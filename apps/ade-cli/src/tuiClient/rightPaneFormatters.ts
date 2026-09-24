@@ -9,9 +9,12 @@ import {
   type WorkToolId,
   type WorkToolsBrowserTab,
   type WorkToolsLaneState,
+  type WorkToolsMacDesktopState,
   type WorkToolsObservation,
 } from "../../../desktop/src/shared/types/workTools";
+import { macDesktopNotParkedSentence } from "../../../desktop/src/renderer/components/chat/macDesktopActivityText";
 import { formatCursorCloudAge } from "../../../desktop/src/renderer/lib/cursorCloudUtils";
+import { macDesktopVisibleNotParked } from "../../../desktop/src/shared/types/macDesktop";
 import { formatRelativePastTime } from "./relativeTime";
 
 type JsonRecord = Record<string, unknown>;
@@ -642,6 +645,7 @@ const WORK_TOOL_LABELS: Record<WorkToolId, string> = {
   ios: "Simulator",
   "app-control": "App Control",
   browser: "Browser",
+  "mac-desktop": "Mac Desktop",
   pr: "PR",
 };
 
@@ -772,5 +776,53 @@ export function formatWorkToolsLaneState(
     if (frame) lines.push(`last frame: ${frame}`);
   }
 
+  const macDesktopOpen = state.activeTool === "mac-desktop"
+    || (state.openTools ?? []).includes("mac-desktop");
+  if (state.macDesktop?.supported && (state.macDesktop.display || macDesktopOpen)) {
+    lines.push(...workToolsMacDesktopLines(state.macDesktop, nowMs));
+  }
+
   return lines.join("\n");
+}
+
+/**
+ * The lane's private screen, as text.
+ *
+ * Same facts the phone card leads with: size, what is parked, who is driving,
+ * and a window that never left the user's own display. Hidden when this host
+ * cannot host a screen, matching the other clients.
+ */
+function workToolsMacDesktopLines(desktop: WorkToolsMacDesktopState, nowMs: number): string[] {
+  const lines = ["", "Mac Desktop"];
+  const display = desktop.display;
+  if (!display) {
+    lines.push("No display yet.");
+    return lines;
+  }
+  const windowCount = desktop.windows.length;
+  const parts = [
+    `${display.width}x${display.height}`,
+    windowCount === 1 ? "1 window" : `${windowCount} windows`,
+  ];
+  if (desktop.lease) {
+    const label = desktop.lease.holderLabel?.trim();
+    parts.push(label || (desktop.lease.holder === "user" ? "you" : "an agent"));
+  }
+  if (desktop.stream?.running) parts.push(desktop.stream.idle ? "streaming idle" : "streaming");
+  if (desktop.recording?.running) parts.push("recording");
+  lines.push(parts.join(" · "));
+  if (display.mode === "offscreen-region") {
+    lines.push("Parked off-screen on the main display.");
+  }
+  const frame = desktop.lastObservation;
+  if (frame) {
+    const caption = frame.caption?.trim() || "frame captured";
+    lines.push(`last frame: ${caption} · ${formatRelativePastTime(frame.capturedAt, nowMs)}`);
+  }
+  const stranded = macDesktopVisibleNotParked(desktop.notParked ?? [], nowMs)[0];
+  if (stranded) {
+    const title = desktop.windows.find((window) => window.id === stranded.windowId)?.title?.trim();
+    lines.push(macDesktopNotParkedSentence(title || `Window ${stranded.windowId}`, stranded.reason));
+  }
+  return lines;
 }

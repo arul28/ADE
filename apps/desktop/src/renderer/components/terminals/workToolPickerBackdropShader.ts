@@ -27,6 +27,7 @@ uniform vec4 u_surface;    // contrast, brightness, saturation, grain
 uniform vec4 u_transform;  // seed, rotation, drift, vignette
 uniform vec4 u_space;      // offset.xy, pointer.xy
 uniform vec4 u_cursor;     // presence, strength, radius, unused
+uniform vec4 u_view;       // field offset.xy (px, bottom-left), px per canvas pixel xy
 
 #define u_resolution u_scene.xy
 #define u_time u_scene.z
@@ -81,7 +82,10 @@ float noise(vec2 p) {
 float fbm(vec2 p) {
   float v = 0.0;
   float a = 0.5;
-  for (int i = 0; i < 4; i++) {
+  // Three octaves, not four: the warp moves the field by a fraction of a
+  // unit, so a fourth octave adds detail finer than this soft mesh can show,
+  // at a quarter more noise cost per pixel.
+  for (int i = 0; i < 3; i++) {
     v += a * noise(p);
     p = p * 2.03 + vec2(17.0, 9.2);
     a *= 0.5;
@@ -109,8 +113,11 @@ vec3 shade(vec2 p, float t) {
 }
 
 void main() {
-  vec2 screenUv = gl_FragCoord.xy / u_resolution.xy;
-  vec2 p = (gl_FragCoord.xy - 0.5 * u_resolution.xy)
+  // This canvas may be one part of a larger field (see \`u_view\`): map its
+  // pixel into field pixels, and read everything else in field space.
+  vec2 fragCoord = u_view.xy + gl_FragCoord.xy * u_view.zw;
+  vec2 screenUv = fragCoord / u_resolution.xy;
+  vec2 p = (fragCoord - 0.5 * u_resolution.xy)
     / min(u_resolution.x, u_resolution.y);
 
   // One cursor effect only — the swirl. The builder's other three modes were
@@ -156,7 +163,7 @@ void main() {
   }
   if (u_grain > 0.0001)
     col += (grainHash(
-      gl_FragCoord.xy + vec2(u_seed * 17.0, u_seed * 31.0)) - 0.5) * u_grain;
+      fragCoord + vec2(u_seed * 17.0, u_seed * 31.0)) - 0.5) * u_grain;
   gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 `;
@@ -241,50 +248,52 @@ export const UNIFORMS = {
 } as const;
 
 /**
- * The chat header is a few dozen pixels tall, so the pane's scale (which keys
- * off the short side) zooms into a single lobe. These numbers sample the same
- * mesh as a wide horizontal slice, drift it a little faster, and bloom the
- * purple while the pointer is over the bar.
+ * DPR 1, always — and then `BACKDROP_RENDER_SCALE` under that. This is a soft
+ * gradient; it has nothing to resolve.
  */
-export const HEADER_SLICE = {
-  /**
-   * Shade-space radius of the orbiting lobes (`0.50 + intensity * 0.38`).
-   * Landing this near the ends of the strip is what turns the 32px bar into
-   * a slice of the pane instead of one dot behind the title.
-   */
-  fieldReach: 0.78,
-  /** Fraction of the half-width that reach should cover. */
-  reachAcross: 0.92,
-  timeScale: -0.62,
-  drift: 0.3,
-  intensity: 0.72,
-  hoverIntensity: 1,
-  /** The pane sits at -0.14 so cards stay brightest. A slice that thin goes black. */
-  brightness: -0.02,
-  vignette: 0.06,
-  saturation: 1,
-  cursorStrength: 1.45,
-  /** Pre-scale units. One unit is the strip's height, so this is a wide swirl. */
-  cursorRadius: 9,
-} as const;
-
-/** Scale that lays `HEADER_SLICE.fieldReach` across a short, wide canvas. */
-export function headerBackdropScale(width: number, height: number): number {
-  const aspect = Math.max(1, width) / Math.max(1, height);
-  const half = aspect / 2;
-  return HEADER_SLICE.fieldReach / (half * HEADER_SLICE.reachAcross);
-}
-
-/** DPR 1, always. This is a soft gradient; it has nothing to resolve. */
 export const BACKDROP_MAX_DPR = 1;
 /**
- * The hard pixel ceiling. Roughly a 1000×600 pane at DPR 1 — past that the
- * canvas keeps its CSS size and renders fewer pixels, stretched. A mesh this
- * soft cannot show the difference, and the fragment cost is linear in pixels.
+ * The hard pixel ceiling, applied AFTER `BACKDROP_RENDER_SCALE` — so it only
+ * bites on a pane past roughly 1450×1000 CSS pixels, where the canvas keeps its
+ * CSS size and renders fewer pixels, stretched. A mesh this soft cannot show the
+ * difference, and the fragment cost is linear in pixels.
  */
-export const BACKDROP_PIXEL_BUDGET = 600_000;
+export const BACKDROP_PIXEL_BUDGET = 300_000;
+
+/**
+ * Render at 60% of CSS pixels and let the compositor scale the result up.
+ *
+ * The mesh is a sum of gaussian lobes under a small warp: its highest
+ * spatial frequency is measured in tens of pixels, so a drawing buffer at 0.6×
+ * carries every feature it has and the upscale is free — it is the same bilinear
+ * blit the canvas was already doing. Fragment cost is linear in pixels, so this
+ * is 36% of the shader's former per-frame work at every pane size.
+ */
+export const BACKDROP_RENDER_SCALE = 0.6;
 /** 30 fps. Drift this slow gains nothing from 60, let alone from 240. */
 export const BACKDROP_FRAME_MS = 1000 / 30;
+/**
+ * 12 fps while nothing is chasing the cursor, and then nothing at all.
+ *
+ * The 30 fps ceiling exists for the swirl, which has to keep up with a pointer;
+ * the drift underneath it moves a fraction of a pixel a second — see the slowed
+ * `timeScale` — and cannot be told apart at 12. Idle is the state the picker is
+ * in essentially all the time, so this is 60% of the mesh's cost back for a
+ * difference nobody can see. The moment the pointer touches the canvas the loop
+ * steps back up to `BACKDROP_FRAME_MS`.
+ */
+export const BACKDROP_IDLE_FRAME_MS = 1000 / 12;
+
+/**
+ * After this long with the pointer somewhere else, stop drawing entirely.
+ *
+ * The canvas keeps its last composited frame — nothing blanks, nothing fades —
+ * and the renderer stops waking up at all. A pointer move over the canvas or the
+ * window regaining focus starts the drift again. Twenty seconds is long enough
+ * that a user reading the cards never sees it happen, and short enough that a
+ * picker left open behind a terminal costs nothing.
+ */
+export const BACKDROP_IDLE_FREEZE_MS = 20_000;
 
 /**
  * The drawing-buffer size for a given CSS box — the whole size/budget policy,
@@ -300,8 +309,9 @@ export function resolveBackdropSize(
     Math.max(Number.isFinite(devicePixelRatio) && devicePixelRatio > 0 ? devicePixelRatio : 1, 0.5),
     BACKDROP_MAX_DPR,
   );
-  const rawWidth = Math.max(1, Math.round((Number.isFinite(cssWidth) ? cssWidth : 0) * dpr));
-  const rawHeight = Math.max(1, Math.round((Number.isFinite(cssHeight) ? cssHeight : 0) * dpr));
+  const scaled = dpr * BACKDROP_RENDER_SCALE;
+  const rawWidth = Math.max(1, Math.round((Number.isFinite(cssWidth) ? cssWidth : 0) * scaled));
+  const rawHeight = Math.max(1, Math.round((Number.isFinite(cssHeight) ? cssHeight : 0) * scaled));
   const scale = Math.min(1, Math.sqrt(Math.max(1, budget) / (rawWidth * rawHeight)));
   // Floor, not round: rounding both axes up can carry the product a few hundred
   // pixels back over the ceiling it was just scaled under.

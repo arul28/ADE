@@ -26,9 +26,8 @@ import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
 import { normalizeWorkLaneSortMode, type WorkLaneSortMode } from "../components/terminals/workLaneOrder";
 import { MAX_WORK_GRID_TILES } from "../lib/workGrid";
 import {
-  normalizeWorkLiveCardDismissals,
   normalizeWorkLiveCardPosition,
-  type WorkLiveCardDismissals,
+  normalizeWorkLiveCardWidth,
   type WorkLiveCardPosition,
 } from "./workLiveCardState";
 import {
@@ -157,6 +156,7 @@ export type WorkSidebarTab =
   | "ios"
   | "app-control"
   | "browser"
+  | "mac-desktop"
   | "pr";
 export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
@@ -175,6 +175,8 @@ export type WorkSessionListOrganization =
  * `by-time` branch in `SessionListPane` to grow a board case.
  */
 export type WorkViewMode = "list" | "board";
+/** Lanes sidebar grouping. "state" is the default; "stack" is the plain stack tree. */
+export type LanesSidebarGroupBy = "state" | "stack";
 /**
  * A Cursor-style grid: a set of chat/CLI sessions that share the work area in a
  * resizable split layout. `sessionIds` is the membership (drives the sidebar
@@ -210,8 +212,6 @@ export type WorkProjectViewState = {
   workCollapsedTabGroupIds: string[];
   /** Section ids collapsed in status/time sidebar groupings (e.g. "status:running", "time:today"). */
   workCollapsedSectionIds: string[];
-  /** When true, sessions sidebar is hidden for a full-width content area (persisted per project). */
-  workFocusSessionsHidden: boolean;
   /** Global Work right sidebar state; content follows the active lane/session. */
   workSidebarOpen: boolean;
   /**
@@ -244,21 +244,18 @@ export type WorkProjectViewState = {
    */
   workLiveCardPosition?: WorkLiveCardPosition | null;
   /**
-   * Per-tool "×" dismissals of that same card, keyed by tool id, valued with
-   * the activity stamp the card was showing when it was closed. Lane-scoped in
-   * practice (written through `setLaneWorkViewState`): dismissing the browser
-   * preview in one lane says nothing about the next one. Optional for the same
-   * reason as the position — absent means nobody has ever closed it.
+   * The width the user chose for that card, in CSS pixels. Project-scoped like
+   * the position: the layout preference belongs to the workspace, while the
+   * closed/floated state belongs to the chat. Optional because it is only
+   * written once somebody resizes the card; absent means the default width.
    */
-  workLiveCardDismissed?: WorkLiveCardDismissals | null;
+  workLiveCardWidth?: number | null;
   /** Per-lane custom tab ordering for the grouped Work tab strip. */
   laneSessionOrder: Record<string, string[]>;
   /** Session ids pinned to the front of their lane's tab group. */
   pinnedSessionIds: string[];
   /**
-   * Work-sidebar lane pins. Deliberately NOT `lanesPinnedLaneIds` below: that
-   * set belongs to the Lanes tab, and the two surfaces pin for different
-   * reasons. Pinned lanes sort above everything and never take the compact
+   * Work-sidebar lane pins. Pinned lanes sort above everything and never take the compact
    * quiet styling.
    */
   workPinnedLaneIds: string[];
@@ -274,8 +271,12 @@ export type WorkProjectViewState = {
    * tab switch by construction — it has to live here to be preserved at all.
    */
   lanesFilter: string;
-  lanesPinnedLaneIds: string[];
-  lanesExpandedLaneId: string | null;
+  /** How the Lanes sidebar list is grouped: by what each lane needs, or as the stack tree. */
+  lanesGroupBy: LanesSidebarGroupBy;
+  /** State groups collapsed in the Lanes sidebar (e.g. "lanes-state:done"). */
+  lanesCollapsedGroupIds: string[];
+  /** Collapsed sections of the lane overview (e.g. "chats"), shared by every lane. */
+  lanesCollapsedSectionIds: string[];
   /**
    * `"<machineId>:<remotePort>"` pairs the human answered "Always for this
    * lane" to, when a chat pinned to another machine asks the built-in browser
@@ -336,13 +337,12 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workCollapsedTabGroupIds: [],
     // Settled starts collapsed: the tier is present but quiet by default.
     workCollapsedSectionIds: ["status:settled"],
-    workFocusSessionsHidden: false,
     workSidebarOpen: false,
     workSidebarTool: null,
     workSidebarOpenTools: [],
     workSidebarWidthPct: 36,
     workLiveCardPosition: null,
-    workLiveCardDismissed: null,
+    workLiveCardWidth: null,
     laneSessionOrder: {},
     pinnedSessionIds: [],
     workPinnedLaneIds: [],
@@ -352,8 +352,9 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workLaneOrder: [],
     workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
     lanesFilter: "",
-    lanesPinnedLaneIds: [],
-    lanesExpandedLaneId: null,
+    lanesGroupBy: "state",
+    lanesCollapsedGroupIds: [],
+    lanesCollapsedSectionIds: [],
     browserTunnelAlwaysKeys: [],
   };
 }
@@ -383,6 +384,7 @@ function normalizeWorkSidebarTool(value: unknown): WorkSidebarTab | null {
     || value === "ios"
     || value === "app-control"
     || value === "browser"
+    || value === "mac-desktop"
     || value === "pr"
   ) return value;
   return null;
@@ -448,7 +450,6 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workCollapsedLaneIds: normalizeStringArray(candidate.workCollapsedLaneIds),
     workCollapsedTabGroupIds: normalizeStringArray(candidate.workCollapsedTabGroupIds),
     workCollapsedSectionIds: normalizeStringArray(candidate.workCollapsedSectionIds),
-    workFocusSessionsHidden: candidate.workFocusSessionsHidden === true,
     workSidebarOpen: candidate.workSidebarOpen === true,
     workSidebarTool: activeWorkSidebarTool,
     workSidebarOpenTools: normalizeWorkSidebarOpenTools(
@@ -457,7 +458,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     ),
     workSidebarWidthPct: normalizeWorkSidebarWidthPct(candidate.workSidebarWidthPct),
     workLiveCardPosition: normalizeWorkLiveCardPosition(candidate.workLiveCardPosition),
-    workLiveCardDismissed: normalizeWorkLiveCardDismissals(candidate.workLiveCardDismissed),
+    workLiveCardWidth: normalizeWorkLiveCardWidth(candidate.workLiveCardWidth),
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
     // Deduped: a hand-edited or half-written blob must not be able to render the
@@ -467,8 +468,11 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workLaneOrder: normalizeUniqueStringArray(candidate.workLaneOrder),
     workSessionFilters: normalizeWorkSessionFilters(candidate.workSessionFilters),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
-    lanesPinnedLaneIds: normalizeStringArray(candidate.lanesPinnedLaneIds),
-    lanesExpandedLaneId: normalizeOptionalString(candidate.lanesExpandedLaneId),
+    // Additive like the other lanes keys: an older blob has no grouping and
+    // lands on the State default.
+    lanesGroupBy: candidate.lanesGroupBy === "stack" ? "stack" : "state",
+    lanesCollapsedGroupIds: normalizeUniqueStringArray(candidate.lanesCollapsedGroupIds),
+    lanesCollapsedSectionIds: normalizeUniqueStringArray(candidate.lanesCollapsedSectionIds),
     browserTunnelAlwaysKeys: normalizeUniqueStringArray(candidate.browserTunnelAlwaysKeys),
   };
 }

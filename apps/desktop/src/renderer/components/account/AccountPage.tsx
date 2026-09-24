@@ -391,7 +391,13 @@ function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signing
 // Page.
 // ---------------------------------------------------------------------------
 
-export function AccountPage() {
+/**
+ * The account: who you are, your Macs, and sign out; or the sign-in card.
+ *
+ * `embedded` renders it as a Settings section: no page scroll, no width cap,
+ * no Back button. The standalone page (no project open) keeps all three.
+ */
+export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
   const navigate = useNavigate();
   const location = useLocation();
   const { status, refresh } = useAccountStatus();
@@ -460,7 +466,7 @@ export function AccountPage() {
     [status.signedIn, githubConnected, repoBridgeDismissed],
   );
 
-  const backButton = (
+  const backButton = embedded ? null : (
     <button
       ref={backRef}
       type="button"
@@ -478,10 +484,11 @@ export function AccountPage() {
     </button>
   );
 
-  return (
-    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: COLORS.pageBg }}>
-      <div
-        style={{
+  const content = (
+    <div
+      style={embedded
+        ? { display: "flex", flexDirection: "column", gap: 16 }
+        : {
           maxWidth: 920,
           margin: "0 auto",
           padding: "36px clamp(20px, 5vw, 40px) 64px",
@@ -490,166 +497,182 @@ export function AccountPage() {
           gap: 16,
           minHeight: "100%",
         }}
-      >
-        {!status.signedIn ? (
-          <>
-            {backButton}
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, gap: 16 }}>
-              <SignInCard
-                configured={status.configured !== false}
-                onSignedIn={handleSignedIn}
-                sessionState={accountSessionState(status)}
-              />
-            </div>
-          </>
-        ) : (
-          <>
-            {backButton}
+    >
+      {!status.signedIn ? (
+        <>
+          {backButton}
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              flex: 1,
+              gap: 16,
+              padding: embedded ? "32px 0" : undefined,
+            }}
+          >
+            <SignInCard
+              configured={status.configured !== false}
+              onSignedIn={handleSignedIn}
+              sessionState={accountSessionState(status)}
+            />
+          </div>
+        </>
+      ) : (
+        <>
+          {backButton}
 
-            {/* Identity header */}
-            <div style={cardStyle({ display: "flex", alignItems: "center", gap: 16 })}>
-              <span style={{ flexShrink: 0 }}>
-                {avatarImage && !avatarBroken ? (
-                  <img
-                    src={avatarImage}
-                    alt=""
-                    width={52}
-                    height={52}
-                    draggable={false}
-                    onError={() => setAvatarBroken(true)}
-                    style={{
-                      width: 52,
-                      height: 52,
-                      borderRadius: "50%",
-                      objectFit: "cover",
-                      boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)`,
-                    }}
-                  />
-                ) : (
-                  <span
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 52,
-                      height: 52,
-                      borderRadius: "50%",
-                      fontFamily: SANS_FONT,
-                      fontSize: 18,
-                      fontWeight: 700,
-                      color: COLORS.textPrimary,
-                      background: `color-mix(in srgb, ${ringTint} 20%, transparent)`,
-                      boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)`,
-                    }}
-                  >
-                    {accountInitials(status)}
-                  </span>
-                )}
-              </span>
-              <div style={{ minWidth: 0, flex: 1 }}>
-                {status.name ? (
-                  <div
-                    style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 15,
-                      fontWeight: 700,
-                      color: COLORS.textPrimary,
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      whiteSpace: "nowrap",
-                    }}
-                  >
-                    {status.name}
-                  </div>
-                ) : null}
-                <div
+          {/* Identity header */}
+          <div style={cardStyle({ display: "flex", alignItems: "center", gap: 16 })}>
+            <span style={{ flexShrink: 0 }}>
+              {avatarImage && !avatarBroken ? (
+                <img
+                  src={avatarImage}
+                  alt=""
+                  width={52}
+                  height={52}
+                  draggable={false}
+                  onError={() => setAvatarBroken(true)}
                   style={{
-                    fontFamily: SANS_FONT,
-                    fontSize: status.name ? 14 : 16,
-                    fontWeight: status.name ? 500 : 700,
-                    color: status.name ? COLORS.textSecondary : COLORS.textPrimary,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    width: 52,
+                    height: 52,
+                    borderRadius: "50%",
+                    objectFit: "cover",
+                    boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)`,
                   }}
-                >
-                  {status.email ?? "Your ADE account"}
-                </div>
-                {providerCaption ? (
-                  <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                    {providerCaption}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-
-            {/* GitHub repo bridge — identity stays decoupled from repo connection */}
-            {showRepoBridge ? (
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "13px 16px",
-                  borderRadius: RADII.lg,
-                  background: COLORS.cardBg,
-                  border: `1px solid ${COLORS.border}`,
-                }}
-              >
+                />
+              ) : (
                 <span
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    width: 30,
-                    height: 30,
-                    borderRadius: 8,
-                    background: "color-mix(in srgb, #8b949e 20%, transparent)",
+                    width: 52,
+                    height: 52,
+                    borderRadius: "50%",
+                    fontFamily: SANS_FONT,
+                    fontSize: 18,
+                    fontWeight: 700,
                     color: COLORS.textPrimary,
-                    flexShrink: 0,
+                    background: `color-mix(in srgb, ${ringTint} 20%, transparent)`,
+                    boxShadow: `0 0 0 2px color-mix(in srgb, ${ringTint} 55%, transparent)`,
                   }}
                 >
-                  <GithubLogo size={17} weight="fill" />
+                  {accountInitials(status)}
                 </span>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-                    Connect your repos & PRs too?
-                  </div>
-                  <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                    Your identity and your GitHub repo access stay separate — link it when you're ready.
-                  </div>
+              )}
+            </span>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              {status.name ? (
+                <div
+                  style={{
+                    fontFamily: SANS_FONT,
+                    fontSize: 15,
+                    fontWeight: 700,
+                    color: COLORS.textPrimary,
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {status.name}
                 </div>
+              ) : null}
+              <div
+                style={{
+                  fontFamily: SANS_FONT,
+                  fontSize: status.name ? 14 : 16,
+                  fontWeight: status.name ? 500 : 700,
+                  color: status.name ? COLORS.textSecondary : COLORS.textPrimary,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {status.email ?? "Your ADE account"}
+              </div>
+              {providerCaption ? (
+                <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+                  {providerCaption}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* GitHub repo bridge — identity stays decoupled from repo connection */}
+          {showRepoBridge ? (
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "13px 16px",
+                borderRadius: RADII.lg,
+                background: COLORS.cardBg,
+                border: `1px solid ${COLORS.border}`,
+              }}
+            >
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  width: 30,
+                  height: 30,
+                  borderRadius: 8,
+                  background: "color-mix(in srgb, #8b949e 20%, transparent)",
+                  color: COLORS.textPrimary,
+                  flexShrink: 0,
+                }}
+              >
+                <GithubLogo size={17} weight="fill" />
+              </span>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
+                  Connect your repos & PRs too?
+                </div>
+                <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+                  Your identity and your GitHub repo access stay separate — link it when you're ready.
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate(settingsRouteFor("integrations.github"))}
+                style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px", flexShrink: 0 })}
+              >
+                Connect GitHub
+              </button>
+              <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion for this session." }}>
                 <button
                   type="button"
-                  onClick={() => navigate(settingsRouteFor("integrations.github"))}
-                  style={outlineButton({ height: 30, fontSize: 12, padding: "0 12px", flexShrink: 0 })}
+                  onClick={dismissRepoBridge}
+                  aria-label="Dismiss"
+                  style={{ ...outlineButton({ height: 26, width: 26, padding: 0 }), border: "none", background: "transparent", flexShrink: 0 }}
                 >
-                  Connect GitHub
+                  <X size={13} weight="bold" />
                 </button>
-                <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion for this session." }}>
-                  <button
-                    type="button"
-                    onClick={dismissRepoBridge}
-                    aria-label="Dismiss"
-                    style={{ ...outlineButton({ height: 26, width: 26, padding: 0 }), border: "none", background: "transparent", flexShrink: 0 }}
-                  >
-                    <X size={13} weight="bold" />
-                  </button>
-                </SmartTooltip>
-              </div>
-            ) : null}
+              </SmartTooltip>
+            </div>
+          ) : null}
 
-            <YourMacsCard />
+          <YourMacsCard />
 
-            <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
-            {signOutError ? (
-              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, lineHeight: 1.5 }}>
-                {signOutError}
-              </div>
-            ) : null}
-          </>
-        )}
-      </div>
+          <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
+          {signOutError ? (
+            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger, lineHeight: 1.5 }}>
+              {signOutError}
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
+  );
+
+  if (embedded) return content;
+  return (
+    <div style={{ height: "100%", width: "100%", overflowY: "auto", background: COLORS.pageBg }}>
+      {content}
     </div>
   );
 }

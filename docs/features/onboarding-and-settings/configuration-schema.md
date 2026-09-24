@@ -63,8 +63,6 @@ type ProjectConfigFile = {
     rebaseSuggestions?: "off" | "badge" | "banner";
     /** Don't suggest until the lane is at least this far behind. */
     rebaseSuggestionMinBehind?: number;
-    /** Max banners stacked above the Lanes list before they collapse. */
-    laneBannerBudget?: number;
   };
   ai?: AiConfig;
   laneEnvInit?: LaneEnvInitConfig;
@@ -484,8 +482,8 @@ the git block with `defaultEffectiveGitConfig()` from
 `shared/types/config.ts` rather than by hand — including in tests — so
 adding a git setting doesn't require editing every fixture.
 
-`git.rebaseSuggestions` defaults to `banner`,
-`git.rebaseSuggestionMinBehind` to `1`, and `git.laneBannerBudget` to `2`,
+`git.rebaseSuggestions` defaults to `banner`
+and `git.rebaseSuggestionMinBehind` to `1`,
 which together reproduce the pre-setting behavior. `off` is honored in
 `rebaseSuggestionService` *before* the scan runs, so it skips the
 remote-tracking fetch and per-lane behind-count rather than just hiding

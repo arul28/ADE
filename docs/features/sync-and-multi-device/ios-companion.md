@@ -3095,14 +3095,16 @@ Known limits, all deliberate:
 
 The desktop's Work tools pane cannot run on a phone — the browser is a
 `WebContentsView`, App Control is a CDP socket to a local process, and the
-iOS panel is a capture stream — so the phone gets a **read-only mirror**;
-the one button it offers opens a view-only stream, never remote control.
+iOS panel is a capture stream — so the phone gets a **read-only mirror** of the browser and App Control.
+Mac Desktop is the exception: the phone can watch, take control, and start a
+display that is off.
 
 `WorkLaneToolChips.swift` puts the lane's tools in the chat's floating
 badge row, after the PR chip, one chip per thing the phone can open:
 the lane's simulator while it is up (the model without the family word,
 e.g. "16 Pro" beside the device glyph, with a green live dot; VoiceOver reads
 "iPhone 16 Pro" — tap opens `AppleDeviceViewer` full screen),
+the lane's macOS desktop (`desktopcomputer`, labelled **macOS**),
 the desktop browser ("1 tab" / "3 tabs", accent-tinted while an agent is
 driving it), and App Control (the attached app's name). The Mac's active
 tool on its own ("Apple active") is not a chip — it names someone else's
@@ -3145,6 +3147,77 @@ them omits them and the phone hides the row instead of flipping the host
 into `limited` mode. Browser login handoff is surfaced read-only through
 `WorkToolsBrowserTab.handoffReason`. See
 [Chat › the Work tools pane on iOS and the hosted web client](../chat/README.md#the-work-tools-pane-on-ios-and-the-hosted-web-client).
+
+The **Mac Desktop card** gains a live picture when the host advertises
+`hello.features.macDesktopStream` and the `macDesktop.streamSubscribe`
+command. `MacDesktopLiveView.swift` wraps an `AVSampleBufferDisplayLayer` in a
+`UIViewRepresentable`; the card subscribes while the sheet is visible,
+foregrounded, and connected, and drops the subscription on disappear,
+background, sheet close, or socket teardown, resubscribing on reconnect —
+one stable subscription id per lane per app instance. Records arrive as
+`macDesktop.streamRecord` pushes (a `config` first, then Annex-B frames with
+SPS/PPS ahead of every keyframe), are base64-decoded off the main actor,
+rewritten to AVCC, and decoded through a `CMVideoFormatDescription` built from
+the in-band parameter sets; `MacDesktopStreamFrameGate` holds P-frames until
+the keyframe that follows any sequence gap, which is what the host's
+backpressure contract promises. `macDesktop.streamEnded` ends the session
+(stopped/display destroyed) or waits for the reconnect
+(`connection_closed`). The still image is fetched once as the placeholder
+behind the first keyframe and stays when the host reports `stream.idle` — the
+phone never polls a still while a session is mounted. The phone never calls
+`macDesktop.stop`. It calls `macDesktop.start` only from the Off card, and it
+sends pointer and keyboard input only after Take control.
+
+#### macOS chip, Off card, and full-screen viewer
+
+The chat's badge row gets a `desktopcomputer` chip labelled **macOS**
+(`WorkToolChipKind.macDesktop`) from the same 10 s `workTools.getLaneState`
+poll. It shows only while `macDesktop.supported` is true and the lane has a
+`display`. A poll that fails or times out keeps the last lane state
+(`workToolsStateAfterRead`), so a slow status read while an agent drives the
+screen does not drop the chip. The host side of that is a 2 s deadline
+(`WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS`): the lane-state read answers with
+the last Mac Desktop status rather than waiting out the driver's health and
+window-list budgets. The chip carries the green live dot while
+`stream.running && !stream.idle` and takes the accent tint while an agent holds
+the lease. Chips order: simulator, macOS, browser, App Control. Tapping it
+opens `MacDesktopViewer` when the host advertises the stream, else the tools
+sheet.
+
+In the tools sheet the card is titled **macOS** and sits under the Apple card.
+With a display it shows a subtitle of "W × H · bitrate · fps" (rate only while
+streaming), a chips row (display name, window count, a danger **Recording**
+badge), the inline live picture, the host's `stream.lastError` line, the lease
+ribbon, the parked windows, and a **Watch** button. Take control / Return stay
+on the picture. With no display the card is the Off row: "The macOS desktop is
+off." and **Start** when the host advertises `macDesktop.start`. An older host
+that does not advertise start says to start it in ADE on the Mac. Start in
+flight reads "Starting the macOS desktop…". Opening the viewer never starts a
+display; only that button does.
+
+`MacDesktopViewer.swift` is the full-screen view, titled **macOS**. Close,
+Reconnect, and (on a phone, while not controlling) Rotate sit on top. While
+watching, the picture zooms: pinch from 1× to 4×, pan while zoomed, double-tap
+between 1× and 2.5× (`MacDesktopZoom` in `MacDesktopStreamMath.swift`). The
+phone may turn to landscape, with the device or with Rotate. Take control
+forces landscape, holds it, and turns zoom off, because input mapping assumes
+an unzoomed picture; Return restores the orientation from before. An iPad does
+not rotate. The same `MacDesktopControlPicture` (Take control / Return
+included) sits on black. A status card offers Reconnect when the stream stops
+or fails (the host's `lastError` wins over the generic sentence). The footer,
+hidden in landscape, reads who is watching and whether anyone is recording.
+The viewer polls the lane state every 3 s and subscribes under its own id
+(`…-mac-desktop-viewer-<lane>`); the sheet stops its inline subscription while
+the viewer is up. With no display the viewer shows the same Off card and
+Start button. The card and the viewer share `mountMacDesktopLiveSession` and
+`macDesktopStartDisplay` (`MacDesktopLiveMount.swift`), so the two
+subscriptions cannot unsubscribe each other.
+
+The wire gained `macDesktop.recording` (`{ running, startedAt }`, optional —
+an older host omits it and the phone reads "not recording"); the phone also
+now decodes the `fps`, `bitrateKbps` and `lastError` the stream summary
+already carried.
+
 
 ### The Proof sheet and viewer
 

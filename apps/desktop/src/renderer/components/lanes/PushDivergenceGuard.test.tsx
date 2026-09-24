@@ -176,7 +176,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
   }
 
   async function clickPush() {
-    const pushButton = await screen.findByRole("button", { name: "PUSH" });
+    const pushButton = await screen.findByTestId("git-pane-push");
     await userEvent.click(pushButton);
   }
 

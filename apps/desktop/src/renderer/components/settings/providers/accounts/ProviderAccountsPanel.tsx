@@ -31,7 +31,7 @@ import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
 import { providerColor } from "../../../usage/providerColors";
 import { useAppStore } from "../../../../state/appStore";
-import { useClickOutside } from "../../../../hooks/useClickOutside";
+import { AnchoredMenu } from "../../../ui/AnchoredMenu";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import type {
   ProviderInstance,
@@ -201,24 +201,14 @@ function AccountRow({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [draftLabel, setDraftLabel] = useState(instance.label);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const menuButtonRef = useRef<HTMLButtonElement | null>(null);
   const accent = accountAccent(instance, brandColor);
 
   const closeMenu = useCallback(() => setMenuOpen(false), []);
 
   // A row menu is a popover, so it has to answer the two gestures every popover
-  // answers: click somewhere else, or press Escape. Without them the menu of
-  // every row you ever opened stays on screen at once, stacked over the panel
-  // below it.
-  useClickOutside(menuRef, closeMenu, menuOpen);
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMenu();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [menuOpen, closeMenu]);
+  // answers: click somewhere else, or press Escape. `AnchoredMenu` handles both,
+  // and portals the menu so the settings scroll pane cannot clip it.
 
   const item = (action: RowMenuAction, text: string, danger = false) => (
     <button
@@ -331,8 +321,9 @@ function AccountRow({
           {instance.isDefault ? (
             <span style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>Default</span>
           ) : null}
-          <span style={{ position: "relative", display: "inline-flex" }} ref={menuRef}>
+          <span style={{ position: "relative", display: "inline-flex" }}>
             <button
+              ref={menuButtonRef}
               type="button"
               aria-label={`${instance.label} account actions`}
               aria-haspopup="menu"
@@ -353,28 +344,26 @@ function AccountRow({
             >
               <DotsThree size={14} weight="bold" />
             </button>
-            {menuOpen ? (
-              <div
-                role="menu"
-                aria-label={`${instance.label} account actions`}
-                style={{
-                  position: "absolute",
-                  top: "calc(100% + 4px)",
-                  right: 0,
-                  zIndex: 25,
-                  minWidth: 150,
-                  padding: "4px 0",
-                  background: COLORS.cardBgSolid,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
-                }}
-              >
-                {item("rename", "Rename")}
-                {instance.isDefault ? null : item("default", "Set as default")}
-                {item("accent", "Change accent")}
-                {item("remove", "Remove", true)}
-              </div>
-            ) : null}
+            <AnchoredMenu
+              open={menuOpen}
+              anchorRef={menuButtonRef}
+              onClose={closeMenu}
+              placement="bottom-end"
+              role="menu"
+              aria-label={`${instance.label} account actions`}
+              style={{
+                minWidth: 150,
+                padding: "4px 0",
+                background: COLORS.cardBgSolid,
+                border: `1px solid ${COLORS.outlineBorder}`,
+                boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
+              }}
+            >
+              {item("rename", "Rename")}
+              {instance.isDefault ? null : item("default", "Set as default")}
+              {item("accent", "Change accent")}
+              {item("remove", "Remove", true)}
+            </AnchoredMenu>
           </span>
         </span>
       </div>

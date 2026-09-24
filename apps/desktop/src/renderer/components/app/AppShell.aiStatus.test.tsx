@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import type React from "react";
 import type { ReactNode } from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter, useNavigate } from "react-router-dom";
@@ -18,17 +19,24 @@ vi.mock("./CommandPalette", () => ({
   CommandPalette: () => null,
 }));
 
-vi.mock("./TabNav", () => ({
-  TabNav: ({ githubStatus }: { githubStatus: unknown }) => (
-    <nav data-testid="tab-nav">
-      <span data-testid="github-status">{githubStatus ? JSON.stringify(githubStatus) : "none"}</span>
-    </nav>
-  ),
-}));
-
 vi.mock("./TopBar", () => ({
   TopBar: () => <div data-testid="top-bar" />,
 }));
+
+// The shell hands its GitHub status to the banner host; the probe reads it
+// there while the real host still renders its banners.
+vi.mock("./IntegrationBanners", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./IntegrationBanners")>();
+  return {
+    ...actual,
+    IntegrationBanners: (props: React.ComponentProps<typeof actual.IntegrationBanners>) => (
+      <>
+        <span data-testid="github-status">{props.githubStatus ? JSON.stringify(props.githubStatus) : "none"}</span>
+        <actual.IntegrationBanners {...props} />
+      </>
+    ),
+  };
+});
 
 vi.mock("../ui/TabBackground", () => ({
   TabBackground: ({ children }: { children: ReactNode }) => <>{children}</>,

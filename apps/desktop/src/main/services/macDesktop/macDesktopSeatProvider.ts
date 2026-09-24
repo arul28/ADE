@@ -1,0 +1,249 @@
+/**
+ * The Mac virtual-display backend, as a `DesktopSeatProvider`.
+ *
+ * One method per driver op and nothing else: no policy, no ownership, no
+ * lease, no events. The service decides what to ask for and what to refuse;
+ * this file is the only place that knows the op names, so a later Linux seat
+ * backend is a sibling of this file rather than a second set of branches inside
+ * the service.
+ *
+ * Replies that the service normalizes against state only it has — the display's
+ * size, the lane's name, its clock — are passed through as `DesktopSeatReply`
+ * rather than half-normalized here, so there is exactly one place each fallback
+ * is applied.
+ */
+
+import type {
+  DesktopSeatProvider,
+  DesktopSeatReply,
+  MacDesktopAppLeftOpen,
+  MacDesktopInputMode,
+  MacDesktopWalkStop,
+  MacDesktopWindow,
+} from "../../../shared/types/macDesktop";
+import { MAC_DESKTOP_DRIVER_OPS, type MacDesktopDriverClient } from "./macDesktopDriverClient";
+
+/** Launching an app can wait on Gatekeeper and a first-run dialog. */
+const LAUNCH_TIMEOUT_MS = 60_000;
+/** Finalizing a movie file is not a 20-second operation on a long recording. */
+const RECORDING_STOP_TIMEOUT_MS = 60_000;
+const HEALTH_TIMEOUT_MS = 5_000;
+
+/**
+ * The driver-reply normalizers.
+ *
+ * A driver field that answered with a string, an array or nothing at all must
+ * be coerced exactly once, in one place, or the service and this file disagree
+ * about what "no reply" looks like. `asReply` is local — every reply this file
+ * produces is already normalized by the time the service sees it — while the
+ * rest are exported because the service and `macDesktopInput.ts` read the same
+ * loosely-typed driver payloads.
+ */
+const asReply = (value: unknown): DesktopSeatReply =>
+  (value && typeof value === "object" && !Array.isArray(value) ? value as DesktopSeatReply : {});
+
+/** A driver field that should have been a window list, whatever it actually is. */
+export const asWindows = (value: unknown): MacDesktopWindow[] =>
+  (Array.isArray(value) ? value as MacDesktopWindow[] : []);
+
+/** A driver field that should have been an object. */
+export const asRecord = (value: unknown): Record<string, unknown> =>
+  (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+
+/** A driver field that should have been a finite number. */
+export const asNumber = (value: unknown, fallback: number): number =>
+  (typeof value === "number" && Number.isFinite(value) ? value : fallback);
+
+/** A driver field that should have been a non-empty string. */
+export const asNullableString = (value: unknown): string | null =>
+  (typeof value === "string" && value.trim().length ? value.trim() : null);
+
+/** A driver field that should have been a list of strings; other entries are dropped. */
+export const asStringList = (value: unknown): string[] =>
+  (Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0) : []);
+
+/**
+ * The driver's `appsLeftOpen`: the apps a stopped lane opened that did not
+ * quit even when forced. Malformed rows are dropped.
+ */
+export const asAppsLeftOpen = (value: unknown): MacDesktopAppLeftOpen[] =>
+  (Array.isArray(value) ? value : []).flatMap((entry) => {
+    const record = asRecord(entry);
+    const appName = asNullableString(record.appName);
+    if (!appName) return [];
+    return [{
+      pid: asNumber(record.pid, 0),
+      appName,
+      message: asNullableString(record.message) ?? `${appName} did not quit. It moved to your screen.`,
+    }];
+  });
+
+const WALK_STOPS: ReadonlySet<string> = new Set<MacDesktopWalkStop>(["timeout", "stalled", "node_cap", "limit"]);
+
+/** The driver's `truncatedReason`, or null for a complete walk or an unknown reason. */
+export const asWalkStop = (value: unknown): MacDesktopWalkStop | null =>
+  (typeof value === "string" && WALK_STOPS.has(value) ? value as MacDesktopWalkStop : null);
+
+/**
+ * The lanes the driver says have a display, from a `ping` reply. Null when the
+ * reply has no list — an older driver — so the caller cannot mistake "not
+ * reported" for "none".
+ */
+export const asDisplayLaneIds = (value: unknown): Set<string> | null =>
+  (Array.isArray(value)
+    ? new Set(value.filter((laneId): laneId is string => typeof laneId === "string" && laneId.length > 0))
+    : null);
+
+export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient): DesktopSeatProvider {
+  const request = async (
+    op: (typeof MAC_DESKTOP_DRIVER_OPS)[keyof typeof MAC_DESKTOP_DRIVER_OPS],
+    payload: Record<string, unknown> = {},
+    options: { timeoutMs?: number } = {},
+  ): Promise<DesktopSeatReply> => asReply(await client.request(op, payload, options));
+
+  return {
+    id: "mac-virtual-display",
+
+    health: () => request(MAC_DESKTOP_DRIVER_OPS.health, {}, { timeoutMs: HEALTH_TIMEOUT_MS }),
+
+    create: (args) => request(MAC_DESKTOP_DRIVER_OPS.createDisplay, { ...args }),
+
+    destroy: (args) => request(MAC_DESKTOP_DRIVER_OPS.destroyDisplay, { laneId: args.laneId }),
+
+    async reconcile(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.reconcileDisplays, { liveLaneIds: args.liveLaneIds });
+    },
+
+    async watchPermissions(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.watchPermissions, { watch: args.watch });
+    },
+
+    requestPermission: (args) => request(MAC_DESKTOP_DRIVER_OPS.requestPermission, {
+      which: args.which,
+      allowPrompt: args.allowPrompt,
+    }),
+
+    async listWindows(args) {
+      const reply = await request(
+        MAC_DESKTOP_DRIVER_OPS.listWindows,
+        args.laneId ? { laneId: args.laneId } : {},
+      );
+      return asWindows(reply.windows);
+    },
+
+    async park(args) {
+      const reply = await request(MAC_DESKTOP_DRIVER_OPS.parkWindow, {
+        laneId: args.laneId,
+        windowId: args.windowId,
+      });
+      // Older helpers answered with the window itself rather than wrapping it.
+      return (reply.window ? reply.window : reply) as MacDesktopWindow;
+    },
+
+    async unpark(args) {
+      const reply = await request(MAC_DESKTOP_DRIVER_OPS.unparkWindow, {
+        windowId: args.windowId,
+        ...(args.laneId ? { laneId: args.laneId } : {}),
+      });
+      // An older helper released only the one window and did not say so.
+      const releasedWindowIds = Array.isArray(reply.releasedWindowIds)
+        ? reply.releasedWindowIds.filter((id): id is number => typeof id === "number")
+        : [args.windowId];
+      const handedOverPid = typeof reply.handedOverPid === "number" ? reply.handedOverPid : null;
+      return { releasedWindowIds, handedOverPid };
+    },
+
+    launch: (args) => request(MAC_DESKTOP_DRIVER_OPS.launch, {
+      laneId: args.laneId,
+      target: args.target,
+      args: args.args,
+    }, { timeoutMs: LAUNCH_TIMEOUT_MS }),
+
+    present: (args) => request(MAC_DESKTOP_DRIVER_OPS.present, {
+      laneId: args.laneId,
+      destination: args.destination,
+    }),
+
+    observe: (args) => request(MAC_DESKTOP_DRIVER_OPS.observe, {
+      laneId: args.laneId,
+      windowId: args.windowId,
+      limit: args.limit,
+      map: args.map,
+      screenshotPath: args.screenshotPath,
+      ...(args.mapPath ? { mapPath: args.mapPath } : {}),
+      ...(args.caption ? { caption: args.caption } : {}),
+    }),
+
+    input: (args: {
+      laneId: string;
+      command: string;
+      mode: MacDesktopInputMode;
+      payload: Record<string, unknown>;
+      timeoutMs?: number;
+      lease?: { holderId: string } | null;
+    }) => request(MAC_DESKTOP_DRIVER_OPS.input, {
+      laneId: args.laneId,
+      command: args.command,
+      mode: args.mode,
+      payload: args.payload,
+      // The helper refuses a `CGEvent` post itself rather than trusting its
+      // caller, so it is told which holder this process authorized.
+      ...(args.lease ? { lease: { holderId: args.lease.holderId } } : {}),
+    }, args.timeoutMs == null ? {} : { timeoutMs: args.timeoutMs }),
+
+    screenshot: (args) => request(MAC_DESKTOP_DRIVER_OPS.screenshot, {
+      laneId: args.laneId,
+      windowId: args.windowId,
+      path: args.path,
+    }),
+
+    async setLease(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.setLease, {
+        laneId: args.laneId,
+        holderId: args.holderId,
+        expiresAt: args.expiresAt,
+      });
+    },
+
+    async clearLease(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.clearLease, { laneId: args.laneId });
+    },
+
+    startStream: (args) => request(MAC_DESKTOP_DRIVER_OPS.startStream, {
+      laneId: args.laneId,
+      fps: args.fps,
+    }),
+
+    async setStreamCursorVisible(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.setStreamCursorVisible, {
+        laneId: args.laneId,
+        visible: args.visible,
+      });
+    },
+
+    async setStreamRate(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.setStreamRate, { laneId: args.laneId, fps: args.fps });
+    },
+
+    async stopStream(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.stopStream, { laneId: args.laneId });
+    },
+
+    async startRecording(args) {
+      await request(MAC_DESKTOP_DRIVER_OPS.startRecording, {
+        laneId: args.laneId,
+        fps: args.fps,
+        filePath: args.filePath,
+        // The driver cuts still time unless told not to. An older driver
+        // ignores the field and records at wall-clock time.
+        ...(args.keepIdle ? { keepIdle: true } : {}),
+      });
+    },
+
+    stopRecording: (args) => request(
+      MAC_DESKTOP_DRIVER_OPS.stopRecording,
+      { laneId: args.laneId },
+      { timeoutMs: RECORDING_STOP_TIMEOUT_MS },
+    ),
+  };
+}

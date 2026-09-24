@@ -3,7 +3,10 @@ import {
   isWorkLiveCardClosed,
   isWorkLivePreviewDisabled,
   normalizeWorkLiveCardClosedByTool,
+  normalizeWorkLiveCardFloatingTools,
   type WorkLiveCardClosedByTool,
+  type WorkLiveCardFloatingTools,
+  type WorkLiveCardSeenByTool,
   type WorkLiveScreenTool,
 } from "../../state/workLiveCardState";
 
@@ -38,14 +41,26 @@ export type ChatCompanionUiState = {
   /**
    * The Work corner card's "off" markers for this chat, keyed by tool id.
    *
-   * Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge,
-   * take theirs. Written by × on a floating preview (valued with the session key
-   * that was closed) and by the "Show preview when minimized" toggle (valued
-   * with a sentinel). Presence is what disables the preview, so the reader is
-   * `isWorkLivePreviewEnabled`, not a session-key comparison. Per chat because
-   * the preview belongs to the conversation you are reading.
+   * Written by × (valued with the session key that was closed) and by the
+   * "Show preview when minimized" toggle (valued with a sentinel). Presence is
+   * what disables the card, so the reader is `isWorkLivePreviewEnabled`, not a
+   * session-key comparison. Per chat because the card belongs to the
+   * conversation you are reading; a session started by another chat must not
+   * reappear here.
    */
   workLiveCardClosedByTool: WorkLiveCardClosedByTool;
+  /**
+   * Screen tools the user explicitly floated back on for this chat. The Float
+   * button in the pane header suspends the card's "never show the active tool"
+   * rule until the tool is closed again.
+   */
+  workLiveCardFloating: WorkLiveCardFloatingTools;
+  /**
+   * The session key each screen tool showed the last time this chat's tools
+   * pane had it open. An unowned session floats only in a chat that has seen
+   * it; without this a hand-opened browser tab followed you into every chat.
+   */
+  workLiveCardSeenByTool: WorkLiveCardSeenByTool;
 };
 
 export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
@@ -55,6 +70,8 @@ export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
   terminalDrawerOpen: false,
   appleToolsGroup: "device",
   workLiveCardClosedByTool: {},
+  workLiveCardFloating: [],
+  workLiveCardSeenByTool: {},
 };
 
 const CHAT_COMPANION_UI_STORAGE_PREFIX = "ade.chat.companionUiState.";
@@ -80,90 +97,15 @@ type StoredChatCompanionUiState = Partial<ChatCompanionUiState> & {
 
 const chatCompanionUiStateByKey = new Map<string, ChatCompanionUiState>();
 
-export function chatCompanionUiStorageKey(key: string): string {
-  return `${CHAT_COMPANION_UI_STORAGE_PREFIX}${key}`;
-}
-
-export function readChatCompanionUiState(key: string): ChatCompanionUiState {
-  const cached = chatCompanionUiStateByKey.get(key);
-  if (cached) return cached;
-  try {
-    const raw = window.localStorage.getItem(chatCompanionUiStorageKey(key));
-    if (raw) {
-      const decoded = JSON.parse(raw) as unknown;
-      // Every field is read defensively: a hand-edited / partially-written /
-      // older-shape value must degrade to the default, never throw and never
-      // hand a non-boolean to a pane that treats it as one.
-      const parsed = (decoded && typeof decoded === "object" ? decoded : {}) as
-        StoredChatCompanionUiState;
-      const legacyProofOpen = parsed.proofDrawerOpen === true;
-      const state: ChatCompanionUiState = {
-        chatActionsOpen: parsed.chatActionsOpen === true || legacyProofOpen,
-        iosSimulatorOpen: parsed.iosSimulatorOpen === true,
-        appControlOpen: parsed.appControlOpen === true,
-        terminalDrawerOpen: parsed.terminalDrawerOpen === true,
-        // `undefined` is "never written", which is the default card; an explicit
-        // null is a drawer the user collapsed and must stay collapsed.
-        appleToolsGroup: parsed.appleToolsGroup === undefined
-          ? DEFAULT_CHAT_COMPANION_UI_STATE.appleToolsGroup
-          : (typeof parsed.appleToolsGroup === "string" ? parsed.appleToolsGroup : null),
-        workLiveCardClosedByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardClosedByTool),
-      };
-      chatCompanionUiStateByKey.set(key, state);
-      return state;
-    }
-  } catch {
-    // Local storage is best-effort UI state only.
-  }
-  return DEFAULT_CHAT_COMPANION_UI_STATE;
-}
-
-export function writeChatCompanionUiState(key: string, state: ChatCompanionUiState): void {
-  chatCompanionUiStateByKey.set(key, state);
-  notifyChatCompanionUiState(key);
-  try {
-    const record: StoredChatCompanionUiState = { ...state, savedAtMs: Date.now() };
-    window.localStorage.setItem(chatCompanionUiStorageKey(key), JSON.stringify(record));
-  } catch {
-    // Local storage is best-effort UI state only.
-  }
-  // Garbage-collect from inside the module, on the only event that can grow the
-  // family. No caller has to know it exists, and no caller has to enumerate its
-  // own live keys — which is what made the old `knownKeys` prune wrong as soon
-  // as a second surface (the CLI session pane) started writing this namespace.
-  pruneChatCompanionUiState();
-}
-
-/**
- * Merge `patch` into the stored record for `key`.
- *
- * A whole-record write clobbers fields this caller does not own — older blobs
- * also carry fields that no reader uses now — so the write reads
- * forward first. Doing the read-merge-write here makes that structural.
- */
-export function patchChatCompanionUiState(
-  key: string,
-  patch: Partial<ChatCompanionUiState>,
-): ChatCompanionUiState {
-  const next: ChatCompanionUiState = { ...readChatCompanionUiState(key), ...patch };
-  writeChatCompanionUiState(key, next);
-  return next;
-}
-
-/* ── Live-preview markers ────────────────────────────────────────────────────
- * Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge,
- * take theirs.
- * ────────────────────────────────────────────────────────────────────────── */
-
 /**
  * Per-key change listeners.
  *
- * The floating preview (which reads a chat's closed flags) and the toggle in
- * the tool's own header (which writes them) live in different subtrees, so a
- * plain module read would go stale without a write. `useSyncExternalStore` over
- * this map is the smallest thing that keeps them in step; every write replaces
- * the cached object, so the snapshot identity changes exactly when the state
- * does.
+ * The corner card (which reads a chat's closed/floated flags) and the Float
+ * button in the pane header (which writes them) live in different subtrees, so
+ * a plain module read would go stale without a write. `useSyncExternalStore`
+ * over this map is the smallest thing that keeps them in step; every write
+ * replaces the cached object, so the snapshot identity changes exactly when the
+ * state does.
  */
 const chatCompanionUiSubscribers = new Map<string, Set<() => void>>();
 
@@ -204,7 +146,7 @@ export function useChatCompanionUiState(key: string | null): ChatCompanionUiStat
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
-/** Has this tool's preview been closed for this chat at the given session key? */
+/** Has this tool's card been closed for this chat at the given session key? */
 export function isWorkLiveCardClosedForChat(
   key: string,
   tool: WorkLiveScreenTool,
@@ -213,7 +155,10 @@ export function isWorkLiveCardClosedForChat(
   return isWorkLiveCardClosed(readChatCompanionUiState(key).workLiveCardClosedByTool, tool, sessionKey);
 }
 
-/** × for one chat's preview: remember the session key it was closed at. */
+/**
+ * × for one chat's card: remember the session key it was closed at, and drop
+ * any explicit float so the two never disagree.
+ */
 export function closeWorkLiveCardForChat(
   key: string,
   tool: WorkLiveScreenTool,
@@ -222,18 +167,27 @@ export function closeWorkLiveCardForChat(
   const current = readChatCompanionUiState(key);
   return patchChatCompanionUiState(key, {
     workLiveCardClosedByTool: { ...current.workLiveCardClosedByTool, [tool]: sessionKey },
+    workLiveCardFloating: current.workLiveCardFloating.filter((entry) => entry !== tool),
   });
 }
 
-/** Clears the closed marker: the preview is welcome again in this chat. */
+/**
+ * The Float button: clear the closed marker and opt the tool in even while it
+ * fills the pane. A no-op when the chat key is missing (projectless surface).
+ */
 export function floatWorkLiveCardForChat(
   key: string,
   tool: WorkLiveScreenTool,
-): ChatCompanionUiState {
+): ChatCompanionUiState | null {
   const current = readChatCompanionUiState(key);
   const closed = { ...current.workLiveCardClosedByTool };
   delete closed[tool];
-  return patchChatCompanionUiState(key, { workLiveCardClosedByTool: closed });
+  return patchChatCompanionUiState(key, {
+    workLiveCardClosedByTool: closed,
+    workLiveCardFloating: current.workLiveCardFloating.includes(tool)
+      ? current.workLiveCardFloating
+      : [...current.workLiveCardFloating, tool],
+  });
 }
 
 /**
@@ -262,9 +216,10 @@ export function isWorkLivePreviewEnabled(
 /**
  * The per-chat "Show preview when minimized" toggle, one per screen tool.
  *
- * ON clears the tool's closed marker; OFF writes the same marker × does, so the
- * two affordances can never disagree. A missing key (projectless surface) is a
- * no-op.
+ * ON reuses {@link floatWorkLiveCardForChat}: it clears the tool's closed
+ * marker and opts the tool in, so the card returns even while the pane still
+ * shows it. OFF writes the same marker × does, so the two affordances can
+ * never disagree. A missing key (projectless surface) is a no-op.
  */
 export function setWorkLivePreviewEnabledForChat(
   key: string | null,
@@ -272,8 +227,143 @@ export function setWorkLivePreviewEnabledForChat(
   enabled: boolean,
 ): ChatCompanionUiState | null {
   if (!key) return null;
-  if (enabled) return floatWorkLiveCardForChat(key, tool);
-  return closeWorkLiveCardForChat(key, tool, WORK_LIVE_PREVIEW_DISABLED_KEY);
+  if (!enabled) return closeWorkLiveCardForChat(key, tool, WORK_LIVE_PREVIEW_DISABLED_KEY);
+  // Enable clears the disable marker and nothing more. It must NOT float the
+  // tool: floating suspends the "never the active pane" rule, which drew the
+  // preview on top of the open pane the moment the toggle went on. The card
+  // shows on its own when the pane is minimized.
+  const current = readChatCompanionUiState(key);
+  const closed = { ...current.workLiveCardClosedByTool };
+  // Any close marker, the × on a session or the explicit disable: the toggle
+  // is "show it again", and the reader treats both markers as off.
+  const wasClosed = tool in closed;
+  if (wasClosed) delete closed[tool];
+  const floating = current.workLiveCardFloating.filter((entry) => entry !== tool);
+  if (!wasClosed && floating.length === current.workLiveCardFloating.length) return current;
+  return patchChatCompanionUiState(key, { workLiveCardClosedByTool: closed, workLiveCardFloating: floating });
+}
+
+/**
+ * The pane showed `tool` at `sessionKey` in this chat. A no-op when the marker
+ * already matches, so the per-render call from the card never churns storage.
+ */
+export function markWorkLiveCardSeenForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+  sessionKey: string,
+): ChatCompanionUiState {
+  const current = readChatCompanionUiState(key);
+  if (current.workLiveCardSeenByTool[tool] === sessionKey) return current;
+  return patchChatCompanionUiState(key, {
+    workLiveCardSeenByTool: { ...current.workLiveCardSeenByTool, [tool]: sessionKey },
+  });
+}
+
+/**
+ * The session a floated tool was showing has ended (tab closed, app exited,
+ * simulator shut down). The float was for that session, so it ends with it;
+ * otherwise the card kept a blank frame with the tool's name on it.
+ */
+export function unfloatWorkLiveCardForChat(
+  key: string,
+  tool: WorkLiveScreenTool,
+): ChatCompanionUiState {
+  const current = readChatCompanionUiState(key);
+  if (!current.workLiveCardFloating.includes(tool)) return current;
+  return patchChatCompanionUiState(key, {
+    workLiveCardFloating: current.workLiveCardFloating.filter((entry) => entry !== tool),
+  });
+}
+
+export function chatCompanionUiStorageKey(key: string): string {
+  return `${CHAT_COMPANION_UI_STORAGE_PREFIX}${key}`;
+}
+
+/**
+ * Drops one chat's companion UI record.
+ *
+ * Called when a chat (or CLI session) is deleted: the namespace is keyed by
+ * session id, and a record nothing will ever read again is not just stale —
+ * under the storage cap it can evict a live chat's state. Removal is not a
+ * reset to defaults: no record is the honest state for a key with no chat.
+ */
+export function clearChatCompanionUiState(key: string): void {
+  if (!key) return;
+  chatCompanionUiStateByKey.delete(key);
+  notifyChatCompanionUiState(key);
+  try {
+    window.localStorage.removeItem(chatCompanionUiStorageKey(key));
+  } catch {
+    // Local storage is best-effort UI state only.
+  }
+}
+
+export function readChatCompanionUiState(key: string): ChatCompanionUiState {
+  const cached = chatCompanionUiStateByKey.get(key);
+  if (cached) return cached;
+  try {
+    const raw = window.localStorage.getItem(chatCompanionUiStorageKey(key));
+    if (raw) {
+      const decoded = JSON.parse(raw) as unknown;
+      // Every field is read defensively: a hand-edited / partially-written /
+      // older-shape value must degrade to the default, never throw and never
+      // hand a non-boolean to a pane that treats it as one.
+      const parsed = (decoded && typeof decoded === "object" ? decoded : {}) as
+        StoredChatCompanionUiState;
+      const legacyProofOpen = parsed.proofDrawerOpen === true;
+      const state: ChatCompanionUiState = {
+        chatActionsOpen: parsed.chatActionsOpen === true || legacyProofOpen,
+        iosSimulatorOpen: parsed.iosSimulatorOpen === true,
+        appControlOpen: parsed.appControlOpen === true,
+        terminalDrawerOpen: parsed.terminalDrawerOpen === true,
+        // `undefined` is "never written", which is the default card; an explicit
+        // null is a drawer the user collapsed and must stay collapsed.
+        appleToolsGroup: parsed.appleToolsGroup === undefined
+          ? DEFAULT_CHAT_COMPANION_UI_STATE.appleToolsGroup
+          : (typeof parsed.appleToolsGroup === "string" ? parsed.appleToolsGroup : null),
+        workLiveCardClosedByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardClosedByTool),
+        workLiveCardFloating: normalizeWorkLiveCardFloatingTools(parsed.workLiveCardFloating),
+        workLiveCardSeenByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardSeenByTool),
+      };
+      chatCompanionUiStateByKey.set(key, state);
+      return state;
+    }
+  } catch {
+    // Local storage is best-effort UI state only.
+  }
+  return DEFAULT_CHAT_COMPANION_UI_STATE;
+}
+
+export function writeChatCompanionUiState(key: string, state: ChatCompanionUiState): void {
+  chatCompanionUiStateByKey.set(key, state);
+  notifyChatCompanionUiState(key);
+  try {
+    const record: StoredChatCompanionUiState = { ...state, savedAtMs: Date.now() };
+    window.localStorage.setItem(chatCompanionUiStorageKey(key), JSON.stringify(record));
+  } catch {
+    // Local storage is best-effort UI state only.
+  }
+  // Garbage-collect from inside the module, on the only event that can grow the
+  // family. No caller has to know it exists, and no caller has to enumerate its
+  // own live keys — which is what made the old `knownKeys` prune wrong as soon
+  // as a second surface (the CLI session pane) started writing this namespace.
+  pruneChatCompanionUiState();
+}
+
+/**
+ * Merge `patch` into the stored record for `key`.
+ *
+ * A whole-record write clobbers fields this caller does not own — older blobs
+ * also carry fields that no reader uses now — so the write reads
+ * forward first. Doing the read-merge-write here makes that structural.
+ */
+export function patchChatCompanionUiState(
+  key: string,
+  patch: Partial<ChatCompanionUiState>,
+): ChatCompanionUiState {
+  const next: ChatCompanionUiState = { ...readChatCompanionUiState(key), ...patch };
+  writeChatCompanionUiState(key, next);
+  return next;
 }
 
 function readSavedAtMs(storage: Storage, storageKey: string): number {

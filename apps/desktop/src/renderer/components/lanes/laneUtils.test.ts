@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LaneSummary } from "../../../shared/types";
 import {
-  LANES_TILING_LAYOUT_VERSION,
-  LANES_TILING_TREE,
-  LANES_TILING_WORK_FOCUS_TREE,
   formatBranchCheckoutError,
   laneMatchesFilter,
   stripRemotePrefix,
@@ -46,25 +43,16 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   };
 }
 
-describe("laneUtils tiling defaults", () => {
-  it("makes git actions the largest default pane", () => {
-    expect(LANES_TILING_TREE.children[0]?.defaultSize).toBe(38);
-    expect(LANES_TILING_TREE.children[1]?.defaultSize).toBe(62);
-  });
-
-  it("raises the git actions minimum share", () => {
-    expect(LANES_TILING_TREE.children[1]?.minSize).toBe(28);
-  });
-
-  it("bumps the persisted tiling layout version", () => {
-    expect(LANES_TILING_LAYOUT_VERSION).toBe("v8");
-  });
-
-  it("work-focus layout emphasizes the work pane", () => {
-    expect(LANES_TILING_WORK_FOCUS_TREE.children[0]?.defaultSize).toBeGreaterThan(40);
-    expect(LANES_TILING_WORK_FOCUS_TREE.children[1]?.defaultSize).toBeLessThan(
-      (LANES_TILING_TREE.children[1]?.defaultSize ?? 0),
-    );
+describe("laneUtils", () => {
+  describe("laneMatchesFilter", () => {
+    it("matches every token against name, branch and status", () => {
+      const lane = makeLane({ status: { dirty: true, ahead: 2, behind: 0, remoteBehind: -1, rebaseInProgress: false } });
+      expect(laneMatchesFilter(lane, "")).toBe(true);
+      expect(laneMatchesFilter(lane, "lane-one is:dirty")).toBe(true);
+      expect(laneMatchesFilter(lane, "ahead:2 type:worktree")).toBe(true);
+      expect(laneMatchesFilter(lane, "is:clean")).toBe(false);
+      expect(laneMatchesFilter(lane, "is:pinned")).toBe(false);
+    });
   });
 
   describe("validateBranchName", () => {

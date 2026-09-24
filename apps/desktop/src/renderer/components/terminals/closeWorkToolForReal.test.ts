@@ -1,5 +1,4 @@
 /* @vitest-environment jsdom */
-// Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge, take theirs.
 
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,6 +50,16 @@ describe("closeWorkToolForReal", () => {
     expect(closeTab).toHaveBeenCalledTimes(2);
     expect(closeTab).toHaveBeenCalledWith({ tabId: "tab-1" }, undefined);
     expect(closeTab).toHaveBeenCalledWith({ tabId: "tab-2" }, undefined);
+  });
+
+  it("closing the mac-desktop tab stops the lane display", async () => {
+    const stop = vi.fn(async () => ({ stopped: true, releasedWindows: 0 }));
+    (window as unknown as { ade: unknown }).ade = { macDesktop: { stop } };
+
+    closeWorkToolForReal("mac-desktop", { laneId: "lane-1", chatSessionId: "chat-1" });
+    await flush();
+
+    expect(stop).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" }, undefined);
   });
 
   /*

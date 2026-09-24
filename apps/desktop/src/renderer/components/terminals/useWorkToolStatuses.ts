@@ -21,6 +21,10 @@ import {
   type WorkToolErrorsByTab,
 } from "./workToolErrors";
 import { asBuiltInBrowserStatus, isAppControlSessionAttached } from "./useNativeToolSessions";
+import {
+  macDesktopStatusLineText,
+  useMacDesktopToolStatus,
+} from "./useMacDesktopToolStatus";
 import { attachedShellCount, useAttachedTerminalShells } from "./useAttachedTerminalShells";
 import { appleToolCardSubtitle } from "../apple/appleDeviceState";
 import {
@@ -489,8 +493,19 @@ export function useWorkToolStatuses(args: {
     browserStatus,
     appControlSession,
     canBrowser,
+    context,
     offline,
   } = useNativeToolFeeds();
+
+  // The lane's screen: one `getStatus` per lane plus the service's own events.
+  // The capability answer comes from the provider's cached read, so a host that
+  // cannot run a display is never asked about one.
+  const macDesktop = useMacDesktopToolStatus({
+    enabled: enabled && !offline,
+    laneId,
+    runtimePin,
+    supported: context.supportsMacDesktop ?? null,
+  });
   useNativeToolFeedHandlers(useMemo(() => ({ onBrowserEvent }), [onBrowserEvent]));
 
   /*
@@ -558,6 +573,12 @@ export function useWorkToolStatuses(args: {
     };
   }, [enabled, lane, laneId, prSessionId, runtimePinKey]);
 
+  const { line: macDesktopLine, live: macDesktopLive } = macDesktopStatusLineText(macDesktop);
+  const macDesktopStatus = useMemo(
+    () => statusLine(macDesktopLine, macDesktopLive),
+    [macDesktopLine, macDesktopLive],
+  );
+
   const statuses = useMemo<WorkToolStatusMap>(() => ({
     terminal: terminalStatusLine(terminalTitles, panelShellCount),
     browser: offline
@@ -567,9 +588,14 @@ export function useWorkToolStatuses(args: {
     files: filesStatusLine(lane),
     ios: offline ? IDLE : iosStatusLine(appleDevice),
     "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
+    // No `offline ? IDLE` arm: an unreachable machine leaves the last known
+    // answer standing rather than claiming the lane has no screen, and the
+    // hook already stops reading.
+    "mac-desktop": macDesktopStatus,
     pr: prToolStatusLine(prCount),
   }), [
     appControlSession,
+    macDesktopStatus,
     appleDevice,
     browserErrors,
     browserStatus,

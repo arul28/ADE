@@ -19,6 +19,11 @@ vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
   confirmDialog: vi.fn(async () => false),
 }));
 import {
+  ProjectSidebarSlotProvider,
+  useProjectSidebarSlotTarget,
+} from "../app/projectSidebar/ProjectSidebarSlot";
+import { setProjectSidebarHidden } from "../app/projectSidebar/projectSidebarPrefs";
+import {
   forgetWorkPtyLaunchPin,
   rememberWorkPtyLaunchPin,
   workPtyLaunchPinFor,
@@ -34,11 +39,22 @@ import {
   resetWorkToolShowRequestsForTests,
 } from "../../lib/workToolShowRequests";
 import {
+  noteFloatingWorkSurfaceShown,
   noteWorkSurfaceMounted,
   resetWorkToolOnScreenForTests,
   setDocumentVisibleForTests,
   workSurfaceKey,
 } from "../../lib/workToolOnScreen";
+import {
+  MAC_DESKTOP_CARD_ON_SCREEN_KEY,
+  macDesktopCardGrantedAt,
+  resetMacDesktopCardGrantsForTests,
+} from "../work/macDesktopCardGrants";
+import {
+  readChatCompanionUiState,
+  resetChatCompanionUiStateCacheForTests,
+  setWorkLivePreviewEnabledForChat,
+} from "../chat/chatCompanionUiState";
 
 /** A tool laid out in a visible pane, as far as a show can measure it. */
 function mountTool(tool: string, laneId: string): void {
@@ -176,7 +192,6 @@ const workMocks = vi.hoisted(() => {
     workBoardWaitingReasons: new Map(),
     workCollapsedLaneIds: [],
     workCollapsedSectionIds: [],
-    workFocusSessionsHidden: false,
     workSidebarOpen: false,
     workSidebarWidthPct: 36,
     pinnedSessionIds: [],
@@ -195,7 +210,6 @@ const workMocks = vi.hoisted(() => {
     toggleWorkSectionCollapsed: vi.fn(),
     stopRuntime: vi.fn().mockResolvedValue(undefined),
     removeSessionFromList: vi.fn(),
-    setWorkFocusSessionsHidden: vi.fn(),
     setWorkSidebarOpen: vi.fn(),
     setWorkSidebarWidthPct: vi.fn(),
     reorderLaneSessions: vi.fn(),
@@ -242,6 +256,7 @@ const sidebarProps = vi.hoisted(() => ({
 }));
 
 type MockSessionListPaneProps = {
+  boardHost?: HTMLElement | null;
   runningFiltered: TerminalSessionSummary[];
   awaitingInputFiltered: TerminalSessionSummary[];
   endedFiltered: TerminalSessionSummary[];
@@ -396,16 +411,6 @@ vi.mock("./useWorkSessions", async () => {
 
 vi.mock("./useWorkLaneDeleteProgress", () => ({
   useWorkLaneDeleteProgress: () => undefined,
-}));
-
-vi.mock("../ui/PaneTilingLayout", () => ({
-  PaneTilingLayout: ({ panes }: { panes: Record<string, { children: React.ReactNode }> }) => (
-    <div data-testid="pane-tiling-layout">
-      {Object.entries(panes).map(([id, pane]) => (
-        <section key={id} data-testid={`pane:${id}`}>{pane.children}</section>
-      ))}
-    </div>
-  ),
 }));
 
 vi.mock("./SessionListPane", () => ({
@@ -646,49 +651,87 @@ describe("TerminalsPage chat session activation", () => {
   });
 
   /* ────────────────────────────────────────────────────────────────────────
-     BOARD MODE OWNS THE WHOLE TAB.
-
-     Four columns inside the ~390px sessions pane is not a board: at a normal
-     window width two of them are off-screen behind the board's own horizontal
-     scrollbar while the chat pane sits idle. So board mode must not render the
-     split at all — and must not get there by driving the splitter, because
-     `workSidebarWidthPct` is the user's LIST-mode layout and has to survive the
-     round trip untouched.
+     The session list lives in the project sidebar. The board needs the full
+     width, so it draws in the main area: beside the list while the sidebar
+     shows, and as the whole pane when there is no sidebar on screen. Board
+     mode never drives `workSidebarWidthPct`, the user's LIST-mode layout.
      ──────────────────────────────────────────────────────────────────────── */
 
-  it("renders the board full width and does not mount the split layout", async () => {
-    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
+  function SidebarBody() {
+    const setTarget = useProjectSidebarSlotTarget();
+    return <div data-testid="sidebar-body" ref={setTarget} />;
+  }
+
+  function renderWithProjectSidebar() {
+    return render(
+      <ProjectSidebarSlotProvider>
+        <SidebarBody />
+        <TerminalsPage />
+      </ProjectSidebarSlotProvider>,
+    );
+  }
+
+  function mockBrowserEvents() {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
     });
+  }
 
-    render(<TerminalsPage />);
+  it("renders the session list in the project sidebar and only the view in the main area", async () => {
+    mockBrowserEvents();
 
-    expect(await screen.findByTestId("work-board-surface")).toBeTruthy();
-    // The whole point: no split, so no narrow sessions pane and no idle chat
-    // pane beside it.
-    expect(screen.queryByTestId("pane-tiling-layout")).toBeNull();
-    expect(screen.queryByTestId("pane:sessions")).toBeNull();
-    expect(screen.queryByTestId("pane:view")).toBeNull();
-    // Same roster element either way, so the toolbar — and the List/Board
-    // toggle in it — does not move under the cursor between modes.
-    expect(screen.getByTestId("session-list-pane")).toBeTruthy();
-    // The stored list-mode width is never written on the way in.
+    renderWithProjectSidebar();
+
+    const sidebar = screen.getByTestId("sidebar-body");
+    const list = await screen.findByTestId("session-list-pane");
+    expect(sidebar.contains(list)).toBe(true);
+    expect(sidebar.contains(screen.getByTestId("work-view-area"))).toBe(false);
+    expect(screen.queryByTestId("work-board-surface")).toBeNull();
+    expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
+  });
+
+  it("keeps the list in the sidebar and portals the board into the main area", async () => {
+    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
+    mockBrowserEvents();
+
+    renderWithProjectSidebar();
+
+    const sidebar = screen.getByTestId("sidebar-body");
+    const board = await screen.findByTestId("work-board-surface");
+    expect(sidebar.contains(screen.getByTestId("session-list-pane"))).toBe(true);
+    expect(sidebar.contains(board)).toBe(false);
+    await waitFor(() => expect(sessionListPaneProps.latest?.boardHost).toBe(board));
+    // No chat beside the board, and the list-mode tools width is never written.
+    expect(screen.queryByTestId("work-view-area")).toBeNull();
     expect(workMocks.currentWork.setWorkSidebarWidthPct).not.toHaveBeenCalled();
   });
 
-  it("keeps the split layout in list mode", async () => {
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
-    });
+  it("gives the board the whole pane while the project sidebar is hidden", async () => {
+    workMocks.currentWork = { ...workMocks.baseWork, workViewMode: "board" };
+    mockBrowserEvents();
+    setProjectSidebarHidden(true);
+    try {
+      renderWithProjectSidebar();
+
+      const board = await screen.findByTestId("work-board-surface");
+      // The pane is the board, toolbar and all, so the List/Board toggle is
+      // still reachable without the sidebar.
+      expect(board.contains(screen.getByTestId("session-list-pane"))).toBe(true);
+      expect(sessionListPaneProps.latest?.boardHost).toBeUndefined();
+    } finally {
+      setProjectSidebarHidden(false);
+    }
+  });
+
+  it("keeps a plain list column when there is no project sidebar", async () => {
+    mockBrowserEvents();
 
     render(<TerminalsPage />);
 
-    expect(await screen.findByTestId("pane-tiling-layout")).toBeTruthy();
-    expect(screen.getByTestId("pane:sessions")).toBeTruthy();
-    expect(screen.getByTestId("pane:view")).toBeTruthy();
+    const column = await screen.findByTestId("work-sessions-column");
+    expect(column.contains(screen.getByTestId("session-list-pane"))).toBe(true);
+    expect(screen.getByTestId("work-view-area")).toBeTruthy();
     expect(screen.queryByTestId("work-board-surface")).toBeNull();
   });
 
@@ -1913,6 +1956,78 @@ describe("TerminalsPage chat session activation", () => {
         expect.objectContaining({ workSidebarTool: "ios" }),
       );
     });
+
+    describe("Mac Desktop", () => {
+      afterEach(() => {
+        resetMacDesktopCardGrantsForTests();
+        window.localStorage.clear();
+        resetChatCompanionUiStateCacheForTests();
+      });
+
+      it("opens the Mac Desktop tool for the chat in front and answers shown once it is on screen", async () => {
+        paneMountsWhatIsWritten();
+        await renderWithChatInFront();
+        await expect(answerWorkToolShowRequest(showRequest({ surface: "mac-desktop" }))).resolves.toEqual({ status: "shown" });
+        expect(workMocks.fns.setLaneWorkViewState).toHaveBeenLastCalledWith(
+          "/repo",
+          "lane-background",
+          expect.objectContaining({ workSidebarTool: "mac-desktop" }),
+        );
+      });
+
+      /*
+       * Accessibility-mode input takes no lease and nothing watches yet, so the
+       * card never appeared for the chat whose agent drove the display. The
+       * agent's activity now authorizes the card, for that chat on that lane.
+       */
+      it("authorizes the floating card for the chat whose agent drives the display, and no other", async () => {
+        await renderWithChatInFront();
+        await answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).not.toBeNull();
+
+        await expect(answerWorkToolShowRequest(showRequest({
+          surface: "floating-mac-desktop",
+          auto: true,
+          chatSessionId: "chat-other",
+          laneId: "lane-other",
+        }))).resolves.toBeNull();
+        expect(macDesktopCardGrantedAt("lane-other", "chat-other")).toBeNull();
+        expect(macDesktopCardGrantedAt("lane-background", "chat-other")).toBeNull();
+      });
+
+      it("floats nothing automatically while the chat's preview is off, or while the tool opens", async () => {
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+        await renderWithChatInFront();
+        await answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).toBeNull();
+        cleanup();
+
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", true);
+        workMocks.laneWorkViewByScope = {
+          "/repo::lane-background": { workSidebarTool: "mac-desktop", workSidebarOpenTools: ["mac-desktop"] },
+        };
+        await renderWithChatInFront({ workSidebarOpen: true });
+        await answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop", auto: true }));
+        expect(macDesktopCardGrantedAt("lane-background", "chat-1")).toBeNull();
+      });
+
+      it("floats the card when asked by name, past an earlier ×, and answers shown once it is on screen", async () => {
+        setWorkLivePreviewEnabledForChat("chat-1", "mac-desktop", false);
+        setDocumentVisibleForTests(true);
+        await renderWithChatInFront();
+        let answer: string | null = "pending";
+        const pending = answerWorkToolShowRequest(showRequest({ surface: "floating-mac-desktop" }))
+          .then((result) => { answer = result?.status ?? null; });
+        await waitFor(() => expect(macDesktopCardGrantedAt("lane-background", "chat-1")).not.toBeNull());
+        expect(readChatCompanionUiState("chat-1").workLiveCardFloating).toContain("mac-desktop");
+        expect(readChatCompanionUiState("chat-1").workLiveCardClosedByTool["mac-desktop"]).toBeUndefined();
+        expect(answer).toBe("pending");
+        // The card mounts over the chat: now it is shown.
+        noteFloatingWorkSurfaceShown(workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, "bound", "lane-background"));
+        await pending;
+        expect(answer).toBe("shown");
+      });
+    });
   });
 
   it("hands the floating device the lane and machine of the session in front", async () => {
@@ -2842,25 +2957,96 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setWorkSidebarWidthPct).toHaveBeenCalledWith(36);
   });
 
-  it("recovers a collapsed sessions list from a thin left rail", () => {
+  it("points the Mac Desktop corner card at the focused chat's machine", async () => {
+    // After #1269 the card takes the same session-machine pin the tools pane
+    // does: a Studio chat read from a MacBook-bound tab must ask the Studio
+    // about its own screen, so the card's reads carry the Studio binding.
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      transport: "paired",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const chat = workMocks.makeTerminalSession("chat-studio", "lane-studio", "codex-chat");
+    workMocks.projectRoot = "/repo";
+    workMocks.projectBinding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    workMocks.openRemoteProjectTabs = [studioBinding];
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-studio" }],
+        sessions: [chat],
+        online: true,
+      },
+    };
     workMocks.currentWork = {
       ...workMocks.baseWork,
-      workFocusSessionsHidden: true,
+      activeItemId: "chat-studio",
+      selectedSessionId: "chat-studio",
+      sessions: [chat],
+      sessionsById: new Map([[chat.id, chat]]),
       closingPtyIds: new Set<string>(),
     };
+    const getStreamStatus = vi.fn(async () => ({
+      laneId: "lane-studio",
+      running: false,
+      fps: 0,
+      idle: false,
+      bitrateKbps: null,
+      transport: null,
+      lastError: null,
+      clients: 0,
+      viewerChatSessionIds: ["chat-studio"],
+    }));
+    const getStatus = vi.fn(async () => ({
+      supported: true,
+      display: null,
+      lease: null,
+      windows: [],
+      recording: null,
+    }));
+    const onEvent = vi.fn(() => () => {});
     Object.defineProperty(window, "ade", {
       configurable: true,
-      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) }, iosSimulator: { onEvent: vi.fn(() => vi.fn()) } },
+      value: {
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        // A Studio-pinned chat listens for `ade ui show` and Apple drawer
+        // requests on its own pin.
+        iosSimulator: { onEvent: vi.fn(() => vi.fn()) },
+        workTools: { onShowRequest: vi.fn(() => vi.fn()), acknowledgeShow: vi.fn() },
+        macDesktop: { getStatus, getStreamStatus, onEvent },
+      },
     });
 
     render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
 
-    expect(screen.queryByTestId("session-list-pane")).toBeNull();
-    const rail = screen.getByTestId("work-sessions-collapsed-rail");
-    const show = screen.getByRole("button", { name: "Show sessions" });
-    expect(rail.contains(show)).toBe(true);
-    fireEvent.click(show);
-    expect(workMocks.currentWork.setWorkFocusSessionsHidden).toHaveBeenCalledWith(false);
+    await waitFor(() => expect(getStreamStatus).toHaveBeenCalledWith(
+      { laneId: "lane-studio" },
+      studioBinding,
+    ));
+    // The capability probe behind the tool's availability asked the same
+    // machine — a remote Studio does not hide Mac Desktop, and a local tab
+    // does not answer for it.
+    expect(getStatus).toHaveBeenCalledWith({}, studioBinding);
+    expect(getStatus).toHaveBeenCalledWith(
+      { laneId: "lane-studio", chatSessionId: "chat-studio" },
+      studioBinding,
+    );
+    expect(onEvent).toHaveBeenCalledWith(expect.any(Function), studioBinding);
   });
 
   /* ── Apple device ────────────────────────────────────────────────────── */

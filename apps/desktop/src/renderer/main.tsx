@@ -13,11 +13,7 @@ import { logRendererDebugEvent } from "./lib/debugLog";
 import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
-import { installLayoutSettleResizeObserver } from "./lib/layoutSettle";
-
-// Must run before anything constructs a ResizeObserver — react-resizable-panels
-// reads `ownerDocument.defaultView.ResizeObserver` when a pane group mounts.
-installLayoutSettleResizeObserver();
+import { installScrollingIndicator } from "./lib/scrollingIndicator";
 
 document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
 
@@ -25,6 +21,9 @@ document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
 // Keep the header's end padding pinned to their real width so the feedback,
 // help, and zoom controls always land just to their left.
 trackWindowsCaptionInset();
+
+// Scrollbars show only while you scroll the region under the pointer.
+installScrollingIndicator();
 
 (function injectFontFaces() {
   const style = document.createElement("style");

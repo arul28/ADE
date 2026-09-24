@@ -346,6 +346,43 @@ describe("explicit proof capture", () => {
     ]);
   });
 
+  it("files `ade mac-desktop proof` as ADE's capture: the screenshot action's file, unchanged", async () => {
+    const fixture = createRuntime();
+    // The chat's lane: a display is lane-scoped, and so is the proof it files.
+    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+    fixture.runtime.laneService.getLaneWorktreePath = vi.fn((laneId: string) => (laneId === "lane-1" ? laneRoot : null));
+    const handler = await handlerFor(fixture);
+    const shotPath = path.join(laneRoot, "desktop.png");
+    fixture.runtime.macDesktopService = {
+      screenshot: vi.fn(async () => {
+        fs.writeFileSync(shotPath, "display pixels");
+        return { laneId: "lane-1", filePath: shotPath, width: 1440, height: 900 };
+      }),
+      getStatus: vi.fn(async () => ({ supported: true })),
+    };
+    const ingestShot = () => callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-mac-desktop",
+      toolName: "mac-desktop proof",
+      callerRoot: laneRoot,
+      inputs: [{ kind: "screenshot", title: "Display", path: shotPath }],
+    });
+
+    await callTool(handler, "run_ade_action", { domain: "mac_desktop", action: "screenshot", args: {} });
+    await ingestShot();
+    const capturedSha = sha256Of(shotPath);
+    // The labels alone, on bytes no screenshot action wrote, are an attach.
+    fs.writeFileSync(shotPath, "an older frame");
+    await ingestShot();
+
+    const requests = fixture.ingest.mock.calls as unknown as Array<[{ provenance?: Record<string, unknown> }]>;
+    expect(requests.map(([request]) => request?.provenance)).toEqual([
+      { source: "ade-capture", refuseDuplicates: false, flagOlderMedia: true, capturedSha256: [capturedSha] },
+      { source: "attached" },
+    ]);
+  });
+
   it("a capture files as ADE's once; attaching it again is an attach", async () => {
     const fixture = createRuntime();
     const { handler, laneRoot } = await laneAgentHandler(fixture);

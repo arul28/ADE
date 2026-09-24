@@ -5,8 +5,11 @@ import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerB
 
 export {
   BACKDROP_FRAME_MS,
+  BACKDROP_IDLE_FRAME_MS,
+  BACKDROP_IDLE_FREEZE_MS,
   BACKDROP_MAX_DPR,
   BACKDROP_PIXEL_BUDGET,
+  BACKDROP_RENDER_SCALE,
   backdropThemeFor,
   isSoftwareRenderer,
   resolveBackdropSize,
@@ -25,10 +28,13 @@ export type { WorkToolPickerBackdropTheme } from "./workToolPickerBackdropShader
  *    in that file rather than a hunt through GLSL.
  * 2. The budget. This is decoration on a page you land on constantly, sitting
  *    inside an Electron renderer that is also running a terminal, a browser
- *    view and a chat stream. It renders at DPR 1, never more than
- *    `BACKDROP_PIXEL_BUDGET` pixels, never faster than 30 fps, and not at all
- *    while the window is blurred, the document hidden, the canvas scrolled out
- *    of view, or the pointer's device cannot hover. Under
+ *    view and a chat stream. It renders at DPR 1 and then at
+ *    `BACKDROP_RENDER_SCALE` under that, never more than
+ *    `BACKDROP_PIXEL_BUDGET` pixels, never faster than 30 fps — 12 while
+ *    nothing is chasing the pointer, and nothing at all once
+ *    `BACKDROP_IDLE_FREEZE_MS` has passed without one. It does not draw while
+ *    the window is blurred, the document hidden, the canvas scrolled out of
+ *    view, or the pointer's device cannot hover. Under
  *    `prefers-reduced-motion` it paints one frame and stops. Without WebGL — or
  *    with only a software rasteriser behind it — it is a static CSS gradient
  *    and no canvas at all.
@@ -46,14 +52,17 @@ export function WorkToolPickerBackdrop({
   theme,
   className,
   playing = true,
-  variant = "pane",
+  clockOrigin,
+  field,
 }: {
   theme: ThemeId;
   className?: string;
   /** False keeps the last frame and stops the 30 fps loop. */
   playing?: boolean;
-  /** `header` is the short bar: a wider slice of the same mesh, with a hover bloom. */
-  variant?: "pane" | "header";
+  /** Shared animation clock; see `createBackdropRenderer`. */
+  clockOrigin?: number;
+  /** `window`: draw this box's part of one window-sized field; see `createBackdropRenderer`. */
+  field?: "window";
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<BackdropRenderer | null>(null);
@@ -83,7 +92,8 @@ export function WorkToolPickerBackdrop({
       canvas,
       theme,
       playing: playingRef.current,
-      variant,
+      clockOrigin,
+      field,
       onRefused: () => setWebglRefused(true),
     });
     rendererRef.current = renderer;
@@ -91,7 +101,7 @@ export function WorkToolPickerBackdrop({
       renderer?.dispose();
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
-  }, [theme, variant, webglRefused, motionEpoch]);
+  }, [theme, clockOrigin, field, webglRefused, motionEpoch]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);
@@ -103,6 +113,7 @@ export function WorkToolPickerBackdrop({
     <div
       aria-hidden="true"
       data-backdrop={webglRefused ? "static" : "shader"}
+      data-field={field}
       className={cn("ade-tool-picker-backdrop", className)}
     >
       <div className="ade-tool-picker-static absolute inset-0" />

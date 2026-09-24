@@ -258,9 +258,9 @@ describe("LaneGitActionsPane rescue action", () => {
     );
   }
 
-  it("spends the pane variant's chrome row on the same push and pull actions", async () => {
+  it("spends the pane's chrome row on the same push and pull actions", async () => {
     const user = userEvent.setup();
-    renderPane({ variant: "pane" });
+    renderPane();
 
     // The uppercase status header is replaced by one row: the branch, how far
     // it has drifted, and ghost glyphs for what you do about it.
@@ -283,7 +283,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
   it("lets History follow a clean file list instead of a stretched empty half", async () => {
     mockChangesByLaneId["lane-1"] = { staged: [], unstaged: [] };
-    renderPane({ variant: "pane" });
+    renderPane();
 
     expect(await screen.findByTestId("git-pane-clean")).toBeTruthy();
     const sections = screen.getByTestId("git-sections");
@@ -293,20 +293,11 @@ describe("LaneGitActionsPane rescue action", () => {
   });
 
   it("keeps the even split while the file list has rows to scroll", async () => {
-    renderPane({ variant: "pane" });
+    renderPane();
 
     await screen.findByTestId("git-pane-chrome");
     const sections = screen.getByTestId("git-sections");
     expect(sections.dataset.filesCollapsed).toBeUndefined();
-  });
-
-  it("keeps the Lanes tab on its own labelled toolbar", async () => {
-    renderPane();
-    await screen.findByTestId("action-toolbar");
-    // The page variant is untouched: no pane chrome, and the status header the
-    // wide surface has room for is still there.
-    expect(screen.queryByTestId("git-pane-chrome")).toBeNull();
-    expect(screen.getByText("DIRTY")).toBeTruthy();
   });
 
   it("does not start Git Actions effects while inactive", async () => {
@@ -341,7 +332,7 @@ describe("LaneGitActionsPane rescue action", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByRole("button", { name: "SYNC" });
+    await screen.findByTestId("git-pane-rebase");
 
     expect(window.ade.diff.getChanges).toHaveBeenCalledTimes(1);
     expect(window.ade.git.stashList).toHaveBeenCalledTimes(1);
@@ -381,7 +372,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
     const studioBView = renderPane({ active: false });
     expect(screen.queryByText("src/studio-a.ts")).toBeNull();
-    expect(screen.getByText("No changes")).toBeTruthy();
+    expect(screen.getByTestId("git-pane-clean")).toBeTruthy();
 
     studioBView.rerender(
       <MemoryRouter>
@@ -411,7 +402,7 @@ describe("LaneGitActionsPane rescue action", () => {
   it("does not refresh the global lane store on initial mount", async () => {
     renderPane();
 
-    await screen.findByRole("button", { name: "SYNC" });
+    await screen.findByTestId("git-pane-rebase");
 
     expect(mockStoreState.refreshLanes).not.toHaveBeenCalled();
     expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
@@ -445,9 +436,8 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     expect(await screen.findByText(/merge in progress/i)).toBeTruthy();
-    const pullButton = await screen.findByRole("button", { name: /pull/i });
+    const pullButton = await screen.findByTestId("git-pane-pull");
     expect((pullButton as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText(/next: resolve merge/i)).toBeTruthy();
 
     await user.click(screen.getByRole("button", { name: /abort merge/i }));
 
@@ -567,7 +557,8 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    await user.click(await screen.findByRole("button", { name: "SAVE CHANGES" }));
+    await user.click(await screen.findByTestId("git-pane-more"));
+    await user.click(await screen.findByRole("button", { name: "Save changes" }));
     await user.type(await screen.findByPlaceholderText("Optional note"), "stash untracked audit");
     await user.click(screen.getByRole("button", { name: "Save stash" }));
 
@@ -592,7 +583,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    expect(await screen.findByText("UNSTAGED (305)")).toBeTruthy();
+    expect(await screen.findByText("Unstaged (305)")).toBeTruthy();
     expect(screen.getByText("src/generated/file-0.ts")).toBeTruthy();
     expect(screen.getByText("Showing first 300 of 305 unstaged files.")).toBeTruthy();
     expect(screen.queryByText("src/generated/file-300.ts")).toBeNull();
@@ -614,7 +605,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    expect(await screen.findByText("STAGED (305)")).toBeTruthy();
+    expect(await screen.findByText("Staged (305)")).toBeTruthy();
     expect(screen.getByText("src/staged/file-0.ts")).toBeTruthy();
     expect(screen.getByText("Showing first 300 of 305 staged files.")).toBeTruthy();
     expect(screen.queryByText("src/staged/file-300.ts")).toBeNull();
@@ -660,10 +651,9 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    const syncButton = await screen.findByRole("button", { name: "SYNC" });
-    expect((syncButton as HTMLButtonElement).disabled).toBe(true);
-    expect(syncButton.getAttribute("title")).toMatch(/has uncommitted changes/i);
-    expect(syncButton.getAttribute("title")).toMatch(/before rebasing and pushing/i);
+    const rebaseButton = await screen.findByTestId("git-pane-rebase");
+    expect(rebaseButton.getAttribute("aria-label")).toBe("Rebase on parent and push");
+    expect((rebaseButton as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("treats auto-rebase conflicts as failures and links to the Rebase/Merge tab", async () => {
@@ -713,6 +703,7 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await screen.findByText("2 saved");
+    await user.click(screen.getByTestId("git-pane-more"));
     expect(screen.getByText("drop me")).toBeTruthy();
 
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
@@ -751,6 +742,7 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await screen.findByText("2 saved");
+    await user.click(screen.getByTestId("git-pane-more"));
     expect(screen.getByText("restore me")).toBeTruthy();
 
     await user.click(screen.getAllByRole("button", { name: "RESTORE" })[0]);
@@ -778,6 +770,7 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await screen.findByText("1 saved");
+    await user.click(screen.getByTestId("git-pane-more"));
     await user.click(screen.getByRole("button", { name: "COPY TO WORKTREE" }));
 
     await waitFor(() => {
@@ -805,7 +798,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: /more/i }));
     expect(screen.getByRole("button", { name: /fetch only/i })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: /refresh git state/i }));
+    await user.click(screen.getByTestId("git-pane-refresh"));
     await waitFor(() => {
       expect(screen.queryByRole("button", { name: /fetch only/i })).toBeNull();
     });
@@ -826,6 +819,7 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await screen.findByText("2 saved");
+    await user.click(screen.getByTestId("git-pane-more"));
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
     await user.click(screen.getByRole("button", { name: "Delete stash" }));
@@ -853,7 +847,8 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await screen.findByText("2 saved");
-    await user.click(screen.getByRole("button", { name: "CLEAR STASHES" }));
+    await user.click(screen.getByTestId("git-pane-more"));
+    await user.click(screen.getByRole("button", { name: "Clear stashes" }));
     await user.type(await screen.findByPlaceholderText("Type 2 to confirm"), "2");
     await user.click(screen.getByRole("button", { name: "Delete all" }));
 
@@ -876,6 +871,7 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     await screen.findByText("2 saved");
+    await user.click(screen.getByTestId("git-pane-more"));
     await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
     await user.click(screen.getByRole("button", { name: "Delete stash" }));
@@ -916,11 +912,11 @@ describe("LaneGitActionsPane rescue action", () => {
       </MemoryRouter>,
     );
 
-    await user.click(await screen.findByRole("button", { name: "COMMIT" }));
+    await user.click(await screen.findByTestId("git-pane-commit"));
     await waitFor(() => {
       expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);
     });
-    expect(screen.getByRole("button", { name: "GENERATING..." })).toBeTruthy();
+    expect(screen.getByText("GENERATING COMMIT MESSAGE...")).toBeTruthy();
 
     rerender(
       <MemoryRouter>
@@ -939,9 +935,9 @@ describe("LaneGitActionsPane rescue action", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "COMMIT" })).toBeTruthy();
+      expect(screen.getByTestId("git-pane-commit")).toBeTruthy();
     });
-    expect(screen.queryByRole("button", { name: "GENERATING..." })).toBeNull();
+    expect(screen.queryByText("GENERATING COMMIT MESSAGE...")).toBeNull();
 
     rerender(
       <MemoryRouter>
@@ -960,7 +956,7 @@ describe("LaneGitActionsPane rescue action", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "GENERATING..." })).toBeTruthy();
+      expect(screen.getByText("GENERATING COMMIT MESSAGE...")).toBeTruthy();
     });
 
     rerender(
@@ -997,7 +993,7 @@ describe("LaneGitActionsPane rescue action", () => {
     (window.ade.git.generateCommitMessage as any).mockResolvedValueOnce({ message: "", model: null });
 
     renderPane();
-    await user.click(await screen.findByRole("button", { name: "COMMIT" }));
+    await user.click(await screen.findByTestId("git-pane-commit"));
 
     await waitFor(() => {
       expect(window.ade.git.generateCommitMessage).toHaveBeenCalledWith({ laneId: "lane-1", amend: false }, null);

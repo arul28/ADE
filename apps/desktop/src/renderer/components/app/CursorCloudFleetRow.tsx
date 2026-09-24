@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   ArrowSquareOut,
   CaretDown,
@@ -13,6 +13,7 @@ import {
   isCursorCloudFleetEntryActive,
 } from "../../../shared/cursorCloudFleetStatus";
 import { openExternalUrl } from "../../lib/openExternal";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import {
   cursorCloudRepoLabel,
   cursorCloudStatusToneClass,
@@ -345,41 +346,22 @@ function RowMenu({
   onConfirmDismiss: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [flipUp, setFlipUp] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
-  useEffect(() => {
-    if (!open) {
-      setFlipUp(false);
-      return;
-    }
-    const onDocClick = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setOpen(false);
-        // Dismissing the menu without acting must also stand down an armed
-        // delete confirmation.
-        if (confirmingDelete) onConfirmDismiss();
-      }
-    };
-    // Flip the menu above the trigger when it would overflow the viewport
-    // bottom; both anchor and menu live in the same offset-parent space.
-    const flip = () => {
-      const menu = menuRef.current?.querySelector("[data-row-menu-list]") as HTMLElement | null;
-      if (!menu) return;
-      const rect = menu.getBoundingClientRect();
-      setFlipUp(window.innerHeight - rect.bottom < 8);
-    };
-    document.addEventListener("mousedown", onDocClick);
-    requestAnimationFrame(flip);
-    return () => document.removeEventListener("mousedown", onDocClick);
-  }, [open, confirmingDelete, onConfirmDismiss]);
+  // Dismissing the menu without acting must also stand down an armed delete
+  // confirmation.
+  const dismiss = () => {
+    setOpen(false);
+    if (confirmingDelete) onConfirmDismiss();
+  };
 
   const itemClass =
     "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[11px] text-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/95 disabled:opacity-40";
 
   return (
-    <div ref={menuRef} className="relative" onClick={(event) => event.stopPropagation()}>
+    <div className="relative" onClick={(event) => event.stopPropagation()}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((current) => !current)}
         disabled={busy}
@@ -396,15 +378,19 @@ function RowMenu({
       >
         <CaretDown size={11} weight="bold" />
       </button>
-      {open ? (
-        <div
-          data-row-menu-list
-          role="menu"
-          className={cn(
-            "absolute right-0 z-10 w-[210px] rounded-lg border border-white/[0.10] bg-[#17151f] p-1 shadow-xl shadow-black/50",
-            flipUp ? "bottom-8" : "top-8",
-          )}
-        >
+      {/* Portalled above the fleet modal (z 9999): the modal's scrolling list
+          would cut off a menu opened near its bottom edge. */}
+      <AnchoredMenu
+        open={open}
+        anchorRef={triggerRef}
+        onClose={dismiss}
+        placement="bottom-end"
+        zIndex={10000}
+        data-row-menu-list
+        role="menu"
+        className="w-[210px] rounded-lg border border-white/[0.10] bg-[#17151f] p-1 shadow-xl shadow-black/50"
+        onClick={(event) => event.stopPropagation()}
+      >
           {finished && !entry.agent.archived ? (
             <button type="button" role="menuitem" className={itemClass} onClick={() => { setOpen(false); onPull(); }}>
               <GitPullRequest size={12} weight="bold" className="rotate-90" />
@@ -441,8 +427,7 @@ function RowMenu({
             <Trash size={12} weight="bold" />
             {confirmingDelete ? "Click again to delete forever" : "Delete agent…"}
           </button>
-        </div>
-      ) : null}
+      </AnchoredMenu>
     </div>
   );
 }

@@ -20,6 +20,7 @@ import {
   fs,
   getDefaultModelDescriptor,
   installClaudeResponseFixture,
+  isOpenCodeExternalDirectoryInsideAdeRoot,
   loadExternalSessionEvents,
   loadQwenUserSettings,
   makeDefaultClaudeSession,
@@ -4679,6 +4680,143 @@ describe("createAgentChatService", () => {
 
       releaseStream();
       await sendPromise.catch(() => {});
+    });
+
+    it("full-auto answers an external_directory ask under the project .ade root without a card", async () => {
+      // The test-drive block: a full-auto OpenCode chat waited eleven minutes
+      // on `external_directory: <project>/.ade/*` — the observations and
+      // artifacts the mac-desktop commands write. Full access has to include
+      // the project's own state root, and answering before a card exists is
+      // what keeps the card and `chat status` from disagreeing later.
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+        opencodePermissionMode: "full-auto",
+        permissionMode: "full-auto",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Use mac-desktop." });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      state.events.push({
+        type: "permission.asked",
+        properties: {
+          id: "perm-ade-1",
+          sessionID: "opencode-session-1",
+          permission: "external_directory",
+          patterns: [`${tmpRoot}/.ade/*`],
+          metadata: {},
+        },
+      });
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await vi.waitFor(() => {
+        expect(state.permissionReply).toHaveBeenCalledWith(
+          expect.objectContaining({ requestID: "perm-ade-1", reply: "always" }),
+          expect.anything(),
+        );
+      });
+      // No card was raised, so nothing is left for a later sweep to close
+      // while the session summary still calls the chat blocked.
+      expect(events.some((event) => event.event.type === "approval_request")).toBe(false);
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.awaitingInput ?? false).toBe(false);
+
+      releaseStream();
+      await sendPromise.catch(() => {});
+    });
+
+    it("full-auto still raises a card for an external_directory ask outside .ade", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+        opencodePermissionMode: "full-auto",
+        permissionMode: "full-auto",
+      });
+
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Read /etc." });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      state.events.push({
+        type: "permission.asked",
+        properties: {
+          id: "perm-etc-1",
+          sessionID: "opencode-session-1",
+          permission: "external_directory",
+          patterns: ["/etc/*"],
+          metadata: {},
+        },
+      });
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "approval_request" && event.event.itemId === "perm-etc-1",
+      );
+      expect(state.permissionReply).not.toHaveBeenCalled();
+
+      releaseStream();
+      await sendPromise.catch(() => {});
+    });
+
+    it("scopes the .ade auto-approval to literal paths inside the root", () => {
+      // A glob in the middle cannot be proven inside the root without a glob
+      // engine, and a pattern that escapes it must never be treated as the
+      // project's own state.
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/*`])).toBe(true);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade`])).toBe(true);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`.ade/artifacts/*`])).toBe(true);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, ["/etc/*"])).toBe(false);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/../secrets/*`])).toBe(false);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/**/../../*`])).toBe(false);
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [])).toBe(false);
+      // One proven path does not vouch for an unproven sibling.
+      expect(isOpenCodeExternalDirectoryInsideAdeRoot(tmpRoot, [`${tmpRoot}/.ade/*`, "/etc/*"])).toBe(false);
     });
 
     it("streams OpenCode assistant text from part deltas, without doubling it at the end", async () => {

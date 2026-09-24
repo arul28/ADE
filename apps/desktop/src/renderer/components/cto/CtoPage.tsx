@@ -368,12 +368,14 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   return (
     <div className={cn(shellBodyCls, "relative flex-col")}>
       {/* Header */}
-      <div className="flex flex-col border-b border-white/[0.06]">
-        <div className="flex items-center gap-3 px-4 py-2.5">
-          <div className="flex min-w-0 items-center gap-2.5">
-            {/* The same glyph as the tab rail and as iOS, not the first character
+      <div className="flex shrink-0 flex-col">
+        {/* One header line with the sidebar's tab row: same height, same hairline. */}
+        <div className="ade-page-rail relative gap-3 px-3">
+          {/* The name sits in the middle of the bar, like the Work chat title. */}
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-2 px-24">
+            {/* The same glyph as the sidebar and as iOS, not the first character
                 of whatever the user renamed the CTO to. One mark, every surface. */}
-            <Robot size={22} weight="regular" className="shrink-0" style={{ color: CTO_ACCENT }} />
+            <Robot size={16} weight="regular" className="shrink-0" style={{ color: CTO_ACCENT }} />
             <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
           </div>
 
@@ -384,13 +386,11 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               onClick={() => setSettingsOpen(true)}
               aria-label="CTO settings"
               className={cn(
-                "flex h-8 w-8 items-center justify-center rounded-full border transition-colors",
-                settingsOpen
-                  ? "border-white/15 bg-white/[0.06] text-fg"
-                  : "border-white/[0.07] text-muted-fg/55 hover:bg-white/[0.04] hover:text-fg",
+                "flex h-6 w-6 items-center justify-center transition-colors",
+                settingsOpen ? "text-fg" : "text-muted-fg/55 hover:text-fg",
               )}
             >
-              <Gear size={15} weight={settingsOpen ? "fill" : "regular"} />
+              <Gear size={13} weight={settingsOpen ? "fill" : "regular"} />
             </button>
           </div>
         </div>
@@ -408,6 +408,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
 
       {settingsOpen ? (
         <CtoSettingsPage
+          active={active}
           identity={ctoIdentity}
           sessionLogs={sessionLogs}
           currentModelId={currentModelId}

@@ -201,8 +201,9 @@ export function WorkKanbanBoard({
               // what makes them EQUAL — with the default `basis-auto` a column
               // holding a long chat title would claim more than its share. The
               // floor is where a genuinely narrow window starts scrolling
-              // instead of crushing the cards.
-              "flex min-h-0 min-w-[15.5rem] flex-1 basis-0 flex-col rounded-lg border transition-colors duration-100",
+              // instead of crushing the cards. It is set so all four columns
+              // fit beside the default project sidebar in a 1440px window.
+              "flex min-h-0 min-w-[14rem] flex-1 basis-0 flex-col rounded-lg border transition-colors duration-100",
               "outline-none focus-visible:ring-1 focus-visible:ring-[var(--color-accent)]",
             )}
             style={{

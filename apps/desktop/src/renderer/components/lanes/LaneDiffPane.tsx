@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { FolderOpen, FloppyDisk } from "@phosphor-icons/react";
+import { FloppyDisk, FolderOpen, GitCommit } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { EmptyState } from "../ui/EmptyState";
@@ -7,7 +7,9 @@ import { ResizeGutter } from "../ui/ResizeGutter";
 import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer";
 import type { FileDiff, FilePatch, GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge, outlineButton } from "./laneDesignTokens";
+import { cn } from "../ui/cn";
+import { getFileIcon } from "../files/filePresentation";
+import { COLORS, MONO_FONT, outlineButton } from "./laneDesignTokens";
 
 function normalizePath(pathValue: string): string {
   return pathValue.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
@@ -27,6 +29,18 @@ function fileDiffHasRenderableChanges(diff: FileDiff | null | undefined): diff i
 }
 
 const MAX_COMMIT_FILE_ROWS = 500;
+
+/** The diff's header strip: one quiet row over a hairline, like the pane chrome. */
+const HEADER_ROW = "flex h-10 shrink-0 items-center justify-between gap-2 px-3";
+const HEADER_ROW_STYLE: React.CSSProperties = { borderBottom: `1px solid ${COLORS.borderMuted}` };
+
+/** A small ghost button for the diff header ("Open in Files", "Save"). */
+const headerButton = outlineButton({ height: 26, gap: 5, padding: "0 9px", fontSize: 12 });
+
+function splitPath(path: string): { dir: string; name: string } {
+  const index = path.lastIndexOf("/");
+  return index < 0 ? { dir: "", name: path } : { dir: path.slice(0, index + 1), name: path.slice(index + 1) };
+}
 
 function DiffFailedRetry({ onRetry }: { onRetry: () => void }) {
   return (
@@ -280,24 +294,14 @@ export function LaneDiffPane({
   if (selectedCommit && laneId) {
     return (
       <div className="h-full flex flex-col" style={{ background: COLORS.pageBg }}>
-        <div
-          className="flex items-center justify-between shrink-0"
-          style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}`, gap: 6 }}
-        >
-          <div className="min-w-0 flex items-center" style={{ fontSize: 12, gap: 6 }}>
-            <span style={{
-              ...inlineBadge(COLORS.accent),
-              fontSize: 9,
-              fontWeight: 700,
-              padding: "3px 8px",
-              background: COLORS.outlineBorder,
-              border: "none",
-            }}>COMMIT</span>
-            <span style={{ ...inlineBadge(COLORS.accent), fontFamily: MONO_FONT }}>{selectedCommit.shortSha}</span>
-            <span className="truncate" style={{ color: COLORS.textMuted }}>{selectedCommit.subject}</span>
+        <div className={HEADER_ROW} style={HEADER_ROW_STYLE}>
+          <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
+            <GitCommit size={14} weight="bold" className="shrink-0" style={{ color: COLORS.textMuted }} aria-hidden />
+            <span className="shrink-0 text-[11.5px]" style={{ fontFamily: MONO_FONT, color: COLORS.textMuted }}>{selectedCommit.shortSha}</span>
+            <span className="truncate" style={{ color: COLORS.textPrimary }}>{selectedCommit.subject}</span>
           </div>
-          <span style={inlineBadge(COLORS.success, { fontSize: 9 })}>
-            {commitFiles.length} FILE{commitFiles.length === 1 ? "" : "S"}
+          <span className="shrink-0 text-[12px] tabular-nums" style={{ color: COLORS.textMuted }}>
+            {commitFiles.length} file{commitFiles.length === 1 ? "" : "s"}
           </span>
         </div>
         <div className="flex-1 min-h-0">
@@ -306,54 +310,53 @@ export function LaneDiffPane({
             orientation="horizontal"
             className="h-full min-h-0"
           >
-            <Panel id="diff-pane-commit-files" minSize="15%" defaultSize="26%" className="min-w-0" style={{ background: COLORS.recessedBg }}>
+            <Panel id="diff-pane-commit-files" minSize="15%" defaultSize="32%" className="min-w-0">
               <div className="flex h-full min-h-0 flex-col">
-                <div
-                  className="flex items-center justify-between shrink-0"
-                  style={{ padding: "6px 8px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
-                >
-                  <div className="flex items-center gap-2">
-                    <span style={LABEL_STYLE}>FILES</span>
-                    <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{commitFiles.length}</span>
-                  </div>
+                <div className="flex h-8 shrink-0 items-center gap-2 px-3 text-[12px]">
+                  <span className="font-medium" style={{ color: COLORS.textMuted }}>Files</span>
+                  <span className="tabular-nums" style={{ color: COLORS.textDim }}>{commitFiles.length}</span>
                 </div>
-                <div className="flex-1 min-h-0 overflow-auto" style={{ padding: 4 }}>
+                <div className="flex-1 min-h-0 overflow-auto" style={{ padding: "0 6px 6px" }}>
                   {commitFiles.length ? (
                     visibleCommitFiles.map((file) => {
                       const isFileSelected = selectedCommitFilePath === file;
+                      const { dir, name } = splitPath(file);
+                      const { icon: FileIcon, color: iconColor } = getFileIcon(name);
                       return (
                         <button
                           key={file}
                           type="button"
-                          className="flex w-full items-center gap-2 text-left transition-all duration-150"
+                          className={cn(
+                            "flex h-7 w-full min-w-0 items-center gap-2 rounded-md px-2 text-left text-[12px] transition-colors duration-100",
+                            !isFileSelected && "hover:bg-fg/[0.05]",
+                          )}
                           style={{
-                            padding: "6px 8px",
-                            fontSize: 12,
-                            borderLeft: isFileSelected ? `3px solid ${COLORS.accent}` : "3px solid transparent",
-                            background: isFileSelected ? COLORS.accentSubtle : "transparent",
-                            color: isFileSelected ? COLORS.textPrimary : COLORS.textMuted,
+                            background: isFileSelected ? COLORS.accentSubtle : undefined,
+                            color: isFileSelected ? COLORS.textPrimary : COLORS.textSecondary,
                           }}
                           onClick={() => setSelectedCommitFilePath(file)}
                           title={file}
-                          onMouseEnter={(e) => { if (!isFileSelected) e.currentTarget.style.background = COLORS.hoverBg; }}
-                          onMouseLeave={(e) => { if (!isFileSelected) e.currentTarget.style.background = "transparent"; }}
                         >
-                          <span className="truncate">{file}</span>
+                          <FileIcon size={13} className="shrink-0" style={{ color: iconColor }} aria-hidden />
+                          {/* The folder gives way before the file name does. */}
+                          <span className="max-w-[calc(100%-21px)] shrink-0 truncate">{name}</span>
+                          {dir ? <span className="min-w-0 truncate" style={{ color: COLORS.textDim }}>{dir.replace(/\/$/, "")}</span> : null}
                         </button>
                       );
                     })
                   ) : (
-                    <div style={{ padding: 12, textAlign: "center", fontSize: 12, color: COLORS.textDim, fontStyle: "italic" }}>
-                      Loading files...
+                    <div className="px-2 py-3 text-[12px]" style={{ color: COLORS.textDim }}>
+                      Loading files…
                     </div>
                   )}
                   {hiddenCommitFileCount > 0 ? (
-                    <div style={{ padding: "8px", fontSize: 11, color: COLORS.textDim, fontFamily: MONO_FONT, display: "flex", alignItems: "center", gap: 8 }}>
+                    <div className="flex items-center gap-2 px-2 py-2 text-[11.5px]" style={{ color: COLORS.textDim }}>
                       <span>Showing first {MAX_COMMIT_FILE_ROWS} of {commitFiles.length} files.</span>
                       <button
                         type="button"
                         onClick={() => setShowAllCommitFiles(true)}
-                        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
+                        className="font-medium hover:underline"
+                        style={{ color: COLORS.accent, cursor: "pointer" }}
                       >
                         Show all
                       </button>
@@ -363,7 +366,7 @@ export function LaneDiffPane({
               </div>
             </Panel>
             <ResizeGutter orientation="vertical" />
-            <Panel id="diff-pane-commit-content" minSize="30%" defaultSize="74%" className="min-w-0">
+            <Panel id="diff-pane-commit-content" minSize="30%" defaultSize="68%" className="min-w-0">
               {!selectedCommitFilePath ? (
                 <div className="flex h-full items-center justify-center p-3">
                   <EmptyState title="No files found" description="This commit may be empty." />
@@ -371,7 +374,7 @@ export function LaneDiffPane({
               ) : commitDiffFailed ? (
                 <DiffFailedRetry onRetry={refreshCommitDiff} />
               ) : !commitDiff && !commitPatch ? (
-                <div className="flex h-full items-center justify-center" style={{ fontSize: 12, color: COLORS.textMuted }}>Loading diff...</div>
+                <div className="flex h-full items-center justify-center" style={{ fontSize: 12, color: COLORS.textMuted }}>Loading diff…</div>
               ) : (
                 <AdeDiffViewer diff={commitDiff} patch={commitPatch} editable={false} className="h-full" />
               )}
@@ -387,34 +390,21 @@ export function LaneDiffPane({
     const displayPath = diff?.path ?? patch?.path ?? selectedPath;
     return (
       <div className="h-full flex flex-col" style={{ background: COLORS.pageBg }}>
-        <div
-          className="flex items-center justify-between shrink-0"
-          style={{ padding: "6px 12px", background: COLORS.cardBg, borderBottom: `1px solid ${COLORS.border}` }}
-        >
-          <div className="flex items-center" style={{ fontSize: 12, gap: 6 }}>
-            <span style={{
-              ...inlineBadge(selectedFileMode === "unstaged" ? COLORS.warning : COLORS.info),
-              fontSize: 9,
-              fontWeight: 700,
-              padding: "3px 8px",
-              background: COLORS.outlineBorder,
-              border: "none",
-            }}>
-              {selectedFileMode === "unstaged" ? "WORKING TREE" : "INDEX"}
+        <div className={HEADER_ROW} style={HEADER_ROW_STYLE}>
+          <div className="flex min-w-0 items-center gap-2 text-[12.5px]">
+            <span
+              className="inline-flex h-[18px] shrink-0 items-center rounded-full px-1.5 text-[11px] font-medium"
+              style={{
+                color: selectedFileMode === "unstaged" ? COLORS.warning : COLORS.success,
+                background: `color-mix(in srgb, ${selectedFileMode === "unstaged" ? COLORS.warning : COLORS.success} 13%, transparent)`,
+              }}
+            >
+              {selectedFileMode === "unstaged" ? "Unstaged" : "Staged"}
             </span>
-            <span style={{ color: COLORS.outlineBorder }}>/</span>
-            {displayPath.split("/").map((segment, idx, arr) => (
-              <React.Fragment key={idx}>
-                <span style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 11,
-                  ...(idx === arr.length - 1
-                    ? { fontWeight: 600, color: COLORS.textPrimary, background: "color-mix(in srgb, var(--color-accent) 15%, transparent)", padding: "2px 4px" }
-                    : { color: COLORS.textDim }),
-                }}>{segment}</span>
-                {idx < arr.length - 1 && <span style={{ color: COLORS.outlineBorder }}>/</span>}
-              </React.Fragment>
-            ))}
+            <span className="min-w-0 truncate" title={displayPath}>
+              <span style={{ color: COLORS.textDim }}>{splitPath(displayPath).dir}</span>
+              <span className="font-medium" style={{ color: COLORS.textPrimary }}>{splitPath(displayPath).name}</span>
+            </span>
           </div>
           <div className="flex items-center" style={{ gap: 3 }}>
             {selectedFileMode === "unstaged" && !isForeign ? (
@@ -426,12 +416,12 @@ export function LaneDiffPane({
                 <button
                   type="button"
                   className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
-                  style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
+                  style={headerButton}
                   onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
                   title="Open in Files tab"
                 >
-                  <FolderOpen size={12} />
-                  FILES
+                  <FolderOpen size={13} />
+                  Files
                 </button>
               </SmartTooltip>
             ) : null}
@@ -444,7 +434,7 @@ export function LaneDiffPane({
                 <button
                   type="button"
                   className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
-                  style={outlineButton({ height: 24, gap: 4, padding: "4px 8px", fontSize: 10 })}
+                  style={headerButton}
                   disabled={busyAction != null}
                   onClick={() => {
                     const text = diffRef.current?.getModifiedValue();
@@ -459,8 +449,8 @@ export function LaneDiffPane({
                       .finally(() => setBusyAction(null));
                   }}
                 >
-                  <FloppyDisk size={12} />
-                  SAVE
+                  <FloppyDisk size={13} />
+                  Save
                 </button>
               </SmartTooltip>
             ) : null}
@@ -480,7 +470,7 @@ export function LaneDiffPane({
   if (selectedPath && !diff) {
     return (
       <div className="flex items-center justify-center h-full" style={{ color: COLORS.textMuted, fontSize: 12 }}>
-        Loading diff...
+        Loading diff…
       </div>
     );
   }

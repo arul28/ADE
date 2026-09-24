@@ -13,27 +13,31 @@ module.exports = {
         border: "var(--color-border)",
         accent: "var(--color-accent)",
         "accent-fg": "var(--color-accent-fg)",
-        // `bg-surface` is used across the Apple feature (and the round-3 rule is
-        // that every panel in it is opaque), but the scale only had the three
-        // `surface-*` variants — so every `bg-surface` in the product compiled
-        // to nothing and those panels rendered fully transparent. The variable
-        // has been in `index.css` the whole time.
-        // index.css has defined these in both themes all along; without a token
+        // index.css defines `--color-secondary` in both themes; without a token
         // the class compiles to nothing. `bg-secondary` is a rail button's
-        // PRESSED state, so a toggled-on control showed no background at all,
-        // and the CTO timeline's info/success/warning/error text had no colour.
+        // PRESSED state, so a toggled-on control showed no background at all.
         secondary: "var(--color-secondary)",
-        success: "var(--color-success)",
-        warning: "var(--color-warning)",
-        info: "var(--color-info)",
-        error: "var(--color-error)",
+        // The bare token, which the product spells and the config did not
+        // register: `--color-surface` exists in BOTH themes in index.css,
+        // three `surface-*` variants were registered, and `surface` itself
+        // was not — so `bg-surface` compiled to nothing and the two places
+        // that use it rendered with no background at all.
         surface: "var(--color-surface)",
         "surface-raised": "var(--color-surface-raised)",
         "surface-recessed": "var(--color-surface-recessed)",
         "surface-overlay": "var(--color-surface-overlay)",
         separator: "var(--color-separator)",
         "separator-active": "var(--color-separator-active)",
-        glow: "var(--color-glow)"
+        glow: "var(--color-glow)",
+        // The status tones. index.css defines all four in both themes and the
+        // config registered none, so TimelineEntry's twelve utilities
+        // (`text-info`, `bg-info/10`, `border-info/20` and the same for
+        // success, warning and error) compiled to nothing and every CTO
+        // timeline entry rendered with no tone at all.
+        info: "var(--color-info)",
+        success: "var(--color-success)",
+        warning: "var(--color-warning)",
+        error: "var(--color-error)"
       },
       borderRadius: {
         xl: "16px",

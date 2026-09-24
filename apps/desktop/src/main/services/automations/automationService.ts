@@ -38,6 +38,7 @@ import type {
   RunAdeActionConfig,
 } from "../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../shared/types";
+import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
 import {
@@ -671,6 +672,60 @@ function listMatches(expected: string[] | undefined, actual: string[] | undefine
   if (!expected?.length) return true;
   const actualSet = normalizeSet(actual);
   return expected.some((entry) => actualSet.has(entry.trim().toLowerCase()));
+}
+
+/**
+ * Strip the fields an automation's `ade-action` config is not a trusted author
+ * of, before the resolved args reach an in-process domain service.
+ *
+ * The RPC server scopes the same fields for a session-bound agent
+ * (`scopeMacDesktopAdeActionArgs` in `apps/ade-cli/src/adeRpcServer.ts`); an
+ * automation step never goes through that path — it calls the domain service
+ * directly in this process — so the identity fields have to be dropped here too
+ * or a rule is a second, unscoped writer of them.
+ *
+ * `chat`: `spawnDispatch` and its siblings decide whether an agent completion
+ * wakes another agent, and the host derives that provenance from observed
+ * identity, not from config.
+ *
+ * `mac_desktop`: a human takeover holds the input lease under a `controllerId`
+ * the viewing client minted, and `getStatus().lease.holderId` prints that id to
+ * anyone who can read the lane's status. `inputHolderId` in the service prefers
+ * `controllerId` over the chat id, so a rule carrying a copied controller/holder
+ * id would post real `CGEvent` input while wearing the human's takeover.
+ *
+ * `chatSessionId` is not dropped but *replaced*: the RPC path pins it to the
+ * caller's own session, and an unattended automation has no chat identity to
+ * pin, so any value it carries is borrowed. Emptying it is not free either —
+ * `inputHolderId` falls back to one shared `anonymous-agent`, which collapses
+ * every rule on the host into a single lease holder that can steal and renew
+ * each other's input. A synthetic `automation:<ruleId>` is the honest answer:
+ * stable across a rule's runs (so its own retry keeps its lease), distinct
+ * between rules, and obviously not a chat to anyone reading a status payload.
+ */
+export function scopeAutomationAdeActionArgs(domain: string, resolvedArgs: unknown, ruleId: string): void {
+  const candidates = Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs];
+  if (domain === "chat") {
+    for (const candidate of candidates) {
+      if (isRecord(candidate) && isRecord(candidate.metadata)) {
+        stripHostAuthoredMessageProvenance(candidate.metadata);
+      }
+    }
+  } else if (domain === "mac_desktop") {
+    // No fallback id: two rules sharing one synthetic holder share one lease,
+    // so a blank rule id is a bug to surface, not a value to invent.
+    const trimmedRuleId = ruleId.trim();
+    if (!trimmedRuleId) {
+      throw new Error("scopeAutomationAdeActionArgs requires a rule id to scope mac_desktop args.");
+    }
+    const syntheticSessionId = `${AUTOMATION_CHAT_SESSION_PREFIX}${trimmedRuleId}`;
+    for (const candidate of candidates) {
+      if (!isRecord(candidate)) continue;
+      delete candidate.controllerId;
+      delete candidate.holderId;
+      candidate.chatSessionId = syntheticSessionId;
+    }
+  }
 }
 
 /**
@@ -2976,6 +3031,9 @@ export function createAutomationService({
   const dispatchAdeAction = async (
     config: RunAdeActionConfig,
     trigger: TriggerContext,
+    /** The rule is the only stable identity an unattended action has; it is
+     * what `scopeAutomationAdeActionArgs` hands the domain in place of a chat. */
+    ruleId: string,
   ): Promise<{ status: AutomationActionStatus; output?: string }> => {
     if (!adeActionRegistryRef) {
       return { status: "failed", output: "ADE action registry is not available in this process." };
@@ -3008,18 +3066,8 @@ export function createAutomationService({
       }
     }
 
-    // Automation config is not a trusted author of chat-message provenance:
-    // `spawnDispatch` and its siblings decide whether an agent completion wakes
-    // another agent, and the host derives them from observed identity.
-    if (domain === "chat") {
-      for (const candidate of Array.isArray(resolvedArgs) ? resolvedArgs : [resolvedArgs]) {
-        if (isRecord(candidate) && isRecord(candidate.metadata)) {
-          stripHostAuthoredMessageProvenance(candidate.metadata);
-        }
-      }
-    }
-
     try {
+      scopeAutomationAdeActionArgs(domain, resolvedArgs, ruleId);
       const callable = fn as (...a: unknown[]) => unknown;
       const result = Array.isArray(resolvedArgs)
         ? await callable(...resolvedArgs)
@@ -3151,7 +3199,7 @@ export function createAutomationService({
       if (!config) {
         return { status: "failed", output: "ade-action action is missing adeAction config." };
       }
-      return await dispatchAdeAction(config, trigger);
+      return await dispatchAdeAction(config, trigger, rule.id);
     }
     if (action.type === "handoff") {
       // Same call the ADE action registry allowlists as `chat.handoffSession`;

@@ -1,9 +1,6 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useClickOutside } from "../../hooks/useClickOutside";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, Stack, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowCounterClockwise, UsersThree, CircleNotch, Question } from "@phosphor-icons/react";
-import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { X } from "@phosphor-icons/react";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
@@ -11,17 +8,9 @@ import {
   useAppStoreApi,
   type LaneInspectorTab,
 } from "../../state/appStore";
-import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { isTypingTarget } from "../../lib/typingTarget";
-import { EmptyState } from "../ui/EmptyState";
-import { Button } from "../ui/Button";
-import { PaneTilingLayout } from "../ui/PaneTilingLayout";
-import { useDockLayout } from "../ui/DockLayoutState";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "./laneDesignTokens";
-import { ResizeGutter } from "../ui/ResizeGutter";
-import { LaneStackPane } from "./LaneStackPane";
+import { COLORS, LABEL_STYLE, outlineButton, primaryButton } from "./laneDesignTokens";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
-import { openAgentInWorkTabPath } from "../../lib/laneNavigation";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import {
   consumeLaunchedLanesHighlight,
@@ -32,55 +21,52 @@ import {
   type CreatingIssuePlaceholder,
 } from "../../lib/launchedLanesHighlight";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
-import { LaneWorkPane } from "./LaneWorkPane";
 import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialogHost";
-import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection } from "./ManageLaneDialog";
-import { LaneContextMenu } from "./LaneContextMenu";
-import { getLaneAccent } from "./laneColorPalette";
-import { LaneRebaseBanner } from "./LaneRebaseBanner";
-import { LinearIssueBadge } from "./LinearIssueBadge";
-import { LanePrBadgePopover } from "./LanePrBadgePopover";
+import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection, type ManageLaneTab } from "./ManageLaneDialog";
+import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
 import {
   buildLaneActionClearedSearch,
-  getDeferredLanePaneDelayMs,
-  parseLaneIdsParam,
   laneHasAncestor,
+  lanePrTagRoutePath,
   planLaneDeleteBatches,
-  resolveLaneDeleteStartSelection,
   resolveLaneIdsDeepLinkSelection,
-  resolveVisibleLaneIds,
+  resolveLaneSelectionAfterDelete,
   runLaneDeleteBatchWithConcurrency,
   selectLanePrs,
-  lanePrTagRoutePath,
-  selectVisibleLanePrRefreshIds,
   selectLaneTabPrTags,
+  selectVisibleLanePrRefreshIds,
   shouldApplyLaneIdsDeepLink,
-  sortLaneListRows,
   VISIBLE_LANE_PR_REFRESH_LIMIT,
   type LaneTabPrTag,
 } from "./lanePageModel";
 import {
-  sortLanesForTabs,
-  sortLanesForStackGraph,
-  mergeUnique,
-  laneMatchesFilter,
-  LANES_TILING_TREE,
-  LANES_TILING_WORK_FOCUS_TREE,
-  LANES_TILING_LAYOUT_VERSION,
-  GIT_ACTIONS_FULLSCREEN_TREE,
-  RESIZE_TARGET_MINIMUM_SIZE,
   EMPTY_LANE_PANE_DETAIL,
-  formatBranchCheckoutError,
-  validateBranchName,
-  stripRemotePrefix,
+  laneMatchesFilter,
+  mergeUnique,
   type LanePaneDetailSelection,
-  type LaneBranchOption
 } from "./laneUtils";
+import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
+import { LaneSidebarList, LANES_FILTER_INPUT_ID } from "./sidebar/LaneSidebarList";
+import { LaneSidebarContextMenu } from "./sidebar/LaneSidebarContextMenu";
+import { LaneSidebarBulkRebaseDialog, type LaneBulkRebaseTarget } from "./sidebar/LaneSidebarBulkRebaseDialog";
+import {
+  buildLaneSidebarLayout,
+  buildLaneSidebarRows,
+  classifyLaneState,
+  laneNeedsYouReason,
+  laneSidebarRange,
+  laneSidebarVisibleLaneIds,
+  laneStateGroupSectionId,
+  stepLaneSidebarSelection,
+  type LaneGroupBulkAction,
+  type LaneSidebarGroupBy,
+  type LaneStateGroupId,
+} from "./sidebar/laneSidebarModel";
+import { LaneSplitBody } from "./detail/LaneSplitBody";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import {
-  DEFAULT_LANE_BANNER_BUDGET,
   DEFAULT_REBASE_SUGGESTIONS,
   type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
@@ -90,27 +76,21 @@ import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvent
 import { useLaneListInvalidation } from "../../hooks/useLaneListInvalidation";
 import {
   createPendingLaneDeleteProgress,
-  getLaneDeleteStatusLabel,
   isLaneDeleteProgressActive,
 } from "../../lib/laneDeleteProgress";
 import type {
   DeleteLaneArgs,
   GitCommitSummary,
   GitHubPrListItem,
-  LaneBranchActiveWorkItem,
   LaneListSnapshot,
-  LaneLinearIssue,
   LaneSummary,
   PrSummary,
   RebaseRun,
   RebaseScope,
-  IntegrationProposal,
   LaneDeleteProgress,
 } from "../../../shared/types";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
-import { SmartTooltip } from "../ui/SmartTooltip";
-import { docs } from "../../onboarding/docsLinks";
 import { settingsRouteFor } from "../settings/settingsManifest";
 
 type RebaseScopePromptState = {
@@ -119,19 +99,11 @@ type RebaseScopePromptState = {
   resolve: (scope: RebaseScope | null) => void;
 };
 
-type LanePaneSurface = "inline" | "git-actions-fullscreen" | "lane-fullscreen";
-
-export function shouldMountGitActionsPane({
-  laneId,
-  expandedGitActionsLaneId,
-  surface,
-}: {
-  laneId: string | null;
-  expandedGitActionsLaneId: string | null;
-  surface: LanePaneSurface;
-}): boolean {
-  return surface !== "inline" || !laneId || expandedGitActionsLaneId !== laneId;
-}
+type RebasePushReviewState = {
+  runId: string;
+  lanes: Array<{ laneId: string; laneName: string; selected: boolean }>;
+  resolve: (laneIds: string[] | null) => void;
+};
 
 export function shouldRetryLaneGithubSnapshotForceRefresh({
   currentProjectRoot,
@@ -149,58 +121,13 @@ export function shouldRetryLaneGithubSnapshotForceRefresh({
     && markedProjectRoot === startedProjectRoot;
 }
 
-type RebasePushReviewState = {
-  runId: string;
-  lanes: Array<{ laneId: string; laneName: string; selected: boolean }>;
-  resolve: (laneIds: string[] | null) => void;
-};
-
 const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
 const LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS = 260;
 const LANE_RUNTIME_LIFECYCLE_REFRESH_DEBOUNCE_MS = 300;
 const LANE_RUNTIME_DATA_REFRESH_DEBOUNCE_MS = 5_000;
 const EMPTY_LANE_IDS: string[] = [];
-
-function getDevicePresenceTitle(devicesOpen: LaneSummary["devicesOpen"]): string {
-  const names = (devicesOpen ?? [])
-    .map((device) => device.displayName.trim())
-    .filter((name) => name.length > 0);
-  if (names.length === 0) return "Open on this device";
-  if (names.length === 1) return `Open on ${names[0]}`;
-  return `Open on ${names.length} devices: ${names.join(", ")}`;
-}
-
-function DeferredLanePane({
-  cacheKey,
-  children,
-  delayMs = 0,
-}: {
-  cacheKey: string;
-  label: string;
-  children: React.ReactNode;
-  delayMs?: number;
-}) {
-  const [ready, setReady] = useState(delayMs <= 0);
-  const initializedCacheKeysRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    const initializedCacheKeys = initializedCacheKeysRef.current;
-    if (initializedCacheKeys.has(cacheKey)) {
-      setReady(true);
-      return;
-    }
-    initializedCacheKeys.add(cacheKey);
-    if (delayMs <= 0) {
-      setReady(true);
-      return;
-    }
-    setReady(false);
-    const timer = window.setTimeout(() => setReady(true), delayMs);
-    return () => window.clearTimeout(timer);
-  }, [cacheKey, delayMs]);
-
-  return ready ? <>{children}</> : null;
-}
+const EMPTY_LANE_ID_SET: ReadonlySet<string> = new Set();
+const EMPTY_GROUP_IDS: string[] = [];
 
 function mergePrSummariesById(current: PrSummary[], refreshed: PrSummary[]): PrSummary[] {
   if (refreshed.length === 0) return current;
@@ -229,113 +156,6 @@ function isLaneDeleteProgressHydratable(progress: LaneDeleteProgress | null | un
   return progress?.overallStatus === "running"
     || progress?.overallStatus === "completed"
     || progress?.overallStatus === "completed_with_warnings";
-}
-
-export function buildLaneSplitColumnsKey(args: {
-  laneTilingLayoutSuffix: string;
-  gridResetKey: number;
-}): string {
-  return `lanes-split-columns:${args.laneTilingLayoutSuffix}:${args.gridResetKey}`;
-}
-
-function LaneLoadingSkeleton() {
-  const tabWidths = [118, 96, 132, 88];
-  const rowWidths = [88, 72, 104, 80, 96];
-  const paneWidths = [76, 92, 68, 84];
-  const skeletonBlock = (width: number | string, height: number, extra?: React.CSSProperties): React.CSSProperties => ({
-    width,
-    height,
-    borderRadius: 6,
-    background: "color-mix(in srgb, var(--color-fg) 7%, transparent)",
-    border: `1px solid ${COLORS.borderMuted}`,
-    ...extra,
-  });
-
-  return (
-    <div
-      data-testid="lanes-loading-skeleton"
-      aria-label="Loading lanes"
-      className="flex min-h-0 flex-1 flex-col"
-      style={{ background: COLORS.pageBg }}
-    >
-      <div
-        className="flex h-11 shrink-0 items-center gap-2 overflow-hidden px-3"
-        style={{ borderBottom: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}
-      >
-        {tabWidths.map((width, index) => (
-          <div
-            key={`lane-loading-tab-${index}`}
-            className="animate-pulse"
-            style={skeletonBlock(width, 24, { borderRadius: 7 })}
-          />
-        ))}
-      </div>
-      <div className="grid min-h-0 flex-1 grid-cols-[minmax(190px,280px)_minmax(0,1fr)]">
-        <div
-          className="min-h-0 overflow-hidden p-3"
-          style={{
-            borderRight: `1px solid ${COLORS.border}`,
-            background: "color-mix(in srgb, var(--color-bg) 94%, var(--color-fg) 6%)",
-          }}
-        >
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <div className="animate-pulse" style={skeletonBlock(78, 12, { borderRadius: 4 })} />
-            <div className="animate-pulse" style={skeletonBlock(32, 18)} />
-          </div>
-          <div className="space-y-2">
-            {rowWidths.map((width, index) => (
-              <div
-                key={`lane-loading-row-${index}`}
-                className="animate-pulse"
-                style={{
-                  padding: "10px 10px",
-                  borderRadius: 8,
-                  border: `1px solid ${COLORS.borderMuted}`,
-                  background: COLORS.cardBg,
-                }}
-              >
-                <div style={skeletonBlock(width, 10, { border: "none" })} />
-                <div className="mt-2" style={skeletonBlock(`${Math.max(38, width - 28)}%`, 7, { border: "none", opacity: 0.6 })} />
-              </div>
-            ))}
-          </div>
-        </div>
-        <div className="min-h-0 overflow-hidden p-4">
-          <div className="mb-4 flex items-center gap-2">
-            {paneWidths.map((width, index) => (
-              <div
-                key={`lane-loading-pane-tab-${index}`}
-                className="animate-pulse"
-                style={skeletonBlock(width, 26, { borderRadius: 7 })}
-              />
-            ))}
-          </div>
-          <div className="grid h-[calc(100%-42px)] min-h-0 grid-cols-2 gap-3">
-            {[0, 1, 2, 3].map((index) => (
-              <div
-                key={`lane-loading-pane-${index}`}
-                className="animate-pulse"
-                style={{
-                  minHeight: 0,
-                  borderRadius: 8,
-                  border: `1px solid ${COLORS.border}`,
-                  background: COLORS.cardBg,
-                  padding: 12,
-                }}
-              >
-                <div style={skeletonBlock(index % 2 === 0 ? 94 : 72, 11, { border: "none" })} />
-                <div className="mt-4 space-y-2">
-                  <div style={skeletonBlock("88%", 8, { border: "none", opacity: 0.7 })} />
-                  <div style={skeletonBlock("64%", 8, { border: "none", opacity: 0.55 })} />
-                  <div style={skeletonBlock("74%", 8, { border: "none", opacity: 0.45 })} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 const LANE_DELETE_STEP_LABELS: Record<string, string> = {
@@ -375,26 +195,13 @@ function formatLaneDeleteWarningMessages(messagesByLaneId: Map<string, string>):
   return messages.length > 0 ? messages.join("\n") : null;
 }
 
-function laneTilingLayoutIds(laneId: string): string[] {
-  return [
-    `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:${laneId}`,
-    `lanes:tiling:${LANES_TILING_LAYOUT_VERSION}:wf:${laneId}`,
-    `lanes:tiling:v6:${laneId}`,
-    `lanes:tiling:v6:wf:${laneId}`,
-    `lanes:tiling:v7:${laneId}`,
-    `lanes:tiling:v7:wf:${laneId}`,
-    `lanes:tiling:v8:${laneId}`,
-    `lanes:tiling:v8:wf:${laneId}`,
-  ];
-}
-
 /* ---- Component ---- */
 
 export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const appStore = useAppStoreApi();
-  const [params] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const hasProjectSidebar = useHasProjectSidebar();
   const selectLane = useAppStore((s) => s.selectLane);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
@@ -408,16 +215,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       laneIdsRaw: p.get("laneIds"),
       laneId: p.get("laneId"),
       sessionId: p.get("sessionId"),
-      drawer: p.get("drawer"),
       inspectorTab: p.get("inspectorTab"),
-      focus: p.get("focus"),
       commitSha: p.get("commitSha"),
     };
   }, [location.search]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
   const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
-  const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const keybindings = useAppStore((s) => s.keybindings);
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
@@ -426,46 +230,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
-  const [activeLaneIds, setActiveLaneIds] = useState<string[]>([]);
-  // Pins/filter/expansion are persisted per project rather than held in
-  // component state: the Lanes route unmounts whenever it isn't the active tab,
-  // so anything kept in `useState` here is thrown away on every tab switch.
-  const persistedPinnedLaneIds = useAppStore(
-    (s) => (activeProjectStateKey
-      ? s.workViewByProject[activeProjectStateKey]?.lanesPinnedLaneIds
-      : undefined) ?? EMPTY_LANE_IDS,
-  );
-  const pinnedLaneIds = useMemo(
-    () => new Set(persistedPinnedLaneIds),
-    [persistedPinnedLaneIds],
-  );
-  const setPinnedLaneIds = useCallback(
-    (next: Set<string> | ((prev: Set<string>) => Set<string>)) => {
-      if (!activeProjectStateKey) return;
-      setWorkViewState(activeProjectStateKey, (current) => {
-        const prevSet = new Set(current.lanesPinnedLaneIds);
-        const nextSet = typeof next === "function" ? next(prevSet) : next;
-        return { ...current, lanesPinnedLaneIds: Array.from(nextSet) };
-      });
-    },
-    [activeProjectStateKey, setWorkViewState],
-  );
   const [pulsingLaneId, setPulsingLaneId] = useState<string | null>(null);
-  // Sessions freshly launched from the Linear batch flow, to highlight in the drawer.
-  const [highlightedSessionIds, setHighlightedSessionIds] = useState<Set<string>>(new Set());
   // Lanes freshly launched from the Linear batch flow that have not yet shown a
-  // live agent session. While in this set the lane tab renders a "creating"
-  // placeholder (spinner) so the new lane feels like it is materializing +
-  // auto-starting its chat. Cleared per-lane once a session appears (or by a
-  // safety TTL below).
+  // live agent session. Their rows show a spinner until a session appears (or
+  // a safety TTL below runs out).
   const [creatingLaneIds, setCreatingLaneIds] = useState<Set<string>>(new Set());
-  // Optimistic placeholders keyed by Linear ISSUE id, recorded by the batch
-  // launcher BEFORE the real lanes exist (lane ids are minted as each worktree
-  // materializes). Each renders a spinner "Creating <name>…" tab until the real
-  // lane carrying that issue id appears, at which point the placeholder is
-  // dropped and the real tab (with its loading agent) takes over.
+  // Optimistic rows keyed by Linear ISSUE id, recorded by the batch launcher
+  // BEFORE the real lanes exist. Each drops once the real lane carrying that
+  // issue id appears.
   const [creatingIssues, setCreatingIssues] = useState<CreatingIssuePlaceholder[]>(() => consumeCreatingIssues());
-  const [gridResetKey, setGridResetKey] = useState(0);
+  // The filter is persisted per project: the Lanes route unmounts whenever it
+  // isn't the active tab, so component state would be thrown away.
   const laneFilter = useAppStore(
     (s) => (activeProjectStateKey
       ? s.workViewByProject[activeProjectStateKey]?.lanesFilter
@@ -478,11 +253,47 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     },
     [activeProjectStateKey, setWorkViewState],
   );
+  // Sidebar grouping and collapsed State groups, persisted per project like
+  // the filter.
+  const laneGroupBy = useAppStore(
+    (s): LaneSidebarGroupBy => (activeProjectStateKey
+      ? s.workViewByProject[activeProjectStateKey]?.lanesGroupBy
+      : undefined) ?? "state",
+  );
+  const laneCollapsedGroupIds = useAppStore(
+    (s) => (activeProjectStateKey
+      ? s.workViewByProject[activeProjectStateKey]?.lanesCollapsedGroupIds
+      : undefined) ?? EMPTY_GROUP_IDS,
+  );
+  const laneCollapsedGroupSet = useMemo(() => new Set(laneCollapsedGroupIds), [laneCollapsedGroupIds]);
+  const setLaneGroupBy = useCallback(
+    (next: LaneSidebarGroupBy) => {
+      if (!activeProjectStateKey) return;
+      setWorkViewState(activeProjectStateKey, { lanesGroupBy: next });
+    },
+    [activeProjectStateKey, setWorkViewState],
+  );
+  const toggleLaneGroupCollapsed = useCallback(
+    (sectionId: string) => {
+      if (!activeProjectStateKey) return;
+      const current = appStore.getState().workViewByProject[activeProjectStateKey]?.lanesCollapsedGroupIds ?? [];
+      const next = current.includes(sectionId) ? current.filter((id) => id !== sectionId) : [...current, sectionId];
+      setWorkViewState(activeProjectStateKey, { lanesCollapsedGroupIds: next });
+    },
+    [activeProjectStateKey, appStore, setWorkViewState],
+  );
+  // Rows picked with Cmd/Ctrl/Shift-click, for "Manage N lanes" in the menu.
+  const [multiSelectedLaneIds, setMultiSelectedLaneIds] = useState<ReadonlySet<string>>(EMPTY_LANE_ID_SET);
+  const selectionAnchorRef = useRef<string | null>(null);
   const [manageOpen, setManageOpen] = useState(false);
-  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns all of the
-  // form + submit + env-setup state. LanesPage only tracks whether it is open,
-  // the prefill to seed it with, and (via a ref) whether a create is in flight
-  // so a forced close (dialog bus) can be blocked.
+  // Tab the manage dialog opens on; set by the sidebar's group bulk actions.
+  const [manageInitialTab, setManageInitialTab] = useState<ManageLaneTab | null>(null);
+  // Lanes the Behind group's "Rebase all" confirm step lists.
+  const [bulkRebaseLaneIds, setBulkRebaseLaneIds] = useState<string[] | null>(null);
+  // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form,
+  // submit and env-setup state. The page tracks only whether it is open, the
+  // prefill, and (via a ref) whether a create is in flight so a forced close
+  // from the dialog bus can be blocked.
   const [createOpen, setCreateOpen] = useState(false);
   const [createPrefill, setCreatePrefill] = useState<CreateLanePrefill | null>(null);
   const createBusyRef = useRef(false);
@@ -507,73 +318,28 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
   const [rebaseSuggestionDisplay, setRebaseSuggestionDisplay] =
     useState<RebaseSuggestionDisplay>(DEFAULT_REBASE_SUGGESTIONS);
-  const [laneBannerBudget, setLaneBannerBudget] = useState(DEFAULT_LANE_BANNER_BUDGET);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
   const [rebaseScopePrompt, setRebaseScopePrompt] = useState<RebaseScopePromptState | null>(null);
   const [rebasePushReview, setRebasePushReview] = useState<RebasePushReviewState | null>(null);
 
-  const [laneBranches, setLaneBranches] = useState<LaneBranchOption[]>([]);
-  const [laneBranchesLoading, setLaneBranchesLoading] = useState(false);
-  const [branchDropdownOpen, setBranchDropdownOpen] = useState(false);
-  const [branchCheckoutBusy, setBranchCheckoutBusy] = useState(false);
-  const [branchCheckoutError, setBranchCheckoutError] = useState<string | null>(null);
-  const [branchSearchQuery, setBranchSearchQuery] = useState("");
-  const [newBranchName, setNewBranchName] = useState("");
-  const [newBranchStartPoint, setNewBranchStartPoint] = useState("");
-  const [newBranchBaseRef, setNewBranchBaseRef] = useState("");
-  const [newBranchFormOpen, setNewBranchFormOpen] = useState(false);
-  const [pendingBranchSwitch, setPendingBranchSwitch] = useState<{
-    branchName: string;
-    mode: "existing" | "create";
-    startPoint?: string;
-    baseRef?: string;
-    activeWork: LaneBranchActiveWorkItem[];
-  } | null>(null);
-  const branchSearchInputRef = useRef<HTMLInputElement>(null);
-  const branchDropdownRef = useRef<HTMLDivElement>(null);
   const completedLaneDeleteRefreshesRef = useRef<Set<string>>(new Set());
   const pendingLaneDeleteRefreshIdsRef = useRef<Set<string>>(new Set());
   const laneDeleteRefreshTimerRef = useRef<number | null>(null);
   const hydratedLaneDeleteProgressProjectRef = useRef<string | null>(null);
   const deleteProgressProjectRootRef = useRef<string | null>(activeProjectRoot);
   const activeLanePresenceSignatureRef = useRef<string | null>(null);
-  // Refs for the onDeleteEvent IPC handler. Capturing high-churn values
-  // (selectedLaneId, lanesById, managedLaneIds, manageOpen) in refs lets the
-  // subscription useEffect keep its dep array minimal so it doesn't tear down
-  // and re-subscribe to the IPC bridge on every render.
+  // Refs for the onDeleteEvent IPC handler. Capturing high-churn values in
+  // refs lets the subscription keep a minimal dep array so it doesn't tear
+  // down and re-subscribe to the IPC bridge on every render.
   const selectedLaneIdRef = useRef<string | null>(null);
   const lanesByIdRef = useRef<Map<string, LaneSummary> | null>(null);
   const managedLaneIdsRef = useRef<string[]>([]);
   const manageOpenRef = useRef<boolean>(false);
 
-  const [stackGraphHeaderOpen, setStackGraphHeaderOpen] = useState(false);
-  const stackGraphHeaderRef = useRef<HTMLDivElement>(null);
-
-  const { layout: laneColumnLayout, saveLayout: saveLaneColumnLayout } = useDockLayout("lanes:columns:v1", {});
-
   const [lanePaneDetails, setLanePaneDetails] = useState<Record<string, LanePaneDetailSelection>>({});
   const [laneContextMenu, setLaneContextMenu] = useState<{ laneId: string; x: number; y: number } | null>(null);
-  const expandedLaneId = useAppStore(
-    (s) => (activeProjectStateKey
-      ? s.workViewByProject[activeProjectStateKey]?.lanesExpandedLaneId
-      : undefined) ?? null,
-  );
-  const setExpandedLaneId = useCallback(
-    (next: string | null) => {
-      if (!activeProjectStateKey) return;
-      setWorkViewState(activeProjectStateKey, { lanesExpandedLaneId: next });
-    },
-    [activeProjectStateKey, setWorkViewState],
-  );
-  const [expandedGitActionsLaneId, setExpandedGitActionsLaneId] = useState<string | null>(null);
-  const [integrationProposals, setIntegrationProposals] = useState<IntegrationProposal[]>([]);
   const [lanePrTags, setLanePrTags] = useState<PrSummary[]>([]);
   const [laneGithubPrTags, setLaneGithubPrTags] = useState<GitHubPrListItem[]>([]);
-  const [linearIssueChatContextRequest, setLinearIssueChatContextRequest] = useState<{
-    laneId: string;
-    issue: LaneLinearIssue;
-    requestedAt: number;
-  } | null>(null);
   const laneSnapshots = useAppStore((s) => s.laneSnapshots);
   const laneListFreshnessKey = useMemo(() => ({ lanes, laneSnapshots }), [lanes, laneSnapshots]);
   useLaneListInvalidation({ active: active && Boolean(activeProjectRoot), refreshLanes, freshnessKey: laneListFreshnessKey });
@@ -612,30 +378,29 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
     [laneSnapshots],
   );
-  const sortedLanes = useMemo(() => {
-    // Defensive: the lanes store can momentarily hold a duplicate lane id (e.g.
-    // an optimistic create racing the refreshed list), which would produce
-    // duplicate React keys and drop/duplicate tabs. Dedupe by id before sorting.
+  const dedupedLanes = useMemo(() => {
+    // The lanes store can momentarily hold a duplicate lane id (an optimistic
+    // create racing the refreshed list), which would produce duplicate React
+    // keys. Dedupe by id first.
     const seen = new Set<string>();
-    const deduped = lanes.filter((lane) => {
+    return lanes.filter((lane) => {
       if (seen.has(lane.id)) return false;
       seen.add(lane.id);
       return true;
     });
-    return sortLanesForTabs(deduped);
   }, [lanes]);
-  const sortedLanesRef = useRef(sortedLanes);
+  const sortedLanesRef = useRef(dedupedLanes);
   useEffect(() => {
-    sortedLanesRef.current = sortedLanes;
-  }, [sortedLanes]);
+    sortedLanesRef.current = dedupedLanes;
+  }, [dedupedLanes]);
   const lanePrBranchSignature = useMemo(
-    () => sortedLanes
+    () => dedupedLanes
       .map((lane) => `${lane.id}:${lane.laneType}:${lane.branchRef ?? ""}:${lane.baseRef ?? ""}`)
       .sort()
       .join("\0"),
-    [sortedLanes],
+    [dedupedLanes],
   );
-  const lanesById = useMemo(() => new Map(sortedLanes.map((lane) => [lane.id, lane])), [sortedLanes]);
+  const lanesById = useMemo(() => new Map(dedupedLanes.map((lane) => [lane.id, lane])), [dedupedLanes]);
   const deletingLaneIds = useMemo(() => {
     const ids = new Set<string>();
     for (const progress of Object.values(deleteProgressByLaneId)) {
@@ -643,13 +408,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
     return ids;
   }, [deleteProgressByLaneId]);
+
+  const allRows = useMemo(() => buildLaneSidebarRows(dedupedLanes), [dedupedLanes]);
   const sortedSelectableLaneIds = useMemo(
-    () => sortedLanes.map((lane) => lane.id).filter((laneId) => !deletingLaneIds.has(laneId)),
-    [sortedLanes, deletingLaneIds],
+    () => allRows.map((row) => row.lane.id).filter((laneId) => !deletingLaneIds.has(laneId)),
+    [allRows, deletingLaneIds],
   );
-  // `availableLaneIdsKey` is the content-stable dep trigger (string changes only
-  // when the id set changes). `availableLaneIds` recomputes from the key so its
-  // identity is also content-stable, letting effects depend on either safely.
+  // Content-stable key: changes only when the id set changes.
   const availableLaneIdsKey = useMemo(
     () => sortedSelectableLaneIds.slice().sort().join("\0"),
     [sortedSelectableLaneIds],
@@ -658,132 +423,116 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     () => (availableLaneIdsKey ? availableLaneIdsKey.split("\0") : []),
     [availableLaneIdsKey],
   );
-  const integrationSourcesByLaneId = useMemo(
-    () => buildIntegrationSourcesByLaneId(integrationProposals, lanesById),
-    [integrationProposals, lanesById],
-  );
-  const lanePrByLaneId = useMemo(() => {
-    const map = new Map<string, LaneTabPrTag>();
-    for (const lane of sortedLanes) {
-      const pr = selectLaneTabPrTags(lane, lanePrTags, laneGithubPrTags)[0] ?? null;
-      if (pr) map.set(lane.id, pr);
-    }
-    return map;
-  }, [sortedLanes, lanePrTags, laneGithubPrTags]);
   const lanePrTagsByLaneId = useMemo(() => {
     const map = new Map<string, LaneTabPrTag[]>();
-    for (const lane of sortedLanes) {
+    for (const lane of dedupedLanes) {
       const tags = selectLaneTabPrTags(lane, lanePrTags, laneGithubPrTags);
       if (tags.length > 0) map.set(lane.id, tags);
     }
     return map;
-  }, [sortedLanes, lanePrTags, laneGithubPrTags]);
+  }, [dedupedLanes, lanePrTags, laneGithubPrTags]);
 
   const laneRuntimeById = useMemo(() => {
     const summaryByLane = new Map<string, LaneListSnapshot["runtime"]>();
     for (const snapshot of laneSnapshots) {
       summaryByLane.set(snapshot.lane.id, snapshot.runtime);
     }
-    for (const lane of sortedLanes) {
-          if (!summaryByLane.has(lane.id)) {
-            summaryByLane.set(lane.id, {
-              bucket: "none",
-              runningCount: 0,
-              awaitingInputCount: 0,
-              pendingInputCount: 0,
-              endedCount: 0,
-              sessionCount: 0,
-            });
-          }
-    }
     return summaryByLane;
-  }, [sortedLanes, laneSnapshots]);
-
-  const laneFilterMatchedLanes = useMemo(
-    () => sortedLanes.filter((lane) => laneMatchesFilter(lane, pinnedLaneIds.has(lane.id), laneFilter)),
-    [sortedLanes, laneFilter, pinnedLaneIds],
-  );
-
-  const laneOrderById = useMemo(() => {
-    const map = new Map<string, number>();
-    sortedLanes.forEach((lane, index) => map.set(lane.id, index));
-    return map;
-  }, [sortedLanes]);
+  }, [laneSnapshots]);
 
   const filteredLanes = useMemo(() => {
-    return sortLaneListRows({
-      lanes: laneFilterMatchedLanes,
-      laneRuntimeById,
-      laneStatusFilter: "all",
-      laneOrderById,
-      pinnedLaneIds,
-    });
-  }, [laneFilterMatchedLanes, laneRuntimeById, laneOrderById, pinnedLaneIds]);
-  const stackGraphLanes = useMemo(() => sortLanesForStackGraph(filteredLanes), [filteredLanes]);
-
+    if (!laneFilter.trim()) return dedupedLanes;
+    return dedupedLanes.filter((lane) => laneMatchesFilter(lane, laneFilter));
+  }, [dedupedLanes, laneFilter]);
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
-  const stackGraphAgentLaneIds = stackGraphHeaderOpen ? filteredLaneIds : EMPTY_LANE_IDS;
-  // Per-lane agent rosters are only shown inside Stack Graph; keep the closed route cheap.
-  const agentsByLaneId = useLaneAgents(stackGraphAgentLaneIds);
-  const selectableFilteredLaneIds = useMemo(
-    () => filteredLaneIds.filter((laneId) => !deletingLaneIds.has(laneId)),
-    [filteredLaneIds, deletingLaneIds],
-  );
-  const selectableFilteredSet = useMemo(() => new Set(selectableFilteredLaneIds), [selectableFilteredLaneIds]);
-  const visibleRebaseSuggestions = useMemo(() => {
-    const laneIdSet = new Set(selectableFilteredLaneIds);
-    return laneSnapshots
-      .map((snapshot) => snapshot.rebaseSuggestion)
-      .filter(
-        (suggestion): suggestion is NonNullable<LaneListSnapshot["rebaseSuggestion"]> => {
-          if (suggestion == null) return false;
-          return laneIdSet.has(suggestion.laneId);
-        },
-      );
-  }, [laneSnapshots, selectableFilteredLaneIds]);
-  const visibleAutoRebaseNeedsAttention = useMemo(() => {
-    const laneIdSet = new Set(selectableFilteredLaneIds);
-    return laneSnapshots
-      .map((snapshot) => snapshot.autoRebaseStatus)
-      .filter(
-        (status): status is NonNullable<LaneListSnapshot["autoRebaseStatus"]> => {
-          if (status == null) return false;
-          return laneIdSet.has(status.laneId) && status.state !== "autoRebased";
-        },
-      );
-  }, [laneSnapshots, selectableFilteredLaneIds]);
+  // Rows are on screen, so their agents are too. The page unmounts off-tab,
+  // and `active` gates the roster while it is hidden.
+  const agentsByLaneId = useLaneAgents(active ? filteredLaneIds : EMPTY_LANE_IDS);
 
-  const activeWithPins = useMemo(
-    () => mergeUnique(
-      activeLaneIds.filter((id) => !deletingLaneIds.has(id)),
-      Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id)),
-    ),
-    [activeLaneIds, pinnedLaneIds, lanesById, deletingLaneIds]
+  // State group per lane, from data the list already holds (git status,
+  // snapshots, PR tags, agents). Pure and cheap; no extra requests.
+  const { laneStateById, needsYouReasonByLaneId } = useMemo(() => {
+    const nowMs = Date.now();
+    const states = new Map<string, LaneStateGroupId | "primary">();
+    const reasons = new Map<string, string>();
+    for (const lane of filteredLanes) {
+      const snapshot = laneSnapshotByLaneId.get(lane.id);
+      const input = {
+        lane,
+        agents: agentsByLaneId.get(lane.id) ?? [],
+        runtime: laneRuntimeById.get(lane.id) ?? null,
+        prs: lanePrTagsByLaneId.get(lane.id),
+        rebaseSuggestion: snapshot?.rebaseSuggestion ?? null,
+        autoRebaseStatus: snapshot?.autoRebaseStatus ?? null,
+        nowMs,
+      };
+      states.set(lane.id, classifyLaneState(input));
+      const reason = laneNeedsYouReason(input);
+      if (reason) reasons.set(lane.id, reason);
+    }
+    return { laneStateById: states, needsYouReasonByLaneId: reasons };
+  }, [agentsByLaneId, filteredLanes, laneRuntimeById, lanePrTagsByLaneId, laneSnapshotByLaneId]);
+
+  const sidebarLayout = useMemo(
+    () => buildLaneSidebarLayout({ lanes: filteredLanes, groupBy: laneGroupBy, stateByLaneId: laneStateById, lanesById }),
+    [filteredLanes, laneGroupBy, laneStateById, lanesById],
   );
-  const visibleLaneIds = useMemo(
-    () => resolveVisibleLaneIds({
-      activeLaneIds: activeWithPins,
-      existingLaneIds: lanesById.keys(),
-      filteredLaneIds,
-      selectableFilteredLaneIds,
-      deletingLaneIds,
-    }),
-    [activeWithPins, lanesById, filteredLaneIds, selectableFilteredLaneIds, deletingLaneIds]
+  // On-screen order (collapsed groups skipped): what J/K, Shift-click and the
+  // default selection walk.
+  const selectableFilteredLaneIds = useMemo(
+    () => laneSidebarVisibleLaneIds(sidebarLayout, laneCollapsedGroupSet).filter((laneId) => !deletingLaneIds.has(laneId)),
+    [sidebarLayout, laneCollapsedGroupSet, deletingLaneIds],
   );
+
+  // The lane in the main area: the store selection when it is usable,
+  // otherwise the first lane in the list.
+  const detailLaneId = useMemo(() => {
+    const filterActive = laneFilter.trim().length > 0;
+    const selectedKept = Boolean(
+      selectedLaneId
+      && lanesById.has(selectedLaneId)
+      && !deletingLaneIds.has(selectedLaneId)
+      && (!filterActive || filteredLanes.some((lane) => lane.id === selectedLaneId)),
+    );
+    if (selectedKept) return selectedLaneId;
+    if (filterActive) return selectableFilteredLaneIds[0] ?? null;
+    return selectableFilteredLaneIds[0] ?? sortedSelectableLaneIds[0] ?? null;
+  }, [selectedLaneId, lanesById, deletingLaneIds, filteredLanes, laneFilter, selectableFilteredLaneIds, sortedSelectableLaneIds]);
+  const detailLane = detailLaneId ? lanesById.get(detailLaneId) ?? null : null;
+  const detailLaneIds = useMemo(() => (detailLaneId ? [detailLaneId] : EMPTY_LANE_IDS), [detailLaneId]);
+
+  // When the selection moves to a lane inside a collapsed State group (a deep
+  // link, a click in the overview's stack), open that group so the row shows.
+  // Only on a selection change, so collapsing the selected lane's group sticks.
+  const revealedLaneIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!detailLaneId || revealedLaneIdRef.current === detailLaneId) return;
+    revealedLaneIdRef.current = detailLaneId;
+    if (sidebarLayout.groupBy !== "state") return;
+    const group = sidebarLayout.groups.find((candidate) => candidate.rows.some((row) => row.lane.id === detailLaneId));
+    if (!group) return;
+    const sectionId = laneStateGroupSectionId(group.id);
+    if (laneCollapsedGroupSet.has(sectionId)) toggleLaneGroupCollapsed(sectionId);
+  }, [detailLaneId, laneCollapsedGroupSet, sidebarLayout, toggleLaneGroupCollapsed]);
+  const colorIndexByLaneId = useMemo(
+    () => new Map(allRows.map((row, index) => [row.lane.id, index] as const)),
+    [allRows],
+  );
+  const detailColorIndex = detailLaneId ? colorIndexByLaneId.get(detailLaneId) ?? 0 : 0;
 
   useEffect(() => {
     const syncApi = window.ade.sync;
     if (!syncApi?.setActiveLanePresence) {
       return;
     }
-    const laneIds = active && activeProjectRoot ? [...visibleLaneIds] : [];
+    const laneIds = active && activeProjectRoot ? [...detailLaneIds] : [];
     const signature = laneIds.join("\0");
     if (activeLanePresenceSignatureRef.current === signature) {
       return;
     }
     activeLanePresenceSignatureRef.current = signature;
     void syncApi.setActiveLanePresence({ laneIds }).catch(() => {});
-  }, [active, activeProjectRoot, visibleLaneIds]);
+  }, [active, activeProjectRoot, detailLaneIds]);
 
   useEffect(() => {
     const syncApi = window.ade.sync;
@@ -799,99 +548,28 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     };
   }, []);
 
-  const workFocusTiling = useMemo(() => {
-    if (params.get("workFocus") !== "1") return false;
-    const ids = parseLaneIdsParam(params.get("laneIds"));
-    if (ids.length < 2) return false;
-    const visibleSet = new Set(visibleLaneIds);
-    return ids.every((id) => visibleSet.has(id));
-  }, [params, visibleLaneIds]);
-
-  const laneTilingTree = workFocusTiling ? LANES_TILING_WORK_FOCUS_TREE : LANES_TILING_TREE;
-  const laneTilingLayoutSuffix = workFocusTiling ? ":wf" : "";
-
   const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
   const managedLanes = useMemo(
     () => managedLaneIds.map((id) => lanesById.get(id)).filter((l): l is LaneSummary => l != null && l.laneType !== "primary"),
     [managedLaneIds, lanesById],
   );
-  const isBatchManage = managedLanes.length > 1;
-
-  const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
-  const branchLane = useMemo(() => {
-    const candidate = selectedLaneId ? lanesById.get(selectedLaneId) ?? primaryLane : primaryLane;
-    return candidate ?? null;
-  }, [selectedLaneId, lanesById, primaryLane]);
-
-  /* ---- Lane branch management ---- */
-
-  useEffect(() => {
-    // Always clear stale results when the target lane (or open state) changes
-    // — otherwise lane A's branches linger when the user switches to lane B
-    // before the new fetch resolves.
-    setLaneBranches([]);
-    if (!active || !branchLane || !branchDropdownOpen) return;
-    let cancelled = false;
-    setLaneBranchesLoading(true);
-    window.ade.git.listBranches({ laneId: branchLane.id })
-      .then((result) => { if (!cancelled) setLaneBranches(result); })
-      .catch(() => { if (!cancelled) setLaneBranches([]); })
-      .finally(() => { if (!cancelled) setLaneBranchesLoading(false); });
-    return () => { cancelled = true; };
-  }, [active, branchDropdownOpen, branchLane?.id]);
-
-  useEffect(() => {
-    if (!active || !branchLane) return;
-    const current = laneBranches.find((branch) => branch.isCurrent && !branch.isRemote)?.name ?? null;
-    if (!current || current === branchLane.branchRef) return;
-    refreshLanes().catch(() => {});
-  }, [active, laneBranches, branchLane?.id, branchLane?.branchRef, refreshLanes]);
-
-  useEffect(() => {
-    if (branchDropdownOpen) {
-      setBranchSearchQuery("");
-      setPendingBranchSwitch(null);
-      setNewBranchStartPoint("");
-      setNewBranchBaseRef("");
-      setNewBranchName("");
-      setNewBranchFormOpen(false);
-      setTimeout(() => branchSearchInputRef.current?.focus(), 0);
-    }
-  }, [branchDropdownOpen, branchLane?.id]);
-  useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
-  useClickOutside(stackGraphHeaderRef, () => setStackGraphHeaderOpen(false), stackGraphHeaderOpen);
-
   const refreshAutoRebaseEnabled = useCallback(async () => {
     try {
       const snapshot = await getProjectConfigCached({ projectRoot: activeProjectRoot });
       const git = snapshot.effective.git;
       const enabled = typeof git?.autoRebaseOnHeadChange === "boolean" ? git.autoRebaseOnHeadChange : false;
       setAutoRebaseEnabled(enabled);
-      // Read the banner-noise settings from the same snapshot rather than
+      // Read the rebase-suggestion setting from the same snapshot rather than
       // opening a second config read on the Lanes load path.
       setRebaseSuggestionDisplay(
         git?.rebaseSuggestions === "off" || git?.rebaseSuggestions === "badge" || git?.rebaseSuggestions === "banner"
           ? git.rebaseSuggestions
           : DEFAULT_REBASE_SUGGESTIONS,
       );
-      setLaneBannerBudget(
-        typeof git?.laneBannerBudget === "number" && Number.isFinite(git.laneBannerBudget)
-          ? Math.max(0, Math.floor(git.laneBannerBudget))
-          : DEFAULT_LANE_BANNER_BUDGET,
-      );
     } catch {
       setAutoRebaseEnabled(false);
     }
   }, [activeProjectRoot]);
-
-  const refreshIntegrationProposals = useCallback(async () => {
-    try {
-      const proposals = await window.ade.prs.listProposals();
-      setIntegrationProposals(proposals);
-    } catch {
-      setIntegrationProposals([]);
-    }
-  }, []);
 
   const refreshLanePrTags = useCallback(async (options?: { refreshMapped?: boolean }) => {
     const requestId = ++lanePrTagsRequestRef.current;
@@ -905,9 +583,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setLanePrTags(prs);
       if (options?.refreshMapped !== true) return;
 
-      // Refresh only rows that can render in the current-branch lane tag. PR
-      // history remains available in the PR workspace, but it should not cause
-      // background refreshes or badge state after a lane switches branches.
+      // Refresh only rows that can render in a lane's PR chip. PR history
+      // stays in the PR workspace and should not cause background refreshes.
       const matchedPrIds = [...new Set(sortedLanesRef.current.flatMap((lane) => (
         selectLanePrs(lane, prs)
           .slice(0, VISIBLE_LANE_PR_REFRESH_LIMIT)
@@ -921,7 +598,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         const refreshedById = new Map(refreshed.map((pr) => [pr.id, pr] as const));
         setLanePrTags(prs.map((pr) => refreshedById.get(pr.id) ?? pr));
       } catch {
-        // Keep the immediate local rows visible; the full GitHub snapshot below
+        // Keep the immediate local rows visible; the GitHub snapshot below
         // still has a chance to provide terminal state for branch-matched PRs.
       }
     } catch {
@@ -988,9 +665,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   /* ---- Effects ---- */
 
-  // Mirror high-churn values into refs so the IPC subscription below doesn't
-  // re-subscribe every render (lanesById is rebuilt whenever any lane field
-  // changes; selectedLaneId / managedLaneIds / manageOpen flip on every nav).
   useEffect(() => { selectedLaneIdRef.current = selectedLaneId; }, [selectedLaneId]);
   useEffect(() => { lanesByIdRef.current = lanesById; }, [lanesById]);
   useEffect(() => { managedLaneIdsRef.current = managedLaneIds; }, [managedLaneIds]);
@@ -1025,13 +699,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       completedLaneDeleteRefreshesRef.current.add(laneId);
 
       if (selectedLaneIdRef.current === laneId) selectLane(null);
-      setActiveLaneIds((prev) => prev.filter((id) => id !== laneId));
-      setPinnedLaneIds((prev) => {
-        if (!prev.has(laneId)) return prev;
-        const next = new Set(prev);
-        next.delete(laneId);
-        return next;
-      });
       setManagedLaneIds((prev) => prev.filter((id) => id !== laneId));
       clearLaneInspectorTab(laneId);
       if (overallStatus === "completed_with_warnings") {
@@ -1041,11 +708,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       } else {
         laneDeleteWarningMessagesRef.current.delete(laneId);
         const remainingWarnings = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
-        // Reconstruct from the tracked warnings only. Any delete-warning we ever
-        // show is mirrored into laneDeleteWarningMessagesRef, so this clears a
-        // stale warning once its lane is re-deleted cleanly — without nulling an
-        // unrelated standing error that merely contains the word "delete" (e.g.
-        // the "deleted, but refresh failed" message for a different lane).
+        // Rebuild from the tracked warnings only: every delete warning we show
+        // is mirrored into laneDeleteWarningMessagesRef, so this clears a stale
+        // one without nulling an unrelated standing error.
         setLaneActionError((current) => remainingWarnings ?? current);
       }
       queueLaneDeleteRefresh([laneId]);
@@ -1091,14 +756,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [active, refreshAutoRebaseEnabled]);
 
   useEffect(() => {
-    if (!active) return;
-    const timer = window.setTimeout(() => {
-      void refreshIntegrationProposals();
-    }, 140);
-    return () => window.clearTimeout(timer);
-  }, [active, refreshIntegrationProposals, activeProjectRoot]);
-
-  useEffect(() => {
     lanePrTagsRequestRef.current += 1;
     laneGithubPrTagsRequestRef.current += 1;
     laneGithubSnapshotForceRefreshProjectRootRef.current = null;
@@ -1107,9 +764,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!active || !activeProjectRoot) {
       return;
     }
-    // Keep the lane surface local-first. Visible stale rows are refreshed by
-    // the debounced viewport pass below; a forced snapshot and per-lane PR
-    // refresh here made opening the next PR surface compete with GitHub work.
+    // Keep the lane surface local-first. The selected lane's stale rows are
+    // refreshed by the debounced pass below; a forced snapshot here made
+    // opening the next PR surface compete with GitHub work.
     void refreshLanePrTags();
     void refreshLaneGithubPrTags();
     return () => {
@@ -1121,10 +778,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   useEffect(() => {
     if (!active || !activeProjectRoot || document.visibilityState !== "visible") return;
     if (laneGithubSnapshotForceRefreshProjectRootRef.current === activeProjectRoot) return;
-    const hasVisibleGithubOnlyPr = visibleLaneIds.some((laneId) =>
+    const hasGithubOnlyPr = detailLaneIds.some((laneId) =>
       lanePrTagsByLaneId.get(laneId)?.some((tag) => tag.source === "github" && !tag.linkedPrId) ?? false,
     );
-    if (!hasVisibleGithubOnlyPr) return;
+    if (!hasGithubOnlyPr) return;
 
     const startedRoot = activeProjectRoot;
     const timer = window.setTimeout(() => {
@@ -1149,7 +806,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     lanePrTagsByLaneId,
     laneVisiblePrRefreshVisibilityToken,
     refreshLaneGithubPrTags,
-    visibleLaneIds,
+    detailLaneIds,
   ]);
 
   useEffect(() => {
@@ -1177,6 +834,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, []);
 
+  // Opportunistically refresh the selected lane's stale linked PRs. Rows in the
+  // list only need PR state, which the list read already carries.
   useEffect(() => {
     const projectRoot = activeProjectRoot;
     if (laneVisiblePrRefreshProjectRootRef.current !== projectRoot) {
@@ -1187,7 +846,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
     const nowMs = Date.now();
     const prIds = selectVisibleLanePrRefreshIds({
-      visibleLaneIds,
+      visibleLaneIds: detailLaneIds,
       lanePrByLaneId: lanePrTagsByLaneId,
       prs: lanePrTags,
       recentlyRequestedAtByPrId: laneVisiblePrRefreshRequestedAtRef.current,
@@ -1217,12 +876,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     active,
     getActiveProjectRoot,
     activeProjectRoot,
-    visibleLaneIds,
+    detailLaneIds,
     lanePrTagsByLaneId,
     lanePrTags,
     laneVisiblePrRefreshVisibilityToken,
   ]);
 
+  // Runtime buckets drive each row's status dot. Refresh them without Git
+  // status when sessions start, stop or produce output.
   useEffect(() => {
     if (!active) return;
     let lifecycleTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1272,20 +933,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return () => {
       if (lifecycleTimer) clearTimeout(lifecycleTimer);
       if (dataTimer) clearTimeout(dataTimer);
-      try {
-        unsubPtyData();
-      } catch {
-        // ignore
-      }
-      try {
-        unsubPtyExit();
-      } catch {
-        // ignore
-      }
-      try {
-        unsubChat();
-      } catch {
-        // ignore
+      for (const unsubscribe of [unsubPtyData, unsubPtyExit, unsubChat]) {
+        try {
+          unsubscribe();
+        } catch {
+          // ignore
+        }
       }
       window.clearInterval(intervalId);
     };
@@ -1322,13 +975,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     };
   }, []);
 
-  useEffect(() => {
-    if (!laneContextMenu) return;
-    const onPointerDown = () => setLaneContextMenu(null);
-    window.addEventListener("pointerdown", onPointerDown);
-    return () => window.removeEventListener("pointerdown", onPointerDown);
-  }, [laneContextMenu]);
-
   const startChatInLane = useStartChatInLane({
     projectStateKey: activeProjectStateKey,
     setWorkViewState,
@@ -1338,24 +984,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   });
 
   useEffect(() => {
-    setPinnedLaneIds((prev) => {
-      const next = new Set<string>();
-      for (const laneId of prev) {
-        if (lanesById.has(laneId)) next.add(laneId);
-      }
-      return next.size === prev.size ? prev : next;
-    });
-  }, [lanesById]);
-
-  useEffect(() => {
     setDeleteProgressByLaneId((prev) => {
       const next: Record<string, LaneDeleteProgress> = {};
       for (const [laneId, progress] of Object.entries(prev)) {
         // Once the deleted lane has left the list its progress entry no longer
-        // renders (the per-lane progress UI is gated on lanesById), so drop it —
-        // including completed_with_warnings, whose warning text is surfaced
-        // independently via laneActionError. Keeping it here only leaked the
-        // entry (and pinned the id in deletingLaneIds) for the whole session.
+        // renders, so drop it — including completed_with_warnings, whose text
+        // is surfaced through laneActionError.
         if (isLaneDeleteProgressActive(progress) && lanesById.has(laneId)) {
           next[laneId] = progress;
         }
@@ -1363,22 +997,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       return Object.keys(next).length === Object.keys(prev).length ? prev : next;
     });
   }, [lanesById, setDeleteProgressByLaneId]);
-
-  useEffect(() => {
-    const pinned = Array.from(pinnedLaneIds).filter((laneId) => lanesById.has(laneId) && !deletingLaneIds.has(laneId));
-    setActiveLaneIds((prev) => {
-      const validPrev = prev.filter((laneId) => lanesById.has(laneId) && !deletingLaneIds.has(laneId));
-      const selected = selectedLaneId && lanesById.has(selectedLaneId) && !deletingLaneIds.has(selectedLaneId) ? [selectedLaneId] : [];
-      const fallback = selected.length
-        ? []
-        : validPrev.length
-          ? [validPrev[0]!]
-          : sortedSelectableLaneIds[0]
-            ? [sortedSelectableLaneIds[0]]
-            : [];
-      return mergeUnique(selected, fallback, validPrev, pinned);
-    });
-  }, [selectedLaneId, lanesById, sortedSelectableLaneIds, pinnedLaneIds, deletingLaneIds]);
 
   useEffect(() => {
     setLanePaneDetails((prev) => {
@@ -1390,73 +1008,109 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
   }, [lanesById]);
 
-  /* ---- Keyboard navigation ---- */
+  // Drop multi-selected lanes that left the list or started deleting.
+  useEffect(() => {
+    setMultiSelectedLaneIds((prev) => {
+      if (prev.size === 0) return prev;
+      const next = new Set([...prev].filter((laneId) => lanesById.has(laneId) && !deletingLaneIds.has(laneId)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [lanesById, deletingLaneIds]);
+
+  /* ---- Selection ---- */
+
+  const selectDetailLane = useCallback((laneId: string) => {
+    if (deletingLaneIds.has(laneId) || !lanesById.has(laneId)) return;
+    selectionAnchorRef.current = laneId;
+    selectLane(laneId);
+  }, [deletingLaneIds, lanesById, selectLane]);
 
   const stepLaneSelection = useCallback((direction: -1 | 1) => {
-    if (selectableFilteredLaneIds.length === 0) return;
-    const currentId = selectedLaneId && selectableFilteredSet.has(selectedLaneId) ? selectedLaneId : selectableFilteredLaneIds[0]!;
-    const currentIdx = selectableFilteredLaneIds.indexOf(currentId);
-    const nextIdx = (currentIdx + direction + selectableFilteredLaneIds.length) % selectableFilteredLaneIds.length;
-    const nextId = selectableFilteredLaneIds[nextIdx];
+    const nextId = stepLaneSidebarSelection(selectableFilteredLaneIds, detailLaneId, direction);
     if (!nextId) return;
-    const pinned = Array.from(pinnedLaneIds).filter((laneId) => laneId !== nextId && lanesById.has(laneId) && !deletingLaneIds.has(laneId));
-    setActiveLaneIds(mergeUnique([nextId], pinned));
-    selectLane(nextId);
-  }, [selectableFilteredLaneIds, selectedLaneId, selectableFilteredSet, pinnedLaneIds, lanesById, deletingLaneIds, selectLane]);
+    setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
+    selectDetailLane(nextId);
+  }, [detailLaneId, selectDetailLane, selectableFilteredLaneIds]);
+
+  // Plain click selects. Cmd/Ctrl-click toggles a row in the multi-selection;
+  // Shift-click selects the range from the last clicked row.
+  const handleRowSelect = useCallback((laneId: string, event: React.MouseEvent) => {
+    if (deletingLaneIds.has(laneId) || !lanesById.has(laneId)) return;
+    if (event.metaKey || event.ctrlKey) {
+      setMultiSelectedLaneIds((prev) => {
+        const next = new Set(prev.size === 0 && detailLaneId ? [detailLaneId] : prev);
+        if (next.has(laneId)) next.delete(laneId);
+        else next.add(laneId);
+        return next;
+      });
+      selectionAnchorRef.current = laneId;
+      return;
+    }
+    if (event.shiftKey) {
+      const range = laneSidebarRange(selectableFilteredLaneIds, selectionAnchorRef.current ?? detailLaneId, laneId);
+      setMultiSelectedLaneIds(new Set(range));
+      return;
+    }
+    setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
+    selectDetailLane(laneId);
+  }, [deletingLaneIds, detailLaneId, lanesById, selectDetailLane, selectableFilteredLaneIds]);
+
+  const handleRowContextMenu = useCallback((laneId: string, event: React.MouseEvent) => {
+    setLaneContextMenu({ laneId, x: event.clientX, y: event.clientY });
+  }, []);
+
+  // The overview's "…" button opens the same menu, just under the button.
+  const openLaneMenuAt = useCallback((laneId: string, anchor: DOMRect) => {
+    setLaneContextMenu({ laneId, x: anchor.left, y: anchor.bottom + 4 });
+  }, []);
+
+  const handleOpenPr = useCallback((pr: LaneTabPrTag) => {
+    const prRoute = lanePrTagRoutePath(pr);
+    if (prRoute) {
+      navigate(prRoute);
+      return;
+    }
+    if (pr.githubUrl && isTrustedGitHubUrl(pr.githubUrl)) {
+      void window.ade?.app?.openExternal?.(pr.githubUrl);
+    }
+  }, [navigate]);
+
+  // Agents live in the Work tab; an avatar click opens the session there.
+  const handleOpenAgent = useCallback((agent: LaneAgent) => {
+    if (deletingLaneIds.has(agent.laneId) || !lanesById.has(agent.laneId)) return;
+    window.dispatchEvent(
+      new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: agent.sessionId, laneId: agent.laneId },
+      }),
+    );
+    navigate(`/work?sessionId=${encodeURIComponent(agent.sessionId)}&laneId=${encodeURIComponent(agent.laneId)}`);
+  }, [deletingLaneIds, lanesById, navigate]);
+
+  /* ---- Keyboard ---- */
 
   const kbFilterFocus = useMemo(() => getEffectiveBinding(keybindings, "lanes.filter.focus", "/,Mod+F"), [keybindings]);
   const kbNext = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.next", "J,ArrowDown"), [keybindings]);
   const kbPrev = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.prev", "K,ArrowUp"), [keybindings]);
   const kbNextTab = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.nextTab", "]"), [keybindings]);
   const kbPrevTab = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.prevTab", "["), [keybindings]);
-  const kbConfirm = useMemo(() => getEffectiveBinding(keybindings, "lanes.select.confirm", "Enter"), [keybindings]);
 
   useEffect(() => {
-    if (expandedGitActionsLaneId && !lanesById.has(expandedGitActionsLaneId)) {
-      setExpandedGitActionsLaneId(null);
-    }
-    if (expandedGitActionsLaneId && deletingLaneIds.has(expandedGitActionsLaneId)) {
-      setExpandedGitActionsLaneId(null);
-    }
-  }, [expandedGitActionsLaneId, lanesById, deletingLaneIds]);
-
-  useEffect(() => {
-    if (expandedLaneId && (!lanesById.has(expandedLaneId) || deletingLaneIds.has(expandedLaneId))) {
-      setExpandedLaneId(null);
-    }
-  }, [expandedLaneId, lanesById, deletingLaneIds]);
-
-  useEffect(() => {
-    if (!selectedLaneId || !deletingLaneIds.has(selectedLaneId)) return;
-    selectLane(selectableFilteredLaneIds[0] ?? sortedSelectableLaneIds[0] ?? null);
-  }, [selectedLaneId, deletingLaneIds, selectableFilteredLaneIds, sortedSelectableLaneIds, selectLane]);
-
-  useEffect(() => {
+    if (!active) return;
     const onKeyDown = (event: KeyboardEvent) => {
       const targetIsTyping = isTypingTarget(event.target);
       if (!targetIsTyping && eventMatchesBinding(event, kbFilterFocus)) {
         event.preventDefault();
-        const input = document.getElementById("lanes-filter-input");
+        const input = document.getElementById(LANES_FILTER_INPUT_ID);
         if (input instanceof HTMLInputElement) { input.focus(); input.select(); }
-        return;
-      }
-      if (event.key === "Escape" && expandedGitActionsLaneId) {
-        event.preventDefault();
-        setExpandedGitActionsLaneId(null);
-        return;
-      }
-      if (event.key === "Escape" && expandedLaneId) {
-        event.preventDefault();
-        setExpandedLaneId(null);
         return;
       }
       if (targetIsTyping) {
         if (event.key === "Escape") {
-          const active = document.activeElement;
-          if (active instanceof HTMLInputElement && active.id === "lanes-filter-input") {
+          const focused = document.activeElement;
+          if (focused instanceof HTMLInputElement && focused.id === LANES_FILTER_INPUT_ID) {
             event.preventDefault();
             if (laneFilter.length > 0) setLaneFilter("");
-            else active.blur();
+            else focused.blur();
           }
         }
         return;
@@ -1464,68 +1118,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       if (eventMatchesBinding(event, kbPrevTab) || eventMatchesBinding(event, kbNextTab)) {
         event.preventDefault();
         stepLaneSelection(eventMatchesBinding(event, kbNextTab) ? 1 : -1);
-        return;
-      }
-      if (eventMatchesBinding(event, kbNext)) { event.preventDefault(); stepLaneSelection(1); return; }
-      if (eventMatchesBinding(event, kbPrev)) { event.preventDefault(); stepLaneSelection(-1); return; }
-      if (eventMatchesBinding(event, kbConfirm) && selectableFilteredLaneIds.length > 0) {
-        event.preventDefault();
-        const laneId = selectedLaneId && selectableFilteredSet.has(selectedLaneId) ? selectedLaneId : selectableFilteredLaneIds[0]!;
-        const pinned = Array.from(pinnedLaneIds).filter((lane) => lane !== laneId && lanesById.has(lane) && !deletingLaneIds.has(lane));
-        setActiveLaneIds(mergeUnique([laneId], pinned));
-        selectLane(laneId);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [selectableFilteredLaneIds, selectableFilteredSet, selectedLaneId, pinnedLaneIds, lanesById, deletingLaneIds, selectLane, laneFilter, stepLaneSelection, kbFilterFocus, kbNext, kbPrev, kbNextTab, kbPrevTab, kbConfirm, expandedLaneId, expandedGitActionsLaneId]);
+  }, [active, laneFilter, setLaneFilter, stepLaneSelection, kbFilterFocus, kbNextTab, kbPrevTab]);
+
+  const isNextKey = useCallback((event: React.KeyboardEvent) => eventMatchesBinding(event.nativeEvent, kbNext), [kbNext]);
+  const isPrevKey = useCallback((event: React.KeyboardEvent) => eventMatchesBinding(event.nativeEvent, kbPrev), [kbPrev]);
 
   /* ---- Lane management actions ---- */
-
-  const localLaneBranches = useMemo(() => {
-    const q = branchSearchQuery.toLowerCase();
-    return laneBranches.filter((branch) => !branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
-  }, [laneBranches, branchSearchQuery]);
-  const remoteLaneBranches = useMemo(() => {
-    const q = branchSearchQuery.toLowerCase();
-    return laneBranches.filter((branch) => branch.isRemote && (!q || branch.name.toLowerCase().includes(q)));
-  }, [laneBranches, branchSearchQuery]);
-  const startPointOptions = useMemo(() => {
-    type StartOption = { value: string; label: string; group: "lane" | "local" | "remote" };
-    const map = new Map<string, StartOption>();
-    if (branchLane?.branchRef) {
-      map.set(branchLane.branchRef, { value: branchLane.branchRef, label: branchLane.branchRef, group: "lane" });
-    }
-    for (const branch of laneBranches) {
-      if (branch.isRemote) continue;
-      if (!map.has(branch.name)) map.set(branch.name, { value: branch.name, label: branch.name, group: "local" });
-    }
-    for (const branch of laneBranches) {
-      if (!branch.isRemote) continue;
-      const local = stripRemotePrefix(branch.name);
-      if (map.has(local)) continue;
-      if (!map.has(branch.name)) {
-        map.set(branch.name, { value: branch.name, label: `${branch.name} (remote)`, group: "remote" });
-      }
-    }
-    return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
-  }, [branchLane?.branchRef, laneBranches]);
-  const baseRefOptions = useMemo(() => {
-    const names = new Set<string>();
-    if (primaryLane?.branchRef) names.add(primaryLane.branchRef);
-    for (const opt of startPointOptions) names.add(opt.value);
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [startPointOptions, primaryLane?.branchRef]);
-  const branchNameValidation = useMemo(
-    () => (newBranchName.trim() ? validateBranchName(newBranchName) : { ok: false }),
-    [newBranchName],
-  );
 
   const runLaneAction = async (
     fn: () => Promise<void>,
     status: string,
     kind: "delete" | "archive" = "delete",
-    options: { refreshAfter?: boolean } = {},
   ) => {
     setLaneActionBusy(true);
     setLaneActionKind(kind);
@@ -1533,9 +1140,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setLaneActionError(null);
     try {
       await fn();
-      if (options.refreshAfter !== false) {
-        await refreshLanes();
-      }
+      await refreshLanes();
       setManageOpen(false);
     } catch (err) {
       setLaneActionError(err instanceof Error ? err.message : String(err));
@@ -1546,75 +1151,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   };
 
-  const checkoutLaneBranch = useCallback(async (request: {
-    branchName: string;
-    mode?: "existing" | "create";
-    startPoint?: string;
-    baseRef?: string;
-    acknowledgeActiveWork?: boolean;
-  }) => {
-    if (!branchLane) return;
-    if (branchLane.status.dirty) {
-      setBranchCheckoutError(`Cannot switch branches while ${branchLane.name} has uncommitted changes. Commit, stash, or discard changes first.`);
-      return;
-    }
-    const mode = request.mode ?? "existing";
-    const branchName = request.branchName.trim();
-    if (!branchName) return;
-    setBranchCheckoutBusy(true);
-    setBranchCheckoutError(null);
-    let succeeded = false;
-    try {
-      if (!request.acknowledgeActiveWork) {
-        const preview = await window.ade.lanes.previewBranchSwitch({
-          laneId: branchLane.id,
-          branchName,
-          mode,
-          startPoint: request.startPoint,
-          baseRef: request.baseRef,
-        });
-        if (preview.duplicateLaneId) {
-          throw new Error(`Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`);
-        }
-        if (preview.dirty) {
-          throw new Error(`Cannot switch branches while ${branchLane.name} has uncommitted changes.`);
-        }
-        if (preview.activeWork.length > 0) {
-          setPendingBranchSwitch({
-            branchName,
-            mode,
-            startPoint: request.startPoint,
-            baseRef: request.baseRef,
-            activeWork: preview.activeWork,
-          });
-          return;
-        }
-      }
-      await window.ade.git.checkoutBranch({
-        laneId: branchLane.id,
-        branchName,
-        mode,
-        startPoint: request.startPoint,
-        baseRef: request.baseRef,
-        acknowledgeActiveWork: request.acknowledgeActiveWork,
-      });
-      await refreshLanes();
-      const updated = await window.ade.git.listBranches({ laneId: branchLane.id });
-      setLaneBranches(updated);
-      setPendingBranchSwitch(null);
-      setNewBranchName("");
-      succeeded = true;
-    } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      setBranchCheckoutError(formatBranchCheckoutError(raw, branchLane.name));
-    } finally {
-      setBranchCheckoutBusy(false);
-      if (succeeded) setBranchDropdownOpen(false);
-    }
-  }, [branchLane, refreshLanes]);
-
   const archiveManagedLanes = async () => {
-    const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
+    // The dialog lists `managedLanes`, so act on exactly those. The selected
+    // lane is only a fallback for callers that never set them.
+    const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
     await runLaneAction(async () => {
@@ -1625,32 +1165,22 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   };
 
   const moveAwayFromDeletingLanes = useCallback((laneIds: string[]) => {
-    const allDeletingLaneIds = new Set([...deletingLaneIds, ...laneIds]);
-    const selection = resolveLaneDeleteStartSelection({
-      deletingLaneIds: allDeletingLaneIds,
+    const nextLaneId = resolveLaneSelectionAfterDelete({
+      deletingLaneIds: new Set([...deletingLaneIds, ...laneIds]),
       selectedLaneId,
-      activeLaneIds,
-      pinnedLaneIds,
-      filteredLaneIds,
-      sortedLaneIds: sortedSelectableLaneIds,
+      candidateLaneIds: [...filteredLaneIds, ...sortedSelectableLaneIds],
     });
-    setPinnedLaneIds(selection.pinnedLaneIds);
-    setActiveLaneIds(selection.activeLaneIds);
-    selectLane(selection.selectedLaneId);
+    selectLane(nextLaneId);
     for (const laneId of laneIds) {
       clearLaneInspectorTab(laneId);
     }
-    const nextSearch = selection.selectedLaneId
-      ? `?laneId=${encodeURIComponent(selection.selectedLaneId)}`
-      : "";
+    const nextSearch = nextLaneId ? `?laneId=${encodeURIComponent(nextLaneId)}` : "";
     navigate(`/lanes${nextSearch}`, { replace: true });
   }, [
-    activeLaneIds,
     clearLaneInspectorTab,
     deletingLaneIds,
     filteredLaneIds,
     navigate,
-    pinnedLaneIds,
     selectLane,
     selectedLaneId,
     sortedSelectableLaneIds,
@@ -1726,7 +1256,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [active, activeProjectRoot, appStore, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
 
   const deleteManagedLanes = async () => {
-    const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
+    const targets = managedLanes.length > 0 ? managedLanes : managedLane ? [managedLane] : [];
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
 
@@ -1759,6 +1289,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     laneDeleteWarningMessagesRef.current.clear();
     setLaneActionError(null);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+    setMultiSelectedLaneIds(EMPTY_LANE_ID_SET);
     moveAwayFromDeletingLanes(laneIds);
 
     void (async () => {
@@ -1811,145 +1342,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     })();
   };
 
-  const openBatchManage = useCallback((laneIds: string[]) => {
+  const openBatchManage = useCallback((laneIds: string[], initialTab: ManageLaneTab | null = null) => {
     const manageable = laneIds.filter((id) => {
       const lane = lanesById.get(id);
       return lane && lane.laneType !== "primary" && !deletingLaneIds.has(id);
     });
     if (manageable.length === 0) return;
+    setManageInitialTab(initialTab);
     setManagedLaneIds(manageable);
     setLaneActionError(null);
     setDeleteForce(true);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [lanesById, deletingLaneIds]);
-
-  const handleLaneSelect = useCallback((laneId: string, args: { extend: boolean }) => {
-    if (deletingLaneIds.has(laneId)) return;
-    const lane = lanesById.get(laneId);
-    if (!lane) return;
-
-    if (!args.extend) {
-      const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id) && !deletingLaneIds.has(id));
-      setActiveLaneIds(mergeUnique([laneId], pinned));
-      selectLane(laneId);
-      return;
-    }
-
-    const isPinned = pinnedLaneIds.has(laneId);
-    const isActive = activeWithPins.includes(laneId);
-    if (isPinned && isActive) {
-      selectLane(laneId);
-      return;
-    }
-
-    const next = isActive ? activeWithPins.filter((id) => id !== laneId) : [...activeWithPins, laneId];
-    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id));
-    setActiveLaneIds(mergeUnique(next.length ? next : [laneId], pinned));
-    selectLane(laneId);
-  }, [deletingLaneIds, lanesById, pinnedLaneIds, activeWithPins, selectLane]);
-
-  const handleStartChatWithLinearIssue = useCallback((laneId: string, issue: LaneLinearIssue) => {
-    if (deletingLaneIds.has(laneId) || !lanesById.has(laneId)) return;
-    const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id) && !deletingLaneIds.has(id));
-    setActiveLaneIds(mergeUnique([laneId], pinned));
-    selectLane(laneId);
-    setStackGraphHeaderOpen(false);
-    setLaneWorkViewState(activeProjectRoot, laneId, (prev) => ({
-      ...prev,
-      draftKind: "chat",
-      viewMode: "tabs",
-      activeItemId: null,
-      selectedItemId: null,
-    }));
-    setLinearIssueChatContextRequest({
-      laneId,
-      issue,
-      requestedAt: Date.now(),
-    });
-    navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
-  }, [activeProjectRoot, deletingLaneIds, lanesById, navigate, pinnedLaneIds, selectLane, setLaneWorkViewState]);
-
-  // Open a specific agent (chat or CLI) in the Work tab of its lane, from any
-  // of the inline lane dashboards (stack drawer, graph card, lane list row).
-  const handleOpenAgent = useCallback((agent: LaneAgent) => {
-    const laneId = agent.laneId;
-    if (deletingLaneIds.has(laneId) || !lanesById.has(laneId)) return;
-    const pinned = Array.from(pinnedLaneIds).filter((id) => id !== laneId && lanesById.has(id) && !deletingLaneIds.has(id));
-    setActiveLaneIds(mergeUnique([laneId], pinned));
-    selectLane(laneId);
-    setStackGraphHeaderOpen(false);
-    setLaneWorkViewState(activeProjectRoot, laneId, (prev) => ({
-      ...prev,
-      viewMode: "tabs",
-      openItemIds: prev.openItemIds.includes(agent.sessionId)
-        ? prev.openItemIds
-        : [...prev.openItemIds, agent.sessionId],
-      activeItemId: agent.sessionId,
-      selectedItemId: agent.sessionId,
-    }));
-    navigate(openAgentInWorkTabPath(laneId, agent.sessionId));
-  }, [activeProjectRoot, deletingLaneIds, lanesById, navigate, pinnedLaneIds, selectLane, setLaneWorkViewState]);
-
-  const removeSplitLane = useCallback((laneId: string) => {
-    if (pinnedLaneIds.has(laneId)) return;
-    const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id) && !deletingLaneIds.has(id));
-    const next = activeWithPins.filter((id) => id !== laneId);
-    const normalized = mergeUnique(next, pinned);
-    setActiveLaneIds(normalized);
-    if (!normalized.includes(selectedLaneId ?? "")) {
-      selectLane(normalized[0] ?? null);
-    }
-  }, [pinnedLaneIds, lanesById, deletingLaneIds, activeWithPins, selectedLaneId, selectLane]);
-
-  const togglePinnedLane = useCallback((laneId: string) => {
-    const lane = lanesById.get(laneId);
-    if (!lane || lane.laneType === "primary" || deletingLaneIds.has(laneId)) return;
-    const isPinned = pinnedLaneIds.has(laneId);
-    setPinnedLaneIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(laneId)) next.delete(laneId);
-      else next.add(laneId);
-      return next;
-    });
-    if (!isPinned) {
-      setActiveLaneIds((prev) => mergeUnique(prev, [laneId]));
-    }
-  }, [lanesById, deletingLaneIds, pinnedLaneIds]);
-
-  const resetGridLayout = useCallback(async (preferredLaneId?: string | null) => {
-    const selectedVisibleLane =
-      preferredLaneId && lanesById.has(preferredLaneId) && !deletingLaneIds.has(preferredLaneId)
-        ? preferredLaneId
-        : selectedLaneId && lanesById.has(selectedLaneId) && !deletingLaneIds.has(selectedLaneId)
-          ? selectedLaneId
-          : visibleLaneIds[0] ?? selectableFilteredLaneIds[0] ?? sortedSelectableLaneIds[0] ?? null;
-    if (selectedVisibleLane) {
-      setPinnedLaneIds(new Set());
-      setActiveLaneIds([selectedVisibleLane]);
-      selectLane(selectedVisibleLane);
-    }
-    const promises: Promise<void>[] = [];
-    const laneIdsToReset = new Set<string>([
-      ...selectableFilteredLaneIds,
-      ...visibleLaneIds,
-      ...activeLaneIds,
-    ]);
-    if (selectedVisibleLane) laneIdsToReset.add(selectedVisibleLane);
-    for (const laneId of laneIdsToReset) {
-      for (const layoutKey of laneTilingLayoutIds(laneId)) {
-        promises.push(
-          window.ade.layout.set(layoutKey, {}).catch(() => {}),
-          window.ade.tilingTree.set(layoutKey, {}).catch(() => {})
-        );
-      }
-    }
-    /* Also reset lane column widths */
-    promises.push(window.ade.layout.set("lanes:columns:v1", {}).catch(() => {}));
-    await Promise.all(promises);
-    /* Force full remount so default sizes/trees take effect */
-    setGridResetKey((k) => k + 1);
-  }, [activeLaneIds, selectableFilteredLaneIds, lanesById, deletingLaneIds, selectLane, selectedLaneId, sortedSelectableLaneIds, visibleLaneIds]);
 
   const requestRebaseScope = useCallback((laneId: string) => {
     const laneName = lanesById.get(laneId)?.name ?? laneId;
@@ -2013,52 +1418,60 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope]);
 
-  const hideRebaseSuggestionLocally = useCallback((laneId: string) => {
-    appStore.setState((prev) => ({
-      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
-        snapshot.lane.id === laneId ? { ...snapshot, rebaseSuggestion: null } : snapshot
-      ),
-    }));
-  }, [appStore]);
+  // Group header bulk actions. Archive and delete go through the same batch
+  // manage dialog as Cmd-click (it lists the lanes and confirms); rebase has
+  // its own confirm step. Primary is never in a group, and is filtered again.
+  const handleGroupBulkAction = useCallback((action: LaneGroupBulkAction, laneIds: string[]) => {
+    if (action === "rebase") {
+      const targets = laneIds.filter((id) => {
+        const lane = lanesById.get(id);
+        return lane && lane.laneType !== "primary" && !deletingLaneIds.has(id);
+      });
+      if (targets.length > 0) setBulkRebaseLaneIds(targets);
+      return;
+    }
+    openBatchManage(laneIds, action);
+  }, [deletingLaneIds, lanesById, openBatchManage]);
 
-  const hideAutoRebaseStatusLocally = useCallback((laneId: string) => {
-    appStore.setState((prev) => ({
-      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
-        snapshot.lane.id === laneId ? { ...snapshot, autoRebaseStatus: null } : snapshot
-      ),
-    }));
-  }, [appStore]);
+  // One lane of "Rebase all": the rebase the Git pane's "Rebase now" runs,
+  // scoped to this lane only and without a push.
+  const rebaseLaneForBulk = useCallback(async (laneId: string): Promise<string | null> => {
+    const start = await window.ade.lanes.rebaseStart({ laneId, scope: "lane_only", pushMode: "none", actor: "user" });
+    if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
+      return start.run.error ?? "Rebase failed.";
+    }
+    return null;
+  }, []);
 
-  const restoreRebaseSuggestionLocally = useCallback((laneId: string, suggestion: LaneListSnapshot["rebaseSuggestion"]) => {
-    if (!suggestion) return;
-    appStore.setState((prev) => ({
-      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
-        snapshot.lane.id === laneId && snapshot.rebaseSuggestion == null
-          ? { ...snapshot, rebaseSuggestion: suggestion }
-          : snapshot
-      ),
-    }));
-  }, [appStore]);
+  const bulkRebaseTargets = useMemo((): LaneBulkRebaseTarget[] => {
+    if (!bulkRebaseLaneIds) return [];
+    return bulkRebaseLaneIds.flatMap((laneId) => {
+      const lane = lanesById.get(laneId);
+      if (!lane) return [];
+      const behind = Math.max(lane.status.behind, laneSnapshotByLaneId.get(laneId)?.rebaseSuggestion?.behindCount ?? 0);
+      return [{ lane, colorIndex: colorIndexByLaneId.get(laneId) ?? 0, behind }];
+    });
+  }, [bulkRebaseLaneIds, colorIndexByLaneId, laneSnapshotByLaneId, lanesById]);
 
-  const restoreAutoRebaseStatusLocally = useCallback((laneId: string, status: LaneListSnapshot["autoRebaseStatus"]) => {
-    if (!status) return;
+  const patchLaneSnapshot = useCallback((
+    laneId: string,
+    patch: (snapshot: LaneListSnapshot) => LaneListSnapshot,
+  ) => {
     appStore.setState((prev) => ({
-      laneSnapshots: prev.laneSnapshots.map((snapshot) =>
-        snapshot.lane.id === laneId && snapshot.autoRebaseStatus == null
-          ? { ...snapshot, autoRebaseStatus: status }
-          : snapshot
-      ),
+      laneSnapshots: prev.laneSnapshots.map((snapshot) => (snapshot.lane.id === laneId ? patch(snapshot) : snapshot)),
     }));
   }, [appStore]);
 
   const dismissRebaseSuggestion = async (laneId: string) => {
     const previous = appStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.rebaseSuggestion ?? null;
     setRebaseSuggestionError(null);
-    hideRebaseSuggestionLocally(laneId);
+    patchLaneSnapshot(laneId, (snapshot) => ({ ...snapshot, rebaseSuggestion: null }));
     try {
       await window.ade.lanes.dismissRebaseSuggestion({ laneId });
     } catch (err) {
-      restoreRebaseSuggestionLocally(laneId, previous);
+      if (previous) {
+        patchLaneSnapshot(laneId, (snapshot) => (snapshot.rebaseSuggestion == null ? { ...snapshot, rebaseSuggestion: previous } : snapshot));
+      }
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
     }
   };
@@ -2066,11 +1479,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const dismissAutoRebaseStatus = async (laneId: string) => {
     const previous = appStore.getState().laneSnapshots.find((snapshot) => snapshot.lane.id === laneId)?.autoRebaseStatus ?? null;
     setRebaseSuggestionError(null);
-    hideAutoRebaseStatusLocally(laneId);
+    patchLaneSnapshot(laneId, (snapshot) => ({ ...snapshot, autoRebaseStatus: null }));
     try {
       await window.ade.lanes.dismissAutoRebaseStatus({ laneId });
     } catch (err) {
-      restoreAutoRebaseStatusLocally(laneId, previous);
+      if (previous) {
+        patchLaneSnapshot(laneId, (snapshot) => (snapshot.autoRebaseStatus == null ? { ...snapshot, autoRebaseStatus: previous } : snapshot));
+      }
       setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
     }
   };
@@ -2102,7 +1517,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     navigate(`/prs?${search.toString()}`);
   }, [navigate]);
 
-  /* ---- Detail handlers ---- */
+  /* ---- Git pane selection ---- */
 
   const handleSelectFile = useCallback((laneId: string, path: string, mode: "staged" | "unstaged") => {
     setLanePaneDetails((prev) => ({
@@ -2125,21 +1540,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setLanePaneDetails((prev) => ({ ...prev, [laneId]: EMPTY_LANE_PANE_DETAIL }));
   }, []);
 
-  /* ---- Create lane submit handlers ---- */
+  /* ---- Create / manage dialogs ---- */
 
-  // Open the create-lane host with an optional prefill. The host seeds itself
-  // (branch loading, templates, defaults) when `open` flips true, so LanesPage
-  // only tracks the open flag + prefill.
   const openCreateDialog = useCallback((prefill?: CreateLanePrefill | null) => {
     setCreatePrefill(prefill ?? null);
     setCreateOpen(true);
   }, []);
 
-  // Deep link handling: must not re-run on lane list refreshes, or a stale
-  // ?laneId / focus=single from the URL overwrites the user's current tab/split
-  // selection. Multi-lane ?laneIds= re-tries as `availableLaneIds` changes.
+  // Deep links must not re-run on lane list refreshes, or a stale ?laneId from
+  // the URL would overwrite the user's current selection. Multi-lane
+  // ?laneIds= re-tries as `availableLaneIds` changes.
 
   useEffect(() => {
+    if (!active) return;
     if (urlLaneDeeplinks.action !== "create") return;
     openCreateDialog();
     const next = new URLSearchParams(location.search);
@@ -2152,12 +1565,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     navigate,
     openCreateDialog,
     urlLaneDeeplinks.action,
+    active,
   ]);
 
   // ?action=manage&laneId=X opens ManageLaneDialog for that lane. Used by other
-  // pages (graph, PR cleanup, Work-tab lane right-click) to route through the
-  // canonical delete surface.
+  // pages (PR cleanup, Work-tab lane right-click) to reach the canonical delete
+  // surface.
   useEffect(() => {
+    if (!active) return;
     if (urlLaneDeeplinks.action !== "manage") return;
     const targetId = urlLaneDeeplinks.laneId;
     if (!targetId) return;
@@ -2169,10 +1584,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
     setPulsingLaneId(targetId);
-    // Scrub the action param so refreshes don't re-open.
     navigate(`${location.pathname}${buildLaneActionClearedSearch(location.search)}`, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById, deletingLaneIds]);
+  }, [active, urlLaneDeeplinks.action, urlLaneDeeplinks.laneId, lanesById, deletingLaneIds]);
 
   // Clear the pulse marker shortly after it is set so the animation can replay.
   useEffect(() => {
@@ -2181,39 +1595,26 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return () => window.clearTimeout(t);
   }, [pulsingLaneId]);
 
-  // Handle additional Work-tab right-click actions that route to the Lanes tab.
+  // Work-tab lane menu actions that route here. The split/tab actions are gone
+  // with the lane columns; opening one now just selects the lane.
   useEffect(() => {
+    if (!active) return;
     const action = urlLaneDeeplinks.action;
-    if (!action) return;
+    if (!action || action === "create" || action === "manage") return;
     const laneId = urlLaneDeeplinks.laneId;
     let handled = false;
-    if (action === "split-open" && laneId) {
+    if ((action === "split-open" || action === "split-close-others") && laneId) {
       if (!deletingLaneIds.has(laneId) && lanesById.has(laneId)) {
-        const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
-        setActiveLaneIds((prev) => mergeUnique(prev, [laneId], pinned));
-        selectLane(laneId);
+        selectDetailLane(laneId);
         handled = true;
       }
-    } else if (action === "split-remove" && laneId) {
-      removeSplitLane(laneId);
-      handled = true;
-    } else if (action === "split-close-others" && laneId) {
-      const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
-      setActiveLaneIds(mergeUnique([laneId], pinned));
-      selectLane(laneId);
-      handled = true;
-    } else if (action === "select-all") {
-      const allIds = filteredLanes.map((lane) => lane.id);
-      setActiveLaneIds(allIds);
+    } else if (action === "split-remove" || action === "select-all") {
       handled = true;
     } else if (action === "batch") {
-      const raw = urlLaneDeeplinks.laneIdsRaw;
-      if (raw) {
-        const ids = raw.split(",").map((id) => id.trim()).filter(Boolean);
-        if (ids.length > 0) {
-          openBatchManage(ids);
-          handled = true;
-        }
+      const ids = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim()).filter(Boolean);
+      if (ids.length > 0) {
+        openBatchManage(ids);
+        handled = true;
       }
     }
     if (!handled) return;
@@ -2226,11 +1627,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.laneIdsRaw,
     lanesById,
     deletingLaneIds,
-    pinnedLaneIds,
-    filteredLanes,
+    active,
   ]);
 
   useEffect(() => {
+    if (!active) return;
     if (!shouldApplyLaneIdsDeepLink({
       action: urlLaneDeeplinks.action,
       laneIdsRaw: urlLaneDeeplinks.laneIdsRaw,
@@ -2243,15 +1644,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
     if (laneIdsSelection) {
       consumedLaneIdsDeepLinkSignatureRef.current = laneIdsSelection.signature;
-      const valid = laneIdsSelection.laneIds;
-      selectLane(valid[0]!);
-      setActiveLaneIds(valid);
-      setPinnedLaneIds(new Set());
-      if (urlLaneDeeplinks.inspectorTab && valid[0]) {
-        setLaneInspectorTab(valid[0], urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
+      const first = laneIdsSelection.laneIds[0]!;
+      selectLane(first);
+      if (urlLaneDeeplinks.inspectorTab) {
+        setLaneInspectorTab(first, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
       }
     }
   }, [
+    active,
     availableLaneIds,
     selectLane,
     setLaneInspectorTab,
@@ -2261,6 +1661,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   ]);
 
   useEffect(() => {
+    if (!active) return;
     if (urlLaneDeeplinks.action) return;
     if (urlLaneDeeplinks.laneIdsRaw) return;
     consumedLaneIdsDeepLinkSignatureRef.current = null;
@@ -2268,23 +1669,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!laneId) return;
     if (deletingLaneIds.has(laneId)) return;
     selectLane(laneId);
-    if (urlLaneDeeplinks.focus === "single") {
-      setActiveLaneIds([laneId]);
-    }
     if (urlLaneDeeplinks.inspectorTab) {
       setLaneInspectorTab(laneId, urlLaneDeeplinks.inspectorTab as LaneInspectorTab);
     }
   }, [
+    active,
     urlLaneDeeplinks.action,
     urlLaneDeeplinks.laneIdsRaw,
     urlLaneDeeplinks.laneId,
-    urlLaneDeeplinks.focus,
     urlLaneDeeplinks.inspectorTab,
     deletingLaneIds,
     selectLane,
     setLaneInspectorTab,
   ]);
 
+  // ?laneId=X&commitSha=Y selects that commit in the lane's Git pane.
   useEffect(() => {
     if (!active) return;
     if (urlLaneDeeplinks.action) return;
@@ -2303,8 +1702,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     consumedCommitDeepLinkSignatureRef.current = signature;
 
     selectLane(laneId);
-    setActiveLaneIds((prev) => mergeUnique([laneId], prev));
-    setExpandedGitActionsLaneId(laneId);
 
     let cancelled = false;
     void window.ade.git
@@ -2350,53 +1747,34 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     focusSession(urlLaneDeeplinks.sessionId);
   }, [urlLaneDeeplinks.sessionId, focusSession]);
 
-  // ?drawer=stack opens the stack drawer (used after a Linear batch launch so
-  // the freshly created lanes + agents are visible). Scrub the param so it does
-  // not re-open on refresh.
-  useEffect(() => {
-    if (urlLaneDeeplinks.drawer !== "stack") return;
-    setStackGraphHeaderOpen(true);
-    const next = new URLSearchParams(location.search);
-    next.delete("drawer");
-    const search = next.toString();
-    navigate(`${location.pathname}${search ? `?${search}` : ""}`, { replace: true });
-  }, [urlLaneDeeplinks.drawer, location.pathname, location.search, navigate]);
-
-  // Consume the "just launched" highlight and pulse the new agents for a beat.
+  // Consume the "just launched" marker so new lanes show a spinner until
+  // their headless agent session lands. A safety TTL drops the marker even if
+  // the session never surfaces (e.g. the launch failed after the lane existed).
   useEffect(() => {
     const apply = (highlight: { laneIds: string[]; sessionIds: string[] }) => {
-      if (highlight.laneIds.length) {
-        // Mark the new lanes as "creating" so their tabs show a spinner until the
-        // headless agent session lands. A safety TTL drops the marker even if the
-        // session never surfaces (e.g. launch failed after the lane was created).
-        const newLaneIds = highlight.laneIds;
+      if (!highlight.laneIds.length) return;
+      const newLaneIds = highlight.laneIds;
+      setCreatingLaneIds((prev) => {
+        const next = new Set(prev);
+        for (const laneId of newLaneIds) next.add(laneId);
+        return next;
+      });
+      window.setTimeout(() => {
         setCreatingLaneIds((prev) => {
+          if (!newLaneIds.some((id) => prev.has(id))) return prev;
           const next = new Set(prev);
-          for (const laneId of newLaneIds) next.add(laneId);
+          for (const laneId of newLaneIds) next.delete(laneId);
           return next;
         });
-        window.setTimeout(() => {
-          setCreatingLaneIds((prev) => {
-            if (!newLaneIds.some((id) => prev.has(id))) return prev;
-            const next = new Set(prev);
-            for (const laneId of newLaneIds) next.delete(laneId);
-            return next;
-          });
-        }, 30_000);
-      }
-      if (!highlight.sessionIds.length) return;
-      setStackGraphHeaderOpen(true);
-      setHighlightedSessionIds(new Set(highlight.sessionIds));
-      window.setTimeout(() => setHighlightedSessionIds(new Set()), 6000);
+      }, 30_000);
     };
     const pending = consumeLaunchedLanesHighlight();
     if (pending) apply(pending);
     return subscribeLaunchedLanesHighlight(apply);
   }, []);
 
-  // Drop the "creating" marker once a lane has a live agent session (the headless
-  // kickoff has surfaced), or when the lane is gone. This is what makes the
-  // placeholder resolve into the real lane tab automatically.
+  // Drop the "creating" marker once a lane has a live agent session, or when
+  // the lane is gone.
   useEffect(() => {
     if (creatingLaneIds.size === 0) return;
     setCreatingLaneIds((prev) => {
@@ -2413,27 +1791,22 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
   }, [creatingLaneIds, laneRuntimeById, lanesById]);
 
-  // Keep the optimistic issue-keyed placeholders (spinner tabs that appear
-  // before the real lanes exist) in sync with the launcher's store.
   useEffect(() => {
     setCreatingIssues(consumeCreatingIssues());
     return subscribeCreatingIssues(setCreatingIssues);
   }, []);
 
-  // Index real lanes by the Linear issue they carry so a placeholder can resolve
-  // into its real tab the moment that lane materializes.
+  // Index real lanes by the Linear issue they carry so a placeholder row can
+  // resolve into its real lane the moment that lane materializes.
   const laneIdByLinearIssueId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const lane of sortedLanes) {
+    for (const lane of dedupedLanes) {
       const issueId = lane.linearIssue?.id;
       if (issueId && !map.has(issueId)) map.set(issueId, lane.id);
     }
     return map;
-  }, [sortedLanes]);
+  }, [dedupedLanes]);
 
-  // Placeholders still waiting for their real lane — anything already matched by
-  // a real lane is dropped (and cleared from the store defensively, in case the
-  // launcher hasn't called clearCreatingIssue yet).
   const pendingCreatingIssues = useMemo(
     () => creatingIssues.filter((placeholder) => !laneIdByLinearIssueId.has(placeholder.issueId)),
     [creatingIssues, laneIdByLinearIssueId],
@@ -2448,22 +1821,23 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateOpen(open);
   }, []);
 
-  // Blocked by the dialog bus while a create/setup is in flight (parity with the
-  // old busy guard); the host owns the busy state and mirrors it into the ref.
+  // Blocked by the dialog bus while a create/setup is in flight; the host owns
+  // the busy state and mirrors it into the ref.
   const handleCreateDialogBusClose = useCallback(() => {
     if (createBusyRef.current) return;
     setCreateOpen(false);
   }, []);
 
-  // After the lane record exists + list is refreshed, focus the new lane (the
-  // host still streams env-setup progress in the dialog in stay-open mode).
+  // After the lane record exists and the list is refreshed, select the new
+  // lane (the host keeps streaming env-setup progress in the dialog).
   const handleLaneCreated = useCallback((lane: LaneSummary) => {
-    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
+    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
   }, [navigate]);
 
   const openManageDialog = useCallback((laneId: string) => {
     if (deletingLaneIds.has(laneId)) return;
     selectLane(laneId);
+    setManageInitialTab(null);
     setManagedLaneIds([laneId]);
     setLaneActionError(null);
     setDeleteForce(true);
@@ -2472,7 +1846,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [deletingLaneIds, selectLane]);
 
   const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
-    setStackGraphHeaderOpen(false);
     const name = typeof props?.name === "string" ? props.name.trim() : "";
     openCreateDialog(name ? { name } : null);
   }, [openCreateDialog]);
@@ -2481,7 +1854,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const requestedLaneId = typeof props?.laneId === "string" ? props.laneId : null;
     const requested = requestedLaneId ? lanesById.get(requestedLaneId) ?? null : null;
     const selected = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
-    const fallback = sortedLanes.find((lane) => lane.laneType !== "primary") ?? null;
+    const fallback = dedupedLanes.find((lane) => lane.laneType !== "primary") ?? null;
     const target =
       requested && requested.laneType !== "primary"
         ? requested
@@ -2490,7 +1863,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           : fallback;
     if (!target) return;
     openManageDialog(target.id);
-  }, [lanesById, openManageDialog, selectedLaneId, sortedLanes]);
+  }, [dedupedLanes, lanesById, openManageDialog, selectedLaneId]);
 
   useDialogBus("lanes.create", {
     onOpen: handleCreateDialogBusOpen,
@@ -2502,1206 +1875,173 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     onClose: () => setManageOpen(false),
   });
 
-  /* ---- Pane configs ---- */
-
-  const getPaneConfigs = useCallback((laneId: string | null, surface: LanePaneSurface = "inline") => {
-    const laneDetail = laneId ? lanePaneDetails[laneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
-    const laneSnapshot = laneId ? laneSnapshotByLaneId.get(laneId) ?? null : null;
-    const pendingLinearIssueContext =
-      laneId && linearIssueChatContextRequest?.laneId === laneId
-        ? linearIssueChatContextRequest
-        : null;
-    const lane = laneId ? lanesById.get(laneId) ?? null : null;
-    const lanePrs = lane ? selectLanePrs(lane, lanePrTags) : [];
-    const mountGitActionsPane = shouldMountGitActionsPane({
-      laneId,
-      expandedGitActionsLaneId,
-      surface,
-    });
-    const gitActionsDelayMs = surface === "inline"
-      ? getDeferredLanePaneDelayMs({ laneId, visibleLaneIds })
-      : 0;
-    return {
-      "git-actions": {
-        title: "Git Actions",
-        icon: FileCode,
-        dataTour: "lanes.gitActionsPane",
-        headerActions: (
-          <>
-            {laneId ? (
-              <SmartTooltip content={{ label: expandedGitActionsLaneId === laneId ? "Minimize" : "Expand", description: expandedGitActionsLaneId === laneId ? "Minimize the Git Actions pane back to its default size." : "Expand the Git Actions pane to fill the available space." }}>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-5 w-5 p-0"
-                  title={expandedGitActionsLaneId === laneId ? "Minimize Git Actions pane" : "Expand Git Actions pane"}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setExpandedLaneId(null);
-                    setExpandedGitActionsLaneId((prev) => (prev === laneId ? null : laneId));
-                  }}
-                >
-                  {expandedGitActionsLaneId === laneId ? <ArrowsInSimple size={12} /> : <ArrowsOutSimple size={12} />}
-                </Button>
-              </SmartTooltip>
-            ) : null}
-          </>
-        ),
-        bodyClassName: "overflow-hidden",
-        children: null,
-        renderChildren: ({ minimized }: { minimized: boolean }) => mountGitActionsPane ? (
-          <DeferredLanePane cacheKey={`git:${laneId ?? "none"}`} label="git actions" delayMs={gitActionsDelayMs}>
-            <LaneGitActionsPane
-              laneId={laneId}
-              active={!minimized}
-              autoRebaseEnabled={autoRebaseEnabled}
-              autoRebaseStatusSnapshot={laneSnapshot?.autoRebaseStatus}
-              onOpenSettings={openAutoRebaseSettings}
-              onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
-              onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
-              onViewRebaseDetails={openRebaseDetails}
-              onResolveRebaseConflict={openRebaseConflictResolver}
-              selectedPath={laneDetail.selectedFilePath}
-              selectedMode={laneDetail.selectedFileMode}
-              selectedCommit={laneDetail.selectedCommit ?? null}
-              selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
-              onSelectFile={(path, mode) => { if (laneId) handleSelectFile(laneId, path, mode); }}
-              onSelectCommit={(commit) => { if (laneId) handleSelectCommit(laneId, commit); }}
-              onClearDiffSelection={laneId ? () => handleClearLanePaneDetailSelection(laneId) : undefined}
-            />
-          </DeferredLanePane>
-        ) : null
-      },
-      "work": {
-        title: "Work",
-        icon: Terminal as any,
-        bodyClassName: "overflow-hidden",
-        dataTour: "lanes.workPane",
-        hideHeaderWhenExpanded: true,
-        children: null,
-        renderChildren: ({ minimized }: { minimized: boolean }) => {
-          const mountWorkPane = !minimized && !(surface === "inline" && laneId != null && expandedLaneId === laneId);
-          return mountWorkPane ? (
-            <DeferredLanePane cacheKey={`work:${laneId ?? "none"}`} label="work">
-              <LaneWorkPane
-                laneId={laneId}
-                lanePrs={lanePrs}
-                initialLinearIssueContext={pendingLinearIssueContext?.issue ?? null}
-                onInitialLinearIssueContextConsumed={
-                  pendingLinearIssueContext
-                    ? () => {
-                      setLinearIssueChatContextRequest((current) => (
-                        current?.laneId === pendingLinearIssueContext.laneId
-                        && current.requestedAt === pendingLinearIssueContext.requestedAt
-                          ? null
-                          : current
-                      ));
-                    }
-                    : undefined
-                }
-              />
-            </DeferredLanePane>
-          ) : null;
-        },
-      },
-    };
-  }, [
-    lanePaneDetails,
-    laneSnapshotByLaneId,
-    linearIssueChatContextRequest,
-    expandedGitActionsLaneId,
-    expandedLaneId,
-    visibleLaneIds,
-    autoRebaseEnabled,
-    openAutoRebaseSettings,
-    runRebaseFlow,
-    openRebaseDetails,
-    openRebaseConflictResolver,
-    handleSelectFile,
-    handleSelectCommit,
-    handleClearLanePaneDetailSelection,
-    lanesById,
-    lanePrTags,
-  ]);
+  const refreshLaneAppearance = useCallback(() => refreshLanes({ includeStatus: false }).catch(() => {}), [refreshLanes]);
+  const clearMultiSelection = useCallback(() => setMultiSelectedLaneIds(EMPTY_LANE_ID_SET), []);
+  const closeContextMenu = useCallback(() => setLaneContextMenu(null), []);
+  const multiSelectedList = useMemo(() => [...multiSelectedLaneIds], [multiSelectedLaneIds]);
 
   /* ---- Render ---- */
 
+  const laneList = (
+    <LaneSidebarList
+      layout={sidebarLayout}
+      onGroupByChange={setLaneGroupBy}
+      collapsedGroupIds={laneCollapsedGroupSet}
+      onToggleGroupCollapsed={toggleLaneGroupCollapsed}
+      onGroupBulkAction={handleGroupBulkAction}
+      colorIndexByLaneId={colorIndexByLaneId}
+      needsYouReasonByLaneId={needsYouReasonByLaneId}
+      selectedLaneId={detailLaneId}
+      multiSelectedLaneIds={multiSelectedLaneIds}
+      filter={laneFilter}
+      onFilterChange={setLaneFilter}
+      canCreateLane={canCreateLane}
+      onCreateLane={() => openCreateDialog()}
+      loading={lanesLoading}
+      totalLaneCount={dedupedLanes.length}
+      laneRuntimeById={laneRuntimeById}
+      laneSnapshotByLaneId={laneSnapshotByLaneId}
+      agentsByLaneId={agentsByLaneId}
+      lanePrTagsByLaneId={lanePrTagsByLaneId}
+      deleteProgressByLaneId={deleteProgressByLaneId}
+      creatingLaneIds={creatingLaneIds}
+      pendingCreatingIssues={pendingCreatingIssues}
+      pulsingLaneId={pulsingLaneId}
+      onSelectRow={handleRowSelect}
+      onStepSelection={stepLaneSelection}
+      isNextKey={isNextKey}
+      isPrevKey={isPrevKey}
+      onContextMenu={handleRowContextMenu}
+      onOpenPr={handleOpenPr}
+      onOpenAgent={handleOpenAgent}
+      onClearMultiSelection={clearMultiSelection}
+    />
+  );
+
+  const laneDetail = detailLaneId && detailLane ? lanePaneDetails[detailLaneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
+
   return (
-    <div data-route="lanes" className="flex h-full min-w-0 flex-col" style={{ background: COLORS.pageBg }}>
-      {/* Header bar */}
-      <div style={{ padding: "0 24px", height: 64, display: "flex", alignItems: "center", gap: 24, background: COLORS.cardBg, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: `1px solid ${COLORS.border}`, position: "relative", zIndex: 50, overflow: "visible" }}>
-        {/* Numbered title group */}
-        <div className="flex items-center gap-2 shrink-0">
-          <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "1px", color: COLORS.accent }}>05</span>
-          <LaneIcon size={18} style={{ color: COLORS.accent }} />
-          <span style={{ fontFamily: SANS_FONT, fontSize: 20, fontWeight: 700, color: COLORS.textPrimary }}>LANES</span>
-          <span style={inlineBadge(COLORS.accent, { fontSize: 9 })}>{filteredLanes.length}</span>
-        </div>
-
-        {/* Branch selector */}
-        {branchLane ? (
-          <div className="relative shrink-0 flex items-center" ref={branchDropdownRef}>
-            <SmartTooltip
-              content={{
-                label: `Branch — ${branchLane.name}`,
-                description: `Switch ${branchLane.name} to a local or remote branch.`,
-                docUrl: docs.lanesOverview,
-              }}
-              side="bottom"
-            >
-              <button
-                type="button"
-                data-tour="lanes.branchSelector"
-                style={{
-                  display: "inline-flex", alignItems: "center", gap: 8,
-                  padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-                  color: COLORS.success,
-                  background: "rgba(255,255,255,0.03)",
-                  border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8,
-                  cursor: "pointer",
-                }}
-                onClick={() => {
-                  setStackGraphHeaderOpen(false);
-                  setBranchDropdownOpen((prev) => !prev);
-                }}
-                disabled={branchCheckoutBusy}
-              >
-                <BranchIcon size={14} />
-                <span>{branchLane.branchRef}</span>
-                <CaretDown size={12} style={{ opacity: 0.6 }} />
-              </button>
-            </SmartTooltip>
-            {branchDropdownOpen ? (
-              <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-[480px] overflow-hidden flex flex-col" style={{ width: 360, maxWidth: 360, minWidth: 0, padding: "4px 0", border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.cardBgSolid, backdropFilter: "blur(24px) saturate(150%)", WebkitBackdropFilter: "blur(24px) saturate(150%)", boxShadow: "0 24px 56px -20px rgba(0, 0, 0, 0.7)", boxSizing: "border-box" }}>
-                <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
-                  <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
-                  <input
-                    ref={branchSearchInputRef}
-                    type="text"
-                    placeholder="Search branches…"
-                    value={branchSearchQuery}
-                    onChange={(e) => setBranchSearchQuery(e.target.value)}
-                    style={{
-                      width: "100%", padding: "5px 8px 5px 28px", fontSize: 12, fontFamily: MONO_FONT,
-                      color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
-                      border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, outline: "none",
-                    }}
-                    onFocus={(e) => { e.currentTarget.style.borderColor = COLORS.accent; }}
-                    onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; }}
-                  />
-                </div>
-                {newBranchFormOpen ? (
-                  <div style={{ padding: "8px 10px", borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}` }}>
-                    <div style={{ display: "grid", gap: 8 }}>
-                      <div className="flex items-center justify-between">
-                        <div style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>NEW BRANCH</div>
-                        <button
-                          type="button"
-                          onClick={() => { setNewBranchFormOpen(false); setNewBranchName(""); }}
-                          style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, background: "transparent", border: "none", cursor: "pointer", padding: 0 }}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                      <input
-                        type="text"
-                        placeholder="feature/short-name"
-                        value={newBranchName}
-                        onChange={(e) => setNewBranchName(e.target.value)}
-                        aria-invalid={Boolean(newBranchName.trim()) && !branchNameValidation.ok}
-                        autoFocus
-                        style={{
-                          width: "100%", padding: "6px 8px", fontSize: 12, fontFamily: MONO_FONT,
-                          color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
-                          border: `1px solid ${
-                            newBranchName.trim() && !branchNameValidation.ok ? COLORS.danger : COLORS.outlineBorder
-                          }`,
-                          borderRadius: 6, outline: "none",
-                        }}
-                      />
-                      {newBranchName.trim() && branchNameValidation.reason ? (
-                        <div style={{ fontSize: 11, color: COLORS.danger }}>{branchNameValidation.reason}</div>
-                      ) : null}
-                      <label className="flex flex-col gap-1" title="Git branch the new branch is forked from.">
-                        <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>START FROM</span>
-                        <select
-                          value={newBranchStartPoint || branchLane.branchRef}
-                          onChange={(e) => setNewBranchStartPoint(e.target.value)}
-                          style={{
-                            width: "100%", minWidth: 0, maxWidth: "100%", height: 30, fontSize: 12, fontFamily: MONO_FONT,
-                            color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
-                            border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
-                            boxSizing: "border-box", textOverflow: "ellipsis",
-                          }}
-                        >
-                          {startPointOptions.map((opt) => <option key={`start:${opt.value}`} value={opt.value}>{opt.label}</option>)}
-                        </select>
-                        <span style={{ fontSize: 10, color: COLORS.textDim }}>The commit your new branch is forked from.</span>
-                      </label>
-                      <label className="flex flex-col gap-1" title="ADE compares this lane's commits against this base for rebase / merge readiness.">
-                        <span style={{ fontSize: 9, fontFamily: MONO_FONT, fontWeight: 700, letterSpacing: "1px", color: COLORS.textDim }}>REBASE BASE</span>
-                        <select
-                          value={newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef}
-                          onChange={(e) => setNewBranchBaseRef(e.target.value)}
-                          style={{
-                            width: "100%", minWidth: 0, maxWidth: "100%", height: 30, fontSize: 12, fontFamily: MONO_FONT,
-                            color: COLORS.textPrimary, background: "rgba(255,255,255,0.04)",
-                            border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6, padding: "0 8px",
-                            boxSizing: "border-box", textOverflow: "ellipsis",
-                          }}
-                        >
-                          {baseRefOptions.map((name) => <option key={`base:${name}`} value={name}>{name}</option>)}
-                        </select>
-                        <span style={{ fontSize: 10, color: COLORS.textDim }}>What ADE compares this lane against for rebase / merge readiness.</span>
-                      </label>
-                      <button
-                        type="button"
-                        className="flex w-full items-center justify-center gap-2"
-                        style={{
-                          height: 30, border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
-                          background: "rgba(255,255,255,0.05)", color: COLORS.textPrimary,
-                          fontSize: 12, fontFamily: SANS_FONT,
-                          cursor: branchNameValidation.ok && !branchCheckoutBusy ? "pointer" : "not-allowed",
-                          opacity: branchNameValidation.ok && !branchCheckoutBusy ? 1 : 0.5,
-                        }}
-                        disabled={branchCheckoutBusy || !branchNameValidation.ok}
-                        onClick={async () => {
-                          await checkoutLaneBranch({
-                            branchName: newBranchName,
-                            mode: "create",
-                            startPoint: newBranchStartPoint || branchLane.branchRef,
-                            baseRef: newBranchBaseRef || primaryLane?.branchRef || branchLane.baseRef,
-                          });
-                        }}
-                      >
-                        <Plus size={13} />
-                        <span>Create in this lane</span>
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2"
-                    onClick={() => setNewBranchFormOpen(true)}
-                    style={{
-                      padding: "8px 12px", border: "none",
-                      borderTop: `1px solid ${COLORS.border}`, borderBottom: `1px solid ${COLORS.border}`,
-                      background: "transparent", color: COLORS.textSecondary,
-                      fontSize: 12, fontFamily: SANS_FONT, cursor: "pointer", textAlign: "left",
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  >
-                    <Plus size={13} />
-                    <span>New branch…</span>
-                  </button>
-                )}
-                {pendingBranchSwitch ? (
-                  <div style={{ padding: "8px 10px", borderBottom: `1px solid ${COLORS.border}`, background: "color-mix(in srgb, var(--color-warning) 12%, transparent)" }}>
-                    <div style={{ fontSize: 12, color: COLORS.textPrimary, fontWeight: 600 }}>This lane has active work.</div>
-                    <div style={{ marginTop: 2, fontSize: 11, color: COLORS.textMuted }}>Terminals stay attached to this lane and will keep running on the new branch's worktree.</div>
-                    <div style={{ marginTop: 6, display: "grid", gap: 2 }}>
-                      {pendingBranchSwitch.activeWork.slice(0, 3).map((item) => (
-                        <div key={`${item.kind}:${item.id}`} className="truncate" style={{ fontSize: 11, color: COLORS.textSecondary }}>
-                          Terminal: {item.title}
-                        </div>
-                      ))}
-                      {pendingBranchSwitch.activeWork.length > 3 ? (
-                        <div style={{ fontSize: 11, color: COLORS.textDim }}>+ {pendingBranchSwitch.activeWork.length - 3} more</div>
-                      ) : null}
-                    </div>
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        style={{
-                          fontSize: 11, padding: "4px 8px", height: 26,
-                          border: `1px solid ${COLORS.warning}`, borderRadius: 6,
-                          background: "color-mix(in srgb, var(--color-warning) 25%, transparent)", color: COLORS.warning,
-                          fontFamily: SANS_FONT, fontWeight: 600, cursor: "pointer",
-                        }}
-                        onClick={async () => {
-                          await checkoutLaneBranch({ ...pendingBranchSwitch, acknowledgeActiveWork: true });
-                        }}
-                      >
-                        Switch anyway
-                      </button>
-                      <button
-                        type="button"
-                        style={{ ...outlineButton({ fontSize: 11, padding: "4px 8px", height: 26 }) }}
-                        onClick={() => setPendingBranchSwitch(null)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : null}
-                <div className="overflow-auto flex-1" style={{ padding: "2px 0" }}>
-                {laneBranchesLoading && laneBranches.length === 0 ? (
-                  <div style={{ padding: "10px 12px", fontSize: 12, color: COLORS.textMuted }}>Loading branches…</div>
-                ) : null}
-                <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>LOCAL BRANCHES</div>
-                {localLaneBranches.map((branch) => {
-                  const owned = Boolean(branch.ownedByLaneId);
-                  return (
-                  <button
-                    key={`local:${branch.name}`}
-                    type="button"
-                    className="flex w-full items-center gap-2 text-left"
-                    style={{
-                      padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
-                      color: branch.isCurrent ? COLORS.success : COLORS.textMuted,
-                      fontWeight: branch.isCurrent ? 600 : 400,
-                      background: "transparent", border: "none",
-                      cursor: branch.isCurrent || owned ? "not-allowed" : "pointer",
-                      opacity: owned ? 0.6 : 1,
-                    }}
-                    disabled={branchCheckoutBusy || branch.isCurrent || owned}
-                    title={owned ? `Already active in ${branch.ownedByLaneName ?? "another lane"}` : undefined}
-                    onClick={async () => {
-                      if (branch.isCurrent) return;
-                      await checkoutLaneBranch({ branchName: branch.name });
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                  >
-                    {branch.isCurrent ? <Check size={12} className="shrink-0" /> : <span className="shrink-0" style={{ width: 12 }} />}
-                    <span className="truncate">{branch.name}</span>
-                    {branch.ownedByLaneName ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.warning }}>in {branch.ownedByLaneName}</span> : null}
-                    {!branch.ownedByLaneName && branch.upstream ? <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.textDim }}>tracked</span> : null}
-                  </button>
-                  );
-                })}
-                {remoteLaneBranches.length > 0 ? (
-                  <>
-                    <div style={{ margin: "4px 0", height: 1, background: COLORS.border }} />
-                    <div style={{ padding: "6px 12px", ...LABEL_STYLE }}>REMOTE BRANCHES</div>
-                    {remoteLaneBranches.map((branch) => {
-                      const owned = Boolean(branch.ownedByLaneId);
-                      return (
-                      <button
-                        key={`remote:${branch.name}`}
-                        type="button"
-                        className="flex w-full items-center gap-2 text-left"
-                        style={{
-                          padding: "6px 12px", fontSize: 12, fontFamily: MONO_FONT,
-                          color: COLORS.textMuted, background: "transparent", border: "none",
-                          cursor: owned ? "not-allowed" : "pointer",
-                          opacity: owned ? 0.6 : 1,
-                        }}
-                        disabled={branchCheckoutBusy || owned}
-                        title={owned ? `Already active in ${branch.ownedByLaneName ?? "another lane"}` : undefined}
-                        onClick={async () => { await checkoutLaneBranch({ branchName: branch.name }); }}
-                        onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-                        onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-                      >
-                        <span className="shrink-0" style={{ width: 12 }} />
-                        <span className="truncate">{branch.name}</span>
-                        {branch.ownedByLaneName ? (
-                          <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.warning }}>in {branch.ownedByLaneName}</span>
-                        ) : (
-                          <span className="ml-auto shrink-0" style={{ fontSize: 11, color: COLORS.info }}>remote</span>
-                        )}
-                      </button>
-                      );
-                    })}
-                  </>
-                ) : null}
-                {!laneBranchesLoading && localLaneBranches.length === 0 && remoteLaneBranches.length === 0 ? (
-                  <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>{branchSearchQuery ? "No matching branches." : "No branches found."}</div>
-                ) : null}
-                {branchCheckoutError ? (
-                  <div style={{ padding: "6px 12px", fontSize: 11, color: COLORS.danger }}>{branchCheckoutError}</div>
-                ) : null}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        {branchCheckoutError && branchLane && !branchDropdownOpen ? (
-          <div className="inline-flex items-center gap-2 shrink-0" style={{ border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 15%, transparent)", borderRadius: 8, padding: "4px 8px", fontSize: 12, color: COLORS.danger }}>
-            <span>{branchCheckoutError}</span>
-            <button
-              type="button"
-              style={{ background: "transparent", border: "none", padding: "0 4px", color: COLORS.danger, cursor: "pointer", fontSize: 14 }}
-              onClick={() => setBranchCheckoutError(null)}
-              title="Dismiss"
-            >
-              ×
-            </button>
-          </div>
-        ) : null}
-
-        {/* Filter input */}
-        <div className="relative flex items-center shrink-0">
-          <MagnifyingGlass size={14} className="pointer-events-none absolute" style={{ left: 8, color: COLORS.textDim }} />
-          <input
-            id="lanes-filter-input"
-            data-tour="lanes.filter"
-            value={laneFilter}
-            onChange={(event) => setLaneFilter(event.target.value)}
-            placeholder="FILTER LANES"
-            title="Filter lanes (is:dirty is:pinned type:worktree)"
-            style={{
-              height: 32, width: 200, padding: "0 28px 0 28px", fontSize: 11,
-              fontFamily: MONO_FONT, background: "rgba(255,255,255,0.03)",
-              border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8, color: COLORS.textSecondary,
-              outline: "none", textTransform: "uppercase", letterSpacing: "1px",
-            }}
-          />
-          {laneFilter.trim().length > 0 ? (
-            <button
-              type="button"
-              className="absolute"
-              style={{ right: 4, top: "50%", transform: "translateY(-50%)", display: "inline-flex", width: 20, height: 20, alignItems: "center", justifyContent: "center", background: "transparent", border: "none", color: COLORS.textMuted, cursor: "pointer" }}
-              onClick={() => setLaneFilter("")}
-              title="Clear filter"
-            >
-              <X size={12} />
-            </button>
-          ) : null}
-        </div>
-
-        {laneActionError ? (
-          <div
-            className="inline-flex max-w-[420px] shrink-0 items-center gap-2 rounded-md border px-2 py-1"
-            style={{
-              borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)",
-              background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-              color: COLORS.danger,
-              fontFamily: SANS_FONT,
-              fontSize: 11,
-            }}
-            title={laneActionError}
-          >
-            <span className="truncate">{laneActionError.split(/\r?\n/)[0]?.trim() || "Lane action failed"}</span>
-            <button
-              type="button"
-              className="shrink-0"
-              style={{ background: "transparent", border: "none", color: COLORS.danger, cursor: "pointer", padding: 0 }}
-              onClick={() => {
-                laneDeleteWarningMessagesRef.current.clear();
-                setLaneActionError(null);
-              }}
-              title="Dismiss"
-            >
-              <X size={11} />
-            </button>
-          </div>
-        ) : null}
-
-        {/* NEW LANE button */}
-        <div className="relative shrink-0">
-          <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: docs.lanesCreating }}>
-            <button
-              type="button"
-              data-tour="lanes.newLane"
-              style={primaryButton({ height: 32, padding: "0 12px", fontSize: 10 })}
-              disabled={!canCreateLane}
-              onClick={() => {
-                setStackGraphHeaderOpen(false);
-                openCreateDialog();
-              }}
-            >
-              <Plus size={12} /> NEW LANE
-            </button>
-          </SmartTooltip>
-        </div>
-
-        {filteredLanes.length > 0 ? (
-          <div className="relative shrink-0" ref={stackGraphHeaderRef}>
-            <SmartTooltip
-              content={{
-                label: "Stack graph",
-                description: "Parent/child lane relationships and ahead/behind — same view as the Stack tile.",
-              }}
-            >
-              <button
-                type="button"
-                data-tour="lanes.stackGraphHeader"
-                aria-expanded={stackGraphHeaderOpen}
-                className="inline-flex items-center gap-1.5 shrink-0"
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  letterSpacing: "0.8px",
-                  textTransform: "uppercase",
-                  color: stackGraphHeaderOpen ? COLORS.accent : COLORS.textMuted,
-                  background: stackGraphHeaderOpen ? "color-mix(in srgb, var(--color-accent) 12%, transparent)" : "transparent",
-                  border: `1px solid ${stackGraphHeaderOpen ? COLORS.accent : COLORS.outlineBorder}`,
-                  borderRadius: 6,
-                  padding: "0 10px",
-                  height: 28,
-                  cursor: "pointer",
-                }}
-                onClick={() => {
-                  setBranchDropdownOpen(false);
-                  setStackGraphHeaderOpen((prev) => !prev);
-                }}
-                onMouseEnter={(e) => {
-                  if (stackGraphHeaderOpen) return;
-                  e.currentTarget.style.borderColor = COLORS.accent;
-                  e.currentTarget.style.color = COLORS.accent;
-                }}
-                onMouseLeave={(e) => {
-                  if (stackGraphHeaderOpen) return;
-                  e.currentTarget.style.borderColor = COLORS.outlineBorder;
-                  e.currentTarget.style.color = COLORS.textMuted;
-                }}
-              >
-                <Stack size={12} weight="bold" />
-                Stack graph
-                <CaretDown size={10} style={{ opacity: 0.65 }} />
-              </button>
-            </SmartTooltip>
-            {stackGraphHeaderOpen ? (
-              <div
-                className="absolute left-0 top-full z-[200] mt-2 flex flex-col overflow-hidden rounded-xl shadow-float"
-                style={{
-                  width: 400,
-                  maxWidth: "min(400px, calc(100vw - 48px))",
-                  height: "min(520px, 70vh)",
-                  background: COLORS.cardBgSolid,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                }}
-              >
-                <LaneStackPane
-                  lanes={stackGraphLanes}
-                  selectedLaneId={selectedLaneId}
-                  onSelect={(id) => handleLaneSelect(id, { extend: false })}
-                  runtimeByLaneId={laneRuntimeById}
-                  integrationSourcesByLaneId={integrationSourcesByLaneId}
-                  onStartChatWithLinearIssue={handleStartChatWithLinearIssue}
-                  agentsByLaneId={agentsByLaneId}
-                  highlightedSessionIds={highlightedSessionIds}
-                  onOpenAgent={handleOpenAgent}
-                />
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-
-        {/* Spacer */}
-        <div style={{ flex: 1, height: 1 }} />
-
-        {/* Reset grid + Stats */}
-        {visibleLaneIds.length > 0 ? (
-          <SmartTooltip content={{ label: "Reset Grid", description: "Reset all lane column widths and panel arrangements back to their default layout." }}>
-            <button
-              type="button"
-              data-tour="lanes.resetGrid"
-              title="Reset grid to default layout"
-              onClick={() => {
-                void resetGridLayout(selectedLaneId);
-              }}
-              className="inline-flex items-center gap-1 shrink-0"
-              style={{
-                fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700, letterSpacing: "0.8px",
-                textTransform: "uppercase", color: COLORS.textMuted, background: "transparent",
-                border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 6,
-                padding: "0 8px", height: 24, cursor: "pointer",
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.borderColor = COLORS.accent; e.currentTarget.style.color = COLORS.accent; }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = COLORS.outlineBorder; e.currentTarget.style.color = COLORS.textMuted; }}
-            >
-              <ArrowCounterClockwise size={10} /> RESET GRID
-            </button>
-          </SmartTooltip>
-        ) : null}
-        <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700, letterSpacing: "0.5px", color: COLORS.textMuted, whiteSpace: "nowrap" }}>
-          {sortedLanes.length} lane{sortedLanes.length === 1 ? "" : "s"}
-        </span>
-      </div>
-
-      {/* Lane tabs -- horizontal numbered tab bar */}
-      <div className="flex items-center select-none overflow-x-auto" style={{ background: "rgba(255,255,255,0.01)", borderBottom: `1px solid ${COLORS.border}` }}>
-        {filteredLanes.map((lane, index) => {
-          const isVisible = visibleLaneIds.includes(lane.id);
-          const isSelected = selectedLaneId === lane.id;
-          const isInSplit = isVisible && !isSelected;
-          const isPrimary = lane.laneType === "primary";
-          const isPinned = pinnedLaneIds.has(lane.id);
-          const closable = isVisible && visibleLaneIds.length > 1 && !isPinned;
-          const laneSnapshot = laneSnapshotByLaneId.get(lane.id) ?? null;
-          const laneRuntime = laneRuntimeById.get(lane.id) ?? {
-            bucket: "none",
-            runningCount: 0,
-            awaitingInputCount: 0,
-            pendingInputCount: 0,
-            endedCount: 0,
-            sessionCount: 0,
-          };
-          const pendingInputCount = laneRuntime.pendingInputCount ?? 0;
-          const rebaseSuggestion = laneSnapshot?.rebaseSuggestion ?? null;
-          const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
-          const devicesOpen = lane.devicesOpen ?? [];
-          const tabNumber = String(index + 1).padStart(2, "0");
-          const lanePr = lanePrByLaneId.get(lane.id) ?? null;
-          const lanePrs = lanePrTagsByLaneId.get(lane.id) ?? [];
-          const deleteProgress = deleteProgressByLaneId[lane.id] ?? null;
-          const isDeleting = isLaneDeleteProgressActive(deleteProgress);
-          // A freshly batch-launched lane whose headless agent session has not yet
-          // surfaced. Renders a "creating" placeholder (spinner) like the deleting
-          // overlay so the new tab feels like it is materializing + auto-starting
-          // its chat. Deleting always wins if both somehow apply.
-          const isCreating = !isDeleting && creatingLaneIds.has(lane.id);
-          const showMergedManageShortcut = !isDeleting && !isCreating && !isPrimary && lanePr?.state === "merged";
-
-          return (
-            <div
-              key={lane.id}
-              data-tour={isSelected && !isPrimary && !isDeleting ? "lanes.laneTab" : undefined}
-              role="button"
-              tabIndex={isDeleting ? -1 : 0}
-              aria-disabled={isDeleting}
-              // Drag the lane row out of ADE to drop an "Open in ADE" rich link
-              // into chat apps (Slack/Mail/Messages). Receivers see a properly
-              // titled URL rather than a raw string.
-              // Note: the dragged URL is the lane-UUID form. Cross-machine
-              // branch+repo links require an async lookup against the GitHub
-              // remote; we use the right-click "Copy Branch Link" menu item
-              // for that path. Lane links still resolve correctly on the
-              // sender's own other devices.
-              draggable={!isDeleting}
-              onDragStart={(event) => {
-                if (isDeleting) return;
-                const url = `ade://lane/${encodeURIComponent(lane.id)}`;
-                const escapeHtml = (value: string): string =>
-                  value
-                    .replace(/&/g, "&amp;")
-                    .replace(/</g, "&lt;")
-                    .replace(/>/g, "&gt;")
-                    .replace(/"/g, "&quot;");
-                const title = escapeHtml(lane.name ?? "ADE lane");
-                event.dataTransfer.effectAllowed = "copyLink";
-                event.dataTransfer.setData("text/uri-list", url);
-                event.dataTransfer.setData("text/plain", url);
-                event.dataTransfer.setData(
-                  "text/html",
-                  `<a href="${url}">${title}</a>`,
-                );
-              }}
-              className={`group flex items-center gap-2 shrink-0${pulsingLaneId === lane.id ? " ade-lane-row-pulse" : ""}`}
-              style={{
-                position: "relative",
-                padding: "0 16px",
-                height: 44,
-                borderLeft: isSelected
-                  ? `2px solid ${COLORS.accent}`
-                  : isInSplit
-                    ? `2px solid rgba(167,139,250,0.35)`
-                    : "2px solid transparent",
-                background: isSelected
-                  ? COLORS.accentSubtle
-                  : isInSplit
-                    ? "rgba(167,139,250,0.06)"
-                    : "transparent",
-                borderBottom: isInSplit
-                  ? `1px solid rgba(167,139,250,0.18)`
-                  : "1px solid transparent",
-                cursor: isDeleting ? "not-allowed" : "pointer",
-                opacity: isDeleting ? 0.62 : 1,
-              }}
-              onClick={(event) => {
-                if (isDeleting) return;
-                handleLaneSelect(lane.id, {
-                  extend: Boolean(event.shiftKey || event.metaKey || event.ctrlKey)
-                });
-              }}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                if (isDeleting) return;
-                setLaneContextMenu({ laneId: lane.id, x: event.clientX, y: event.clientY });
-              }}
-              onMouseEnter={(e) => {
-                if (!isDeleting && !isSelected && !isInSplit) e.currentTarget.style.background = COLORS.hoverBg;
-              }}
-              onMouseLeave={(e) => {
-                if (!isSelected) e.currentTarget.style.background = isInSplit ? "rgba(167,139,250,0.06)" : "transparent";
-              }}
-            >
-              {/* Tab number / merged-PR manage shortcut */}
-              <span
-                className="group/merged-manage relative inline-flex shrink-0 items-center justify-center"
-                style={{ width: 20, height: 20 }}
-              >
-                <span
-                  className={showMergedManageShortcut ? "transition-opacity group-hover/merged-manage:opacity-0" : undefined}
-                  style={{
-                    fontFamily: MONO_FONT,
-                    fontSize: 10,
-                    fontWeight: 600,
-                    letterSpacing: "1px",
-                    color: isSelected ? COLORS.accent : COLORS.textDim,
-                  }}
-                >
-                  {tabNumber}
-                </span>
-                {showMergedManageShortcut ? (
-                  <button
-                    type="button"
-                    aria-label={`Manage ${lane.name}`}
-                    className="absolute inset-0 inline-flex items-center justify-center rounded-full opacity-0 transition-opacity group-hover/merged-manage:opacity-100 focus-visible:opacity-100"
-                    style={{
-                      border: `1px solid color-mix(in srgb, ${COLORS.danger} 45%, transparent)`,
-                      background: `color-mix(in srgb, ${COLORS.danger} 14%, transparent)`,
-                      color: COLORS.danger,
-                      cursor: "pointer",
-                    }}
-                    title="PR merged. Manage lane"
-                    onMouseDown={(event) => event.stopPropagation()}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openManageDialog(lane.id);
-                    }}
-                  >
-                    <X size={11} weight="bold" />
-                  </button>
-                ) : null}
-              </span>
-              {/* Terminal attention state */}
-              {!isDeleting && (laneRuntime.bucket === "running" || laneRuntime.bucket === "awaiting-input") ? (
-                <span
-                  title={
-                    laneRuntime.bucket === "awaiting-input"
-                      ? `${laneRuntime.awaitingInputCount} session${laneRuntime.awaitingInputCount === 1 ? "" : "s"} awaiting input`
-                      : `${laneRuntime.runningCount} session${laneRuntime.runningCount === 1 ? "" : "s"} running`
-                  }
-                  className="shrink-0"
-                  style={{
-                    width: 8, height: 8, borderRadius: "50%",
-                    background: laneRuntime.bucket === "awaiting-input" ? COLORS.warning : COLORS.success,
-                  }}
-                />
-              ) : !isDeleting && laneRuntime.bucket === "ended" ? (
-                <span
-                  title={`${laneRuntime.endedCount} ended session${laneRuntime.endedCount === 1 ? "" : "s"}`}
-                  className="shrink-0"
-                  style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
-                />
-              ) : null}
-              {/* Awaiting-your-input pill — a chat in this lane is blocked on a
-                  question/plan only you can answer. Reuses the device-presence
-                  pill shape, tinted with the warning accent to match the dot. */}
-              {!isDeleting && pendingInputCount > 0 ? (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 3,
-                    padding: "2px 6px",
-                    borderRadius: 6,
-                    fontFamily: MONO_FONT,
-                    fontSize: 9,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.04em",
-                    color: COLORS.warning,
-                    background: `color-mix(in srgb, ${COLORS.warning} 14%, transparent)`,
-                    border: `1px solid color-mix(in srgb, ${COLORS.warning} 32%, transparent)`,
-                  }}
-                  title={
-                    pendingInputCount > 1
-                      ? `${pendingInputCount} chats are waiting for your answer`
-                      : "A chat is waiting for your answer"
-                  }
-                >
-                  <Question size={10} weight="bold" />
-                  Awaiting you
-                </span>
-              ) : null}
-              {/* Lane name */}
-              <span className="truncate" style={{
-                maxWidth: 180,
-                fontFamily: SANS_FONT, fontSize: 12, letterSpacing: "0.5px", textTransform: "uppercase",
-                fontWeight: isSelected ? 600 : 500,
-                color: isSelected ? COLORS.textPrimary : COLORS.textMuted,
-              }}>{lane.name}</span>
-              {!isDeleting && lane.linearIssue ? (
-                <LinearIssueBadge
-                  issue={lane.linearIssue}
-                  compact
-                  onStartChatWithIssue={() => handleStartChatWithLinearIssue(lane.id, lane.linearIssue!)}
-                />
-              ) : null}
-              {!isDeleting && lanePr ? (
-                <LanePrBadgePopover
-                  prs={lanePrs}
-                  onOpenList={() => navigate(`/prs${buildPrsRouteSearch({
-                    activeTab: "normal",
-                    selectedPrId: null,
-                    selectedLaneId: lane.id,
-                    selectedRebaseItemId: null,
-                  })}`)}
-                  onActivate={(_event, selectedPr) => {
-                    const target = selectedPr ?? lanePr;
-                    const prRoute = lanePrTagRoutePath(target);
-                    if (prRoute) {
-                      navigate(prRoute);
-                      return;
-                    }
-                    if (target.githubUrl && isTrustedGitHubUrl(target.githubUrl)) {
-                      void window.ade?.app?.openExternal?.(target.githubUrl);
-                    }
-                  }}
-                />
-              ) : null}
-              {!isDeleting && devicesOpen.length > 0 ? (
-                <span
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 4,
-                    padding: "2px 6px",
-                    borderRadius: 6,
-                    fontFamily: MONO_FONT,
-                    fontSize: 9,
-                    fontWeight: 700,
-                    color: COLORS.accent,
-                    background: COLORS.accentSubtle,
-                    border: `1px solid ${COLORS.accentBorder}`,
-                  }}
-                  title={getDevicePresenceTitle(devicesOpen)}
-                >
-                  <UsersThree size={10} weight="bold" />
-                  {devicesOpen.length}
-                </span>
-              ) : null}
-              {/* Behind badge (rebase suggestion) */}
-              {!isDeleting && rebaseSuggestion ? (
-                <span style={{
-                  display: "inline-flex", alignItems: "center", padding: "2px 6px", borderRadius: 6,
-                  fontFamily: MONO_FONT, fontSize: 9, fontWeight: 700,
-                  color: COLORS.warning, background: "color-mix(in srgb, var(--color-warning) 18%, transparent)", border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
-                }} title={`Behind ${rebaseSuggestion.baseLabel?.trim() || "base"} by ${rebaseSuggestion.behindCount} commit(s)`}>
-                  ↑{rebaseSuggestion.behindCount}
-                </span>
-              ) : null}
-              {/* Auto-rebase status badges */}
-              {!isDeleting && autoRebaseStatus?.state === "autoRebased" ? (
-                <span style={inlineBadge(COLORS.success, { fontSize: 9 })} title={autoRebaseStatus.message ?? "Lane was rebased automatically."}>
-                  REBASED
-                </span>
-              ) : null}
-              {!isDeleting && autoRebaseStatus?.state === "rebasePending" ? (
-                <span style={inlineBadge(COLORS.warning, { fontSize: 9 })} title={autoRebaseStatus.message ?? "Auto-rebase is pending manual action."}>
-                  PENDING
-                </span>
-              ) : null}
-              {!isDeleting && autoRebaseStatus?.state === "rebaseFailed" ? (
-                <span
-                  style={inlineBadge(COLORS.danger, { fontSize: 9 })}
-                  title={autoRebaseStatus.message ?? "Auto-rebase failed and the lane needs manual follow-up."}
-                >
-                  FAILED
-                </span>
-              ) : null}
-              {!isDeleting && autoRebaseStatus?.state === "rebaseConflict" ? (
-                <span
-                  style={inlineBadge(COLORS.danger, { fontSize: 9 })}
-                  title={autoRebaseStatus.message ?? "Auto-rebase stopped due to conflicts."}
-                >
-                  CONFLICT{autoRebaseStatus.conflictCount > 0 ? ` ${autoRebaseStatus.conflictCount}` : ""}
-                </span>
-              ) : null}
-              {/* Pin toggle — appears on hover */}
-              {!isDeleting && !isPrimary ? (
-                <button
-                  type="button"
-                  className={`shrink-0 rounded transition-opacity ${isPinned ? "" : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100"}`}
-                  style={{
-                    display: "inline-flex", width: 16, height: 16, alignItems: "center", justifyContent: "center",
-                    background: isPinned ? `color-mix(in srgb, ${COLORS.warning} 18%, transparent)` : "transparent",
-                    color: COLORS.warning,
-                    border: isPinned ? `1px solid color-mix(in srgb, ${COLORS.warning} 42%, transparent)` : "1px solid transparent",
-                    cursor: "pointer",
-                  }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    togglePinnedLane(lane.id);
-                  }}
-                  title={isPinned ? "Unpin lane" : "Pin lane"}
-                >
-                  <PushPin size={11} weight={isPinned ? "fill" : "regular"} />
-                </button>
-              ) : null}
-              {/* Close from split — appears on hover */}
-              {!isDeleting && closable ? (
-                <button
-                  type="button"
-                  className="shrink-0 transition-opacity opacity-0 group-hover:opacity-100"
-                  style={{
-                    display: "inline-flex", width: 16, height: 16, alignItems: "center", justifyContent: "center",
-                    background: "transparent", color: COLORS.textDim, border: "none", cursor: "pointer",
-                  }}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    removeSplitLane(lane.id);
-                  }}
-                  title="Remove from split"
-                >
-                  <X size={10} />
-                </button>
-              ) : null}
-              {isDeleting ? (
-                <div
-                  className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5"
-                  style={{
-                    background: "rgba(12, 15, 20, 0.72)",
-                    color: COLORS.textSecondary,
-                    fontFamily: MONO_FONT,
-                    fontSize: 9,
-                    fontWeight: 700,
-                    letterSpacing: "0.8px",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  <CircleNotch size={12} className="animate-spin" />
-                  <span>{getLaneDeleteStatusLabel(deleteProgress)}</span>
-                </div>
-              ) : isCreating ? (
-                // Mirrors the deleting overlay, but accent-tinted: a freshly
-                // launched lane materializing its agent session rather than a
-                // destructive action. Stays click-through so the tab is usable.
-                <div
-                  className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5"
-                  style={{
-                    background: "rgba(12, 15, 20, 0.72)",
-                    color: COLORS.accent,
-                    fontFamily: MONO_FONT,
-                    fontSize: 9,
-                    fontWeight: 700,
-                    letterSpacing: "0.8px",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  <CircleNotch size={12} className="animate-spin" />
-                  <span>Creating</span>
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-
-        {/* Optimistic "creating lane" placeholder tabs for batch-launched issues
-            whose real lanes haven't materialized yet. Non-interactive; each
-            drops automatically once its real lane (carrying the same Linear
-            issue id) appears. Mirrors the deleting/creating overlay styling but
-            accent-tinted + positive. */}
-        {pendingCreatingIssues.map((placeholder) => (
-          <div
-            key={`creating:${placeholder.issueId}`}
-            aria-disabled
-            className="group flex items-center gap-2 shrink-0 pointer-events-none"
-            style={{
-              position: "relative",
-              padding: "0 16px",
-              height: 44,
-              borderLeft: "2px solid transparent",
-              background: "transparent",
-              borderBottom: "1px solid transparent",
-              opacity: 0.92,
-            }}
-          >
-            <CircleNotch size={13} className="animate-spin" style={{ color: COLORS.accent }} />
-            <span
-              className="truncate"
-              style={{
-                maxWidth: 180,
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                color: COLORS.textSecondary,
-              }}
-              title={`Creating ${placeholder.name}…`}
-            >
-              {placeholder.name}
-            </span>
-            <div
-              className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1.5"
-              style={{
-                background: "rgba(12, 15, 20, 0.72)",
-                color: COLORS.accent,
-                fontFamily: MONO_FONT,
-                fontSize: 9,
-                fontWeight: 700,
-                letterSpacing: "0.8px",
-                textTransform: "uppercase",
-              }}
-            >
-              <CircleNotch size={12} className="animate-spin" />
-              <span>Creating</span>
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Rebase / auto-rebase banners */}
-      <LaneRebaseBanner
-        visibleRebaseSuggestions={visibleRebaseSuggestions}
-        visibleAutoRebaseNeedsAttention={visibleAutoRebaseNeedsAttention}
-        lanesById={lanesById}
-        rebaseSuggestionError={rebaseSuggestionError}
-        onViewRebaseDetails={openRebaseDetails}
-        onDismissRebase={(laneId) => { void dismissRebaseSuggestion(laneId); }}
-        onDismissAutoRebase={(laneId) => { void dismissAutoRebaseStatus(laneId); }}
-        display={rebaseSuggestionDisplay}
-        bannerBudget={laneBannerBudget}
-      />
-
-      {/* Floating pane tiling layout */}
-      {visibleLaneIds.length === 0 ? (
-        <div className={lanesLoading && sortedLanes.length === 0 ? "flex-1 min-h-0 flex" : "flex-1 flex items-center justify-center"}>
-          {sortedLanes.length === 0 ? (
-            lanesLoading ? (
-              <LaneLoadingSkeleton />
-            ) : (
-              <EmptyState
-                title="No lanes created yet"
-                description="Lanes let you work on multiple features in parallel."
-              >
-                <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    disabled={!canCreateLane}
-                    onClick={() => {
-                      openCreateDialog();
-                    }}
-                  >
-                    Create Lane
-                  </Button>
-                </div>
-              </EmptyState>
-            )
-          ) : (
-            <EmptyState
-              title={filteredLanes.length === 0 ? "No lanes match" : "No lane selected"}
-              description={
-                filteredLanes.length === 0
-                  ? "Adjust the lane filter."
-                  : "Select a lane tab to begin."
-              }
-            />
-          )}
-        </div>
-      ) : visibleLaneIds.length === 1 ? (
-        <PaneTilingLayout
-          key={`lanes:single:${gridResetKey}`}
-          layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${visibleLaneIds[0]}`}
-          tree={laneTilingTree}
-          panes={getPaneConfigs(visibleLaneIds[0] ?? null)}
-          className="flex-1 min-h-0"
-        />
+    <div data-route="lanes" className="flex h-full min-w-0" style={{ background: COLORS.pageBg }}>
+      {hasProjectSidebar ? (
+        <ProjectSidebarSlot active={active}>{laneList}</ProjectSidebarSlot>
       ) : (
-        <Group
-          key={buildLaneSplitColumnsKey({ laneTilingLayoutSuffix, gridResetKey })}
-          id="lanes-split-columns"
-          orientation="horizontal"
-          resizeTargetMinimumSize={RESIZE_TARGET_MINIMUM_SIZE}
-          className="flex-1 min-h-0 min-w-0"
-          onLayoutChanged={(nextLayout) => {
-            const updates: Record<string, number> = {};
-            for (const laneId of visibleLaneIds) {
-              const panelId = `lane-column:${laneId}`;
-              const size = nextLayout[panelId];
-              if (typeof size === "number" && Number.isFinite(size)) {
-                updates[panelId] = size;
-              }
-            }
-            if (Object.keys(updates).length > 0) {
-              saveLaneColumnLayout((prev) => ({ ...prev, ...updates }));
-            }
-          }}
+        <div
+          className="flex w-[280px] shrink-0 flex-col pt-2"
+          style={{ borderRight: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)" }}
         >
-          {visibleLaneIds.map((laneId, index) => {
-            const evenSize = Math.max(20, 100 / Math.max(1, visibleLaneIds.length));
-            const savedColSize = laneColumnLayout[`lane-column:${laneId}`];
-            const defaultSize = typeof savedColSize === "number" && Number.isFinite(savedColSize) ? savedColSize : evenSize;
-            const lane = lanesById.get(laneId);
-            const laneName = lane?.name ?? laneId.slice(0, 8);
-            return (
-              <Fragment key={laneId}>
-                <Panel id={`lane-column:${laneId}`} minSize="12%" defaultSize={`${defaultSize}%`} className="min-h-0 min-w-0">
-                  <div className="ade-lane-column" style={{ "--lane-accent": getLaneAccent(lane, index) } as React.CSSProperties}>
-                    <div className="flex items-center gap-1.5 px-2 shrink-0" style={{ height: 22, background: `color-mix(in srgb, var(--lane-accent) 6%, transparent)` }}>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, fontWeight: 700, letterSpacing: "0.8px", textTransform: "uppercase", color: "var(--lane-accent)", opacity: 0.85 }}>{laneName}</span>
-                    </div>
-                    <PaneTilingLayout
-                      layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${laneId}`}
-                      tree={laneTilingTree}
-                      panes={getPaneConfigs(laneId)}
-                      className="flex-1 min-h-0"
-                    />
-                  </div>
-                </Panel>
-                {index < visibleLaneIds.length - 1 ? <ResizeGutter orientation="vertical" laneDivider /> : null}
-              </Fragment>
-            );
-          })}
-        </Group>
+          {laneList}
+        </div>
       )}
 
-      {/* Fullscreen Git Actions pane overlay */}
-      {expandedGitActionsLaneId && lanesById.has(expandedGitActionsLaneId) ? (
-        <div className="fixed inset-0 z-[110] flex flex-col" style={{ background: COLORS.pageBg }}>
-          <PaneTilingLayout
-            layoutId={`lanes:git-actions:fullscreen:v1:${expandedGitActionsLaneId}`}
-            tree={GIT_ACTIONS_FULLSCREEN_TREE}
-            panes={getPaneConfigs(expandedGitActionsLaneId, "git-actions-fullscreen")}
-            className="flex-1 min-h-0"
-          />
-        </div>
-      ) : null}
-
-      {/* Fullscreen lane overlay */}
-      {expandedLaneId && lanesById.has(expandedLaneId) ? (
-        <div className="fixed inset-0 z-[100] flex flex-col" style={{ background: COLORS.pageBg }}>
-          <div className="absolute top-2 right-3 z-10">
-            <button
-              type="button"
-              style={outlineButton({ height: 28, padding: "0 8px" })}
-              onClick={() => setExpandedLaneId(null)}
-              title="Exit fullscreen (Esc)"
-            >
-              <X size={16} />
-            </button>
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+        {detailLane && detailLaneId ? (
+          <>
+            {laneActionError ? (
+              <div
+                className="flex shrink-0 items-center gap-2 px-4 py-1.5 text-[11.5px]"
+                style={{ color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 8%, transparent)" }}
+                title={laneActionError}
+              >
+                <span className="min-w-0 flex-1 truncate">{laneActionError.split(/\r?\n/)[0]?.trim() || "Lane action failed"}</span>
+                <button
+                  type="button"
+                  className="shrink-0"
+                  onClick={() => {
+                    laneDeleteWarningMessagesRef.current.clear();
+                    setLaneActionError(null);
+                  }}
+                  aria-label="Dismiss"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+            ) : null}
+            <LaneSplitBody
+              left={(
+                <LaneDashboard
+                  laneId={detailLaneId}
+                  colorIndex={detailColorIndex}
+                  active={active}
+                  agents={agentsByLaneId.get(detailLaneId)}
+                  colorIndexByLaneId={colorIndexByLaneId}
+                  prTagsByLaneId={lanePrTagsByLaneId}
+                  onSelectLane={selectDetailLane}
+                  onOpenPrTag={handleOpenPr}
+                  onOpenLaneMenu={openLaneMenuAt}
+                  showRebaseSuggestions={rebaseSuggestionDisplay !== "off"}
+                  rebaseError={rebaseSuggestionError}
+                  onOpenRebase={openRebaseDetails}
+                  onDismissRebaseSuggestion={(laneId) => { void dismissRebaseSuggestion(laneId); }}
+                  onDismissAutoRebase={(laneId) => { void dismissAutoRebaseStatus(laneId); }}
+                  onStartChat={startChatInLane}
+                  onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
+                />
+              )}
+              right={(
+                // Mounted like Work -> Tools -> Git: the same pane, keyed per
+                // lane, with the same header row and the same in-place diffs.
+                <div className="flex h-full min-h-0 flex-col" data-tour="lanes.gitActionsPane">
+                  <LaneGitActionsPane
+                    key={`lanes-git:${detailLaneId}`}
+                    laneId={detailLaneId}
+                    active={active}
+                    autoRebaseEnabled={autoRebaseEnabled}
+                    autoRebaseStatusSnapshot={laneSnapshotByLaneId.get(detailLaneId)?.autoRebaseStatus}
+                    onOpenSettings={openAutoRebaseSettings}
+                    onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
+                    onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
+                    onViewRebaseDetails={openRebaseDetails}
+                    onResolveRebaseConflict={openRebaseConflictResolver}
+                    selectedPath={laneDetail.selectedFilePath}
+                    selectedMode={laneDetail.selectedFileMode}
+                    selectedCommit={laneDetail.selectedCommit ?? null}
+                    selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
+                    onSelectFile={(path, mode) => handleSelectFile(detailLaneId, path, mode)}
+                    onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
+                    onClearDiffSelection={() => handleClearLanePaneDetailSelection(detailLaneId)}
+                  />
+                </div>
+              )}
+            />
+          </>
+        ) : (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3">
+            <div className="text-[13px]" style={{ color: COLORS.textMuted }}>
+              {lanesLoading && dedupedLanes.length === 0
+                ? "Loading lanes…"
+                : dedupedLanes.length === 0
+                  ? "No lanes yet."
+                  : "No lane matches the filter."}
+            </div>
+            {!lanesLoading || dedupedLanes.length > 0 ? (
+              <button
+                type="button"
+                data-tour={hasProjectSidebar ? undefined : "lanes.newLane"}
+                style={primaryButton({ height: 30, padding: "0 12px", fontSize: 11 })}
+                disabled={!canCreateLane}
+                onClick={() => openCreateDialog()}
+              >
+                New lane
+              </button>
+            ) : null}
           </div>
-          <PaneTilingLayout
-            layoutId={`lanes:tiling:${LANES_TILING_LAYOUT_VERSION}${laneTilingLayoutSuffix}:${expandedLaneId}`}
-            tree={laneTilingTree}
-            panes={getPaneConfigs(expandedLaneId, "lane-fullscreen")}
-            className="flex-1 min-h-0"
-          />
-        </div>
-      ) : null}
+        )}
+      </main>
 
-      {/* Lane tab context menu */}
       {laneContextMenu ? (
-        <LaneContextMenu
-          laneContextMenu={laneContextMenu}
+        <LaneSidebarContextMenu
+          menu={laneContextMenu}
           lanesById={lanesById}
-          visibleLaneIds={visibleLaneIds}
-          onClose={() => setLaneContextMenu(null)}
+          selectedLaneIds={multiSelectedList}
+          onClose={closeContextMenu}
           onManage={openManageDialog}
-          selectLane={selectLane}
-          onRemoveFromSplit={removeSplitLane}
-          onCloseOtherSplits={(keepLaneId) => {
-            const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
-            setActiveLaneIds(mergeUnique([keepLaneId], pinned));
-            selectLane(keepLaneId);
-          }}
-          onSelectAll={() => {
-            const allIds = filteredLanes.map((lane) => lane.id);
-            setActiveLaneIds(allIds);
-          }}
           onBatchManage={openBatchManage}
-          onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
+          selectLane={selectDetailLane}
+          onAppearanceChanged={refreshLaneAppearance}
           onStartChatInLane={startChatInLane}
         />
       ) : null}
 
-      {/* Manage Lane dialog */}
       <ManageLaneDialog
         open={manageOpen}
         onOpenChange={setManageOpen}
@@ -3719,13 +2059,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         laneActionKind={laneActionKind}
         onArchive={() => { archiveManagedLanes().catch(() => {}); }}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
-        onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
+        onAppearanceChanged={refreshLaneAppearance}
         onStackReorganized={() => { refreshLanes().catch(() => {}); }}
+        initialTab={manageInitialTab}
       />
 
+      <LaneSidebarBulkRebaseDialog
+        open={bulkRebaseLaneIds != null}
+        targets={bulkRebaseTargets}
+        onOpenChange={(open) => { if (!open) setBulkRebaseLaneIds(null); }}
+        rebaseLane={rebaseLaneForBulk}
+        onFinished={() => { refreshLanes().catch(() => {}); }}
+      />
 
-
-      {/* Create Lane dialog */}
       <CreateLaneDialogHost
         open={createOpen}
         onOpenChange={handleCreateDialogOpenChange}

@@ -15,9 +15,9 @@ import {
  * `ade ui show` on the brain side.
  *
  * The surfaces an agent wants the user to see (the Apple tool, the floating
- * device, the browser, the proof drawer) are renderer UI, and the brain cannot
- * tell which renderer is showing which chat. So it asks all of them: the
- * request goes out on the runtime event stream every desktop on this project
+ * device, the browser, the proof drawer, the Mac Desktop tool and its floating
+ * card) are renderer UI, and the brain cannot tell which renderer is showing
+ * which chat. So it asks all of them: the request goes out on the runtime event stream every desktop on this project
  * already reads — a local window and a paired desktop on another machine alike
  * — and the one that has the chat answers.
  *
@@ -41,9 +41,9 @@ export const WORK_TOOL_SHOW_ACK_TIMEOUT_MS = 8_000;
 export const WORK_TOOL_SHOW_HELD_GRACE_MS = 600;
 
 /**
- * One automatic float offer per chat in this window. An agent taps many times a
- * second; the renderer only needs to hear "an agent is driving the device"
- * again after it had a chance to change its mind.
+ * One automatic float offer per chat and device in this window. An agent taps
+ * many times a second; the renderer only needs to hear "an agent is driving the
+ * device" again after it had a chance to change its mind.
  */
 export const WORK_TOOL_AGENT_ACTIVITY_THROTTLE_MS = 5_000;
 
@@ -52,6 +52,8 @@ const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
   "floating-apple": "floating Apple device",
   browser: "browser in the tools pane",
   proof: "proof drawer",
+  "mac-desktop": "Mac Desktop in the tools pane",
+  "floating-mac-desktop": "floating Mac Desktop",
 };
 
 type HeldAnswer = { desktopLabel: string | null; opened: boolean };
@@ -83,7 +85,8 @@ type PendingShow = {
   resolve: (result: WorkToolShowResult) => void;
 };
 
-export type AgentAppleActivity = { chatSessionId: string | null; laneId: string | null };
+/** The chat an agent drove a device or lane display from, and its lane. */
+export type AgentDeviceActivity = { chatSessionId: string | null; laneId: string | null };
 
 export type WorkToolShowRequests = {
   show(input: unknown): Promise<WorkToolShowResult>;
@@ -92,7 +95,9 @@ export type WorkToolShowRequests = {
    * An agent just drove this chat's Apple device. Publishes an `auto`
    * floating-player offer, throttled per chat. Never acked and never waited on.
    */
-  noteAgentAppleActivity(input: AgentAppleActivity): boolean;
+  noteAgentAppleActivity(input: AgentDeviceActivity): boolean;
+  /** The same for the lane's Mac Desktop: an `auto` floating-card offer. */
+  noteAgentMacDesktopActivity(input: AgentDeviceActivity): boolean;
   dispose(): void;
 };
 
@@ -178,6 +183,26 @@ export function createWorkToolShowRequests(args: {
     return true;
   };
 
+  const noteAgentActivity = (
+    surface: "floating-apple" | "floating-mac-desktop",
+    input: AgentDeviceActivity,
+  ): boolean => {
+    const chatSessionId = trimmedOrNull(input.chatSessionId);
+    if (!chatSessionId || disposed) return false;
+    const key = `${surface}\u0000${chatSessionId}`;
+    const at = now();
+    const last = lastActivityByChat.get(key);
+    if (last != null && at - last < activityThrottleMs) return false;
+    lastActivityByChat.delete(key);
+    lastActivityByChat.set(key, at);
+    // A long-lived brain sees many chats; keep only the recent ones.
+    if (lastActivityByChat.size > 256) {
+      const oldest = lastActivityByChat.keys().next().value;
+      if (oldest) lastActivityByChat.delete(oldest);
+    }
+    return publish(buildRequest(surface, chatSessionId, trimmedOrNull(input.laneId), true));
+  };
+
   return {
     async show(input) {
       const record = isRecord(input) ? input : {};
@@ -233,19 +258,11 @@ export function createWorkToolShowRequests(args: {
     },
 
     noteAgentAppleActivity(input) {
-      const chatSessionId = trimmedOrNull(input.chatSessionId);
-      if (!chatSessionId || disposed) return false;
-      const at = now();
-      const last = lastActivityByChat.get(chatSessionId);
-      if (last != null && at - last < activityThrottleMs) return false;
-      lastActivityByChat.delete(chatSessionId);
-      lastActivityByChat.set(chatSessionId, at);
-      // A long-lived brain sees many chats; keep only the recent ones.
-      if (lastActivityByChat.size > 256) {
-        const oldest = lastActivityByChat.keys().next().value;
-        if (oldest) lastActivityByChat.delete(oldest);
-      }
-      return publish(buildRequest("floating-apple", chatSessionId, trimmedOrNull(input.laneId), true));
+      return noteAgentActivity("floating-apple", input);
+    },
+
+    noteAgentMacDesktopActivity(input) {
+      return noteAgentActivity("floating-mac-desktop", input);
     },
 
     dispose() {

@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
 import { spawnSync } from "node:child_process";
 import {
+  bindDeviceReleaseOnChatEnd,
   bindIosSimulatorReleaseOnChatEnd,
   createAdeRuntime,
   createHeadlessAdeCliAgentEnv,
@@ -65,6 +66,18 @@ describe("createAdeRuntime dispose", () => {
       .map(([kind, count]) => `${kind} x${count - (baseline.get(kind) ?? 0)}`);
   }
 
+  /** Live resources once a disposed runtime's timers have drained (two equal polls in a row). */
+  async function settledResources(): Promise<Map<string, number>> {
+    let last: Map<string, number> | null = null;
+    await vi.waitFor(() => {
+      const now = liveResources();
+      const same = last !== null && now.size === last.size && [...now].every(([kind, count]) => last?.get(kind) === count);
+      last = now;
+      if (!same) throw new Error("resources still draining");
+    }, { timeout: 10_000, interval: 500 });
+    return last ?? liveResources();
+  }
+
   async function buildRuntime(runtimeProfile: "embedded" | "chat" | "full") {
     const projectRoot = makeTempRoot();
     return await createAdeRuntime({
@@ -84,17 +97,42 @@ describe("createAdeRuntime dispose", () => {
       // The first runtime in a process also creates process-wide state (module
       // caches and their timers) that later runtimes share, so measure the second.
       (await buildRuntime(runtimeProfile)).dispose();
-      const before = liveResources();
+      const before = await settledResources();
 
       const runtime = await buildRuntime(runtimeProfile);
       expect(leakedSince(before)).not.toEqual([]);
       runtime.dispose();
 
       expect(() => runtime.db.getJson("probe")).toThrow(/not open/);
-      await vi.waitFor(() => expect(leakedSince(before)).toEqual([]), { timeout: 10_000 });
+      await settledResources();
+      expect(leakedSince(before)).toEqual([]);
     },
     30_000,
   );
+});
+
+describe("bindDeviceReleaseOnChatEnd", () => {
+  it("logs a failure under the caller's own event name", async () => {
+    const listeners: Array<(sessionId: string) => void> = [];
+    const debug = vi.fn();
+    expect(bindDeviceReleaseOnChatEnd({
+      agentChatService: {
+        registerChatSessionEndedListener(listener: (sessionId: string) => void) {
+          listeners.push(listener);
+        },
+      },
+      device: { releaseIfOwnedBy: () => Promise.reject(new Error("no display")) },
+      logEvent: "mac_desktop.release_on_chat_end_failed",
+      logger: { debug },
+    })).toBe(true);
+    listeners[0]!("chat-1");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(debug).toHaveBeenCalledWith(
+      "mac_desktop.release_on_chat_end_failed",
+      { sessionId: "chat-1", error: "no display" },
+    );
+  });
 });
 
 describe("bindIosSimulatorReleaseOnChatEnd", () => {

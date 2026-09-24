@@ -108,6 +108,8 @@ export type BrowserToolbarRowProps = {
   reduceMotion: boolean;
   /** The ⋯ menu, rendered as this row's last child. */
   overflow: ReactNode;
+  /** The pane's own preview/maximize controls, drawn at the far right. */
+  previewControls?: ReactNode;
 };
 
 export function BrowserToolbarRow({
@@ -133,6 +135,7 @@ export function BrowserToolbarRow({
   progressPhase,
   reduceMotion,
   overflow,
+  previewControls,
 }: BrowserToolbarRowProps) {
   const {
     toolbar,
@@ -422,6 +425,10 @@ export function BrowserToolbarRow({
       ) : null}
 
       {overflow}
+
+      {/* The pane's own preview/maximize controls, after the ⋯ menu so they
+          are the row's far right — where the panel-specific controls belong. */}
+      {previewControls}
 
       {/*
         Determinate-feeling progress on the row's own bottom edge: it races

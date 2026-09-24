@@ -26,8 +26,19 @@ import type {
 import type { ExternalSessionDetail, ExternalSessionDetailArgs } from "./externalSessionDetail";
 import type { PtySendToSessionResult, SessionActivityReport, TerminalSessionSummary } from "./sessions";
 import type { PairedRuntimeSyncEnvelope } from "./pairedRuntime";
+import type {
+  MacDesktopClickArgs,
+  MacDesktopDragArgs,
+  MacDesktopReleaseInputArgs,
+  MacDesktopMoveArgs,
+  MacDesktopPressArgs,
+  MacDesktopScrollArgs,
+  MacDesktopStatus,
+  MacDesktopTypeArgs,
+} from "./macDesktop";
 import type { LinearConnectionStatus } from "./linearSync";
 import type { SyncHostConflictPublic, SyncHostReadinessSnapshot } from "./syncHostRecovery";
+import { readAccountRefusalCode } from "../accountMachineRefusal";
 
 export type SyncScalarBytes = {
   type: "bytes";
@@ -449,6 +460,53 @@ export type UnpublishedMachineAdvice = {
   nextAction: string | null;
 };
 
+/** The process holding the machine-wide sync-host lease when it is not us. */
+export type CompetingSyncHostOwner = {
+  /** The owning runtime's app name, e.g. `ADE Alpha`; null when unknown. */
+  appName: string | null;
+  /** The owning process's pid; null when it could not be read. */
+  pid: number | null;
+};
+
+/**
+ * The publisher's `skipReason` for `no_active_sync_scope`.
+ *
+ * `skipReason` is the only field the publisher health round-trips to the popover
+ * and `ade doctor`, and the owning process is the one fact a person needs to end
+ * the condition. One producer here and one reader below, so the pid cannot be
+ * written in a shape the popover fails to parse.
+ */
+export function competingSyncHostSkipReason(owner: CompetingSyncHostOwner): string {
+  const pid = Number.isFinite(owner.pid) && (owner.pid as number) > 0
+    ? Math.floor(owner.pid as number)
+    : null;
+  if (pid == null) {
+    return "Another ADE app on this computer owns sync for this machine.";
+  }
+  const name = owner.appName?.trim() || "ADE";
+  return `Another ADE app on this computer owns sync for this machine (${name}, pid ${pid}).`;
+}
+
+/**
+ * Reads the owning process back out of a `no_active_sync_scope` skipReason.
+ * Returns null for the plain, owner-less sentence and for any other state.
+ */
+export function readCompetingSyncHostOwner(
+  health: SyncAccountDirectoryHealth | null | undefined,
+): CompetingSyncHostOwner | null {
+  const reason = health?.skipReason;
+  if (!reason) return null;
+  const match =
+    /^Another ADE app on this computer owns sync for this machine \((.*), pid (\d+)\)\.$/.exec(reason);
+  if (!match) return null;
+  const pid = Number.parseInt(match[2]!, 10);
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  return { appName: match[1]!.trim() || null, pid };
+}
+
+/** The one next step that ends a competing sync host: quit the other ADE app. */
+export const QUIT_COMPETING_SYNC_HOST_ADVICE = "Quit that ADE to let this one host sync.";
+
 /**
  * User-facing advice for a machine that is signed in but not published.
  *
@@ -463,20 +521,40 @@ export type UnpublishedMachineAdvice = {
  */
 export function describeUnpublishedAccountDirectory(
   state: SyncAccountDirectoryState,
+  /**
+   * The publisher health behind `state`, when the caller has it. Two branches
+   * consult it: `http_error`, where a 403 whose reason names a refusal is the
+   * directory *answering* rather than failing to be reached, and
+   * `no_active_sync_scope`, whose `skipReason` names the ADE app that owns sync.
+   * Optional so CLI callers that only have the state keep today's text.
+   */
+  health?: SyncAccountDirectoryHealth | null,
 ): UnpublishedMachineAdvice {
   switch (state) {
     case "published":
       return { summary: "published to your ADE account", nextAction: null };
-    case "no_active_sync_scope":
+    case "no_active_sync_scope": {
       // NOT "open a project" any more. A brain with no project registered now
       // publishes on its own, so the only way to reach this state is another ADE
       // process on this computer holding the machine-wide sync-host lease — and
       // that process is the one publishing this machine. Telling the user to
       // open a project would hand them an action that cannot change anything.
+      //
+      // When the publisher named the owning process in its `skipReason`, name it
+      // here too: "another ADE app" is not actionable, but "ADE Alpha, pid 9253"
+      // is the app the user has to quit.
+      const owner = readCompetingSyncHostOwner(health ?? null);
+      if (owner?.pid != null) {
+        return {
+          summary: `another ADE app on this computer owns sync for this machine (${owner.appName ?? "ADE"}, pid ${owner.pid})`,
+          nextAction: QUIT_COMPETING_SYNC_HOST_ADVICE,
+        };
+      }
       return {
         summary: "another ADE app on this computer owns sync for this machine",
         nextAction: "ade doctor",
       };
+    }
     case "not_host":
       return {
         summary: "this computer publishes through your main ADE host",
@@ -493,7 +571,7 @@ export function describeUnpublishedAccountDirectory(
       // sends them looking for a switch that is already on.
       return {
         summary: "sync hasn't started on this computer yet",
-        nextAction: "ade doctor",
+        nextAction: "Start sync",
       };
     case "missing_pairing_connect_info":
       return {
@@ -520,7 +598,28 @@ export function describeUnpublishedAccountDirectory(
         summary: "the ADE background service can't read your account session",
         nextAction: "ade brain restart",
       };
-    case "http_error":
+    case "http_error": {
+      // "Can't reach your ADE account" was a lie when the directory was reached
+      // and answered that this machine is not on the account. The refusal code
+      // rides `lastHttpReason`, so branch on it rather than on the state alone.
+      const refusalCode = readAccountRefusalCode(health ?? null);
+      if (refusalCode === "machine_revoked") {
+        return {
+          summary: "this computer was removed from your ADE account",
+          nextAction: "Reconnect this computer",
+        };
+      }
+      if (refusalCode === "pairing_authentication_required") {
+        return {
+          summary: "confirm it's you to reconnect this computer",
+          nextAction: "Confirm it's you",
+        };
+      }
+      return {
+        summary: "can't reach your ADE account right now, retrying",
+        nextAction: null,
+      };
+    }
     case "http_timeout":
     case "token_timeout":
     case "timeout":
@@ -536,6 +635,71 @@ export function describeUnpublishedAccountDirectory(
         nextAction: "restart ADE",
       };
   }
+}
+
+/**
+ * What the one button on a "this computer" card should say, and what pressing
+ * it does. The label follows the brain's refusal code — the same code the
+ * publisher already reports on `lastHttpReason` — so the two surfaces that
+ * render this card can never word it differently.
+ *
+ * A plain publish failure that the directory did not refuse gets "Retry"; a
+ * healthy or inactive state gets no button at all.
+ */
+export type ThisComputerAction = {
+  /** The button's label, or null when this state offers nothing to press. */
+  label: string | null;
+  /** The reconnect has to prove a fresh sign-in before it can go through. */
+  needsSignIn: boolean;
+  /** A plain retry of the failed publish. */
+  retry: boolean;
+  /**
+   * Nobody on this computer hosts sync, so the publisher cannot run. The
+   * button starts (or re-hosts) sync through the brain's own recovery, the
+   * same repair the phone's "Fix connection" runs.
+   */
+  startSync: boolean;
+};
+
+/**
+ * States where nothing has failed. They get no action button: `sync_disabled`
+ * means the user turned sync off, and the rest are "not this computer's turn".
+ */
+const ACCOUNT_DIRECTORY_INACTIVE_STATES: ReadonlySet<SyncAccountDirectoryState> = new Set([
+  "sync_disabled",
+  "no_active_sync_scope",
+  "not_host",
+  "account_signed_out",
+  "machine_key_unavailable",
+  "missing_pairing_connect_info",
+]);
+
+export function thisComputerAction(
+  state: SyncAccountDirectoryState,
+  health?: SyncAccountDirectoryHealth | null,
+): ThisComputerAction {
+  const none = { needsSignIn: false, retry: false, startSync: false };
+  if (state === "published") return { label: null, ...none };
+  const refusal = readAccountRefusalCode(health ?? null);
+  if (refusal === "machine_revoked") {
+    return { label: "Reconnect this computer", ...none };
+  }
+  if (refusal === "pairing_authentication_required") {
+    return { label: "Confirm it's you", ...none, needsSignIn: true };
+  }
+  if (isBrainAccountSessionFailure(state)) {
+    // The Repair control owns this one; the card renders it beside the line.
+    return { label: "Repair", ...none };
+  }
+  if (state === "sync_not_started") {
+    // Not "retry": nothing was published to retry. The sync host is down on
+    // this computer, and the brain's own recovery is the way back up.
+    return { label: "Start sync", ...none, startSync: true };
+  }
+  if (ACCOUNT_DIRECTORY_INACTIVE_STATES.has(state)) {
+    return { label: null, ...none };
+  }
+  return { label: "Retry", ...none, retry: true };
 }
 
 export type SyncAccountDirectoryLegDurations = {
@@ -683,6 +847,20 @@ export type SyncStatusEventPayload = {
 export type SyncFeatureFlags = {
   fileAccess: true;
   terminalStreaming: true;
+  /**
+   * The host can re-publish a lane's Mac Desktop H.264 stream as
+   * `macDesktop.streamRecord` push notifications. Older hosts omit it, and a
+   * client without a decoder keeps the still-image fallback.
+   */
+  macDesktopStream?: true;
+  /**
+   * The host serves `macDesktop.takeControl` and its siblings, so the hosted
+   * web client may take the lane's input lease over the sync socket. Advertised
+   * only when the control commands are registered, exactly like
+   * {@link macDesktopStream}; the phone ignores it (view-only by product
+   * decision), and an older host omits it and keeps the watch-only wording.
+   */
+  macDesktopControl?: true;
   chatStreaming: {
     enabled: true;
   };
@@ -1796,6 +1974,79 @@ export type SyncBrainStatusPayload = {
   cloudRelayWssUrl?: string | null;
 };
 
+// ---------------------------------------------------------------------------
+// Mac Desktop live stream over the sync socket
+//
+// The desktop reads its lane's stream from a token-guarded loopback URL. A
+// paired phone or hosted web client cannot reach that URL, so the brain
+// subscribes to the same loopback stream in-process and re-publishes each
+// framed record as a push notification on the sync socket. The URL and token
+// never cross this boundary; a subscription is keyed by `subscriptionId`.
+// ---------------------------------------------------------------------------
+
+/**
+ * One pushed record. `data` is base64: Annex-B access-unit bytes for a
+ * `frame`, and the JSON `{codec,width,height,annexB}` config object for a
+ * `config`. The first record after subscribe is always a config, then a
+ * keyframe. Under backpressure the host may skip frames, and a resumed stream
+ * always begins again at a keyframe.
+ */
+export type SyncMacDesktopStreamRecordPayload = {
+  subscriptionId: string;
+  /** Host-assigned, per-subscription, monotonically increasing. */
+  seq: number;
+  kind: "config" | "frame";
+  keyframe: boolean;
+  /** Microseconds since the subscription attached; monotonic per subscription. */
+  timestampUs: number;
+  data: string;
+};
+
+export type SyncMacDesktopStreamEndedPayload = {
+  subscriptionId: string;
+  reason: "unsubscribed" | "stopped" | "display_destroyed" | "connection_closed" | "error";
+  message?: string;
+};
+
+/** The `macDesktop.streamSubscribe` reply. */
+export type SyncMacDesktopStreamSubscribeResult = {
+  ok: true;
+  width: number | null;
+  height: number | null;
+  codec: string | null;
+};
+
+/**
+ * One forwarded real-input call from a web controller.
+ *
+ * The same calls the desktop's `useMacDesktopRealInput` builds, so the
+ * translation from a browser event is one shared function rather than a second
+ * implementation per surface. The args are the service's own shapes; the host
+ * strips every caller-asserted identity from them (`controllerId`, `holderId`,
+ * `chatSessionId`), forces `silent`, and re-fills the controller id it derives
+ * from the socket, so nothing here can name a lease it does not hold.
+ *
+ * `releaseInput` is not an event: it is the panic release behind Escape, and
+ * a remote controller needs it more than the desktop does, not less. Its
+ * network is the thing most likely to stall mid-gesture, and it is the one
+ * caller that can leave a button held down on a Mac in another room.
+ */
+export type SyncMacDesktopInputCall =
+  | { kind: "click"; args: MacDesktopClickArgs }
+  | { kind: "move"; args: MacDesktopMoveArgs }
+  | { kind: "scroll"; args: MacDesktopScrollArgs }
+  | { kind: "type"; args: MacDesktopTypeArgs }
+  | { kind: "press"; args: MacDesktopPressArgs }
+  | { kind: "drag"; args: MacDesktopDragArgs }
+  | { kind: "releaseInput"; args: MacDesktopReleaseInputArgs };
+
+/**
+ * The lane's macOS screen as a sync client may read it. `MacDesktopStatus` is
+ * already token-free (the stream is a summary); this only pins the recording
+ * to null, because its `filePath` is host state no read-only client can use.
+ */
+export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & { recording: null };
+
 export type SyncRunQuickCommandArgs = {
   laneId: string;
   title: string;
@@ -2282,6 +2533,24 @@ export type SyncRemoteCommandAction =
   // panes, they never drive them.
   | "workTools.getLaneState"
   | "workTools.readObservationPreview"
+  // The lane's private macOS screen. `getStatus` / `streamSubscribe` /
+  // `streamUnsubscribe` are read-only; `start` / `stop` exist for the hosted
+  // web client (the phone is view-only and never calls them). Records and the
+  // end notice are pushed back on dedicated `macDesktop.streamRecord` /
+  // `macDesktop.streamEnded` envelopes.
+  | "macDesktop.getStatus"
+  | "macDesktop.start"
+  | "macDesktop.stop"
+  | "macDesktop.streamSubscribe"
+  | "macDesktop.streamUnsubscribe"
+  // Takeover from the hosted web client. Deliberately NOT viewer-allowed: a
+  // read-only viewer watches, a paired/account controller drives. The brain
+  // derives the lease's controller id from the socket's connection id plus the
+  // caller's per-tab token, so a client can only return or renew its own lease.
+  | "macDesktop.takeControl"
+  | "macDesktop.returnControl"
+  | "macDesktop.renewLease"
+  | "macDesktop.input"
   // Apple device environment. `apple.status` and `apple.streamTicket` are
   // viewer-allowed (the phone is view-only); everything that drives or
   // provisions a device is controller-only, so a viewer role cannot tap.
@@ -2422,6 +2691,19 @@ export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_hist
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
+/**
+ * Host→client push for a Mac Desktop stream subscription. The type names match
+ * the sync command namespace on purpose: a client dispatches these by the same
+ * action vocabulary it called `macDesktop.streamSubscribe` with.
+ */
+export type SyncMacDesktopStreamRecordEnvelope = SyncEnvelopeWithPayload<
+  "macDesktop.streamRecord",
+  SyncMacDesktopStreamRecordPayload
+>;
+export type SyncMacDesktopStreamEndedEnvelope = SyncEnvelopeWithPayload<
+  "macDesktop.streamEnded",
+  SyncMacDesktopStreamEndedPayload
+>;
 export type SyncChatToolResultEnvelope = SyncEnvelopeWithPayload<
   "chat_tool_result",
   SyncChatToolResultRequestPayload | SyncChatToolResultResponsePayload
@@ -2514,6 +2796,8 @@ export type SyncEnvelope =
   | SyncChatSubscribeEnvelope
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
+  | SyncMacDesktopStreamRecordEnvelope
+  | SyncMacDesktopStreamEndedEnvelope
   | SyncChatHistoryEnvelope
   | SyncChatToolResultEnvelope
   | SyncBrainStatusEnvelope

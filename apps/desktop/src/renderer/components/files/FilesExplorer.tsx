@@ -78,6 +78,8 @@ export type FilesExplorerProps = {
   onRenamePath: (sourcePath: string, destinationPath: string) => Promise<void>;
   onInlineRenameSettled: () => void;
   compact?: boolean;
+  /** Paint no surface of its own, e.g. in the project sidebar. */
+  flat?: boolean;
 };
 
 function parentDirOfPath(filePath: string): string {
@@ -185,6 +187,7 @@ export function FilesExplorer({
   onRenamePath,
   onInlineRenameSettled,
   compact = false,
+  flat = false,
 }: FilesExplorerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const fileIconColorFor = useFileIconColor();
@@ -281,7 +284,7 @@ export function FilesExplorer({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: COLORS.cardBg, borderRadius: 8 }}>
+    <div className="flex h-full min-h-0 flex-col" style={flat ? undefined : { background: COLORS.cardBg, borderRadius: 8 }}>
       {/*
         Hidden in the Work tools pane: the pane's own 40px chrome row already
         carries the breadcrumb and a search that opens the same panel, so this

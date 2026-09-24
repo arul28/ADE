@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
+  MAC_DESKTOP_AGENT_DRIVING_ACTIONS,
+  MAC_DESKTOP_LANE_BOUND_ACTIONS,
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
@@ -5624,6 +5626,47 @@ describe("adeRpcServer", () => {
     expect(noteAgentAppleActivity).not.toHaveBeenCalled();
   });
 
+  it("tells the desktop when an agent drives its lane's Mac Desktop, and not for reads or the user's own input", async () => {
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const noteAgentAppleActivity = vi.fn();
+    const noteAgentMacDesktopActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentAppleActivity, noteAgentMacDesktopActivity };
+    fixture.runtime.macDesktopService = {
+      click: vi.fn(async (args: unknown) => args),
+      getStatus: vi.fn(async () => ({ supported: true })),
+    } as any;
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const clicked = await callTool(agent, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { x: 10, y: 20 },
+    });
+    expect(clicked?.isError).toBeUndefined();
+    // Accessibility-mode input takes no lease, so this note is what lets the
+    // card float for the acting chat, and only for it.
+    expect(noteAgentMacDesktopActivity).toHaveBeenCalledWith({ chatSessionId: "chat-a", laneId: "lane-a" });
+    expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+
+    noteAgentMacDesktopActivity.mockClear();
+    await callTool(agent, "run_ade_action", { domain: "mac_desktop", action: "getStatus", args: {} });
+    expect(noteAgentMacDesktopActivity).not.toHaveBeenCalled();
+
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { laneId: "lane-a", x: 1, y: 2 },
+    });
+    expect(noteAgentMacDesktopActivity).not.toHaveBeenCalled();
+  });
+
   it("lets only user clients delete an installed simulator", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
@@ -5814,6 +5857,196 @@ describe("adeRpcServer", () => {
     });
     expect(humanWrite?.isError).toBeUndefined();
     expect(setActiveTool).toHaveBeenCalledWith({ laneId: "lane-b", tool: "browser" });
+  });
+
+  it("pins mac_desktop to the caller's own chat session and lane", async () => {
+    // `chatSessionId` on this domain is WHO holds the display's input lease and
+    // whose turn a clip is charged to. Nothing checked it belonged to the
+    // caller, so an agent in chat A could act as chat B.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const getStatus = vi.fn(async () => ({ supported: true, running: false }));
+    const observe = vi.fn(async (args: unknown) => args);
+    fixture.runtime.macDesktopService = { getStatus, observe } as any;
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    // A foreign lane is refused outright rather than silently swapped for the
+    // caller's own: the old behavior made `--lane lane-b` fail with a message
+    // naming lane-a, which reads as a bug in the wrong place. Both lanes are
+    // named in the refusal.
+    const foreign = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(foreign?.isError).toBe(true);
+    const foreignText = JSON.stringify(foreign);
+    expect(foreignText).toContain("bound to lane lane-a");
+    expect(foreignText).toContain("--lane lane-b was ignored");
+    expect(observe).not.toHaveBeenCalled();
+
+    // Naming the caller's own lane is a no-op, and the chat attribution is
+    // filled in rather than trusted: an agent's call belongs to the chat that
+    // made it.
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-a", chatSessionId: "chat-b" },
+    });
+    expect(own?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-a",
+      chatSessionId: "chat-a",
+    }));
+
+    // Omitting it entirely is filled in, not left blank: an agent's call is
+    // always attributed to the chat that made it.
+    observe.mockClear();
+    const missing = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-a" },
+    });
+    expect(missing?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-a",
+      chatSessionId: "chat-a",
+    }));
+
+    // A run/step identity has no chat of its own and no lane to be pinned to,
+    // so an acting command is refused rather than run against whichever lane it
+    // named. The capability probe still answers.
+    observe.mockClear();
+    getStatus.mockClear();
+    const stepHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(stepHandler, { callerId: "step-1", role: "agent", runId: "run-1", stepId: "step-1" });
+    const step = await callTool(stepHandler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(step.isError).toBe(true);
+    expect(observe).not.toHaveBeenCalled();
+    const stepStatus = await callTool(stepHandler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "getStatus",
+      args: { laneId: "lane-b" },
+    });
+    expect(stepStatus?.isError).toBeUndefined();
+    expect(getStatus).toHaveBeenCalled();
+
+    // A user client keeps what it sent: the desktop renderer, the web client and
+    // a paired phone each drive whichever lane's display their UI is showing.
+    observe.mockClear();
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-b",
+      chatSessionId: "chat-b",
+    }));
+  });
+
+  it("refuses CTO-only mac_desktop actions to an agent-shaped CTO caller, not to user clients", async () => {
+    // A chat identity is clamped to `agent`, but a run/step identity keeps the
+    // CTO role it asked for, and the role gate alone let it through:
+    // `startStream` returns the unredacted loopback token, and with it the
+    // agent could post real input under the human's takeover id read off
+    // `getStatus`.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const startStream = vi.fn(async () => ({ token: "secret" }));
+    const requestPermission = vi.fn(async () => ({ ok: true }));
+    const takeControl = vi.fn(async () => ({ ok: true }));
+    const getStatus = vi.fn(async () => ({ supported: true }));
+    fixture.runtime.macDesktopService = { getStatus, startStream, requestPermission, takeControl } as any;
+
+    const cto = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(cto, { callerId: "step-1", role: "cto", runId: "run-1", stepId: "step-1" });
+    for (const action of ["startStream", "requestPermission", "takeControl"]) {
+      const refused = await callTool(cto, "run_ade_action", {
+        domain: "mac_desktop",
+        action,
+        args: { laneId: "lane-a" },
+      });
+      expect(refused?.isError).toBe(true);
+    }
+    expect(startStream).not.toHaveBeenCalled();
+    expect(requestPermission).not.toHaveBeenCalled();
+    expect(takeControl).not.toHaveBeenCalled();
+
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "startStream",
+      args: { laneId: "lane-b" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(startStream).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b" }));
+  });
+
+  it("strips a caller-supplied controllerId and holderId from mac_desktop calls", async () => {
+    // `getStatus().lease.holderId` prints the human's takeover controller id to
+    // any caller that can read the lane. The service prefers `controllerId` over
+    // the chat id when it decides who is holding the input lease, so echoing the
+    // id back would have let an agent post real input as the user. Reading it
+    // stays possible; using it does not.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const click = vi.fn(async (args: unknown) => args);
+    const getStatus = vi.fn(async () => ({ supported: true }));
+    fixture.runtime.macDesktopService = { click, getStatus } as any;
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    const forged = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: {
+        laneId: "lane-a",
+        x: 10,
+        y: 10,
+        controllerId: "ade-window:human-takeover",
+        holderId: "ade-window:human-takeover",
+        mode: "real",
+      },
+    });
+    expect(forged?.isError).toBeUndefined();
+    const forwarded = click.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty("controllerId");
+    expect(forwarded).not.toHaveProperty("holderId");
+    expect(forwarded).toMatchObject({ laneId: "lane-a", chatSessionId: "chat-a" });
+
+    // A user client keeps both: the takeover itself is driven by a controller id.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { laneId: "lane-a", x: 10, y: 10, controllerId: "ade-window:human-takeover" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(click).toHaveBeenLastCalledWith(expect.objectContaining({
+      controllerId: "ade-window:human-takeover",
+    }));
   });
 
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
@@ -7659,5 +7892,56 @@ describe("run_ade_action search scope", () => {
     });
     expect(status?.isError).toBeUndefined();
     expect(search.indexStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("MAC_DESKTOP_LANE_BOUND_ACTIONS", () => {
+  it("covers every acting mac_desktop action, derived from the allowlist", () => {
+    // Pinned deliberately: the set is DERIVED from the action allowlist, so a
+    // new `mac_desktop` action lands here automatically and this assertion is
+    // the place the reviewer decides whether it is an act or a read.
+    expect([...MAC_DESKTOP_LANE_BOUND_ACTIONS].sort()).toEqual([
+      "claimWindow",
+      "click",
+      "drag",
+      "move",
+      "observe",
+      "open",
+      "present",
+      "press",
+      "releaseWindow",
+      "requestInputLease",
+      "screenshot",
+      "scroll",
+      "start",
+      "startRecording",
+      "stop",
+      "stopRecording",
+      "type",
+      "wait",
+    ]);
+    // Everything absent from that list is either a read that answers without a
+    // lane (`getStatus`, `listWindows`, `getStreamStatus`) or one of the
+    // CTO-only viewing actions gated by role — the pin above is what says so.
+  });
+});
+
+describe("MAC_DESKTOP_AGENT_DRIVING_ACTIONS", () => {
+  it("covers every acting mac_desktop action, derived from the allowlist", () => {
+    // Derived like the lane-bound set: a new acting action lands here on its
+    // own, and this pin is where a reviewer decides it drives the display.
+    expect([...MAC_DESKTOP_AGENT_DRIVING_ACTIONS].sort()).toEqual([
+      "claimWindow",
+      "click",
+      "drag",
+      "move",
+      "open",
+      "present",
+      "press",
+      "scroll",
+      "start",
+      "startRecording",
+      "type",
+    ]);
   });
 });

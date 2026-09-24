@@ -7,9 +7,22 @@ import { docs } from "../../onboarding/docsLinks";
 import { cn } from "../ui/cn";
 import { ADE_WELCOME_VIDEO_REPLAY_EVENT } from "../../../shared/welcomeVideo";
 
-type MenuPosition = { top: number; right: number } | null;
+type MenuPosition = { top: number; left?: number; right?: number } | null;
 
-export function HelpMenu() {
+/**
+ * The question-mark menu: docs, the welcome video, and help preferences.
+ * `align` picks which edge of the button the menu lines up with; a button near
+ * the left edge of the window wants "start" so the menu opens into the window.
+ */
+export function HelpMenu({
+  align = "end",
+  className,
+  iconSize = 14,
+}: {
+  align?: "start" | "end";
+  className?: string;
+  iconSize?: number;
+} = {}) {
   const smartTooltipsEnabled = useAppStore((s) => s.smartTooltipsEnabled);
   const setSmartTooltipsEnabled = useAppStore((s) => s.setSmartTooltipsEnabled);
 
@@ -27,9 +40,13 @@ export function HelpMenu() {
     const el = buttonRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPosition({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) });
+    setPosition(
+      align === "start"
+        ? { top: r.bottom + 6, left: Math.max(8, r.left) }
+        : { top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) },
+    );
     setOpen(true);
-  }, []);
+  }, [align]);
 
   useEffect(() => {
     if (!open) return;
@@ -73,16 +90,18 @@ export function HelpMenu() {
         aria-expanded={open}
         title="Help · welcome video, docs, and preferences"
         className={cn(
-          "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
+          "inline-flex items-center justify-center",
           "transition-[background-color,color,border-color,box-shadow] duration-150",
+          className,
         )}
+        data-state={open ? "open" : undefined}
         onClick={() => (open ? close() : openAt())}
         style={{
           WebkitAppRegion: "no-drag",
           color: open ? "var(--color-accent)" : undefined,
         } as React.CSSProperties}
       >
-        <Question size={14} weight={open ? "fill" : "regular"} />
+        <Question size={iconSize} weight={open ? "fill" : "regular"} />
       </button>
 
       {open && position
@@ -95,6 +114,7 @@ export function HelpMenu() {
               style={{
                 position: "fixed",
                 top: position.top,
+                left: position.left,
                 right: position.right,
                 zIndex: 9999,
                 minWidth: 268,

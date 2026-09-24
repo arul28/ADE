@@ -11,10 +11,6 @@ vi.mock("../chat/ChatGitToolbar", () => ({
   ),
 }));
 
-vi.mock("../terminals/WorkToolPickerBackdrop", () => ({
-  WorkToolPickerBackdrop: () => <div data-testid="header-backdrop" />,
-}));
-
 vi.mock("../terminals/LaneChip", () => ({
   LaneChip: ({ laneName, onClick }: { laneName: string; onClick?: () => void }) => (
     <button data-testid="lane-chip" onClick={onClick}>
@@ -180,7 +176,8 @@ describe("WorkSurfaceHeader", () => {
       />,
     );
     expect(screen.getByText("Centered chat")).toBeTruthy();
-    expect(screen.getByTestId("header-backdrop")).toBeTruthy();
+    // The chat header is plain; only the top bar carries the window gradient.
+    expect(document.querySelector("[data-backdrop]")).toBeNull();
     expect(screen.queryByTestId("lane-chip")).toBeNull();
     const toolbar = screen.getByTestId("chat-git-toolbar");
     const toggle = screen.getByRole("button", { name: "Open Tools pane" });

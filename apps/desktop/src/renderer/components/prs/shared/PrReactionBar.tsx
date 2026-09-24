@@ -2,6 +2,7 @@ import { memo, useEffect, useRef, useState } from "react";
 
 import type { PrReactionContent, PrReviewThreadReaction } from "../../../../shared/types";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { AnchoredMenu } from "../../ui/AnchoredMenu";
 
 const REACTION_OPTIONS: Array<{ content: PrReactionContent; label: string }> = [
   { content: "+1", label: "👍" },
@@ -52,6 +53,7 @@ export const PrReactionBar = memo(function PrReactionBar({
   const [localReactions, setLocalReactions] = useState<PrReviewThreadReaction[]>(reactions);
   const subjectKeyRef = useRef(subjectKey);
   const pendingRef = useRef(0);
+  const pickerButtonRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
     if (subjectKeyRef.current !== subjectKey) {
@@ -134,6 +136,7 @@ export const PrReactionBar = memo(function PrReactionBar({
       {canReact ? (
         <div className="relative">
           <button
+            ref={pickerButtonRef}
             type="button"
             onClick={() => setPickerOpen((open) => !open)}
             aria-label="Add reaction"
@@ -144,29 +147,31 @@ export const PrReactionBar = memo(function PrReactionBar({
           >
             +
           </button>
-          {pickerOpen ? (
-            <div
-              role="menu"
-              className="ade-liquid-glass-menu absolute left-0 top-[26px] z-20 flex items-center gap-0.5 px-1 py-1"
-              data-pr-reaction-picker
-              data-pr-id={prId}
-            >
-              {REACTION_OPTIONS.map((option) => (
-                <button
-                  key={option.content}
-                  type="button"
-                  onClick={() => {
-                    void react(option.content);
-                    setPickerOpen(false);
-                  }}
-                  aria-label={`React ${option.content}`}
-                  className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-white/[0.08]"
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
+          {/* Portalled so the timeline's scroll pane and later rows cannot cover it. */}
+          <AnchoredMenu
+            open={pickerOpen}
+            anchorRef={pickerButtonRef}
+            onClose={() => setPickerOpen(false)}
+            role="menu"
+            className="ade-liquid-glass-menu flex items-center gap-0.5 px-1 py-1"
+            data-pr-reaction-picker
+            data-pr-id={prId}
+          >
+            {REACTION_OPTIONS.map((option) => (
+              <button
+                key={option.content}
+                type="button"
+                onClick={() => {
+                  void react(option.content);
+                  setPickerOpen(false);
+                }}
+                aria-label={`React ${option.content}`}
+                className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-white/[0.08]"
+              >
+                {option.label}
+              </button>
+            ))}
+          </AnchoredMenu>
         </div>
       ) : null}
     </div>

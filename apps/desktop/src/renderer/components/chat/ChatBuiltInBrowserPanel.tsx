@@ -100,6 +100,7 @@ import { BrowserStage, type BrowserLaunchpadGroup } from "./browser/BrowserStage
 import { BrowserTabStrip } from "./browser/BrowserTabStrip";
 import { orderBrowserTabsByLane } from "./browser/browserTabGroups";
 import { BrowserToolbarRow } from "./browser/BrowserToolbarRow";
+import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   MENU_ITEM_CLASS,
   MENU_LABEL_CLASS,
@@ -2397,6 +2398,9 @@ export function ChatBuiltInBrowserPanel({
     hasSelection,
     canAttachContext,
     recording: isRecording,
+    // The pane always draws two fixed controls at the far right (preview
+    // toggle + maximize); price them so the omnibox is not clipped by them.
+    extraRightControlCount: 2,
   }), [canAttachContext, hasSelection, isRecording, paneWidth]);
   /**
    * `status != null` matters: before the first status lands the panel knows
@@ -2775,6 +2779,7 @@ export function ChatBuiltInBrowserPanel({
               selectionFrame={selectionFrame}
             />
           )}
+          previewControls={<WorkToolPreviewControls tool="browser" chatSessionId={sessionId} />}
         />
 
         <BrowserFindBar

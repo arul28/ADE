@@ -59,6 +59,7 @@ import { setPendingSessionAnchor } from "./pendingSessionAnchors";
 import { seedCrossMachineOptimisticSession, useRetainedCrossMachineSlices } from "../../state/crossMachineLanes";
 import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachines";
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
+import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
 import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
 import { mergeChatLaunchRows, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
 import { subscribeChatLaunchClosed } from "../chat/launch/chatLaunchDraftRestore";
@@ -797,7 +798,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workCollapsedLaneIds = projectViewState.workCollapsedLaneIds ?? EMPTY_STRING_ARRAY;
   const workCollapsedTabGroupIds = projectViewState.workCollapsedTabGroupIds ?? EMPTY_STRING_ARRAY;
   const workCollapsedSectionIds = projectViewState.workCollapsedSectionIds ?? EMPTY_STRING_ARRAY;
-  const workFocusSessionsHidden = projectViewState.workFocusSessionsHidden ?? false;
   const workSidebarOpen = projectViewState.workSidebarOpen ?? false;
   const workSidebarWidthPct = projectViewState.workSidebarWidthPct ?? 36;
   const laneSessionOrder = projectViewState.laneSessionOrder ?? EMPTY_LANE_SESSION_ORDER;
@@ -1147,13 +1147,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
           pinnedSessionIds: has ? cur.filter((id) => id !== sessionId) : [...cur, sessionId],
         };
       });
-    },
-    [setProjectViewState],
-  );
-
-  const setWorkFocusSessionsHidden = useCallback(
-    (hidden: boolean) => {
-      setProjectViewState({ workFocusSessionsHidden: hidden });
     },
     [setProjectViewState],
   );
@@ -2260,6 +2253,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {
+    // Every caller is a delete: the session record is gone for good, so its
+    // companion UI record goes with it rather than accumulating until the
+    // storage prune evicts a live chat's state instead.
+    clearChatCompanionUiState(sessionId);
     setHostSessions((prev) => prev.filter((session) => session.id !== sessionId));
   }, []);
 
@@ -2456,8 +2453,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     reorderLaneSessions,
     togglePinnedSession,
 
-    workFocusSessionsHidden,
-    setWorkFocusSessionsHidden,
     workSidebarOpen,
     setWorkSidebarOpen,
     workSidebarWidthPct,

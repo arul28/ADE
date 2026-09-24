@@ -2004,8 +2004,8 @@ long as the URL still points at the selected PR and drops them when the
 PR changes. `PrDetailPane` reads them on mount to scroll / open the
 right card and to pick the right sub-tab. `PRsPage` also writes the
 most recent `/prs...` path to `localStorage` via `writeStoredPrsRoute`
-scoped per project root, so the top-bar `TabNav` can route back to the
-user's last PR selection when they click the PRs tab from elsewhere.
+scoped per project root, so the project sidebar's PRs tab
+(`projectSidebarTabs.ts`) can route back to the user's last PR selection when they click the PRs tab from elsewhere.
 
 Event sources: `buildTimelineEvents` prepends a synthetic `pr_opened`
 event (title, PR number, head/base branches, draft flag, additions /

@@ -69,6 +69,13 @@ vi.mock("../apple/useLaneAppleDevices", async (importOriginal) => ({
   useLaneAppleDevices: () => laneAppleDevicesForTest,
 }));
 
+// The Mac Desktop hook reads the runtime too; tests seed its lane set directly.
+const { laneMacDesktopsForTest } = vi.hoisted(() => ({ laneMacDesktopsForTest: new Set<string>() }));
+vi.mock("./useLaneMacDesktops", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./useLaneMacDesktops")>()),
+  useLaneMacDesktops: () => laneMacDesktopsForTest,
+}));
+
 function makePr(overrides: Partial<PrSummary> = {}): PrSummary {
   return {
     id: "pr-1",
@@ -183,7 +190,7 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
   return render(paneElement(props));
 }
 
-/** The one shared header shape: sticky wrapper + the hairline row inside it. */
+/** The one shared header shape: the wrapper + the hairline row inside it. */
 function headerRow(sectionId: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(
     `[data-section-id="${sectionId}"] > div`,
@@ -3049,18 +3056,6 @@ describe("SessionListPane header shape", () => {
     expect(within(collapsedHeader).getByText("Known Lane (2)")).toBeTruthy();
   });
 
-  it("hides the sessions list from a control next to search", () => {
-    const onToggleSessionsPane = vi.fn();
-    renderPane({ onToggleSessionsPane });
-    const header = screen.getByTestId("work-session-list-header");
-    const hide = screen.getByRole("button", { name: "Hide sessions" });
-    expect(header.contains(hide)).toBe(true);
-    const search = screen.getByTestId("work-sidebar-search");
-    expect(search.compareDocumentPosition(hide) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
-    fireEvent.click(hide);
-    expect(onToggleSessionsPane).toHaveBeenCalledTimes(1);
-  });
-
   it("opens the command palette from the search button", () => {
     const setQ = vi.fn();
     renderPane({ setQ });
@@ -3076,10 +3071,6 @@ describe("SessionListPane header shape", () => {
     expect(setQ).not.toHaveBeenCalled();
   });
 
-  it("offers a New lane button", () => {
-    renderPane();
-    screen.getByRole("button", { name: "New lane" });
-  });
 });
 
 describe("SessionListPane visual hierarchy", () => {
@@ -4093,6 +4084,26 @@ describe("SessionListPane Apple device marks", () => {
     const identity = card.querySelector('[data-session-lane-identity="Solo lane"]') as HTMLElement;
     const mark = within(identity).getByRole("img", { name: "iPad Air on this lane (off)" });
     expect(mark.getAttribute("data-lane-apple-device-running")).toBe("false");
+  });
+
+  it("marks a lane holding a Mac Desktop display, on its header or its lone card, and no other", () => {
+    laneMacDesktopsForTest.add("lane-group");
+    laneMacDesktopsForTest.add("lane-solo");
+    try {
+      const { container } = renderLanes();
+
+      const header = container.querySelector('[data-section-id="lane-group"]') as HTMLElement;
+      expect(within(header).getByRole("img", { name: "Mac Desktop running on this lane" })).toBeTruthy();
+      const soloCard = container.querySelector('[data-session-id="session-solo"]') as HTMLElement;
+      const identity = soloCard.querySelector('[data-session-lane-identity="Solo lane"]') as HTMLElement;
+      expect(identity.querySelector('[data-lane-mac-desktop="lane-solo"]')).toBeTruthy();
+      const plainCard = container.querySelector('[data-session-id="session-plain"]') as HTMLElement;
+      expect(plainCard.querySelector("[data-lane-mac-desktop]")).toBeNull();
+      // Rows under a marked header do not repeat the mark.
+      expect(container.querySelectorAll("[data-lane-mac-desktop]")).toHaveLength(2);
+    } finally {
+      laneMacDesktopsForTest.clear();
+    }
   });
 
   it("leaves lanes without a device unmarked", () => {

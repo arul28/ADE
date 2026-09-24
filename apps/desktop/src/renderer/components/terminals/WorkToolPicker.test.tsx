@@ -66,6 +66,7 @@ describe("WorkToolPicker", () => {
     // Still behind the cards: painted first, so the scrolling column sits on
     // top of it without needing a z-index.
     expect(backdrop?.nextElementSibling).toBe(scroller);
+    expect(document.querySelector("[data-tool-picker-scrim]")).toBeNull();
   });
 
   it("renders an untitled column of cards, each with its live status line", () => {

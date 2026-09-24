@@ -18,6 +18,7 @@ import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
+import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
 import {
   getAppleMiniPlayerLaneDevice,
@@ -29,7 +30,6 @@ import {
 } from "../apple/appleMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
-import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
@@ -287,38 +287,26 @@ function WorkGitTool({
   if (pinnedMachineOffline) {
     return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
-  const hasDiffSelection = Boolean(selectedPath || selectedCommit);
+  // The pane shows the selected file or commit's diff itself, in place of the
+  // file list, so it gets the full height. Wrapping it in an auto-height box
+  // and mounting a second diff below squeezed the pane's own sections to
+  // nothing and loaded every diff twice.
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={cn("min-h-0 overflow-auto", hasDiffSelection ? "max-h-[58%] shrink-0" : "flex-1")}>
-        <LaneGitActionsPane
-          key={`work-git:${mountScope}:${laneId}`}
-          laneId={laneId}
-          runtimePin={runtimePin}
-          variant="pane"
-          autoRebaseEnabled={false}
-          onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
-          onSelectFile={onSelectFile}
-          onSelectCommit={onSelectCommit}
-          onClearDiffSelection={onClearDiffSelection}
-          selectedPath={selectedPath}
-          selectedMode={selectedMode}
-          selectedCommit={selectedCommit}
-          selectedCommitSha={selectedCommit?.sha ?? null}
-        />
-      </div>
-      {hasDiffSelection ? (
-        <div className="min-h-0 flex-1 border-t border-white/[0.08]">
-          <LaneDiffPane
-            laneId={laneId}
-            runtimePin={runtimePin}
-            selectedPath={selectedPath}
-            selectedFileMode={selectedMode}
-            selectedCommit={selectedCommit}
-            liveSync
-          />
-        </div>
-      ) : null}
+      <LaneGitActionsPane
+        key={`work-git:${mountScope}:${laneId}`}
+        laneId={laneId}
+        runtimePin={runtimePin}
+        autoRebaseEnabled={false}
+        onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
+        onSelectFile={onSelectFile}
+        onSelectCommit={onSelectCommit}
+        onClearDiffSelection={onClearDiffSelection}
+        selectedPath={selectedPath}
+        selectedMode={selectedMode}
+        selectedCommit={selectedCommit}
+        selectedCommitSha={selectedCommit?.sha ?? null}
+      />
     </div>
   );
 }
@@ -550,6 +538,49 @@ function WorkAppControlTool({
   );
 }
 
+/**
+ * The lane's private macOS screen.
+ *
+ * Read-only on the hosted web client in the one sense that matters: no
+ * takeover and no real input, because there is no way to hold the input lease
+ * over a sync socket. It still plays the live picture when the host advertises
+ * `macDesktopStream`, and it can start or stop the lane's display. Everywhere
+ * else — including a Windows or Linux desktop watching a Mac-hosted lane —
+ * this is the full panel: the display lives on the runtime host, so the
+ * viewer's own platform never enters into it.
+ */
+function WorkMacDesktopTool({
+  laneId,
+  activeLane,
+  toolContext,
+  panelSessionId,
+  runtimePin,
+  warningReason,
+}: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade mac-desktop show` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("mac-desktop", mountScope, laneId) : null);
+  if (isReadOnlyWorkTool("mac-desktop", toolContext)) {
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />
+      </div>
+    );
+  }
+  if (!laneId) return <NoLaneNotice />;
+  return (
+    <NativePanelFrame warningReason={warningReason} padded frameRef={mountRef}>
+      <ChatMacDesktopPanel
+        key={`work-mac-desktop:${mountScope}`}
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+      />
+    </NativePanelFrame>
+  );
+}
+
 function WorkPrTool({
   laneId,
   activeLane,
@@ -579,5 +610,6 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   files: WorkFilesTool,
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
+  "mac-desktop": WorkMacDesktopTool,
   pr: WorkPrTool,
 };

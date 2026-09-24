@@ -173,9 +173,9 @@ for its separate RPC, sync, storage, and UI contracts.
 | `apps/desktop/src/main/services/builtInBrowser/builtInBrowserPreviewStream.ts` | Refcounted, skip-never-queue, pause-when-invisible preview frames for the Work tab's corner card. Subscriber counts are keyed by owner so a departed renderer releases only its own holds. The Electron surface (`capturePage` / `nativeImage.resize` / `toJPEG`) is injected, so the scheduling rules are testable without a browser. |
 | `apps/desktop/src/main/services/devServers/devServerRegistry.ts` | Passive dev-server discovery riding `ptyService`'s existing output pass: one bounded regex per chunk plus a carry for a line split across chunk boundaries. Nothing opens a socket or makes a request. In-memory with no persistence — a port that was live last week says nothing about this app session. |
 | `apps/desktop/src/shared/agentObservationNormalizers.ts`, `apps/desktop/src/main/services/shared/agentObservationCache.ts` | The two halves shared by the built-in browser and App Control, which evaluate the *same* DOM collector and write the same `<id>.json` / `<id>.png` / `<id>.map.png` triples. The normalizers validate the untrusted CDP shapes and own the single trace-target redaction rule (a fork of `actionTargetForTrace` had already drifted, so typing an API key wrote a `textLength` on one surface and the key itself on the other); the cache owns the two disk sweeps. Both are dependency-free so the Electron browser and the headless-daemon App Control service can import them. |
-| `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`, `workLiveCard.ts`, `WorkLiveIosStreamView.tsx`, `apps/desktop/src/renderer/state/workLiveCardState.ts` | The floating live-preview card: which tool it shows, per-tool/per-lane dismissal stamps, the fractional position, and the Apple-device H.264 stream keyed by device udid (native picture-in-picture via `canvas.captureStream()`). The persisted shapes and their normalizers live in `state/` so the store can import them without reaching into a component module. |
+| `apps/desktop/src/renderer/components/work/WorkLiveCornerCard.tsx`, `workLiveCard.ts`, `workLiveIosPictureInPicture.ts`, `apps/desktop/src/renderer/state/workLiveCardState.ts` | The floating live-preview card: which tool it shows (scoped to the chat on screen), the aspect-derived box, the right-corner card's per-chat closed/floated flags (`chatCompanionUiState.ts`), per-tool/per-lane dismissal stamps, the fractional position and persisted width, and the Apple-device H.264 stream keyed by device udid, with native picture-in-picture through `canvas.captureStream()`. The persisted shapes and their normalizers live in `state/` so the store can import them without reaching into a component module. |
 | `apps/desktop/src/renderer/components/terminals/useNativeToolSessions.ts`, `NativeToolFeedsContext.tsx`, `workToolErrors.ts` | The three native tool feeds (browser, App Control, simulator) as one subscription set, provided once by `TerminalsPage` and read by both the tools pane and the corner card, plus the pure fold over pushed browser `diagnostics` events behind the red half of the activity dots. |
-| `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome. `AgentChatPane` renders `CenteredWorkSurfaceHeader`: no lane chip, the thread title centered over a header slice of the new-chat mesh (`WorkToolPickerBackdrop` `variant="header"`), and a right cluster with the snooze chip, cache badge, trailing actions (browser presence, **Open terminal** when `useAttachedTerminalShells` finds an attached shell), the git toolbar in badge-only mode, the chat progress icon (`actionsToggle`), and the Tools toggle. CLI surfaces render `WorkSurfaceHeader` (title and lane chip on the left). Also the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. The `WorkSurfaceTitle` sub-component plays a one-time CSS shimmer when the title transitions from a provider default (`Claude Chat`, `Codex Chat`, …) to a real auto-generated title while the surface stays mounted, and respects `prefers-reduced-motion`. `AgentChatPane` also reuses `ClaudeLoginPromptButton` as a sticky bar above the composer (keyed `composer-auth:<sessionId>`) while a Claude session is logged out. Settled state is rendered by `ChatLifecyclePill` as a compact pill above the composer; the header takes a `snoozeSessionId` for the remaining snooze affordance — see [composer-and-ui.md › Header](composer-and-ui.md#header). |
+| `apps/desktop/src/renderer/components/work/WorkSurfaceHeader.tsx`, `ClaudeLoginPromptButton.tsx` | Shared Work surface header chrome. `AgentChatPane` renders `CenteredWorkSurfaceHeader`: no lane chip, the thread title centered on the plain rail-height header (no gradient), and a right cluster with the snooze chip, cache badge, trailing actions (browser presence, **Open terminal** when `useAttachedTerminalShells` finds an attached shell), the git toolbar in badge-only mode, the chat progress icon (`actionsToggle`), and the Tools toggle. CLI surfaces render `WorkSurfaceHeader` (title and lane chip on the left). Also the dismissible Claude login CTA that starts `claude auth login` in a tracked PTY. The `WorkSurfaceTitle` sub-component plays a one-time CSS shimmer when the title transitions from a provider default (`Claude Chat`, `Codex Chat`, …) to a real auto-generated title while the surface stays mounted, and respects `prefers-reduced-motion`. `AgentChatPane` also reuses `ClaudeLoginPromptButton` as a sticky bar above the composer (keyed `composer-auth:<sessionId>`) while a Claude session is logged out. Settled state is rendered by `ChatLifecyclePill` as a compact pill above the composer; the header takes a `snoozeSessionId` for the remaining snooze affordance — see [composer-and-ui.md › Header](composer-and-ui.md#header). |
 | `apps/desktop/src/renderer/components/chat/AgentCliAuthCard.tsx` | Inline install / re-login card for missing or unauthenticated agent CLIs, rendered in the transcript from a decorated `error` event's `errorInfo.agentCli` payload. Copy chips + a tracked-PTY Run button (`window.ade.pty.create`) for the install / auth command. The logged-out (`category: "unauthenticated"`) variant is terracotta-toned for Claude (amber for other agents), retitles to "&lt;Provider&gt; is logged out", and adds an always-on **Retry turn** button that resends the last user message via the `CHAT_RETRY_AUTH_TURN_EVENT` (`ade:chat:retry-auth-turn`) window event; it collapses to a "Reconnected" confirmation when `AgentChatPane` fires `CHAT_AUTH_RECOVERED_EVENT` (`ade:chat:auth-recovered`) after a later turn succeeds. The "missing CLI" variant keeps the red-free amber install card. |
 | `apps/desktop/src/renderer/components/chat/ProviderFailureRecoveryCard.tsx` | Classifies terminal provider capacity and usage-limit errors into actionable transcript cards. The card explains that the thread remains safe, offers an explicit same-thread **Retry turn**, and opens the composer model picker through a one-shot request for **Choose model**; neither action is enabled while another turn is active. The usage-limit card remains the transcript evidence and fork entry point, while the live schedule is rendered once by `ChatUsageLimitResumePill` above the composer; it no longer owns the old **Continue automatically** / **Don't continue** block. |
 | `apps/desktop/src/shared/chatAutoResume.ts` | Shared auto-resume contract and helpers: the deterministic schedule id/tag, 90s buffer, continue prompt, structured usage-limit classifier, host-zone notice copy, `autoResumeFireAtMs`, `isPendingAutoResumeScheduledWork`, `resolveUsageLimitResumeState`, the deprecated `usageLimitParkedUntilMirror`, `formatUsageLimitResetLabel`, and `isUsageLimitChatError`. A known future reset arms one durable `auto-resume:<sessionId>` row for every provider, including Claude; a missing reset produces `no_reset` with no wake. `sessionAutoContinueAtUsageLimit()` treats only explicit `false` as opt-out. Don't continue cancels the row and produces `opted_out`; Turn on / Try again resets the two-arm streak and arms again; Resume now cancels the row, resets the streak, and sends `AUTO_RESUME_PROMPT` as an ordinary user turn with `metadata.usageLimitResume: "manual"`. `resolveUsageLimitResumeState` derives `resuming` after the row is due, and only `armed` / `resuming` mirror `fireAt` into deprecated `usageLimitParkedUntil`. |
@@ -2150,14 +2150,20 @@ stops calling the session live, and the user is told in the chat.
 `teardownRuntime` distinguishes **terminal** close reasons
 (`handle_close`, `ended_session`, `model_switch`) from **non-terminal**
 ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`,
-`project_close`, `shutdown`). For Claude and Cursor runtimes, a
-non-terminal teardown preserves resume state: the service persists chat
-state immediately (Claude additionally pins `runtime.sdkSessionId` to
-the last known Claude SDK session id before releasing the session;
-Cursor persists with its SDK agent id intact) and skips the usual
+`project_close`, `shutdown`). For Claude, Cursor, Pi, ACP and OpenCode
+runtimes, a non-terminal teardown preserves resume state: the service
+persists chat state immediately (Claude additionally pins
+`runtime.sdkSessionId` to the last known Claude SDK session id before
+releasing the session; Cursor persists with its SDK agent id intact;
+OpenCode persists `providerSessionId` from the live handle before the
+lease closes, because OpenCode keeps sessions in its own store and
+`session.get` re-opens one by id on any later server) and skips the usual
 `runtimeInvalidated = true` + `clearLaneDirectiveKey` cleanup. The next
 turn on that chat can therefore rehydrate the same provider SDK session
-instead of creating a fresh one, even though the SDK process was
+instead of creating a fresh one (until 2026-09-21 OpenCode was missing
+from that list, so its 60-second idle window wiped the pointer and every
+follow-up message opened a brand-new OpenCode session that had to
+rediscover the thread), even though the SDK process was
 released to reclaim budget or compact the pool (a dead pooled Cursor
 worker detected during turn setup also tears down with
 `pool_compaction`, keeping that path non-terminal). Terminal closes
@@ -3469,6 +3475,24 @@ declares no kinds.
   connection and the client stops at `attempt >= max`, so the ceiling has to be
   2 to allow one real reconnect — 1 permits none. The `onSseError` log is skipped
   when the turn's abort signal already fired, because that is the user's Stop.
+  The cap does not cover the other loss: a socket that reconnects within the
+  cap still dropped whatever was published in the gap. So the loop reads the
+  stream through `withOpenCodeIdleProbe`
+  (`openCodeIdleProbe.ts`): after `OPENCODE_IDLE_PROBE_QUIET_MS` of silence it
+  calls `GET /session/status` and synthesizes `session.idle` for every session
+  it still waits on that the server does not report `busy`, logging
+  `agent_chat.opencode_idle_recovered_by_probe`. A busy session (a long tool
+  call, a CI poll) is left alone, and a failed probe is unknown, not idle.
+- **A settled child never comes back.** OpenCode keeps publishing
+  `session.updated` for a finished child (its summary, its `time.updated` when
+  the parent reads the result) after that child's `session.idle`. The
+  "missed the created event" synthesis used to re-add it, nothing settled it a
+  second time, and the parent's idle then waited on a child that had already
+  reported: on 2026-09-21 two dev-loop turns in one chat read `subagent_started`
+  → `subagent_result` → `subagent_started` in the transcript with no `done`,
+  and showed "Working" for hours. `settledOpenCodeSubagentKeys` records every
+  settled child for the turn; a later update for one is ignored. The idle probe
+  above is the safety net for this class, not the fix.
 - **Cancel OpenCode question cards on interrupt and on turn failure, never on a
   clean completion.** `requestChatInput` parks the card in
   `managed.localPendingInputs`, which the interrupt path did not drain — it

@@ -1,9 +1,11 @@
 @import "tailwindcss";
-/* Tailwind v4 ignores `tailwind.config.cjs` unless the CSS asks for it. Without
-   this line every token utility in that config — `bg-surface`, `text-fg`,
-   `border-border`, `bg-surface-overlay` … — compiled to NOTHING, so panels had
-   no background, text inherited its colour and dialogs were see-through. Class
-   names in tests still passed, because jsdom computes no styles. */
+/* The config, named rather than found, and load-bearing today.
+   `@tailwindcss/postcss` 4.2.1 does NOT auto-detect `tailwind.config.cjs`
+   beside package.json. I compiled this stylesheet both ways: with the line,
+   765,034 bytes and `.bg-surface`, `.text-fg` and `.border-border` all
+   present; without it, 702,484 bytes and none of the three emitted. Every
+   token utility then compiles to nothing and every panel that uses one
+   renders see-through. Do not remove this line. */
 @config "../../tailwind.config.cjs";
 
 [data-theme="dark"] .editor-target-logo--invert-in-dark {
@@ -54,6 +56,9 @@
   /* 32px title rail + 1px hairline. Shared by `.ade-tool-header` and
      `.ade-chat-shell-header` so the Work split's two bars meet. */
   --ade-work-chrome-rail-h: 33px;
+  /* The one hairline under the sidebar tab row, the chat header and the
+     tools header, so the three read as one bar. */
+  --ade-work-chrome-rail-border: rgba(255, 255, 255, 0.07);
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -155,11 +160,8 @@
   --shell-header-border: rgba(255, 255, 255, 0.04);
   --shell-header-divider: rgba(255, 255, 255, 0.04);
 
-  --shell-sidebar-collapsed-width: 52px;
-  --shell-sidebar-expanded-width: 140px;
   --shell-sidebar-bg: linear-gradient(180deg, rgba(22, 20, 30, 0.88) 0%, rgba(12, 11, 16, 0.92) 100%);
   --shell-sidebar-border: rgba(255, 255, 255, 0.04);
-  --shell-sidebar-item-height: 36px;
   --shell-sidebar-item-fg: rgba(255, 255, 255, 0.45);
   --shell-sidebar-item-hover-fg: rgba(255, 255, 255, 0.85);
   --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
@@ -261,6 +263,7 @@
    ═══════════════════════════════════════════════════════════ */
 
 [data-theme="light"] {
+  --ade-work-chrome-rail-border: rgba(26, 26, 30, 0.1);
   --color-bg: #f5f3f0;
   --chat-canvas-bg: #f5f3f0;
   --color-fg: #1a1a1e;
@@ -276,6 +279,11 @@
   --color-accent: #049068;
   --color-accent-fg: #ffffff;
   --color-accent-muted: rgba(4, 144, 104, 0.10);
+  /* Light never defined these, so every light surface that reached for them —
+     the tools picker backdrop among them — silently got the DARK theme's
+     violets on a green page. */
+  --color-accent-bright: #4FC49B;
+  --color-accent-deep: #0E9A72;
   --color-surface-raised: #ffffff;
   --color-surface-recessed: #eae7e2;
   --color-surface-overlay: rgba(255, 255, 255, 0.92);
@@ -520,7 +528,8 @@ h6 {
   background: var(--shell-header-bg);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
-  border-bottom: 1px solid var(--shell-header-border);
+  /* No bottom hairline: the top bar sits on its part of the window gradient
+     (see TopBar), and a line would cut it off from the new chat pane below. */
 }
 
 .ade-shell-header-divider {
@@ -575,25 +584,6 @@ h6 {
   font-weight: 500;
   letter-spacing: 0.02em;
   opacity: 0.82;
-}
-
-.ade-shell-header-utility-cluster {
-  --shell-header-utility-h: 18px;
-}
-
-.ade-shell-header-utility-btn {
-  width: var(--shell-header-utility-h);
-  height: var(--shell-header-utility-h);
-  min-width: var(--shell-header-utility-h);
-  min-height: var(--shell-header-utility-h);
-}
-
-.ade-shell-header-utility-zoom {
-  height: var(--shell-header-utility-h);
-  min-width: 28px;
-  padding-inline: 4px;
-  font-size: 9px;
-  line-height: 1;
 }
 
 .ade-shell-project-tab {
@@ -709,139 +699,387 @@ h6 {
   border: 1px solid var(--shell-control-border);
 }
 
-.ade-shell-sidebar-item {
-  min-height: var(--shell-sidebar-item-height);
+/* ═══════════════════════════════════════════════════════════
+   Project Sidebar
+   One fixed-width column per project: a tab strip, the body that
+   the active tab portals its list into, and a small footer.
+   ═══════════════════════════════════════════════════════════ */
+
+/* Every tab uses the Work tab's colors: the sidebar is the Work session
+   list's color, and each page is the chat canvas color. Pages paint with
+   `bg-bg`, so the page wrappers point `--color-bg` at the same color. */
+.ade-project-sidebar {
+  --color-bg: var(--work-session-sidebar-bg, var(--work-sidebar-bg));
+  --shell-sidebar-bg: var(--work-session-sidebar-bg, var(--work-sidebar-bg));
+  background: var(--work-session-sidebar-bg, var(--work-sidebar-bg));
+}
+
+.ade-project-page {
+  --color-bg: var(--chat-canvas-bg);
+  background: var(--chat-canvas-bg);
+}
+
+/* A page's top toolbar (CTO, History) lines up with the sidebar tab row:
+   the same height, surface and bottom hairline. */
+.ade-page-rail {
+  box-sizing: border-box;
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: var(--ade-work-chrome-rail-h);
+  background: var(--work-chrome-surface, var(--color-card));
+  border-bottom: 1px solid var(--ade-work-chrome-rail-border);
+}
+
+/* The sidebar's right edge starts below the header line, so the tab row runs
+   straight into the chat header with no divider between them. */
+.ade-project-sidebar::before {
+  content: "";
+  position: absolute;
+  top: var(--ade-work-chrome-rail-h);
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--shell-sidebar-border);
+  pointer-events: none;
+  z-index: 1;
+}
+
+/* The tab strip is the sidebar's share of one header line: the same height,
+   background and hairline as the Work chat header and the tools header
+   (`--ade-work-chrome-rail-h`), so the three read as one bar.
+   It fills the sidebar width at any size. Every tab takes an equal share;
+   the active one takes a larger share, so its label opens and the
+   neighbours move aside. flex-grow and the label's max-width run on the same
+   curve, so the whole strip moves as one.
+   The active share (3.9) fits "Automations" at the 260px minimum width. */
+.ade-project-sidebar-tabs {
+  --ade-tab-ease: cubic-bezier(0.32, 0.72, 0, 1);
+  --ade-tab-duration: 280ms;
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+  display: flex;
+  align-items: stretch;
+  height: var(--ade-work-chrome-rail-h);
+  padding: 0 6px;
+  background: var(--work-chrome-surface, var(--color-card));
+  border-bottom: 1px solid var(--ade-work-chrome-rail-border);
+}
+
+/* The Lanes tab's Git column starts right under the app bar, so its one
+   chrome row takes the same rail as the sidebar tab strip and the two read
+   as one header line on either side of the lane overview. */
+/* In Lanes the Git pane's chrome row is the top row, next to the sidebar tab
+   row, so it takes the rail height and hairline to form one header line. In
+   Work it sits under the Tools header and keeps its own height. */
+.ade-lanes-split [data-testid="git-pane-chrome"] {
+  box-sizing: border-box;
+  height: var(--ade-work-chrome-rail-h);
+  min-height: var(--ade-work-chrome-rail-h);
+  background: var(--work-chrome-surface, var(--color-card));
+  border-bottom: 1px solid var(--ade-work-chrome-rail-border);
+}
+
+.ade-project-sidebar-tab {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 0;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 0 6px;
+  overflow: hidden;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  color: var(--shell-sidebar-item-fg);
+  background: transparent;
+  outline: none;
+  transition:
+    flex-grow var(--ade-tab-duration) var(--ade-tab-ease),
+    gap var(--ade-tab-duration) var(--ade-tab-ease),
+    color 160ms ease;
+}
+
+/* The active tab's underline sits on the header's hairline and grows with
+   the tab, so the selection moves with the strip instead of jumping. */
+.ade-project-sidebar-tab::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: 0;
+  height: 2px;
+  border-radius: 2px 2px 0 0;
+  background: var(--color-accent);
+  opacity: 0;
+  transform: scaleX(0.4);
+  transition:
+    opacity 180ms ease,
+    transform var(--ade-tab-duration) var(--ade-tab-ease);
+}
+
+.ade-project-sidebar-tab:hover {
+  color: var(--shell-sidebar-item-hover-fg);
+}
+
+.ade-project-sidebar-tab[data-active="true"] {
+  flex-grow: 3.9;
+  gap: 6px;
+  color: var(--color-fg);
+}
+
+.ade-project-sidebar-tab[data-active="true"]::after {
+  opacity: 1;
+  transform: scaleX(1);
+}
+
+.ade-project-sidebar-tab:focus-visible {
+  color: var(--color-fg);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 55%, transparent);
+}
+
+.ade-project-sidebar-tab-label {
+  display: inline-block;
+  max-width: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition:
+    max-width var(--ade-tab-duration) var(--ade-tab-ease),
+    opacity 120ms ease;
+}
+
+.ade-project-sidebar-tab[data-active="true"] .ade-project-sidebar-tab-label {
+  max-width: 120px;
+  opacity: 1;
+  transition:
+    max-width var(--ade-tab-duration) var(--ade-tab-ease),
+    opacity 180ms ease 80ms;
+}
+
+.ade-project-sidebar-body {
+  overflow: hidden;
+}
+
+/* One container per page that portals into the body. Hidden pages keep
+   their list mounted; `[hidden]` must win over the flex display. */
+.ade-project-sidebar-slot:not([hidden]) {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ade-project-sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px 8px;
+  border-top: 1px solid var(--shell-sidebar-separator);
+}
+
+.ade-project-sidebar-footer-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 7px;
   font-family: var(--font-sans);
   font-size: 11.5px;
   font-weight: 500;
-  letter-spacing: -0.01em;
   color: var(--shell-sidebar-item-fg);
   background: transparent;
-  border-radius: 8px;
   outline: none;
   transition: color 120ms ease, background 120ms ease;
 }
 
-.ade-shell-sidebar-item:hover {
+/* Footer items change only their text colour: no fill, no bubble. */
+.ade-project-sidebar-footer-item:hover {
   color: var(--shell-sidebar-item-hover-fg);
-  background: var(--shell-sidebar-item-hover-bg);
 }
 
-.ade-shell-sidebar-item[data-active="true"] {
-  color: var(--shell-sidebar-item-active-fg);
-  background: var(--shell-sidebar-item-active-bg);
-  font-weight: 600;
+.ade-project-sidebar-footer-item[data-active="true"] {
+  color: var(--color-fg);
 }
 
-.ade-shell-sidebar-item:focus-visible {
-  color: var(--shell-sidebar-item-hover-fg);
-  background: color-mix(in srgb, var(--shell-sidebar-item-active-bg) 72%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 45%, transparent);
-}
-
-.ade-shell-sidebar-icon {
-  color: currentColor;
-}
-
-.ade-shell-sidebar-icon-slot {
-  width: var(--shell-sidebar-collapsed-width);
-}
-
-.ade-shell-sidebar-item[data-active="true"] .ade-shell-sidebar-icon {
-  color: var(--shell-sidebar-item-active-fg);
-}
-
-.ade-shell-sidebar-separator {
-  border-color: var(--shell-sidebar-separator);
-}
-
-.ade-shell-sidebar-active-rail {
-  background: var(--shell-sidebar-item-active-rail);
-}
-
-.ade-shell-sidebar-menu {
-  background: var(--shell-sidebar-bg);
-  border: 1px solid var(--shell-sidebar-border);
-  border-radius: 12px;
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-}
-
-.ade-shell-sidebar-menu-item {
+/* Over CTO or History the footer is one full-width Back button. */
+.ade-project-sidebar-footer-back {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 30px;
   font-family: var(--font-sans);
-  font-size: 11.5px;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--shell-sidebar-item-fg);
   background: transparent;
-  border-radius: 8px;
+  outline: none;
+  transition: color 120ms ease;
 }
 
-.ade-shell-sidebar-menu-item:hover {
+.ade-project-sidebar-footer-back:hover,
+.ade-project-sidebar-footer-back:focus-visible {
+  color: var(--color-fg);
+}
+
+.ade-project-sidebar-footer-item:focus-visible,
+.ade-settings-sidebar-tool:focus-visible,
+.ade-settings-sidebar-zoom-value:focus-visible,
+.ade-settings-sidebar-identity:focus-visible {
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 55%, transparent);
+}
+
+/* The settings cog sits alone at the far end of the footer. */
+.ade-project-sidebar-footer-settings {
+  justify-content: center;
+  width: 26px;
+  margin-left: auto;
+  padding: 0;
+}
+
+/* Settings sidebar header: app tools, then who you are. */
+.ade-settings-sidebar-header {
+  display: flex;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 8px;
+  padding: 8px 0 10px;
+  border-bottom: 1px solid var(--shell-sidebar-separator);
+}
+
+.ade-settings-sidebar-tools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.ade-settings-sidebar-tool,
+.ade-settings-sidebar-zoom-value {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--shell-sidebar-item-fg);
+  background: transparent;
+  outline: none;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.ade-settings-sidebar-tool {
+  width: 24px;
+}
+
+/* "Back" is the one tool with a word: it is the way out of Settings. */
+.ade-settings-sidebar-back {
+  width: auto;
+  gap: 5px;
+  padding: 0 8px 0 6px;
+  margin-right: 4px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--shell-sidebar-item-hover-fg);
+}
+
+.ade-settings-sidebar-tool:hover,
+.ade-settings-sidebar-tool[data-state="open"],
+.ade-settings-sidebar-zoom-value:hover {
   color: var(--shell-sidebar-item-hover-fg);
   background: var(--shell-sidebar-item-hover-bg);
 }
 
-.ade-shell-sidebar-menu-item:focus-visible {
+.ade-settings-sidebar-zoom {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+
+.ade-settings-sidebar-zoom .ade-settings-sidebar-tool {
+  width: 22px;
+}
+
+.ade-settings-sidebar-zoom-value {
+  min-width: 36px;
+  padding: 0 2px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ade-settings-sidebar-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 9px;
+  text-align: left;
+  color: var(--shell-sidebar-item-fg);
+  background: transparent;
   outline: none;
-  color: var(--shell-sidebar-item-hover-fg);
-  background: color-mix(in srgb, var(--shell-sidebar-item-active-bg) 72%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--shell-sidebar-item-active-rail) 45%, transparent);
+  transition: background 120ms ease;
 }
 
-/* ═══════════════════════════════════════════════════════════
-   Collapsible Sidebar
-   ═══════════════════════════════════════════════════════════ */
+.ade-settings-sidebar-identity:hover {
+  background: var(--shell-sidebar-item-hover-bg);
+}
 
-/* Outer clip container — the rail animates its own width in normal flow, so
-   the shell's main row genuinely reflows and content is pushed aside as the
-   rail grows. That is the macOS behaviour and it is the behaviour we keep.
-   Only the icons never reflow, because the inner .ade-sidebar is always at the
-   expanded width and this box clips it.
-
-   Layout every frame is not what made this expensive on Windows — the
-   ResizeObserver storm it triggered inside <main> was. See
-   renderer/lib/layoutSettle.ts: AppShell holds ResizeObserver delivery inside
-   <main> for the length of this transition and flushes once on transitionend,
-   so react-resizable-panels stops doing a forced synchronous layout plus a
-   full re-render of every pane on every one of the ~48 frames a 240 Hz display
-   packs into 200ms. */
-.ade-sidebar-clip {
-  width: var(--shell-sidebar-collapsed-width);
+.ade-settings-sidebar-identity-name {
   overflow: hidden;
-  border-right-color: rgba(255, 255, 255, 0.04);
-  transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-fg);
 }
 
-.ade-sidebar-clip:hover {
-  width: var(--shell-sidebar-expanded-width);
+.ade-settings-sidebar-identity-email {
+  overflow: hidden;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--shell-sidebar-item-fg);
 }
 
-/* Inner content — always full expanded width so icon positions are pixel-stable */
-.ade-sidebar {
-  width: var(--shell-sidebar-expanded-width);
-  background: var(--shell-sidebar-bg);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
+.ade-project-sidebar-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  bottom: 0;
+  width: 6px;
+  z-index: 30;
+  cursor: col-resize;
 }
 
-/* Phase-2 label animation: fade out immediately, fade in after width expands */
-.ade-tab-label {
-  opacity: 0;
-  transition: opacity 80ms ease 0ms;
-  will-change: opacity;
+.ade-project-sidebar-resize:hover,
+body.ade-project-sidebar-resizing .ade-project-sidebar-resize {
+  background: linear-gradient(90deg, transparent 2px, color-mix(in srgb, var(--color-accent) 45%, transparent) 2px, color-mix(in srgb, var(--color-accent) 45%, transparent) 4px, transparent 4px);
 }
 
-.ade-sidebar-clip:hover .ade-tab-label {
-  opacity: 1;
-  transition: opacity 80ms ease 140ms;
+body.ade-project-sidebar-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-sidebar-clip {
-    transition: width 0ms;
-  }
-  .ade-tab-label,
-  .ade-sidebar-clip:hover .ade-tab-label {
-    transition: opacity 0ms;
+  .ade-project-sidebar-tab,
+  .ade-project-sidebar-tab::after,
+  .ade-project-sidebar-tab-label,
+  .ade-project-sidebar-tab[data-active="true"] .ade-project-sidebar-tab-label {
+    transition: none;
   }
 }
 
@@ -1479,6 +1717,98 @@ h6 {
   box-shadow: none;
 }
 
+/* In the Work split the tools gutter takes no layout width: the chat and the
+   tools pane meet edge to edge, so their headers form one line. The hit area
+   overlays both edges, and the line shows only on hover, focus or drag. The
+   tools pane's own left border is the resting divider. */
+.ade-work-surface .ade-tool-gutter.vertical,
+.ade-lanes-split .ade-tool-gutter.vertical {
+  width: 0;
+  margin: 0;
+  z-index: 20;
+  background: transparent !important;
+}
+
+.ade-work-surface .ade-tool-gutter.vertical::after,
+.ade-lanes-split .ade-tool-gutter.vertical::after {
+  inset: 0 -4px;
+}
+
+.ade-work-surface .ade-tool-gutter.vertical::before {
+  opacity: 0;
+  width: 1px;
+  box-shadow: none;
+  background: var(--color-separator-active);
+}
+
+.ade-work-surface .ade-tool-gutter.vertical:hover,
+.ade-work-surface .ade-tool-gutter.vertical:focus-visible,
+.ade-work-surface .ade-tool-gutter.vertical[data-resize-handle-active] {
+  background: transparent !important;
+}
+
+.ade-work-surface .ade-tool-gutter.vertical:hover::before,
+.ade-work-surface .ade-tool-gutter.vertical:focus-visible::before,
+.ade-work-surface .ade-tool-gutter.vertical[data-resize-handle-active]::before {
+  opacity: 1;
+  width: 2px;
+  box-shadow: none;
+}
+
+/* The Lanes dashboard / Git pane split uses the same zero-width splitter: the
+   Git column's left border is the resting line, the hairline shows on hover. */
+.ade-lanes-split .ade-tool-gutter.vertical:hover::before,
+.ade-lanes-split .ade-tool-gutter.vertical:focus-visible::before,
+.ade-lanes-split .ade-tool-gutter.vertical[data-resize-handle-active]::before {
+  width: 2px;
+}
+
+/* Lane dashboard violets: GitHub's merged purple and a softer one for
+   "ahead", plus the sky blue of the Stack section. The theme accent is
+   green in the light theme, so these are fixed per theme instead of
+   borrowing it. */
+[data-theme="dark"] {
+  --ade-lane-merged: #A371F7;
+  --ade-lane-violet: #B9A6F5;
+  --ade-lane-sky: #38BDF8;
+}
+
+[data-theme="light"] {
+  --ade-lane-merged: #8250DF;
+  --ade-lane-violet: #6E56CF;
+  --ade-lane-sky: #0284C7;
+}
+
+/* The chat header and the tools header share the sidebar tab row's
+   background and hairline, so the header line has one colour and one bottom
+   edge. */
+.ade-work-surface .ade-chat-shell-header {
+  border-bottom-color: var(--ade-work-chrome-rail-border);
+}
+
+.ade-work-surface .ade-tool-header.ade-tool-pane-rule {
+  background: var(--work-chrome-surface, var(--color-card));
+  border-bottom-color: var(--ade-work-chrome-rail-border);
+}
+
+/* The tools pane's left edge also starts below the header line. */
+.ade-work-surface [data-work-sidebar-pane] > aside {
+  position: relative;
+  border-left-width: 0;
+}
+
+.ade-work-surface [data-work-sidebar-pane] > aside::before {
+  content: "";
+  position: absolute;
+  top: var(--ade-work-chrome-rail-h);
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--work-pane-border);
+  pointer-events: none;
+  z-index: 1;
+}
+
 /* ═══════════════════════════════════════════════════════════
    Lane Divider
    ═══════════════════════════════════════════════════════════ */
@@ -1616,13 +1946,29 @@ h6 {
   background-color: transparent;
 }
 
+/* Scrollbars are invisible until you scroll. lib/scrollingIndicator.ts marks
+   an element with `data-ade-scrolling` while it scrolls; its thumb paints only
+   then, and only while the pointer is over it (or dragging the thumb).
+   Colour only, never width: the gutter stays the same at every state, so
+   nothing reflows, which matters on Windows where scrollbars take space.
+   Chromium ignores these rules on any element that sets the standard
+   `scrollbar-color` / `scrollbar-width`, so leave those unset. */
 ::-webkit-scrollbar-thumb {
-  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.18);
+  background-color: transparent;
   border-radius: 3px;
 }
 
-::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.35);
+[data-ade-scrolling]:hover::-webkit-scrollbar-thumb {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.3);
+}
+
+[data-ade-scrolling]:hover::-webkit-scrollbar-thumb:hover,
+::-webkit-scrollbar-thumb:active {
+  background-color: rgba(var(--tab-tint-rgb, 113, 113, 122), 0.45);
+}
+
+::-webkit-scrollbar-corner {
+  background-color: transparent;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -2140,6 +2486,12 @@ button, [role="button"] {
     var(--color-bg);
 }
 
+/* A window-field part: the flat fallback is fixed to the window too, so
+   separate parts still read as one gradient without WebGL. */
+.ade-tool-picker-backdrop[data-field="window"] .ade-tool-picker-static {
+  background-attachment: fixed;
+}
+
 [data-theme="light"] .ade-tool-picker-static {
   background:
     radial-gradient(
@@ -2155,49 +2507,115 @@ button, [role="button"] {
     var(--color-surface);
 }
 
-/* The card. Now that there is something behind it, the card is a piece of
-   glass rather than a flat rectangle: a translucent fill, one
-   hairline, and nothing else at rest. No `backdrop-filter` — six blur regions
-   over a 30fps animating canvas re-blur on every backdrop frame and spend back
-   everything the backdrop's own budget (DPR 1, 600k px, 30fps) saves. The
-   measured 82% fill is what carries the violet through and holds contrast.
-   Hover is the only place this page spends
-   colour — a 2px lift, the hairline to 45% accent, and one soft accent glow
-   over 160ms. Press settles back to a 0.99 scale, so the card gives under the
-   cursor rather than jumping out from under it. */
+/* The card: a piece of glass standing on the gradient, not a flat rectangle
+   punched out of it.
+
+   Three layers, and each one is there for a reason the flat version could not
+   cover. The FILL is a translucent `--color-card` at 82% (84% under the
+   cursor): enough to hold a 12px muted line at 4:1 over the brightest spot of
+   the mesh it can sit on, with no scrim between the two. The INNER hairline
+   (`inset 0 0 0 1px`) is the accent at low alpha:
+   it is what makes the edge read as lit from the gradient rather than drawn on
+   top of it, and it costs one shadow with no blur. The OUTER hairline is still
+   the border, kept neutral so the two do not fight.
+
+   Still no `backdrop-filter`. Seven blur regions over a 30fps animating canvas
+   re-blur on every backdrop frame and spend back everything the backdrop's own
+   budget (DPR 1, 600k px, 30fps) saves — the translucent fill plus the inner
+   accent edge buys the same read for one paint.
+
+   Hover is where this page spends colour: a 3px lift, the border and the inner
+   edge up to a real accent, and one soft accent glow over 160ms. Press settles
+   back to a 0.99 scale, so the card gives under the cursor rather than jumping
+   out from under it. */
+/* The hover glow lives on `::after`, not on this box-shadow, and the transition
+   list below deliberately does not name `box-shadow`. A transitioned shadow is
+   repainted on the main thread on every frame of the 160ms — sixteen cards deep,
+   over a live shader canvas — while an `opacity` transition is one Chromium
+   promotes and runs on the compositor. The resting shadow is still a shadow; it
+   just never animates. */
 .ade-tool-card {
-  border-radius: 10px;
-  border: 1px solid rgb(255 255 255 / 0.12);
-  /* 82%, not the 50-ish a "glass" card wants to be: the mesh peaks at a
-     luminance of ~118 and a card thin enough to show that peak takes its own
-     12px muted line down to a 2.4:1 contrast. 82% keeps every line at or above
-     4:1 over the brightest spot the backdrop can produce, and the blur still
-     carries the violet through. */
+  position: relative;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
   background: color-mix(in srgb, var(--color-card) 82%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 12%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.06),
+    0 1px 2px -1px rgb(0 0 0 / 0.4);
   transition:
     transform 160ms ease-out,
     background-color 160ms ease-out,
-    border-color 160ms ease-out,
-    box-shadow 160ms ease-out;
+    border-color 160ms ease-out;
+}
+
+.ade-tool-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 32%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.1),
+    0 10px 26px -12px color-mix(in srgb, var(--color-accent) 60%, transparent);
+  transition: opacity 160ms ease-out;
+}
+
+[data-theme="light"] .ade-tool-card::after {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 26%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.6),
+    0 10px 26px -14px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 [data-theme="light"] .ade-tool-card {
   border-color: color-mix(in srgb, var(--color-border) 70%, transparent);
   background: color-mix(in srgb, var(--color-card) 84%, transparent);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 10%, transparent),
+    inset 0 1px 0 0 rgb(255 255 255 / 0.5),
+    0 1px 2px -1px rgb(15 23 42 / 0.08);
 }
 
 .ade-tool-card:not(:disabled):hover,
 .ade-tool-card:not(:disabled)[data-highlighted="true"] {
-  transform: translateY(-2px);
-  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  transform: translateY(-3px);
+  border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
   background: color-mix(in srgb, var(--color-card) 90%, transparent);
-  box-shadow: 0 8px 22px -12px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.ade-tool-card:not(:disabled):hover::after,
+.ade-tool-card:not(:disabled)[data-highlighted="true"]::after {
+  opacity: 1;
+}
+
+/* The glyph, tinted at rest. `--color-accent` at full strength would make the
+   icon compete with the label, and `text-muted-fg` on a coloured gradient reads
+   as a disabled control — 62% of the accent mixed into the muted foreground
+   sits between the two, and hover takes it the rest of the way. */
+.ade-tool-card-icon {
+  color: color-mix(in srgb, var(--color-accent) 62%, var(--color-muted-fg));
 }
 
 /* Press: the lift collapses and the card takes a hair off its own size. */
 .ade-tool-card:not(:disabled):active {
   transform: translateY(-1px) scale(0.99);
   background: color-mix(in srgb, var(--color-accent) 12%, var(--color-card));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-tool-card,
+  .ade-tool-card::after {
+    transition: none;
+  }
+
+  .ade-tool-card:not(:disabled):hover,
+  .ade-tool-card:not(:disabled)[data-highlighted="true"],
+  .ade-tool-card:not(:disabled):active {
+    transform: none;
+  }
 }
 
 /* The last-opened tool is `aria-current` but carries NO fill: the picker is a
@@ -2213,7 +2631,8 @@ button, [role="button"] {
 /* Motion off: the fill and hairline still answer the cursor, the geometry does
    not. A lift is the part of this that moves. */
 @media (prefers-reduced-motion: reduce) {
-  .ade-tool-card {
+  .ade-tool-card,
+  .ade-tool-card::after {
     transition: none;
   }
 

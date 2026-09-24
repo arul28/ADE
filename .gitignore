@@ -89,6 +89,9 @@ apps/desktop/resources/native/ade-attention-notch
 apps/desktop/resources/native/ADEAttentionNotch_ADEAttentionNotch.bundle/
 apps/desktop/native/ADEAttentionNotch/.build/
 apps/desktop/native/ADEAttentionNotch/.build-*/
+apps/desktop/resources/native/ade-desktop-driver
+apps/desktop/native/ADEDesktopDriver/.build/
+apps/desktop/native/ADEDesktopDriver/.build-*/
 apps/desktop/resources/native/ade-capture-helper
 apps/desktop/resources/native/ade-capture-helper.exe
 apps/desktop/native/ADECaptureHelper/.build/

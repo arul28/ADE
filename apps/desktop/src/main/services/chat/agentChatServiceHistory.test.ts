@@ -14,6 +14,8 @@ import {
   parseAgentChatTranscript,
   path,
   readPersistedChatState,
+  startOpenCodeSession,
+  streamText,
   tmpHomeRoot,
   tmpRoot,
   waitFor,
@@ -2587,6 +2589,44 @@ describe("createAgentChatService", () => {
         expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
         expect(send).toHaveBeenCalledTimes(3);
         expect(String(send.mock.calls[2]?.[0] ?? "")).toContain("Follow up with the previous context");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps the OpenCode session pointer across idle_ttl so the next message resumes the same thread", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.mocked(streamText).mockImplementation(() => ({
+          fullStream: (async function* () {
+            yield { type: "finish", usage: {} };
+          })(),
+        } as any));
+        const { service } = createService();
+        const session = await service.createSession({
+          laneId: "lane-1",
+          provider: "opencode",
+          model: "",
+          modelId: "opencode/openai/gpt-5.4",
+        });
+
+        await service.runSessionTurn({ sessionId: session.id, text: "first" });
+        const firstStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)![0];
+        const pointer = readPersistedChatState(session.id).providerSessionId;
+        expect(pointer).toEqual(expect.any(String));
+
+        // The idle sweep tears the runtime down. OpenCode keeps its sessions in
+        // its own store and re-opens one by id, so this teardown must keep the
+        // pointer: before the fix it flagged the runtime invalidated, the next
+        // persist dropped the id, and every follow-up message opened a
+        // brand-new OpenCode session that had to rediscover the thread.
+        await vi.advanceTimersByTimeAsync(6 * 60_000);
+        expect(readPersistedChatState(session.id).providerSessionId).toBe(pointer);
+
+        await service.runSessionTurn({ sessionId: session.id, text: "second" });
+        const secondStart = vi.mocked(startOpenCodeSession).mock.calls.at(-1)![0];
+        expect(firstStart.sessionId).toBeUndefined();
+        expect(secondStart.sessionId).toBe(pointer);
       } finally {
         vi.useRealTimers();
       }
