@@ -158,7 +158,8 @@ const CURSOR_STORE_PROMPT_MAX_BLOB_BYTES = 256 * 1024;
 
 export type CursorStorePrompts = {
   firstUserText: string | null;
-  userCount: number;
+  /** Null when the bounded scan ended before any prompt: unknown, not zero. */
+  userCount: number | null;
   /** ADE's CTO agent drove this chat through the Cursor SDK. */
   adeOrigin: boolean;
 };
@@ -194,9 +195,13 @@ export function readCursorStorePrompts(
     let firstUserText: string | null = null;
     let userCount = 0;
     let adeOrigin = false;
+    let skippedAny = false;
     for (const id of conversation.messageIds.slice(0, CURSOR_STORE_PROMPT_SCAN_MESSAGES)) {
       const size = conversation.messageSize(id);
-      if (size === null || size > CURSOR_STORE_PROMPT_MAX_BLOB_BYTES) continue;
+      if (size === null || size > CURSOR_STORE_PROMPT_MAX_BLOB_BYTES) {
+        skippedAny = true;
+        continue;
+      }
       const record = conversation.readMessage(id);
       if (asString(record?.role) !== "user") continue;
       const raw = extractText(record?.content);
@@ -207,7 +212,10 @@ export function readCursorStorePrompts(
       userCount += 1;
       firstUserText ??= cleaned;
     }
-    return { firstUserText, userCount, adeOrigin };
+    // A scan that was capped or skipped a message and saw no prompt proves
+    // nothing; a zero here would drop the chat from Import as "no prompts".
+    const scanWasPartial = skippedAny || conversation.messageIds.length > CURSOR_STORE_PROMPT_SCAN_MESSAGES;
+    return { firstUserText, userCount: userCount === 0 && scanWasPartial ? null : userCount, adeOrigin };
   } catch {
     return null;
   } finally {

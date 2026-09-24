@@ -401,12 +401,18 @@ describe("Copilot discovery", () => {
     });
     writeCopilotSession(copilotHome, picked, { events: [start("claude-sonnet-4.6"), prompt, shutdown] });
     writeCopilotSession(copilotHome, legacy, { events: [{ type: "session.start", data: { context: { cwd: repo } }, id: "s", timestamp: "2026-03-12T17:37:01.580Z" }, prompt, shutdown] });
+    const autoAtShutdown = "bbbbbbbb-0000-4000-8000-000000000004";
+    writeCopilotSession(copilotHome, autoAtShutdown, {
+      events: [{ type: "session.start", data: { context: { cwd: repo } }, id: "s", timestamp: "2026-03-12T17:37:01.580Z" }, prompt,
+        { type: "session.shutdown", data: { currentModel: "auto" }, id: "x", timestamp: "2026-03-12T17:38:00.000Z" }],
+    });
 
     const sessions = await discoverCopilotSessions({ homeDir, env, limit: 10 });
     const launchById = Object.fromEntries(sessions.map((session) => [session.id, session.launch ?? null]));
     expect(launchById[auto]).toBeNull();
     expect(launchById[picked]).toEqual({ model: "claude-sonnet-4.6" });
     expect(launchById[legacy]).toEqual({ model: "gpt-5.6-luna" });
+    expect(launchById[autoAtShutdown]).toBeNull();
   });
 
   it("leaves out ADE clients, folders without events, and sessions with no prompt", async () => {

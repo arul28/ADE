@@ -5,7 +5,12 @@
  */
 import type { AgentChatEventEnvelope } from "../../../../shared/types/chat";
 import type { ImportSurface } from "../../../../shared/externalSessionPolicy";
-import { getDefaultModelDescriptor, resolveModelDescriptor } from "../../../../shared/modelRegistry";
+import {
+  getDefaultModelDescriptor,
+  resolveModelDescriptor,
+  findProviderModelByRecordedName,
+  resolveModelDescriptorForProvider,
+} from "../../../../shared/modelRegistry";
 import { branchNameFromRef } from "../../prs/shared/laneBranchTargets";
 import type { LaneComboboxLane } from "../LaneCombobox";
 import type {
@@ -186,8 +191,12 @@ export function homeLaneIdIn(
  * fork default.
  */
 export function defaultForkModel(summary: ExternalSessionSummary): string {
-  const recorded = summary.launch?.model?.trim();
-  if (recorded && resolveModelDescriptor(recorded)) return recorded;
+  // Only a model of the session's own provider: a recorded name that another
+  // provider also registers (a Copilot "gpt-5.2") must not turn the copy into
+  // a chat on that other provider.
+  const recorded = resolveModelDescriptorForProvider(summary.launch?.model, summary.provider)
+    ?? findProviderModelByRecordedName(summary.provider, summary.launch?.model);
+  if (recorded) return recorded.id;
   return getDefaultModelDescriptor(summary.provider)?.id ?? DEFAULT_FORK_MODEL;
 }
 

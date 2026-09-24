@@ -192,7 +192,8 @@ function copilotRecordFromCandidate(
     .at(-1);
   // "auto" is Copilot's router, not a model; leaving it out lets the resumed
   // CLI apply its own default rather than pinning a `--model auto` flag.
-  const model = selectedModel === "auto" ? null : (selectedModel ?? shutdownModel ?? null);
+  const recorded = selectedModel ?? shutdownModel ?? null;
+  const model = recorded === "auto" ? null : recorded;
   const updatedAt = asEpochMs(candidate.workspace.updated_at);
 
   return acpDiscoveryRecord({

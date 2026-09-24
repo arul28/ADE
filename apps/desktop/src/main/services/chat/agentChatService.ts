@@ -695,6 +695,7 @@ import {
   resolveModelAlias,
   resolveOpenCodeFastEffortSelection,
   resolveModelDescriptorForProvider,
+  findProviderModelByRecordedName,
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
   type LocalProviderFamily,
@@ -41416,8 +41417,11 @@ export function createAgentChatService(args: {
     const descriptor = getModelById(trimmed)
       ?? resolveModelAlias(trimmed)
       ?? (storedId ? getModelById(storedId) : undefined);
-    if (!descriptor || descriptor.deprecated) return null;
-    return resolveProviderGroupForModel(descriptor) === provider ? descriptor : null;
+    if (descriptor && !descriptor.deprecated && resolveProviderGroupForModel(descriptor) === provider) {
+      return descriptor;
+    }
+    // A name another provider also registers (Pi's `openai/gpt-5.2`).
+    return findProviderModelByRecordedName(provider, trimmed) ?? null;
   };
 
   /**

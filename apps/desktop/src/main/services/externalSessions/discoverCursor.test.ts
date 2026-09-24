@@ -138,6 +138,30 @@ describe("readCursorStorePrompts", () => {
     }
   });
 
+  it("reports an unknown prompt count, not zero, when the capped scan found none", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-"));
+    try {
+      const store = path.join(root, "store.db");
+      const filler = Array.from({ length: 1001 }, (_, index) => ({ role: "assistant", content: `step ${index}` }));
+      writeStore(store, [...filler, { role: "user", content: [{ type: "text", text: "<user_query>\nlate prompt\n</user_query>" }] }]);
+      expect(readCursorStorePrompts(store, null)).toEqual({ firstUserText: null, userCount: null, adeOrigin: false });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an unknown prompt count when the only prompt was too large to read", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-"));
+    try {
+      const store = path.join(root, "store.db");
+      const pasted = "x".repeat(300 * 1024);
+      writeStore(store, [{ role: "user", content: [{ type: "text", text: `<user_query>\n${pasted}\n</user_query>` }] }]);
+      expect(readCursorStorePrompts(store, null)).toEqual({ firstUserText: null, userCount: null, adeOrigin: false });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("marks chats ADE's CTO agent drove", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-store-"));
     try {

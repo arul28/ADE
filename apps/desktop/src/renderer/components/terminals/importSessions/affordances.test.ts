@@ -5,6 +5,13 @@ import { sessionAnchors, sessionHeading } from "./sessionPresentation";
 import type { ExternalSessionCapabilities, ExternalSessionSummary } from "./contract";
 import type { AgentChatEventEnvelope } from "../../../../shared/types/chat";
 import {
+  createDynamicPiModelDescriptor,
+  getModelById,
+  replaceDynamicPiModelDescriptors,
+  resolveProviderGroupForModel,
+} from "../../../../shared/modelRegistry";
+import {
+  defaultForkModel,
   laneFilterKey,
   matchesSearch,
   OTHER_FOLDERS_ID,
@@ -211,6 +218,29 @@ describe("import browser model", () => {
       ...overrides,
     };
   }
+
+  it("keeps a chat copy's default model in the session's own provider", () => {
+    // "gpt-5.2" is a Codex model id too; a Copilot copy must not become a Codex chat.
+    const copilot = defaultForkModel(summary({ provider: "copilot", launch: { model: "gpt-5.2" } }));
+    const copilotDescriptor = getModelById(copilot);
+    expect(copilotDescriptor && resolveProviderGroupForModel(copilotDescriptor)).not.toBe("codex");
+    const codex = defaultForkModel(summary({ provider: "codex", launch: { model: "gpt-5.2" } }));
+    expect(resolveProviderGroupForModel(getModelById(codex)!)).toBe("codex");
+    const unknown = defaultForkModel(summary({ provider: "claude", launch: { model: "no-such-model" } }));
+    expect(resolveProviderGroupForModel(getModelById(unknown)!)).toBe("claude");
+  });
+
+  it("finds Pi's own model for the provider/model name Pi records", () => {
+    const openai = createDynamicPiModelDescriptor("openai", "gpt-5.2");
+    const anthropic = createDynamicPiModelDescriptor("anthropic", "claude-sonnet-4-6");
+    replaceDynamicPiModelDescriptors([anthropic, openai]);
+    try {
+      expect(defaultForkModel(summary({ provider: "pi", launch: { model: "openai/gpt-5.2" } }))).toBe(openai.id);
+      expect(defaultForkModel(summary({ provider: "pi", launch: { model: "anthropic/claude-sonnet-4-6" } }))).toBe(anthropic.id);
+    } finally {
+      replaceDynamicPiModelDescriptors([]);
+    }
+  });
 
   const HOME = {
     kind: "lane" as const,
