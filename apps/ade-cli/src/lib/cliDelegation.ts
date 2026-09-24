@@ -84,8 +84,13 @@ export type CliDelegationTarget = {
   entry: string | null;
 };
 
-function canonical(filePath: string, fsLike: CliDelegationFs): string {
-  return fsLike.realpath(filePath) ?? path.resolve(filePath);
+/** The path rules of `platform`, not of the host: a caller may name another platform's layout. */
+function pathApiFor(platform: NodeJS.Platform): path.PlatformPath {
+  return platform === "win32" ? path.win32 : path.posix;
+}
+
+function canonical(filePath: string, fsLike: CliDelegationFs, platform: NodeJS.Platform = process.platform): string {
+  return fsLike.realpath(filePath) ?? pathApiFor(platform).resolve(filePath);
 }
 
 /**
@@ -114,25 +119,26 @@ export function resolveCliDelegationTarget(
   if (!command || !fsLike.isFile(command)) return null;
   if (!currentEntry) return null;
 
-  const current = canonical(currentEntry, fsLike);
+  const api = pathApiFor(platform);
+  const current = canonical(currentEntry, fsLike, platform);
   if (isSourceCheckoutRuntimeModule(current)) return null;
   const same = (candidate: string) => pathsEqual(candidate, current, platform);
 
   const declaredEntry = env.ADE_CLI_ENTRY_PATH?.trim();
   if (declaredEntry && fsLike.isFile(declaredEntry)) {
-    const entry = canonical(declaredEntry, fsLike);
+    const entry = canonical(declaredEntry, fsLike, platform);
     return same(entry) ? null : { command, entry };
   }
 
-  const target = canonical(command, fsLike);
+  const target = canonical(command, fsLike, platform);
   if (same(target)) return null;
   if (JS_ENTRY_PATTERN.test(target)) return { command, entry: target };
 
   // Packaged layout: <Resources>/ade-cli/bin/ade(.cmd) runs <Resources>/ade-cli/cli.cjs.
-  if (path.basename(path.dirname(target)).toLowerCase() === "bin") {
-    const sibling = path.join(path.dirname(path.dirname(target)), "cli.cjs");
+  if (api.basename(api.dirname(target)).toLowerCase() === "bin") {
+    const sibling = api.join(api.dirname(api.dirname(target)), "cli.cjs");
     if (fsLike.isFile(sibling)) {
-      const entry = canonical(sibling, fsLike);
+      const entry = canonical(sibling, fsLike, platform);
       return same(entry) ? null : { command, entry };
     }
   }

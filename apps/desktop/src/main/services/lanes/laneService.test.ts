@@ -2954,6 +2954,7 @@ describe("laneService symlinked project root path space", () => {
     }
   });
 
+  // WINDOWS-GATE: needs a case-insensitive file system; the Windows fold itself is pinned by pathCase.test.ts and pathCompare.test.ts in windows-foundation.
   it.runIf(process.platform === "darwin" || process.platform === "win32")(
     "finds the lane for a path whose casing differs from the lane row",
     async () => {
