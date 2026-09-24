@@ -251,7 +251,7 @@ struct MacDesktopViewer: View {
       using: syncService,
       laneId: laneId,
       starting: $starting,
-      error: $startError,
+      errorText: $startError,
       refresh: { await refresh() }
     )
   }

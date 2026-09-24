@@ -4,6 +4,7 @@ import SwiftUI
 ///
 /// Both the tools card and the full-screen viewer mount this way. The
 /// subscription id is the caller's, so the two can never unsubscribe each other.
+@MainActor
 func mountMacDesktopLiveSession(
   laneId: String,
   subscriptionId: String,
@@ -23,22 +24,23 @@ func mountMacDesktopLiveSession(
 }
 
 /// Starts this lane's display. Both Start buttons report the system error string.
+@MainActor
 func macDesktopStartDisplay(
   using syncService: SyncService,
   laneId: String,
   starting: Binding<Bool>,
-  error: Binding<String?>,
-  refresh: @escaping () async -> Void
+  errorText: Binding<String?>,
+  refresh: @escaping @MainActor () async -> Void
 ) {
   guard !starting.wrappedValue else { return }
   starting.wrappedValue = true
-  error.wrappedValue = nil
-  Task {
+  errorText.wrappedValue = nil
+  Task { @MainActor in
     do {
       try await syncService.macDesktopStart(laneId: laneId)
       await refresh()
     } catch {
-      error.wrappedValue = (error as NSError).localizedDescription
+      errorText.wrappedValue = (error as NSError).localizedDescription
     }
     starting.wrappedValue = false
   }

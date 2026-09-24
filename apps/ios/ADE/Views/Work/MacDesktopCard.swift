@@ -147,7 +147,7 @@ struct MacDesktopCard: View {
       using: syncService,
       laneId: laneId,
       starting: $macDesktopStarting,
-      error: $macDesktopStartError,
+      errorText: $macDesktopStartError,
       refresh: { await refreshLane() }
     )
   }
