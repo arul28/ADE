@@ -2,7 +2,10 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
+import {
+  EXTERNAL_SESSION_PROVIDER_CAPABILITIES,
+  EXTERNAL_SESSION_PROVIDERS,
+} from "../../desktop/src/shared/types/externalSessions";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   refusesVoiceCategory,
@@ -3328,8 +3331,9 @@ function scopeExternalSessionsListArgs(
 }
 
 function externalSessionImportUsesSourceRunCwd(provider: ExternalSessionProvider, mode: string): boolean {
-  if (mode === "resume") return provider !== "codex";
-  if (mode === "fork") return provider === "opencode" || provider === "pi";
+  const capabilities = EXTERNAL_SESSION_PROVIDER_CAPABILITIES[provider];
+  if (mode === "resume") return !capabilities.resumeInDifferentCwd;
+  if (mode === "fork") return capabilities.fork && !capabilities.forkIntoDifferentCwd;
   return false;
 }
 
@@ -3387,6 +3391,33 @@ async function scopeExternalSessionsImportArgs(
     if (!runCwd || !isPathInsideOrEqual(laneCwd, runCwd)) externalSessionsAccessDenied(method);
   }
   return scopedArgs;
+}
+
+async function scopeExternalSessionsGetDetailArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  detailArgs: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const method = "run_ade_action:external-sessions.getDetail";
+  const { laneId, laneCwd } = resolveAuthorizedExternalSessionsLane(runtime, session, method, detailArgs);
+  const provider = asOptionalTrimmedString(detailArgs.provider);
+  const sessionId = asOptionalTrimmedString(detailArgs.sessionId);
+  if (!isExternalSessionProviderName(provider) || !sessionId) externalSessionsAccessDenied(method);
+  const summary = await findExternalSessionSummaryForAuthorization(
+    runtime,
+    method,
+    provider,
+    sessionId,
+    laneId,
+    laneCwd,
+  );
+  if (!summary) externalSessionsAccessDenied(method);
+  const before = asOptionalTrimmedString(detailArgs.before);
+  return {
+    provider,
+    sessionId,
+    ...(before ? { before } : {}),
+  };
 }
 
 async function runCtoOperatorBridgeTool(
@@ -4560,6 +4591,8 @@ async function runTool(args: {
         scopedResultHandled = true;
       } else if (action === "import") {
         scopedObjectArgs = await scopeExternalSessionsImportArgs(runtime, session, externalArgs);
+      } else if (action === "getDetail") {
+        scopedObjectArgs = await scopeExternalSessionsGetDetailArgs(runtime, session, externalArgs);
       } else {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }

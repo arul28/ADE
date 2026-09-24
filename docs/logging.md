@@ -256,6 +256,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | `codex` |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
 | `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
+| `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -475,6 +476,15 @@ one-hour action/outcome/family key admits at most 3 outcomes × 11 families ×
 24 = 792 key slots per day before budgets; the event-level `ade_feature_used`
 140-per-day / 30-per-minute limits remain the hard bound, and no ceiling was
 raised.
+
+The external sessions service (`externalSessions/externalSessionsService.ts`)
+records one `work/session_<continue|copy>_<chat|cli>` per import attempt that
+passed its argument checks, through its `onImportOutcome` hook: `desktop` from
+the desktop main process, `api` from the brain (which also serves the TUI and
+the phone). It carries no session id, title, folder, lane, or model. Imports are
+user-initiated and rare; the hourly per-key deduplication bounds the worst case
+to 4 actions × 2 outcomes × the provider families per hour, well inside the
+existing `ade_feature_used` daily and per-minute limits, so no ceiling changes.
 
 The two Claude session-capability facts are siblings on the same
 `ade_feature_used` event with `feature: "chat"`, `outcome: "failed"`,

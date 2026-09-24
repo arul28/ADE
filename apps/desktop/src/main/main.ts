@@ -87,7 +87,7 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "./services/analytics/agentTurnProductAnalytics";
-import { capturePendingInputDismissedAnalytics } from "./services/analytics/featureProductAnalytics";
+import { capturePendingInputDismissedAnalytics, captureSessionImportAnalytics } from "./services/analytics/featureProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -4468,6 +4468,14 @@ app.whenReady().then(async () => {
       chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
       homeDir: os.homedir(),
       env: process.env,
+      onImportOutcome: ({ provider, target, mode, outcome }) => captureSessionImportAnalytics({
+        analytics: productAnalyticsService,
+        surface: "desktop",
+        target,
+        mode,
+        outcome,
+        provider,
+      }),
     });
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,

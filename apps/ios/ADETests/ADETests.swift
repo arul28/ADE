@@ -219,6 +219,25 @@ final class ADETests: XCTestCase {
     XCTAssertNil(result.chatSummary)
   }
 
+  func testExternalSessionDetailDecodesDesktopContract() throws {
+    let json = #"{"provider":"copilot","id":"external-3","cwd":"/tmp/project","title":"Import task","model":"gpt-5","createdAt":1785142800000,"updatedAt":1785142860000,"messageCount":4,"messages":[{"role":"user","text":"Import this session","at":1785142800000}],"sourcePath":"/tmp/session.jsonl","watchable":true,"hasOlder":true,"olderCursor":"cursor-1"}"#
+    let detail = try JSONDecoder().decode(ExternalSessionDetail.self, from: Data(json.utf8))
+
+    XCTAssertEqual(detail.provider, "copilot")
+    XCTAssertEqual(detail.id, "external-3")
+    XCTAssertEqual(detail.cwd, "/tmp/project")
+    XCTAssertEqual(detail.title, "Import task")
+    XCTAssertEqual(detail.model, "gpt-5")
+    XCTAssertEqual(detail.createdAt, 1_785_142_800_000)
+    XCTAssertEqual(detail.updatedAt, 1_785_142_860_000)
+    XCTAssertEqual(detail.messageCount, 4)
+    XCTAssertEqual(detail.messages.map(\.text), ["Import this session"])
+    XCTAssertEqual(detail.sourcePath, "/tmp/session.jsonl")
+    XCTAssertEqual(detail.watchable, true)
+    XCTAssertTrue(detail.hasOlder)
+    XCTAssertEqual(detail.olderCursor, "cursor-1")
+  }
+
   func testExternalSessionSummaryDecodesFirstPromptAndMessages() throws {
     let json = """
     {
@@ -7602,6 +7621,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
     XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
     XCTAssertFalse(service.supportsRemoteAction("work.updateSessionMeta"))
+    XCTAssertFalse(service.supportsExternalSessionDetail)
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.dispatchSteer", sessionId: "chat-legacy"))
@@ -7645,6 +7665,38 @@ final class ADETests: XCTestCase {
     }
     let analyticsOptOutAcknowledged = await service.setProductAnalyticsClientEnabled(false)
     XCTAssertTrue(analyticsOptOutAcknowledged)
+  }
+
+  @MainActor
+  func testExternalSessionDetailRejectsHostWithoutAdvertisedAction() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "host-1", "deviceName": "Mac Studio"],
+      "features": [
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "work.listExternalSessions",
+            "scope": "project",
+            "policy": ["viewerAllowed": true],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertFalse(service.supportsExternalSessionDetail)
+    do {
+      _ = try await service.getExternalSessionDetail(provider: "claude", sessionId: "external-1")
+      XCTFail("A host that omits the detail action must reject the request locally")
+    } catch {
+      XCTAssertEqual((error as NSError).code, 15)
+      XCTAssertEqual(service.pendingOperationCount, 0)
+    }
   }
 
   @MainActor

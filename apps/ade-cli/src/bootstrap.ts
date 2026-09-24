@@ -158,7 +158,11 @@ import {
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
-import { captureNewLaneLaunchAnalytics, capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
+import {
+  captureNewLaneLaunchAnalytics,
+  capturePendingInputDismissedAnalytics,
+  captureSessionImportAnalytics,
+} from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
@@ -2554,6 +2558,14 @@ export async function createAdeRuntime(args: {
       chatImporter: agentChatService,
       ...(agentChatService ? { chatImportedRefsProvider: chatImportedRefsProvider(agentChatService) } : {}),
       chatSessionsDir: paths.chatSessionsDir,
+      onImportOutcome: ({ provider, target, mode, outcome }) => captureSessionImportAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        target,
+        mode,
+        outcome,
+        provider,
+      }),
     });
 
     // Constructed below the chat service on purpose: a call reaches the CTO

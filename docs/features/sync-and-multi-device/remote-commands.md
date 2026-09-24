@@ -800,8 +800,9 @@ A handful have more logic:
 - **`work.getExternalSessionDetail`** — one external session's conversation for
   the phone's import preview (`viewerAllowed`, not queueable). Args are
   `provider`, `sessionId`, and an optional `before` paging cursor. It calls the
-  same `loadExternalSessionDetail` the desktop's `external-sessions.getDetail`
-  action uses, with a 120-event page (the desktop reads 200) so paging stays
+  runtime's `externalSessionsService.getDetail`, the same entry the desktop's
+  `external-sessions.getDetail` action uses (so it reads the service's provider
+  homes), with a 120-event page (the desktop reads 200) so paging stays
   exact, and returns `ExternalSessionDetail`: `events` (ADE chat envelopes,
   oldest to newest) compacted by `compactChatEventForMobileWire` minus the
   `resultTruncatedForMobile` flag (a preview has no stored transcript to fetch a

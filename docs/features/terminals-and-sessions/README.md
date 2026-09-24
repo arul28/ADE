@@ -272,7 +272,9 @@ and in tests.
   per-lane cwd resolution that gates PTY creation to the lane worktree.
 - `apps/desktop/src/main/services/externalSessions/` —
   external CLI session discovery and import. `externalSessionsService.ts`
-  drives provider discovery, capability flags, lane attribution (`home`, from
+  (`list`, `importExternalSession`, `getDetail`) drives provider discovery
+  through the one provider table in `discoverers.ts`, id checks from
+  `sessionIds.ts`, capability flags, lane attribution (`home`, from
   `sessionHome.ts`), project/all scoping, already-imported detection,
   active-session hints, the import policy guard, CLI import into tracked
   PTYs, chat import delegation, cwd checks, and provider-specific resume/fork
@@ -290,8 +292,11 @@ and in tests.
   honoured with their differing shapes; see
   [Provider config homes](../chat/agent-routing.md#provider-config-homes).
   `events/` converts each provider's store to ADE chat events for the
-  import preview and for chat replay imports; `externalSessionDetail.ts`
-  serves the preview pages.
+  import preview and for chat replay imports (a store-only Cursor chat is read
+  from its `store.db`); `externalSessionDetail.ts` serves the preview pages,
+  always reached through the service's `getDetail` so it reads the same
+  provider homes as `list`. `liveChatProviderRefs.ts` builds the chat refs
+  source (`chatImportedRefsProvider`) that both runtime hosts wire in.
   `claudeSessionTransplant.ts` performs the non-destructive Claude JSONL copy
   used when forking or importing a Claude session into a different lane cwd;
   `claudeLiveSessions.ts` reads Claude's own `sessions/<pid>.json` registry to
@@ -615,7 +620,8 @@ Shared types and IPC:
   counts into the new surface.
 - `apps/desktop/src/shared/types/externalSessions.ts` —
   `ExternalSessionProvider`, `EXTERNAL_SESSION_PROVIDERS` and their labels,
-  `ExternalSessionHome`, `ExternalSessionCapabilities`,
+  `EXTERNAL_SESSION_PROVIDER_CAPABILITIES` (the per-provider base
+  capabilities), `ExternalSessionHome`, `ExternalSessionCapabilities`,
   `ExternalSessionSummary`, `ExternalSessionListArgs`,
   `ExternalSessionImportArgs`, and `ExternalSessionImportResult`. This is
   the canonical DTO surface shared by desktop IPC, the ADE action domain,
@@ -753,15 +759,18 @@ Renderer surfaces:
   with counts and "Other folders", search, rows that name the home lane), and
   the read-only `AgentChatMessageList` preview plus an action bar on the right.
   The action bar renders `planImport`: the surface switch, the lane pill
-  (locked when the plan says so), and the primary/secondary buttons. The
+  (locked when the plan says so), and the primary/secondary buttons, with the
+  "Continue anyway" second click driven by the action's `confirmBeforeRun`. The
   target lane is the session's home lane and never follows the Work view's
   lane. `sessionPresentation.ts` keeps title-free path/time headings separate
   from prompt previews.
 - `apps/desktop/src/shared/externalSessionPolicy.ts` — the one import policy
   (`PROVIDER_IMPORT_RULES`, `effectiveImportRules`, `planImport`,
   `importRejectionReason`), used by desktop, `ade code`, and the host import
-  guard, and ported to Swift for iOS. `shared/externalSessionAffordances.ts`
-  now only shortens paths for rows.
+  guard, and ported to Swift for iOS. `importProviderLabel` there is the
+  provider label every desktop and TUI surface uses.
+  `shared/externalSessionAffordances.ts` holds the row display helpers:
+  `shortenExternalSessionCwd` and `formatExternalSessionSize`.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` —
   Work draft/new-chat surface. The ADE wordmark sits above an optically
   lifted composer; the machine/lane launch shelf tucks under it. Usage
@@ -1845,7 +1854,8 @@ ADE CLI / TUI runtime surfaces:
 - `apps/ade-cli/src/tuiClient/externalSessionBrowser.ts` and
   `apps/ade-cli/src/tuiClient/app.tsx` — `ade code` import browser.
   It reuses the same shared DTOs and `planImport` as desktop (rows show the
-  home lane; actions default to that lane), then
+  home lane; actions default to that lane; a refresh that moves a different
+  session under the cursor clears the row's picks), then
   calls `external-sessions.list` / `external-sessions.import` through the
   TUI action connection.
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` —
@@ -1926,7 +1936,9 @@ iOS Work surfaces:
   it through the page. It fetches the host's cached `usage.getAdeStats`
   snapshot, supports activity/token/code/client-mix charts and
   day/week/month/year ranges, and persists both selections on-device.
-- `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` and
+- `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` (with
+  `WorkImportSessionRows.swift`, `WorkImportSessionPreview.swift`,
+  `WorkImportSessionPresentation.swift`, and `WorkImportActionBar.swift`) and
   `WorkExternalSessionAffordances.swift` — iOS import browser/details flow and
   the Swift port of `externalSessionPolicy.ts` (`workPlanImport`). The screen calls
   `SyncService.listExternalSessions`, `SyncService.getExternalSessionDetail`

@@ -24019,6 +24019,23 @@ function formatExternalSessions(value: unknown): string {
     ]);
   }
 
+  if (
+    isRecord(value)
+    && typeof value.id === "string"
+    && typeof value.provider === "string"
+    && (Array.isArray(value.events) || Array.isArray(value.messages) || "watchable" in value)
+  ) {
+    const events = Array.isArray(value.events) ? value.events.length : 0;
+    const messages = Array.isArray(value.messages) ? value.messages.length : 0;
+    return renderKeyValues("ADE external session detail", [
+      ["provider", value.provider],
+      ["session", value.id],
+      ["source", value.sourcePath],
+      ["events", events || messages],
+      ["older", value.hasOlder === true ? value.olderCursor ?? "yes" : "no"],
+    ]);
+  }
+
   const sessions = Array.isArray(value)
     ? value.filter(isRecord)
     : firstArray(value, ["sessions", "results", "items"]);

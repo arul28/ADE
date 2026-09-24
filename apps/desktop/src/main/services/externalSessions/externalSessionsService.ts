@@ -141,6 +141,19 @@ type ExternalSessionsServiceArgs = {
     extraPids?: readonly number[];
   }) => LiveProviderSessionIndex | Promise<LiveProviderSessionIndex>;
   runHandleCommand?: RunCommand;
+  /**
+   * One call per import attempt that passed argument checks, after it ran or
+   * failed. The host turns it into a content-free analytics event; nothing
+   * here may carry an id, path, or title.
+   */
+  onImportOutcome?: (outcome: ExternalSessionImportOutcome) => void;
+};
+
+export type ExternalSessionImportOutcome = {
+  provider: ExternalSessionProvider;
+  target: ExternalSessionImportArgs["target"];
+  mode: ExternalSessionImportArgs["mode"];
+  outcome: "completed" | "failed";
 };
 
 type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
@@ -908,8 +921,21 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   const importExternalSession = async (
     importArgs: LaneScopedExternalSessionImportArgs,
   ): Promise<ExternalSessionImportResult> => {
+    const report = (outcome: ExternalSessionImportOutcome["outcome"]): void => {
+      if (!PROVIDERS.includes(importArgs.provider)) return;
+      try {
+        args.onImportOutcome?.({ provider: importArgs.provider, target: importArgs.target, mode: importArgs.mode, outcome });
+      } catch {
+        // Analytics never changes an import's result.
+      }
+    };
     try {
-      return await runImport(importArgs);
+      const result = await runImport(importArgs);
+      report("completed");
+      return result;
+    } catch (error) {
+      report("failed");
+      throw error;
     } finally {
       dropListSnapshot();
     }

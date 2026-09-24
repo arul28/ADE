@@ -36,38 +36,40 @@ ADE first learns it.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point. Runs provider discovery, stamps each row's capabilities, `home` lane, and `sizeBytes`, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, refuses any import the policy does not offer (`importRejectionReason`), builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. |
-| `apps/desktop/src/shared/externalSessionPolicy.ts` | The one import policy. `PROVIDER_IMPORT_RULES` (the per-provider table), `effectiveImportRules` (the table narrowed by host capabilities), `planImport` (what the action bar shows), and `importRejectionReason` (the host guard). The renderer, the TUI, and the host import all use it. iOS mirrors it in Swift. |
+| `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point (`list`, `importExternalSession`, `getDetail`). Runs provider discovery, stamps each row's capabilities, `home` lane, and `sizeBytes`, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, refuses any import the policy does not offer (`importRejectionReason`), builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. `getDetail` wraps `loadExternalSessionDetail` with the service's own `homeDir`/`env`, so every detail caller (IPC, the watch, the ADE action, the sync command) reads the same provider stores as `list`. |
+| `apps/desktop/src/main/services/externalSessions/discoverers.ts` | `EXTERNAL_SESSION_DISCOVERERS`: the one provider → discoverer table. Listing, import, and the exact-id detail lookup all use it. |
+| `apps/desktop/src/main/services/externalSessions/sessionIds.ts` | Session id checks. `isWellFormedExternalSessionId` (strict UUID for Claude/Codex, `^[A-Za-z0-9][A-Za-z0-9._-]{2,127}$` for the rest) and `validateExternalSessionId` (the same check plus the Cursor `agent-` refusal, throwing). Discoverers join the id into a store path, so an id with a separator must never reach them. |
+| `apps/desktop/src/shared/externalSessionPolicy.ts` | The one import policy. `PROVIDER_IMPORT_RULES` (the per-provider table), `effectiveImportRules` (the table narrowed by host capabilities), `planImport` (what the action bar shows), `importRejectionReason` (the host guard), and `importProviderLabel` (the provider label every desktop and TUI surface uses). The renderer, the TUI, and the host import all use it. iOS mirrors it in Swift. |
 | `apps/desktop/src/main/services/externalSessions/sessionHome.ts` | `createSessionHomeResolver`: maps a provider cwd to the lane that owns it (`ExternalSessionHome`). The deepest lane root wins. A folder under `.ade/worktrees/` that no live lane owns is a removed lane, not the primary lane. |
 | `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
 | `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles, excludes SDK-origin transcripts, and collapses continuation chains to their leaf. |
 | `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from `CODEX_HOME/state_5.sqlite` (default `~/.codex`): top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when the thread store is unusable. |
-| `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. |
+| `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. Also owns `openCursorStoreConversation`, the reader for the conversation inside a `store.db` (see [Cursor](#cursor)). |
 | `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `<factoryConfigHome>/sessions/<escaped-cwd>/` (default `~/.factory`), one record per session id, using the `session_start` row for id/cwd/title. |
 | `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts` | Discovers OpenCode sessions by running `opencode session list --pure --format json --max-count <N>` in the requested/project cwd. |
 | `apps/desktop/src/main/services/externalSessions/discoverPi.ts` | Discovers Pi's native JSONL sessions in the one Pi session store that ADE chat and tracked Pi terminals also use. |
 | `apps/desktop/src/main/services/externalSessions/discoverQwen.ts`, `discoverKimi.ts`, `discoverGrok.ts`, `discoverCopilot.ts` | The ACP-provider discoverers. Each reads its CLI's own on-disk store, drops ADE-launched and subagent sessions, and drops sessions with no prompt. See [ACP providers](#acp-providers-qwen-kimi-grok-copilot). |
 | `apps/desktop/src/main/services/externalSessions/discoverAcpShared.ts` | Shared plumbing for the four ACP discoverers. Each discoverer maps its records to one neutral `{ type, timestamp, message: { role, content } }` form, and the shared helpers compute the preview, the sampled `messages`, and the prompt count from that form. Also: bounded head + tail reads, the `## ADE` guidance test, `~` expansion for env overrides, and a newest-first read loop that stops when enough sessions survive. |
-| `apps/desktop/src/main/services/externalSessions/events/` | The per-provider converters from a provider store to ADE chat events (`AgentChatEventEnvelope[]`), plus byte-window paging. `loadExternalSessionEvents` (`index.ts`) serves both the preview (`purpose: "preview"`) and the chat import (`purpose: "import"`). See [Conversation events](#conversation-events). |
-| `apps/desktop/src/main/services/externalSessions/externalSessionDetail.ts` | `loadExternalSessionDetail`: one session's detail for a preview. Returns the text tail in `messages` and a page of `events` with `hasOlder`/`olderCursor`. Also owns the local file watch (`startExternalSessionDetailWatch`) that pushes a fresh newest page when the source file changes. |
+| `apps/desktop/src/main/services/externalSessions/events/` | The per-provider converters from a provider store to ADE chat events (`AgentChatEventEnvelope[]`), plus byte-window paging. `loadExternalSessionEvents` (`index.ts`) serves both the preview (`purpose: "preview"`) and the chat import (`purpose: "import"`). `jsonlSourceFor` names the conversation file a converter reads; `records.ts` is the exact-id record lookup (it returns null for an ill-formed id). A store-only Cursor chat pages through `loadCursorStorePage` (`cursor.ts`). See [Conversation events](#conversation-events). |
+| `apps/desktop/src/main/services/externalSessions/externalSessionDetail.ts` | `loadExternalSessionDetail`: one session's detail for a preview. Returns the text tail in `messages` and a page of `events` with `hasOlder`/`olderCursor`. Also owns the local file watch (`startExternalSessionDetailWatch`), which pushes a fresh newest page when the source file changes and loads through the `loadDetail` callback it is given (the service's `getDetail`). Callers go through `externalSessionsService.getDetail`, not this function directly. |
 | `apps/desktop/src/main/services/externalSessions/providerSessionHandles.ts` | Maps a provider session id back to the files that hold it, and finds which live process holds each file. The Claude / Codex / Droid roots come from `shared/providerConfigHomes.ts` so `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `FACTORY_HOME_OVERRIDE` are all honoured — and honoured with the right shape, since only the first two name a directory while `FACTORY_HOME_OVERRIDE` replaces the HOME that `.factory` is appended to. The ACP roots come from the same module (`QWEN_HOME`, `GROK_HOME`, `COPILOT_HOME`, `KIMI_CODE_HOME`). See [Session tracking](#session-tracking). |
-| `apps/desktop/src/main/services/externalSessions/liveChatProviderRefs.ts` | `providerPointersFromChatRecord`: every provider pointer that one ADE chat holds (`importedFrom` for a continue, the provider session ids, and `acpSessionId` for the ACP providers). Both runtime hosts use it, so a session that ADE itself runs never lists as importable. |
+| `apps/desktop/src/main/services/externalSessions/liveChatProviderRefs.ts` | `providerPointersFromChatRecord`: every provider pointer that one ADE chat holds (`importedFrom` for a continue, the provider session ids, and `acpSessionId` for the ACP providers). `chatImportedRefsProvider(chatService)` builds the chat refs source from it over the non-archived chats. Both runtime hosts wire in that one function, so a session that ADE itself runs never lists as importable on either. |
 | `apps/desktop/src/main/services/externalSessions/importedSessionStore.ts` | Machine-local durable log of every import (`<ADE_HOME>/external-sessions/imported.json`), the only imported-marking source that survives deleting the ADE session and the only one that knows a fork's new provider id. |
 | `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`) and returns the session ids whose pid is still alive, for `possiblyActive`. |
 | `apps/desktop/src/main/services/externalSessions/claudeSessionTransplant.ts` | Non-destructive Claude transcript transplant. For forks it copies JSONL rows, rekeys `sessionId`, hard-links without clobbering, and leaves the source untouched; for moves it can link/unlink when requested by other callers. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Canonical CLI launch/resume/fork command builders. External import uses `buildTrackedCliResumeCommand`, `withCodexNoAltScreen`, provider permission/model mappings, and shell quoting from here. Also holds the pre-assigned session id helpers (`preassignedSessionIdArgs`, `withPreassignedSessionIdInCommandLine`) and `buildClaudeForkLaunchCommand`. |
 | `apps/desktop/src/shared/importedTurnBoundaries.ts` | `withImportedTurnBoundaries`: adds a `done` event after each imported turn that did tool work. The preview and `appendImportedChatEvents` both apply it. See [Conversation events](#conversation-events). |
-| `apps/desktop/src/shared/types/externalSessions.ts` | Canonical DTOs shared by desktop IPC, ADE actions, sync remote commands, `ade code`, and iOS. Also `EXTERNAL_SESSION_PROVIDERS` (display order) and `EXTERNAL_SESSION_PROVIDER_LABELS`, the one provider list and label map. |
+| `apps/desktop/src/shared/types/externalSessions.ts` | Canonical DTOs shared by desktop IPC, ADE actions, sync remote commands, `ade code`, and iOS. Also `EXTERNAL_SESSION_PROVIDERS` (display order), `EXTERNAL_SESSION_PROVIDER_LABELS` (the one provider list and label map), and `EXTERNAL_SESSION_PROVIDER_CAPABILITIES` (the per-provider base capabilities, which the host narrows per session and the browser mock shows as they are). |
 | `apps/desktop/src/shared/types/externalSessionDetail.ts` | `ExternalSessionDetail` and its args. `events`, `hasOlder`, `olderCursor`, and the `before` arg are optional, so older hosts stay compatible. |
 | `apps/desktop/src/main/services/chat/externalChatHistoryImport.ts` | Converts external Claude JSONL and Codex app-server thread history into ADE chat event envelopes with byte/event caps and provenance/truncation notices. Exports the building blocks the `events/` converters share (`externalImportEnvelope`, `finalizeExternalImportEvents`, `claudeRecordsToContentEvents`, `codexTurnsToContentEvents`). |
-| `apps/desktop/src/main/services/chat/agentChatService.ts` | Owns `importExternalChatSession`. Creates the ADE chat session, imports history, seeds Claude `sdkSessionId`, Codex `threadId`, or the Droid/OpenCode/Pi provider pointer, persists provenance (`importedFrom.mode`), and cleans up failed forks. Statically imports the Claude transplant module for the packaged brain bundle. |
+| `apps/desktop/src/main/services/chat/agentChatService.ts` | Owns `importExternalChatSession`. Creates the ADE chat session, imports history, seeds Claude `sdkSessionId`, Codex `threadId`, or the Droid/OpenCode/Pi/Copilot provider pointer, persists provenance (`importedFrom.mode`), and cleans up failed forks. Statically imports the Claude transplant module for the packaged brain bundle. |
 | `apps/desktop/src/shared/ipc.ts`, `apps/desktop/src/main/services/ipc/registerIpc.ts` | Defines and registers `ade.externalSessions.list`, `.import`, `.getDetail`, `.watchDetail`, `.unwatchDetail`, and the `.detailUpdated` push channel. `list`, `import`, and `getDetail` are the legacy in-process fallback; the watch channels are always local. |
 | `apps/desktop/src/preload/preload.ts`, `apps/desktop/src/preload/global.d.ts` | Exposes `window.ade.externalSessions.list/import/getDetail/watchDetail/unwatchDetail/onDetailUpdated`. `list`, `import`, and `getDetail` first call the bound project runtime's `external-sessions` ADE action domain and fall back to desktop IPC only when no runtime is bound. The watch calls always use local IPC. |
-| `apps/desktop/src/main/services/adeActions/registry.ts` | Registers the `external-sessions` ADE action domain (`list`, `import`, `getDetail`) against the runtime service. `watchDetail` is deliberately absent: it pushes on a per-sender Electron IPC channel that the action domain cannot reach. |
+| `apps/desktop/src/main/services/adeActions/registry.ts` | Registers the `external-sessions` ADE action domain (`list`, `import`, `getDetail`) against the runtime's `externalSessionsService`. `watchDetail` is deliberately absent: it pushes on a per-sender Electron IPC channel that the action domain cannot reach. |
 | `apps/desktop/src/main/main.ts` | Constructs `externalSessionsService` for desktop-owned project runtimes and injects it into IPC, ADE actions, sync, and runtime context. |
 | `apps/ade-cli/src/bootstrap.ts` | Constructs the same service for the headless ADE brain/runtime so remote-bound desktop windows and the mobile sync host expose the feature. |
 | `apps/ade-cli/src/adeRpcServer.ts` | Authorizes `run_ade_action` calls. Non-CTO callers are lane-scoped for `external-sessions`; CTO callers can use the domain unscoped. |
-| `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions`, `work.getExternalSessionDetail` (the phone preview: 120-event pages, mobile-wire compacted), and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
+| `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions`, `work.getExternalSessionDetail` (the phone preview: the service's `getDetail` with 120-event pages, mobile-wire compacted), and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
 | `apps/desktop/src/shared/types/sync.ts` | Sync command DTO aliases for external-session list/detail/import payloads and results. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | The desktop Import session dialog: a fixed-size split view (`LaneDialogShell`, up to 1180 × 860 px). Owns the scan, the filters, the selection, the target lane, the surface choice, and the import run. Asks for 200 rows per provider to match the service's project-scope discovery window. A provider that fails its scan leaves a muted per-provider notice ("OpenCode CLI not found…") instead of an unexplained empty list, and only a total scan failure becomes the blocking error state. See [Desktop dialog](#desktop-dialog). |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportTopBar.tsx` | The dialog's top bar: provider chips, the lane filter (`LaneCombobox` with per-lane counts and "Other folders"), search, refresh, and the computer (source) picker. |
@@ -78,18 +80,22 @@ ADE first learns it.
 | `apps/desktop/src/renderer/components/terminals/importSessions/importBrowserModel.ts` | Pure dialog rules with no React: `sessionPlace` (the lane a row names), lane-filter keys and counts, search, `defaultForkModel`, the per-provider surface memory in `localStorage` (`ade.importSession.surface.<provider>`), and `spliceNewestPage` for live preview updates. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/useExternalSessionDetail.ts` | Loads the preview transcript: the newest page after a short settle delay, older pages on scroll-back, and live updates through `watchDetail` for sessions on this computer. A live update replaces the newest page and keeps the pages the user already loaded. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/ImportFloatingBadge.tsx` | The "Import your chats from outside ADE" hint on the Work draft surface, plus its machine-local per-project dismissal (`readImportBadgeDismissed`). It is the last row of the draft column, below the activity module, and is `shrink-0` because the wordmark above it is the only row meant to absorb overflow when the column is height-capped. It returns `null` — not an empty wrapper — once dismissed or when there is no project root, so a retired hint spends none of the column's row gap. |
-| `apps/desktop/src/shared/externalSessionAffordances.ts`, `apps/desktop/src/renderer/components/terminals/importSessions/affordances.ts` | Path display only: `shortenExternalSessionCwd` and its renderer binding `shortenCwd`. The import actions live in `externalSessionPolicy.ts`. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/sessionPresentation.ts` | Pure desktop heading/time/anchor helpers. Provider titles win, then the opening prompt (`preview`), then cwd + relative time. `sessionAnchors` returns the row's "started"/"latest" pair and drops whichever one the heading is already showing, so a row never prints the same sentence twice. Also the date groups, compact row times ("13m"), prompt counts, and session sizes ("40 MB"). |
-| `apps/desktop/src/renderer/components/terminals/importSessions/contract.ts` | Renderer bridge/types/display helpers for external sessions. `ALL_IMPORT_PROVIDERS` and the provider labels come from the shared provider list. |
+| `apps/desktop/src/shared/externalSessionAffordances.ts`, `apps/desktop/src/renderer/components/terminals/importSessions/affordances.ts` | Row display helpers shared by the desktop dialog and the TUI: `shortenExternalSessionCwd` (and its renderer binding `shortenCwd`) and `formatExternalSessionSize` ("40 MB", "2.4 MB"; empty for a missing or zero size). The import actions live in `externalSessionPolicy.ts`. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/sessionPresentation.ts` | Pure desktop heading/time/anchor helpers. Provider titles win, then the opening prompt (`preview`), then cwd + relative time. `sessionAnchors` returns the row's "started"/"latest" pair and drops whichever one the heading is already showing, so a row never prints the same sentence twice. Also the date groups, compact row times ("13m"), and prompt counts. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/contract.ts` | Renderer bridge and types for external sessions (`readImportedFrom`, `PROVIDER_TOOL_TYPE`). The provider list and labels are not here: surfaces use `EXTERNAL_SESSION_PROVIDERS` and `importProviderLabel` directly. |
 | `apps/desktop/src/renderer/components/terminals/LaneCombobox.tsx` | The shared lane picker. Options can carry a trailing `detail` (the import dialog's session counts) and an `icon` (the "Other folders" pseudo-option); `allDetail` puts a total on the "All lanes" row. |
 | `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` | Adopts import results into the Work surface and focuses existing imported sessions without re-importing. |
 | `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx`, `apps/desktop/src/renderer/components/terminals/WorkViewArea.tsx`, `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` | Wires the import browser into the Work draft/new-session surface and routes imported or already-imported sessions to the selected Work tab. |
-| `apps/ade-cli/src/tuiClient/externalSessionBrowser.ts`, `apps/ade-cli/src/tuiClient/components/RightPane.tsx`, `apps/ade-cli/src/tuiClient/app.tsx` | ADE Code TUI import browser. Rows show the home lane with its color. The action list is `planImport` flattened (one entry per surface and mode, with the lane, the lock reason, and the note). The target lane defaults to the session's home lane, and a live continue asks for a second Enter. |
-| `apps/ios/ADE/Models/RemoteModels.swift` | iOS Codable mirrors for `ExternalSessionSummary` (including `home` and `sizeBytes`), `ExternalSessionMessage`, capabilities, imported refs, and import results. `messages` decodes through `ADELossyArray`, and `ExternalSessionMessage` rejects any role other than `user`/`assistant`, so a bad element is dropped instead of taking the whole summary down. A new key must be added in all three places inside the summary struct — `CodingKeys`, the memberwise `init`, and `init(from:)` — or it silently decodes as nil. |
+| `apps/ade-cli/src/tuiClient/externalSessionBrowser.ts`, `apps/ade-cli/src/tuiClient/components/RightPane.tsx`, `apps/ade-cli/src/tuiClient/components/ExternalSessionPreview.tsx`, `apps/ade-cli/src/tuiClient/app.tsx` | ADE Code TUI import browser. Rows show the home lane with its color. The action list is `planImport` flattened (one entry per surface and mode, with the lane, the lock reason, and the note), planned with `originLaneId` set to the lane `/import` scanned. The target lane defaults to the session's home lane, and an action with `confirmBeforeRun` asks for a second Enter. `withReloadedExternalSessions` swaps in a refreshed list and clears the row's lane, action, and confirm picks (`EXTERNAL_SESSION_ROW_RESET`) when a different session now sits at the selected index, so Enter never imports a new row into the lane picked for the old one. |
+| `apps/ios/ADE/Models/RemoteModels.swift` | iOS Codable mirrors for `ExternalSessionSummary` (including `home`, `sizeBytes`, and `importedBefore`), `ExternalSessionMessage`, capabilities, imported refs, and import results. `messages` decodes through `ADELossyArray`, and `ExternalSessionMessage` rejects any role other than `user`/`assistant`, so a bad element is dropped instead of taking the whole summary down. A new key must be added in all three places inside the summary struct — `CodingKeys`, the memberwise `init`, and `init(from:)` — or it silently decodes as nil. The import result requires only `kind`: an embedded `session`/`chatSummary` this build cannot decode is dropped (the screen re-fetches the chat summary), because the import already happened on the host and a failed decode would invite a duplicate import. |
 | `apps/ios/ADE/Services/SyncService.swift` | iOS client methods for `work.listExternalSessions` (including the exact `sessionId` lookup), `work.getExternalSessionDetail` (`getExternalSessionDetail(provider:sessionId:before:)`, gated by `supportsExternalSessionDetail`), and `work.importExternalSession` (optional model and permission mode). |
 | `apps/ios/ADE/Views/Work/WorkNewChatScreen.swift` | Adds the Import session affordance when a concrete lane is selected. |
 | `apps/ios/ADE/Views/Work/WorkExternalSessionAffordances.swift` | The Swift port of `externalSessionPolicy.ts`: `WorkImportLaneRule`, the provider table, `workEffectiveImportRules`, and `workPlanImport`. Keep the table, labels, notes, and lock reason in lockstep with the TypeScript file; `ADETests` mirrors its tests. `workExternalSessionProviderName` is the one iOS provider-label map. |
-| `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` | iOS list/detail flow: provider chips, a lane filter menu with counts and "Other folders", project/all scope, rows that name the home lane, the full-conversation preview, and an action bar that renders `workPlanImport`. |
+| `apps/ios/ADE/Views/Work/WorkImportSessionScreen.swift` | iOS list/detail flow: provider chips, a lane filter menu with counts and "Other folders", project/all scope, date-grouped rows, the scan and import runs, and the live-continue confirm state. |
+| `apps/ios/ADE/Views/Work/WorkImportSessionRows.swift` | The compact list row, the detail header, the status badges ("In ADE", "Copied before", "May be open elsewhere"), and `WorkImportLaneLabel` (lane dot + name, "Removed lane", or the folder's last segment). |
+| `apps/ios/ADE/Views/Work/WorkImportSessionPreview.swift` | The detail's conversation preview. On a host with `work.getExternalSessionDetail` it renders the ADE chat events through the Work chat builders and row views, in a bounded scroller with "Load earlier". Otherwise it shows the list's sampled messages. |
+| `apps/ios/ADE/Views/Work/WorkImportActionBar.swift` | The action bar that renders `workPlanImport`: mode switch, lane control (`WorkLanePickerDropdown`, or a locked lane), note, primary button, and optional Copy. `workImportConfirmKey` keys the "Continue anyway" second tap to one session, action, and lane. |
+| `apps/ios/ADE/Views/Work/WorkImportSessionPresentation.swift` | Pure row presentation on `ExternalSessionSummary`: headings, anchors, lane names, lane-filter buckets, the default target lane (`defaultImportTargetLaneId`), and `workExternalSessionSizeText`, which mirrors desktop `formatExternalSessionSize`. |
 | `apps/ios/ADE/Views/Work/WorkRootComponents.swift`, `apps/ios/ADE/Views/Work/WorkStatusAndFormattingHelpers.swift`, `apps/ios/ADE/Views/Components/ADEDesignSystem.swift` | Shared iOS provider logos, fallback symbols, and provider accent colors consumed by the import screen. |
 
 ## Architecture
@@ -420,8 +426,10 @@ either. Until then, chat mode offers only the replay copy for them.
 
 #### Capabilities only narrow the table
 
-The host still sends `ExternalSessionCapabilities` on every row.
-`effectiveImportRules` narrows the table with them. It never widens it.
+The host still sends `ExternalSessionCapabilities` on every row. The base
+values per provider are `EXTERNAL_SESSION_PROVIDER_CAPABILITIES` in
+`shared/types/externalSessions.ts`; the host narrows them per session as listed
+below. `effectiveImportRules` narrows the table with them. It never widens it.
 
 | Capability | Meaning | Effect on the rules |
 |---|---|---|
@@ -447,8 +455,10 @@ The host narrows the capabilities for these cases:
 
 #### The plan
 
-`planImport(summary, { surface, targetLaneId, laneName })` returns an
-`ImportPlan`. Every client renders it as it is:
+`planImport(summary, { surface, targetLaneId, originLaneId, laneName })`
+returns an `ImportPlan`. `originLaneId` is the lane the session list was
+scanned for; it matters only for an older host (see the notes below). Every
+client renders the plan as it is:
 
 | Field | Meaning |
 |---|---|
@@ -456,7 +466,7 @@ The host narrows the capabilities for these cases:
 | `surface` | The requested surface, else the first available one. |
 | `targetLaneId` | The lane the actions run in. A locked plan forces the home lane. |
 | `laneLocked`, `lockReason` | True when no action on this surface can leave the home lane. The reason is short: "Cursor sessions stay in their own lane." |
-| `primary`, `secondary` | The main action and the optional secondary "Copy". Each has `target`, `mode` (`resume` or `fork`, the wire value), `label`, and `needsModel` (true for a chat copy). |
+| `primary`, `secondary` | The main action and the optional secondary "Copy". Each has `target`, `mode` (`resume` or `fork`, the wire value), `label`, `needsModel` (true for a chat copy), and `confirmBeforeRun` (true for a continue on a `possiblyActive` session; two writers on one provider session corrupt it). Clients arm their second press from `confirmBeforeRun` and never re-derive it. |
 | `note` | One short line, or null. |
 
 Labels:
@@ -473,7 +483,10 @@ Notes (at most one):
   first."
 - A copy out of the home lane: "Original stays in {home lane}."
 - A CLI continue of a session outside every lane: "Runs in its original
-  folder."
+  folder." An older host sends no `home`, so its `cwdMatchesRequestedLane` is
+  the only signal. That flag answers for the scanned lane, so the note also
+  shows when the flag is not true, or when the target is no longer
+  `originLaneId`.
 
 #### Host guard
 
@@ -487,8 +500,9 @@ around it.
 ### CLI target
 
 `externalSessionsService.importExternalSession` validates the provider and
-session id (strict UUIDs for Claude/Codex; bounded provider-safe ids for the
-other CLIs), resolves the target lane cwd, optionally enforces caller lane scope,
+session id with `validateExternalSessionId` (`sessionIds.ts`: strict UUIDs for
+Claude/Codex; bounded provider-safe ids with no path separators for the other
+CLIs), resolves the target lane cwd, optionally enforces caller lane scope,
 finds a currently resumable external summary, runs the policy guard, chooses
 the run cwd, builds `TerminalResumeMetadata`, then builds a provider command.
 
@@ -592,7 +606,10 @@ runtime opens the pointer from the store that the CLI writes:
 The importer refuses a native continue when the session folder is not the lane
 root, and when the requested model is from another family. The model is the
 requested one, else the recorded model of the same family, else the provider
-default. The imported history is for display only: the provider already holds
+default. When that model is the session's recorded model and supports the
+recorded reasoning effort (`sourceReasoningEffort`), the chat keeps it, as the
+native Claude and Codex paths do. The
+imported history is for display only: the provider already holds
 it, so nothing is replayed into the prompt. The history is read before the chat
 exists, so an unreadable session creates nothing.
 
@@ -662,12 +679,14 @@ preview and the replay import, so the preview shows what an import writes.
 | Paging | `before` / `olderCursor` | One page |
 
 Paging (`paging.ts`): a JSONL store is read in byte windows that end on a line
-boundary. The cursor names the window (an absolute byte `end` and its size) and
+boundary. `jsonlSourceFor` names the file: the session JSONL itself, or for the
+ACP stores the conversation file inside the session folder. The cursor names the window (an absolute byte `end` and its size) and
 the first event already shown from it. Offsets are absolute, so appends to a
 live file never shift an older page, and `before` never encodes a page size.
 Limits: a line longer than the window is skipped, and a tool call and its
 result on the two sides of a window edge render as two rows. OpenCode pages by
-event index alone. When no converter produces events, the first page falls back
+event index alone. A store-only Cursor chat pages by message index (see the
+Cursor row below). When no converter produces events, the first page falls back
 to the discovery record's sampled messages (text only).
 
 Converters and their fidelity:
@@ -676,13 +695,13 @@ Converters and their fidelity:
 |---|---|---|
 | Claude, Droid | The session JSONL (same message shape) | Text, tool calls, tool results (failed status kept). Thinking blocks are dropped, as on import. Shares `claudeRecordsToContentEvents` with the import. |
 | Codex | The rollout JSONL | Three layouts: current (`event_msg` `item_completed` items, plus `function_call`s no item covers, such as `spawn_agent`), legacy (`user_message` / `agent_message` plus `response_item` tool calls), and bare (`response_item` only). Commands, file changes, reasoning, and MCP tool calls map through `codexTurnsToContentEvents`. The code-mode `exec` wrapper and its `wait` polls are dropped because the commands and patches they ran are already items. |
-| Cursor | `agent-transcripts/<id>/<id>.jsonl` | Text and tool calls. The transcript has no timestamps, tool ids, or tool results, so each call gets an empty completed result. A session known only through `store.db` falls back to sampled messages. |
-| OpenCode | `opencode export --pure <id>` | The full export. Stdout goes to a temp file, because OpenCode 1.18 exits before a piped stdout drains and cuts the JSON at 128 KB. 15 s timeout, 96 MB cap. |
+| Cursor | `agent-transcripts/<id>/<id>.jsonl`, else `store.db` | From the transcript: text and tool calls. The transcript has no timestamps, tool ids, or tool results, so each call gets an empty completed result. A chat known only through `store.db` goes through `loadCursorStorePage`: user text, assistant text, readable reasoning, tool calls, and tool results (failed status kept), plus a `context_compact` marker where a summarization replaced earlier turns. The cursor's `end` is a message index (the store's list only grows at its end), and a page reads back one message at a time until it holds the page's events or bytes. A message blob over 8 MB (`CURSOR_STORE_MAX_MESSAGE_BYTES`) is left out with an info notice ("One message (N MB) was left out…") instead of silently vanishing. Cursor's `<user_info>` environment message is dropped. |
+| OpenCode | `opencode export --pure <id>` | The full export. Stdout goes to a temp file, because OpenCode 1.18 exits before a piped stdout drains and cuts the JSON at 128 KB. The file is created exclusive and owner-only (`0600`), since it holds a whole session and the temp folder can be shared. 15 s timeout, 96 MB cap. A timeout kills the process tree (a Windows `opencode.cmd` shim runs under `cmd.exe`) and waits up to 2 s for it to close before the file is deleted. |
 | Pi | The session JSONL | Text, thinking, tool calls, and tool results. |
-| Qwen | `chats/<id>.jsonl` | Text, `thought` parts as reasoning, `functionCall` / `functionResponse`. Verified only for text turns; tool shapes follow the Gemini CLI format. |
+| Qwen | `chats/<id>.jsonl` | Text, `thought` parts as reasoning, `functionCall` / `functionResponse`. User rows that Qwen injected (a `provenance` other than `real_user`) are dropped, the same test discovery uses (`isQwenPromptRecord`). Verified only for text turns; tool shapes follow the Gemini CLI format. |
 | Grok | `chat_history.jsonl` | Text, `tool_calls`, tool results, and reasoning summaries. Injected (`synthetic_reason`) user rows are dropped. Rows have no timestamps. |
-| Copilot | `events.jsonl` | Text, `reasoningText`, tool requests, and tool results (failed status kept). Subagent rows (`parentToolCallId`) are dropped; the parent call stands for the run. |
-| Kimi | `agents/main/wire.jsonl` | Unverified. Follows the Kimi wire protocol (`TurnBegin`, `ContentPart`, `ToolCall`, `ToolResult`) and also accepts OpenAI-style rows. |
+| Copilot | `events.jsonl` | Text, `reasoningText`, tool requests, and tool results (failed status kept). Subagent rows (`parentToolCallId`) are dropped; the parent call stands for the run. Autopilot "keep going" user rows are dropped, the same test discovery uses (`isCopilotPrompt`). |
+| Kimi | `agents/main/wire.jsonl` (legacy `context.jsonl`) | Unverified. Accepts persisted `context.append_message` and `turn_begin` rows, the streamed wire protocol (`TurnBegin`, `ContentPart`, `ToolCall`, `ToolResult`), and OpenAI-style role rows (with think/reasoning parts and failed tool results). When `context.append_message` user rows exist, `turn_begin`/`TurnBegin` input is not shown again, and user rows whose origin is not the person (`isKimiUserOrigin`) are dropped. |
 
 **Turn boundaries.** ADE's transcript does not show finished tool calls as rows
 of their own. It lists them in the turn's `done` summary. A provider transcript
@@ -692,12 +711,19 @@ imported turn that did tool work with a `done` event. A text-only turn gets no
 boundary, and input that already has `done` events is returned unchanged. The
 desktop preview and `appendImportedChatEvents` both apply it.
 
-**Detail.** `loadExternalSessionDetail` returns `ExternalSessionDetail`:
-`messages` (the text tail that older clients read), plus `events`, `hasOlder`,
-and `olderCursor`. A preview uses the chat-session id
+**Detail.** Every caller reaches `loadExternalSessionDetail` through
+`externalSessionsService.getDetail`, which passes the service's `homeDir` and
+`env`. It returns `ExternalSessionDetail`: `messages` (the text tail that older
+clients read), plus `events`, `hasOlder`, and `olderCursor`. The text tail is
+read from the same file the converter reads (`jsonlSourceFor`), never from a
+session folder or a `store.db`. Without a JSONL tail it is the discovery
+record's sampled messages, else the text of the preview events (clipped), so a
+store-only Cursor chat still has one. An ill-formed session id finds no record
+and returns an empty detail, because the id comes straight from the caller,
+including a remote viewer. A preview uses the chat-session id
 `external-preview:<provider>:<id>` and has no "Session imported from" notice.
-The local watch (`watchDetail`) always sends the newest page. A client that
-paged back keeps its older pages.
+The local watch (`watchDetail`) loads through the same `getDetail` and always
+sends the newest page. A client that paged back keeps its older pages.
 
 ### Desktop dialog
 
@@ -747,9 +773,11 @@ Action bar (`ImportActionBar.tsx`) renders the plan and nothing else:
   asks for the model first: when "Copy" is the secondary action, the first
   click shows the model picker and changes the buttons to "Cancel" and "Make
   copy". When a copy is the primary action, the model picker shows at once.
-- **Live confirm.** A continue on a session that may be open elsewhere takes
-  two clicks. The first click changes the button to "Continue anyway" (amber)
-  for 4 s.
+- **Live confirm.** An action with `confirmBeforeRun` (a continue on a session
+  that may be open elsewhere) takes two clicks. The first click changes the
+  button to "Continue anyway" (amber) for 4 s. One armed state covers both
+  second presses (the live confirm and the chat-copy model step). It is keyed
+  to the row, surface, and lane, and only the live confirm times out.
 - **Already in ADE.** "Open in ADE" replaces the plan.
 
 Target lane: the session's home lane when this computer has that lane, else
@@ -942,6 +970,20 @@ mtime as activity. Newer session headers can carry a `blobEncryptionKey`; an
 unreadable body still leaves a resumable session, so `meta.json` supplies the
 title in that case.
 
+**The conversation inside `store.db`** (`openCursorStoreConversation`, checked
+against 42 real stores on 2026-09-24). `blobs` is content-addressed (`id` is the
+sha256 of `data`), so row order is not conversation order and a repeated
+message is one blob listed twice. `meta['0']` (hex JSON) names
+`latestRootBlobId`. That root blob is a protobuf whose repeated field 1 lists
+the message blob ids oldest first, and each message blob is AI SDK JSON
+`{ role, content }`. After a summarization the root starts over from the
+summary: its field 13 names a summary blob whose field 1 lists the messages it
+replaced and whose field 4 is the summary message the root carries, so the
+full order is the replaced messages, then the root after that summary message.
+Prompt counting (`readCursorStorePrompts`) and the store-only preview walk this
+order. Cursor's `<system_reminder>` mode note and `<user_info>` environment
+message are wrappers, never prompts.
+
 Scope is decided from directory names, `meta.json`, and `.workspace-trusted`
 before the recent-session cut, so out-of-project usage cannot crowd in-project
 conversations out of the list. Artifacts whose cwd nothing on disk can confirm
@@ -1066,7 +1108,9 @@ flag.
 **Kimi.** `ptyService` finds the session a tracked Kimi launch created in
 Kimi's real layout: `<kimiHome>/sessions/wd_<slug>_<sha256(cwd)[:12]>/<id>/`.
 `kimiWorkDirKey` reproduces Kimi's bucket name for each spelling of the cwd,
-and `workspaces.json` can add an alias bucket. `selectKimiLaunchSession` takes
+and `workspaces.json` can add an alias bucket. An alias id must have Kimi's own
+`wd_<slug>_<hash12>` shape, because it becomes a folder name: a hand-edited
+entry cannot point the scan outside `sessions/`. `selectKimiLaunchSession` takes
 a session born inside the launch window, whose recorded `workDir` (when it has
 one) matches the cwd, and that no other terminal adopted. A session that proves its cwd wins. A
 capture that cannot prove ownership is skipped: resuming the wrong conversation

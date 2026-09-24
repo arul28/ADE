@@ -6071,16 +6071,32 @@ struct ExternalSessionListResult: Decodable, Equatable {
 struct ExternalSessionDetail: Decodable, Equatable {
   var provider: String?
   var id: String?
+  var cwd: String?
+  var title: String?
+  var model: String?
+  var createdAt: Double?
+  var updatedAt: Double?
+  var messageCount: Int?
   var events: [AgentChatEventEnvelope]
   var messages: [ExternalSessionMessage]
+  var sourcePath: String?
+  var watchable: Bool?
   var hasOlder: Bool
   var olderCursor: String?
 
   private enum CodingKeys: String, CodingKey {
     case provider
     case id
+    case cwd
+    case title
+    case model
+    case createdAt
+    case updatedAt
+    case messageCount
     case events
     case messages
+    case sourcePath
+    case watchable
     case hasOlder
     case olderCursor
   }
@@ -6088,15 +6104,31 @@ struct ExternalSessionDetail: Decodable, Equatable {
   init(
     provider: String? = nil,
     id: String? = nil,
+    cwd: String? = nil,
+    title: String? = nil,
+    model: String? = nil,
+    createdAt: Double? = nil,
+    updatedAt: Double? = nil,
+    messageCount: Int? = nil,
     events: [AgentChatEventEnvelope] = [],
     messages: [ExternalSessionMessage] = [],
+    sourcePath: String? = nil,
+    watchable: Bool? = nil,
     hasOlder: Bool = false,
     olderCursor: String? = nil
   ) {
     self.provider = provider
     self.id = id
+    self.cwd = cwd
+    self.title = title
+    self.model = model
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+    self.messageCount = messageCount
     self.events = events
     self.messages = messages
+    self.sourcePath = sourcePath
+    self.watchable = watchable
     self.hasOlder = hasOlder
     self.olderCursor = olderCursor
   }
@@ -6105,6 +6137,12 @@ struct ExternalSessionDetail: Decodable, Equatable {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     provider = try? container.decodeIfPresent(String.self, forKey: .provider)
     id = try? container.decodeIfPresent(String.self, forKey: .id)
+    cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
+    title = try? container.decodeIfPresent(String.self, forKey: .title)
+    model = try? container.decodeIfPresent(String.self, forKey: .model)
+    createdAt = try? container.decodeIfPresent(Double.self, forKey: .createdAt)
+    updatedAt = try? container.decodeIfPresent(Double.self, forKey: .updatedAt)
+    messageCount = try? container.decodeIfPresent(Int.self, forKey: .messageCount)
     events = (try? container.decodeIfPresent(
       ADELossyArray<AgentChatEventEnvelope>.self,
       forKey: .events
@@ -6113,6 +6151,8 @@ struct ExternalSessionDetail: Decodable, Equatable {
       ADELossyArray<ExternalSessionMessage>.self,
       forKey: .messages
     ))?.wrappedValue ?? []
+    sourcePath = try? container.decodeIfPresent(String.self, forKey: .sourcePath)
+    watchable = try? container.decodeIfPresent(Bool.self, forKey: .watchable)
     hasOlder = (try? container.decodeIfPresent(Bool.self, forKey: .hasOlder)) ?? false
     let cursor = (try? container.decodeIfPresent(String.self, forKey: .olderCursor))?
       .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

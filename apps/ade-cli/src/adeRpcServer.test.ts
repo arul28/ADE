@@ -6107,6 +6107,54 @@ describe("adeRpcServer", () => {
     expect(importExternalSession).toHaveBeenCalledTimes(5);
   });
 
+  it("scopes external-sessions.getDetail to a session inside the caller's lane", async () => {
+    const fixture = createRuntime();
+    const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-1") return ownChat;
+      return null;
+    });
+    const lane1Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-1"));
+    const detail = {
+      provider: "qwen",
+      sessionId: "own-qwen",
+      sourcePath: `${lane1Cwd}/session.json`,
+      watchable: true,
+      events: [],
+      messages: [],
+      hasOlder: false,
+      olderCursor: null,
+    };
+    const list = vi.fn(async () => [
+      { provider: "qwen", id: "own-qwen", cwd: lane1Cwd, title: "Own Qwen", preview: "own" },
+    ]);
+    const getDetail = vi.fn(async () => detail);
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession: vi.fn(), getDetail };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "qwen", sessionId: "own-qwen", before: "cursor-1", extra: "drop" },
+    });
+    expect(own?.isError).toBeUndefined();
+    expect(getDetail).toHaveBeenCalledWith({
+      provider: "qwen",
+      sessionId: "own-qwen",
+      before: "cursor-1",
+    });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "grok", sessionId: "outside-grok" },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
+    expect(getDetail).toHaveBeenCalledTimes(1);
+  });
+
   it("allows CTO callers to use unscoped external-sessions ADE actions", async () => {
     const fixture = createRuntime();
     const list = vi.fn(async () => [

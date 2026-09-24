@@ -16,7 +16,8 @@ export type FeatureAnalyticsName =
   | "presets"
   | "proxy"
   | "usage"
-  | "chat";
+  | "chat"
+  | "work";
 
 export type FeatureAnalyticsAction =
   | "account_created"
@@ -33,7 +34,11 @@ export type FeatureAnalyticsAction =
   | "stop"
   | "reset_credit_consumed"
   | "pending_input_dismissed"
-  | "new_lane_launch";
+  | "new_lane_launch"
+  | "session_continue_chat"
+  | "session_copy_chat"
+  | "session_continue_cli"
+  | "session_copy_cli";
 
 export type FeatureAnalyticsOutcome =
   | "completed"
@@ -223,5 +228,29 @@ export function captureNewLaneLaunchAnalytics(args: {
     ...args,
     feature: "chat",
     action: "new_lane_launch",
+  });
+}
+
+/**
+ * One external-session import (Import dialog, TUI, or phone) finished: which
+ * way it ran, whether it worked, and the coarse provider family. Captured by the
+ * external sessions service's outcome hook, never per list or preview.
+ */
+export function captureSessionImportAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  target: "chat" | "cli";
+  mode: "resume" | "fork";
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "failed">;
+  provider: unknown;
+}): void {
+  const verb = args.mode === "resume" ? "continue" : "copy";
+  captureFeatureUsedAnalytics({
+    analytics: args.analytics,
+    surface: args.surface,
+    feature: "work",
+    action: `session_${verb}_${args.target}` as const,
+    outcome: args.outcome,
+    provider: args.provider,
   });
 }

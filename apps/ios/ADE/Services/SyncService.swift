@@ -11916,6 +11916,7 @@ final class SyncService: ObservableObject {
     sessionId: String,
     before: String? = nil
   ) async throws -> ExternalSessionDetail {
+    try requireInvokableRemoteAction("work.getExternalSessionDetail")
     var args: [String: Any] = [
       "provider": provider,
       "sessionId": sessionId,
