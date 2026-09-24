@@ -246,6 +246,65 @@ export type WorkBoardModel = {
   waitingReasonBySessionId: Map<string, WorkBoardWaitingReason>;
 };
 
+/**
+ * The list's status partitions, which `buildWorkBoardModel` then lays into
+ * columns. One function so the bound-machine roster and each foreign machine
+ * the board unions in file a session the same way.
+ */
+export function partitionRosterForBoard(
+  sessions: readonly TerminalSessionSummary[],
+  effectiveFilingBuckets: ReadonlyMap<string, ReturnType<typeof sessionFilingBucket>>,
+  nowMs: number,
+): {
+  runningFiltered: TerminalSessionSummary[];
+  awaitingInputFiltered: TerminalSessionSummary[];
+  needsYouFiltered: TerminalSessionSummary[];
+  restingFiltered: TerminalSessionSummary[];
+  endedFiltered: TerminalSessionSummary[];
+  settledFiltered: TerminalSessionSummary[];
+  snoozedFiltered: TerminalSessionSummary[];
+} {
+  const running: TerminalSessionSummary[] = [];
+  const loud: TerminalSessionSummary[] = [];
+  const quiet: TerminalSessionSummary[] = [];
+  const ended: TerminalSessionSummary[] = [];
+  const settled: TerminalSessionSummary[] = [];
+  const snoozed: TerminalSessionSummary[] = [];
+  for (const session of sessions) {
+    // Snooze is a visibility overlay: it pulls the row OUT of whatever bucket
+    // it would otherwise sit in, including Running — but it YIELDS to a raised
+    // hand. A needs_you row is filed normally even while snoozed, which
+    // keeps "Until I'm asked" honest.
+    const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
+    const filingBucket = effectiveFilingBuckets.get(session.id)
+      ?? sessionFilingBucket(session, nowMs);
+    if (filingBucket === "snoozed") {
+      snoozed.push(session);
+      continue;
+    }
+    if (filingBucket === "running") running.push(session);
+    else if (filingBucket === "awaiting-input") {
+      // Loud (Needs you) rows float to the top of the Your-move section; the
+      // two partitions each keep startedAt order, so rows never jitter.
+      if (phase === "needs_you") loud.push(session);
+      else quiet.push(session);
+    } else if (filingBucket === "settled") settled.push(session);
+    else ended.push(session);
+  }
+  return {
+    runningFiltered: running,
+    // The list's "Your move" section keeps both tiers: it is a container, and
+    // each card states its own phase. The board splits them, because its
+    // first column is a claim rather than a container.
+    awaitingInputFiltered: [...loud, ...quiet],
+    needsYouFiltered: loud,
+    restingFiltered: quiet,
+    endedFiltered: ended,
+    settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
+    snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
+  };
+}
+
 export function buildWorkBoardModel(args: {
   runningFiltered: readonly TerminalSessionSummary[];
   /**
@@ -1858,49 +1917,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     endedFiltered,
     settledFiltered,
     snoozedFiltered,
-  } = useMemo(() => {
-    const nowMs = Date.now();
-    const running: TerminalSessionSummary[] = [];
-    const loud: TerminalSessionSummary[] = [];
-    const quiet: TerminalSessionSummary[] = [];
-    const ended: TerminalSessionSummary[] = [];
-    const settled: TerminalSessionSummary[] = [];
-    const snoozed: TerminalSessionSummary[] = [];
-    for (const session of chipFiltered) {
-      // Snooze is a visibility overlay: it pulls the row OUT of whatever bucket
-      // it would otherwise sit in, including Running — but it YIELDS to a raised
-      // hand. A needs_you row is filed normally even while snoozed, which
-      // keeps "Until I'm asked" honest.
-      const phase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
-      const filingBucket = effectiveFilingBuckets.get(session.id)
-        ?? sessionFilingBucket(session, nowMs);
-      if (filingBucket === "snoozed") {
-        snoozed.push(session);
-        continue;
-      }
-      const bucket = filingBucket;
-      if (bucket === "running") running.push(session);
-      else if (bucket === "awaiting-input") {
-        // Loud (Needs you) rows float to the top of the Your-move section; the
-        // two partitions each keep startedAt order, so rows never jitter.
-        if (phase === "needs_you") loud.push(session);
-        else quiet.push(session);
-      } else if (bucket === "settled") settled.push(session);
-      else ended.push(session);
-    }
-    return {
-      runningFiltered: running,
-      // The list's "Your move" section keeps both tiers: it is a container, and
-      // each card states its own phase. The board splits them, because its
-      // first column is a claim rather than a container.
-      awaitingInputFiltered: [...loud, ...quiet],
-      needsYouFiltered: loud,
-      restingFiltered: quiet,
-      endedFiltered: ended,
-      settledFiltered: settled.sort(compareSessionsBySettledAtDesc),
-      snoozedFiltered: snoozed.sort(compareSessionsByWakeAtAsc),
-    };
-  }, [chipFiltered, effectiveFilingBuckets]);
+  } = useMemo(
+    () => partitionRosterForBoard(chipFiltered, effectiveFilingBuckets, Date.now()),
+    [chipFiltered, effectiveFilingBuckets],
+  );
 
   /**
    * The board's four columns, layered on the list's buckets in the same style

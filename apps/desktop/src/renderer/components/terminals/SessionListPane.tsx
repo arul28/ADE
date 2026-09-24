@@ -64,7 +64,12 @@ import {
 } from "./workSessionFilters";
 import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization, WorkViewMode } from "../../state/appStore";
 import { WorkKanbanBoard, WORK_BOARD_COLUMNS } from "./WorkKanbanBoard";
-import type { WorkBoardWaitingReason } from "./useWorkSessions";
+import {
+  buildWorkBoardModel,
+  lanePrWaitingReason,
+  partitionRosterForBoard,
+  type WorkBoardWaitingReason,
+} from "./useWorkSessions";
 import {
   WORK_BOARD_COLUMN_LABEL,
   isWorkBoardMoveTarget,
@@ -111,6 +116,7 @@ const WORK_LANE_SORT_LABELS: Record<WorkLaneSortMode, string> = {
   manual: "Manual",
 };
 const EMPTY_FOREIGN_ROWS: CrossMachineLaneRow[] = [];
+const EMPTY_FOREIGN_SESSION_ROWS: ReadonlyMap<string, CrossMachineLaneRow> = new Map();
 const EMPTY_BOARD_WAITING_REASONS: ReadonlyMap<string, WorkBoardWaitingReason> = new Map();
 /** Upper bound on the foreign-row snooze-expiry timer. */
 const FOREIGN_SNOOZE_TICK_MAX_DELAY_MS = 10 * 60 * 1000;
@@ -1578,6 +1584,86 @@ export const SessionListPane = React.memo(function SessionListPane({
   }, [chipFiltersActive, filingBucketsForForeignSessions, foreignFilingNowMs, foreignRows, laneFilterActive, normalizedFilterLaneId, q, workSessionFilters]);
 
   /**
+   * The board shows the same union the sidebar does. The hook's buckets stay
+   * the bound machine only — a foreign lane's CI must not park a local row —
+   * and each other machine is filed with `partitionRosterForBoard` against
+   * that machine's own PRs, then appended in sidebar order.
+   */
+  const boardUnion = useMemo(() => {
+    if (!workBoardBuckets) {
+      return {
+        buckets: null,
+        waitingReasons: workBoardWaitingReasons,
+        sessionRow: EMPTY_FOREIGN_SESSION_ROWS,
+      };
+    }
+    const sessionRow = new Map<string, CrossMachineLaneRow>();
+    const localIds = new Set<string>();
+    for (const column of WORK_BOARD_COLUMNS) {
+      for (const session of workBoardBuckets[column.key]) localIds.add(session.id);
+    }
+    for (const row of visibleForeignRows) {
+      for (const session of row.sessions) {
+        if (localIds.has(session.id) || sessionRow.has(session.id)) continue;
+        sessionRow.set(session.id, row);
+      }
+    }
+    if (sessionRow.size === 0) {
+      return {
+        buckets: workBoardBuckets,
+        waitingReasons: workBoardWaitingReasons,
+        sessionRow: EMPTY_FOREIGN_SESSION_ROWS,
+      };
+    }
+    const buckets: Record<WorkBoardColumn, TerminalSessionSummary[]> = {
+      needs_you: [...workBoardBuckets.needs_you],
+      working: [...workBoardBuckets.working],
+      waiting: [...workBoardBuckets.waiting],
+      done: [...workBoardBuckets.done],
+    };
+    const waitingReasons = new Map(workBoardWaitingReasons);
+    const filing = filingBucketsForForeignSessions(foreignRows.flatMap((row) => row.sessions));
+    const sessionsByMachine = new Map<string, TerminalSessionSummary[]>();
+    for (const row of visibleForeignRows) {
+      const list = sessionsByMachine.get(row.machineId) ?? [];
+      if (!sessionsByMachine.has(row.machineId)) sessionsByMachine.set(row.machineId, list);
+      for (const session of row.sessions) {
+        if (sessionRow.get(session.id) === row) list.push(session);
+      }
+    }
+    for (const [machineId, sessions] of sessionsByMachine) {
+      if (sessions.length === 0) continue;
+      const partitioned = partitionRosterForBoard(sessions, filing, foreignFilingNowMs);
+      const model = buildWorkBoardModel({
+        runningFiltered: partitioned.runningFiltered,
+        needsYouFiltered: partitioned.needsYouFiltered,
+        restingFiltered: partitioned.restingFiltered,
+        endedFiltered: partitioned.endedFiltered,
+        settledFiltered: partitioned.settledFiltered,
+        snoozedFiltered: partitioned.snoozedFiltered,
+        laneWaitingReason: (laneId) => lanePrWaitingReason(
+          lanePrsForMachine(prsByLaneId, machineId, laneId),
+        ),
+      });
+      for (const column of WORK_BOARD_COLUMNS) {
+        buckets[column.key].push(...model.buckets[column.key]);
+      }
+      for (const [sessionId, reason] of model.waitingReasonBySessionId) {
+        waitingReasons.set(sessionId, reason);
+      }
+    }
+    return { buckets, waitingReasons, sessionRow };
+  }, [
+    filingBucketsForForeignSessions,
+    foreignFilingNowMs,
+    foreignRows,
+    prsByLaneId,
+    visibleForeignRows,
+    workBoardBuckets,
+    workBoardWaitingReasons,
+  ]);
+
+  /**
    * Which shelf a CROSS-MACHINE lane files into, or null to stay in the inbox.
    *
    * The shelving rule has to be one rule — "a lane whose sessions are all quiet
@@ -1938,13 +2024,13 @@ export const SessionListPane = React.memo(function SessionListPane({
   // The board's reading order — columns left to right, cards top to bottom.
   // Range selection on a board card walks this, not the list's order.
   const boardSessionIds = useMemo(() => {
-    if (!isBoard || !workBoardBuckets) return null;
+    if (!isBoard || !boardUnion.buckets) return null;
     const ids: string[] = [];
     for (const column of WORK_BOARD_COLUMNS) {
-      ids.push(...collectVisibleIds(workBoardBuckets[column.key]));
+      ids.push(...collectVisibleIds(boardUnion.buckets[column.key]));
     }
     return ids;
-  }, [collectVisibleIds, isBoard, workBoardBuckets]);
+  }, [boardUnion.buckets, collectVisibleIds, isBoard]);
   const renderedSessionIds = useMemo(() => {
     // Board first when it replaces the list wholesale: the ids downstream
     // consumers get (range selection, `onSelectSession`'s visible set) are then
@@ -2330,30 +2416,34 @@ export const SessionListPane = React.memo(function SessionListPane({
    * reimplemented here. There is no second code path to keep in sync.
    */
   const renderBoardCard = (session: TerminalSessionSummary): React.ReactNode => {
-    const lane = laneById.get(session.laneId) ?? null;
-    const lanePrs = lane ? boundMachineLanePrs(prsByLaneId, lane.id) : [];
+    const foreignRow = boardUnion.sessionRow.get(session.id);
+    const lane = foreignRow?.lane ?? laneById.get(session.laneId) ?? null;
+    const lanePrs = lane
+      ? (foreignRow
+          ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, lane.id)
+          : boundMachineLanePrs(prsByLaneId, lane.id))
+      : [];
     const primaryPr = lane ? selectPrimaryLanePr(lane, lanePrs) : null;
-    return renderCardCore(session, {
-      showLaneIdentity: true,
-      visibleSessionIds: boardSessionIds ?? undefined,
-      // The column header is the authority on status here; a card repeating it
-      // is at best noise and at worst a contradiction (a "Done" pill under the
-      // "Needs you" heading). The word moves to the hover card — see SessionCard.
-      suppressStatusLabel: true,
-      lanePr: primaryPr,
-      lanePrs,
-      onOpenLanePrs: lane
-        ? () => navigate(`/prs${buildPrsRouteSearch({
-            activeTab: "normal",
-            selectedPrId: null,
-            selectedLaneId: lane.id,
-            selectedRebaseItemId: null,
-          })}`)
-        : undefined,
-      machineMarker: markersByLaneId.get(session.laneId) ?? null,
-      laneAppleDevice: lane ? laneAppleDevices.get(lane.id) ?? null : null,
-      laneMacDesktop: lane ? laneMacDesktops.has(lane.id) : false,
-      laneActions: lane
+    const markerKey = foreignRow ? `${foreignRow.machineId}:${foreignRow.lane.id}` : session.laneId;
+    const laneActions: SessionContextMenuLaneActions | null = foreignRow?.binding
+      ? {
+          laneId: foreignRow.lane.id,
+          laneName: foreignRow.lane.name,
+          lane: foreignRow.lane,
+          binding: foreignRow.binding,
+          machineId: foreignRow.machineId,
+          onToggleWorkPin: toggleWorkLanePinned,
+          workPinnedLaneIds,
+          workPinLaneId: `${foreignRow.machineId}:${foreignRow.lane.id}`,
+          open: ({ x, y }) => triggerForeignLaneContextMenu(
+            foreignRow.lane,
+            foreignRow.binding!,
+            foreignRow.machineName,
+            foreignRow.machineId,
+            { preventDefault: () => {}, clientX: x, clientY: y },
+          ),
+        }
+      : lane
         ? {
             laneId: lane.id,
             laneName: lane.name,
@@ -2367,7 +2457,31 @@ export const SessionListPane = React.memo(function SessionListPane({
               clientY: y,
             }),
           }
-        : null,
+        : null;
+    return renderCardCore(session, {
+      foreignRow,
+      showLaneIdentity: true,
+      visibleSessionIds: boardSessionIds ?? undefined,
+      // The column header is the authority on status here; a card repeating it
+      // is at best noise and at worst a contradiction (a "Done" pill under the
+      // "Needs you" heading). The word moves to the hover card — see SessionCard.
+      suppressStatusLabel: true,
+      lanePr: primaryPr,
+      lanePrs,
+      onOpenLanePrs: foreignRow && primaryPr
+        ? () => openLanePr(primaryPr, { foreign: true, navigate })
+        : lane
+          ? () => navigate(`/prs${buildPrsRouteSearch({
+              activeTab: "normal",
+              selectedPrId: null,
+              selectedLaneId: lane.id,
+              selectedRebaseItemId: null,
+            })}`)
+          : undefined,
+      machineMarker: markersByLaneId.get(markerKey) ?? null,
+      laneAppleDevice: !foreignRow && lane ? laneAppleDevices.get(lane.id) ?? null : null,
+      laneMacDesktop: !foreignRow && lane ? laneMacDesktops.has(lane.id) : false,
+      laneActions,
     });
   };
 
@@ -2425,7 +2539,8 @@ export const SessionListPane = React.memo(function SessionListPane({
       // to translate; Waiting is refused by the guard because it is derived.
       if (!isWorkBoardMoveTarget(column)) return;
       const to = column;
-      void move(session.id, to)
+      const binding = boardUnion.sessionRow.get(session.id)?.binding ?? null;
+      void move(session.id, to, binding)
         .then((result) => {
           if (!result?.changed || !result.moveId) {
             // A no-op is ALWAYS a disagreement here: the board only offers a
@@ -2470,7 +2585,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               onClick: () => {
                 const undo = window.ade.sessions?.undoBoardMove;
                 if (typeof undo !== "function") return;
-                void undo(session.id, moveId)
+                void undo(session.id, moveId, binding)
                   .then((undone) => {
                     setBoardMovePulses((previous) => {
                       const next = new Map(previous);
@@ -2515,7 +2630,7 @@ export const SessionListPane = React.memo(function SessionListPane({
           });
         });
     },
-    [],
+    [boardUnion.sessionRow],
   );
 
   const renderHandoffCards = (jobs: HandoffLaunchJob[]) => (
@@ -3430,12 +3545,16 @@ export const SessionListPane = React.memo(function SessionListPane({
     </div>
   );
 
-  const boardElement = isBoard && workBoardBuckets ? (
+  const boardElement = isBoard && boardUnion.buckets ? (
     <WorkKanbanBoard
-      buckets={workBoardBuckets}
-      waitingReasons={workBoardWaitingReasons}
+      buckets={boardUnion.buckets}
+      waitingReasons={boardUnion.waitingReasons}
       renderCard={renderBoardCard}
-      laneAccentFor={(session) => laneById.get(session.laneId)?.color ?? null}
+      laneAccentFor={(session) =>
+        boardUnion.sessionRow.get(session.id)?.lane.color
+        ?? laneById.get(session.laneId)?.color
+        ?? null
+      }
       onMoveSession={handleBoardMove}
       pulsingSessionIds={boardMovePulses}
     />
@@ -3541,7 +3660,12 @@ export const SessionListPane = React.memo(function SessionListPane({
                 SIDEBAR_BARE_BUTTON_CLASS,
                 "ade-session-list-toolbar-new-chat h-6 w-6 shrink-0 justify-center",
               )}
-              onClick={() => onShowDraftKind("chat")}
+              onClick={() => {
+                // The board owns the main area, so a draft opened in place has
+                // nowhere to draw. Leave the board first, then open new chat.
+                if (isBoard) setWorkViewMode?.("list");
+                onShowDraftKind("chat");
+              }}
               aria-label="Start a new chat"
               data-tour="work.newSession"
             >
