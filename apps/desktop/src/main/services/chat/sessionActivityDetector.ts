@@ -81,7 +81,7 @@ const TEST_RUNNER = new RegExp(
     + `|${bin("npm|pnpm|yarn|bun")}\\s+(?:run\\s+)?test(?::\\S*)?)(?:\\s|$)`,
 );
 const STATIC_CHECK = new RegExp(
-  "^(?:tsc|eslint|ruff|mypy|biome\\s+(?:check|lint)|cargo\\s+(?:check|clippy|build)|swift\\s+build"
+  `^(?:${bin("tsc|eslint|ruff|mypy")}|biome\\s+(?:check|lint)|cargo\\s+(?:check|clippy|build)|swift\\s+build`
     + `|xcodebuild|${bin("npm|pnpm|yarn|bun")}\\s+(?:run\\s+)?(?:typecheck|type-check|lint|build|check)(?::\\S*)?)(?:\\s|$)`,
 );
 const SHIP = new RegExp(
@@ -97,18 +97,21 @@ const ADE_STATUS_COMMAND = /^ADE\s+chat\s+(?:activity|note|ask)\b/;
 
 /** Prefixes that run the real command after them: `sudo -E`, `npx --yes`, `FOO=1`, `python -m`. */
 const COMMAND_PREFIX = new RegExp(
-  "^(?:\\w+=\\S*\\s+|(?:sudo|time|exec|env|command|nohup|(?:npx|bunx|pnpx|uvx)(?:\\.cmd|\\.exe)?|npm\\s+exec|pnpm\\s+(?:exec|dlx)"
-    + "|yarn\\s+dlx|uv\\s+run|poetry\\s+run|python3?\\s+-m)(?:\\s+-\\S+)*\\s+)+",
+  `^(?:\\w+=\\S*\\s+|(?:sudo|time|exec|env|command|nohup|${bin("npx|bunx|pnpx|uvx")}`
+    + `|${bin("npm")}\\s+exec|${bin("pnpm")}\\s+(?:exec|dlx)|${bin("yarn")}\\s+dlx`
+    + `|uv\\s+run|poetry\\s+run|python3?\\s+-m)(?:\\s+-\\S+)*\\s+)+`,
 );
 /** A package manager naming a runner directly: `pnpm vitest`, `yarn jest`. */
-const RUNNER_VIA_PACKAGE_MANAGER = /^(?:pnpm|yarn|bun)\s+(?=(?:vitest|jest|mocha|playwright)\b)/;
+const RUNNER_VIA_PACKAGE_MANAGER = new RegExp(`^${bin("pnpm|yarn|bun")}\\s+(?=(?:vitest|jest|mocha|playwright)\\b)`);
 /**
  * Shells that wrap the real command line: `/bin/zsh -lc '…'` (Codex does this
  * for every command), `"C:\Program Files\Git\bin\bash.exe" -lc '…'`,
  * `powershell.exe -NoProfile -Command "…"`, `cmd /c …`.
  */
 const SHELL_WRAPPERS: RegExp[] = [
-  /^(?:"[^"]*[\\/])?(?:\S*[\\/])?(?:ba|z|da)?sh(?:\.exe)?"?\s+-\w*c\s+(['"])([\s\S]*)\1\s*$/i,
+  // The quoted and unquoted path forms are separate alternatives so the two
+  // path runs cannot both absorb a long run of slashes (quadratic backtracking).
+  /^(?:"[^"]*[\\/](?:ba|z|da)?sh(?:\.exe)?"|(?:[^\s"]*[\\/])?(?:ba|z|da)?sh(?:\.exe)?)\s+-\w*c\s+(['"])([\s\S]*)\1\s*$/i,
   /^(?:\S*[\\/])?(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+\s+)*-c(?:ommand)?\s+(['"]?)([\s\S]*)\1\s*$/i,
   /^(?:\S*[\\/])?cmd(?:\.exe)?\s+\/c\s+()([\s\S]*)$/i,
 ];
@@ -123,8 +126,15 @@ const QUOTED_SPAN = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
 /** The ADE CLI named by path at command position: `ade`, `/usr/local/bin/ade`, `C:\tools\ade.exe`. */
 const ADE_CLI_PATH_SPELLING = /^(?:\S*[\\/])?ade(?:\.exe|\.cmd)?(?=\s|$)/i;
 
+/**
+ * How much of a command line the wrapper unwrap reads. Larger than the
+ * classification cap so a long wrapped line keeps its closing quote, but still
+ * bounded: the unwrap runs on the main process for every command.
+ */
+const MAX_UNWRAPPED_COMMAND_CHARS = 64_000;
+
 function unwrapShell(command: string): string {
-  let text = command.trim();
+  let text = command.slice(0, MAX_UNWRAPPED_COMMAND_CHARS).trim();
   // Two passes cover one wrapper inside another (`cmd /c powershell -Command …`).
   for (let pass = 0; pass < 2; pass += 1) {
     const inner = SHELL_WRAPPERS.map((wrapper) => text.match(wrapper)?.[2]).find((match) => match != null);
@@ -140,15 +150,18 @@ function unwrapShell(command: string): string {
  * across a multi-kilobyte heredoc backtrack for seconds on the main process.
  */
 function isWatchLoop(text: string): boolean {
-  const loop = text.search(/\b(?:until|while)\b/);
-  if (loop < 0) return false;
-  const rest = text.slice(loop);
-  if (/\bStart-Sleep\b/i.test(rest)) return true;
-  const body = rest.search(/\bdo\b/);
-  if (body < 0) return false;
-  const loopBody = rest.slice(body);
-  const end = loopBody.search(/\bdone\b/);
-  return /\bsleep\b/.test(end < 0 ? loopBody : loopBody.slice(0, end));
+  if (/\bwhile\b[\s\S]*\bStart-Sleep\b/i.test(text)) return true;
+  // Each loop's body runs from its `do` to the `done` that ends a statement
+  // (`echo done` is an argument, not the end of the loop).
+  for (const loop of text.matchAll(/\b(?:until|while)\b/g)) {
+    const rest = text.slice(loop.index);
+    const body = rest.search(/\bdo\b/);
+    if (body < 0) continue;
+    const loopBody = rest.slice(body);
+    const end = loopBody.search(/(?:^|[;\n&|])\s*done\b/);
+    if (/\bsleep\b/.test(end < 0 ? loopBody : loopBody.slice(0, end))) return true;
+  }
+  return false;
 }
 
 /** The command line with its data (heredoc bodies, quoted arguments) blanked out. */
