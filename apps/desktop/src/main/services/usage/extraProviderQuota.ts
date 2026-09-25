@@ -304,10 +304,14 @@ export async function readOpenCodeConsoleAccountFromDisk(
     db = openReadOnlyDatabase(dbPath);
     // A running OpenCode may hold the write lock; answer at once rather than wait.
     db.exec("PRAGMA busy_timeout = 0");
+    // Same rule `readOpenCodePlanEmail` uses: the active account first, else the
+    // most recently updated one, so a multi-account install reads the login
+    // OpenCode is actually on.
     const account = db.prepare(`
-      SELECT access_token AS accessToken, token_expiry AS tokenExpiry, email AS email
-        FROM account
-       ORDER BY time_updated DESC
+      SELECT a.access_token AS accessToken, a.token_expiry AS tokenExpiry, a.email AS email
+        FROM account a
+        LEFT JOIN account_state s ON s.active_account_id = a.id
+       ORDER BY (s.active_account_id IS NOT NULL) DESC, a.time_updated DESC
        LIMIT 1
     `).get() as { accessToken?: unknown; tokenExpiry?: unknown; email?: unknown } | undefined;
     const accessToken = sqliteText(account?.accessToken ?? null);

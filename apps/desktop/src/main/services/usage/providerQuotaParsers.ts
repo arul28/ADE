@@ -409,9 +409,11 @@ export function parseOpenCodeGoUsage(payload: unknown, nowMs: number): UsageWind
  *
  * The console reports money, not a percentage: `usedMicroCents` and
  * `limitMicroCents` (sent as numeric strings), so the used percent is
- * `100 × used / limit`. The month meter carries no reset of its own, so the
- * subscription's `access.endsAt` stands in for it — the same rule CodexBar
- * uses. A meter with no usable limit is not a window.
+ * `100 × used / limit`, clamped to 100 so a plan already past its cap keeps its
+ * window (a raw `>100` would be rejected as out of range). The month meter
+ * carries no reset of its own, so the subscription's `access.endsAt` stands in
+ * for it — the same rule CodexBar uses. A meter with no usable limit is not a
+ * window.
  */
 function consoleMeterWindow(args: {
   windowType: UsageWindowType;
@@ -426,7 +428,7 @@ function consoleMeterWindow(args: {
   const used = finiteNumberFromNumeric(meter.usedMicroCents ?? meter.used_micro_cents);
   const limit = finiteNumberFromNumeric(meter.limitMicroCents ?? meter.limit_micro_cents);
   if (used == null || limit == null || limit <= 0) return null;
-  const percent = wholePercent((Math.max(0, used) / limit) * 100);
+  const percent = wholePercent(Math.max(0, Math.min(100, (used / limit) * 100)));
   if (percent == null) return null;
   const resetsAt = isoField(meter, "resetsAt", "resets_at") ?? args.fallbackResetsAt ?? null;
   return quotaWindow({

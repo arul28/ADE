@@ -233,6 +233,14 @@ describe("extra provider quota parsers", () => {
     }, NOW)).toEqual([]);
   });
 
+  it("clamps a console meter already past its limit instead of dropping the window", () => {
+    const windows = parseOpenCodeConsoleGoStatus({
+      access: { meters: { fiveHour: { limitMicroCents: "100", usedMicroCents: "250" } } },
+    }, NOW);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({ windowType: "five_hour", percentUsed: 100 });
+  });
+
   it("reads Cursor plan percent and the billing-cycle reset", () => {
     const parsed = parseCursorUsageSummary({
       membershipType: "pro",
