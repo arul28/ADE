@@ -120,6 +120,24 @@ describe("createDefaultBranchAutoPullService", () => {
     expect(pullFastForward).toHaveBeenCalledWith("lane-primary");
   });
 
+  it("centers the pull decision on the post-fetch read, not the stale pre-fetch one", async () => {
+    let reads = 0;
+    const { deps, fetch, pullFastForward } = harness({
+      readSyncStatus: async () => {
+        reads += 1;
+        // The remote-tracking ref is stale before the fetch and current after.
+        return reads === 1 ? sync({ behind: 0 }) : sync({ behind: 3 });
+      },
+    });
+    const service = createDefaultBranchAutoPullService(deps);
+
+    const result = await service.runOnce();
+
+    expect(result).toEqual({ pulled: true, reason: "eligible", behind: 3 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(pullFastForward).toHaveBeenCalledWith("lane-primary");
+  });
+
   it("does not fetch at all when the worktree is dirty", async () => {
     const { deps, fetch, pullFastForward } = harness({
       readWorktreeStatus: async () => ({ staged: 0, unstaged: 1, headBranchRef: "main" }),
