@@ -1,4 +1,5 @@
 import {
+  ArrowClockwise,
   ArrowSquareOut,
   Cube,
   FileText,
@@ -27,6 +28,7 @@ import {
 } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
 import { MediaLightbox } from "../ui/MediaLightbox";
+import { SectionHeader } from "./ChatSubagentsPanel";
 import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import {
@@ -166,11 +168,15 @@ function VideoProofPoster({
 export function ArtifactLightbox({
   artifact,
   preview,
+  failed,
+  failureText,
   onMediaError,
   onClose,
 }: {
   artifact: ComputerUseArtifactView;
   preview: string;
+  failed: boolean;
+  failureText: string;
   onMediaError: () => void;
   onClose: () => void;
 }) {
@@ -186,6 +192,7 @@ export function ArtifactLightbox({
       title={artifact.description?.trim() || artifact.title}
       readDataUrl={externalArtifactUrl(artifact.uri) ? undefined : readDataUrl}
       onMediaError={onMediaError}
+      failureText={failed ? failureText : null}
       onClose={onClose}
     />
   );
@@ -317,6 +324,8 @@ export function ChatProofArtifactCard({
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
+          failed={failed}
+          failureText={failureText}
           onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
@@ -539,6 +548,8 @@ function DrawerProofTile({
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
+          failed={failed}
+          failureText={failureText}
           onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
@@ -614,6 +625,7 @@ export function ChatComputerUsePanel({
   const [error, setError] = useState<string | null>(null);
 
   const [filter, setFilter] = useState<ProofDrawerFilter>(EMPTY_PROOF_DRAWER_FILTER);
+  const [collapsed, setCollapsed] = useState(false);
   const groups = useMemo(
     () => buildProofDrawerGroups(artifacts, events, filter),
     [artifacts, events, filter],
@@ -673,22 +685,35 @@ export function ChatComputerUsePanel({
     });
   }, [artifacts, scope.pin, withBusy]);
 
-  if (!snapshot || artifacts.length === 0) return null;
+  if (!snapshot) return null;
 
   return (
-    <div className="flex min-w-0 flex-col gap-2.5">
-      <div className="flex items-center justify-between gap-2 px-0.5">
-        <div className="font-sans text-[10.5px] text-muted-fg/42">
-          {artifacts.length} item{artifacts.length === 1 ? "" : "s"}
-        </div>
-        <button
-          type="button"
-          onClick={() => void onRefresh()}
-          className="rounded-lg px-2 py-1 font-sans text-[10px] text-muted-fg/42 transition-colors hover:bg-white/[0.05] hover:text-fg/68"
-        >
-          Refresh
-        </button>
-      </div>
+    <section data-testid="chat-proof-panel" className="flex min-w-0 flex-col pb-3">
+      <SectionHeader
+        label="Proof"
+        hint={String(artifacts.length)}
+        tone="proof"
+        emphasized
+        sticky
+        collapsible
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((current) => !current)}
+        action={(
+          <button
+            type="button"
+            title="Refresh proof"
+            aria-label="Refresh proof"
+            onClick={() => void onRefresh()}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/70"
+          >
+            <ArrowClockwise size={11} weight="bold" />
+          </button>
+        )}
+      />
+      {collapsed ? null : artifacts.length === 0 ? (
+        <p className="px-4 pt-1 font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
+      ) : (
+    <div className="flex min-w-0 flex-col gap-2.5 px-4 pt-1">
 
       {brokenCount > 0 ? (
         <Banner
@@ -789,5 +814,7 @@ export function ChatComputerUsePanel({
         </section>
       ))}
     </div>
+      )}
+    </section>
   );
 }

@@ -186,6 +186,8 @@ function CitedProofMedia({
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
+          failed={failed}
+          failureText={failureText}
           onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />

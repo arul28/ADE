@@ -171,17 +171,24 @@ type GlyphCategory = "subagent" | "background";
 
 /* ── Section header — sentence case, paper-section feel ── */
 
-type SectionTone = "subagent" | "background" | "workflow" | "scheduled" | "neutral";
+type SectionTone = "subagent" | "background" | "workflow" | "scheduled" | "proof" | "sources" | "neutral";
 
 const SECTION_DOT_CLASS: Record<SectionTone, string> = {
   subagent: "bg-[color:var(--color-accent,#A78BFA)]/70",
   background: "bg-cyan-300/65",
   workflow: "bg-amber-300/65",
   scheduled: "bg-sky-300/65",
+  proof: "bg-emerald-300/65",
+  sources: "bg-indigo-300/65",
   neutral: "bg-fg/30",
 };
 
-function SectionHeader({
+/**
+ * The chat-actions drawer's one section header: a dot, an uppercase label, an
+ * optional count and collapse arrow. Proof and Sources use it too, so every
+ * section of the drawer reads the same.
+ */
+export function SectionHeader({
   label,
   hint,
   action,
@@ -1675,11 +1682,11 @@ export function ChatSubagentsPanel({
     </div>
   );
 
-  // Pane = one section of the chat actions drawer. The drawer owns the only
-  // scroll, so this renders no height, no scroller and no empty placeholder:
-  // nothing to show means no DOM at all, and the drawer's divider/empty-line
-  // rules see it as absent. `paneScrollRef` still finds rows for
-  // scroll-into-view; the browser scrolls the drawer's scroller.
+  // Pane = one section of the chat actions drawer. The drawer gives each
+  // section its own region and scroll, so this renders no height, no scroller
+  // and no empty placeholder: nothing to show means no DOM at all, and the
+  // drawer hides the region. `paneScrollRef` still finds rows for
+  // scroll-into-view; the browser scrolls the section's region.
   if (variant === "pane") {
     if (!hasAnything) return null;
     return (

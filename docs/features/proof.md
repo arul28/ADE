@@ -357,24 +357,33 @@ Proof surfaces across chat and linked workflow contexts:
   reveals a horizontally scrollable filmstrip directly below that turn. It
   starts collapsed, remains in chronology when newer messages arrive, and is
   never pinned to the thread tail.
-- **Proof drawer** — the current chat's complete collected set, with the same
-  previews and captions plus irreversible artifact deletion. It is a
-  collection view, not an approval workflow: there are no
-  accept/reject/publish controls and local files are never handed to Finder
-  just to see them.
+- **Proof drawer** — the Proof section of the chat actions drawer
+  (`ChatComputerUsePanel.tsx`, grouping in `shared/proofDrawerModel.ts`).
+  Proof is grouped by the turn that filed it, newest first, under that turn's
+  prompt. Inside a turn, "In the answer" (items an answer cites, in citation
+  order) comes before "Also filed". Two items a `proof-compare` block names
+  show as one Before/After pair. A search box, a Pictures/Videos filter, an
+  "In answers" filter and a PR chip (from the `github_pr` owner link) sit on
+  top. Deletion stays. A turn's "N proof" chip in the thread counts only proof
+  the answer does not already show.
+- **Chat actions drawer layout** — the drawer never scrolls as a whole
+  (`ChatActionsDrawerPanel.tsx`). It grows with its content up to the pane's
+  height; past that, each section keeps its own region and scrolls inside it.
+  A region never shrinks below its content or 160 px, whichever is smaller.
+  Tasks, Subagents, Proof and Sources share one collapsible, sticky header.
 - **iOS chat** — proof stays in the message timeline, and the Proof sheet
-  (`WorkProofSheet.swift`) is the phone's drawer: the chat's artifacts newest
-  first, each row a thumbnail plus "kind · when", pull-to-refresh only. Tapping
+  (`WorkProofSheet.swift`) is the phone's drawer. It uses the same grouping as
+  the desktop (`workProofDrawerGroups`): a section per turn, "In the answer"
+  first, Before/After pairs, a search field and a filter menu. Each row is a
+  thumbnail plus "kind · when", pull-to-refresh only. Tapping
   a row opens a full-screen viewer with **one page per artifact**, so the rest
   of the set is one swipe away; page dots show only when there is somewhere to
   swipe. Preview/share actions, no review-state chrome. See
   [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
-- **Where it came from** — the drawer tile, the timeline card, and the iOS
-  Proof sheet row print one quiet line under the title: `Recorded by ADE ·
-  10:24–10:25 AM` (plus `· idle cut 1:52` when the recorder cut still time),
-  `Captured by ADE`, or `Attached by the agent`. A video
-  flagged as older adds an amber line: `Recorded at 5:19 AM, before this
-  request.` Rows without `proofSource` print nothing.
+- **Where it came from** — the record keeps `proofSource`, but no proof
+  surface draws it any more (the owner found the lines to be noise); the iOS
+  row still speaks it to VoiceOver. A video flagged as older keeps its amber
+  line: `Recorded at 5:19 AM, before this request.`
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
 Both clients resolve media through the owning runtime instead of opening the

@@ -26,6 +26,7 @@ export function MediaLightbox({
   fileName,
   readDataUrl,
   onMediaError,
+  failureText = null,
   onClose,
 }: {
   src: string;
@@ -36,6 +37,8 @@ export function MediaLightbox({
   fileName?: string;
   readDataUrl?: () => Promise<string | null>;
   onMediaError?: () => void;
+  /** Set once the media failed to load: shown in its place, with only Close. */
+  failureText?: string | null;
   onClose: () => void;
 }) {
   const closeRef = useRef<HTMLButtonElement | null>(null);
@@ -118,7 +121,14 @@ export function MediaLightbox({
       initialFocusRef={closeRef}
     >
       <div data-media-lightbox="" className="group/lightbox relative">
-        {kind === "video" ? (
+        {failureText ? (
+          <div
+            role="status"
+            className="flex min-h-40 w-[min(420px,calc(100vw-32px))] items-center justify-center bg-black/70 px-6 py-10 text-center font-sans text-[13px] text-white/75"
+          >
+            {failureText}
+          </div>
+        ) : kind === "video" ? (
           <video
             src={src}
             controls
@@ -141,7 +151,7 @@ export function MediaLightbox({
           // the picture shows whole and unobstructed.
           className="absolute right-2.5 top-2.5 flex items-center gap-0.5 rounded-lg border border-white/[0.12] bg-black/60 p-0.5 text-white/80 opacity-0 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-opacity duration-150 has-[:focus-visible]:opacity-100 group-hover/lightbox:opacity-100"
         >
-          {kind === "image" && canReadBytes ? (
+          {kind === "image" && canReadBytes && !failureText ? (
             <LightboxTool
               label={copied ? "Copied" : "Copy picture"}
               disabled={busy !== null}
@@ -150,7 +160,7 @@ export function MediaLightbox({
               {copied ? <Check size={14} weight="bold" /> : <Copy size={14} />}
             </LightboxTool>
           ) : null}
-          {canReadBytes ? (
+          {canReadBytes && !failureText ? (
             <LightboxTool label="Download" disabled={busy !== null} onClick={() => void download()}>
               <DownloadSimple size={14} />
             </LightboxTool>
