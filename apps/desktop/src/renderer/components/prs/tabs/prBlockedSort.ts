@@ -70,7 +70,9 @@ export function resolveGitHubRowNextStepKind(args: {
     reviewDecision: reviewDecisionFrom(source?.reviewStatus),
     approvalsCount: null,
     requiredApprovals: null,
-    changesRequestedBy: source?.reviewStatus === "changes_requested" ? ["reviewer"] : [],
+    // The review decision above already drives the changes_requested branch; the
+    // list has no per-reviewer logins to attribute it to.
+    changesRequestedBy: [],
     unresolvedThreads: 0,
     canBypass: false,
     autoMergeAllowed: undefined,

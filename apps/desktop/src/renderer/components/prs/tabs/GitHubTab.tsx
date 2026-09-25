@@ -306,6 +306,15 @@ export function GitHubTab({
     setSort(normalizeGitHubTabSort(selectedSort));
   }, [selectedSort]);
 
+  // A `blocked` sort restored from the warm cache should be reflected in the
+  // route once, so a shared URL carries it without a manual re-toggle.
+  const didSyncInitialSortRef = React.useRef(false);
+  React.useEffect(() => {
+    if (didSyncInitialSortRef.current) return;
+    didSyncInitialSortRef.current = true;
+    if (selectedSort === null && sort === "blocked") onSortChange?.("blocked");
+  }, [onSortChange, selectedSort, sort]);
+
   React.useEffect(() => {
     if (snapshot?.viewerLogin) {
       setContextViewerLogin?.(snapshot.viewerLogin);
