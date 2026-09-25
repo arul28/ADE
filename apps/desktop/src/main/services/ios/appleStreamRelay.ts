@@ -118,6 +118,8 @@ export type AppleStreamRelay = {
   }): AppleStreamTicket;
   /** The ticket id in `/apple/stream/<id>`, or null when the url is not ours. */
   ticketFromUrl(url: string | null | undefined): string | null;
+  /** True while this relay holds the unexpired, unused ticket. */
+  hasTicket(ticket: string): boolean;
   /**
    * Take over a freshly upgraded socket. Resolves false when the ticket is
    * unknown, expired, already used, or the token does not match — the caller
@@ -474,6 +476,11 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
         height,
         expiresAt: new Date(expiresAtMs).toISOString(),
       };
+    },
+
+    hasTicket(ticket) {
+      pruneTickets();
+      return tickets.has(ticket);
     },
 
     ticketFromUrl(url) {

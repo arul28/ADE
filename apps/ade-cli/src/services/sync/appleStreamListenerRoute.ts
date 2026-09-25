@@ -20,6 +20,8 @@ export { APPLE_STREAM_PATH_PREFIX } from "../../../../desktop/src/main/services/
 
 export type AppleStreamSocketRouter = {
   ticketFromUrl(url: string | null | undefined): string | null;
+  /** True while this router holds the ticket. Optional for routers that predate it. */
+  hasTicket?(ticket: string): boolean;
   attach(
     socket: {
       send(data: Uint8Array): void;
@@ -31,18 +33,53 @@ export type AppleStreamSocketRouter = {
   ): Promise<boolean>;
 };
 
-let activeRouter: AppleStreamSocketRouter | null = null;
+/**
+ * Every project's forwarder, newest last.
+ *
+ * One brain opens several projects, and each builds its own forwarder with its
+ * own tickets. A single "active" handle meant the last project to open took
+ * every socket, so a ticket from another project's forwarder was unknown and
+ * the viewer was closed with 4401 ("the stream pass expired") every time.
+ */
+const routers: AppleStreamSocketRouter[] = [];
 
-/** Claims the handle. Returns a detach that only clears its own registration. */
+/** Registers a forwarder. Null clears them all. Returns a detach for this one only. */
 export function setActiveAppleStreamRouter(router: AppleStreamSocketRouter | null): () => void {
-  activeRouter = router;
+  if (!router) {
+    routers.length = 0;
+    return () => {};
+  }
+  routers.push(router);
   return () => {
-    if (activeRouter === router) activeRouter = null;
+    const index = routers.lastIndexOf(router);
+    if (index >= 0) routers.splice(index, 1);
   };
 }
 
+/**
+ * One router over all registered forwarders: a socket goes to the forwarder
+ * that issued its ticket, else to the newest, which refuses it with 4401.
+ */
+const combinedRouter: AppleStreamSocketRouter = {
+  ticketFromUrl(url) {
+    for (const router of routers) {
+      const ticket = router.ticketFromUrl(url);
+      if (ticket) return ticket;
+    }
+    return null;
+  },
+  hasTicket(ticket) {
+    return routers.some((router) => router.hasTicket?.(ticket) === true);
+  },
+  attach(socket, args) {
+    const owner = routers.find((router) => router.hasTicket?.(args.ticket) === true)
+      ?? routers[routers.length - 1];
+    return owner!.attach(socket, args);
+  },
+};
+
 export function getActiveAppleStreamRouter(): AppleStreamSocketRouter | null {
-  return activeRouter;
+  return routers.length > 0 ? combinedRouter : null;
 }
 
 /** The `?token=` a browser must use, because it cannot set an Authorization header. */
@@ -76,7 +113,7 @@ export function tryRouteAppleStreamSocket(
     on(event: string, listener: (...args: never[]) => void): void;
   },
   request: { url?: string | null; headers?: Record<string, unknown> },
-  router: AppleStreamSocketRouter | null = activeRouter,
+  router: AppleStreamSocketRouter | null = getActiveAppleStreamRouter(),
 ): boolean {
   const ticket = router?.ticketFromUrl(request.url ?? null) ?? null;
   if (!router || !ticket) return false;
