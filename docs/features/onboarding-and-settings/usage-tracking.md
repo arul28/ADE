@@ -841,3 +841,22 @@ for each provider, mainly Claude and Codex. The wire contract is in
   credits ride their own key in the same payload. Claude grants no such credit
   — its `extra_usage` is paid overage in dollars, which the extra usage card
   already shows.
+- Every Codex app-server read (`runCodexAppServerJsonRpc`: the quota fallback,
+  the reset-credit probe, and spending a credit) holds stdin open until every
+  requested response id has arrived, then closes it; only the timeout kills the
+  tree early. The app-server aborts an in-flight request the moment it sees
+  stdin EOF, and `account/rateLimits/read` is a network round-trip, so closing
+  stdin right after the write returned only the `initialize` reply and dropped
+  the credit payload — which ADE then cached as `availableCount: 0` and never
+  offered **Use reset**. Notifications interleaved between replies carry no
+  numeric id and are ignored.
+
+Claude's "Couldn't refresh Claude — showing last reading" is the generic
+stale-state line `buildProviderWindows` emits when a *fresh* Claude poll returns
+no windows while unexpired last-good windows exist: a transient usage-endpoint
+5xx/timeout/429 or an unrecognized response. It is not the credential path — a
+background poll that cannot read a login returns `preserve_previous` (silent,
+windows carried, no such message), and a rejected token produces the
+"reconnect" state instead. The next successful poll clears it and resets
+`providerFailureCount`, and `Retry-After`/exponential backoff bounds the retry
+storm, so it self-heals.

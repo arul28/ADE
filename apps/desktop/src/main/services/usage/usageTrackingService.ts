@@ -1206,6 +1206,12 @@ type CodexAppServerRpcRequest = {
  * Throws on a missing binary, a spawn failure, a non-zero exit, or the timeout.
  * Callers decide what an unavailable app-server means for them — a poll
  * degrades, a credit spend fails loudly.
+ *
+ * stdin stays open until every requested response id has arrived (or the
+ * timeout kills the tree). The app-server aborts an in-flight request the
+ * instant it sees stdin EOF, and a rate-limit read is a network round-trip —
+ * closing stdin right after the write returned only the `initialize` reply and
+ * silently dropped the read.
  */
 async function runCodexAppServerJsonRpc(args: {
   logger: Logger;
@@ -1278,10 +1284,41 @@ async function runCodexAppServerJsonRpc(args: {
       let stderr = "";
       const maxStdout = 50_000;
       const maxStderr = 10_000;
+
+      // Every requested response id must arrive before stdin closes. The
+      // app-server interleaves notifications (configWarning,
+      // remoteControl/status/changed, account/updated) between replies; they
+      // carry no numeric id and are ignored here. The result parse after close
+      // still filters to lines that carry a `result`.
+      const pendingResponseIds = new Set<number>(requests.map((request) => request.id));
+      let stdinClosed = false;
+      let stdoutCarry = "";
+      const closeStdinOnceRepliesArrive = () => {
+        if (stdinClosed || pendingResponseIds.size > 0) return;
+        stdinClosed = true;
+        try {
+          child.stdin?.end();
+        } catch (err) {
+          if (isBenignStdinCloseError(err)) return;
+          logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
+            error: getErrorMessage(err),
+          });
+        }
+      };
       child.stdout?.on("data", (chunk: Buffer) => {
         if (stdout.length >= maxStdout) return;
         const s = chunk.toString("utf8");
         stdout += s.slice(0, maxStdout - stdout.length);
+        stdoutCarry += s;
+        const lines = stdoutCarry.split("\n");
+        stdoutCarry = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.length) continue;
+          const parsed = safeJsonParse<Record<string, unknown>>(trimmed, {});
+          if (typeof parsed.id === "number") pendingResponseIds.delete(parsed.id);
+        }
+        closeStdinOnceRepliesArrive();
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         if (stderr.length >= maxStderr) return;
@@ -1319,14 +1356,17 @@ async function runCodexAppServerJsonRpc(args: {
 
       try {
         child.stdin?.write(combined);
-        child.stdin?.end();
       } catch (err) {
         if (isBenignStdinCloseError(err)) return;
         logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
           error: getErrorMessage(err),
         });
         finish(() => reject(err));
+        return;
       }
+      // With no requests there is nothing to wait for; otherwise the stdout
+      // handler closes stdin once every reply is in.
+      closeStdinOnceRepliesArrive();
     },
   );
 

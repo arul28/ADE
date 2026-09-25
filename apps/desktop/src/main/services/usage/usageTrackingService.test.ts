@@ -195,11 +195,13 @@ function createFakeCodexChild({
   const stdinEmitter = new EventEmitter() as any;
   const written: string[] = [];
 
-  stdinEmitter.write = vi.fn((chunk: string) => {
-    written.push(chunk);
-    return true;
-  });
-  stdinEmitter.end = vi.fn(() => {
+  // A real app-server answers while stdin is still open; it does not wait for
+  // EOF. Model that so a test fails if the code closes stdin before every reply
+  // has been read.
+  let responded = false;
+  const respond = () => {
+    if (responded) return;
+    responded = true;
     queueMicrotask(() => {
       if (stdinError) {
         stdinEmitter.emit("error", stdinError);
@@ -209,6 +211,15 @@ function createFakeCodexChild({
       if (stderr) stderrEmitter.emit("data", Buffer.from(stderr));
       child.emit("close", closeCode);
     });
+  };
+
+  stdinEmitter.write = vi.fn((chunk: string) => {
+    written.push(chunk);
+    respond();
+    return true;
+  });
+  stdinEmitter.end = vi.fn(() => {
+    respond();
   });
 
   child.stdout = stdoutEmitter;
@@ -1725,6 +1736,67 @@ describe("pollCodexViaCliRpc", () => {
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
     expect(fake.written[0]).toMatch(/\n$/);
     expect(fake.written[0]).not.toMatch(/\n\n$/);
+    expect(result.errors).toEqual([]);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
+  });
+
+  it("keeps app-server stdin open until a delayed rate-limit reply arrives", async () => {
+    const child = new EventEmitter() as any;
+    const stdoutEmitter = new EventEmitter();
+    const stderrEmitter = new EventEmitter();
+    const stdinEmitter = new EventEmitter() as any;
+    let replyDelivered = false;
+    let stdinEndedBeforeReply = false;
+    let replyTimer: ReturnType<typeof setTimeout> | null = null;
+
+    stdinEmitter.write = vi.fn(() => true);
+    stdinEmitter.end = vi.fn(() => {
+      if (!replyDelivered) {
+        // A real app-server aborts the in-flight request and exits on EOF.
+        stdinEndedBeforeReply = true;
+        if (replyTimer) clearTimeout(replyTimer);
+        child.emit("close", 0);
+      }
+    });
+    child.stdout = stdoutEmitter;
+    child.stderr = stderrEmitter;
+    child.stdin = stdinEmitter;
+    child.kill = vi.fn();
+
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockReturnValue(child);
+
+    const logger = createLogger();
+    const pending = pollCodexViaCliRpc(logger as any);
+
+    // `initialize` (id 0) answers at once; the rate-limit read (id 1) is a
+    // network round-trip that lands a tick later.
+    stdoutEmitter.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} })}\n`),
+    );
+    replyTimer = setTimeout(() => {
+      replyDelivered = true;
+      stdoutEmitter.emit(
+        "data",
+        Buffer.from(`${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            rateLimits: {
+              primary: { usedPercent: 17, resetsAt: 1773446952 },
+              secondary: { usedPercent: 64, resetsAt: 1773853354 },
+            },
+          },
+        })}\n`),
+      );
+      child.emit("close", 0);
+    }, 20);
+
+    const result = await pending;
+
+    expect(stdinEndedBeforeReply).toBe(false);
     expect(result.errors).toEqual([]);
     expect(result.windows).toHaveLength(2);
     expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
