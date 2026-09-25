@@ -491,10 +491,19 @@ DTOs:
 ## GitHub data-loading model
 
 The GitHub tab renders PRs from the active repository, sorted by
-creation date. The scope filter (`all` / `ade` / `external`) is local
-to that repository: `ade` means ADE-managed/linked PRs, while
-`external` means repo PRs that are not currently managed by ADE.
-Cross-repo PRs involving the viewer are not fetched or displayed.
+most-recently-updated (falling back to created) by default. The toolbar's
+**Blocked** toggle switches to a "blocked on me" order: rows whose next step
+needs a person (conflicts, behind, failing checks, requested changes, a needed
+review, a blocking rule) float above rows still waiting on CI. It reuses
+`shared/prNextStep.ts` (`resolvePrNextStep` + `prNextStepBlocker`) rather than
+re-deriving blocker rules, never moves a row across the Open/Merged/Closed
+sections, and leaves relevance order alone while a search is active. The choice
+persists with the tab's other list preferences in the warm cache and, when it
+is `blocked`, in the URL as `sort=blocked` (`prsRouteState`). The scope filter
+(`all` / `ade` / `external`) is local to that repository: `ade` means
+ADE-managed/linked PRs, while `external` means repo PRs that are not currently
+managed by ADE. Cross-repo PRs involving the viewer are not fetched or
+displayed.
 
 Caching layers:
 

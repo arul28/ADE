@@ -1,5 +1,5 @@
 import React from "react";
-import { CircleNotch, GitMerge, GithubLogo } from "@phosphor-icons/react";
+import { CircleNotch, GitMerge, GithubLogo, HandPalm } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   GitHubPrListItem,
@@ -30,6 +30,7 @@ import {
   type GitHubFilter,
   type GitHubFilterCounts,
 } from "./githubTabModel";
+import type { GitHubTabSort } from "./prBlockedSort";
 import { prRouteCoordinatesMatch } from "../prsRouteState";
 import { PRS_LIST_ROOT_CLASS, PrsListPortal, usePrsListHost } from "../shared/PrsListHost";
 
@@ -57,6 +58,7 @@ type GitHubTabViewList = {
   parentRef: React.RefObject<HTMLDivElement>;
   filter: GitHubFilter;
   filterCounts: GitHubFilterCounts;
+  sort: GitHubTabSort;
   loading: boolean;
   loadingFilter: GitHubFilter | null;
   loadingOlderHistory: boolean;
@@ -68,6 +70,7 @@ type GitHubTabViewList = {
   prsByIdMap: Map<string, PrSummary>;
   canLoadOlderHistory: boolean;
   onFilterChange: (filter: GitHubFilter) => void;
+  onSortChange: (sort: GitHubTabSort) => void;
   onSelect: (item: GitHubPrListItem) => void;
   onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
   onLoadOlderHistory: () => void;
@@ -237,6 +240,36 @@ function GitHubTabListColumn({
           );
         })}
         <div style={{ flex: 1 }} />
+        <button
+          type="button"
+          aria-pressed={list.sort === "blocked"}
+          aria-label="Sort pull requests by blocked on me"
+          title={list.sort === "blocked"
+            ? "Sorted by what is blocked on you — click for recently updated"
+            : "Sort by what is blocked on you"}
+          onClick={() => list.onSortChange(list.sort === "blocked" ? "updated" : "blocked")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            height: 22,
+            padding: "0 7px",
+            marginRight: 4,
+            borderRadius: 6,
+            border: `1px solid ${list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 40%, transparent)` : "rgba(255,255,255,0.08)"}`,
+            background: list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 14%, transparent)` : "transparent",
+            color: list.sort === "blocked" ? COLORS.warning : COLORS.textMuted,
+            fontFamily: SANS_FONT,
+            fontSize: 10.5,
+            fontWeight: 600,
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+          }}
+        >
+          <HandPalm size={11} weight={list.sort === "blocked" ? "fill" : "regular"} aria-hidden />
+          Blocked
+        </button>
         {list.showLoadingIndicator ? (
           <span
             role="status"

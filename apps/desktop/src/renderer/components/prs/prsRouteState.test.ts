@@ -44,6 +44,7 @@ describe("prsRouteState", () => {
       threadId: null,
       commitSha: null,
       detailTab: null,
+      githubSort: null,
     });
   });
 
@@ -65,6 +66,7 @@ describe("prsRouteState", () => {
       threadId: null,
       commitSha: null,
       detailTab: null,
+      githubSort: null,
     });
   });
 
@@ -85,6 +87,7 @@ describe("prsRouteState", () => {
       threadId: "thr-12",
       commitSha: "abc123",
       detailTab: "files",
+      githubSort: null,
     });
   });
 
