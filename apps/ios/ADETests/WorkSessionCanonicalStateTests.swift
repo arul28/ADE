@@ -785,7 +785,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
   func testDetectedExploringKeepsNativePlanningButAgentActivityCanRefineIt() {
     var session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now))
-    let summary = makeChatSummary(status: "active", awaitingInput: false, codexEffectiveCollaborationMode: "plan")
+    var summary = makeChatSummary(status: "active", awaitingInput: false, codexEffectiveCollaborationMode: "plan")
+    summary.currentTurnStartedAt = iso(now)
     session.activityStatus = SessionActivityReport(value: "exploring", source: "detected", updatedAt: iso(now))
 
     XCTAssertEqual(workSessionRowPresentation(session: session, summary: summary, now: now).status?.label, "Planning")
