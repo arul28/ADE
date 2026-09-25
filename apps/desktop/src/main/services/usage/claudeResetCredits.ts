@@ -58,11 +58,36 @@ export type ClaudeResetConsumeAttempt = {
   result: UsageResetCreditResult;
   /**
    * True when nothing confirmed the claim (a transport failure, a 5xx, or the
-   * server's `unavailable`): the same request id must be sent again so a retry
-   * asks about the original claim instead of minting a second one.
+   * server's `unavailable`): the same claim must be sent again so a retry asks
+   * about the original request instead of minting a second one.
    */
   retrySameClaim: boolean;
 };
+
+/**
+ * Whether this platform can read and redeem Claude resets at all.
+ *
+ * macOS keeps the Claude OAuth token in the Keychain, and ADE will not turn a
+ * Keychain read into an unattended HTTP call, so the feature is not offered
+ * there. The credential read is gated before it happens, not after.
+ */
+export function isClaudeResetCreditsSupported(
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return platform !== "darwin";
+}
+
+/**
+ * The result of reading one account's banked resets.
+ *
+ * `ok` is a confirmed answer — `credits` null means the account has none.
+ * `unavailable` is "we could not find out" (macOS, no readable login, a failed
+ * request); it must not be read as a confirmed zero, so a caller can keep the
+ * last known reading instead of blanking a live control on a transient outage.
+ */
+export type ClaudeResetCreditsRead =
+  | { status: "ok"; credits: ClaudeResetCredits | null }
+  | { status: "unavailable" };
 
 /** Rejects unparseable and calendar-invalid timestamps such as February 30. */
 function isFutureTimestamp(value: string, nowMs: number): boolean {
@@ -214,19 +239,25 @@ function claudeHeaders(token: string, version: string, withBody: boolean): Recor
 }
 
 /**
- * Read one account's banked resets. Any failure — macOS, no credentials file,
- * a non-2xx response, a malformed body — reads as "no resets", never an error.
+ * Read one account's banked resets.
+ *
+ * Any failure — macOS, no credentials, a non-2xx response, a thrown request —
+ * is `unavailable`, never a confirmed zero, so the caller keeps the last known
+ * reading rather than hiding a live control on a transient outage. `accessToken`
+ * lets the caller reuse the credential path's cached (and possibly refreshed)
+ * login instead of the file's possibly-stale token; the file is the fallback.
  */
 export async function readClaudeResetCredits(args: {
   configHome?: string;
+  accessToken?: string;
   nowMs?: number;
   platform?: NodeJS.Platform;
   cliVersion?: string;
   fetchImpl?: typeof fetch;
-} = {}): Promise<ClaudeResetCredits | null> {
-  if ((args.platform ?? process.platform) === "darwin") return null;
-  const token = await readClaudeAccessToken(args.configHome);
-  if (!token) return null;
+} = {}): Promise<ClaudeResetCreditsRead> {
+  if (!isClaudeResetCreditsSupported(args.platform)) return { status: "unavailable" };
+  const token = args.accessToken?.trim() || await readClaudeAccessToken(args.configHome);
+  if (!token) return { status: "unavailable" };
   const version = args.cliVersion ?? await resolveClaudeCliVersion();
   const fetchImpl = args.fetchImpl ?? fetch;
   try {
@@ -238,11 +269,14 @@ export async function readClaudeResetCredits(args: {
         signal: AbortSignal.timeout(CLAUDE_RESET_READ_TIMEOUT_MS),
       },
     );
-    if (!response.ok) return null;
+    if (!response.ok) return { status: "unavailable" };
     const payload = safeJsonParse<unknown>(await response.text(), null);
-    return claudeResetCreditsFromUsagePayload(payload, args.nowMs ?? Date.now());
+    return {
+      status: "ok",
+      credits: claudeResetCreditsFromUsagePayload(payload, args.nowMs ?? Date.now()),
+    };
   } catch {
-    return null;
+    return { status: "unavailable" };
   }
 }
 
@@ -257,6 +291,7 @@ export async function readClaudeResetCredits(args: {
  */
 export async function consumeClaudeResetCredit(args: {
   configHome?: string;
+  accessToken?: string;
   grantId: string;
   requestId: string;
   platform?: NodeJS.Platform;
@@ -267,16 +302,17 @@ export async function consumeClaudeResetCredit(args: {
     result: { ok: false, status: "failure", message },
     retrySameClaim,
   });
-  if ((args.platform ?? process.platform) === "darwin") {
+  if (!isClaudeResetCreditsSupported(args.platform)) {
     return failure("Claude reset credits are not available on this computer.");
   }
   if (!GRANT_ID_PATTERN.test(args.grantId) || !REQUEST_ID_PATTERN.test(args.requestId)) {
     return failure("Claude returned a malformed reset credit.");
   }
-  const [token, organization] = await Promise.all([
-    readClaudeAccessToken(args.configHome),
+  const [fileToken, organization] = await Promise.all([
+    args.accessToken?.trim() ? Promise.resolve(null) : readClaudeAccessToken(args.configHome),
     readClaudeOrganizationUuid(args.configHome),
   ]);
+  const token = args.accessToken?.trim() || fileToken;
   if (!token || !organization) return failure("Sign in to Claude again to redeem resets.");
 
   const version = args.cliVersion ?? await resolveClaudeCliVersion();

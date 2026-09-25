@@ -93,7 +93,10 @@ describe("readClaudeResetCredits", () => {
       platform: "linux",
       cliVersion: CLI_VERSION,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-    })).resolves.toEqual({ availableCount: 1, nextCreditId: "grant_a" });
+    })).resolves.toEqual({
+      status: "ok",
+      credits: { availableCount: 1, nextCreditId: "grant_a" },
+    });
   });
 
   it("reads nothing on macOS, without a login, or from a failed request", async () => {
@@ -105,7 +108,7 @@ describe("readClaudeResetCredits", () => {
       platform: "darwin",
       cliVersion: CLI_VERSION,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-    })).resolves.toBeNull();
+    })).resolves.toEqual({ status: "unavailable" });
     expect(fetchImpl).not.toHaveBeenCalled();
     await expect(readClaudeResetCredits({
       configHome: path.join(configHome, "missing"),
@@ -113,14 +116,33 @@ describe("readClaudeResetCredits", () => {
       platform: "linux",
       cliVersion: CLI_VERSION,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-    })).resolves.toBeNull();
+    })).resolves.toEqual({ status: "unavailable" });
+    // A 429 is a failed read, never a confirmed zero balance.
     await expect(readClaudeResetCredits({
       configHome,
       nowMs: NOW,
       platform: "linux",
       cliVersion: CLI_VERSION,
       fetchImpl: fetchImpl as unknown as typeof fetch,
-    })).resolves.toBeNull();
+    })).resolves.toEqual({ status: "unavailable" });
+  });
+
+  it("prefers the caller's token over the credentials file", async () => {
+    const configHome = writeLogin();
+    const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect((init?.headers as Record<string, string>).authorization).toBe("Bearer fresh-token");
+      return new Response(JSON.stringify({
+        cedar_ember: { eligible: false },
+      }), { status: 200 });
+    });
+    await expect(readClaudeResetCredits({
+      configHome,
+      accessToken: "fresh-token",
+      nowMs: NOW,
+      platform: "linux",
+      cliVersion: CLI_VERSION,
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })).resolves.toEqual({ status: "ok", credits: null });
   });
 });
 

@@ -842,15 +842,20 @@ for each provider, mainly Claude and Codex. The wire contract is in
   `parseCodexRateLimitSnapshot` remains windows-and-spend-control only; the
   Codex credits ride their own key in the same payload. Claude's read is the
   OAuth usage endpoint with `cedar_ember=1&skip_spend=1`, sent with the OAuth
-  token the CLI keeps on disk. On macOS that token lives in the Keychain, so
-  ADE does not offer the control there rather than turn a Keychain read into an
-  unattended HTTP call; the read stays off and sends nothing. Spending a Claude
-  credit is `POST /api/organizations/{org}/reset_rate_limits` with
-  `{ program, grant_id, request_id }`, one claim at a time with the request id
-  held until Claude answers — `cooldown`, `429`, and a signed-out answer count
-  as answers, while an unanswered or unconfirmed claim reuses the same id.
-  Claude's `extra_usage` is paid overage in dollars, which the extra usage card
-  already shows.
+  token from ADE's Claude credential cache when it is warm (so a token the
+  quota poll just refreshed is used, not the possibly-stale file) and the
+  credentials file otherwise. On macOS that token lives in the Keychain, so ADE
+  does not offer the control there rather than turn a Keychain read into an
+  unattended HTTP call; the read stays off and sends nothing. A failed read is
+  not a confirmed zero: the last known credits are kept, and only a successful
+  response can replace them. Spending a Claude credit is
+  `POST /api/organizations/{org}/reset_rate_limits` with
+  `{ program, grant_id, request_id }`, one claim at a time with the pending
+  claim — its grant id and request id together — held until Claude answers, so
+  a retry after a timeout repeats the exact request instead of spending a
+  second credit on whatever grant a later probe selected; `cooldown`, `429`,
+  and a signed-out answer count as answers. Claude's `extra_usage` is paid
+  overage in dollars, which the extra usage card already shows.
 - Every Codex app-server read (`runCodexAppServerJsonRpc`: the quota fallback,
   the reset-credit probe, and spending a credit) holds stdin open until every
   requested response id has arrived, then closes it; only the timeout kills the

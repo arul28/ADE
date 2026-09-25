@@ -194,6 +194,7 @@ import {
 } from "./providerQuotaParsers";
 import {
   consumeClaudeResetCredit,
+  isClaudeResetCreditsSupported,
   readClaudeResetCredits,
   type ClaudeResetCredits,
 } from "./claudeResetCredits";
@@ -1703,9 +1704,12 @@ function claudeResetCreditsContract(
  * Read one account's banked credits, at most once per
  * {@link CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS} unless `force` is set.
  *
- * Never throws: macOS, a machine with no Claude login, a non-2xx response, and
- * a malformed body all mean "no credits to offer", which is what the absent
- * field already means to every client.
+ * Never throws. On macOS the feature is not offered, so the field is zeroed
+ * without reading anything. On a real read failure the previous reading is kept
+ * — a transient outage must not blank a live control — and only a confirmed
+ * response can replace it, with zero when the account has no redeemable grant.
+ * The token comes from the credential path's cache when it has one (possibly
+ * refreshed), falling back to the file.
  */
 async function probeClaudeResetCredits(args: {
   logger: Logger;
@@ -1721,11 +1725,19 @@ async function probeClaudeResetCredits(args: {
   if (inFlight) return inFlight;
   const probe = (async () => {
     try {
-      const credits = await readClaudeResetCredits({
+      if (!isClaudeResetCreditsSupported()) {
+        claudeResetCreditCache.set(key, { credits: { availableCount: 0 }, readAt: Date.now() });
+        return;
+      }
+      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
+      const read = await readClaudeResetCredits({
         ...(args.configHome ? { configHome: args.configHome } : {}),
+        ...(accessToken ? { accessToken } : {}),
       });
       claudeResetCreditCache.set(key, {
-        credits: credits ?? { availableCount: 0 },
+        credits: read.status === "ok"
+          ? read.credits ?? { availableCount: 0 }
+          : cached?.credits ?? { availableCount: 0 },
         readAt: Date.now(),
       });
     } catch (error) {
@@ -1747,6 +1759,23 @@ async function probeClaudeResetCredits(args: {
   return probe;
 }
 
+/**
+ * The cached (and possibly refreshed) access token for one Claude account, or
+ * null. `allowKeychain` is false so the reset path never opens the macOS
+ * Keychain; the quota poll that runs earlier in the same pass has usually
+ * already warmed this cache.
+ */
+async function readClaudeCredentialAccessToken(
+  logger: Logger,
+  configHome: string | undefined,
+): Promise<string | null> {
+  const creds = await readClaudeCredentialsWithRefresh(logger, {
+    allowKeychain: false,
+    ...(configHome ? { configHome } : {}),
+  });
+  return creds?.accessToken ?? null;
+}
+
 /** Spends in flight, keyed by config home — one per account at a time. */
 const claudeResetCreditConsumeInFlight = new Map<string, Promise<UsageResetCreditResult>>();
 /**
@@ -1763,9 +1792,11 @@ const claudeResetCreditRequestIds = new Map<string, { requestId: string; grantId
 /**
  * Spend one banked Claude reset credit for `configHome`.
  *
- * Single-flight per account, with the request id held across an unconfirmed
- * claim. The windows are re-read afterwards by the caller because the outcome
- * alone is not the user-visible fact.
+ * Single-flight per account, with the pending claim — its grant id and request
+ * id together — held across an unconfirmed claim, so a retry repeats the exact
+ * request that may already have applied instead of spending a second credit on
+ * whatever grant a later probe selected. The windows are re-read afterwards by
+ * the caller because the outcome alone is not the user-visible fact.
  */
 async function spendClaudeResetCredit(args: {
   logger: Logger;
@@ -1776,7 +1807,10 @@ async function spendClaudeResetCredit(args: {
   if (inFlight) return inFlight;
   const attempt = (async (): Promise<UsageResetCreditResult> => {
     try {
-      const grantId = readCachedClaudeResetCredits(args.configHome)?.nextCreditId;
+      const held = claudeResetCreditRequestIds.get(key);
+      // A held claim is retried exactly, even when a newer probe has selected a
+      // different grant; only a fresh claim reads the cache.
+      const grantId = held?.grantId ?? readCachedClaudeResetCredits(args.configHome)?.nextCreditId;
       if (!grantId) {
         // Nothing was sent, so no request id is minted or held.
         return {
@@ -1785,11 +1819,12 @@ async function spendClaudeResetCredit(args: {
           message: "No reset credit is banked on this account.",
         };
       }
-      const held = claudeResetCreditRequestIds.get(key);
-      const requestId = held && held.grantId === grantId ? held.requestId : randomUUID();
+      const requestId = held?.requestId ?? randomUUID();
       claudeResetCreditRequestIds.set(key, { requestId, grantId });
+      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
       const { result, retrySameClaim } = await consumeClaudeResetCredit({
         ...(args.configHome ? { configHome: args.configHome } : {}),
+        ...(accessToken ? { accessToken } : {}),
         grantId,
         requestId,
       });
@@ -4806,7 +4841,10 @@ export function createUsageTrackingService({
     }
   }
 
-  function captureResetCreditOutcome(result: UsageResetCreditResult): void {
+  function captureResetCreditOutcome(
+    result: UsageResetCreditResult,
+    provider?: "claude" | "codex",
+  ): void {
     // `resetCreditOutcomeKey` is the one classifier: it already rejects an
     // unrecognized (or inherited, like `toString`) wire status, so the key it
     // returns can index the table directly. Reading the same verdict the user's
@@ -4821,6 +4859,7 @@ export function createUsageTrackingService({
         analytics: { captureInternal: sink },
         surface: "api",
         outcome,
+        ...(provider ? { provider } : {}),
       });
     } catch (error) {
       logger.debug("usage.reset_credit_analytics_failed", { error: getErrorMessage(error) });
@@ -4871,7 +4910,7 @@ export function createUsageTrackingService({
         status: "failure",
         message: "That account is not signed in on this computer.",
       };
-      captureResetCreditOutcome(failure);
+      captureResetCreditOutcome(failure, provider ?? undefined);
       return failure;
     }
     const configHome = scopedConfigHome(provider, instance);
@@ -4912,7 +4951,7 @@ export function createUsageTrackingService({
         error: getErrorMessage(error),
       });
     }
-    captureResetCreditOutcome(result);
+    captureResetCreditOutcome(result, provider);
     return result;
   }
 
