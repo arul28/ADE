@@ -253,7 +253,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `presets` | `preset_created`, `preset_deleted` | `completed` | coarse harness/provider family |
 | `proxy` | `sign_in` | `success` | Claude/Codex family |
 | `proxy` | `start`, `stop` | `completed` | omitted; no provider is involved |
-| `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | `codex` |
+| `usage` | `reset_credit_consumed` | `completed`, `nothing_to_reset`, `no_credit`, `already_redeemed`, `failed` | Claude/Codex family; omitted when no account was named |
 | `chat` | `pending_input_dismissed` | `completed` | coarse session provider family |
 | `chat` | `new_lane_launch` | `completed`, `cancelled`, `failed` | coarse chat provider family |
 | `work` | `session_continue_chat`, `session_copy_chat`, `session_continue_cli`, `session_copy_cli` | `completed`, `failed` | coarse provider family (Qwen, Kimi, Grok and Copilot report `other`) |
@@ -446,8 +446,9 @@ login polling, health probes, and subscription launch reads stay untracked.
 Reset-credit consume outcomes are captured in
 `apps/desktop/src/main/services/usage/usageTrackingService.ts` after the
 consume result is known, including invalid/missing-account failures. The event
-is `usage/reset_credit_consumed`, always carries provider `codex`, and maps
-the service statuses to `completed`, `nothing_to_reset`, `no_credit`,
+is `usage/reset_credit_consumed`, carries the Claude/Codex provider family of
+the account whose credit was spent (omitted when the caller named no account),
+and maps the service statuses to `completed`, `nothing_to_reset`, `no_credit`,
 `already_redeemed`, or `failed`. One key per outcome with a one-hour minimum
 interval admits at most 120 events per day before the existing event-level
 `ade_feature_used` 140-per-day / 30-per-minute ceilings; no polling, quota

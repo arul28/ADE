@@ -832,15 +832,30 @@ for each provider, mainly Claude and Codex. The wire contract is in
   falls back to `status.accountEmail`, then to "This machine".
 - The iOS quota rows are readings, not controls: the old tap-to-focus gesture
   on a pace bar is gone. Tapping a row opens the account detail sheet.
-- Codex DOES report banked reset credits, and ADE parses them:
+- Codex and Claude both report banked reset credits, and ADE parses them:
   `parseCodexResetCredits` counts only credits whose status is still
-  `available` and reports the soonest expiry, which lands on
-  `UsageAccount.resetCredits`. That is what gates the Codex row's **Use reset**
-  action, so a Codex account with no banked credit shows no action at all.
+  `available` and reports the soonest expiry; `parseClaudeResetCredits` (Claude
+  Code's `cedar_ember` program) counts the grants the server marks usable and
+  unexpired and pins the one it names as next. Both land on
+  `UsageAccount.resetCredits`, which is what gates the row's **Use reset**
+  action, so an account with no banked credit shows no action at all.
   `parseCodexRateLimitSnapshot` remains windows-and-spend-control only; the
-  credits ride their own key in the same payload. Claude grants no such credit
-  — its `extra_usage` is paid overage in dollars, which the extra usage card
-  already shows.
+  Codex credits ride their own key in the same payload. Claude's read is the
+  OAuth usage endpoint with `cedar_ember=1&skip_spend=1`, sent with the OAuth
+  token from ADE's Claude credential cache when it is warm (so a token the
+  quota poll just refreshed is used, not the possibly-stale file) and the
+  credentials file otherwise. On macOS that token lives in the Keychain, so ADE
+  does not offer the control there rather than turn a Keychain read into an
+  unattended HTTP call; the read stays off and sends nothing. A failed read is
+  not a confirmed zero: the last known credits are kept, and only a successful
+  response can replace them. Spending a Claude credit is
+  `POST /api/organizations/{org}/reset_rate_limits` with
+  `{ program, grant_id, request_id }`, one claim at a time with the pending
+  claim — its grant id and request id together — held until Claude answers, so
+  a retry after a timeout repeats the exact request instead of spending a
+  second credit on whatever grant a later probe selected; `cooldown`, `429`,
+  and a signed-out answer count as answers. Claude's `extra_usage` is paid
+  overage in dollars, which the extra usage card already shows.
 - Every Codex app-server read (`runCodexAppServerJsonRpc`: the quota fallback,
   the reset-credit probe, and spending a credit) holds stdin open until every
   requested response id has arrived, then closes it; only the timeout kills the

@@ -7096,12 +7096,178 @@ describe("per-account quota attribution", () => {
     await expect(service.consumeResetCredit(undefined as never)).resolves.toEqual({
       ok: false,
       status: "failure",
-      message: "Name the Codex account whose reset credit to spend.",
+      message: "Name the account whose reset credit to spend.",
     });
     await expect(service.consumeResetCredit({ accountId: "  " })).resolves.toMatchObject({
       ok: false,
       status: "failure",
     });
+  });
+
+  it("reads Claude banked resets from the account's own home and spends one", async () => {
+    // Claude's reset read is gated off on macOS (the token lives in the
+    // Keychain), so the non-macOS HTTP path is exercised by presenting the
+    // platform the feature is offered on.
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      writeJson(path.join(workHome, ".claude.json"), {
+        oauthAccount: { emailAddress: "work@example.com", organizationUuid: "org-1" },
+      });
+      const calls: Array<{ url: string; method: string }> = [];
+      const analyticsEvents: ProductAnalyticsCapture[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { method?: string }) => {
+        calls.push({ url: String(url), method: init?.method ?? "GET" });
+        if (String(url).includes("/api/oauth/usage")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              cedar_ember: {
+                eligible: true,
+                next_grant_id: "grant_a",
+                grants: [{
+                  id: "grant_a",
+                  resets_left: 2,
+                  usable_now: true,
+                  ends_at: "2099-03-14T02:00:00Z",
+                }],
+              },
+            }),
+          };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ result: "reset" }) };
+      }));
+
+      const service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          captureInternalAnalytics: (input) => analyticsEvents.push(input),
+          pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          listProviderInstances: (provider) => provider === "claude"
+            ? [{ id: "work", label: "Work", configHome: workHome, isDefault: true }]
+            : [],
+          scanClaudeLogs: vi.fn(async () => []),
+          scanCodexLogs: vi.fn(async () => []),
+          scanCursorLogs: vi.fn(async () => []),
+          scanCursorAgentLogs: vi.fn(async () => []),
+          scanOpenClawLogs: vi.fn(async () => []),
+          scanOpenCodeLogs: vi.fn(async () => []),
+          scanDroidLogs: vi.fn(async () => []),
+          scanCopilotLogs: vi.fn(async () => []),
+          scanGeminiLogs: vi.fn(async () => []),
+        },
+      });
+
+      const snapshot = await service.poll({ reason: "user" });
+      const account = (snapshot.accounts ?? []).find((entry) => entry.id === "claude:work");
+      expect(account?.resetCredits).toEqual({
+        availableCount: 2,
+        nextExpiresAt: "2099-03-14T02:00:00.000Z",
+      });
+
+      await expect(service.consumeResetCredit({ accountId: "claude:work" }))
+        .resolves.toEqual({ ok: true, status: "reset" });
+      expect(calls.find((call) => call.method === "POST")?.url)
+        .toBe("https://api.anthropic.com/api/organizations/org-1/reset_rate_limits");
+      // The event must name the provider whose credit was spent, not Codex.
+      const outcome = analyticsEvents
+        .filter((event) => event.properties?.action === "reset_credit_consumed")
+        .at(-1);
+      expect(outcome?.properties).toMatchObject({ outcome: "completed", provider: "claude" });
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a banked Claude credit when a later read fails", async () => {
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      let failing = false;
+      vi.stubGlobal("fetch", vi.fn(async () => (failing
+        ? { ok: false, status: 500, text: async () => "{}" }
+        : {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            cedar_ember: {
+              eligible: true,
+              next_grant_id: "grant_a",
+              grants: [{ id: "grant_a", resets_left: 1, usable_now: true }],
+            },
+          }),
+        })));
+
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      expect(_testing.readCachedClaudeResetCredits(workHome)?.availableCount).toBe(1);
+
+      // A 500 is not a confirmed zero balance: the live control must survive it.
+      failing = true;
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      expect(_testing.readCachedClaudeResetCredits(workHome)?.availableCount).toBe(1);
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("repeats an unconfirmed Claude claim instead of switching grants", async () => {
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      writeJson(path.join(workHome, ".claude.json"), {
+        oauthAccount: { emailAddress: "work@example.com", organizationUuid: "org-1" },
+      });
+      const bodies: Array<{ grant_id: string; request_id: string }> = [];
+      let nextGrant = "grant_a";
+      let claimStatus = 500;
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          bodies.push(JSON.parse(String(init.body)));
+          return {
+            ok: claimStatus === 200,
+            status: claimStatus,
+            text: async () => JSON.stringify(claimStatus === 200 ? { result: "reset" } : {}),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            cedar_ember: {
+              eligible: true,
+              next_grant_id: nextGrant,
+              grants: [{ id: nextGrant, resets_left: 1, usable_now: true }],
+            },
+          }),
+        };
+      }));
+
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      await expect(_testing.spendClaudeResetCredit({ logger: logger as never, configHome: workHome }))
+        .resolves.toMatchObject({ status: "failure" });
+
+      // A later probe selects a different grant; the retry must still repeat the
+      // original claim, not spend the new grant under a fresh request id.
+      nextGrant = "grant_b";
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      claimStatus = 200;
+      await expect(_testing.spendClaudeResetCredit({ logger: logger as never, configHome: workHome }))
+        .resolves.toEqual({ ok: true, status: "reset" });
+
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toEqual(bodies[0]);
+      expect(bodies[1]?.grant_id).toBe("grant_a");
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
   });
 
   it("records one analytics outcome per reset-credit verdict", async () => {
