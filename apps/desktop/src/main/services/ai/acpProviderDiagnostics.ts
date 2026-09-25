@@ -19,7 +19,8 @@ import { grokConfigHome } from "../shared/providerConfigHomes";
 import { acpProbeConfigHome, getCachedAcpAuthProbe } from "./acpAuthProbe";
 import { resolveAcpExecutable } from "./acpExecutables";
 import {
-  collectGrokUpdateInfo,
+  decideGrokUpdate,
+  fetchGrokUpdateBaseline,
   resolveGrokInstaller,
   runGrokUpdate,
   type GrokInstallerIo,
@@ -118,27 +119,33 @@ export async function collectAcpProviderDiagnostics(
     return { ...base, versionError: `\`${args.provider}\` was not found on this machine.` };
   }
 
+  // Start the registry round-trip before the version spawn so a slow or
+  // offline registry overlaps `--version` instead of following it.
+  const updateBaseline = args.provider === "grok"
+    ? fetchGrokUpdateBaseline({
+      binaryPath,
+      ...(args.installerIo ? { installerIo: args.installerIo } : {}),
+      ...(args.fetchImpl ? { fetchImpl: args.fetchImpl } : {}),
+    }).catch(() => null)
+    : null;
   const version = await run(executable.path, ["--version"], {
     timeout: VERSION_TIMEOUT_MS,
     cwd: args.cwd,
   });
   const versionLine = version.status === 0 ? firstVersionLine(version.stdout, version.stderr) : null;
-  const update = args.provider === "grok"
-    ? await collectGrokUpdateInfo({
-      binaryPath,
-      currentVersion: versionLine,
-      ...(args.installerIo ? { installerIo: args.installerIo } : {}),
-      ...(args.fetchImpl ? { fetchImpl: args.fetchImpl } : {}),
-    }).catch(() => EMPTY_UPDATE_INFO)
-    : undefined;
   const result: AcpProviderDiagnostics = {
     ...base,
     version: versionLine,
     versionError: versionLine
       ? null
       : firstVersionLine(version.stderr, version.stdout) ?? "The CLI did not report a version.",
-    ...(update ? { update } : {}),
   };
+  if (updateBaseline) {
+    const baseline = await updateBaseline;
+    result.update = baseline
+      ? decideGrokUpdate({ currentVersion: versionLine, latestVersion: baseline.latestVersion, installer: baseline.installer })
+      : EMPTY_UPDATE_INFO;
+  }
 
   const doctorArgs = DOCTOR_COMMANDS[args.provider];
   if (!args.runDoctor || !doctorArgs) return result;

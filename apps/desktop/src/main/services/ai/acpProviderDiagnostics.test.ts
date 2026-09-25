@@ -4,6 +4,7 @@ import {
   collectAcpProviderDiagnostics,
   formatAcpProviderDiagnosticsReport,
 } from "./acpProviderDiagnostics";
+import type { GrokInstallerIo } from "./grokUpdate";
 
 /** A `spawnAsync` stand-in. Same contract: resolves, never rejects. */
 function fakeRun(byArg: Record<string, { status: number | null; stdout?: string; stderr?: string }>) {
@@ -13,6 +14,12 @@ function fakeRun(byArg: Record<string, { status: number | null; stdout?: string;
     return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
   }) as never;
 }
+
+/**
+ * Force the Grok installer to look unresolved, so diagnostics never reaches the
+ * registry even if `/opt/bin/grok` happens to exist on the test machine.
+ */
+const noInstaller: GrokInstallerIo = { exists: () => false, readFirstLine: () => null };
 
 const env = { PATH: "", GROK_EXECUTABLE: "/opt/bin/grok", KIMI_EXECUTABLE: "/opt/bin/kimi", QWEN_EXECUTABLE: "/opt/bin/qwen" };
 
@@ -28,7 +35,7 @@ describe("acpProviderDiagnostics", () => {
 
   it("reports version and config home without running doctor by default", async () => {
     const run = fakeRun({ "--version": { status: 0, stdout: "1.0.14\n" } });
-    const result = await collectAcpProviderDiagnostics({ provider: "grok", cwd: "/repo", env, run });
+    const result = await collectAcpProviderDiagnostics({ provider: "grok", cwd: "/repo", env, run, installerIo: noInstaller });
 
     expect(result.version).toBe("1.0.14");
     expect(result.versionError).toBeNull();
@@ -46,6 +53,7 @@ describe("acpProviderDiagnostics", () => {
       cwd: "/repo",
       env: { ...env, GROK_HOME: "/tmp/grok-custom" },
       run,
+      installerIo: noInstaller,
     });
 
     expect(result.configHome).toBe("/tmp/grok-custom");
@@ -86,10 +94,35 @@ describe("acpProviderDiagnostics", () => {
   // as a version would put "null" on the settings page.
   it("names why there is no version instead of inventing one", async () => {
     const run = fakeRun({ "--version": { status: null, stderr: "killed after timeout" } });
-    const result = await collectAcpProviderDiagnostics({ provider: "grok", cwd: "/repo", env, run });
+    const result = await collectAcpProviderDiagnostics({ provider: "grok", cwd: "/repo", env, run, installerIo: noInstaller });
 
     expect(result.version).toBeNull();
     expect(result.versionError).toBe("killed after timeout");
+  });
+
+  it("attaches Grok update info from injected probes", async () => {
+    const run = fakeRun({ "--version": { status: 0, stdout: "1.0.13\n" } });
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ version: "1.0.40" }),
+    })) as unknown as typeof fetch;
+    const result = await collectAcpProviderDiagnostics({
+      provider: "grok",
+      cwd: "/repo",
+      env,
+      run,
+      installerIo: { exists: (path) => path === "/opt/bin/grok", readFirstLine: () => null },
+      fetchImpl,
+    });
+
+    expect(result.version).toBe("1.0.13");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.update).toMatchObject({
+      installer: "native",
+      latestVersion: "1.0.40",
+      updateAvailable: true,
+      canUpdate: true,
+    });
   });
 
   it("names every absent fact in the copyable report", () => {

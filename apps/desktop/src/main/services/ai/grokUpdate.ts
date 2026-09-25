@@ -20,7 +20,7 @@ import type {
   AcpProviderUpdateInfo,
   AcpProviderUpdateResult,
 } from "../../../shared/types/config";
-import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 export const GROK_NPM_PACKAGE = "@xai-official/grok";
 const GROK_REGISTRY_LATEST_URL = `https://registry.npmjs.org/${encodeURIComponent(GROK_NPM_PACKAGE)}/latest`;
@@ -73,9 +73,9 @@ const DEFAULT_INSTALLER_IO: GrokInstallerIo = {
 export function resolveGrokInstaller(
   binaryPath: string | null | undefined,
   io: GrokInstallerIo = DEFAULT_INSTALLER_IO,
-): { installer: GrokInstallerKind | null; updateCommand: string[] | null } {
+): { installer: GrokInstallerKind | null } {
   const candidate = binaryPath?.trim();
-  if (!candidate || !io.exists(candidate)) return { installer: null, updateCommand: null };
+  if (!candidate || !io.exists(candidate)) return { installer: null };
   const lower = candidate.toLowerCase();
   const firstLine = (io.readFirstLine(candidate) ?? "").trim();
   const isNodeShim = /^#!.*\bnode\b/.test(firstLine)
@@ -84,7 +84,7 @@ export function resolveGrokInstaller(
     || lower.endsWith(".bat");
   const inNodeModules = lower.includes("node_modules") || lower.includes("xai-official");
   const installer: GrokInstallerKind = isNodeShim || inNodeModules ? "npm" : "native";
-  return { installer, updateCommand: [candidate, "update"] };
+  return { installer };
 }
 
 /** Numeric compare of the first `x.y.z` in each string. `null` when unparsable. */
@@ -169,7 +169,31 @@ export async function fetchLatestGrokVersion(
   }
 }
 
-export const _testing = { resetLatestVersionCache: () => { cachedLatestVersion = null; } };
+export type GrokUpdateBaseline = {
+  installer: GrokInstallerKind | null;
+  latestVersion: string | null;
+};
+
+/**
+ * Resolve the installer and fetch the latest version, independent of the
+ * installed version. A caller that also needs `--version` can start this first
+ * so the registry round-trip overlaps the version spawn instead of following it.
+ * Skips the registry entirely when the installer cannot be resolved.
+ */
+export async function fetchGrokUpdateBaseline(args: {
+  binaryPath: string | null;
+  installerIo?: GrokInstallerIo;
+  fetchImpl?: typeof fetch;
+  force?: boolean;
+}): Promise<GrokUpdateBaseline> {
+  const { installer } = resolveGrokInstaller(args.binaryPath, args.installerIo ?? DEFAULT_INSTALLER_IO);
+  if (!installer) return { installer: null, latestVersion: null };
+  const latestVersion = await fetchLatestGrokVersion({
+    ...(args.fetchImpl ? { fetchImpl: args.fetchImpl } : {}),
+    ...(args.force ? { force: true } : {}),
+  });
+  return { installer, latestVersion };
+}
 
 /**
  * Update state for a resolved Grok binary. Skips the registry entirely when the
@@ -183,15 +207,17 @@ export async function collectGrokUpdateInfo(args: {
   fetchImpl?: typeof fetch;
   force?: boolean;
 }): Promise<AcpProviderUpdateInfo> {
-  const { installer } = resolveGrokInstaller(args.binaryPath, args.installerIo ?? DEFAULT_INSTALLER_IO);
-  if (!installer) {
-    return decideGrokUpdate({ currentVersion: args.currentVersion, latestVersion: null, installer: null });
-  }
-  const latestVersion = await fetchLatestGrokVersion({
+  const baseline = await fetchGrokUpdateBaseline({
+    binaryPath: args.binaryPath,
+    ...(args.installerIo ? { installerIo: args.installerIo } : {}),
     ...(args.fetchImpl ? { fetchImpl: args.fetchImpl } : {}),
     ...(args.force ? { force: true } : {}),
   });
-  return decideGrokUpdate({ currentVersion: args.currentVersion, latestVersion, installer });
+  return decideGrokUpdate({
+    currentVersion: args.currentVersion,
+    latestVersion: baseline.latestVersion,
+    installer: baseline.installer,
+  });
 }
 
 export type GrokRunResult = { status: number | null; stdout: string; stderr: string };
@@ -200,6 +226,26 @@ export type GrokSpawn = (
   args: string[],
   opts: { timeout: number; env: NodeJS.ProcessEnv; cwd?: string },
 ) => Promise<GrokRunResult>;
+
+/**
+ * Kill the updater and anything it spawned.
+ *
+ * The POSIX child is detached, so it leads its own process group; signalling the
+ * group reaches installer grandchildren that `child.kill()` alone would leave
+ * running. On Windows `terminateProcessTree` runs `taskkill /T` plus the direct
+ * kill.
+ */
+function killGrokUpdateTree(child: ReturnType<typeof spawn>): void {
+  const pid = child.pid;
+  if (process.platform !== "win32" && typeof pid === "number") {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      // The group already exited.
+    }
+  }
+  terminateProcessTree(child, "SIGKILL", () => {});
+}
 
 function defaultGrokSpawn(
   command: string,
@@ -235,11 +281,7 @@ function defaultGrokSpawn(
       child.once("error", () => settle(null));
       child.once("close", (code) => settle(code));
       const timer = setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          // The process already exited.
-        }
+        killGrokUpdateTree(child);
         settle(null);
       }, opts.timeout);
     } catch {

@@ -1,20 +1,16 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
-  _testing,
   collectGrokUpdateInfo,
   compareGrokVersions,
   decideGrokUpdate,
+  fetchGrokUpdateBaseline,
   resolveGrokInstaller,
   runGrokUpdate,
   type GrokInstallerIo,
   type GrokRunResult,
   type GrokSpawn,
 } from "./grokUpdate";
-
-beforeEach(() => {
-  _testing.resetLatestVersionCache();
-});
 
 function installerIo(files: Record<string, string | null>): GrokInstallerIo {
   return {
@@ -24,12 +20,9 @@ function installerIo(files: Record<string, string | null>): GrokInstallerIo {
 }
 
 describe("resolveGrokInstaller", () => {
-  it("treats a real executable as the native installer and builds its update command", () => {
+  it("treats a real executable as the native installer", () => {
     const io = installerIo({ "/usr/local/bin/grok": null });
-    expect(resolveGrokInstaller("/usr/local/bin/grok", io)).toEqual({
-      installer: "native",
-      updateCommand: ["/usr/local/bin/grok", "update"],
-    });
+    expect(resolveGrokInstaller("/usr/local/bin/grok", io)).toEqual({ installer: "native" });
   });
 
   it("recognizes a Windows npm shim", () => {
@@ -43,11 +36,8 @@ describe("resolveGrokInstaller", () => {
   });
 
   it("returns null for a binary that does not exist, so the candidate stays manual", () => {
-    expect(resolveGrokInstaller("/opt/bin/grok", installerIo({}))).toEqual({
-      installer: null,
-      updateCommand: null,
-    });
-    expect(resolveGrokInstaller(null, installerIo({}))).toEqual({ installer: null, updateCommand: null });
+    expect(resolveGrokInstaller("/opt/bin/grok", installerIo({}))).toEqual({ installer: null });
+    expect(resolveGrokInstaller(null, installerIo({}))).toEqual({ installer: null });
   });
 });
 
@@ -123,9 +113,37 @@ describe("collectGrokUpdateInfo", () => {
       currentVersion: "1.0.13",
       installerIo: installerIo({ "/usr/local/bin/grok": null }),
       fetchImpl,
+      force: true,
     });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(info).toMatchObject({ installer: "native", latestVersion: "1.0.34", updateAvailable: true, canUpdate: true });
+  });
+});
+
+describe("fetchGrokUpdateBaseline", () => {
+  it("skips the registry when the installer cannot be resolved", async () => {
+    const fetchImpl = vi.fn();
+    const baseline = await fetchGrokUpdateBaseline({
+      binaryPath: "/opt/bin/grok",
+      installerIo: installerIo({}),
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(baseline).toEqual({ installer: null, latestVersion: null });
+  });
+
+  it("resolves the installer and latest version without the installed version", async () => {
+    const fetchImpl = vi.fn(async () => ({
+      ok: true,
+      json: async () => ({ version: "1.0.40" }),
+    })) as unknown as typeof fetch;
+    const baseline = await fetchGrokUpdateBaseline({
+      binaryPath: "/usr/local/bin/grok",
+      installerIo: installerIo({ "/usr/local/bin/grok": null }),
+      fetchImpl,
+      force: true,
+    });
+    expect(baseline).toEqual({ installer: "native", latestVersion: "1.0.40" });
   });
 });
 

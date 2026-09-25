@@ -764,7 +764,9 @@ the binary's installer from the same resolution diagnostics uses (a native
 binary, or an npm `.cmd`/Node-shebang install), reads
 `https://registry.npmjs.org/@xai-official/grok/latest` (cached 30 minutes), and
 compares it to the `--version` line. `AcpProviderUpdateInfo` carries the verdict
-on `AcpProviderDiagnostics.update`.
+on `AcpProviderDiagnostics.update`. The registry round-trip is started before the
+`--version` spawn (`fetchGrokUpdateBaseline`) so a slow or offline registry
+overlaps the version probe instead of delaying it.
 
 One-click **Update now** appears only when the installer resolved
 (`canUpdate`). It runs `<resolved binary> update` with the instance
@@ -772,9 +774,11 @@ environment, including `GROK_HOME`, so a custom home updates that home, then
 re-reads `--version` to confirm and refreshes the diagnostics. An unresolvable
 binary skips the registry read entirely and shows a manual note with no button —
 ADE never runs a guessed command. The updater spawns through
-`resolveCliSpawnInvocation`, so a Windows npm `.cmd` shim works. There is no
-network call in the unit tests; the registry fetch and install-kind probes are
-injected.
+`resolveCliSpawnInvocation`, so a Windows npm `.cmd` shim works. Its POSIX child
+is detached (its own process group) and the timeout kills the whole group on
+POSIX and the tree via `terminateProcessTree` on Windows, so installer
+grandchildren do not survive. There is no network call in the unit tests; the
+registry fetch and install-kind probes are injected.
 
 ## 7. Test contract
 
