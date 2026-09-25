@@ -254,6 +254,23 @@ describe("useAppleLaneDeviceCard", () => {
       expect(result.current?.state).toBe("running");
       expect(deviceList.mock.calls.length).toBe(readsBefore);
     });
+
+    it("re-reads when refreshKey changes, for the client with no event feed", async () => {
+      // The hosted web client gets no `apple.device.state` events, so the card
+      // menu's own mutations bump `refreshKey` to force this re-read.
+      const { result, rerender } = renderHook(
+        ({ key }: { key: number }) => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true, refreshKey: key }),
+        { initialProps: { key: 0 } },
+      );
+      await waitFor(() => expect(result.current?.state).toBe("running"));
+
+      const readsBefore = deviceList.mock.calls.length;
+      hasLane = false;
+      rerender({ key: 1 });
+
+      await waitFor(() => expect(result.current).toBeNull());
+      expect(deviceList.mock.calls.length).toBeGreaterThan(readsBefore);
+    });
   });
 });
 

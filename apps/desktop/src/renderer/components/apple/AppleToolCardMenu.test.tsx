@@ -141,4 +141,18 @@ describe("AppleToolCardMenu", () => {
     await waitFor(() => expect(ios.deviceDetach).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
   });
+
+  it("re-enables the trigger when a mutation throws synchronously", async () => {
+    ios.deviceDetach.mockImplementationOnce(() => {
+      throw new Error("iosSimulator is not available here");
+    });
+    const { open, trigger } = renderMenu();
+    open();
+
+    fireEvent.click(screen.getByText("Release device"));
+
+    // Deferred through a microtask, a sync throw is a rejection the chain
+    // catches; without that it would escape and the trigger would stay disabled.
+    await waitFor(() => expect(trigger.hasAttribute("disabled")).toBe(false));
+  });
 });
