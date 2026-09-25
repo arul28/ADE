@@ -837,6 +837,7 @@ describe("createAutoUpdateService", () => {
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
+      restoreUpdateWorkspaceOnLaunch: true,
     });
 
     service.dispose();
@@ -1349,6 +1350,7 @@ describe("createAutoUpdateService", () => {
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
+      restoreUpdateWorkspaceOnLaunch: true,
     });
     expect(service.getSnapshot()).toMatchObject({
       status: "installing",

@@ -228,6 +228,7 @@ import { browseProjectDirectories } from "./services/projects/projectBrowserServ
 import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
+import { selectUpdateWorkspaceRestore } from "./services/updates/updateWorkspace";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
@@ -2137,8 +2138,32 @@ app.whenReady().then(async () => {
     for (const root of authorizedLocalRoots) {
       rememberWindowKnownLocalProjectRoot(windowId, root);
     }
+    persistUpdateWorkspace();
     scheduleProjectContextRebalance();
     return projectsForWindowTabs(windowId);
+  };
+
+  const persistUpdateWorkspace = (): void => {
+    const localRoots: string[] = [];
+    let fallbackActiveRoot: string | null = null;
+    for (const [windowId, tabRoots] of windowProjectTabRoots) {
+      for (const root of tabRoots) {
+        if (!localRoots.some((existing) => pathsEqual(existing, root))) localRoots.push(root);
+      }
+      const bound = windowProjectRoots.get(windowId) ?? null;
+      if (bound && localRoots.some((root) => pathsEqual(root, bound))) fallbackActiveRoot = bound;
+    }
+    const activeLocalRoot = activeProjectRoot && localRoots.some((root) => pathsEqual(root, activeProjectRoot))
+      ? activeProjectRoot
+      : fallbackActiveRoot;
+    const current = readGlobalState(globalStatePath);
+    writeGlobalState(globalStatePath, {
+      ...current,
+      updateWorkspace: {
+        localRoots,
+        activeLocalRoot,
+      },
+    });
   };
 
   const bindingForLocalProject = (project: ProjectInfo | null): OpenProjectBinding | null =>
@@ -2358,6 +2383,7 @@ app.whenReady().then(async () => {
       emitProjectChangedToWindow(windowId, project);
       emitProjectBindingChangedToWindow(windowId, bindingForLocalProject(project));
     }
+    if (windowId != null && normalizedRoot) persistUpdateWorkspace();
   };
 
   const persistLastRemoteProjectBinding = (
@@ -2718,6 +2744,9 @@ app.whenReady().then(async () => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
     });
+    // Windows are still open here. The quit that follows closes them, and each
+    // closed handler would otherwise save an empty tab list over this snapshot.
+    persistUpdateWorkspace();
     // From here until the app quits, the missing (or old) background service
     // is the update working. The pool must not answer it with a repair that
     // reinstalls what this function is about to remove.
@@ -7043,6 +7072,7 @@ app.whenReady().then(async () => {
       setForegroundProject(firstOpenWindowProjectRoot());
       replaceDormantContext(normalizedRoot);
     }
+    persistUpdateWorkspace();
   };
 
   const closeCurrentProject = async () => {
@@ -7058,6 +7088,7 @@ app.whenReady().then(async () => {
       if (previousRoot) tabRoots?.delete(normalizeProjectRoot(previousRoot));
       const nextRoot = tabRoots?.values().next().value ?? null;
       bindWindowToProject(windowId, nextRoot, { emit: true, foreground: false });
+      if (nextRoot == null) persistUpdateWorkspace();
       if (nextRoot == null && (activeProjectRoot === previousRoot || activeProjectRoot == null)) {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
@@ -7822,6 +7853,7 @@ app.whenReady().then(async () => {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
       scheduleProjectContextRebalance();
+      if (!autoUpdateService.isInstallQuitArmed()) persistUpdateWorkspace();
     });
   };
 
@@ -8893,18 +8925,58 @@ app.whenReady().then(async () => {
     }
   }
 
+  const savedUpdateState = readGlobalState(globalStatePath);
+  const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
+    restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true,
+    explicitLaunch: shouldOpenStartupProject,
+    saved: savedUpdateState.updateWorkspace,
+    normalizeProjectPath: normalizeProjectRoot,
+    isLikelyRepoRoot,
+  });
+  if (savedUpdateState.restoreUpdateWorkspaceOnLaunch) {
+    const cleared = readGlobalState(globalStatePath);
+    writeGlobalState(globalStatePath, {
+      ...cleared,
+      restoreUpdateWorkspaceOnLaunch: false,
+    });
+  }
+  if (updateWorkspaceRestore.localRoots.length > 0) {
+    const warmOrder = [
+      ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),
+      ...(updateWorkspaceRestore.activeLocalRoot ? [updateWorkspaceRestore.activeLocalRoot] : []),
+    ];
+    for (const root of warmOrder) {
+      try {
+        await switchProjectFromDialog(root);
+      } catch {
+        // A checkout that is gone stays off the restored tab strip.
+      }
+    }
+  }
+  const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
+  const restoredActiveRoot = restoredLocalRoots.find((root) => pathsEqual(root, updateWorkspaceRestore.activeLocalRoot))
+    ?? restoredLocalRoots[0]
+    ?? null;
+  const restoringUpdateWorkspace = restoredLocalRoots.length > 0;
+
   const initialRemoteProjectBinding =
-    shouldOpenStartupProject ? null : savedRemoteProjectBinding;
-  const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
+    shouldOpenStartupProject || restoringUpdateWorkspace ? null : savedRemoteProjectBinding;
+  const initialWindowProjectRoot = shouldOpenStartupProject
+    ? activeProjectRoot
+    : restoredActiveRoot;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
     onRendererRecovery: reportRendererRecovery,
-    onCreated: (createdWindow) =>
+    onCreated: (createdWindow) => {
       registerWindowSession(
         createdWindow,
         initialWindowProjectRoot,
         initialRemoteProjectBinding,
-      ),
+      );
+      if (restoredLocalRoots.length > 0) {
+        rememberWindowProjectTabs(createdWindow.id, restoredLocalRoots);
+      }
+    },
     onCloseRequested: handleMainWindowCloseRequested,
   });
   builtInBrowserService.attachToWindow(initialWindow);
