@@ -24,6 +24,15 @@ const POLL_MS = 6_000;
 export type AppleLaneDeviceCard = {
   name: string;
   state: "starting" | "running" | "off";
+  /**
+   * The lane's device udid, and whether ADE created it.
+   *
+   * Optional so a partial card (a test, an older payload) still typechecks —
+   * the hook always sets both from the lane row. The card's action menu needs
+   * them: `clone` is ADE's to delete, `attached` is only ever released.
+   */
+  udid?: string;
+  origin?: "clone" | "attached";
 };
 
 export function useAppleLaneDeviceCard(args: {
@@ -65,7 +74,12 @@ export function useAppleLaneDeviceCard(args: {
         setCard(null);
         return;
       }
-      setCard({ name: lane.name, state: laneDeviceBooted(listed) ? "running" : "off" });
+      setCard({
+        name: lane.name,
+        state: laneDeviceBooted(listed) ? "running" : "off",
+        udid: lane.udid,
+        origin: lane.origin,
+      });
     };
     void read();
     const timer = window.setInterval(() => void read(), POLL_MS);

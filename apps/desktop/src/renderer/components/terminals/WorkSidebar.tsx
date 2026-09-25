@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode,
 } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type {
@@ -29,6 +30,7 @@ import { WorkToolsMaximizeContext } from "./workToolsMaximize";
 import { cn } from "../ui/cn";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
+import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 import { isAvailableWorkSidebarTab, workToolContextLabel, workToolLabel } from "./workTools";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
@@ -273,6 +275,7 @@ export function WorkSidebar({
     statuses,
     loading: statusesLoading,
     appControlSession,
+    appleDevice,
   } = useWorkToolStatuses({
     enabled: active,
     laneId,
@@ -469,6 +472,31 @@ export function WorkSidebar({
     if (effectiveTool === "browser") hideBuiltInBrowserView(browserViewRoot);
     onClose();
   }, [browserViewRoot, effectiveTool, onClose]);
+
+  /**
+   * The one picker card that carries an action: the Apple device card.
+   *
+   * Its claim is otherwise invisible — the card reads the lane's device and its
+   * power, but neither "give it up" nor "boot it" had a target on the card, so
+   * releasing meant opening the pane and finding a control named "Choose another
+   * device". The menu makes the claim actionable where it is stated. Absent
+   * until the lane actually owns a device, so an unclaimed lane's card is
+   * exactly what it always was.
+   */
+  const toolCardActions = useMemo<Partial<Record<WorkSidebarTab, ReactNode>>>(() => {
+    if (!laneId || !appleDevice?.udid) return {};
+    return {
+      ios: (
+        <AppleToolCardMenu
+          device={appleDevice}
+          laneId={laneId}
+          chatSessionId={panelSessionId}
+          runtimePin={runtimePin}
+          onOpenTool={() => selectTool("ios")}
+        />
+      ),
+    };
+  }, [appleDevice, laneId, panelSessionId, runtimePin, selectTool]);
 
   // Escape is scoped to the pane, not the window: a global binding would steal
   // Escape from the composer, from dialogs, and from the browser panel's own
@@ -692,6 +720,7 @@ export function WorkSidebar({
             statuses={statuses}
             loading={statusesLoading}
             onPick={selectTool}
+            cardActions={toolCardActions}
             playing={!effectiveTool}
           />
         </div>

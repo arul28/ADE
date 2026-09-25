@@ -233,7 +233,7 @@ describe("work tool status lines", () => {
       attention: true,
     });
     expect(iosStatusLine({ name: "iPhone 17 Pro", state: "off" })).toMatchObject({
-      line: "iPhone 17 Pro · Off",
+      line: "iPhone 17 Pro · Shut down",
       live: false,
     });
     expect(appControlStatusLine(null).line).toBe("No app");

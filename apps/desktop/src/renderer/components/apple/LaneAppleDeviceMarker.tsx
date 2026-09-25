@@ -6,9 +6,14 @@ import { laneAppleDeviceLabel, type LaneAppleDevice } from "./useLaneAppleDevice
 /**
  * The small Apple mark beside a lane name: this lane holds a simulator.
  *
- * Muted like the other glyphs on a lane row. A booted device reads a little
- * stronger than one that is off or not yet known. The device name is in the
- * tooltip, not on the row.
+ * Two things, one mark. The glyph says the lane OWNS a device — it is present
+ * whether that device is running or not, because a claim is a claim. The COLOUR
+ * says which: green while the device is booted, muted while it is claimed but
+ * shut down or not yet known. The owner's report that opened the claim-UX round
+ * was that a muted mark beside a card reading "Off" read as "the tool is off";
+ * the state is the device's, and it now shows.
+ *
+ * The device name is in the tooltip, not on the row.
  */
 export function LaneAppleDeviceMarker({ device }: { device: LaneAppleDevice }) {
   const label = laneAppleDeviceLabel(device);
@@ -24,7 +29,7 @@ export function LaneAppleDeviceMarker({ device }: { device: LaneAppleDevice }) {
         <AppleLogo
           size={11}
           aria-hidden
-          className={cn("shrink-0", device.running ? "text-muted-fg/80" : "text-muted-fg/45")}
+          className={cn("shrink-0", device.running ? "text-success" : "text-muted-fg/45")}
         />
       </span>
     </PaneTooltip>

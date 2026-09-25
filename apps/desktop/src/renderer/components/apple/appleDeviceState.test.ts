@@ -154,11 +154,11 @@ describe("appleToolCardSubtitle", () => {
     expect(appleToolCardSubtitle({ name: "iPhone 17 Pro", state: "running" }))
       .toBe("iPhone 17 Pro · Running");
     expect(appleToolCardSubtitle({ name: "iPhone 17 Pro", state: "off" }))
-      .toBe("iPhone 17 Pro · Off");
+      .toBe("iPhone 17 Pro · Shut down");
   });
 
   it("falls back to a name rather than rendering an empty half", () => {
-    expect(appleToolCardSubtitle({ name: "  ", state: "off" })).toBe("Simulator · Off");
+    expect(appleToolCardSubtitle({ name: "  ", state: "off" })).toBe("Simulator · Shut down");
     expect(appleToolCardSubtitle({ name: null, state: "running" })).toBe("Simulator · Running");
   });
 });
