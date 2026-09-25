@@ -494,7 +494,11 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       pruneTickets();
       const pending = tickets.get(ticket);
       if (!pending || !token || !constantTimeEquals(pending.token, token)) {
-        debug("apple.stream_ticket_rejected", { hasTicket: Boolean(pending) });
+        // A warning, not a debug line: the viewer only says "the stream pass
+        // expired", and this line is the one place that says why.
+        warn("apple.stream_ticket_rejected", {
+          reason: !pending ? "unknown_or_used_ticket" : !token ? "missing_token" : "token_mismatch",
+        });
         try {
           socket.close(4401, "invalid stream ticket");
         } catch {
