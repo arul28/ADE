@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from "vitest";
 import {
   canCreateLaneOnMachine,
   cachedGitRemoteIdentity,
+  chooseLaneMachineByLoad,
   defaultLaneMachineId,
   deriveLaneMachineOptions,
   isLowLaneMachineDisk,
@@ -10,6 +11,7 @@ import {
   resetGitRemoteIdentityCache,
   resetProjectOriginMemory,
   THIS_MACHINE_ID,
+  type LaneMachineOption,
 } from "./laneMachines";
 import type {
   RemoteRuntimeConnectionStatus,
@@ -438,5 +440,78 @@ describe("project origin memory", () => {
       rootPath: "/Users/x/work",
       displayName: "work",
     })).toBe("git@github.com:acme/repo-a.git");
+  });
+});
+
+function machineOption(
+  overrides: Partial<LaneMachineOption> & { id: string },
+): LaneMachineOption {
+  return {
+    name: overrides.id,
+    targetId: overrides.id === THIS_MACHINE_ID ? null : overrides.id,
+    hostname: null,
+    version: null,
+    freeBytes: null,
+    activeLaneCount: null,
+    repoMatch: "matched",
+    project: null,
+    isBound: false,
+    ...overrides,
+  };
+}
+
+describe("chooseLaneMachineByLoad", () => {
+  it("returns the default machine when only one can host the repo", () => {
+    const options = [
+      machineOption({ id: THIS_MACHINE_ID, isBound: true, freeBytes: 100 * 1024 ** 3 }),
+      machineOption({ id: "mini", repoMatch: "missing" }),
+    ];
+    expect(chooseLaneMachineByLoad(options)).toBe(THIS_MACHINE_ID);
+  });
+
+  it("falls back to the default when the option list is empty", () => {
+    expect(chooseLaneMachineByLoad([])).toBe(THIS_MACHINE_ID);
+  });
+
+  it("prefers the machine with fewer running lanes", () => {
+    const options = [
+      machineOption({ id: "a", isBound: true, activeLaneCount: 5 }),
+      machineOption({ id: "b", activeLaneCount: 1 }),
+    ];
+    expect(chooseLaneMachineByLoad(options)).toBe("b");
+  });
+
+  it("deprioritizes a machine below the disk warning threshold", () => {
+    const options = [
+      machineOption({ id: "a", freeBytes: 4 * 1024 ** 3 }),
+      machineOption({ id: "b", freeBytes: 200 * 1024 ** 3 }),
+    ];
+    expect(chooseLaneMachineByLoad(options)).toBe("b");
+  });
+
+  it("keeps the bound machine on a true tie", () => {
+    const options = [
+      machineOption({ id: "a", freeBytes: 200 * 1024 ** 3 }),
+      machineOption({ id: "b", isBound: true, freeBytes: 200 * 1024 ** 3 }),
+    ];
+    expect(chooseLaneMachineByLoad(options)).toBe("b");
+  });
+
+  it("never picks a machine that does not have the repo", () => {
+    const options = [
+      machineOption({ id: "a", repoMatch: "missing", freeBytes: 900 * 1024 ** 3 }),
+      machineOption({ id: "b", freeBytes: 10 * 1024 ** 3 }),
+    ];
+    expect(chooseLaneMachineByLoad(options)).toBe("b");
+  });
+
+  it("attaches caller-supplied per-machine lane counts during derivation", () => {
+    const options = deriveLaneMachineOptions({
+      connections: [connection({ id: "studio" })],
+      boundTargetId: null,
+      machineActiveLaneCounts: { [THIS_MACHINE_ID]: 2, studio: 0 },
+    });
+    expect(options.find((option) => option.id === THIS_MACHINE_ID)?.activeLaneCount).toBe(2);
+    expect(options.find((option) => option.id === "studio")?.activeLaneCount).toBe(0);
   });
 });

@@ -13,6 +13,7 @@ function machine(overrides: Partial<LaneMachineOption> & { id: string; name: str
     hostname: null,
     version: null,
     freeBytes: null,
+    activeLaneCount: null,
     repoMatch: "matched",
     project: null,
     isBound: false,
@@ -118,5 +119,34 @@ describe("LaneMachineSelector", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /connect another machine/i }));
     expect(onConnectMachine).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers the least-loaded eligible machine on the Auto card", () => {
+    const onSelectMachine = vi.fn();
+    render(
+      <LaneMachineSelector
+        machines={[
+          machine({ id: THIS_MACHINE_ID, name: "This computer", isBound: true, freeBytes: 4 * 1024 ** 3 }),
+          machine({ id: "studio", name: "MacBook Pro (97)", freeBytes: 200 * 1024 ** 3 }),
+        ]}
+        selectedMachineId={THIS_MACHINE_ID}
+        onSelectMachine={onSelectMachine}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Auto — least loaded/ }));
+    expect(onSelectMachine).toHaveBeenCalledWith("studio");
+  });
+
+  it("hides the Auto card when only one machine can host the repo", () => {
+    render(
+      <LaneMachineSelector
+        machines={[machines[0]!, machine({ id: "mini", name: "Mac mini", repoMatch: "missing" })]}
+        selectedMachineId={THIS_MACHINE_ID}
+        onSelectMachine={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: /Auto — least loaded/ })).toBeNull();
   });
 });

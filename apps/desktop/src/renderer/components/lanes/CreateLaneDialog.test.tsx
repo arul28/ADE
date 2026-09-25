@@ -257,6 +257,7 @@ function machine(overrides: Partial<LaneMachineOption> & { id: string; name: str
     hostname: null,
     version: null,
     freeBytes: null,
+    activeLaneCount: null,
     repoMatch: "matched",
     project: null,
     isBound: false,

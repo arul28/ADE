@@ -70,6 +70,12 @@ export type LaneMachineOption = {
   version: string | null;
   /** Free disk headroom, when the snapshot already carries it. Never fetched. */
   freeBytes: number | null;
+  /**
+   * Lanes already running on this machine, when the caller already has them.
+   * Null means "not counted": it adds no load in the placement comparison and
+   * is never read as proof the machine is idle.
+   */
+  activeLaneCount: number | null;
   repoMatch: LaneMachineRepoMatch;
   /** The machine's checkout of this repo, when we could resolve it. */
   project: LaneMachineProjectRef | null;
@@ -98,6 +104,13 @@ export type LaneMachineDerivationInput = {
   localProjects?: readonly RecentProjectSummary[];
   /** Free disk headroom on this computer, when a caller already has it. */
   thisMachineFreeBytes?: number | null;
+  /**
+   * Lanes already in flight per machine id, when the caller has the
+   * cross-machine lane union in hand. Optional: with no counts the placement
+   * falls back to free-disk headroom alone, and never treats a missing count
+   * as zero.
+   */
+  machineActiveLaneCounts?: Readonly<Record<string, number | null>> | null;
 };
 
 /**
@@ -324,10 +337,19 @@ function thisMachineOption(input: LaneMachineDerivationInput): LaneMachineOption
       typeof freeBytes === "number" && Number.isFinite(freeBytes) && freeBytes >= 0
         ? freeBytes
         : null,
+    activeLaneCount: activeLaneCountFor(input, THIS_MACHINE_ID),
     repoMatch: isBound ? "matched" : repoMatchFor(project, canProveAbsence),
     project,
     isBound,
   };
+}
+
+/** A count the caller supplied for a machine id, or null when uncounted. */
+function activeLaneCountFor(input: LaneMachineDerivationInput, machineId: string): number | null {
+  const counts = input.machineActiveLaneCounts;
+  if (!counts) return null;
+  const value = counts[machineId];
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 /**
@@ -355,6 +377,7 @@ export function deriveLaneMachineOptions(
       transport: connection.target.transport ?? "ssh",
       version: connection.version ?? null,
       freeBytes: connectionFreeBytes(connection),
+      activeLaneCount: activeLaneCountFor(input, connection.target.id),
       repoMatch: isBound
         ? "matched"
         : repoMatchFor(project, !!repoIdentity || !!repoDisplayName),
@@ -369,6 +392,42 @@ export function deriveLaneMachineOptions(
 /** The machine a freshly opened create-lane dialog should start on. */
 export function defaultLaneMachineId(options: readonly LaneMachineOption[]): string {
   return (options.find((option) => option.isBound) ?? options[0])?.id ?? THIS_MACHINE_ID;
+}
+
+/**
+ * The machine a load-balanced new lane should land on.
+ *
+ * Order of judgement: a machine with healthy disk headroom beats one below the
+ * warning threshold; fewer already-running lanes beats more; more free disk
+ * beats less; and the machine the tab is already bound to wins a true tie, so
+ * balance never moves work off the current machine for no reason.
+ *
+ * Degrades to `defaultLaneMachineId` whenever balancing cannot help: fewer than
+ * two machines can host this repo (the one-machine and repo-only-on-one cases),
+ * or the option list is empty. Offline machines are already absent — only
+ * `connected` connections become options.
+ */
+export function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): string {
+  const eligible = options.filter(canCreateLaneOnMachine);
+  // One machine (or none) is nothing to balance. The single eligible machine is
+  // the answer even when it is not the first option — a repo-missing machine
+  // must never be chosen just because it sorts first.
+  if (eligible.length === 0) return defaultLaneMachineId(options);
+  if (eligible.length === 1) return eligible[0]!.id;
+  const best = [...eligible].sort(compareLaneMachineLoad)[0];
+  return best?.id ?? defaultLaneMachineId(options);
+}
+
+function compareLaneMachineLoad(a: LaneMachineOption, b: LaneMachineOption): number {
+  const lowDiskDelta = Number(isLowLaneMachineDisk(a.freeBytes)) - Number(isLowLaneMachineDisk(b.freeBytes));
+  if (lowDiskDelta !== 0) return lowDiskDelta;
+  const loadDelta = (a.activeLaneCount ?? 0) - (b.activeLaneCount ?? 0);
+  if (loadDelta !== 0) return loadDelta;
+  const freeDelta = (typeof b.freeBytes === "number" ? b.freeBytes : 0)
+    - (typeof a.freeBytes === "number" ? a.freeBytes : 0);
+  if (freeDelta !== 0) return freeDelta;
+  if (a.isBound !== b.isBound) return a.isBound ? -1 : 1;
+  return 0;
 }
 
 /** A machine can host a new lane unless we know the repo isn't there. */
