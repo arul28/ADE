@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ import {
   readGrokBearer,
   readKimiAccessToken,
   readOpenCodeApiKey,
+  readOpenCodeConsoleAccountFromDisk,
   resetQuotaIdentityCacheForTests,
 } from "./extraProviderQuota";
 
@@ -556,5 +558,69 @@ describe("extra provider quota polls", () => {
       platform: "win32",
       env: { APPDATA: "C:\\Users\\ada\\AppData\\Roaming" },
     })).toContain("Cursor");
+  });
+});
+
+describe("OpenCode console account reader", () => {
+  const requireForTest = createRequire(path.join(process.cwd(), "extra-quota-test.cjs"));
+
+  /** A minimal `opencode.db`: the two tables the console account lives in. */
+  function writeOpenCodeDb(
+    dbPath: string,
+    accounts: Array<{ id: string; email: string; token: string; expiry: number; updated: number }>,
+    activeId: string,
+    orgId: string,
+  ): void {
+    const { DatabaseSync } = requireForTest("node:sqlite") as {
+      DatabaseSync: new (dbPath: string, options?: Record<string, unknown>) => {
+        exec: (sql: string) => void;
+        prepare: (sql: string) => { run: (...args: unknown[]) => void };
+        close: () => void;
+      };
+    };
+    const db = new DatabaseSync(dbPath);
+    db.exec("create table account (id text, email text, access_token text, refresh_token text, token_expiry integer, time_created integer, time_updated integer);");
+    db.exec("create table account_state (id integer, active_account_id text, active_org_id text);");
+    const insert = db.prepare("insert into account values (?, ?, ?, ?, ?, ?, ?)");
+    for (const account of accounts) {
+      insert.run(account.id, account.email, account.token, "rt", account.expiry, account.updated, account.updated);
+    }
+    db.prepare("insert into account_state values (1, ?, ?)").run(activeId, orgId);
+    db.close();
+  }
+
+  it("prefers the active OpenCode account over a more recently updated inactive one", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ade-oc-console-"));
+    try {
+      const dbPath = path.join(dir, "opencode.db");
+      writeOpenCodeDb(dbPath, [
+        { id: "user_a", email: "active@example.com", token: "st_active", expiry: NOW + 86_400_000, updated: 1 },
+        { id: "user_b", email: "inactive@example.com", token: "st_inactive", expiry: NOW + 86_400_000, updated: 99 },
+      ], "user_a", "org_a");
+      await expect(readOpenCodeConsoleAccountFromDisk(dbPath, NOW)).resolves.toEqual({
+        accessToken: "st_active",
+        orgId: "org_a",
+        email: "active@example.com",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores an expired console token instead of sending it", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ade-oc-console-"));
+    try {
+      const dbPath = path.join(dir, "opencode.db");
+      writeOpenCodeDb(dbPath, [
+        { id: "user_a", email: "active@example.com", token: "st_expired", expiry: NOW - 1_000, updated: 99 },
+      ], "user_a", "org_a");
+      await expect(readOpenCodeConsoleAccountFromDisk(dbPath, NOW)).resolves.toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads no account from a missing database", async () => {
+    await expect(readOpenCodeConsoleAccountFromDisk("/tmp/ade-oc-missing-dir/opencode.db", NOW)).resolves.toBeNull();
   });
 });
