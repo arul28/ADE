@@ -434,6 +434,58 @@ describe("extra provider quota polls", () => {
     expect(String(openCodeFetch.mock.calls[0]?.[0])).toBe("https://opencode.ai/zen/go/v1/usage");
   });
 
+  it("falls back to the OpenCode console login for OpenCode Go when no API key exists", async () => {
+    const fetchImpl = fetchMock({
+      product: "go",
+      access: {
+        endsAt: "2026-10-25T18:37:51.000Z",
+        meters: {
+          fiveHour: { resetsAt: "2026-09-26T00:18:07.400Z", limitMicroCents: "1200000000", usedMicroCents: "600000000" },
+          week: { resetsAt: "2026-09-28T00:00:00.000Z", limitMicroCents: "3000000000", usedMicroCents: "300000000" },
+          month: { limitMicroCents: "6000000000", usedMicroCents: "1200000000" },
+        },
+      },
+    });
+    const result = await pollOpenCodeQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env,
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+      readText: async () => null,
+      readOpenCodeConsoleAccount: async () => ({
+        accessToken: "st_console-token",
+        orgId: "org_123",
+        email: "ada@example.com",
+      }),
+    });
+    expect(result.windows.map((window) => window.percentUsed)).toEqual([50, 10, 20]);
+    expect(result.windows[0]?.accountId).toBe("opencode:ada@example.com");
+    expect(result.accountEmail).toBe("ada@example.com");
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://opencode.ai/console/api/go/status");
+    expect(JSON.stringify(init?.headers)).toContain("Bearer st_console-token");
+    expect(JSON.stringify(init?.headers)).toContain("org_123");
+  });
+
+  it("treats an OpenCode console account without a Go plan as signed out, not an error", async () => {
+    const fetchImpl = fetchMock({ access: null });
+    const result = await pollOpenCodeQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env,
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+      readText: async () => null,
+      readOpenCodeConsoleAccount: async () => ({
+        accessToken: "st_console-token",
+        orgId: "org_123",
+        email: "ada@example.com",
+      }),
+    });
+    expect(result).toEqual({ disposition: "not_signed_in", windows: [], errors: [] });
+  });
+
   it("fetches a Droid session's Factory credits, without treating a missing key as an error", async () => {
     const fetchImpl = vi.fn(async (_url: string) => new Response(JSON.stringify({ tokenUsage: { factoryCredits: 3.5 } })));
     const io = {

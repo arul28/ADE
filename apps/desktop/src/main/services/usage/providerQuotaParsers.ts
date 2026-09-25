@@ -404,6 +404,78 @@ export function parseOpenCodeGoUsage(payload: unknown, nowMs: number): UsageWind
   ].filter((window): window is UsageWindow => window != null);
 }
 
+/**
+ * One OpenCode Go console meter into a window.
+ *
+ * The console reports money, not a percentage: `usedMicroCents` and
+ * `limitMicroCents` (sent as numeric strings), so the used percent is
+ * `100 × used / limit`. The month meter carries no reset of its own, so the
+ * subscription's `access.endsAt` stands in for it — the same rule CodexBar
+ * uses. A meter with no usable limit is not a window.
+ */
+function consoleMeterWindow(args: {
+  windowType: UsageWindowType;
+  meter: Record<string, unknown> | null;
+  nowMs: number;
+  email?: string | null;
+  fallbackResetsAt?: string | null;
+  windowDurationMs?: number;
+}): UsageWindow | null {
+  const meter = args.meter;
+  if (!meter) return null;
+  const used = finiteNumberFromNumeric(meter.usedMicroCents ?? meter.used_micro_cents);
+  const limit = finiteNumberFromNumeric(meter.limitMicroCents ?? meter.limit_micro_cents);
+  if (used == null || limit == null || limit <= 0) return null;
+  const percent = wholePercent((Math.max(0, used) / limit) * 100);
+  if (percent == null) return null;
+  const resetsAt = isoField(meter, "resetsAt", "resets_at") ?? args.fallbackResetsAt ?? null;
+  return quotaWindow({
+    provider: "opencode",
+    windowType: args.windowType,
+    percentUsed: percent,
+    resetsAt,
+    nowMs: args.nowMs,
+    email: args.email,
+    ...(args.windowDurationMs && args.windowDurationMs > 0 ? { windowDurationMs: args.windowDurationMs } : {}),
+  });
+}
+
+/**
+ * OpenCode Go subscription meters from the console API
+ * (`GET opencode.ai/console/api/go/status`), the payload the logged-in OpenCode
+ * CLI reads. `access.meters.fiveHour`, `.week`, and `.month` each carry
+ * micro-cent `usedMicroCents`/`limitMicroCents`. An account without a Go plan
+ * answers `access: null` and yields no windows.
+ */
+export function parseOpenCodeConsoleGoStatus(
+  payload: unknown,
+  nowMs: number,
+  email?: string | null,
+): UsageWindow[] {
+  const root = asRecord(payload);
+  const access = asRecord(root?.access);
+  const meters = asRecord(access?.meters);
+  if (!access || !meters) return [];
+  const endsAt = isoField(access, "endsAt", "ends_at");
+  return [
+    consoleMeterWindow({
+      windowType: "five_hour",
+      meter: asRecord(meters.fiveHour) ?? asRecord(meters.five_hour),
+      nowMs,
+      email,
+      windowDurationMs: 5 * 3_600_000,
+    }),
+    consoleMeterWindow({ windowType: "weekly", meter: asRecord(meters.week), nowMs, email }),
+    consoleMeterWindow({
+      windowType: "monthly",
+      meter: asRecord(meters.month),
+      nowMs,
+      email,
+      fallbackResetsAt: endsAt,
+    }),
+  ].filter((window): window is UsageWindow => window != null);
+}
+
 export function parseClaudeWindows(data: ClaudeUsageResponse): { windows: UsageWindow[]; extraUsage: ExtraUsage | null } {
   const windows: UsageWindow[] = [];
   const fiveHour = data.five_hour ?? data.fiveHour;
