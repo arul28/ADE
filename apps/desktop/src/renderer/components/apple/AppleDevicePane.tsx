@@ -19,7 +19,13 @@ import type {
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
-import type { AppleDevice3DFailure } from "./AppleDevice3DView";
+import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
+import {
+  appleDeviceSupportsDuo,
+  createAppleDuoState,
+  nearestAppleDuoStance,
+  reduceAppleDuoState,
+} from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
 import { AppleDeviceRail } from "./AppleDeviceRail";
@@ -140,6 +146,12 @@ export function AppleDevicePane({
    * described as portrait until something rotates it.
    */
   const [orientation, setOrientation] = useState<AppleDeviceOrientation>("portrait");
+  /**
+   * The foldable body's posture. It only ever reaches the 3D view for a device
+   * the simulator record reports as foldable; the state exists for every device
+   * but does nothing when `duoCapable` is false.
+   */
+  const [duoState, setDuoState] = useState(() => createAppleDuoState());
   const [rotating, setRotating] = useState(false);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
@@ -671,6 +683,23 @@ export function AppleDevicePane({
   const deviceTypeIdentifier = laneDevice
     ? installed.find((entry) => entry.udid === laneDevice.udid)?.deviceTypeIdentifier ?? null
     : null;
+  /*
+   * The Duo mode is capability-gated. Only a device whose simulator record
+   * reports foldable gets the procedural two-panel body and the fold controls;
+   * every other device — and every host with no Duo runtime — keeps the
+   * unchanged single-display path and does no Duo work.
+   */
+  const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier, deviceTypeName: deviceName });
+  const duoControlsEnabled = duoCapable && canUse3d;
+  const duoProps: AppleDeviceDuoProps | undefined = duoControlsEnabled
+    ? {
+        enabled: true,
+        angle: duoState.pose.angle,
+        lowerFlat: duoState.pose.lowerFlat,
+        onHingeChange: (angle) =>
+          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle })),
+      }
+    : undefined;
   const inputConnected = state === "live";
 
   const viewport = renderViewport();
@@ -764,6 +793,7 @@ export function AppleDevicePane({
               orientation={orientation}
               devicePointSize={stream.devicePointSize}
               interactive={appleInputAllowed(state)}
+              duo={duoProps}
               onDeviceInput={input.send}
               onDeviceScroll={input.scroll}
               onDeviceKey={input.key}
@@ -897,6 +927,17 @@ export function AppleDevicePane({
               screenshotPending={screenshotPending}
               onHome={pressHome}
               onHardwareButton={pressHardwareButton}
+              duo={duoControlsEnabled
+                ? {
+                    capable: true,
+                    angle: duoState.pose.angle,
+                    stance: nearestAppleDuoStance(duoState.pose.angle),
+                  }
+                : undefined}
+              onDuoStance={(stance) =>
+                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }))}
+              onDuoNudge={(delta) =>
+                setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }))}
               orientation={orientation}
               orientationPending={rotating}
               onOrientation={rotateTo}

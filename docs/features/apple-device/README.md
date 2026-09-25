@@ -169,6 +169,29 @@ is no separate column.
   first. The mark beside each lane in the Work session list is green while the
   device is booted and muted while it is claimed but off.
 
+### Foldable ("Duo") mode
+
+A device whose simulator record reports fold/dual-screen support (a `Duo` —
+or `Fold` — in the CoreSimulator type identifier or name) renders an articulated
+two-panel body instead of a GLB: two screen halves, two body slabs and a hinge
+barrel, built procedurally and sized from the streamed inner display
+(`appleDuoScene.ts`). The rail grows a **Duo** menu with the four postures —
+Open (180°), Laptop (flat base), Tent, Closed (0°) — plus `Close/Open hinge 15°`
+nudge items, and a trackpad pinch on the glass moves the hinge instead of
+zooming the camera.
+
+The whole mode is capability-gated by `appleDeviceSupportsDuo`. A device that
+does not fold gets no `duo` prop, the procedural body is never built, and the
+imported GLB path (and its per-frame work) is byte-for-byte unchanged. The
+state machine, panel rotations, continuous inner-display coordinate mapping and
+the capability matcher live in `appleDuo.ts`, away from three.js, so they are
+tested without a GPU.
+
+> **Not validated on a real Duo.** No iOS 27.1 iPhone Duo runtime exists on the
+> build host, so this mode is written from the documented foldable behaviour and
+> tested only by the pure geometry/state/control tests above. Live posture
+> handoff, the native fold API, and real dual-screen touch are UNVERIFIED.
+
 ## Agent discovery
 
 `getStatus` returns `capabilities`, the list of every `ios_simulator` action an
@@ -221,6 +244,7 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
+| `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `appleDuoScene.ts` | The foldable "Duo" mode: the pure posture state machine, panel rotations, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder. Capability-gated; unused on non-foldable devices. |
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds). |
 | `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
 | `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |

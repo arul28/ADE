@@ -227,4 +227,46 @@ describe("AppleDeviceRail", () => {
     expect(screen.queryByRole("menuitem", { name: /shake/i })).toBeNull();
   });
 
+  it("hides the Duo posture control on a device that does not fold", () => {
+    renderRail();
+    expect(screen.queryByRole("button", { name: /^Duo:/ })).toBeNull();
+  });
+
+  it("lists the Duo postures and reports the chosen one", () => {
+    const onDuoStance = vi.fn();
+    renderRail({
+      duo: { capable: true, angle: 105, stance: "laptop" },
+      onDuoStance,
+      onDuoNudge: vi.fn(),
+    });
+
+    openMenu("Duo: 105°");
+    const labels = screen.getAllByRole("menuitem").map((item) => item.textContent ?? "");
+    expect(labels).toEqual([
+      expect.stringContaining("Open"),
+      expect.stringContaining("Laptop"),
+      expect.stringContaining("Tent"),
+      expect.stringContaining("Closed"),
+      expect.stringContaining("Close hinge"),
+      expect.stringContaining("Open hinge"),
+    ]);
+
+    const tent = screen.getAllByRole("menuitem").find((item) => item.textContent?.includes("Tent"));
+    fireEvent.click(tent!);
+    expect(onDuoStance).toHaveBeenCalledWith("tent");
+  });
+
+  it("nudges the hinge from the Duo menu", () => {
+    const onDuoNudge = vi.fn();
+    renderRail({
+      duo: { capable: true, angle: 90, stance: "tent" },
+      onDuoStance: vi.fn(),
+      onDuoNudge,
+    });
+
+    openMenu("Duo: 90°");
+    fireEvent.click(screen.getByRole("menuitem", { name: /Open hinge/ }));
+    expect(onDuoNudge).toHaveBeenCalledWith(15);
+  });
+
 });
