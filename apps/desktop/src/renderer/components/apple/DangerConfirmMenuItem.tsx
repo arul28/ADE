@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { Trash } from "@phosphor-icons/react";
+import { Trash, type Icon } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS } from "../ui/paneMenuTokens";
 
@@ -26,6 +26,7 @@ export function DangerConfirmMenuItem({
   onBeginConfirm,
   onConfirm,
   danger = true,
+  icon: ItemIcon = Trash,
 }: {
   /** True once the first row was chosen: disable it and show the confirmation. */
   confirming: boolean;
@@ -41,6 +42,8 @@ export function DangerConfirmMenuItem({
    * ends a live session, which is disruptive rather than destructive.
    */
   danger?: boolean;
+  /** Row glyph. Defaults to `Trash`; a release passes `Eject`. */
+  icon?: Icon;
 }) {
   const className = cn(MENU_ITEM_CLASS, danger && "text-[var(--color-error)]");
   return (
@@ -56,7 +59,7 @@ export function DangerConfirmMenuItem({
           onBeginConfirm();
         }}
       >
-        <Trash size={14} />
+        <ItemIcon size={14} />
         {idleLabel}
       </DropdownMenu.Item>
       {confirming ? (
@@ -65,7 +68,7 @@ export function DangerConfirmMenuItem({
           {...{ [confirmDataAttribute.name]: confirmDataAttribute.value }}
           onSelect={onConfirm}
         >
-          <Trash size={14} />
+          <ItemIcon size={14} />
           {confirmLabel}
         </DropdownMenu.Item>
       ) : null}

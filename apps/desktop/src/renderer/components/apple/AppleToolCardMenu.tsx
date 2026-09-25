@@ -94,18 +94,20 @@ export function AppleToolCardMenu({
   const release = useCallback(() => {
     run("Release device", () => window.ade.iosSimulator.deviceDetach({
       laneId,
+      udid: device.udid,
       chatSessionId,
       ignoreOwnership: true,
     }, runtimePin));
-  }, [chatSessionId, laneId, run, runtimePin]);
+  }, [chatSessionId, device.udid, laneId, run, runtimePin]);
 
   const remove = useCallback(() => {
     run("Delete device", () => window.ade.iosSimulator.deviceDelete({
       laneId,
+      udid: device.udid,
       chatSessionId,
       ignoreOwnership: true,
     }, runtimePin));
-  }, [chatSessionId, laneId, run, runtimePin]);
+  }, [chatSessionId, device.udid, laneId, run, runtimePin]);
 
   return (
     <DropdownMenu.Root
@@ -153,6 +155,7 @@ export function AppleToolCardMenu({
           {comingUp ? (
             <DangerConfirmMenuItem
               danger={false}
+              icon={Eject}
               confirming={confirmingRelease}
               idleLabel="Release device…"
               confirmLabel="End session and release"

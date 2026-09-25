@@ -86,7 +86,7 @@ describe("AppleToolCardMenu", () => {
     fireEvent.click(screen.getByText("Release device"));
 
     await waitFor(() => expect(ios.deviceDetach).toHaveBeenCalledWith(
-      { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true },
+      { laneId: "lane-1", udid: "udid-e", chatSessionId: "chat-1", ignoreOwnership: true },
       null,
     ));
   });
@@ -105,7 +105,7 @@ describe("AppleToolCardMenu", () => {
 
     fireEvent.click(screen.getByText("Delete for good"));
     await waitFor(() => expect(ios.deviceDelete).toHaveBeenCalledWith(
-      { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true },
+      { laneId: "lane-1", udid: "udid-e", chatSessionId: "chat-1", ignoreOwnership: true },
       null,
     ));
   });
