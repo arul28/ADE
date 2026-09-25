@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CaretDown,
   CaretRight,
@@ -234,81 +234,100 @@ export function DiffFileTree({
 
   const isEmpty = tree.children.length === 0;
 
-  const renderItem = (item: DiffFileTreeItem, depth: number): React.ReactNode => {
-    const indent = 8 + depth * 12;
-    if (item.kind === "folder") {
-      const open = !collapsed.has(item.path);
-      return (
-        <div key={`folder:${item.path}`}>
-          <button
-            type="button"
-            role="treeitem"
-            aria-expanded={open}
-            data-testid="diff-file-tree-folder"
-            data-path={item.path}
-            onClick={() => toggleFolder(item.path)}
-            style={{
-              display: "flex", alignItems: "center", gap: 6, width: "100%",
-              padding: `4px 8px 4px ${indent}px`, border: "none", background: "transparent",
-              cursor: "pointer", textAlign: "left", color: COLORS.textSecondary,
-              fontFamily: SANS_FONT, fontSize: 11.5,
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
-          >
-            {open ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />}
-            {open
-              ? <FolderOpen size={13} style={{ color: COLORS.textMuted }} />
-              : <FolderSimple size={13} style={{ color: COLORS.textMuted }} />}
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
-          </button>
-          {open ? item.children.map((child) => renderItem(child, depth + 1)) : null}
-        </div>
-      );
+  // Visible rows in render order. Keyboard navigation walks this list, and
+  // `aria-level` on each row carries the hierarchy a nested group would.
+  const flatItems = useMemo(() => {
+    const out: FlatDiffTreeRow[] = [];
+    const walk = (items: DiffFileTreeItem[], depth: number, parentPath: string | null): void => {
+      for (const item of items) {
+        if (item.kind === "folder") {
+          const expanded = !collapsed.has(item.path);
+          out.push({ kind: "folder", path: item.path, name: item.name, depth, parentPath, expanded });
+          if (expanded) walk(item.children, depth + 1, item.path);
+        } else {
+          out.push({ kind: "file", path: item.path, name: item.name, depth, parentPath, entry: item.entry });
+        }
+      }
+    };
+    walk(tree.children, 0, null);
+    return out;
+  }, [tree, collapsed]);
+
+  const itemRefs = useRef(new Map<string, HTMLButtonElement>());
+  const [focusedPath, setFocusedPath] = useState<string | null>(null);
+  const activePath = focusedPath && flatItems.some((item) => item.path === focusedPath)
+    ? focusedPath
+    : flatItems[0]?.path ?? null;
+
+  useEffect(() => {
+    if (focusedPath && !flatItems.some((item) => item.path === focusedPath)) setFocusedPath(null);
+  }, [flatItems, focusedPath]);
+
+  const focusItem = useCallback((path: string) => {
+    setFocusedPath(path);
+    requestAnimationFrame(() => itemRefs.current.get(path)?.focus());
+  }, []);
+
+  const moveFocus = useCallback((delta: number) => {
+    const index = flatItems.findIndex((item) => item.path === activePath);
+    const nextIndex = Math.min(flatItems.length - 1, Math.max(0, (index < 0 ? 0 : index) + delta));
+    const next = flatItems[nextIndex];
+    if (next) focusItem(next.path);
+  }, [activePath, flatItems, focusItem]);
+
+  // Arrow keys move focus between visible rows; Left/Right open and close
+  // folders, matching the interaction the tree roles advertise. Enter and Space
+  // are the focused button's own activation, so they need no handling here.
+  const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
+    const index = flatItems.findIndex((item) => item.path === activePath);
+    const current = index >= 0 ? flatItems[index] : null;
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        moveFocus(1);
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        moveFocus(-1);
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        if (current?.kind === "folder") {
+          if (!current.expanded) {
+            setCollapsed((prev) => {
+              const next = new Set(prev);
+              next.delete(current.path);
+              return next;
+            });
+          } else {
+            moveFocus(1);
+          }
+        }
+        break;
+      case "ArrowLeft":
+        event.preventDefault();
+        if (current?.kind === "folder" && current.expanded) {
+          setCollapsed((prev) => new Set(prev).add(current.path));
+        } else if (current?.parentPath) {
+          focusItem(current.parentPath);
+        }
+        break;
+      case "Home":
+        event.preventDefault();
+        if (flatItems[0]) focusItem(flatItems[0].path);
+        break;
+      case "End":
+        event.preventDefault();
+        if (flatItems.length) focusItem(flatItems[flatItems.length - 1].path);
+        break;
+      default:
+        break;
     }
-    const status = item.entry.status ?? null;
-    const selected = selectedPath === item.path;
-    return (
-      <button
-        key={`file:${item.path}`}
-        type="button"
-        role="treeitem"
-        aria-selected={selected}
-        data-testid="diff-file-tree-file"
-        data-path={item.path}
-        title={item.entry.previousPath ? `${item.entry.previousPath} → ${item.path}` : item.path}
-        onClick={() => onSelectFile?.(item.path)}
-        style={{
-          display: "flex", alignItems: "center", gap: 6, width: "100%",
-          padding: `4px 8px 4px ${indent}px`, border: "none",
-          background: selected ? `color-mix(in srgb, ${COLORS.accent} 14%, transparent)` : "transparent",
-          cursor: "pointer", textAlign: "left",
-        }}
-        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = COLORS.hoverBg; }}
-        onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
-      >
-        <span
-          aria-hidden
-          style={{
-            fontFamily: MONO_FONT, fontSize: 9.5, fontWeight: 700, lineHeight: "14px",
-            color: diffFileTreeStatusColor(status),
-            background: `color-mix(in srgb, ${diffFileTreeStatusColor(status)} 10%, transparent)`,
-            borderRadius: 3, width: 14, textAlign: "center", flexShrink: 0,
-          }}
-        >
-          {diffFileTreeStatusMark(status)}
-        </span>
-        <span
-          style={{
-            fontFamily: MONO_FONT, fontSize: 11,
-            color: selected ? COLORS.textPrimary : COLORS.textSecondary,
-            overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
-          }}
-        >
-          {item.name}
-        </span>
-      </button>
-    );
+  }, [activePath, flatItems, focusItem, moveFocus]);
+
+  const setItemRef = (path: string, node: HTMLButtonElement | null): void => {
+    if (node) itemRefs.current.set(path, node);
+    else itemRefs.current.delete(path);
   };
 
   return (
@@ -325,14 +344,112 @@ export function DiffFileTree({
         <TreeButton label="Expand all" disabled={isEmpty || folderPaths.length === 0} onClick={expandAllFolders} />
         <TreeButton label="Collapse all" disabled={isEmpty || folderPaths.length === 0} onClick={collapseAllFolders} />
       </div>
-      <div role="tree" aria-label="Changed files" className="min-h-0 flex-1 overflow-auto" style={{ padding: "2px 0" }}>
-        {isEmpty
-          ? <div style={{ padding: "10px 12px", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>{emptyLabel}</div>
-          : tree.children.map((item) => renderItem(item, 0))}
+      <div
+        role="tree"
+        aria-label="Changed files"
+        onKeyDown={handleKeyDown}
+        className="min-h-0 flex-1 overflow-auto"
+        style={{ padding: "2px 0" }}
+      >
+        {isEmpty ? (
+          <div style={{ padding: "10px 12px", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>{emptyLabel}</div>
+        ) : flatItems.map((item) => {
+          const indent = 8 + item.depth * 12;
+          const focused = item.path === activePath;
+          if (item.kind === "folder") {
+            return (
+              <button
+                key={`folder:${item.path}`}
+                ref={(node) => setItemRef(item.path, node)}
+                type="button"
+                role="treeitem"
+                aria-level={item.depth + 1}
+                aria-expanded={item.expanded}
+                tabIndex={focused ? 0 : -1}
+                data-testid="diff-file-tree-folder"
+                data-path={item.path}
+                onFocus={() => setFocusedPath(item.path)}
+                onClick={() => toggleFolder(item.path)}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, width: "100%",
+                  padding: `4px 8px 4px ${indent}px`, border: "none", background: "transparent",
+                  cursor: "pointer", textAlign: "left", color: COLORS.textSecondary,
+                  fontFamily: SANS_FONT, fontSize: 11.5,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+              >
+                {item.expanded ? <CaretDown size={11} weight="bold" /> : <CaretRight size={11} weight="bold" />}
+                {item.expanded
+                  ? <FolderOpen size={13} style={{ color: COLORS.textMuted }} />
+                  : <FolderSimple size={13} style={{ color: COLORS.textMuted }} />}
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</span>
+              </button>
+            );
+          }
+          const status = item.entry?.status ?? null;
+          const selected = selectedPath === item.path;
+          return (
+            <button
+              key={`file:${item.path}`}
+              ref={(node) => setItemRef(item.path, node)}
+              type="button"
+              role="treeitem"
+              aria-level={item.depth + 1}
+              aria-selected={selected}
+              tabIndex={focused ? 0 : -1}
+              data-testid="diff-file-tree-file"
+              data-path={item.path}
+              title={item.entry?.previousPath ? `${item.entry.previousPath} → ${item.path}` : item.path}
+              onFocus={() => setFocusedPath(item.path)}
+              onClick={() => onSelectFile?.(item.path)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6, width: "100%",
+                padding: `4px 8px 4px ${indent}px`, border: "none",
+                background: selected ? `color-mix(in srgb, ${COLORS.accent} 14%, transparent)` : "transparent",
+                cursor: "pointer", textAlign: "left",
+              }}
+              onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = COLORS.hoverBg; }}
+              onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
+            >
+              <span
+                aria-hidden
+                style={{
+                  fontFamily: MONO_FONT, fontSize: 9.5, fontWeight: 700, lineHeight: "14px",
+                  color: diffFileTreeStatusColor(status),
+                  background: `color-mix(in srgb, ${diffFileTreeStatusColor(status)} 10%, transparent)`,
+                  borderRadius: 3, width: 14, textAlign: "center", flexShrink: 0,
+                }}
+              >
+                {diffFileTreeStatusMark(status)}
+              </span>
+              <span
+                style={{
+                  fontFamily: MONO_FONT, fontSize: 11,
+                  color: selected ? COLORS.textPrimary : COLORS.textSecondary,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
+                }}
+              >
+                {item.name}
+              </span>
+            </button>
+          );
+        })}
       </div>
     </div>
   );
 }
+
+type FlatDiffTreeRow = {
+  kind: "folder" | "file";
+  path: string;
+  name: string;
+  depth: number;
+  parentPath: string | null;
+  /** Folders only. */
+  expanded?: boolean;
+  entry?: DiffFileTreeEntry;
+};
 
 const LABEL_STYLE_LOCAL: React.CSSProperties = {
   fontFamily: MONO_FONT,
