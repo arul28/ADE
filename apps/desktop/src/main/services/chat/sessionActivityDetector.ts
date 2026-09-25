@@ -88,38 +88,100 @@ const SHIP = new RegExp(
 );
 const CHECK_STATUS = /^gh\s+(?:pr\s+checks|run\s+(?:view|list)|pr\s+view\b.*(?:checks|statusCheckRollup|mergeStateStatus))/;
 const WATCH_SEGMENT = /^(?:gh\s+(?:pr\s+checks\b.*--watch|run\s+watch)|ADE\s+chat\s+wait|watch\s+-n)\b/;
-/** A polling loop anywhere in the line: `until …; do … sleep`, or PowerShell's `Start-Sleep`. */
-const WATCH_LOOP = /\b(?:until|while)\b.*\bdo\b.*\bsleep\b|\bwhile\b.*\bStart-Sleep\b/is;
 const DRIVE_APP = /^(?:ADE\s+(?:app-control|browser|mac-desktop|apple|ios-sim|proof)|agent-browser)\b/;
 const REVIEW_READ = /^gh\s+(?:pr\s+diff|api\s+\S*(?:comments|reviews))/;
 /** The agent reporting its own status is not evidence of anything. */
 const ADE_STATUS_COMMAND = /^ADE\s+chat\s+(?:activity|note|ask)\b/;
 
-/** Prefixes that run the real command after them: `sudo`, `npx`, `FOO=1`, `python -m`. */
-const COMMAND_PREFIX = /^(?:\w+=\S*\s+|(?:sudo|time|exec|env|command|nohup|npx|bunx|pnpx|uvx|pnpm\s+exec|yarn\s+dlx|uv\s+run|poetry\s+run|python3?\s+-m)\s+)+/;
-/** `/bin/zsh -lc '…'` and friends wrap the real command line (Codex does this for every command). */
-const SHELL_WRAPPER = /^\S*\b(?:ba|z|da)?sh\s+-\w*c\s+(['"])([\s\S]*)\1\s*$/;
-/** Any spelling of the ADE CLI (`ade`, `"$ADE_CLI_PATH"`, `/path/to/ade`) normalizes to `ADE`. */
-const ADE_CLI = /^(?:"?\$\{?ADE_CLI_PATH\}?"?|&\s*"\$env:ADE_CLI_PATH"|(?:\S*\/)?ade)(?=\s|$)/;
+/** Prefixes that run the real command after them: `sudo -E`, `npx --yes`, `FOO=1`, `python -m`. */
+const COMMAND_PREFIX = new RegExp(
+  "^(?:\\w+=\\S*\\s+|(?:sudo|time|exec|env|command|nohup|npx|bunx|pnpx|uvx|npm\\s+exec|pnpm\\s+(?:exec|dlx)"
+    + "|yarn\\s+dlx|uv\\s+run|poetry\\s+run|python3?\\s+-m)(?:\\s+-\\S+)*\\s+)+",
+);
+/** A package manager naming a runner directly: `pnpm vitest`, `yarn jest`. */
+const RUNNER_VIA_PACKAGE_MANAGER = /^(?:pnpm|yarn|bun)\s+(?=(?:vitest|jest|mocha|playwright)\b)/;
+/**
+ * Shells that wrap the real command line: `/bin/zsh -lc '…'` (Codex does this
+ * for every command), `"C:\Program Files\Git\bin\bash.exe" -lc '…'`,
+ * `powershell.exe -NoProfile -Command "…"`, `cmd /c …`.
+ */
+const SHELL_WRAPPERS: RegExp[] = [
+  /^(?:"[^"]*[\\/])?(?:\S*[\\/])?(?:ba|z|da)?sh(?:\.exe)?"?\s+-\w*c\s+(['"])([\s\S]*)\1\s*$/i,
+  /^(?:\S*[\\/])?(?:powershell|pwsh)(?:\.exe)?\s+(?:-\w+\s+)*-c(?:ommand)?\s+(['"]?)([\s\S]*)\1\s*$/i,
+  /^(?:\S*[\\/])?cmd(?:\.exe)?\s+\/c\s+()([\s\S]*)$/i,
+];
+/** A heredoc body is data, not commands: `cat <<'EOF' … EOF`. */
+const HEREDOC_BODY = /<<-?\s*(['"]?)(\w+)\1[\s\S]*?\n\2\b/g;
+/** The ADE CLI named through its environment variable, in any shell's spelling. */
+const ADE_CLI_VARIABLE = /"?\$(?:\{ADE_CLI_PATH\}|ADE_CLI_PATH\b|env:ADE_CLI_PATH\b)"?/g;
+/** A quoted span is an argument (a commit message, an `echo`), never a command. */
+const QUOTED_SPAN = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
+/** The ADE CLI named by path at command position: `ade`, `/usr/local/bin/ade`, `C:\tools\ade.exe`. */
+const ADE_CLI_PATH_SPELLING = /^(?:\S*[\\/])?ade(?:\.exe|\.cmd)?(?=\s|$)/i;
 
-/** The command line split into the commands it runs, each starting at its command name. */
-function commandSegments(command: string): string[] {
-  const unwrapped = command.trim().match(SHELL_WRAPPER)?.[2] ?? command;
-  return unwrapped
+function unwrapShell(command: string): string {
+  let text = command.trim();
+  // Two passes cover one wrapper inside another (`cmd /c powershell -Command …`).
+  for (let pass = 0; pass < 2; pass += 1) {
+    const inner = SHELL_WRAPPERS.map((wrapper) => text.match(wrapper)?.[2]).find((match) => match != null);
+    if (inner == null) break;
+    text = inner.trim();
+  }
+  return text;
+}
+
+/**
+ * A polling loop anywhere in the line: `until …; do … sleep`, or PowerShell's
+ * `while … Start-Sleep`. A linear scan, not one regex: two greedy wildcards
+ * across a multi-kilobyte heredoc backtrack for seconds on the main process.
+ */
+function isWatchLoop(text: string): boolean {
+  const loop = text.search(/\b(?:until|while)\b/);
+  if (loop < 0) return false;
+  const rest = text.slice(loop);
+  if (/\bStart-Sleep\b/i.test(rest)) return true;
+  const body = rest.search(/\bdo\b/);
+  return body >= 0 && /\bsleep\b/.test(rest.slice(body));
+}
+
+/** The command line with its data (heredoc bodies, quoted arguments) blanked out. */
+function commandCode(text: string): string {
+  return text
+    .replace(HEREDOC_BODY, "")
+    .replace(ADE_CLI_VARIABLE, "ADE")
+    .replace(QUOTED_SPAN, "Q");
+}
+
+/** The command code split into the commands it runs, each starting at its command name. */
+function commandSegments(code: string): string[] {
+  return code
     .split(/(?:&&|\|\||[;|&()\n{}])/)
-    .map((segment) => segment.trim().replace(COMMAND_PREFIX, "").replace(ADE_CLI, "ADE"))
+    .map((segment) => segment
+      .trim()
+      .replace(COMMAND_PREFIX, "")
+      .replace(RUNNER_VIA_PACKAGE_MANAGER, "")
+      .replace(ADE_CLI_PATH_SPELLING, "ADE"))
     .filter((segment) => segment.length > 0);
 }
 
+/**
+ * How much of a command line is classified. The command that runs is at the
+ * front; the tail of a long line is heredoc or argument data. The cap also
+ * bounds the scans below — an unterminated heredoc or quote in a 250 KB line
+ * cost seconds on the main process.
+ */
+const MAX_CLASSIFIED_COMMAND_CHARS = 4_000;
+
 /** Classify one shell command line. Unknown commands read as reading. */
 function classifyShellCommand(command: string): SessionActivitySignal {
-  const segments = commandSegments(command);
+  const code = commandCode(unwrapShell(command.slice(0, MAX_CLASSIFIED_COMMAND_CHARS)));
+  const segments = commandSegments(code);
   if (segments.some((segment) => ADE_STATUS_COMMAND.test(segment))) return READ;
   const any = (pattern: RegExp) => segments.some((segment) => pattern.test(segment));
   // Shipping first: `git commit -m "fix jest flake"` is a commit, not a test run.
   if (any(SHIP)) return weak("shipping");
   if (any(TEST_RUNNER)) return strong("testing");
-  if (WATCH_LOOP.test(command) || any(WATCH_SEGMENT)) return strong("monitoring");
+  if (isWatchLoop(code) || any(WATCH_SEGMENT)) return strong("monitoring");
   if (any(CHECK_STATUS)) return weak("monitoring");
   if (any(STATIC_CHECK) || any(DRIVE_APP)) return weak("testing");
   if (any(REVIEW_READ)) return weak("reviewing");
@@ -239,15 +301,6 @@ function classifySessionActivityEvent(event: AgentChatEvent): SessionActivitySig
   }
 }
 
-/** The event types that carry evidence; everything else leaves the detector as it is. */
-export function isActivityEvidenceEvent(event: AgentChatEvent): boolean {
-  return event.type === "tool_call"
-    || event.type === "command"
-    || event.type === "file_change"
-    || event.type === "web_search"
-    || event.type === "subagent_started";
-}
-
 /** A long unbroken run of reads means the turn has gone back to exploring. */
 const READ_STREAK_TO_EXPLORING = 12;
 /** Weak signals only count while they are this recent. */
@@ -259,8 +312,12 @@ const TEST_LOOP_MS = 2 * 60_000;
 const SEEN_ITEM_CAP = 2_000;
 
 export type SessionActivityDetector = {
-  /** Feed one normalized event; returns the turn's detected activity, or null before any evidence. */
-  observe(event: AgentChatEvent, atMs: number): SessionActivityValue | null;
+  /**
+   * Feed one normalized event. Returns the turn's detected activity (null
+   * before any evidence) and whether this event counted as new evidence —
+   * streamed re-emits and non-tool frames do not.
+   */
+  observe(event: AgentChatEvent, atMs: number): { activity: SessionActivityValue | null; counted: boolean };
   /**
    * Forget the evidence. Called when the USER engages (a new message, a
    * steer, an answer) — not at every provider turn start: a subagent finishing
@@ -300,10 +357,8 @@ export function createSessionActivityDetector(): SessionActivityDetector {
     return true;
   };
 
-  const observe = (event: AgentChatEvent, atMs: number): SessionActivityValue | null => {
-    const signal = classifySessionActivityEvent(event);
-    if (!signal || !firstSighting(event)) return state;
-
+  /** Apply one counted signal and return the resulting state. */
+  const apply = (signal: SessionActivitySignal, atMs: number): SessionActivityValue | null => {
     if (signal.kind === "read") {
       readStreak += 1;
       if (state === null || readStreak >= READ_STREAK_TO_EXPLORING) state = "exploring";
@@ -325,6 +380,12 @@ export function createSessionActivityDetector(): SessionActivityDetector {
       .slice(-WEAK_WINDOW_SIZE);
     if (recentWeak.filter((entry) => entry.activity === activity).length >= 2) state = activity;
     return state;
+  };
+
+  const observe = (event: AgentChatEvent, atMs: number) => {
+    const signal = classifySessionActivityEvent(event);
+    if (!signal || !firstSighting(event)) return { activity: state, counted: false };
+    return { activity: apply(signal, atMs), counted: true };
   };
 
   return {

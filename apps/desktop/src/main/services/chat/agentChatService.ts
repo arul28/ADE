@@ -57,11 +57,7 @@ import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClau
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
 import { hasNonEmptyRecord } from "../../../shared/agentObservationNormalizers";
-import {
-  createSessionActivityDetector,
-  isActivityEvidenceEvent,
-  type SessionActivityDetector,
-} from "./sessionActivityDetector";
+import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
   claudePluginDeliveryForSource,
@@ -18798,14 +18794,14 @@ export function createAgentChatService(args: {
     const detector = managed.activityDetector ??= createSessionActivityDetector();
     if (event.type === "status" && event.turnStatus === "started") managed.activityRowNeedsWrite = true;
     const before = detector.current;
-    const detected = detector.observe(event, Date.now());
+    const { activity: detected, counted } = detector.observe(event, Date.now());
     if (!detected) return;
     const changed = detected !== before || managed.activityRowNeedsWrite === true;
     // An unchanged detection only refills an empty row (an agent ran
     // `ade chat activity clear`): rewriting it would override an agent report
-    // the evidence has not moved away from. Tool events only, so text and
-    // reasoning frames do not each cost a row read.
-    if (!changed && !isActivityEvidenceEvent(event)) return;
+    // the evidence has not moved away from. Only counted evidence checks, so
+    // streamed re-emits and text frames do not each cost a row read.
+    if (!changed && !counted) return;
     managed.activityRowNeedsWrite = false;
     try {
       sessionService.setDetectedSessionActivity(
@@ -18815,6 +18811,8 @@ export function createAgentChatService(args: {
         { onlyIfEmpty: !changed },
       );
     } catch (error) {
+      // The detector has already moved on; retry the row on the next event.
+      managed.activityRowNeedsWrite = true;
       logger.warn("agent_chat.activity_detect_write_failed", {
         sessionId: managed.session.id,
         activity: detected,
