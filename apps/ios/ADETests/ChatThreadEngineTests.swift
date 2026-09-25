@@ -1510,3 +1510,49 @@ private func chatThreadFramePresentationMismatch(
   }
   return nil
 }
+
+/// Reasoning fragments fold with desktop's `mergeReasoningFragment` rule, and
+/// the engine's pre-merged reasoning rows produce the builder's cards.
+@MainActor
+final class WorkReasoningFragmentMergeTests: XCTestCase {
+  // Desktop parity: the same cases as shared/chatActivityPhase.test.ts.
+  func testMatchesDesktopMergeReasoningFragment() {
+    XCTAssertEqual(mergeWorkReasoningFragment("The same thought.", "The same thought."), "The same thought.")
+    XCTAssertEqual(mergeWorkReasoningFragment("The same", "The same thought."), "The same thought.")
+    XCTAssertEqual(mergeWorkReasoningFragment("The same thought.", "thought."), "The same thought.")
+    XCTAssertEqual(mergeWorkReasoningFragment("look", "keep going"), "lookkeep going")
+    XCTAssertEqual(mergeWorkReasoningFragment("I will check", " the logs."), "I will check the logs.")
+  }
+
+  // The old merge dropped a fragment found anywhere earlier and inserted a
+  // space between word halves; streamed reasoning lost words on mobile.
+  func testKeepsFragmentsThatAppearedEarlierAndSplitWords() {
+    var text = ""
+    for piece in ["Waiting six", " minutes.", " Then retry after ten", " minutes.", " Linu", "x build"] {
+      text = mergeWorkReasoningFragment(text, piece)
+    }
+    XCTAssertEqual(text, "Waiting six minutes. Then retry after ten minutes. Linux build")
+  }
+
+  func testCoalescedReasoningRowsBuildTheSameCards() {
+    let pieces = ["Checking the", " logs", " now.", "   ", " The logs", " show two", " logs"]
+    var rows: [WorkChatEnvelope] = []
+    for (index, piece) in pieces.enumerated() {
+      rows.append(WorkChatEnvelope(
+        sessionId: "s",
+        timestamp: "2026-09-24T10:00:0\(index)Z",
+        sequence: index + 1,
+        event: .reasoning(text: piece, turnId: "t1", itemId: "r1", summaryIndex: nil)
+      ))
+    }
+    rows.append(WorkChatEnvelope(
+      sessionId: "s", timestamp: "2026-09-24T10:00:08Z", sequence: 20,
+      event: .reasoning(text: "Other block", turnId: "t1", itemId: nil, summaryIndex: 0)
+    ))
+    var coalescer = ChatThreadReasoningCoalescer()
+    for row in rows { coalescer.consume(row) }
+    XCTAssertEqual(coalescer.rows.count, 2)
+    XCTAssertEqual(buildWorkEventCards(from: coalescer.rows), buildWorkEventCards(from: rows))
+    XCTAssertEqual(buildWorkEventCards(from: rows).first?.body, "Checking the logs now. The logs show two logs")
+  }
+}

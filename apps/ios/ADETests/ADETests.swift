@@ -17358,6 +17358,9 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkEventCardsMergeReasoningFragmentsByItemId() {
+    // Streamed thinking pieces carry their own spaces (Claude) or split
+    // mid-word (OpenCode: "orche" + "stration"), so they join verbatim, as on
+    // desktop (`mergeReasoningFragment`).
     let transcript = [
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -17369,13 +17372,13 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-22T21:11:58.509Z",
         sequence: 7,
-        event: .reasoning(text: "to test computer use", turnId: "turn-1", itemId: "claude-thinking:turn-1:0", summaryIndex: nil)
+        event: .reasoning(text: " to test computer use", turnId: "turn-1", itemId: "claude-thinking:turn-1:0", summaryIndex: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
         timestamp: "2026-04-22T21:11:58.843Z",
         sequence: 8,
-        event: .reasoning(text: "and proof capture.", turnId: "turn-1", itemId: "claude-thinking:turn-1:0", summaryIndex: nil)
+        event: .reasoning(text: " and proof capture.", turnId: "turn-1", itemId: "claude-thinking:turn-1:0", summaryIndex: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",

@@ -65,6 +65,8 @@ struct ChatThreadTimelineFold {
     /// Sparse envelopes of `transcript[..<count]`, with their indices.
     var sparse: [WorkChatEnvelope]
     var sparseIndices: [Int]
+    /// Event-card input for `sparse`, reasoning cards pre-merged.
+    var reasoning: ChatThreadReasoningCoalescer
   }
 
   private struct SubagentOutputs {
@@ -204,6 +206,18 @@ struct ChatThreadTimelineFold {
       probe -= 1
     }
 
+    // Event-card input: resume the reasoning merge from the checkpoint, feed
+    // the sparse rows up to the next checkpoint (saved with it), then the rest.
+    var reasoning = resume?.reasoning ?? ChatThreadReasoningCoalescer()
+    let checkpointSparseCount = sparseIndices.partitioningIndex { $0 >= nextCheckpointAt }
+    while reasoning.consumed < checkpointSparseCount {
+      reasoning.consume(sparse[reasoning.consumed])
+    }
+    let checkpointReasoning = reasoning
+    while reasoning.consumed < sparse.count {
+      reasoning.consume(sparse[reasoning.consumed])
+    }
+
     var nextCheckpoint: Checkpoint?
     func makeCheckpoint(at index: Int) -> Checkpoint {
       let sparseCount = sparseIndices.partitioningIndex { $0 >= index }
@@ -217,7 +231,8 @@ struct ChatThreadTimelineFold {
         sourceIndices: sourceIndices,
         assistantTextIndicesByTurn: assistantTextIndicesByTurn,
         sparse: Array(sparse.prefix(sparseCount)),
-        sparseIndices: Array(sparseIndices.prefix(sparseCount))
+        sparseIndices: Array(sparseIndices.prefix(sparseCount)),
+        reasoning: checkpointReasoning
       )
     }
     for index in start..<count {
@@ -254,7 +269,7 @@ struct ChatThreadTimelineFold {
     let toolCards = tools.cards.filter(workMobileShowsToolCardInTimeline)
     let taskList = buildWorkChatTaskListSnapshot(from: sparse)
     let eventCards = buildWorkEventCards(
-      from: sparse,
+      from: reasoning.rows,
       suppressedItemIds: suppressedItemIds,
       taskList: taskList,
       // `transcript.map(\.timestamp).max()`: empty timestamps sort first, so
@@ -424,5 +439,104 @@ private extension Array where Element == Int {
       if predicate(self[mid]) { high = mid } else { low = mid + 1 }
     }
     return low
+  }
+}
+
+/// The sparse transcript as `buildWorkEventCards` needs to see it, with every
+/// reasoning card's rows merged into one row, kept up to date as rows arrive.
+///
+/// A streamed "thinking" block arrives as hundreds of small reasoning rows that
+/// all fold into one card (`mergedWorkEventCard`). Handing the builder every
+/// row made each engine step re-merge the whole block, O(rows × text) per
+/// event: a reasoning-heavy chat spent ~230 ms per streamed event there. This
+/// keeps the merged card text between steps, so a new row costs one merge.
+///
+/// The merged row gives the builder the same card it would have folded from
+/// the rows one by one:
+/// - body: `mergeWorkReasoningFragment` folded over the rows' text, in order (the
+///   builder's first row sets the body; each later row merges into it);
+/// - timestamp: `laterWorkTimestamp` folded over the rows;
+/// - turn id: the last row's raw turn id that is not nil (the builder keeps
+///   `incoming ?? existing`);
+/// - position: the first row the builder would keep (it appends the card id to
+///   its order there). Low-signal rows are dropped, as the builder drops them.
+/// Rows whose card id is the per-row fallback (no item id and no turn id)
+/// never merge in the builder, so they pass through unchanged.
+struct ChatThreadReasoningCoalescer {
+  private enum Slot {
+    case row(WorkChatEnvelope)
+    case card(String)
+  }
+
+  private struct Card {
+    var template: WorkChatEnvelope
+    var itemId: String?
+    var summaryIndex: Int?
+    var body: String
+    var timestamp: String
+    var turnId: String?
+  }
+
+  private var slots: [Slot] = []
+  private var cards: [String: Card] = [:]
+  /// Sparse rows consumed so far.
+  private(set) var consumed = 0
+
+  mutating func consume(_ envelope: WorkChatEnvelope) {
+    consumed += 1
+    guard case .reasoning(let text, let turnId, let itemId, let summaryIndex) = envelope.event else {
+      slots.append(.row(envelope))
+      return
+    }
+    // The builder drops these before any merge.
+    if isLowSignalWorkReasoning(text) { return }
+    let hasItem = !(itemId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    let hasTurn = !(turnId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    guard hasItem || hasTurn else {
+      slots.append(.row(envelope))
+      return
+    }
+    let cardId = workReasoningCardId(
+      sessionId: envelope.sessionId,
+      turnId: turnId,
+      itemId: itemId,
+      summaryIndex: summaryIndex,
+      fallback: envelope.id
+    )
+    if var card = cards[cardId] {
+      card.body = mergeWorkReasoningFragment(card.body, text)
+      card.timestamp = laterWorkTimestamp(card.timestamp, envelope.timestamp)
+      if let turnId = workTurnId(for: envelope.event) { card.turnId = turnId }
+      cards[cardId] = card
+    } else {
+      cards[cardId] = Card(
+        template: envelope,
+        itemId: itemId,
+        summaryIndex: summaryIndex,
+        body: text,
+        timestamp: envelope.timestamp,
+        turnId: workTurnId(for: envelope.event)
+      )
+      slots.append(.card(cardId))
+    }
+  }
+
+  /// The builder input: sparse rows with each reasoning card as one row.
+  var rows: [WorkChatEnvelope] {
+    slots.compactMap { slot in
+      switch slot {
+      case .row(let envelope):
+        return envelope
+      case .card(let id):
+        guard let card = cards[id] else { return nil }
+        let template = card.template
+        return WorkChatEnvelope(
+          sessionId: template.sessionId,
+          timestamp: card.timestamp,
+          sequence: template.sequence,
+          event: .reasoning(text: card.body, turnId: card.turnId, itemId: card.itemId, summaryIndex: card.summaryIndex)
+        )
+      }
+    }
   }
 }

@@ -3583,7 +3583,7 @@ private func redundantWorkTerminalStatus(
     && (normalizedStatus == "interrupted" || normalizedStatus == "failed")
 }
 
-private func workReasoningCardId(
+func workReasoningCardId(
   sessionId: String,
   turnId: String?,
   itemId: String?,
@@ -3789,7 +3789,42 @@ private func workPlanTextCardId(
   return fallback
 }
 
-private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> String {
+/// One streamed reasoning fragment folded into the card's text so far.
+/// Desktop parity with `mergeReasoningFragment` (shared/chatActivityPhase.ts):
+/// fragments append verbatim; a cumulative re-emit replaces the text it
+/// extends; a fragment that repeats the text's tail is dropped. Unlike
+/// `mergeWorkInlineText`, a fragment is never dropped for appearing earlier in
+/// the text and no separator is inserted: streamed pieces such as " minutes."
+/// or "x" (after "Linu") are real text. Byte comparisons keep a fragment's
+/// cost proportional to the fragment, not to the whole block.
+func mergeWorkReasoningFragment(_ existing: String, _ incoming: String) -> String {
+  if existing.isEmpty { return incoming }
+  if incoming.isEmpty { return existing }
+  let old = existing.utf8
+  let new = incoming.utf8
+  if old.count == new.count, old.elementsEqual(new) { return existing }
+  if new.count > old.count, new.prefix(old.count).elementsEqual(old) { return incoming }
+  if old.count > new.count, old.prefix(new.count).elementsEqual(new) { return existing }
+  let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines).utf8
+  if !trimmedIncoming.isEmpty {
+    var end = old.endIndex
+    while end > old.startIndex {
+      let before = old.index(before: end)
+      let byte = old[before]
+      // ASCII whitespace, the set JS `trimEnd` covers for model output.
+      guard byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D else { break }
+      end = before
+    }
+    let body = old[old.startIndex..<end]
+    if body.count >= trimmedIncoming.count,
+       body.suffix(trimmedIncoming.count).elementsEqual(trimmedIncoming) {
+      return existing
+    }
+  }
+  return existing + incoming
+}
+
+func mergeWorkInlineText(_ existing: String, _ incoming: String) -> String {
   if existing.isEmpty { return incoming }
   if incoming.isEmpty { return existing }
   if existing == incoming { return existing }
@@ -3801,7 +3836,7 @@ private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> Stri
   return "\(existing)\(separator)\(incoming)"
 }
 
-private func laterWorkTimestamp(_ lhs: String, _ rhs: String) -> String {
+func laterWorkTimestamp(_ lhs: String, _ rhs: String) -> String {
   let lhsDate = workParsedDate(lhs)
   let rhsDate = workParsedDate(rhs)
 
@@ -3997,7 +4032,7 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       icon: incoming.icon,
       tint: incoming.tint,
       timestamp: laterWorkTimestamp(existing.timestamp, incoming.timestamp),
-      body: mergeWorkInlineText(existing.body ?? "", incoming.body ?? ""),
+      body: mergeWorkReasoningFragment(existing.body ?? "", incoming.body ?? ""),
       bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
       metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
@@ -4887,7 +4922,7 @@ func normalizedWorkTurnId(_ turnId: String?) -> String? {
   return key.isEmpty ? nil : key
 }
 
-private func workTurnId(for event: WorkChatEvent) -> String? {
+func workTurnId(for event: WorkChatEvent) -> String? {
   switch event {
   case .userMessage(_, _, let turnId, _, _, _),
        .userMessageResolution(_, _, _, _, _, let turnId),
