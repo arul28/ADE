@@ -74,7 +74,7 @@ describe("chat history ordering", () => {
     expect(merged[1]).toBe(result);
   });
 
-  it("keeps a completed tool result while a history snapshot fills the call input", () => {
+  it("drops a preexisting tool result omitted by the authoritative snapshot", () => {
     const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
       type: "tool_call", tool: "bash", args: {}, itemId: "call-2", logicalItemId: "logical-2", turnId: "turn-2",
     });
@@ -87,11 +87,32 @@ describe("chat history ordering", () => {
       logicalItemId: "logical-2", turnId: "turn-2",
     });
 
-    const merged = mergeAgentChatHistorySnapshot([updated], [call, result]);
+    const arrivalWatermark = captureAgentChatHistoryArrivalWatermark([call, result]);
+    const merged = mergeAgentChatHistorySnapshot([updated], [call, result], { arrivalWatermark });
 
-    expect(merged).toHaveLength(2);
+    expect(merged).toHaveLength(1);
     expect(merged[0]).toMatchObject({ event: { type: "tool_call", args: { command: "pnpm test" } } });
-    expect(merged[1]).toMatchObject({ event: { type: "tool_result", result: "passed", status: "completed" } });
+  });
+
+  it("retains a tool result that arrives while history is loading", () => {
+    const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "pnpm test" }, itemId: "call-3",
+      logicalItemId: "logical-3", turnId: "turn-3",
+    });
+    const result = toolEnvelope("2026-07-29T10:00:02.000Z", {
+      type: "tool_result", tool: "bash", result: "passed", itemId: "call-3", logicalItemId: "logical-3",
+      turnId: "turn-3", status: "completed",
+    });
+    const tail = envelope("2026-07-29T10:00:03.000Z", "tail");
+    const arrivalWatermark = captureAgentChatHistoryArrivalWatermark([call]);
+
+    const merged = mergeAgentChatHistorySnapshot(
+      [call, tail],
+      [call, result, tail],
+      { arrivalWatermark },
+    );
+
+    expect(merged).toEqual([call, result, tail]);
   });
 
   it("keeps newer streamed tool arguments inside a stale snapshot range", () => {

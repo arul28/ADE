@@ -86,6 +86,7 @@ function logicalToolItemKey(entry: AgentChatEventEnvelope): string | null {
 function upsertRepeatedToolCalls(
   events: AgentChatEventEnvelope[],
   previous: readonly AgentChatEventEnvelope[] = [],
+  shouldRetainPreviousResult: (entry: AgentChatEventEnvelope) => boolean = () => true,
 ): AgentChatEventEnvelope[] {
   let result = events;
   const callIndexes = new Map<string, number>();
@@ -150,7 +151,7 @@ function upsertRepeatedToolCalls(
   const previousResults = previous.filter((entry) => entry.event.type === "tool_result");
   const missingResults = previousResults.filter((entry) => {
     const key = logicalToolItemKey(entry);
-    if (!key || !callIndexes.has(key) || resultKeys.has(key)) return false;
+    if (!shouldRetainPreviousResult(entry) || !key || !callIndexes.has(key) || resultKeys.has(key)) return false;
     resultKeys.add(key);
     return true;
   });
@@ -299,7 +300,11 @@ export function mergeAgentChatHistorySnapshot(
   const merged = inFlightEvents.length
     ? orderAgentChatEventsChronologically([...baseMerged, ...inFlightEvents])
     : baseMerged;
-  const reconciled = upsertRepeatedToolCalls(merged, existing);
+  const reconciled = upsertRepeatedToolCalls(
+    merged,
+    existing,
+    (entry) => arrivalWatermark !== undefined && !arrivalWatermark.has(identityKey(entry)),
+  );
 
   if (
     reconciled.length === existing.length
