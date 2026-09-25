@@ -271,6 +271,9 @@ export function WorkSidebar({
   // Status now spans every tool, not just the one on screen: the picker cards
   // and the header's activity dots both report on tools nobody is looking at.
   const panelSessionId = contextTarget?.kind === "chat" ? contextTarget.sessionId : null;
+  // A bump re-reads the lane's Apple device after the card menu boots, releases,
+  // or deletes it — the web client gets no `apple.device.state` events.
+  const [appleDeviceRefreshKey, setAppleDeviceRefreshKey] = useState(0);
   const {
     statuses,
     loading: statusesLoading,
@@ -284,6 +287,7 @@ export function WorkSidebar({
     terminalOwnerSessionId: statusOwnerSessionId,
     prSessionId: panelSessionId,
     activeTool: tool,
+    appleDeviceRefreshKey,
   });
 
   function resolveToolAttributionReason(): string | null {
@@ -484,7 +488,7 @@ export function WorkSidebar({
    * exactly what it always was.
    */
   const toolCardActions = useMemo<Partial<Record<WorkSidebarTab, ReactNode>>>(() => {
-    if (!laneId || !appleDevice?.udid) return {};
+    if (!laneId || !appleDevice) return {};
     return {
       ios: (
         <AppleToolCardMenu
@@ -493,6 +497,7 @@ export function WorkSidebar({
           chatSessionId={panelSessionId}
           runtimePin={runtimePin}
           onOpenTool={() => selectTool("ios")}
+          onMutated={() => setAppleDeviceRefreshKey((nonce) => nonce + 1)}
         />
       ),
     };

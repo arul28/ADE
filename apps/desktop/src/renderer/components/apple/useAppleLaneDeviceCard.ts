@@ -24,23 +24,27 @@ const POLL_MS = 6_000;
 export type AppleLaneDeviceCard = {
   name: string;
   state: "starting" | "running" | "off";
-  /**
-   * The lane's device udid, and whether ADE created it.
-   *
-   * Optional so a partial card (a test, an older payload) still typechecks —
-   * the hook always sets both from the lane row. The card's action menu needs
-   * them: `clone` is ADE's to delete, `attached` is only ever released.
-   */
-  udid?: string;
-  origin?: "clone" | "attached";
+  /** The lane's device udid. The menu boots it by name. */
+  udid: string;
+  /** `clone` is ADE's to delete; `attached` is the user's and only ever released. */
+  origin: "clone" | "attached";
 };
 
 export function useAppleLaneDeviceCard(args: {
   laneId: string | null;
   runtimePin: OpenProjectBinding | null;
   enabled: boolean;
+  /**
+   * Bump to re-read now.
+   *
+   * The card normally learns about a change from the `apple.device.state`
+   * event feed, but the hosted web client receives no Apple events — so the
+   * card menu's own mutations request a fresh read instead of waiting out the
+   * poll. Ignored when `enabled` is false.
+   */
+  refreshKey?: unknown;
 }): AppleLaneDeviceCard | null {
-  const { laneId, runtimePin, enabled } = args;
+  const { laneId, runtimePin, enabled, refreshKey } = args;
   const [card, setCard] = useState<AppleLaneDeviceCard | null>(null);
   const [starting, setStarting] = useState(false);
   const [readNonce, setReadNonce] = useState(0);
@@ -87,7 +91,7 @@ export function useAppleLaneDeviceCard(args: {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [enabled, laneId, readNonce]);
+  }, [enabled, laneId, readNonce, refreshKey]);
 
   useEffect(() => {
     if (!enabled || !laneId) return undefined;
