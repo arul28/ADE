@@ -1282,6 +1282,9 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The Hub's glass composer over a scrolling list; `-adePreviewFocusComposer`
   /// opens it. See `HubComposerPreviewHost` in `WorkNewChatScreen.swift`.
   case hubComposer = "hub-composer"
+  /// The Chat Info sheet built from a real transcript file
+  /// (`-adeBenchTranscript <path>`). See `WorkChatInfoPreviewHost`.
+  case chatInfo = "chat-info"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1332,6 +1335,8 @@ struct ADEPreviewScreenHost: View {
       )
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
+    case .chatInfo:
+      WorkChatInfoPreviewHost()
     case .tools:
       WorkToolsSheet(
         laneId: WorkProofPreviewData.laneId,
@@ -1832,3 +1837,55 @@ enum WorkListPreviewData {
 }
 
 #endif
+
+
+/// Chat Info over a real transcript, derived with the app's own builders, so a
+/// simulator screenshot shows the sheet as a real chat fills it.
+struct WorkChatInfoPreviewHost: View {
+  @State private var expanded: Set<String> = []
+
+  private struct Derived {
+    var sessionId = "preview"
+    var subagents: [WorkSubagentSnapshot] = []
+    var scheduled: [WorkScheduledWorkSnapshot] = []
+    var taskList: WorkChatTaskListSnapshot?
+    var sources: WorkChatSourceList?
+  }
+
+  private static let derived: Derived = {
+    let options = WorkChatScrollBenchOptions.fromLaunchArguments()
+    guard let path = options.transcriptPath else { return Derived() }
+    let events = WorkChatScrollBenchLoader.load(path: path, limit: options.limit)
+    var filter = WorkSubagentTranscriptFilter()
+    let admitted = filter.admit(events.map(\.envelope)) ?? []
+    let transcript = admitted.map(makeWorkChatEnvelope(from:)).sorted(by: workChatEnvelopeOrderedBefore)
+    return Derived(
+      sessionId: transcript.first?.sessionId ?? "preview",
+      subagents: buildWorkSubagentSnapshots(from: transcript),
+      scheduled: buildWorkScheduledWorkSnapshots(from: transcript),
+      taskList: buildWorkChatTaskListSnapshot(from: transcript),
+      sources: buildWorkChatSourceList(from: transcript)
+    )
+  }()
+
+  var body: some View {
+    let data = Self.derived
+    WorkChatInfoDetailsSheet(
+      sessionId: data.sessionId,
+      subagentSnapshots: data.subagents,
+      scheduledWorkSnapshots: data.scheduled,
+      scheduledWorkPaused: false,
+      nextWakeAt: nil,
+      provider: "claude",
+      expandedTaskIds: $expanded,
+      sessionModel: "claude-opus-5",
+      sourceRefs: data.sources?.refs ?? [],
+      omittedSourceRefCount: data.sources?.omittedCount ?? 0,
+      taskList: data.taskList,
+      onSelect: { _ in },
+      onCancelScheduledWork: { _ in },
+      onSetScheduledWorkPaused: { _ in },
+      onStopTask: { _ in }
+    )
+  }
+}
