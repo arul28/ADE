@@ -22,6 +22,7 @@ function renderRail(overrides: Partial<React.ComponentProps<typeof AppleDeviceRa
     screenshotPending: false,
     orientation: "portrait",
     onHome: vi.fn(),
+    onHardwareButton: vi.fn(),
     onOrientation: vi.fn(),
     onScreenshot: vi.fn(),
     onToggleTools: vi.fn(),
@@ -64,6 +65,7 @@ describe("AppleDeviceRail", () => {
     const labels = railButtons().map((button) => button.getAttribute("aria-label"));
     expect(labels).toEqual([
       "Home",
+      "Hardware buttons",
       "Orientation: Portrait",
       "Inspect elements",
       "Save screenshot",
@@ -150,6 +152,7 @@ describe("AppleDeviceRail", () => {
     renderRail({ containerWidth: 320 });
     expect(railButtons().map((button) => button.getAttribute("aria-label"))).toEqual([
       "Home",
+      "Hardware buttons",
       "Orientation: Portrait",
       "Device tools",
       "More device actions",
@@ -203,6 +206,25 @@ describe("AppleDeviceRail", () => {
     const items = screen.getAllByRole("menuitem").map((node) => node.textContent);
     expect(screen.getByText("iPhone 17 Pro · iOS 26.2")).toBeTruthy();
     expect(items).toEqual(["Float over chat", "Switch device…", "Power off"]);
+  });
+
+  it("presses the device's other hardware buttons through one menu", () => {
+    const props = renderRail();
+    const cases: Array<[string, string]> = [
+      ["Lock", "lock"],
+      ["Volume up", "volume-up"],
+      ["Volume down", "volume-down"],
+      ["Siri", "siri"],
+      ["App switcher", "app-switcher"],
+    ];
+    for (const [label, name] of cases) {
+      // Radix closes the menu on select, so reopen it for each key.
+      openMenu("Hardware buttons");
+      fireEvent.click(screen.getByRole("menuitem", { name: label }));
+      expect(props.onHardwareButton).toHaveBeenLastCalledWith(name);
+    }
+    // The helper cannot press shake, so the rail must not offer it.
+    expect(screen.queryByRole("menuitem", { name: /shake/i })).toBeNull();
   });
 
 });

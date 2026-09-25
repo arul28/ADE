@@ -8,14 +8,20 @@ import {
   Cube,
   DeviceMobile,
   DotsThree,
+  GameController,
   House,
+  Lock,
+  Microphone,
   PictureInPicture,
   Power,
   Record,
   SlidersHorizontal,
+  SpeakerHigh,
+  SpeakerLow,
+  SquaresFour,
   Stop,
 } from "@phosphor-icons/react";
-import type { AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
+import type { AppleDeviceOrientation, AppleHardwareButtonName } from "../../../shared/types/iosSimulator";
 import {
   APPLE_ORIENTATION_CHOICES,
   appleOrientationIconDegrees,
@@ -56,6 +62,13 @@ export type AppleDeviceRailProps = {
   /** A rotation is in flight and the device has not confirmed it yet. */
   orientationPending?: boolean;
   onHome: () => void;
+  /**
+   * Press one of the device's physical buttons (lock, volume, Siri, app
+   * switcher). `shake` is deliberately absent: this Xcode's `simctl` and the
+   * helper cannot press it, so the service refuses it, and a control that can
+   * only fail is worse than no control.
+   */
+  onHardwareButton: (name: AppleHardwareButtonName) => void;
   /** §V2: rotate TO a named orientation. The blind cycle is gone. */
   onOrientation: (orientation: AppleDeviceOrientation) => void;
   onScreenshot: () => void;
@@ -83,15 +96,16 @@ export type AppleDeviceRailProps = {
 /**
  * The device's controls, in one pill on the right edge of the picture.
  *
- * Round 4 §A5 fixes the order and the contents: Home, Rotate, Inspect,
- * Screenshot, Record, View, Tools, More. Appearance and Text size are GONE
- * from here — they were duplicated in the drawer, which is where device
- * settings live; Inspect and Record came the other way, out of the drawer,
- * because they act on the picture rather than on the device's settings.
+ * Round 4 §A5 fixes the order and the contents: Home, Hardware buttons,
+ * Rotate, Inspect, Screenshot, Record, View, Tools, More. Appearance and Text
+ * size are GONE from here — they were duplicated in the drawer, which is where
+ * device settings live; Inspect and Record came the other way, out of the
+ * drawer, because they act on the picture rather than on the device's settings.
  *
  * `Shake` — which the service refuses with `APPLE_BUTTON_UNSUPPORTED` — still
  * does not exist as a control at all, because a button that can only fail is
- * worse than no button.
+ * worse than no button. Lock, volume, Siri and the app switcher do work and
+ * live in the one Hardware buttons menu.
  */
 export function AppleDeviceRail({
   containerWidth,
@@ -108,6 +122,7 @@ export function AppleDeviceRail({
   orientation,
   orientationPending = false,
   onHome,
+  onHardwareButton,
   onOrientation,
   onScreenshot,
   onToggleTools,
@@ -152,6 +167,40 @@ export function AppleDeviceRail({
         <RailButton label="Home" disabled={hardwareDisabled} onClick={onHome}>
           <House size={16} />
         </RailButton>
+        {/*
+          * The rest of the device's physical buttons. They live in one menu
+          * rather than five more rail icons: the rail is 28px circles and the
+          * lock/volume/Siri/app-switcher keys are occasional, so a labelled
+          * list keeps the rail legible. `shake` is not here — the helper cannot
+          * press it and the service refuses it.
+          */}
+        <RailMenu
+          label="Hardware buttons"
+          disabled={hardwareDisabled}
+          icon={<GameController size={16} />}
+        >
+          <div className={MENU_LABEL_CLASS}>Hardware buttons</div>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onHardwareButton("lock")}>
+            <Lock size={14} />
+            Lock
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onHardwareButton("volume-up")}>
+            <SpeakerHigh size={14} />
+            Volume up
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onHardwareButton("volume-down")}>
+            <SpeakerLow size={14} />
+            Volume down
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onHardwareButton("siri")}>
+            <Microphone size={14} />
+            Siri
+          </DropdownMenu.Item>
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onHardwareButton("app-switcher")}>
+            <SquaresFour size={14} />
+            App switcher
+          </DropdownMenu.Item>
+        </RailMenu>
         {/*
           * §V2: the orientation control, which SHOWS the orientation.
           *

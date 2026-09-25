@@ -146,8 +146,11 @@ affected.
 The tool is **Apple Development**, one pane inside the Work tools pane. There
 is no separate column.
 
-- The floating rail carries Home, Rotate, Inspect, Screenshot, Record, the
-  3D/Flat view toggle, Tools and More. Every button is labelled.
+- The floating rail carries Home, a **Hardware buttons** menu (Lock, Volume
+  up/down, Siri, app switcher), Rotate, Inspect, Screenshot, Record, the
+  3D/Flat view toggle, Tools and More. Every button is labelled. `shake` is
+  deliberately not offered: the helper cannot press it and the service refuses
+  it, so a control for it could only fail.
 - The drawer has four collapsible groups — Device, App, Capture, Preview Lab —
   one open at a time, and a closed group is unmounted so its polling stops.
 - 3D is the default view and renders the real Apple body. Flat is the same
