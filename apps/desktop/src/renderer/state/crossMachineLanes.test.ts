@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { createElement, type ReactNode } from "react";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatSession,
@@ -599,6 +599,150 @@ describe("union memo stability", () => {
     rerender({ roster: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })] });
 
     expect(result.current.foreignRows[0]?.sessions ?? []).toHaveLength(0);
+  });
+});
+
+describe("This Mac's slice resolves from the live connection snapshot", () => {
+  const remoteBinding: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    runtimeName: "Mac Studio (12)",
+    transport: "ssh",
+    projectId: "project-a",
+    rootPath: "/repo-a",
+    displayName: "Repo A",
+  };
+
+  /**
+   * A tab that restores straight to a remote binding reads its first connection
+   * snapshot while the remote is still dialing, so the project (and its origin)
+   * are absent. Before the fix `thisMachineBinding` stayed null and This Mac's
+   * chats never entered the union until the user switched machines and back;
+   * the local rows were simply missing from the sidebar.
+   */
+  it("reads This Mac once the bound project arrives in a later snapshot", async () => {
+    vi.useFakeTimers();
+    // The union's own sync engine and this hook's identity resolver both
+    // subscribe to the same snapshot feed, so the mock has to fan out.
+    const snapshotListeners = new Set<(snapshot: unknown) => void>();
+    const emitSnapshot = (snapshot: unknown) => {
+      for (const listener of [...snapshotListeners]) listener(snapshot);
+    };
+    const listLanes = vi.fn(async () => [makeLane({ id: "lane-this-mac" })]);
+    const listSessions = vi.fn(async () => [
+      makeSession({ id: "session-this-mac", laneId: "lane-this-mac" }),
+    ]);
+    window.ade = {
+      project: {
+        listRecent: vi.fn(async () => [
+          {
+            rootPath: "/Users/me/repo-a",
+            displayName: "Repo A (local)",
+            lastOpenedAt: "2026-07-20T10:00:00.000Z",
+            exists: true,
+            kind: "local",
+            gitOriginUrl: "git@github.com:acme/repo-a.git",
+          },
+        ]),
+      },
+      lanes: { list: listLanes },
+      sessions: { list: listSessions },
+      prs: { listAll: vi.fn(async () => []) },
+      remoteRuntime: {
+        callAction: vi.fn(),
+        // The remote is still dialing: no project list yet.
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [{
+            state: "connecting",
+            target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+            projects: [],
+          }],
+          connectedCount: 0,
+          updatedAt: 1,
+        })),
+        onConnectionSnapshotChanged: vi.fn((listener: (snapshot: unknown) => void) => {
+          snapshotListeners.add(listener);
+          return () => {
+            snapshotListeners.delete(listener);
+          };
+        }),
+      },
+    } as unknown as typeof window.ade;
+
+    expect(resolveThisMachineBindingForOrigin(
+      [{
+        rootPath: "/Users/me/repo-a",
+        displayName: "Repo A (local)",
+        lastOpenedAt: "2026-07-20T10:00:00.000Z",
+        exists: true,
+        kind: "local",
+        gitOriginUrl: "git@github.com:acme/repo-a.git",
+      }],
+      "git@github.com:acme/repo-a.git",
+    )).toMatchObject({ key: "local:/Users/me/repo-a" });
+
+    useAppStore.setState({
+      project: { rootPath: "/repo-a", displayName: "Repo A", baseRef: "main" },
+      projectBinding: remoteBinding,
+      lanes: [makeLane({ id: "lane-studio" })],
+    });
+
+    const { result, unmount } = renderHook(() => useCrossMachineLaneUnion(true, []));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    // First pass owns no local counterpart, so This Mac is never read.
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(result.current.foreignRows.some((row) => row.machineId === THIS_MACHINE_ID)).toBe(false);
+
+    // The connection comes up and reports the project with its origin.
+    expect(snapshotListeners.size).toBeGreaterThan(0);
+    act(() => {
+      emitSnapshot({
+        connections: [{
+          state: "connected",
+          target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+          projects: [{
+            projectId: "project-a",
+            rootPath: "/repo-a",
+            displayName: "Repo A",
+            gitOriginUrl: "git@github.com:acme/repo-a.git",
+          }],
+        }],
+        connectedCount: 1,
+        updatedAt: 2,
+      });
+    });
+    // Flush the async identity resolution and the scope effect it triggers
+    // BEFORE advancing timers: the union only arms its coalescing timer once
+    // the new scope has rendered, and that timer must land inside the window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+
+    expect(listSessions).toHaveBeenCalledWith(
+      { limit: 60 },
+      {
+        kind: "local",
+        key: "local:/Users/me/repo-a",
+        rootPath: "/Users/me/repo-a",
+        displayName: "Repo A (local)",
+        gitOriginUrl: "git@github.com:acme/repo-a.git",
+      },
+    );
+    expect(result.current.foreignRows.some(
+      (row) => row.machineId === THIS_MACHINE_ID
+        && row.sessions.some((session) => session.id === "session-this-mac"),
+    )).toBe(true);
+
+    // This hook subscribes while active; without an explicit unmount its
+    // cleanup leaks into later tests in this file.
+    unmount();
   });
 });
 

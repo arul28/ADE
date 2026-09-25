@@ -2210,10 +2210,49 @@ export function useCrossMachineLaneUnion(
       });
       return;
     }
-    const loadIdentity = async () => {
-      const projects = await listRecent();
-      if (cancelled) return null;
+    // Only write when something the sync scope keys on actually changed. The
+    // scope effect depends on `thisMachineBinding`'s identity and the snapshot
+    // subscription below re-resolves it on every connection tick, so an
+    // unguarded write would tear down and restart the whole union each tick.
+    const applyIdentity = (identity: {
+      originUrl: string | null;
+      thisMachineBinding: Extract<OpenProjectBinding, { kind: "local" }> | null;
+    }) => {
+      setLocalRepoIdentity((current) => {
+        if (!current || current.scopeKey !== scopeKey) return { scopeKey, ...identity };
+        // A newer snapshot can transiently omit the bound project while the
+        // remote reconnects. Never downgrade an already-resolved local
+        // counterpart to null for the same scope, or the union would drop This
+        // Mac's chats again until the project list refilled.
+        if (
+          current.thisMachineBinding
+          && !identity.thisMachineBinding
+          && identity.originUrl == null
+        ) {
+          return current;
+        }
+        if (
+          current.originUrl === identity.originUrl
+          && current.thisMachineBinding?.key === identity.thisMachineBinding?.key
+        ) {
+          return current;
+        }
+        return { scopeKey, ...identity };
+      });
+    };
+    // Recents are stable for the life of this effect — opening a local project
+    // changes `projectRoot`/`scopeKey` and re-runs it — so the snapshot
+    // subscription reuses this promise instead of re-reading on every tick.
+    const projectsPromise = listRecent().then((projects) => {
+      if (cancelled) return projects;
       rememberProjectOriginSummaries(projects, { replace: true });
+      return projects;
+    });
+    const loadIdentity = async (
+      snapshotOverride?: RemoteRuntimeConnectionSnapshot,
+    ) => {
+      const projects = await projectsPromise;
+      if (cancelled) return null;
       if (!boundTargetId || !boundProjectId) {
         const project = projects.find((candidate) => candidate.rootPath === projectRoot);
         return {
@@ -2221,7 +2260,8 @@ export function useCrossMachineLaneUnion(
           thisMachineBinding: null,
         };
       }
-      const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
+      const snapshot = snapshotOverride
+        ?? await window.ade.remoteRuntime.getConnectionSnapshot();
       if (cancelled) return null;
       const connection = snapshot.connections.find(
         (candidate) => candidate.target.id === boundTargetId,
@@ -2252,22 +2292,37 @@ export function useCrossMachineLaneUnion(
         ),
       };
     };
-    void loadIdentity()
-      .then((identity) => {
-        if (cancelled || identity == null) return;
-        setLocalRepoIdentity({ scopeKey, ...identity });
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setLocalRepoIdentity({
-            scopeKey,
-            originUrl: null,
-            thisMachineBinding: null,
-          });
-        }
-      });
+    const resolveAndApply = (snapshotOverride?: RemoteRuntimeConnectionSnapshot) => {
+      void loadIdentity(snapshotOverride)
+        .then((identity) => {
+          if (cancelled || identity == null) return;
+          applyIdentity(identity);
+        })
+        .catch(() => {
+          if (cancelled) return;
+          // A failed read must not clobber an identity already resolved for
+          // this scope; only seed the empty one on a first-run failure.
+          setLocalRepoIdentity((current) =>
+            current && current.scopeKey === scopeKey
+              ? current
+              : { scopeKey, originUrl: null, thisMachineBinding: null });
+        });
+    };
+    resolveAndApply();
+    // The bound machine's project list — and with it the origin that locates the
+    // local checkout of the same repo — only arrives once its connection
+    // snapshot has loaded. When a tab restores straight to a remote binding that
+    // snapshot is usually still dialing on the first pass, so `thisMachineBinding`
+    // resolved to null and This Mac's chats never entered the union until the
+    // user switched machines and back. Re-resolve on every snapshot change.
+    const unsubscribe = boundTargetId && boundProjectId
+      ? window.ade.remoteRuntime.onConnectionSnapshotChanged?.(
+          (snapshot) => resolveAndApply(snapshot),
+        )
+      : undefined;
     return () => {
       cancelled = true;
+      unsubscribe?.();
     };
   }, [boundProjectId, boundTargetId, projectRoot, scopeKey]);
 
