@@ -1947,6 +1947,9 @@ export async function createAdeRuntime(args: {
     computerUseArtifactBrokerService.setChatTurnStartResolver(
       (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,
     );
+    computerUseArtifactBrokerService.setChatTurnIdResolver(
+      (sessionId) => agentChatService?.getTurnId?.(sessionId) ?? null,
+    );
     bindIosSimulatorReleaseOnChatEnd({
       agentChatService,
       iosSimulatorService,

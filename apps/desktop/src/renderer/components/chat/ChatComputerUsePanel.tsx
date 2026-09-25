@@ -67,7 +67,7 @@ function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult
  * Who made the bytes, and whether an attached video predates the request.
  * One quiet line each; rows filed before ADE recorded this print nothing.
  */
-function ProofProvenanceLines({ artifact, className, warningClassName }: {
+export function ProofProvenanceLines({ artifact, className, warningClassName }: {
   artifact: ComputerUseArtifactView;
   className: string;
   warningClassName: string;
@@ -92,7 +92,7 @@ function ProofProvenanceLines({ artifact, className, warningClassName }: {
   );
 }
 
-function ProofPreviewFailureNotice({ failureText }: { failureText: string }) {
+export function ProofPreviewFailureNotice({ failureText }: { failureText: string }) {
   return (
     <Banner
       model={{ id: "proof-preview-failed", tone: "warning", title: failureText }}
@@ -162,7 +162,7 @@ function VideoProofPoster({
   );
 }
 
-function ArtifactLightbox({
+export function ArtifactLightbox({
   artifact,
   preview,
   failed,

@@ -149,6 +149,7 @@ import { readCodexIsBlocking } from "../../../shared/codexRequestUserInput";
 import {
   codexComputerUseToolCall,
 } from "../../../shared/codexComputerUseStatus";
+import { PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { parseCodexPluginList } from "../../../shared/codexPluginList";
 import {
   countHumanChildMessagesForTurn,
@@ -7726,6 +7727,16 @@ export function buildLinearSessionDirective(
 }
 
 /**
+ * How the agent shows proof inside its answer. The user reads the answer, not
+ * the drawer, so the proof goes next to the claim it proves.
+ */
+const PROOF_IN_ANSWER_GUIDANCE = [
+  "Show proof in your answer, directly under the claim it proves. Every proof command prints a `cite:` line such as `![caption](ade-proof://<id>)`; paste it into your message. Pictures show inline and videos play inline.",
+  `For a before/after, write a fenced \`\`\`${PROOF_COMPARE_FENCE_LANGUAGE} block with the lines \`before: <id> <label>\`, \`after: <id> <label>\` and an optional \`caption: <one sentence>\`. You may also compose an image yourself (a crop, a side-by-side), file it with \`ade proof attach\`, and cite it.`,
+  "Give each item a caption that says what it shows, and an honest caveat when it does not show everything (mock data, a partial state, a step you could not check). Cite as many items as the claims need, and choose the ones that show the claim instead of every capture. Proof that ADE captured or recorded, and that your answer cites, shows as Verified.",
+].join("\n");
+
+/**
  * Identity of one rendering of the computer-use directive.
  *
  * The directive's text is derived entirely from which backends are available,
@@ -7855,6 +7866,7 @@ export function buildComputerUseDirective(
       options.macDesktopAvailable
         ? "Proof is intentional. For work on the lane's Mac Desktop, file a still with `ade mac-desktop proof` or `ade proof capture`, and a video with `ade mac-desktop record` or `ade proof record`; all of them capture the lane's screen, never the user's, and `ade proof capture/record` are refused until the lane screen is started. `--real-screen` captures the user's whole real screen — use it only when the user asks. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
         : "Proof is intentional. File proof from the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`), or use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. `ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — use it only when the user asks. Add logs only as secondary context unless the user explicitly asks for them.",
+      PROOF_IN_ANSWER_GUIDANCE,
     ].join("\n"),
   );
 
@@ -10523,6 +10535,12 @@ export function createAgentChatService(args: {
    * or is deleted.
    */
   const lastTurnStartedAtBySession = new Map<string, string>();
+  /**
+   * The turn id of each chat's latest emitted event that named one. Proof that
+   * a chat files is stamped with it, so the proof belongs to the same turn the
+   * transcript's rows name, and not only to a time. Cleared with the map above.
+   */
+  const lastTurnIdBySession = new Map<string, string>();
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -18901,6 +18919,10 @@ export function createAgentChatService(args: {
     })();
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
     observeSessionActivity(managed, normalizedEvent);
+    const eventTurnId = (normalizedEvent as { turnId?: unknown }).turnId;
+    if (typeof eventTurnId === "string" && eventTurnId.length > 0) {
+      lastTurnIdBySession.set(managed.session.id, eventTurnId);
+    }
 
     if (normalizedEvent.type === "text") {
       queueBufferedTextEvent(managed, normalizedEvent);
@@ -22556,6 +22578,7 @@ export function createAgentChatService(args: {
 
     managedSessions.delete(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
+    lastTurnIdBySession.delete(managed.session.id);
     revokeBrowserActorToken(managed.session.id);
   };
 
@@ -53571,6 +53594,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
+    lastTurnIdBySession.delete(sessionId);
     revokeBrowserActorToken(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
@@ -55903,6 +55927,7 @@ export function createAgentChatService(args: {
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
     lastTurnStartedAtBySession.delete(trimmedSessionId);
+    lastTurnIdBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -59707,6 +59732,8 @@ export function createAgentChatService(args: {
         ?? lastTurnStartedAtBySession.get(sessionId)
         ?? null;
     },
+    /** The running turn's id, or the latest one's. Null when no event named a turn in this process. */
+    getTurnId: (sessionId: string): string | null => lastTurnIdBySession.get(sessionId) ?? null,
     getTurnStatus,
     ensureSessionSurface,
     hasActiveWorkloads,

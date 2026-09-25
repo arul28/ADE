@@ -1181,6 +1181,8 @@ struct WorkChatSessionView: View {
     var hasher = Hasher()
     hasher.combine(cardExpansionRenderSignature)
     hasher.combine(artifactContentRenderSignature)
+    // An answer's proof citation shows once its artifact is in the list.
+    hasher.combine(artifactsRenderSignature)
     hasher.combine(actionInFlight)
     hasher.combine(isLive)
     hasher.combine(hostUnreachable)
@@ -1472,6 +1474,15 @@ struct WorkChatSessionView: View {
   /// `ScrollView` + `LazyVStack`: UIKit compensates its own content offset
   /// when a cell self-sizes away from its estimate, so a row re-measuring
   /// above the viewport does not move the row the reader is looking at.
+  /// The chat's proof, for `ade-proof://` citations in its answers.
+  private var proofCitationContext: WorkProofCitationContext {
+    WorkProofCitationContext(
+      artifactsById: Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+      content: artifactContent,
+      load: onLoadArtifact
+    )
+  }
+
   @ViewBuilder
   private var transcriptView: some View {
     WorkChatTranscriptCollectionView(
@@ -1485,6 +1496,7 @@ struct WorkChatSessionView: View {
           transcriptRowView(row)
             .environmentObject(syncService)
             .environment(\.workOutputViewer, outputViewer)
+            .environment(\.workProofCitations, proofCitationContext)
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,

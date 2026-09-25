@@ -107,6 +107,10 @@ struct WorkMarkdownBlockView: View {
       }
     case .rule:
       Divider()
+    case .proofCitation(let artifactId, let caption):
+      WorkProofCitationView(artifactId: artifactId, caption: caption)
+    case .proofCompare(let compare):
+      WorkProofCompareView(compare: compare)
     }
   }
 

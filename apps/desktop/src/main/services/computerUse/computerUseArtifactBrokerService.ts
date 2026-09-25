@@ -819,6 +819,25 @@ export function createComputerUseArtifactBrokerService(args: {
     }
   };
 
+  /**
+   * The owning chat's current turn id, from the chat service (built after the
+   * broker). Proof is stamped with it so it belongs to a turn, not a time.
+   */
+  let resolveChatTurnId: ((sessionId: string) => string | null | undefined) | null = null;
+  const readOwnerTurnId = (owners: ComputerUseArtifactOwner[]): string | null => {
+    if (!resolveChatTurnId) return null;
+    for (const owner of owners) {
+      if (owner.kind !== "chat_session") continue;
+      try {
+        const turnId = resolveChatTurnId(owner.id)?.trim();
+        if (turnId) return turnId;
+      } catch {
+        // No turn id means the proof is placed by time, never a failed ingest.
+      }
+    }
+    return null;
+  };
+
   const proofJudge = createProofFingerprintJudge({
     db,
     projectId,
@@ -1371,6 +1390,7 @@ export function createComputerUseArtifactBrokerService(args: {
     const recordedFrom = proofSource === "ade-recorder" ? validIsoOrNull(request.provenance?.recordedFrom) : null;
     const recordedTo = proofSource === "ade-recorder" ? validIsoOrNull(request.provenance?.recordedTo) : null;
     const warnings: string[] = [];
+    const turnId = readOwnerTurnId(owners);
     const judged: Array<PreparedIngest["entries"][number] & {
       fingerprint: ContentFingerprint | null;
       /** Size only, for a file not hashed at filing; it keeps the duplicate check's size filter cheap. */
@@ -1418,6 +1438,7 @@ export function createComputerUseArtifactBrokerService(args: {
         ...(!fingerprint && unhashedBytes !== null ? { contentBytes: unhashedBytes } : {}),
         ...(mediaCreatedAt ? { mediaCreatedAt } : {}),
         ...(recordedBeforeRequest ? { recordedBeforeRequest: true } : {}),
+        ...(turnId ? { turnId } : {}),
       };
       const record = insertArtifactRecord({
         kind,
@@ -1496,6 +1517,11 @@ export function createComputerUseArtifactBrokerService(args: {
 
     /** Late wiring for the chat service, which is built after the broker. */
     setChatTurnStartResolver: proofJudge.setChatTurnStartResolver,
+
+    /** Late wiring for the chat service: the turn id new proof is stamped with. */
+    setChatTurnIdResolver(resolver: ((sessionId: string) => string | null | undefined) | null): void {
+      resolveChatTurnId = resolver;
+    },
 
     listArtifacts(args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] {
       // Public callers cap ordinary list responses at 200. Internal proof

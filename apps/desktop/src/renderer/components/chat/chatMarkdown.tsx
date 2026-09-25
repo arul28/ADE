@@ -5,6 +5,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 import { openLinkFromUi } from "../../lib/openExternal";
+import { parseProofCitationUrl } from "../../../shared/proofCitation";
 import { cn } from "../ui/cn";
 import {
   isWindowsAbsolutePath,
@@ -84,6 +85,9 @@ export function chatMarkdownUrlTransform(value: string): string {
   if (/^file:/i.test(value) || isWindowsAbsolutePath(value) || isWindowsAbsolutePath(decoded)) {
     return value;
   }
+  // A proof citation names an artifact id, not a location. Only the answer
+  // renderer's image override reads it; nothing opens it as a URL.
+  if (parseProofCitationUrl(value)) return value;
   return defaultUrlTransform(value);
 }
 
