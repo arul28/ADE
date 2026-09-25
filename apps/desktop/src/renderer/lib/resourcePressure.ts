@@ -3,6 +3,15 @@ import type { AppResourceRoleUsage, AppResourceUsageSnapshot } from "../../share
 export type ResourcePressureLevel = 0 | 1 | 2 | 3 | 4;
 
 let resourceUsageRequest: Promise<AppResourceUsageSnapshot | null> | null = null;
+let latestPressureLevel: ResourcePressureLevel = 0;
+
+/**
+ * The pressure level of the most recent resource sample (the top bar samples
+ * while a project is open), without a new IPC round trip. 0 before any sample.
+ */
+export function latestAppResourcePressureLevel(): ResourcePressureLevel {
+  return latestPressureLevel;
+}
 
 export function getAppResourceUsageCoalesced(): Promise<AppResourceUsageSnapshot | null> {
   if (resourceUsageRequest) return resourceUsageRequest;
@@ -10,6 +19,10 @@ export function getAppResourceUsageCoalesced(): Promise<AppResourceUsageSnapshot
   if (typeof getResourceUsage !== "function") return Promise.resolve(null);
 
   const request = getResourceUsage()
+    .then((usage) => {
+      latestPressureLevel = appResourcePressureLevel(usage);
+      return usage;
+    })
     .catch(() => null)
     .finally(() => {
       if (resourceUsageRequest === request) resourceUsageRequest = null;

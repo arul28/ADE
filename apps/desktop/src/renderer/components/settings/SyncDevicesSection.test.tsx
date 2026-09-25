@@ -296,7 +296,7 @@ describe("ThisMacCard", () => {
 
     render(<ThisMacCard sync={makeSync({ status })} sessionState="active" />);
 
-    expect(screen.getByRole("alert").textContent).toContain(
+    expect(screen.getByRole("status").textContent).toContain(
       "Phone sync is unavailable in this ADE installation.",
     );
     // The alert above carries the runtime's full explanation; the status line
@@ -483,12 +483,6 @@ describe("ThisMacCard", () => {
 
     expect(await screen.findByText("Port 8787 is already in use.")).toBeTruthy();
     expect(screen.getByText("This machine — ADE 1.2.28")).toBeTruthy();
-  });
-
-  it("no longer embeds a Connect-a-phone disclosure — the Phone tab owns pairing", () => {
-    render(<ThisMacCard sync={makeSync()} sessionState="active" />);
-    expect(screen.queryByText("Connect a phone")).toBeNull();
-    expect(screen.queryByText("Scan to pair")).toBeNull();
   });
 
   it("shows this computer's own name even while the window is remote-bound", () => {
@@ -919,6 +913,22 @@ describe("accountDirectorySummary", () => {
     expect(summary.label).not.toContain("open a project");
   });
 
+  it("names the owning ADE app and pid, and adds the one line that ends it", () => {
+    // The second ADE on a Mac cannot host sync while the first is running. Naming
+    // the owner is the whole point: "another ADE app" is not something a person
+    // can act on, and the pid disambiguates two ADE builds with one name.
+    const summary = summaryForState(
+      "no_active_sync_scope",
+      "Another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253).",
+    );
+    expect(summary).toEqual({
+      label:
+        "Signed in — another ADE app on this computer owns sync for this machine (ADE Alpha, pid 9253)",
+      healthy: false,
+      detail: "Quit that ADE to let this one host sync.",
+    });
+  });
+
   it("gives each actionable publish state its own instruction", () => {
     expect(summaryForState("account_signed_out", "The ADE brain is signed out.").label).toBe(
       "Signed in — the ADE background service is signed out",
@@ -928,6 +938,34 @@ describe("accountDirectorySummary", () => {
     );
     expect(summaryForState("http_error", null).label).toBe(
       "Signed in — can't reach your ADE account right now, retrying",
+    );
+  });
+
+  it("names an answered refusal instead of claiming the directory is unreachable", () => {
+    const summaryForRefusal = (lastHttpReason: string) => {
+      const status = {
+        routeHealth: {
+          accountDirectory: {
+            state: "http_error",
+            skipReason: null,
+            reachableEndpointCount: 0,
+            lastHttpStatus: 403,
+            lastHttpReason,
+          },
+        },
+      } as SyncRoleSnapshot;
+      return accountDirectorySummary(
+        status,
+        "active",
+        readThisMachineRefusal(status.routeHealth?.accountDirectory),
+      );
+    };
+
+    expect(summaryForRefusal("machine_revoked").label).toBe(
+      "This computer was removed from your account",
+    );
+    expect(summaryForRefusal("pairing_authentication_required").label).toBe(
+      "This computer needs you to confirm it's you before it can rejoin your account",
     );
   });
 

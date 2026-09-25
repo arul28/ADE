@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
 import { useNavigate } from "react-router-dom";
-import { Play, WarningCircle } from "@phosphor-icons/react";
+import { Play } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
   AgentChatFileRef,
@@ -17,6 +18,7 @@ import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
+import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
 import {
   getAppleMiniPlayerLaneDevice,
@@ -28,10 +30,10 @@ import {
 } from "../apple/appleMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
-import { LaneDiffPane } from "../lanes/LaneDiffPane";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
@@ -99,10 +101,11 @@ function useWorkToolMountScope(runtimePin: OpenProjectBinding | null): string {
 
 export function WarningBanner({ message }: { message: string }) {
   return (
-    <div className="flex shrink-0 items-start gap-2 border-b border-amber-400/15 bg-amber-500/[0.055] px-3 py-2 text-[11px] leading-4 text-amber-100/85">
-      <WarningCircle size={14} weight="fill" className="mt-0.5 shrink-0 text-amber-200/80" />
-      <span>{message}</span>
-    </div>
+    <Banner
+      layout="inline"
+      model={{ id: "work-tool-lane-warning", tone: "warning", title: message }}
+      style={{ margin: "6px 8px", flexShrink: 0 }}
+    />
   );
 }
 
@@ -133,14 +136,17 @@ function NoLaneNotice() {
 function NativePanelFrame({
   warningReason,
   padded,
+  frameRef,
   children,
 }: {
   warningReason: string | null;
   padded?: boolean;
+  /** Registers the tool as mounted, for `ade ui show`. */
+  frameRef?: (element: HTMLDivElement | null) => void;
   children: ReactNode;
 }) {
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div ref={frameRef} className="flex h-full min-h-0 flex-col">
       {warningReason ? <WarningBanner message={warningReason} /> : null}
       <div className={cn("min-h-0 flex-1", padded ? "overflow-auto px-3 py-3" : "overflow-hidden")}>
         {children}
@@ -236,14 +242,20 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     onInsertDraft,
   } = props;
   const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade ui show browser` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(workSurfaceKey("browser", mountScope, laneId ?? null));
   // A surface that cannot drive the tool shows what the desktop is doing with
   // it instead. Checked before the native panel so it never mounts a stubbed
   // namespace it would only fail against.
   if (isReadOnlyWorkTool("browser", toolContext)) {
-    return <WorkToolReadOnlyView tool="browser" laneId={laneId} />;
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="browser" laneId={laneId} />
+      </div>
+    );
   }
   return (
-    <NativePanelFrame warningReason={warningReason}>
+    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
       <ChatBuiltInBrowserPanel
         key={`work-browser:${mountScope}`}
         sessionId={panelSessionId}
@@ -275,38 +287,26 @@ function WorkGitTool({
   if (pinnedMachineOffline) {
     return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
-  const hasDiffSelection = Boolean(selectedPath || selectedCommit);
+  // The pane shows the selected file or commit's diff itself, in place of the
+  // file list, so it gets the full height. Wrapping it in an auto-height box
+  // and mounting a second diff below squeezed the pane's own sections to
+  // nothing and loaded every diff twice.
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className={cn("min-h-0 overflow-auto", hasDiffSelection ? "max-h-[58%] shrink-0" : "flex-1")}>
-        <LaneGitActionsPane
-          key={`work-git:${mountScope}:${laneId}`}
-          laneId={laneId}
-          runtimePin={runtimePin}
-          variant="pane"
-          autoRebaseEnabled={false}
-          onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
-          onSelectFile={onSelectFile}
-          onSelectCommit={onSelectCommit}
-          onClearDiffSelection={onClearDiffSelection}
-          selectedPath={selectedPath}
-          selectedMode={selectedMode}
-          selectedCommit={selectedCommit}
-          selectedCommitSha={selectedCommit?.sha ?? null}
-        />
-      </div>
-      {hasDiffSelection ? (
-        <div className="min-h-0 flex-1 border-t border-white/[0.08]">
-          <LaneDiffPane
-            laneId={laneId}
-            runtimePin={runtimePin}
-            selectedPath={selectedPath}
-            selectedFileMode={selectedMode}
-            selectedCommit={selectedCommit}
-            liveSync
-          />
-        </div>
-      ) : null}
+      <LaneGitActionsPane
+        key={`work-git:${mountScope}:${laneId}`}
+        laneId={laneId}
+        runtimePin={runtimePin}
+        autoRebaseEnabled={false}
+        onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
+        onSelectFile={onSelectFile}
+        onSelectCommit={onSelectCommit}
+        onClearDiffSelection={onClearDiffSelection}
+        selectedPath={selectedPath}
+        selectedMode={selectedMode}
+        selectedCommit={selectedCommit}
+        selectedCommitSha={selectedCommit?.sha ?? null}
+      />
     </div>
   );
 }
@@ -400,7 +400,7 @@ function WorkIosTool({
         .then((listed) => {
           if (cancelled) return;
           const lane = listed?.lane ?? null;
-          noteAppleMiniPlayerLaneDevice(laneId, lane
+          noteAppleMiniPlayerLaneDevice({ laneId, runtimePin: pinRef.current }, lane
             ? { udid: lane.udid, name: lane.name, runtime: lane.runtime, family: lane.family }
             : null);
         })
@@ -449,12 +449,15 @@ function WorkIosTool({
     releaseAppleMiniPlayerHandoverHold();
   });
 
+  // `ade apple show` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("ios", mountScope, laneId) : null);
+
   useLayoutEffect(() => {
     if (!laneId) return undefined;
     retakeAppleMiniPlayer();
     return () => {
       const canvas = paneNodeRef.current?.querySelector("canvas");
-      const udid = getAppleMiniPlayerLaneDevice(laneId)?.udid ?? null;
+      const udid = getAppleMiniPlayerLaneDevice({ laneId, runtimePin: pinRef.current })?.udid ?? null;
       if (canvas && udid && hasDecodedFrame(canvas)) {
         try {
           // JPEG, not PNG: this is a photograph of a screen that is about to be
@@ -477,7 +480,7 @@ function WorkIosTool({
   // 12px gutter and scroll container turned the device back into the drawer
   // this rebuild replaced.
   return (
-    <NativePanelFrame warningReason={warningReason}>
+    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
       {/* `contents`, so this ref holder generates no box at all and the pane
           stays the flex child it was — the node exists only to be queried for
           the decoder canvas during the unmount above. */}
@@ -535,6 +538,49 @@ function WorkAppControlTool({
   );
 }
 
+/**
+ * The lane's private macOS screen.
+ *
+ * Read-only on the hosted web client in the one sense that matters: no
+ * takeover and no real input, because there is no way to hold the input lease
+ * over a sync socket. It still plays the live picture when the host advertises
+ * `macDesktopStream`, and it can start or stop the lane's display. Everywhere
+ * else — including a Windows or Linux desktop watching a Mac-hosted lane —
+ * this is the full panel: the display lives on the runtime host, so the
+ * viewer's own platform never enters into it.
+ */
+function WorkMacDesktopTool({
+  laneId,
+  activeLane,
+  toolContext,
+  panelSessionId,
+  runtimePin,
+  warningReason,
+}: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
+  // `ade mac-desktop show` answers "shown" only once this is on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("mac-desktop", mountScope, laneId) : null);
+  if (isReadOnlyWorkTool("mac-desktop", toolContext)) {
+    return (
+      <div ref={mountRef} className="contents">
+        <WorkToolReadOnlyView tool="mac-desktop" laneId={laneId} />
+      </div>
+    );
+  }
+  if (!laneId) return <NoLaneNotice />;
+  return (
+    <NativePanelFrame warningReason={warningReason} padded frameRef={mountRef}>
+      <ChatMacDesktopPanel
+        key={`work-mac-desktop:${mountScope}`}
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        sessionId={panelSessionId}
+        runtimePin={runtimePin}
+      />
+    </NativePanelFrame>
+  );
+}
+
 function WorkPrTool({
   laneId,
   activeLane,
@@ -564,5 +610,6 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   files: WorkFilesTool,
   ios: WorkIosTool,
   "app-control": WorkAppControlTool,
+  "mac-desktop": WorkMacDesktopTool,
   pr: WorkPrTool,
 };

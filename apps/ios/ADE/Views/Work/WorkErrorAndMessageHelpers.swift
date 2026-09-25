@@ -35,7 +35,7 @@ func errorPresentation(for category: String) -> WorkErrorPresentation {
 }
 
 func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMessage] {
-  var fold = WorkChatMessageFold()
+  var fold = WorkChatMessageFold(hiddenSteerIds: workSteerIdsWithLatestQueuedRow(from: transcript))
   for envelope in transcript {
     fold.consume(envelope)
   }
@@ -43,6 +43,21 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
     metadataByTurn: workTurnModelMetadataByTurn(from: transcript),
     resolutionBySteerId: workUserMessageResolutionsBySteerId(from: transcript)
   )
+}
+
+/// Steer ids whose NEWEST `user_message` row is `queued`. A steer's newest row
+/// decides whether its bubble shows: a Cursor or OpenCode steer is shown as
+/// `accepted` while the live turn decides, and goes back to `queued` when the
+/// turn refuses it; its earlier bubble would then duplicate the queued card
+/// until it is sent. Reads only user messages (sparse rows).
+func workSteerIdsWithLatestQueuedRow(from transcript: [WorkChatEnvelope]) -> Set<String> {
+  var latestDeliveryStateBySteerId: [String: String] = [:]
+  for envelope in transcript {
+    if case .userMessage(_, _, _, let steerId?, let deliveryState, _) = envelope.event {
+      latestDeliveryStateBySteerId[steerId] = deliveryState ?? ""
+    }
+  }
+  return Set(latestDeliveryStateBySteerId.compactMap { $0.value == "queued" ? $0.key : nil })
 }
 
 /// The latest `user_message_resolution` per trimmed steer id (timestamp, then
@@ -95,7 +110,16 @@ func workUserMessageResolutionsBySteerId(
 ///   exactly what setting them at creation and filling them "if nil" on each
 ///   merge produces;
 /// - user-message resolutions by steer id.
+///
+/// `hiddenSteerIds` (`workSteerIdsWithLatestQueuedRow`) is a whole-transcript
+/// input read WHILE folding: every non-queued row of a hidden steer is
+/// skipped. A resumed fold may adopt a new set only when no steer whose
+/// membership changed had a non-queued row in the prefix (`canAdopt`);
+/// otherwise the caller refolds the messages from index 0.
 struct WorkChatMessageFold {
+  private(set) var hiddenSteerIds: Set<String>
+  /// Steer ids of every non-queued user row consumed so far (hidden or not).
+  private var consumedSettledSteerIds: Set<String> = []
   private(set) var messages: [WorkChatMessage] = []
   /// Per message (parallel to `messages`): the trimmed turn ids whose model
   /// metadata the full fold would consult, in order. Empty for user messages.
@@ -114,7 +138,19 @@ struct WorkChatMessageFold {
   /// the turn id; messages with a blank turn id are never duplicate targets.
   private var assistantIndicesByTurn: [String: [Int]] = [:]
 
-  init() {}
+  init(hiddenSteerIds: Set<String> = []) {
+    self.hiddenSteerIds = hiddenSteerIds
+  }
+
+  /// Whether the prefix folded so far is exactly what a fold started with
+  /// `newHiddenSteerIds` would have produced.
+  func canAdopt(hiddenSteerIds newHiddenSteerIds: Set<String>) -> Bool {
+    hiddenSteerIds.symmetricDifference(newHiddenSteerIds).isDisjoint(with: consumedSettledSteerIds)
+  }
+
+  mutating func adopt(hiddenSteerIds newHiddenSteerIds: Set<String>) {
+    hiddenSteerIds = newHiddenSteerIds
+  }
 
   mutating func consume(_ envelope: WorkChatEnvelope) {
     switch envelope.event {
@@ -123,6 +159,10 @@ struct WorkChatMessageFold {
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
         return
+      }
+      if let steerId {
+        consumedSettledSteerIds.insert(steerId)
+        if hiddenSteerIds.contains(steerId) { return }
       }
       if let lastIndex = messages.indices.last,
          messages[lastIndex].role == "user",
@@ -165,22 +205,26 @@ struct WorkChatMessageFold {
         ))
       }
     case .assistantText(let text, let turnId, let itemId):
+      let textPhase = envelope.textPhase
       let text = workStreamingTextByCollapsingRepeatedTailReplay(text)
       let metadataKey = turnId.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
       let isLiveFragment = envelope.sequence != nil
       let canMergeWithPreviousAssistant = itemId != nil || (previousEnvelopeWasAssistantText && isLiveFragment)
-      if let itemIndex = assistantFragmentIndexByItemId(turnId: turnId, itemId: itemId) {
+      if let itemIndex = assistantFragmentIndexByItemId(turnId: turnId, itemId: itemId, textPhase: textPhase) {
         messages[itemIndex].markdown = mergeWorkStreamingText(messages[itemIndex].markdown, text)
+        messages[itemIndex].textPhase = messages[itemIndex].textPhase ?? textPhase
         messages[itemIndex].assistantPreview = nil
         metadataTurnKeys[itemIndex].append(metadataKey)
       } else if let lastIndex = messages.indices.last,
          messages[lastIndex].role == "assistant",
          messages[lastIndex].turnId == turnId,
          messages[lastIndex].itemId == itemId,
+         assistantTextPhasesAllowMerge(messages[lastIndex].textPhase, textPhase),
          canMergeWithPreviousAssistant {
         messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
+        messages[lastIndex].textPhase = messages[lastIndex].textPhase ?? textPhase
         messages[lastIndex].assistantPreview = nil
-      } else if let duplicate = duplicateAssistantFragment(turnId: turnId, incoming: text) {
+      } else if let duplicate = duplicateAssistantFragment(turnId: turnId, textPhase: textPhase, incoming: text) {
         messages[duplicate.index].markdown = duplicate.merged
       } else {
         appendAssistant(WorkChatMessage(
@@ -189,7 +233,8 @@ struct WorkChatMessageFold {
           markdown: text,
           timestamp: envelope.timestamp,
           turnId: turnId,
-          itemId: itemId
+          itemId: itemId,
+          textPhase: textPhase
         ), metadataKey: metadataKey)
       }
       previousEnvelopeWasAssistantText = true
@@ -278,20 +323,23 @@ struct WorkChatMessageFold {
 
   /// The newest assistant message with the same stable item id whose turn id
   /// allows the merge.
-  private func assistantFragmentIndexByItemId(turnId: String?, itemId: String?) -> Int? {
+  private func assistantFragmentIndexByItemId(turnId: String?, itemId: String?, textPhase: String?) -> Int? {
     let normalizedItemId = normalizedAssistantItemId(itemId)
     guard !normalizedItemId.isEmpty, let candidates = assistantIndicesByItemId[normalizedItemId] else { return nil }
     return candidates.reversed().first { index in
-      assistantTurnIdsAllowStableItemMerge(messages[index].turnId, turnId)
+      assistantTextPhasesAllowMerge(messages[index].textPhase, textPhase)
+        && assistantTurnIdsAllowStableItemMerge(messages[index].turnId, turnId)
     }
   }
 
   /// The newest same-turn assistant message the incoming text duplicates, and
   /// the merged text. Only messages of the same non-blank turn qualify.
-  private func duplicateAssistantFragment(turnId: String?, incoming: String) -> (index: Int, merged: String)? {
+  private func duplicateAssistantFragment(turnId: String?, textPhase: String?, incoming: String) -> (index: Int, merged: String)? {
     guard let turnKey = assistantDuplicateTurnKey(turnId),
           let candidates = assistantIndicesByTurn[turnKey] else { return nil }
     for index in candidates.reversed() {
+      // The full fold skips a phase-incompatible candidate and keeps looking.
+      guard assistantTextPhasesAllowMerge(messages[index].textPhase, textPhase) else { continue }
       if let merged = mergedDuplicateAssistantText(existing: messages[index].markdown, incoming: incoming) {
         return (index, merged)
       }
@@ -306,6 +354,12 @@ private func assistantDuplicateTurnKey(_ turnId: String?) -> String? {
   guard let turnId else { return nil }
   let trimmed = workStreamingTrimmedView(turnId)
   return trimmed.isEmpty ? nil : String(trimmed)
+}
+
+private func assistantTextPhasesAllowMerge(_ lhs: String?, _ rhs: String?) -> Bool {
+  let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return left.isEmpty || right.isEmpty || left == right
 }
 
 private func normalizedAssistantItemId(_ itemId: String?) -> String {
@@ -1017,12 +1071,15 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
     timestamp: entry.timestamp,
     sequence: entry.sequence,
     event: makeWorkChatEvent(from: entry.event),
+    textPhase: agentChatEventTextPhase(entry.event),
     subagentTaskType: entry.subagentTaskType,
+    subagentProvider: entry.subagentProvider,
     subagentCommand: entry.subagentCommand,
     subagentSpawnKind: entry.subagentSpawnKind,
     subagentParentAgentId: entry.subagentParentAgentId,
     subagentSpawnDepth: entry.subagentSpawnDepth,
     subagentResourceLinks: entry.subagentResourceLinks ?? [],
+    subagentResumed: entry.subagentResumed,
     apiErrorStatus: entry.apiErrorStatus,
     isLegacySubagentCompletedFrame: entry.isLegacySubagentCompletedFrame,
     stopSource: entry.stopSource,
@@ -1091,6 +1148,11 @@ struct WorkSubagentTranscriptFilter {
   }
 }
 
+private func agentChatEventTextPhase(_ event: AgentChatEvent) -> String? {
+  guard case .text(_, _, _, _, let phase) = event else { return nil }
+  return phase
+}
+
 private func isSubagentTranscriptEnvelope(_ entry: AgentChatEventEnvelope) -> Bool {
   let target = entry.provenance?.targetKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   return target == "codex_subagent" || target == "subagent"
@@ -1103,7 +1165,7 @@ private func normalizedWorkEventId(_ value: String?) -> String? {
 
 private func workSubagentParentItemId(_ event: AgentChatEvent) -> String? {
   switch event {
-  case .subagentStarted(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _),
+  case .subagentStarted(_, _, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _),
        .subagentProgress(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _, _),
        .subagentResult(_, _, _, let parentAgentId, let parentToolUseId, _, _, _, _, _, _, _, _, _):
     return normalizedWorkEventId(parentToolUseId) ?? normalizedWorkEventId(parentAgentId)
@@ -1122,7 +1184,7 @@ private func workSubagentParentItemIds(from entries: [AgentChatEventEnvelope]) -
 private func workEventItemAndParentIds(_ event: AgentChatEvent) -> (itemId: String?, parentItemId: String?) {
   switch event {
   case .toolCall(_, _, let itemId, _, let parentItemId, _),
-       .toolResult(_, _, let itemId, _, let parentItemId, _, _):
+       .toolResult(_, _, let itemId, _, let parentItemId, _, _, _, _):
     return (normalizedWorkEventId(itemId), normalizedWorkEventId(parentItemId))
   case .command(_, _, _, let itemId, _, _, _, _, _),
        .fileChange(_, _, _, let itemId, _, _, _),
@@ -1171,7 +1233,7 @@ private func isSubagentChildWorkEvent(
 }
 
 /// Drop stale queued `user_message` rows once the same steerId has graduated
-/// to delivered/inline/failed, been resolved by a steer system notice, or has
+/// to a settled row, been resolved by a steer system notice, or has
 /// a non-queued Claude command lifecycle frame.
 func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !transcript.isEmpty else { return transcript }
@@ -1194,10 +1256,15 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
           queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
         }
       } else {
-        // A delivered/inline/failed row graduates at most ONE queued steer.
+        // A settled row graduates at most ONE queued steer.
         // Prefer the exact steerId match; only fall back to text (consuming a
         // single queued id) so duplicate prompts don't clear multiple pending
         // steers at once.
+        if steerId != nil, !isSettledSteerDeliveryState(deliveryState) {
+          // Not final: a refused Cursor/OpenCode inline steer comes back as
+          // `queued` on the same steerId, and that row must survive.
+          continue
+        }
         let normalizedText = normalizedQueuedSteerText(text)
         if let steerId {
           resolvedSteerIds.insert(steerId)
@@ -1359,6 +1426,7 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
     .assistantText(let existingText, let existingTurnId, let existingItemId),
     .assistantText(let incomingText, let incomingTurnId, let incomingItemId)
   ):
+    guard assistantTextPhasesAllowMerge(existing.textPhase, incoming.textPhase) else { return incoming }
     // Keep the earlier envelope's ordering key so a stable-key assistant message
     // doesn't jump to the latest fragment position when the transcript is sorted,
     // which would reorder the visible timeline around tool/status events.
@@ -1371,7 +1439,8 @@ private func mergedWorkChatEnvelope(existing: WorkChatEnvelope, incoming: WorkCh
         text: mergeWorkStreamingText(existingText, incomingText),
         turnId: incomingTurnId ?? existingTurnId,
         itemId: incomingItemId ?? existingItemId
-      )
+      ),
+      textPhase: incoming.textPhase ?? existing.textPhase
     )
   default:
     return incoming
@@ -2105,7 +2174,7 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     switch envelope.event {
     case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, _):
       if let steerId, deliveryState == "queued", !resolved.contains(steerId) {
-        if queue[steerId] == nil { order.append(steerId) }
+        if queue[steerId] == nil, !order.contains(steerId) { order.append(steerId) }
         queue[steerId] = WorkPendingSteerModel(
           id: steerId,
           text: text,
@@ -2122,7 +2191,12 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
         // steerId, then fall back to consuming a single text-matched queued id so
         // a duplicate prompt doesn't clear multiple pending steers at once.
         let normalizedText = normalizedQueuedSteerText(text)
-        if let steerId, deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
+        if let steerId, !isSettledSteerDeliveryState(deliveryState) {
+          // Offered to the live turn: off the staging strip, but not final. A
+          // refusal brings the same steerId back as `queued`.
+          queue.removeValue(forKey: steerId)
+          queuedSteerIdsByText[normalizedText]?.remove(steerId)
+        } else if let steerId {
           queue.removeValue(forKey: steerId)
           resolved.insert(steerId)
           if !normalizedText.isEmpty {
@@ -2150,6 +2224,11 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     }
   }
   return order.compactMap { queue[$0] }
+}
+
+/// Mirrors `isSettledSteerDeliveryState` in apps/desktop/src/shared/chatTranscript.ts.
+func isSettledSteerDeliveryState(_ state: String?) -> Bool {
+  state != "queued" && state != "accepted"
 }
 
 func normalizedQueuedSteerText(_ text: String) -> String {
@@ -2222,7 +2301,7 @@ func workPendingInputSweepState(from transcript: [WorkChatEnvelope]) -> WorkPend
       approvals.removeValue(forKey: itemId)
       questions.removeValue(forKey: itemId)
       swept.remove(itemId)
-    case .toolResult(_, _, let itemId, _, _, _),
+    case .toolResult(_, _, let itemId, _, _, _, _, _),
          .command(_, _, _, _, let itemId, _, _, _),
          .fileChange(_, _, _, _, let itemId, _):
       // A provider approval shares its tool call's itemId, so the tool resolving
@@ -2331,13 +2410,21 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["text", turnId ?? "", text].joined(separator: "|")
   case .toolCall(let tool, let argsText, let itemId, let parentItemId, let turnId):
     return ["tool_call", turnId ?? "", itemId, parentItemId ?? "", tool, argsText].joined(separator: "|")
-  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status):
+  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status, _, _):
     return ["tool_result", turnId ?? "", itemId, parentItemId ?? "", tool, status.rawValue, resultText].joined(separator: "|")
+  case .sources(let refs, let turnId, let omitted):
+    let refsKey = refs.map { "\($0.kind):\($0.url ?? $0.path ?? "")" }.joined(separator: ",")
+    return ["sources", turnId ?? "", refsKey, String(omitted ?? 0)].joined(separator: "|")
   case .activity(let kind, let detail, let turnId):
     return ["activity", turnId ?? "", kind, detail ?? ""].joined(separator: "|")
   case .plan(let steps, let explanation, let turnId):
     let stepDigest = steps.map { "\($0.status):\($0.text)" }.joined(separator: "\n")
     return ["plan", turnId ?? "", explanation ?? "", stepDigest].joined(separator: "|")
+  case .planProposal(let text, let turnId):
+    return ["plan_proposal", turnId ?? "", text].joined(separator: "|")
+  case .taskListUpdate(let items, let turnId):
+    let digest = items.map { "\($0.id):\($0.status.rawValue):\($0.description):\($0.activeForm ?? ""):\($0.cancelled == true)" }.joined(separator: "\n")
+    return ["todo_update", turnId ?? "", digest].joined(separator: "|")
   case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
     return ["subagent_started", turnId ?? "", taskId, agentId ?? "", agentType ?? "", parentToolUseId ?? "", description, background ? "1" : "0", label ?? "", model ?? "", reasoningEffort ?? ""].joined(separator: "|")
   case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):

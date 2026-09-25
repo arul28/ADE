@@ -25,6 +25,8 @@ import type { EventCategory } from "./eventTaxonomy";
 import { CATEGORY_META } from "./eventTaxonomy";
 import { useTimelineStore } from "./useTimelineStore";
 import type { ScopeLevel } from "./useTimelineStore";
+import { promptDialog } from "../ui/dialog/confirm";
+import { Z_LAYERS } from "../ui/zLayers";
 import {
   buildHistoryLaneActions,
   groupHistoryLaneActions,
@@ -157,24 +159,23 @@ export function TimelineToolbar({
       window.setTimeout(() => setExportNotice(null), 4000);
       return;
     }
-    const promptFn = typeof window.prompt === "function" ? window.prompt.bind(window) : null;
     let chosenLimit = 500;
-    if (promptFn) {
-      const raw = promptFn(
-        "Export how many rows? (1–10000, default 500)",
-        "500",
-      );
-      if (raw == null) return; // user cancelled
-      const trimmed = raw.trim();
-      if (trimmed.length) {
-        const parsed = Number.parseInt(trimmed, 10);
-        if (!Number.isFinite(parsed) || parsed <= 0) {
-          setExportNotice("Invalid export limit; must be a positive integer");
-          window.setTimeout(() => setExportNotice(null), 4000);
-          return;
-        }
-        chosenLimit = Math.min(10000, Math.max(1, parsed));
+    const raw = await promptDialog({
+      title: "Export how many rows? (1–10000, default 500)",
+      defaultValue: "500",
+      confirmLabel: "Export",
+      allowEmpty: true,
+    });
+    if (raw == null) return; // user cancelled
+    const trimmed = raw.trim();
+    if (trimmed.length) {
+      const parsed = Number.parseInt(trimmed, 10);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setExportNotice("Invalid export limit; must be a positive integer");
+        window.setTimeout(() => setExportNotice(null), 4000);
+        return;
       }
+      chosenLimit = Math.min(10000, Math.max(1, parsed));
     }
     try {
       const result = await exportFn({
@@ -205,9 +206,10 @@ export function TimelineToolbar({
   const focusLaneHasWorktree = Boolean(focusLane?.worktreePath?.trim());
 
   return (
-    <div className="flex flex-col gap-2 border-b border-white/[0.06] bg-white/[0.02] backdrop-blur-xl px-3 py-2">
-      {/* ── Row 0: Surface + lane (commits) ──────────────────── */}
-      <div className="flex items-center gap-2">
+    <div className="flex shrink-0 flex-col">
+      {/* ── Row 0: Surface + lane (commits). The page's top rail, the same
+          height and hairline as the sidebar tab row. ── */}
+      <div className="ade-page-rail gap-2 px-3">
         <div className="flex items-center gap-0.5">
           {SURFACE_OPTIONS.map(({ value, label, Icon }) => (
             <button
@@ -215,7 +217,7 @@ export function TimelineToolbar({
               type="button"
               onClick={() => setSurface(value)}
               className={cn(
-                "flex h-7 items-center gap-1 rounded-md border px-2 font-mono text-[10px] font-bold uppercase tracking-[0.5px] transition-colors",
+                "flex h-6 items-center gap-1 rounded-md border px-2 font-mono text-[10px] font-bold uppercase tracking-[0.5px] transition-colors",
                 surface === value
                   ? "border-[var(--color-accent)]/20 bg-[var(--color-accent)]/15 text-[var(--color-accent)]"
                   : "border-transparent text-[var(--color-muted-fg)] hover:bg-white/[0.04]",
@@ -232,7 +234,7 @@ export function TimelineToolbar({
               value={focusLaneId ?? ""}
               onChange={(e) => setFocusLaneId(e.target.value || null)}
               aria-label="Lane"
-              className="h-7 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
+              className="h-6 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
             >
               <option value="">Select lane…</option>
               {lanes.map((lane) => (
@@ -251,8 +253,9 @@ export function TimelineToolbar({
         ) : null}
       </div>
 
-      {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
       {showActivityControls ? (
+      <div className="flex flex-col gap-2 border-b border-white/[0.06] px-3 py-2">
+      {/* ── Row 1: View mode · Scope · Search · Gear ─────────── */}
       <div className="flex items-center gap-3">
         {/* View mode toggle */}
         <div className="flex items-center gap-0.5">
@@ -349,10 +352,8 @@ export function TimelineToolbar({
 
         <ColumnSettingsMenu columns={columns} onToggleColumn={toggleColumn} />
       </div>
-      ) : null}
 
       {/* ── Row 2: Category · Status · Time · Lanes ────────── */}
-      {showActivityControls ? (
       <div className="flex flex-wrap items-center gap-1.5" data-tour="history.filter">
         {/* Section label */}
         <span className="mr-1 font-sans text-[10px] font-bold uppercase tracking-[1px] text-muted-fg/60">
@@ -508,6 +509,7 @@ export function TimelineToolbar({
           </Button>
         )}
       </div>
+      </div>
       ) : null}
     </div>
   );
@@ -593,7 +595,7 @@ function LaneGitActionsMenu({
           disabled={!laneId}
           title={laneId ? "Lane git actions" : "Select a lane first"}
           className={cn(
-            "flex h-7 shrink-0 items-center gap-1 rounded-md border px-2",
+            "flex h-6 shrink-0 items-center gap-1 rounded-md border px-2",
             "border-white/[0.06] bg-white/[0.03] font-mono text-[10px] font-bold uppercase tracking-[0.5px]",
             "text-[var(--color-muted-fg)] transition-colors hover:bg-white/[0.06] hover:text-fg disabled:cursor-not-allowed disabled:opacity-40",
           )}
@@ -607,7 +609,8 @@ function LaneGitActionsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className="z-50 outline-none"
+          className="outline-none"
+          style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => event.preventDefault()}
         >
           <div className="flex max-h-[min(70vh,620px)] min-w-[260px] flex-col overflow-y-auto rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">
@@ -692,7 +695,8 @@ function ColumnSettingsMenu({
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className="z-50 outline-none"
+          className="outline-none"
+          style={{ zIndex: Z_LAYERS.popover }}
           onCloseAutoFocus={(event) => event.preventDefault()}
         >
           <div className="flex min-w-[190px] flex-col gap-1 rounded-md border border-white/[0.08] bg-[var(--color-card)] p-1 shadow-xl">

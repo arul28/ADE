@@ -812,6 +812,10 @@ function createWorkToolsNamespace(call: MiscCall): AdeNamespace<"workTools"> {
     setActiveTool: async () => {},
     readObservationPreview: (observationPath: string) =>
       call("workTools.readObservationPreview", { path: observationPath }, null),
+    // The web client has no tools pane to show, so it never answers `ade ui
+    // show`; a desktop that has the chat open does.
+    onShowRequest: () => () => {},
+    acknowledgeShow: async () => ({ ok: false }),
   } as AdeNamespace<"workTools">;
 }
 

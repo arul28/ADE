@@ -5,6 +5,7 @@ import {
   ADE_ACTION_CTO_ONLY,
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
+  isUserOnlyAdeAction,
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
@@ -205,6 +206,14 @@ describe("isAllowedAdeAction", () => {
     }
   });
 
+  it("allows deleting an installed simulator on the bus but never to an automation", () => {
+    expect(isAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
+    expect(isUserOnlyAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
+    expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(false);
+    expect(isUserOnlyAdeAction("ios_simulator", "deviceDelete")).toBe(false);
+    expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDelete")).toBe(true);
+  });
+
   it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {
     expect(isAllowedAdeAction("session", "snoozeSession")).toBe(true);
     expect(isAllowedAdeAction("session", "snoozeSessions")).toBe(true);
@@ -311,7 +320,7 @@ describe("isAllowedAdeAction", () => {
       "continueUsageLimitOnAlternate",
       "prepareCrossMachineHandoff", "recoverCodexTurn", "recoverContinuity", "recoverTurn",
       "regenerateSessionMetadata", "reloadClaudePlugins", "resetCodexMemory",
-      "resolveSmartLinkPreview", "resolveUnprocessedMessage", "respondToInput",
+      "resolveSmartLinkPreview", "resolveSourceFavicons", "resolveUnprocessedMessage", "respondToInput",
       "restoreCancelledQueue", "rewindFiles", "saveTempAttachment", "sendMessage",
       "setClaudeOutputStyle", "setCodexGoal", "setCodexGoalStatus", "setParallelLaunchState",
       "setScheduledWorkPaused", "steer", "stopTask", "suggestLaneNameFromPrompt",
@@ -517,6 +526,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
+      "readArtifactRange",
       "recoverArtifact",
     ]) {
       expect(isCtoOnlyAdeAction("computer_use_artifacts", action)).toBe(true);

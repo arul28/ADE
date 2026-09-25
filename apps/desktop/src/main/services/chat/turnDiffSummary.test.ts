@@ -116,7 +116,7 @@ describe("collectTurnDiffSummary", () => {
   // The bug: an uncommitted turn reports the same sha on both sides, and the
   // caller returned early on that, so edit-and-wait-for-review turns — the most
   // common shape — showed no files-changed row at all.
-  it("regression: summarizes an uncommitted turn against the working tree", async () => {
+  it("summarizes an uncommitted turn against the working tree", async () => {
     const head = await headSha(repo);
     fs.writeFileSync(path.join(repo, "kept.txt"), "one\ntwo\n", "utf8");
     fs.writeFileSync(path.join(repo, "brand-new.ts"), "export const a = 1;\nexport const b = 2;\n", "utf8");

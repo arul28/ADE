@@ -442,6 +442,19 @@ describe("CTO secret exposure", () => {
     expect(result.count).toBe(2);
   });
 
+  it("files the CTO's captureProof as an attach, so a copy of old proof is refused", async () => {
+    const ingest = vi.fn().mockResolvedValue({ artifacts: [], links: [] });
+    const tools = createCtoOperatorTools(runtimeShapedDeps({ proofIngestService: { ingestAsync: ingest } }));
+    await tools.captureProof!.execute({
+      sourcePath: "/tmp/clip.mp4",
+      kind: "video_recording",
+      title: "Clip",
+      ownerKind: "chat_session",
+      ownerId: "chat-1",
+    } as never);
+    expect(ingest).toHaveBeenCalledWith(expect.objectContaining({ provenance: { source: "attached" } }));
+  });
+
   it("exposes no tool that can read a secret value", () => {
     const tools = createCtoOperatorTools(runtimeShapedDeps());
     const secretish = Object.keys(tools).filter((name) => /secret/i.test(name));

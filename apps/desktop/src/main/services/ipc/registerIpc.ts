@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
+import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, shell, systemPreferences, webContents } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import {
   createEmptyAutoUpdateSnapshot,
@@ -304,6 +304,8 @@ import type {
   GitPullArgs,
   GitPushArgs,
   GitResetCommitArgs,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitRevertArgs,
   GitStashPushArgs,
@@ -833,7 +835,6 @@ import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createSearchService } from "../search/searchService";
 import type { createExternalSessionsService } from "../externalSessions/externalSessionsService";
 import {
-  loadExternalSessionDetail,
   normalizeExternalSessionDetailArgs,
   startExternalSessionDetailWatch,
   stopExternalSessionDetailWatch,
@@ -843,6 +844,8 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
+import type { MacDesktopServiceApi } from "../../../shared/types/macDesktop";
+import { createMacDesktopEscapeHotkey } from "../macDesktop/macDesktopEscapeHotkey";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
 import {
@@ -1168,6 +1171,15 @@ export type AppContext = {
   agentChatService: ReturnType<typeof createAgentChatService> | null;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService> | null;
   iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
+  /**
+   * The lane's private macOS screen.
+   *
+   * Optional and nullable for the same reason the simulator is: a non-macOS
+   * host never constructs it, and the runtime-backed build resolves it through
+   * the `mac_desktop` action domain rather than through this field. Every
+   * handler below states the absence instead of dereferencing null.
+   */
+  macDesktopService?: MacDesktopServiceApi | null;
   appControlService?: ReturnType<typeof createAppControlService> | null;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   githubService: ReturnType<typeof createGithubService>;
@@ -2538,6 +2550,42 @@ export function registerIpc({
     return service;
   };
 
+  /**
+   * The Mac Desktop service, or a stated absence.
+   *
+   * Never a null dereference: on a Windows or Linux desktop, and in any build
+   * whose runtime is the daemon rather than this process, the field is null and
+   * the renderer's call arrives here only as the *local fallback* arm of
+   * `callMacDesktopActionOr`. Rejecting with a sentence is what lets the panel
+   * render "no display on this machine" instead of an opaque IPC crash.
+   */
+  /**
+   * Escape while a takeover holds this Mac. Built here rather than in the
+   * service context because it is about this Electron app's keyboard, and a
+   * runtime-backed build has no `macDesktopService` to hang it off.
+   */
+  const macDesktopEscapeHotkey = createMacDesktopEscapeHotkey({
+    register: (accelerator, handler) => globalShortcut.register(accelerator, handler),
+    unregister: (accelerator) => globalShortcut.unregister(accelerator),
+    notify: (webContentsId) => {
+      const contents = webContents.fromId(webContentsId);
+      if (!contents || contents.isDestroyed()) return false;
+      contents.send(IPC.macDesktopEscapeHotkeyPressed, {});
+      return true;
+    },
+    log: (line) => getCtx().logger.warn(line),
+  });
+  // Never leave the machine's Escape key taken after ADE goes away.
+  app.once("will-quit", () => macDesktopEscapeHotkey.dispose());
+
+  const ensureMacDesktop = (): MacDesktopServiceApi => {
+    const service = getCtx().macDesktopService;
+    if (!service) {
+      throw new Error("Mac Desktop is not available on this machine.");
+    }
+    return service;
+  };
+
   const ensureAppControl = (): NonNullable<AppContext["appControlService"]> => {
     const service = getCtx().appControlService;
     if (!service) {
@@ -3221,6 +3269,28 @@ export function registerIpc({
       : Number(input);
     const normalized = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
     app.setBadgeCount(normalized);
+    return { ok: true } as const;
+  });
+
+  /**
+   * Swallow this window's menu accelerators while it drives a remote screen.
+   *
+   * A takeover forwards every keystroke to the lane's display, and the person
+   * driving reasonably presses ⌘Q to quit an app over there, or ⌘W to close a
+   * window. `preventDefault` in the renderer does not touch an Electron menu
+   * accelerator — it fires first and independently — so ⌘Q on the remote
+   * desktop quit ADE instead. That is what kept closing the dev window
+   * mid-test, cleanly and with nothing in the log to explain it.
+   *
+   * Scoped to the calling window's own contents, and to the span of the
+   * takeover: the renderer turns it off when the pointer lock ends, and the
+   * menu works normally everywhere else.
+   */
+  ipcMain.handle(IPC.appSetIgnoreMenuShortcuts, async (event, input: unknown) => {
+    const ignore = typeof input === "object" && input !== null
+      ? (input as { ignore?: unknown }).ignore === true
+      : input === true;
+    event.sender.setIgnoreMenuShortcuts(ignore);
     return { ok: true } as const;
   });
 
@@ -6291,7 +6361,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.externalSessionsGetDetail, async (_event, arg: unknown): Promise<ExternalSessionDetail> => {
-    return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(arg));
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["externalSessionsService"]);
+    return ctx.externalSessionsService.getDetail(normalizeExternalSessionDetailArgs(arg));
   });
 
   const detailWatchCleanupSenders = new Set<number>();
@@ -6301,6 +6373,9 @@ export function registerIpc({
     const watchId = typeof record.watchId === "string" ? record.watchId.trim() : "";
     if (!watchId) throw new Error("external session detail watchId must be a string.");
     const args = normalizeExternalSessionDetailArgs(arg);
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["externalSessionsService"]);
+    const externalSessionsService = ctx.externalSessionsService;
     const sender = event.sender;
     const senderId = sender.id;
     if (!detailWatchCleanupSenders.has(senderId)) {
@@ -6315,6 +6390,7 @@ export function registerIpc({
       watchId,
       provider: args.provider,
       sessionId: args.sessionId,
+      loadDetail: (detailArgs) => externalSessionsService.getDetail(detailArgs),
       onUpdate: (detail) => {
         if (sender.isDestroyed()) return;
         const payload: ExternalSessionDetailUpdatedEvent = { watchId, detail };
@@ -8940,6 +9016,8 @@ export function registerIpc({
             outcome = "unknown";
             broker.ingest({
               backend: { name: "scene", style: "manual", toolName: "scene_snapshot" },
+              // The desktop drew these pixels; ADE captured them.
+              provenance: { source: "ade-capture" as const },
               ...(sessionId ? { owners: [{ kind: "chat_session" as const, id: sessionId }] } : {}),
               inputs: [{
                 kind: "screenshot",
@@ -9227,6 +9305,8 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorDeviceStop, async (_event, arg = {}) => ensureIosSimulator().deviceStop(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceList, async (_event, arg = {}) => ensureIosSimulator().deviceList(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDelete, async (_event, arg = {}) => ensureIosSimulator().deviceDelete(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
   ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
@@ -9317,6 +9397,60 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorCaptureProofBundle, async (_event, arg = {}) =>
     ensureIosSimulator().captureProofBundle(arg));
+
+  // ── Mac Desktop ─────────────────────────────────────────────────────────
+  //
+  // One handler per `MacDesktopServiceApi` method the renderer drives. These
+  // are the LOCAL arm only: the preload namespace routes every call through the
+  // `mac_desktop` action domain first (pinned, then the bound project's
+  // runtime) and falls back to these channels, exactly as `iosSimulator` does.
+  // A runtime-backed build therefore never reaches `ensureMacDesktop` at all,
+  // and a dev build that does gets a sentence rather than a null crash.
+  ipcMain.handle(IPC.macDesktopGetStatus, async (_event, arg = {}) => ensureMacDesktop().getStatus(arg));
+  ipcMain.handle(IPC.macDesktopRecheckPermissions, async (_event, arg = {}) =>
+    ensureMacDesktop().recheckPermissions(arg));
+  ipcMain.handle(IPC.macDesktopRequestPermission, async (_event, arg) =>
+    ensureMacDesktop().requestPermission(arg));
+  ipcMain.handle(IPC.macDesktopStart, async (_event, arg) => ensureMacDesktop().start(arg));
+  ipcMain.handle(IPC.macDesktopStop, async (_event, arg) => ensureMacDesktop().stop(arg));
+  ipcMain.handle(IPC.macDesktopListWindows, async (_event, arg = {}) => ensureMacDesktop().listWindows(arg));
+  ipcMain.handle(IPC.macDesktopOpen, async (_event, arg) => ensureMacDesktop().open(arg));
+  ipcMain.handle(IPC.macDesktopClaimWindow, async (_event, arg) => ensureMacDesktop().claimWindow(arg));
+  ipcMain.handle(IPC.macDesktopReleaseWindow, async (_event, arg) => ensureMacDesktop().releaseWindow(arg));
+  ipcMain.handle(IPC.macDesktopObserve, async (_event, arg) => ensureMacDesktop().observe(arg));
+  ipcMain.handle(IPC.macDesktopClick, async (_event, arg) => ensureMacDesktop().click(arg));
+  ipcMain.handle(IPC.macDesktopType, async (_event, arg) => ensureMacDesktop().type(arg));
+  ipcMain.handle(IPC.macDesktopPress, async (_event, arg) => ensureMacDesktop().press(arg));
+  ipcMain.handle(IPC.macDesktopScroll, async (_event, arg) => ensureMacDesktop().scroll(arg));
+  ipcMain.handle(IPC.macDesktopDrag, async (_event, arg) => ensureMacDesktop().drag(arg));
+  ipcMain.handle(IPC.macDesktopMove, async (_event, arg) => ensureMacDesktop().move(arg));
+  ipcMain.handle(IPC.macDesktopWait, async (_event, arg) => ensureMacDesktop().wait(arg));
+  ipcMain.handle(IPC.macDesktopScreenshot, async (_event, arg) => ensureMacDesktop().screenshot(arg));
+  ipcMain.handle(IPC.macDesktopStartRecording, async (_event, arg) => ensureMacDesktop().startRecording(arg));
+  ipcMain.handle(IPC.macDesktopStopRecording, async (_event, arg) => ensureMacDesktop().stopRecording(arg));
+  ipcMain.handle(IPC.macDesktopStartStream, async (_event, arg) => ensureMacDesktop().startStream(arg));
+  ipcMain.handle(IPC.macDesktopStopStream, async (_event, arg) => ensureMacDesktop().stopStream(arg));
+  ipcMain.handle(IPC.macDesktopGetStreamStatus, async (_event, arg) => ensureMacDesktop().getStreamStatus(arg));
+  ipcMain.handle(IPC.macDesktopTakeControl, async (_event, arg) => ensureMacDesktop().takeControl(arg));
+  ipcMain.handle(IPC.macDesktopReturnControl, async (_event, arg) => ensureMacDesktop().returnControl(arg));
+  ipcMain.handle(IPC.macDesktopRenewLease, async (_event, arg) => ensureMacDesktop().renewLease(arg));
+  ipcMain.handle(IPC.macDesktopPresent, async (_event, arg) => ensureMacDesktop().present(arg));
+
+  /**
+   * The machine-wide Escape behind a takeover on THIS Mac.
+   *
+   * Not routed through the action domain, and it never can be: the key belongs
+   * to the Electron app the person is sitting at, not to the runtime that owns
+   * the display. A remote lane leaves it disarmed on purpose — focus stays in
+   * the ADE window there, so the pane's own listener already works.
+   */
+  ipcMain.handle(IPC.macDesktopSetEscapeHotkey, async (event, arg) => {
+    const request = (arg ?? {}) as { laneId?: unknown; armed?: unknown };
+    const laneId = typeof request.laneId === "string" ? request.laneId.trim() : "";
+    if (request.armed === true && laneId) macDesktopEscapeHotkey.arm(event.sender.id, laneId);
+    else macDesktopEscapeHotkey.disarm(event.sender.id);
+    return { armed: macDesktopEscapeHotkey.isArmed() };
+  });
 
   ipcMain.handle(IPC.appControlGetStatus, async (event) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
@@ -9815,11 +9949,35 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.ptyResumeSession, async (_event, arg: PtyResumeSessionArgs): Promise<PtyResumeSessionResult> => {
-    return await requirePtyService().resumeSession(arg);
+    const ctx = getCtx();
+    const result = await requirePtyService().resumeSession(arg);
+    if (result.resumed) {
+      try {
+        ctx.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        ctx.logger.warn("pty.resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.ptySendToSession, async (_event, arg: PtySendToSessionArgs): Promise<PtySendToSessionResult> => {
-    return await requirePtyService().sendToSession(arg);
+    const ctx = getCtx();
+    const result = await requirePtyService().sendToSession(arg);
+    if (result.resumed) {
+      try {
+        ctx.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        ctx.logger.warn("pty.resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
   });
 
   ipcMain.handle(IPC.ptyWrite, async (_event, arg: { ptyId: string; data: string }): Promise<void> => {
@@ -10262,6 +10420,11 @@ export function registerIpc({
   ipcMain.handle(IPC.gitGetSyncStatus, async (_event, arg: { laneId: string }): Promise<GitUpstreamSyncStatus> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.getSyncStatus(arg);
+  });
+
+  ipcMain.handle(IPC.gitGetSyncStatuses, async (_event, arg: GitSyncStatusesArgs): Promise<GitSyncStatuses> => {
+    const ctx = ensureGitContext();
+    return await ctx.gitService.getSyncStatuses(arg);
   });
 
   ipcMain.handle(IPC.gitGetOriginRemote, async (_event, arg: { laneId: string }): Promise<{ remoteUrl: string | null; branch: string | null }> => {
@@ -11117,6 +11280,8 @@ export function registerIpc({
   // Takes no arguments on purpose: it always targets THIS machine, and a
   // machineKey parameter would invite a caller to "repair" a machine it does
   // not own — the brain could not honour that anyway.
+  ipcMain.handle(IPC.accountStartSyncHost, async () => accountBridge.startSyncHost());
+
   ipcMain.handle(
     IPC.accountRepairMachinePairing,
     async (): Promise<AdeAccountMachinePairingRepairResult> => {
@@ -12468,6 +12633,7 @@ export function registerIpc({
     getLocalMachineIdentity: runtimeBridge.getLocalMachineIdentity,
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
     resolveTargetNameForMachineKey: runtimeBridge.resolveTargetNameForMachineKey,
+    readRemoteArtifactRange: runtimeBridge.readRemoteArtifactRange,
     async openAttentionProject(args: {
       machineKey: string;
       projectId: string;

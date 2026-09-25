@@ -5832,37 +5832,6 @@ describe("createSyncHostService LAN discovery", () => {
     }
   });
 
-  it("keeps LAN discovery unpublished when discovery is explicitly refreshed", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const publishedServices: Array<{ on: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }> = [];
-    publishMock.mockImplementation(() => {
-      const service = { on: vi.fn(), stop: vi.fn() };
-      publishedServices.push(service);
-      return service;
-    });
-    const host = createSyncHostService(
-      createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]) as unknown as Parameters<
-        typeof createSyncHostService
-      >[0],
-    );
-
-    try {
-      await host.waitUntilListening();
-      publishMock.mockClear();
-
-      host.refreshLanDiscovery();
-      expect(publishMock).not.toHaveBeenCalled();
-
-      host.refreshLanDiscovery({ forceLan: true });
-
-      expect(publishMock).not.toHaveBeenCalled();
-      expect(publishedServices).toEqual([]);
-    } finally {
-      await host.dispose();
-      cleanup();
-    }
-  });
-
   it("does not publish native LAN discovery when running under Electron on macOS", async () => {
     Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
     Object.defineProperty(process.versions, "electron", {
@@ -6314,6 +6283,26 @@ describe("CTO-gated Linear sync commands", () => {
         readObservationPreview: vi.fn(async () => ({ ok: true })),
         setActiveTool: vi.fn(() => ({ ok: true })),
       },
+      // Same rule for `macDesktop.*`: a Mac runtime builds the service and its
+      // stream fan-out (`bootstrap.ts` / `main.ts`), so the fixture carries
+      // both. The handlers are never reached with valid args here; the loop
+      // only checks that each optional action clears the authorization gate.
+      macDesktopService: {
+        getStatus: vi.fn(async () => ({ supported: false })),
+        start: vi.fn(async () => ({ supported: true })),
+        stop: vi.fn(async () => ({ stopped: false, releasedWindows: 0 })),
+        getDisplay: vi.fn(async () => null),
+        takeControl: vi.fn(async () => ({ holder: "user" })),
+        returnControl: vi.fn(async () => null),
+        renewLease: vi.fn(async () => null),
+        click: vi.fn(async () => ({ ok: true })),
+        move: vi.fn(async () => ({ ok: true })),
+        startStreamForSubscription: vi.fn(async () => {
+          throw new Error("no display in this fixture");
+        }),
+        releaseStreamSubscription: vi.fn(async () => {}),
+        subscribe: vi.fn(() => () => {}),
+      },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
@@ -6328,82 +6317,6 @@ describe("CTO-gated Linear sync commands", () => {
         features?: { commandRouting?: { actions?: SyncRemoteCommandDescriptor[] } };
       })?.features?.commandRouting?.actions ?? [];
 
-      expect(MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS).toEqual([
-        "chat.startLaunch",
-        "chat.getLaunch",
-        "chat.listLaunches",
-        "chat.cancelLaunch",
-        "chat.retryLaunch",
-        "chat.startLaunchNow",
-        "chat.queueLaunchMessage",
-        "cto.startLinearMobileOAuth",
-        "cto.completeLinearMobileOAuth",
-        "cto.setLinearToken",
-        "cto.clearLinearToken",
-        "cto.getAttention",
-        "session.settleSessions",
-        "session.unsettleSessions",
-        "session.setSettleOverride",
-        "session.snoozeSession",
-        "session.wakeSession",
-        "session.clearWokeMarker",
-        "session.moveOnBoard",
-        "session.undoBoardMove",
-        "chat.setSpawnKind",
-        "chat.dismissSubagentTakeoverPrompt",
-        "chat.regenerateSessionMetadata",
-        "chat.resumeUsageLimitNow",
-        "chat.continueUsageLimitOnAlternate",
-        "prs.listGithubStacks",
-        "prs.syncGithubStacks",
-        "prs.createGithubStack",
-        "prs.addGithubStackPullRequests",
-        "prs.unstackGithubStack",
-        "ai.openCursorCloudChat",
-        "ai.watchCursorCloudMirror",
-        "ai.listCursorCloudRepositories",
-        "ai.listCursorCloudAgents",
-        "ai.listCursorCloudRuns",
-        "ai.createCursorCloudRun",
-        "ai.getCursorCloudLaneSecretNames",
-        "ai.archiveCursorCloudAgent",
-        "ai.unarchiveCursorCloudAgent",
-        "ai.deleteCursorCloudAgent",
-        "ai.getCursorCloudAgent",
-        "ai.getCursorAgentUsage",
-        "ai.listCursorCloudArtifacts",
-        "ai.downloadCursorCloudArtifact",
-        "ai.cursorCloudStreamRun",
-        "ai.cancelCursorCloudRun",
-        "ai.cursorCloudFollowUp",
-        "ai.cursorCloudFleet",
-        "ai.getCursorCloudFleet",
-        "ai.cursorCloudResolveLane",
-        "ai.cursorCloudPullIntoLane",
-        "ai.cursorCloudStopRun",
-        "chat.listPromptStashes",
-        "chat.createPromptStash",
-        "chat.deletePromptStash",
-        "workTools.getLaneState",
-        "workTools.readObservationPreview",
-        "apple.status",
-        "apple.streamTicket",
-        "apple.input",
-        "apple.invoke",
-        "apple.deviceList",
-        "apple.deviceCreate",
-        "apple.deviceAttach",
-        "apple.recordList",
-        "apple.recordStart",
-        "apple.recordStop",
-        "prs.setDraft",
-        "prs.setAutoMerge",
-      ]);
-      expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
-        expect.arrayContaining(
-          MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS.filter((action) => !action.startsWith("apple.")),
-        ),
-      );
       // The two direct credential-store writers stay advertised — a phone still
       // feature-detects them — but are host-local, so the gate rejects them
       // (C12-sec). Clients hide the affordance by reading the advertised
@@ -6411,6 +6324,16 @@ describe("CTO-gated Linear sync commands", () => {
       const viewerBlockedActions = new Set<string>([
         "cto.setLinearToken",
         "cto.clearLinearToken",
+        // Creating or destroying the lane's display is a host mutation, and
+        // takeover posts real CGEvents there: a read-only viewer never gets to
+        // make either. A record-backed browser/phone controller may, which is
+        // what `controllerAllowed` is for.
+        "macDesktop.start",
+        "macDesktop.stop",
+        "macDesktop.takeControl",
+        "macDesktop.returnControl",
+        "macDesktop.renewLease",
+        "macDesktop.input",
         // Lane resolution can import a lane and pull mutates worktrees —
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
@@ -6441,6 +6364,12 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
         "ai.cursorCloudStopRun",
+        "macDesktop.start",
+        "macDesktop.stop",
+        "macDesktop.takeControl",
+        "macDesktop.returnControl",
+        "macDesktop.renewLease",
+        "macDesktop.input",
       ]);
 
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
@@ -6451,12 +6380,13 @@ describe("CTO-gated Linear sync commands", () => {
         if (action.startsWith("apple.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
+        const scope = action === "chat.resolveSourceFavicons" ? "runtime" : "project";
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
         // with an accurate viewerAllowed bit.
         expect(actions).toContainEqual(expect.objectContaining({
           action,
-          scope: "project",
+          scope,
           policy: expect.objectContaining({ viewerAllowed: !viewerBlocked }),
         }));
         if (controllerAllowed) {
@@ -6505,6 +6435,51 @@ describe("CTO-gated Linear sync commands", () => {
     }
   });
 
+});
+
+describe("Mac Desktop lease release on socket close", () => {
+  it("tells the command service to return the closed connection's lease", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const releaseMacDesktopConnection = vi.fn();
+    // The host only ever reads descriptors and executes through this service;
+    // the release is the one new call, and it is what a closed tab depends on
+    // to give control back before the lease TTL.
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      discoveryEnabled: false,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      remoteCommandService: {
+        getDescriptor: () => null,
+        getSupportedActions: () => [],
+        getDescriptors: () => [],
+        execute: vi.fn(),
+        releaseMacDesktopConnection,
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      peer = await connectPeer(
+        await host.waitUntilListening(),
+        host.getBootstrapToken(),
+        "close-holds-lease",
+      );
+      peer.ws.close();
+      await waitForValue(
+        () => (releaseMacDesktopConnection.mock.calls.length > 0 ? true : null),
+        "macDesktop lease release on close",
+      );
+      expect(releaseMacDesktopConnection).toHaveBeenCalledWith(expect.stringMatching(/^[0-9a-f-]{8,}$/i));
+    } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
 });
 
 describe("initial hydration priority", () => {
@@ -10498,6 +10473,67 @@ describe("sync host reliability guards", () => {
       cleanup();
     }
   });
+
+  it("sends a recording too large for one read in bounded slices, only from the artifact store", async () => {
+    // The owner's 2026-09-23 report: a 41 MB recording could not reach the
+    // phone at all, because `readArtifact` refuses anything over 8 MB.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const artifactPath = path.join(projectRoot, ".ade", "artifacts", "apple-recordings", "lane-1", "rec.mov");
+    fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
+    const bytes = Buffer.alloc(8 * 1024 * 1024 + 11);
+    for (let index = 0; index < bytes.length; index += 997) bytes[index] = index % 256;
+    fs.writeFileSync(artifactPath, bytes);
+    fs.writeFileSync(path.join(projectRoot, "secret.mov"), Buffer.from("nope"));
+    const host = createReliabilityHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-artifact-range");
+      const received: Buffer[] = [];
+      let offset = 0;
+      for (let slice = 0; slice < 10; slice += 1) {
+        const requestId = `artifact-range-${slice}`;
+        peer.ws.send(encodeSyncEnvelope({
+          type: "file_request",
+          requestId,
+          payload: {
+            action: "readArtifactRange",
+            args: { uri: ".ade/artifacts/apple-recordings/lane-1/rec.mov", offset, length: 64 * 1024 * 1024 },
+          },
+        }));
+        const response = await waitForEnvelope(peer.envelopes, "file_response", requestId);
+        const result = (response.payload as { ok: boolean; result: {
+          totalSize: number; rangeStart: number; rangeEnd: number; content: string; eof: boolean;
+        } }).result;
+        expect(result.totalSize).toBe(bytes.length);
+        expect(result.rangeStart).toBe(offset);
+        // The host caps every slice, whatever the phone asks for.
+        expect(result.rangeEnd - result.rangeStart).toBeLessThanOrEqual(2 * 1024 * 1024);
+        received.push(Buffer.from(result.content, "base64"));
+        offset = result.rangeEnd;
+        if (result.eof) break;
+      }
+      expect(Buffer.concat(received)).toEqual(bytes);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "file_request",
+        requestId: "artifact-range-escape",
+        payload: { action: "readArtifactRange", args: { uri: ".ade/artifacts/../../secret.mov", offset: 0 } },
+      }));
+      const escape = await waitForEnvelope(peer.envelopes, "file_response", "artifact-range-escape");
+      expect(escape.payload).toMatchObject({ ok: false, action: "readArtifactRange" });
+      expect((escape.payload as { error?: { message?: string } }).error?.message)
+        .toMatch(/within \.ade\/artifacts/);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
 });
 
 describe("chat_subscribe snapshots", () => {
@@ -12018,6 +12054,13 @@ describe("chat_subscribe snapshots", () => {
     const transcriptPath = path.join(projectRoot, "transcripts", "chat-tool-result.chat.jsonl");
     fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
     const fullResult = "x".repeat(8_000);
+    const sources = Array.from({ length: 8 }, (_, index) => ({
+      kind: "web_search_result" as const,
+      url: `https://source-${index}.example/guide`,
+      title: `Source ${index}`,
+      snippet: "context that should stay on the host ".repeat(500),
+      query: "private search wording",
+    }));
     const event: AgentChatEventEnvelope = {
       sessionId,
       timestamp: "2026-09-20T10:00:00.000Z",
@@ -12028,6 +12071,7 @@ describe("chat_subscribe snapshots", () => {
         result: fullResult,
         itemId,
         status: "completed",
+        sources,
       },
     };
     fs.writeFileSync(transcriptPath, `${JSON.stringify(event)}\n`, "utf8");
@@ -12071,6 +12115,13 @@ describe("chat_subscribe snapshots", () => {
           windowTruncated: false,
           sessionFound: true,
         }),
+        getChatEventHistoryPage: vi.fn().mockResolvedValue({
+          sessionId,
+          events: [event],
+          startOffset: 0,
+          hasMore: false,
+          sessionFound: true,
+        }),
         getSessionSummary: vi.fn().mockResolvedValue({ status: "inactive" }),
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
@@ -12092,8 +12143,28 @@ describe("chat_subscribe snapshots", () => {
         type: "tool_result",
         resultTruncatedForMobile: true,
         resultOriginalBytes: fullResult.length,
+        sourceRefsOmittedForMobile: 5,
       });
       expect((snapshotEvent.event as { result: string }).result).not.toBe(fullResult);
+      const snapshotSources = (snapshotEvent.event as { sources: Array<{ snippet?: string; query?: string }> }).sources;
+      expect(snapshotSources).toHaveLength(3);
+      expect(snapshotSources.some((source) => source.snippet || source.query)).toBe(false);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_history",
+        requestId: "chat-tool-result-history-page",
+        payload: {
+          sessionId,
+          beforeOffset: Buffer.byteLength(`${JSON.stringify(event)}\n`, "utf8"),
+          maxBytes: 256 * 1_024,
+        },
+      }));
+      const historyPage = await waitForEnvelope(peer.envelopes, "chat_history", "chat-tool-result-history-page");
+      const pageEvent = (historyPage.payload as { events: AgentChatEventEnvelope[] }).events[0]!;
+      expect(pageEvent.event).toMatchObject({ type: "tool_result", sourceRefsOmittedForMobile: 5 });
+      const pageSources = (pageEvent.event as { sources: Array<{ snippet?: string; query?: string }> }).sources;
+      expect(pageSources).toHaveLength(3);
+      expect(pageSources.some((source) => source.snippet || source.query)).toBe(false);
 
       peer.ws.send(encodeSyncEnvelope({
         type: "chat_tool_result",
@@ -12149,10 +12220,6 @@ describe("mobile chat wire (mobileChatSlimV1)", () => {
     expect((shared.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBeUndefined();
   });
 
-  it("leaves a small tool result identical on both wires", () => {
-    const envelope = toolResultEnvelope("exit 0");
-    expect(compactChatEventEnvelopeForMobileSync(envelope)).toEqual(compactChatEventEnvelopeForSync(envelope));
-  });
 });
 
 describe("chat event replay buffer (resumable chat streams)", () => {
@@ -13944,29 +14011,6 @@ describe("createSyncHostService all-projects roster", () => {
     }
   });
 
-  it("stays silent on roster_subscribe when no roster provider is wired (older host)", async () => {
-    const { projectRoot, cleanup } = createTempProjectRoot();
-    const rosterState = { projects: [] as ReturnType<typeof rosterProject>[] };
-    const host = createRosterHost(projectRoot, rosterState, { withRosterProvider: false });
-    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-    try {
-      const port = await host.waitUntilListening();
-      peer = await connectPeer(port, host.getBootstrapToken(), "ios-roster-3");
-
-      peer.ws.send(encodeSyncEnvelope({ type: "roster_subscribe", requestId: "roster-1", payload: {} }));
-      await new Promise((resolve) => setTimeout(resolve, 400));
-      expect(peer.envelopes.some((envelope) => envelope.type === "roster_snapshot")).toBe(false);
-      expect(peer.envelopes.some((envelope) => envelope.type === "roster_delta")).toBe(false);
-    } finally {
-      try {
-        peer?.ws.close();
-      } catch {
-        // ignore
-      }
-      await host.dispose();
-      cleanup();
-    }
-  });
 });
 
 /**

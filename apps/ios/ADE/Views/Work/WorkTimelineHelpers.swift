@@ -28,9 +28,14 @@ func buildWorkChatTimelineSnapshot(
   let pendingSteers = derivePendingWorkSteers(from: transcript)
   let suppressedItemIds = Set(pendingInputs.map(\.itemId))
   let suppressedToolItemIds = Set(pendingInputs.map(\.itemId))
+  let taskList = buildWorkChatTaskListSnapshot(from: transcript)
   let toolCards = buildWorkMobileTimelineToolCards(from: transcript, suppressedPendingItemIds: suppressedToolItemIds)
     .filter(workMobileShowsToolCardInTimeline)
-  let eventCards = buildWorkEventCards(from: transcript, suppressedItemIds: suppressedItemIds)
+  let eventCards = buildWorkEventCards(
+    from: transcript,
+    suppressedItemIds: suppressedItemIds,
+    taskList: taskList
+  )
     .filter { $0.kind != "toolUseSummary" }
   let commandCards: [WorkCommandCardModel] = []
   let fileChangeCards: [WorkFileChangeCardModel] = []
@@ -40,6 +45,7 @@ func buildWorkChatTimelineSnapshot(
     snapshots: subagentSnapshots
   )
   let scheduledWorkSnapshots = buildWorkScheduledWorkSnapshots(from: transcript)
+  let sourceList = buildWorkChatSourceList(from: transcript)
   let transcriptIndicatesActiveTurn = workTranscriptIndicatesActiveTurn(transcript)
   let transcriptLatestTurnEnded = workTranscriptLatestTurnEnded(transcript)
   let transcriptHasInterruptibleActivity = WorkActivityIndicator.derivePresentation(from: transcript) != nil
@@ -55,7 +61,9 @@ func buildWorkChatTimelineSnapshot(
     pendingInputs: pendingInputs,
     artifacts: artifacts,
     localEchoMessages: localEchoMessages,
-    usageLimitTurnId: usageLimitTurnId
+    usageLimitTurnId: usageLimitTurnId,
+    scheduledWorkSnapshots: scheduledWorkSnapshots,
+    sourceCountsByTurn: sourceList.countsByTurn
   )
   return makeWorkChatTimelineSnapshot(
     signature: signature,
@@ -69,6 +77,8 @@ func buildWorkChatTimelineSnapshot(
     transcriptLatestTurnEnded: transcriptLatestTurnEnded,
     transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
     latestTranscriptTimestamp: latestTranscriptTimestamp,
+    sourceList: sourceList,
+    taskList: taskList,
     timeline: timeline
   )
 }
@@ -87,6 +97,8 @@ func makeWorkChatTimelineSnapshot(
   transcriptLatestTurnEnded: Bool,
   transcriptHasInterruptibleActivity: Bool,
   latestTranscriptTimestamp: String?,
+  sourceList: WorkChatSourceList,
+  taskList: WorkChatTaskListSnapshot?,
   timeline: [WorkTimelineEntry]
 ) -> WorkChatTimelineSnapshot {
   let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
@@ -101,6 +113,9 @@ func makeWorkChatTimelineSnapshot(
     fileChangeCards: [],
     subagentSnapshots: subagentSnapshots,
     scheduledWorkSnapshots: scheduledWorkSnapshots,
+    sourceRefs: sourceList.refs,
+    omittedSourceRefCount: sourceList.omittedCount,
+    taskList: taskList,
     transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
     transcriptLatestTurnEnded: transcriptLatestTurnEnded,
     transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
@@ -150,6 +165,7 @@ struct WorkTimelineSignatureFold {
     hasher.combine(envelope.timestamp)
     hasher.combine(envelope.sequence ?? Int.min)
     combineOptional(envelope.subagentTaskType, into: &hasher)
+    combineOptional(envelope.subagentProvider, into: &hasher)
     combineOptional(envelope.subagentCommand, into: &hasher)
     combineOptional(envelope.subagentSpawnKind.map { String(describing: $0) }, into: &hasher)
     combineOptional(envelope.subagentParentAgentId, into: &hasher)
@@ -157,6 +173,7 @@ struct WorkTimelineSignatureFold {
     hasher.combine(envelope.subagentResourceLinks)
     combineOptional(envelope.stopSource, into: &hasher)
     combineOptional(envelope.stopReason, into: &hasher)
+    combineOptional(envelope.textPhase, into: &hasher)
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 
@@ -252,13 +269,19 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
     hasher.combine(itemId)
     combineOptional(parentItemId, into: &hasher)
     combineOptional(turnId, into: &hasher)
-  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status):
+  case .toolResult(let tool, let resultText, let itemId, let parentItemId, let turnId, let status, let sources, let sourceRefsOmittedForMobile):
     hasher.combine(tool)
     combineLongTextSignature(resultText, into: &hasher)
     hasher.combine(itemId)
     combineOptional(parentItemId, into: &hasher)
     combineOptional(turnId, into: &hasher)
     hasher.combine(status.rawValue)
+    hasher.combine(sources ?? [])
+    hasher.combine(sourceRefsOmittedForMobile ?? 0)
+  case .sources(let refs, let turnId, let omittedForMobile):
+    hasher.combine(refs)
+    combineOptional(turnId, into: &hasher)
+    hasher.combine(omittedForMobile ?? 0)
   case .activity(let kind, let detail, let turnId):
     hasher.combine(kind)
     combineOptionalText(detail, into: &hasher)
@@ -266,6 +289,19 @@ private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: 
   case .plan(let steps, let explanation, let turnId):
     combinePlanSteps(steps, into: &hasher)
     combineOptionalText(explanation, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .planProposal(let text, let turnId):
+    combineLongTextSignature(text, into: &hasher)
+    combineOptional(turnId, into: &hasher)
+  case .taskListUpdate(let items, let turnId):
+    hasher.combine(items.count)
+    for item in items {
+      hasher.combine(item.id)
+      combineLongTextSignature(item.description, into: &hasher)
+      hasher.combine(item.status.rawValue)
+      combineOptionalText(item.activeForm, into: &hasher)
+      hasher.combine(item.cancelled ?? false)
+    }
     combineOptional(turnId, into: &hasher)
   case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
     hasher.combine(taskId)
@@ -528,6 +564,8 @@ private func combinePlanSteps(_ steps: [WorkPlanStep], into hasher: inout Hasher
   for step in steps {
     combineLongTextSignature(step.text, into: &hasher)
     hasher.combine(step.status)
+    combineOptionalText(step.priority, into: &hasher)
+    hasher.combine(step.cancelled)
   }
 }
 
@@ -963,10 +1001,12 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
     case .subagentStarted(let taskId, let agentId, let agentType, let parentToolUseId, let description, let background, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
       let existing = resolved.existing
+      let resumed = envelope.subagentResumed == true
       place(resolved.key, WorkSubagentSnapshot(
         taskId: taskId,
         agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
         agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
+        provider: trimmedWorkSubagentText(envelope.subagentProvider) ?? existing?.provider,
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
         description: longerWorkSubagentText(existing?.description, description) ?? "Subagent",
         background: background || (existing?.background ?? false),
@@ -974,10 +1014,10 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         model: trimmedWorkSubagentText(model) ?? existing?.model,
         reasoningEffort: trimmedWorkSubagentText(reasoningEffort) ?? existing?.reasoningEffort,
         status: .running,
-        lastToolName: existing?.lastToolName,
-        latestSummary: existing?.latestSummary,
+        lastToolName: resumed ? nil : existing?.lastToolName,
+        latestSummary: resumed ? nil : existing?.latestSummary,
         turnId: turnId ?? existing?.turnId,
-        startedAt: existing?.startedAt ?? envelope.timestamp,
+        startedAt: resumed ? envelope.timestamp : existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
         command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
@@ -985,10 +1025,10 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         parentAgentId: trimmedWorkSubagentText(envelope.subagentParentAgentId) ?? existing?.parentAgentId,
         spawnDepth: envelope.subagentSpawnDepth ?? existing?.spawnDepth,
         resourceLinks: envelope.subagentResourceLinks.isEmpty ? (existing?.resourceLinks ?? []) : envelope.subagentResourceLinks,
-        stopSource: existing?.stopSource,
-        stopReason: existing?.stopReason,
-        resultLanded: existing?.resultLanded ?? false,
-        lastActivity: existing?.lastActivity
+        stopSource: resumed ? nil : existing?.stopSource,
+        stopReason: resumed ? nil : existing?.stopReason,
+        resultLanded: resumed ? false : existing?.resultLanded ?? false,
+        lastActivity: resumed ? nil : existing?.lastActivity
       ), order: resolved.order)
     case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
@@ -997,8 +1037,11 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskId: resolved.adoptedPlaceholder ? taskId : existing?.taskId ?? taskId,
         agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
         agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
+        provider: existing?.provider,
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
-        description: longerWorkSubagentText(existing?.description, description) ?? "Subagent",
+        // Keep the first task description as the card name. Progress text often
+        // contains the current activity and should remain status detail.
+        description: existing?.description ?? longerWorkSubagentText(nil, description) ?? "Subagent",
         background: existing?.background ?? false,
         label: trimmedWorkSubagentText(label) ?? existing?.label,
         model: trimmedWorkSubagentText(model) ?? existing?.model,
@@ -1030,6 +1073,7 @@ func buildWorkSubagentSnapshots(from rawTranscript: [WorkChatEnvelope]) -> [Work
         taskId: resolved.adoptedPlaceholder ? taskId : existing?.taskId ?? taskId,
         agentId: normalizedWorkSubagentAgentId(agentId) ?? existing?.agentId,
         agentType: normalizedWorkSubagentAgentId(agentType) ?? existing?.agentType,
+        provider: existing?.provider,
         parentToolUseId: normalizedWorkSubagentAgentId(parentToolUseId) ?? existing?.parentToolUseId,
         description: description,
         background: existing?.background ?? false,
@@ -1133,8 +1177,14 @@ func buildWorkSubagentTimelineRows(
         && normalizedParent == parent
       guard directMatch || parentPlaceholderMatch else { continue }
 
-      if isStarted, firstStarted == nil {
-        firstStarted = (index, envelope.timestamp)
+      if isStarted {
+        if envelope.subagentResumed == true {
+          firstStarted = (index, envelope.timestamp)
+          firstResult = nil
+          resultSummary = nil
+        } else if firstStarted == nil {
+          firstStarted = (index, envelope.timestamp)
+        }
       }
       if isResult {
         if firstResult == nil {
@@ -1348,6 +1398,34 @@ func buildWorkScheduledWorkSnapshots(from transcript: [WorkChatEnvelope]) -> [Wo
     .map(\.snapshot)
 }
 
+func workBackgroundJobEntryId(taskId: String?) -> String? {
+  let key = taskId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return key.isEmpty ? nil : "background-job:\(key)"
+}
+
+func buildWorkBackgroundJobs(from snapshots: [WorkScheduledWorkSnapshot]) -> [WorkBackgroundJobModel] {
+  snapshots.compactMap { snapshot in
+    guard snapshot.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "background_task" else {
+      return nil
+    }
+    let id = workBackgroundJobEntryId(taskId: snapshot.sourceTaskId) ?? "background-job:\(snapshot.id)"
+    return WorkBackgroundJobModel(
+      id: id,
+      taskId: snapshot.sourceTaskId,
+      title: snapshot.title,
+      status: snapshot.status,
+      startedAt: snapshot.createdAt,
+      updatedAt: snapshot.updatedAt,
+      durationLabel: formattedSessionDuration(startedAt: snapshot.createdAt, endedAt: snapshot.updatedAt),
+      turnId: snapshot.turnId
+    )
+  }
+  .sorted { lhs, rhs in
+    if lhs.startedAt == rhs.startedAt { return lhs.id < rhs.id }
+    return lhs.startedAt < rhs.startedAt
+  }
+}
+
 /// Reconciles transcript presentation events with the host's durable management
 /// store. A nil or empty managed list keeps transcript behavior so a transient
 /// empty host snapshot cannot hide still-live provider work; once the host has
@@ -1551,6 +1629,7 @@ func workSubagentSnapshot(from remote: SyncService.AgentChatSubagentSnapshot) ->
     taskId: remote.taskId,
     agentId: normalizedWorkSubagentAgentId(remote.agentId),
     agentType: normalizedWorkSubagentAgentId(remote.agentType),
+    provider: trimmedWorkSubagentText(remote.provider),
     parentToolUseId: normalizedWorkSubagentAgentId(remote.parentToolUseId),
     description: remote.description,
     background: remote.background ?? false,
@@ -1627,6 +1706,7 @@ private func mergedWorkSubagentSnapshot(
     taskId: remote.taskId,
     agentId: remote.agentId ?? local.agentId,
     agentType: local.agentType ?? remote.agentType,
+    provider: preferredWorkSubagentText(local.provider, fallback: remote.provider),
     parentToolUseId: remote.parentToolUseId ?? local.parentToolUseId,
     description: preferredWorkSubagentText(remote.description, fallback: local.description) ?? "Subagent",
     background: remote.background || local.background,
@@ -1680,6 +1760,68 @@ private func latestWorkSubagentTimestamp(_ lhs: String?, _ rhs: String?) -> Stri
   return rhsDate >= lhsDate ? rhs : lhs
 }
 
+func foldWorkSubagentTimelineRows(_ rows: [WorkSubagentTimelineRow]) -> [WorkSubagentTimelineItem] {
+  var result: [WorkSubagentTimelineItem] = []
+  var run: [WorkSubagentTimelineRow] = []
+  func flush() {
+    guard !run.isEmpty else { return }
+    if run.count > 1 {
+      result.append(.grid(WorkSubagentTimelineGrid(id: "subagent-grid:\(run[0].id)", rows: run)))
+    } else if let row = run.first {
+      result.append(.row(row))
+    }
+    run.removeAll(keepingCapacity: true)
+  }
+  for row in rows {
+    if row.kind == .backgroundCommand || run.first?.snapshot.turnId != row.snapshot.turnId {
+      flush()
+    }
+    if row.kind == .backgroundCommand {
+      result.append(.row(row))
+    } else {
+      run.append(row)
+    }
+  }
+  flush()
+  return result
+}
+
+func collapseConsecutiveWorkBackgroundJobs(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  var index = 0
+  while index < entries.count {
+    guard case .backgroundJob(let firstJob) = entries[index].payload else {
+      result.append(entries[index])
+      index += 1
+      continue
+    }
+    var jobs = [firstJob]
+    var end = index + 1
+    while end < entries.count,
+          entries[end].turnId == entries[index].turnId,
+          case .backgroundJob(let nextJob) = entries[end].payload {
+      jobs.append(nextJob)
+      end += 1
+    }
+    if jobs.count > 1 {
+      let anchor = entries[index]
+      let group = WorkBackgroundJobRunModel(id: anchor.id, jobs: jobs)
+      result.append(WorkTimelineEntry(
+        id: anchor.id,
+        timestamp: anchor.timestamp,
+        rank: anchor.rank,
+        payload: .backgroundJobRun(group),
+        turnId: anchor.turnId
+      ))
+    } else {
+      result.append(entries[index])
+    }
+    index = end
+  }
+  return result
+}
+
 func buildWorkTimeline(
   transcript: [WorkChatEnvelope],
   fallbackEntries: [AgentChatTranscriptEntry],
@@ -1694,8 +1836,11 @@ func buildWorkTimeline(
   /// See `buildWorkChatTimelineSnapshot`. Anchors the quiet usage-limit footer
   /// to the turn the host's resume row names when the transcript's own `done`
   /// frame carried no 429.
-  usageLimitTurnId: String? = nil
+  usageLimitTurnId: String? = nil,
+  scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]? = nil,
+  sourceCountsByTurn: [String: Int]? = nil
 ) -> [WorkTimelineEntry] {
+  let scheduledSnapshots = scheduledWorkSnapshots ?? buildWorkScheduledWorkSnapshots(from: transcript)
   let messages = transcript.isEmpty && !fallbackEntries.isEmpty
     ? fallbackEntries.map {
         WorkChatMessage(
@@ -1708,7 +1853,11 @@ func buildWorkTimeline(
         )
       }
     : buildWorkChatMessages(from: transcript)
-  let turnEndMarkers = workTurnEndMarkers(from: transcript, usageLimitTurnId: usageLimitTurnId)
+  let turnEndMarkers = workTurnEndMarkers(
+    from: transcript,
+    usageLimitTurnId: usageLimitTurnId,
+    sourceCountsByTurn: sourceCountsByTurn
+  )
   return assembleWorkTimeline(
     stampedMessages: messages.map(workTimelineStampedMessage),
     pendingSteers: localEchoMessages.isEmpty ? [] : derivePendingWorkSteers(from: transcript),
@@ -1716,6 +1865,7 @@ func buildWorkTimeline(
     commandCards: commandCards,
     fileChangeCards: fileChangeCards,
     subagentRows: subagentRows,
+    scheduledWorkSnapshots: scheduledSnapshots,
     eventCards: eventCards,
     adeCards: buildWorkAdeCards(from: transcript),
     turnEndMarkers: turnEndMarkers,
@@ -1763,6 +1913,7 @@ func assembleWorkTimeline(
   commandCards: [WorkCommandCardModel],
   fileChangeCards: [WorkFileChangeCardModel],
   subagentRows: [WorkSubagentTimelineRow],
+  scheduledWorkSnapshots scheduledSnapshots: [WorkScheduledWorkSnapshot],
   eventCards: [WorkEventCardModel],
   adeCards: [WorkAdeCardModel],
   turnEndMarkers: [WorkTurnEndMarker],
@@ -1770,8 +1921,14 @@ func assembleWorkTimeline(
   artifacts: [ComputerUseArtifactSummary],
   localEchoMessages: [WorkLocalEchoMessage]
 ) -> [WorkTimelineEntry] {
+  let backgroundJobs = buildWorkBackgroundJobs(from: scheduledSnapshots)
+  let backgroundTaskIds = Set(backgroundJobs.compactMap { $0.taskId?.trimmingCharacters(in: .whitespacesAndNewlines) })
+  let visibleSubagentRows = subagentRows.filter { row in
+    guard row.kind == .backgroundCommand else { return true }
+    return !backgroundTaskIds.contains(row.snapshot.taskId)
+  }
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
-    WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
+    WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message), turnId: message.turnId)
   }
   // Counted, not set-membership: two identical echoes must not both vanish on
   // one matching row. Built from `messages` rather than the transcript so the
@@ -1795,28 +1952,61 @@ func assembleWorkTimeline(
   }
 
   entries.append(contentsOf: toolCards.enumerated().map { index, card in
-    WorkTimelineEntry(id: "tool-\(card.id)", timestamp: card.startedAt, rank: 1_000 + index, payload: .toolCard(card))
+    WorkTimelineEntry(id: "tool-\(card.id)", timestamp: card.startedAt, rank: 1_000 + index, payload: .toolCard(card), turnId: card.turnId)
   })
 
   entries.append(contentsOf: commandCards.enumerated().map { index, card in
-    WorkTimelineEntry(id: "command-\(card.id)", timestamp: card.timestamp, rank: 1_250 + index, payload: .commandCard(card))
+    WorkTimelineEntry(id: "command-\(card.id)", timestamp: card.timestamp, rank: 1_250 + index, payload: .commandCard(card), turnId: card.turnId)
   })
 
   entries.append(contentsOf: fileChangeCards.enumerated().map { index, card in
-    WorkTimelineEntry(id: "file-change-\(card.id)", timestamp: card.timestamp, rank: 1_375 + index, payload: .fileChangeCard(card))
+    WorkTimelineEntry(id: "file-change-\(card.id)", timestamp: card.timestamp, rank: 1_375 + index, payload: .fileChangeCard(card), turnId: card.turnId)
   })
 
-  entries.append(contentsOf: subagentRows.enumerated().map { index, row in
+  entries.append(contentsOf: foldWorkSubagentTimelineRows(visibleSubagentRows).enumerated().map { index, item in
+    let timestamp: String
+    let payload: WorkTimelinePayload
+    switch item {
+    case .row(let row):
+      timestamp = row.timestamp
+      payload = .subagent(row)
+    case .grid(let grid):
+      timestamp = grid.rows.last?.timestamp ?? ""
+      payload = .subagentGrid(grid)
+    }
+    let turnId: String?
+    switch item {
+    case .row(let row): turnId = row.snapshot.turnId
+    case .grid(let grid): turnId = grid.rows.first?.snapshot.turnId
+    }
+    return WorkTimelineEntry(id: item.id, timestamp: timestamp, rank: 1_450 + index, payload: payload, turnId: turnId)
+  })
+
+  let scheduleSnapshots = scheduledSnapshots.filter {
+    $0.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() != "background_task"
+  }
+  entries.append(contentsOf: scheduleSnapshots.enumerated().map { index, snapshot in
     WorkTimelineEntry(
-      id: row.id,
-      timestamp: row.timestamp,
-      rank: 1_450 + index,
-      payload: .subagent(row)
+      id: "scheduled-work:\(snapshot.id)",
+      timestamp: snapshot.createdAt,
+      rank: 1_475 + index,
+      payload: .scheduledWork(snapshot),
+      turnId: snapshot.turnId
+    )
+  })
+
+  entries.append(contentsOf: backgroundJobs.enumerated().map { index, job in
+    WorkTimelineEntry(
+      id: job.id,
+      timestamp: job.startedAt,
+      rank: 1_480 + index,
+      payload: .backgroundJob(job),
+      turnId: job.turnId
     )
   })
 
   entries.append(contentsOf: eventCards.enumerated().map { index, card in
-    WorkTimelineEntry(id: "event-\(card.id)", timestamp: card.timestamp, rank: 1_500 + index, payload: .eventCard(card))
+    WorkTimelineEntry(id: "event-\(card.id)", timestamp: card.timestamp, rank: 1_500 + index, payload: .eventCard(card), turnId: card.turnId)
   })
 
   // Derived from the transcript rather than passed in: `ade_card` merges by
@@ -1826,7 +2016,8 @@ func assembleWorkTimeline(
       id: "ade-card-\(card.id)",
       timestamp: card.timestamp,
       rank: 1_600 + index,
-      payload: .adeCard(card)
+      payload: .adeCard(card),
+      turnId: card.turnId
     )
   })
 
@@ -1842,10 +2033,10 @@ func assembleWorkTimeline(
   // into its footer instead of rendered as their own row beside it.
   let usageLimitTurnKeys = Set(turnEndMarkers.compactMap { $0.usageLimitPaused ? $0.turnId : nil })
 
-  let turnUsageSummaries = doneEnvelopes.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary)? in
+  let turnUsageSummaries = doneEnvelopes.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary, turnId: String)? in
     guard case .done(_, _, let usage, let turnId, _, _, _) = envelope.event, let usage else { return nil }
     if let key = normalizedWorkTurnId(turnId), usageLimitTurnKeys.contains(key) { return nil }
-    return (envelope.id, envelope.timestamp, usage)
+    return (envelope.id, envelope.timestamp, usage, turnId)
   }
 
   entries.append(contentsOf: turnUsageSummaries.enumerated().map { index, item in
@@ -1853,7 +2044,8 @@ func assembleWorkTimeline(
       id: "usage-\(item.id)",
       timestamp: item.timestamp,
       rank: 1_650 + index,
-      payload: .usageSummary(item.usage)
+      payload: .usageSummary(item.usage),
+      turnId: item.turnId
     )
   })
 
@@ -1862,7 +2054,8 @@ func assembleWorkTimeline(
       id: "turn-end-\(marker.turnId)",
       timestamp: marker.time,
       rank: 1_700 + index,
-      payload: .turnEndMarker(marker)
+      payload: .turnEndMarker(marker),
+      turnId: marker.turnId
     )
   })
 
@@ -1918,6 +2111,7 @@ func assembleWorkTimeline(
   folded = collapseConsecutiveWorkActivityEntries(folded)
   folded = collapseActivityPhaseTimelineEntries(folded)
   folded = collapseSameCauseSubagentEntries(folded, causeOf: workSubagentStoppedGroupCause)
+  folded = collapseConsecutiveWorkBackgroundJobs(folded)
   return folded
 }
 
@@ -1970,6 +2164,7 @@ func collapseConsecutiveSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -
       icon: newestCard.icon,
       tint: newestCard.tint,
       timestamp: newestCard.timestamp,
+      turnId: anchorCard.turnId ?? newestCard.turnId,
       body: foldedBody,
       bullets: newestCard.bullets,
       metadata: newestCard.metadata,
@@ -1979,7 +2174,8 @@ func collapseConsecutiveSpawnCompletionEntries(_ entries: [WorkTimelineEntry]) -
       id: run[0].id,
       timestamp: run[run.count - 1].timestamp,
       rank: run[0].rank,
-      payload: .eventCard(folded)
+      payload: .eventCard(folded),
+      turnId: run[0].turnId
     ))
   }
   return result
@@ -2085,6 +2281,7 @@ func collapseSameCauseSubagentEntries(
     let stopReason = workSubagentStoppedGroupReason(entries[index])
     var end = index
     while end < entries.count,
+          entries[end].turnId == entries[index].turnId,
           causeOf(entries[end]) == cause,
           workSubagentStoppedGroupSource(entries[end]) == stopSource,
           workSubagentStoppedGroupReason(entries[end]) == stopReason {
@@ -2113,7 +2310,8 @@ func collapseSameCauseSubagentEntries(
       id: model.id,
       timestamp: run[run.count - 1].timestamp,
       rank: run[0].rank,
-      payload: .subagentStoppedGroup(model)
+      payload: .subagentStoppedGroup(model),
+      turnId: run[0].turnId
     ))
   }
   return result
@@ -2151,6 +2349,212 @@ func workFormatTurnWorkSummaryLabel(toolCount: Int, fileCount: Int) -> String? {
 ///
 /// Desktop and Chat Info still retain the underlying activity events, so this
 /// remains a mobile transcript presentation choice rather than a sync change.
+private enum WorkTurnFoldRowRole {
+  case history
+  case keep
+  case keepIfLive
+}
+
+private func workTurnFoldRole(
+  for entry: WorkTimelineEntry,
+  turnId: String,
+  liveEntryIds: Set<String>
+) -> WorkTurnFoldRowRole {
+  if let entryTurnId = normalizedWorkTurnId(entry.turnId), entryTurnId != turnId {
+    return .keep
+  }
+  switch entry.payload {
+  case .toolCard, .commandCard, .fileChangeCard, .toolGroup, .changedFiles, .usageSummary:
+    return .history
+  case .backgroundJob(let job):
+    return liveEntryIds.contains(job.id) ? .keepIfLive : .history
+  case .backgroundJobRun(let run):
+    return run.jobs.contains(where: { liveEntryIds.contains($0.id) }) ? .keepIfLive : .history
+  case .scheduledWork(let schedule):
+    return liveEntryIds.contains(entry.id) ? .keepIfLive : .history
+  case .adeCard(let card):
+    return card.variant == "lane_setup" && !liveEntryIds.contains(entry.id) ? .history : .keep
+  case .eventCard(let card):
+    switch card.kind {
+    case "reasoning", "plan", "planProposal", "planText", "contextCompact", "autoApprovalReview", "promptSuggestion", "codexState", "turnDiagnostics", "turnDetails":
+      return .history
+    case "status", "activity", "activityBundle":
+      return .history
+    default:
+      return .keep
+    }
+  case .message(let message):
+    guard message.role.lowercased() == "assistant" else { return .keep }
+    return .history
+  case .subagent, .subagentGrid, .subagentStoppedGroup,
+       .artifact, .turnSeparator, .turnEndMarker, .turnFold,
+       .pendingQuestion, .pendingPermission, .pendingPlanApproval, .pendingModelSelection:
+    return .keep
+  }
+}
+
+private struct WorkTurnFoldPlan {
+  let model: WorkTurnFoldModel
+  let startIndex: Int
+}
+
+func workApplyingTurnFolds(
+  _ entries: [WorkTimelineEntry],
+  expandedTurnIds: Set<String> = []
+) -> [WorkTimelineEntry] {
+  var plansByStart: [Int: WorkTurnFoldPlan] = [:]
+  var collapsedHiddenIndices = Set<Int>()
+  var duplicateAnswerIndices = Set<Int>()
+  var turnWindowStart = entries.startIndex
+
+  for markerIndex in entries.indices {
+    guard case .turnEndMarker(let marker) = entries[markerIndex].payload else { continue }
+    let windowStart = turnWindowStart
+    turnWindowStart = markerIndex + 1
+    let turnId = normalizedWorkTurnId(marker.turnId) ?? marker.turnId
+    var matchingBoundary: Int?
+    var fallbackBoundary: Int?
+    for index in windowStart..<markerIndex {
+      guard case .message(let message) = entries[index].payload,
+            message.role.lowercased() == "user" else { continue }
+      if normalizedWorkTurnId(message.turnId) == turnId {
+        matchingBoundary = index
+      } else if normalizedWorkTurnId(message.turnId) == nil {
+        fallbackBoundary = index
+      }
+    }
+    guard let boundaryIndex = matchingBoundary ?? fallbackBoundary else { continue }
+
+    var answerIndex: Int?
+    if boundaryIndex + 1 < markerIndex {
+      for index in stride(from: markerIndex - 1, through: boundaryIndex + 1, by: -1) {
+        guard case .message(let message) = entries[index].payload,
+              message.role.lowercased() == "assistant" else { continue }
+        let rowTurnId = normalizedWorkTurnId(message.turnId)
+        guard rowTurnId == nil || rowTurnId == turnId else { continue }
+        let phase = message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard phase != "commentary" else { continue }
+        if answerIndex == nil { answerIndex = index }
+        if phase == "final_answer" {
+          answerIndex = index
+          break
+        }
+      }
+    }
+    guard let answerIndex else { continue }
+
+    let span = (boundaryIndex + 1)..<answerIndex
+    guard !span.isEmpty else { continue }
+    var foldable: [Int] = []
+    foldable.reserveCapacity(span.count)
+    var toolCount = 0
+    var fileCount = 0
+    var jobCount = 0
+    var subagentIds = Set<String>()
+
+    for index in span {
+      let entry = entries[index]
+      if let rowTurnId = normalizedWorkTurnId(entry.turnId), rowTurnId != turnId { continue }
+      switch entry.payload {
+      case .toolCard, .commandCard:
+        toolCount += 1
+      case .fileChangeCard:
+        fileCount += 1
+      case .toolGroup(let group):
+        toolCount += group.count
+      case .changedFiles(let group):
+        fileCount += group.count
+      case .backgroundJob(let job):
+        jobCount += 1
+      case .backgroundJobRun(let run):
+        jobCount += run.jobs.count
+      case .subagent(let row):
+        subagentIds.insert(row.snapshot.agentId ?? row.snapshot.taskId)
+      case .subagentGrid(let grid):
+        for row in grid.rows { subagentIds.insert(row.snapshot.agentId ?? row.snapshot.taskId) }
+      case .subagentStoppedGroup(let group):
+        for row in group.rows { subagentIds.insert(row.snapshot.agentId ?? row.snapshot.taskId) }
+      default:
+        break
+      }
+      if case .eventCard(let card) = entry.payload,
+         ["status", "activity", "activityBundle", "turnDiagnostics", "turnDetails"].contains(card.kind) {
+        continue
+      }
+      if case .message(let message) = entry.payload,
+         message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        continue
+      }
+      switch workTurnFoldRole(for: entry, turnId: turnId, liveEntryIds: marker.liveEntryIds) {
+      case .history:
+        foldable.append(index)
+      case .keep, .keepIfLive:
+        break
+      }
+    }
+    let hasVisibleWork = jobCount > 0 || toolCount > 0 || fileCount > 0 || !subagentIds.isEmpty
+    guard !foldable.isEmpty || hasVisibleWork else { continue }
+
+    let answer = (entries[answerIndex].payload.asAssistantMessage)?.markdown
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    var duplicates = Set<Int>()
+    if let answer, !answer.isEmpty {
+      for index in foldable {
+        guard case .message(let message) = entries[index].payload,
+              message.role.lowercased() == "assistant",
+              message.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == answer else { continue }
+        duplicates.insert(index)
+      }
+    }
+
+    let status = marker.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    let foldStatus: String = ["interrupted", "stopped", "cancelled", "canceled"].contains(status)
+      ? "interrupted"
+      : ["failed", "error"].contains(status) ? "failed" : "completed"
+    var parts = [foldStatus == "interrupted" ? "Stopped after \(marker.workedDurationLabel)" : "Worked for \(marker.workedDurationLabel)"]
+    if toolCount > 0 { parts.append("\(toolCount) tool\(toolCount == 1 ? "" : "s")") }
+    if fileCount > 0 { parts.append("\(fileCount) file\(fileCount == 1 ? "" : "s")") }
+    if !subagentIds.isEmpty { parts.append("\(subagentIds.count) subagent\(subagentIds.count == 1 ? "" : "s")") }
+    if jobCount > 0 { parts.append("\(jobCount) background job\(jobCount == 1 ? "" : "s")") }
+    if marker.sourceCount > 0 { parts.append("\(marker.sourceCount) source\(marker.sourceCount == 1 ? "" : "s")") }
+    let id = "turn-fold:\(turnId)"
+    let isExpanded = expandedTurnIds.contains(turnId)
+    let plan = WorkTurnFoldPlan(
+      model: WorkTurnFoldModel(id: id, turnId: turnId, label: parts.joined(separator: " · "), isExpanded: isExpanded, status: foldStatus),
+      startIndex: boundaryIndex + 1
+    )
+    plansByStart[plan.startIndex] = plan
+    if isExpanded { duplicateAnswerIndices.formUnion(duplicates) }
+    else { collapsedHiddenIndices.formUnion(foldable) }
+  }
+
+  guard !plansByStart.isEmpty else { return entries }
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(entries.count)
+  for index in entries.indices {
+    if let plan = plansByStart[index] {
+      result.append(WorkTimelineEntry(
+        id: plan.model.id,
+        timestamp: entries[index].timestamp,
+        rank: entries[index].rank,
+        payload: .turnFold(plan.model),
+        turnId: plan.model.turnId
+      ))
+    }
+    if duplicateAnswerIndices.contains(index) { continue }
+    if collapsedHiddenIndices.contains(index) { continue }
+    result.append(entries[index])
+  }
+  return result
+}
+
+private extension WorkTimelinePayload {
+  var asAssistantMessage: WorkChatMessage? {
+    guard case .message(let message) = self, message.role.lowercased() == "assistant" else { return nil }
+    return message
+  }
+}
+
 func workPresentedTimelineEntries(
   _ timeline: [WorkTimelineEntry],
   provider: String? = nil,
@@ -2218,7 +2622,8 @@ func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [Work
             id: groupId,
             timestamp: anchor.timestamp,
             rank: anchor.rank,
-            payload: .toolGroup(WorkToolGroupModel(id: groupId, members: readOnly))
+            payload: .toolGroup(WorkToolGroupModel(id: groupId, members: readOnly, turnId: anchor.turnId)),
+            turnId: anchor.turnId
           ))
         }
         if !codeChange.isEmpty {
@@ -2229,7 +2634,8 @@ func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [Work
               id: groupId,
               timestamp: anchor.timestamp,
               rank: anchor.rank,
-              payload: .changedFiles(WorkChangedFilesGroupModel(id: groupId, files: files))
+              payload: .changedFiles(WorkChangedFilesGroupModel(id: groupId, files: files, turnId: anchor.turnId)),
+              turnId: anchor.turnId
             ))
           } else {
             // Aggregation found no extractable file paths (e.g. all members
@@ -2241,7 +2647,8 @@ func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [Work
               id: fallbackId,
               timestamp: anchor.timestamp,
               rank: anchor.rank,
-              payload: .toolGroup(WorkToolGroupModel(id: fallbackId, members: codeChange))
+              payload: .toolGroup(WorkToolGroupModel(id: fallbackId, members: codeChange, turnId: anchor.turnId)),
+              turnId: anchor.turnId
             ))
           }
         }
@@ -2478,6 +2885,7 @@ private func mergeReasoningTimelineEntries(_ entries: [WorkTimelineEntry]) -> Wo
     icon: anchor.icon,
     tint: anchor.tint,
     timestamp: last.timestamp,
+    turnId: first.turnId,
     body: mergedBody.isEmpty ? anchor.body : mergedBody,
     bullets: anchor.bullets,
     metadata: anchor.metadata,
@@ -2491,7 +2899,8 @@ private func mergeReasoningTimelineEntries(_ entries: [WorkTimelineEntry]) -> Wo
     id: mergedCard.id,
     timestamp: last.timestamp,
     rank: first.rank,
-    payload: .eventCard(mergedCard)
+    payload: .eventCard(mergedCard),
+    turnId: first.turnId
   )
 }
 
@@ -2503,13 +2912,15 @@ private func mergeToolGroupTimelineEntries(_ entries: [WorkTimelineEntry]) -> Wo
   let first = entries[0]
   let merged = WorkToolGroupModel(
     id: "activity-phase-tools:\(first.id)",
-    members: groups.flatMap(\.members)
+    members: groups.flatMap(\.members),
+    turnId: first.turnId
   )
   return WorkTimelineEntry(
     id: merged.id,
     timestamp: entries[entries.count - 1].timestamp,
     rank: first.rank,
-    payload: .toolGroup(merged)
+    payload: .toolGroup(merged),
+    turnId: first.turnId
   )
 }
 
@@ -2521,13 +2932,15 @@ private func mergeChangedFilesTimelineEntries(_ entries: [WorkTimelineEntry]) ->
   let first = entries[0]
   let merged = WorkChangedFilesGroupModel(
     id: "activity-phase-files:\(first.id)",
-    files: groups.flatMap(\.files)
+    files: groups.flatMap(\.files),
+    turnId: first.turnId
   )
   return WorkTimelineEntry(
     id: merged.id,
     timestamp: entries[entries.count - 1].timestamp,
     rank: first.rank,
-    payload: .changedFiles(merged)
+    payload: .changedFiles(merged),
+    turnId: first.turnId
   )
 }
 
@@ -2615,19 +3028,36 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
   result.reserveCapacity(entries.count)
   var cluster: [WorkTimelineEntry] = []
   var clusterTurnId: String?
+  // A subagent row is its own timeline boundary. It must not be swallowed into
+  // the activity bundle, and it must not split same-turn activity that the
+  // transcript interleaved around the spawn.
+  var heldBoundaries: [WorkTimelineEntry] = []
+
+  func isSubagentBoundary(_ entry: WorkTimelineEntry) -> Bool {
+    switch entry.payload {
+    case .subagent, .subagentStoppedGroup:
+      return true
+    default:
+      return false
+    }
+  }
 
   func flushCluster() {
     defer {
       cluster.removeAll(keepingCapacity: true)
       clusterTurnId = nil
+      heldBoundaries.removeAll(keepingCapacity: true)
     }
+    let boundaries = heldBoundaries
     guard cluster.count > 1 else {
       result.append(contentsOf: cluster)
+      result.append(contentsOf: boundaries)
       return
     }
     let cards = cluster.compactMap(workActivityCard(from:))
     guard cards.count == cluster.count, let anchor = cluster.first, let latest = cards.last else {
       result.append(contentsOf: cluster)
+      result.append(contentsOf: boundaries)
       return
     }
     let summaries = cards.map(workActivityCardSummary).filter { !$0.isEmpty }
@@ -2644,11 +3074,13 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
       bullets: Array(summaries.prefix(6)),
       metadata: []
     )
+    result.append(contentsOf: boundaries)
     result.append(WorkTimelineEntry(
       id: "activity-bundle:\(anchor.id)",
       timestamp: anchor.timestamp,
       rank: anchor.rank,
-      payload: .eventCard(bundle)
+      payload: .eventCard(bundle),
+      turnId: anchor.turnId
     ))
   }
 
@@ -2662,6 +3094,8 @@ private func collapseConsecutiveWorkActivityEntries(_ entries: [WorkTimelineEntr
         clusterTurnId = turnId
       }
       cluster.append(entry)
+    } else if isSubagentBoundary(entry) {
+      heldBoundaries.append(entry)
     } else {
       flushCluster()
       result.append(entry)
@@ -2797,7 +3231,7 @@ func buildWorkCommandCards(from transcript: [WorkChatEnvelope]) -> [WorkCommandC
   var byId: [String: WorkCommandCardModel] = [:]
   var order: [String] = []
   for envelope in transcript {
-    guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, _) = envelope.event else {
+    guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId) = envelope.event else {
       continue
     }
     if byId[itemId] == nil { order.append(itemId) }
@@ -2809,7 +3243,8 @@ func buildWorkCommandCards(from transcript: [WorkChatEnvelope]) -> [WorkCommandC
       status: status,
       timestamp: envelope.timestamp,
       exitCode: exitCode,
-      durationMs: durationMs
+      durationMs: durationMs,
+      turnId: turnId
     )
   }
   return order.compactMap { byId[$0] }
@@ -2819,7 +3254,7 @@ func buildWorkFileChangeCards(from transcript: [WorkChatEnvelope]) -> [WorkFileC
   var byId: [String: WorkFileChangeCardModel] = [:]
   var order: [String] = []
   for envelope in transcript {
-    guard case .fileChange(let path, let diff, let kind, let status, let itemId, _) = envelope.event else {
+    guard case .fileChange(let path, let diff, let kind, let status, let itemId, let turnId) = envelope.event else {
       continue
     }
     if byId[itemId] == nil { order.append(itemId) }
@@ -2829,7 +3264,8 @@ func buildWorkFileChangeCards(from transcript: [WorkChatEnvelope]) -> [WorkFileC
       diff: diff,
       kind: kind,
       status: status,
-      timestamp: envelope.timestamp
+      timestamp: envelope.timestamp,
+      turnId: turnId
     )
   }
   return order.compactMap { byId[$0] }
@@ -2931,7 +3367,12 @@ func workIncrementalEventCards(from timeline: [WorkTimelineEntry]) -> [WorkEvent
 
 func buildWorkEventCards(
   from transcript: [WorkChatEnvelope],
-  suppressedItemIds: Set<String> = []
+  suppressedItemIds: Set<String> = [],
+  taskList: WorkChatTaskListSnapshot? = nil,
+  /// The session id and latest timestamp of the WHOLE transcript, for a
+  /// caller that passes a subsequence (the thread engine's sparse fold). The
+  /// task-list card is anchored to them. Nil reads them from `transcript`.
+  taskListAnchor: (sessionId: String?, latestTimestamp: String?)? = nil
 ) -> [WorkEventCardModel] {
   var byId: [String: WorkEventCardModel] = [:]
   var order: [String] = []
@@ -2995,8 +3436,11 @@ func buildWorkEventCards(
        recoveredCodexTurnIds.contains(turnId) {
       continue
     }
-    guard let card = eventCard(for: envelope, resolutionByItemId: resolutionByItemId) else { continue }
+    guard var card = eventCard(for: envelope, resolutionByItemId: resolutionByItemId) else { continue }
+    card.turnId = card.turnId ?? workTurnId(for: envelope.event)
     if let existing = byId[card.id], let merged = mergedWorkEventCard(existing, with: card) {
+      var merged = merged
+      merged.turnId = merged.turnId ?? card.turnId ?? existing.turnId
       byId[card.id] = merged
     } else {
       if byId[card.id] == nil { order.append(card.id) }
@@ -3026,7 +3470,28 @@ func buildWorkEventCards(
       break
     }
   }
-  return order.compactMap { byId[$0] }
+  var cards = order.compactMap { byId[$0] }
+  let anchor = taskListAnchor ?? (transcript.last?.sessionId, transcript.map(\.timestamp).max())
+  if let taskList = taskList ?? buildWorkChatTaskListSnapshot(from: transcript),
+     let sessionId = anchor.sessionId {
+    let active = taskList.items.first(where: { $0.status == .running })
+      ?? taskList.items.first(where: { $0.status == .pending })
+    cards.append(WorkEventCardModel(
+      id: "task-list:\(sessionId)",
+      kind: "taskList",
+      title: taskList.label,
+      icon: "checklist",
+      tint: .accent,
+      timestamp: anchor.latestTimestamp ?? taskList.timestamp,
+      turnId: taskList.turnId,
+      body: active?.activeLabel ?? active?.label,
+      bullets: taskList.items.map(\.label),
+      metadata: ["\(taskList.completedCount)/\(taskList.items.count)"],
+      planSteps: taskList.items.map { WorkPlanStep(text: $0.label, status: $0.status.rawValue, priority: $0.priority, cancelled: $0.skipped) },
+      taskList: taskList
+    ))
+  }
+  return cards
 }
 
 private func workTodoTurnKey(sessionId: String, turnId: String?) -> String {
@@ -3584,10 +4049,10 @@ private func eventCard(
     case .userMessageResolution:
       // Folded into the originating user bubble by `buildWorkChatMessages`.
       return nil
-    case .plan(let steps, let explanation, let turnId):
-      guard !steps.isEmpty || nonEmptyWorkTimelineText(explanation) != nil else {
-        return nil
-      }
+    case .plan:
+      // Non-proposal plan events feed the chat's single task-list card below.
+      return nil
+    case .planProposal(let text, let turnId):
       return WorkEventCardModel(
         id: workPlanCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "plan",
@@ -3595,10 +4060,10 @@ private func eventCard(
         icon: "list.bullet.clipboard",
         tint: .accent,
         timestamp: envelope.timestamp,
-        body: nonEmptyWorkTimelineText(explanation),
-        bullets: steps.map { $0.text },
+        body: nonEmptyWorkTimelineText(text),
+        bullets: [],
         metadata: [],
-        planSteps: steps
+        planSteps: []
       )
     case .reasoning(let text, let turnId, let itemId, let summaryIndex):
       guard !isLowSignalWorkReasoning(text) else { return nil }
@@ -3676,6 +4141,8 @@ private func eventCard(
         bullets: items,
         metadata: ["Tasks · \(progressLabel)"]
       )
+    case .taskListUpdate, .sources:
+      return nil
     case .subagentStarted, .subagentProgress, .subagentResult:
       // Subagent lifecycle is represented by compact timeline boundaries, the
       // composer badge, and Chat Info. Rendering every lifecycle envelope as a
@@ -4224,7 +4691,8 @@ func injectWorkTurnSeparators(
             id: "turn-sep-\(key)",
             timestamp: message.timestamp,
             rank: entry.rank - 1,
-            payload: .turnSeparator(separator)
+            payload: .turnSeparator(separator),
+            turnId: entry.turnId
           )
         )
       }
@@ -4240,24 +4708,45 @@ func injectWorkTurnSeparators(
 /// then the only thing that knows which turn stopped.
 func workTurnEndMarkers(
   from transcript: [WorkChatEnvelope],
-  usageLimitTurnId: String? = nil
+  usageLimitTurnId: String? = nil,
+  sourceCountsByTurn: [String: Int]? = nil
 ) -> [WorkTurnEndMarker] {
   var fold = WorkTurnEndMarkerFold(usageLimitTurnId: usageLimitTurnId)
   for envelope in sortedWorkChatEnvelopes(transcript) {
     fold.consume(envelope)
   }
-  return fold.markers
+  return fold.markers(
+    sourceCountsByTurn: sourceCountsByTurn ?? buildWorkChatSourceList(from: transcript).countsByTurn
+  )
 }
 
 /// `workTurnEndMarkers` as a left fold over the time-sorted transcript, so
 /// the thread engine can resume it from a prefix.
+///
+/// Per-turn source counts are a whole-transcript input, applied at
+/// `markers(sourceCountsByTurn:)` rather than while folding.
 struct WorkTurnEndMarkerFold {
   let usageLimitTurnId: String?
   private let limitTurnKey: String?
   private var startByTurn: [String: String] = [:]
-  private(set) var markers: [WorkTurnEndMarker] = []
+  /// Markers with `sourceCount` still 0.
+  private var foldedMarkers: [WorkTurnEndMarker] = []
   private var seenEndedTurns = Set<String>()
   private var fallbackStart: String?
+  private var currentTurnKey: String?
+  private var unkeyedLiveEntryIds = Set<String>()
+  private var turnKeyByLiveEntryId: [String: String] = [:]
+  private var liveBackgroundJobsByTurn: [String: Set<String>] = [:]
+  private var liveScheduledWorkByTurn: [String: Set<String>] = [:]
+
+  func markers(sourceCountsByTurn: [String: Int]) -> [WorkTurnEndMarker] {
+    guard !sourceCountsByTurn.isEmpty else { return foldedMarkers }
+    return foldedMarkers.map { marker in
+      var marker = marker
+      marker.sourceCount = sourceCountsByTurn[marker.turnId] ?? 0
+      return marker
+    }
+  }
 
   init(usageLimitTurnId: String?) {
     self.usageLimitTurnId = usageLimitTurnId
@@ -4269,16 +4758,52 @@ struct WorkTurnEndMarkerFold {
       fallbackStart = envelope.timestamp
     }
     switch envelope.event {
+    case .scheduledWorkUpdate(let id, let kind, let status, _, _, _, _, _, _, _, _, _, _, _, _, _, let sourceTaskId, let turnId, _):
+      let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      let normalizedStatus = status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      if normalizedKind == "background_task" {
+        let entryId = workBackgroundJobEntryId(taskId: sourceTaskId)
+          ?? "background-job:\(id.trimmingCharacters(in: .whitespacesAndNewlines))"
+        let key = normalizedWorkTurnId(turnId) ?? currentTurnKey ?? turnKeyByLiveEntryId[entryId]
+        if let key {
+          var active = liveBackgroundJobsByTurn[key, default: []]
+          if normalizedStatus == "running" { active.insert(entryId) }
+          else { active.remove(entryId) }
+          liveBackgroundJobsByTurn[key] = active
+          turnKeyByLiveEntryId[entryId] = key
+        } else if normalizedStatus == "running" {
+          unkeyedLiveEntryIds.insert(entryId)
+        } else {
+          unkeyedLiveEntryIds.remove(entryId)
+        }
+      } else {
+        let entryId = "scheduled-work:\(id.trimmingCharacters(in: .whitespacesAndNewlines))"
+        let key = normalizedWorkTurnId(turnId) ?? currentTurnKey ?? turnKeyByLiveEntryId[entryId]
+        if let key {
+          var active = liveScheduledWorkByTurn[key, default: []]
+          if ["scheduled", "paused", "running"].contains(normalizedStatus) { active.insert(entryId) }
+          else { active.remove(entryId) }
+          liveScheduledWorkByTurn[key] = active
+          turnKeyByLiveEntryId[entryId] = key
+        } else if ["scheduled", "paused", "running"].contains(normalizedStatus) {
+          unkeyedLiveEntryIds.insert(entryId)
+        } else {
+          unkeyedLiveEntryIds.remove(entryId)
+        }
+      }
     case .userMessage(_, _, let turnId, _, _, _):
       // A new visible user turn is also the fallback boundary for providers or
       // imported transcripts that omit turn ids and terminal events.
       fallbackStart = envelope.timestamp
+      currentTurnKey = normalizedWorkTurnId(turnId)
       guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { return }
       startByTurn[key] = envelope.timestamp
     case .status(let turnStatus, _, let turnId):
       switch turnStatus.lowercased() {
       case "started", "active", "running", "inprogress", "in_progress", "in-progress":
-        guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { return }
+        guard let key = normalizedWorkTurnId(turnId) else { return }
+        currentTurnKey = key
+        guard startByTurn[key] == nil else { return }
         startByTurn[key] = envelope.timestamp
       default:
         return
@@ -4292,7 +4817,10 @@ struct WorkTurnEndMarkerFold {
       let metadata = workTurnModelMetadata(model: model, modelId: modelId, fallbackProvider: "")
       let usageLimitPaused = envelope.apiErrorStatus == 429
         || (limitTurnKey != nil && explicitKey == limitTurnKey)
-      markers.append(WorkTurnEndMarker(
+      let liveIds = (liveBackgroundJobsByTurn[explicitKey ?? key] ?? [])
+        .union(liveScheduledWorkByTurn[explicitKey ?? key] ?? [])
+        .union(explicitKey == nil ? unkeyedLiveEntryIds : [])
+      foldedMarkers.append(WorkTurnEndMarker(
         turnId: key,
         time: envelope.timestamp,
         workedDurationLabel: formattedSessionDuration(startedAt: start, endedAt: envelope.timestamp),
@@ -4302,8 +4830,11 @@ struct WorkTurnEndMarkerFold {
         modelLabel: metadata.modelLabel,
         modelId: metadata.modelId,
         usageLimitPaused: usageLimitPaused,
+        liveEntryIds: liveIds,
         usage: usageLimitPaused ? usage : nil
       ))
+      if currentTurnKey == explicitKey { currentTurnKey = nil }
+      if explicitKey == nil { unkeyedLiveEntryIds.removeAll(keepingCapacity: true) }
       fallbackStart = nil
     default:
       guard let key = normalizedWorkTurnId(workTurnId(for: envelope.event)), startByTurn[key] == nil else { return }
@@ -4351,7 +4882,7 @@ func workClaudeGoal(
   return current
 }
 
-private func normalizedWorkTurnId(_ turnId: String?) -> String? {
+func normalizedWorkTurnId(_ turnId: String?) -> String? {
   let key = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   return key.isEmpty ? nil : key
 }
@@ -4362,9 +4893,12 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .userMessageResolution(_, _, _, _, _, let turnId),
        .assistantText(_, let turnId, _),
        .toolCall(_, _, _, _, let turnId),
-       .toolResult(_, _, _, _, let turnId, _),
+       .toolResult(_, _, _, _, let turnId, _, _, _),
+       .sources(_, let turnId, _),
        .activity(_, _, let turnId),
        .plan(_, _, let turnId),
+       .planProposal(_, let turnId),
+       .taskListUpdate(_, let turnId),
        .subagentStarted(_, _, _, _, _, _, _, _, _, let turnId),
        .subagentProgress(_, _, _, _, _, _, _, _, _, _, let turnId),
        .subagentResult(_, _, _, _, _, _, _, _, _, let turnId),

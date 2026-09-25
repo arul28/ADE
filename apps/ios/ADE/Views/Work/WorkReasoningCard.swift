@@ -45,6 +45,30 @@ struct WorkReasoningCard: View {
                 .stroke(ADEColor.glassBorder, lineWidth: 1)
             )
             .transition(.opacity.combined(with: .move(edge: .top)))
+        } else if isLive, let bodyText {
+          Text(bodyText)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary.opacity(0.78))
+            .lineLimit(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.top, 2)
+            .mask(
+              LinearGradient(
+                stops: [
+                  .init(color: .black, location: 0),
+                  .init(color: .black, location: 0.72),
+                  .init(color: .clear, location: 1),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+              )
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+              withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) { onToggle() }
+            }
+            .accessibilityLabel("Live thinking preview. Tap to expand.")
         }
       }
       Spacer(minLength: 0)

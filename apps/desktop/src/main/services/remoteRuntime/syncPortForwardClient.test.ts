@@ -74,18 +74,24 @@ class FakeServer extends EventEmitter {
   }
 }
 
-function createLoopbackConnection(): AuthenticatedSyncConnection {
+function createLoopbackConnection(options: {
+  /** Where the paired sync socket actually landed: LAN, tailnet, or relay. */
+  endpoint?: string;
+  /** Every envelope the client sends, for asserting the forward handshake. */
+  sent?: Array<{ type: string; payload: unknown }>;
+} = {}): AuthenticatedSyncConnection {
   const envelopeCallbacks = new Set<(envelope: ParsedSyncEnvelope) => void>();
   const errorCallbacks = new Set<(error: Error) => void>();
   const closeCallbacks = new Set<() => void>();
   return {
-    endpoint: "ws://loopback.test/",
+    endpoint: options.endpoint ?? "ws://loopback.test/",
     hello: { features: { rpcChannel: true, portForward: true } },
     credentials: {},
     send(
       type: Parameters<AuthenticatedSyncConnection["send"]>[0],
       payload: unknown,
     ) {
+      options.sent?.push({ type: String(type), payload });
       if (type !== "fwd_data") return;
       const envelope = {
         version: 1,
@@ -152,6 +158,60 @@ describe("SyncPortForwardClient", () => {
     expect(reused.lastUsedAt).toBeGreaterThanOrEqual(forward.lastUsedAt);
     client.dispose();
     expect(socket.destroyed).toBe(true);
+  });
+
+  it("carries the driver's loopback stream port over the account relay", async () => {
+    // The Mac Desktop live view names loopback on the Mac that owns the
+    // display. When the paired route is the relay (both machines signed in to
+    // the same account, no LAN or tailnet path), the forward must be opened on
+    // that same sync socket — the relay is a transport for the channel, not a
+    // reason the forward cannot exist.
+    let server: FakeServer | null = null;
+    const createServer = ((callback: (socket: net.Socket) => void) => {
+      server = new FakeServer(callback);
+      return server as unknown as net.Server;
+    }) as typeof net.createServer;
+    const sent: Array<{ type: string; payload: unknown }> = [];
+    const client = new SyncPortForwardClient(
+      createLoopbackConnection({
+        endpoint: "wss://relay.example/connect/machine-1",
+        sent,
+      }),
+      { createServer },
+    );
+
+    const streamPort = 62_114;
+    const forward = await client.ensureForward("127.0.0.1", streamPort);
+    expect(forward).toMatchObject({
+      remoteHost: "127.0.0.1",
+      remotePort: streamPort,
+      localHost: "127.0.0.1",
+      localPort: 43123,
+      localUrl: "http://127.0.0.1:43123",
+    });
+
+    // The reader attaches: the local listener asks the host to open the
+    // loopback port on its side, over the relay-carried channel.
+    const socket = server!.accept();
+    await flushMicrotasks();
+    expect(sent).toContainEqual({
+      type: "fwd_open",
+      payload: expect.objectContaining({ host: "127.0.0.1", port: streamPort }),
+    });
+
+    const bytes = Buffer.from("annex-b access unit", "utf8");
+    socket.send(bytes);
+    await flushMicrotasks();
+    expect(Buffer.concat(socket.writes)).toEqual(bytes);
+    client.dispose();
+  });
+
+  it("refuses a forward for anything but a loopback address", async () => {
+    // The Mac Desktop stream server binds loopback; a forward for a wider
+    // address would turn this channel into a general network pivot.
+    const client = new SyncPortForwardClient(createLoopbackConnection());
+    await expect(client.ensureForward("0.0.0.0", 62_114)).rejects.toThrow(/127\.0\.0\.1 or localhost/);
+    client.dispose();
   });
 
   it("delivers a payload larger than 4MB when the local reader drains", async () => {

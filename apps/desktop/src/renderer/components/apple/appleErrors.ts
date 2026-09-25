@@ -1,5 +1,7 @@
 import {
   APPLE_BUTTON_UNSUPPORTED_CODE,
+  APPLE_DEVICE_ALREADY_RECORDING_CODE,
+  APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_HELPER_UNAVAILABLE_CODE,
@@ -37,6 +39,9 @@ export type AppleErrorDescription = {
 };
 
 export const APPLE_GENERIC_ERROR_SENTENCE = "Something went wrong with the simulator.";
+
+/** The pane gave up waiting on a start (see `useAppleDeviceStartTracker`). */
+export const APPLE_START_GIVE_UP_CODE = "APPLE_START_GIVE_UP";
 
 /** Electron prefixes a rejected `ipcRenderer.invoke` with the channel. */
 const IPC_PREFIX = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;
@@ -87,6 +92,8 @@ const RULES: readonly Rule[] = [
     sentence: "Could not connect to the video stream.",
     action: "reconnect",
   },
+  // A viewer asked to watch a device that is off. Watching never boots it.
+  { test: includes(APPLE_DEVICE_OFF_CODE), sentence: "The device is off.", action: "start" },
   // The device is off (helper `DeviceSession` refusal, or `simctl` on a shut-down device).
   { test: matches(/Device not booted|current state: Shutdown|is not booted|Unable to boot device/i), sentence: "The device is off.", action: "start" },
   // The helper.
@@ -107,6 +114,7 @@ const RULES: readonly Rule[] = [
   { test: matches(/which is no longer available/i), sentence: "That simulator is no longer installed." },
   { test: matches(/No framebuffer display descriptor|Failed to get device IO|No IO client|Failed to get IO ports|registerScreenCallbacks/i), sentence: "The simulator screen could not be read.", action: "reconnect" },
   { test: matches(/screenshot-failed|screenshot could not be written|screenshot path could not be opened|captured frame could not be decoded/i), sentence: "The screenshot could not be saved." },
+  { test: includes(APPLE_DEVICE_ALREADY_RECORDING_CODE), sentence: "Another lane is recording this device." },
   { test: matches(/already-recording/i), sentence: "A recording is already running." },
   { test: matches(/not-recording/i), sentence: "No recording is running." },
   { test: matches(/record-no-frames/i), sentence: "The recording captured no frames." },
@@ -128,6 +136,7 @@ const RULES: readonly Rule[] = [
   { test: includes(APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE), sentence: "ADE only detaches a simulator it did not create." },
   { test: matches(/No installed simulator matches/i), sentence: "That simulator is not installed." },
   { test: matches(/Apple devices belong to a lane|laneId is required|no Apple device yet/i), sentence: "Open the Apple tab from a lane first." },
+  { test: includes(APPLE_START_GIVE_UP_CODE), sentence: "The simulator is taking too long to start.", action: "start" },
   { test: matches(/did not become ready within|CoreSimulator may be stuck/i), sentence: "The simulator is taking too long to start.", action: "start" },
   { test: matches(/simctl clone did not report a udid/i), sentence: "The simulator could not be cloned." },
   // Launch and ownership.
@@ -148,6 +157,11 @@ const RULES: readonly Rule[] = [
   { test: matches(/Choose a #Preview|no nearby #Preview|No #Preview/i), sentence: "No SwiftUI preview was found for this file." },
   { test: matches(/timed out|timeout/i), sentence: "The simulator did not answer in time.", action: "reconnect" },
 ];
+
+/** True for the service's "this device is off, and watching never boots it". */
+export function isAppleDeviceOffError(error: unknown): boolean {
+  return `${codeOf(error)} ${rawMessage(error)}`.includes(APPLE_DEVICE_OFF_CODE);
+}
 
 /**
  * One sentence for the strip, the raw text for `Details`, and the button that

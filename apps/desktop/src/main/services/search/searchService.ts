@@ -24,6 +24,8 @@ import {
   SEARCH_INDEX_SCHEMA_VERSION,
   clearSearchIndex,
   openSearchIndexDb,
+  SearchIndexFts5UnavailableError,
+  SEARCH_INDEX_DB_FILENAME,
   type SearchIndexDb
 } from "./searchIndexDb";
 import {
@@ -209,17 +211,9 @@ function chatEventSearchText(envelope: AgentChatEventEnvelope): string | null {
   };
   if (!event || typeof event !== "object") return null;
   if (event.type === "user_message") {
-    // Accepted steers are persisted again when they become processed or
-    // terminally unprocessed so every transcript surface can fold the latest
-    // delivery state. The first accepted event already owns the searchable
-    // message body; lifecycle snapshots must not create duplicate hits.
-    if (
-      event.deliveryState === "queued"
-      || event.deliveryState === "processed"
-      || event.deliveryState === "unprocessed"
-    ) {
-      return null;
-    }
+    // A staged steer is not a sent message yet. Its later lifecycle rows are
+    // folded onto one doc per steerId by the indexer (`chatEventSteerId`).
+    if (event.deliveryState === "queued") return null;
     const display = typeof event.displayText === "string" ? event.displayText : "";
     const text = typeof event.text === "string" ? event.text : "";
     return display.trim() || text.trim() || null;
@@ -229,6 +223,18 @@ function chatEventSearchText(envelope: AgentChatEventEnvelope): string | null {
     return text.trim() || null;
   }
   return null;
+}
+
+/**
+ * A steer writes its row once per lifecycle state on one steerId (`accepted`
+ * then `inline`, `processed`, `delivered`, ...), with the same text. Keying
+ * its doc by steerId makes it one hit. The first row indexed keeps the doc, so
+ * the hit links to where the message first showed.
+ */
+function chatEventSteerId(envelope: AgentChatEventEnvelope): string | null {
+  const event = envelope.event as { type?: string; steerId?: unknown } | null | undefined;
+  if (!event || event.type !== "user_message" || typeof event.steerId !== "string") return null;
+  return event.steerId.trim() || null;
 }
 
 export type SearchService = ReturnType<typeof createSearchService>;
@@ -249,12 +255,41 @@ export function createSearchService(deps: SearchServiceDeps) {
   // never lose freshly-enqueued work to an in-flight drain.
   let workChain: Promise<void> = Promise.resolve();
 
+  /*
+   * Set once when this runtime cannot host a search index at all, and
+   * rethrown by every later `ensureDb`.
+   *
+   * `ensureDb` is lazy and called per operation, so a permanent failure was
+   * retried on every chat event: the open threw "no such module: fts5", the
+   * per-source catch logged it, and the next event did it again — several
+   * lines a second on a dev brain, each one also deleting and recreating the
+   * index file. A missing module is a property of the runtime, not of the
+   * attempt, so it is remembered and the indexer stands down.
+   */
+  let unavailable: SearchIndexFts5UnavailableError | null = null;
+
   const ensureDb = (): SearchIndexDb => {
     // A source processor resuming from an await after dispose() must not
     // re-open the just-closed database (handle leak + writes after teardown);
     // the throw is caught and logged by the queue drain's per-source catch.
     if (disposed) throw new Error("search index disposed");
-    if (!index) index = openSearchIndexDb(deps.cacheDir);
+    if (unavailable) throw unavailable;
+    if (!index) {
+      try {
+        index = openSearchIndexDb(deps.cacheDir);
+      } catch (error) {
+        if (error instanceof SearchIndexFts5UnavailableError) {
+          unavailable = error;
+          // ONE line, at warn, naming the consequence and its bound.
+          logger?.warn("search.index_unavailable", {
+            reason: error.code,
+            detail: error.message,
+          });
+          queue.clear();
+        }
+        throw error;
+      }
+    }
     return index;
   };
 
@@ -347,6 +382,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (disposed) return;
     const key = `${sourceKind}:${id}`;
     const dueAt = Date.now() + (debounceMs ?? DEBOUNCE_MS[sourceKind]);
+    if (unavailable) return;
     const existing = queue.get(key);
     // Keep the earlier due time so a steady stream of events cannot starve
     // the source forever.
@@ -713,6 +749,13 @@ export function createSearchService(deps: SearchServiceDeps) {
       for (const envelope of envelopes) {
         const seq = docSeq;
         docSeq += 1;
+        const steerId = chatEventSteerId(envelope);
+        // A steer the turn refused goes back to the staging strip, and its
+        // bubble is hidden until it is sent. Drop its hit until then.
+        if (steerId && (envelope.event as { deliveryState?: unknown }).deliveryState === "queued") {
+          deleteDocsWhere("doc_id = ?", [`chat:${sessionId}:steer:${steerId}`]);
+          continue;
+        }
         const text = chatEventSearchText(envelope);
         if (!text) continue;
         const sanitized = sanitizeIndexedText(text);
@@ -724,8 +767,10 @@ export function createSearchService(deps: SearchServiceDeps) {
           typeof envelope.sequence === "number" && envelope.sequence >= 0
             ? envelope.sequence
             : seq;
+        const docId = steerId ? `chat:${sessionId}:steer:${steerId}` : `chat:${sessionId}:${seq}`;
+        if (steerId && getRow("SELECT 1 FROM docs WHERE doc_id = ?", [docId])) continue;
         upsertDoc({
-          docId: `chat:${sessionId}:${seq}`,
+          docId,
           kind: "chat",
           laneId,
           laneName,
@@ -1617,6 +1662,21 @@ export function createSearchService(deps: SearchServiceDeps) {
     query,
 
     indexStatus(): SearchIndexStatus {
+      if (unavailable) {
+        // `ready: false` is the honest answer and the one the field exists
+        // for. Throwing here would turn "this machine cannot search" into an
+        // error dialog on a status read.
+        return {
+          ready: false,
+          schemaVersion: SEARCH_INDEX_SCHEMA_VERSION,
+          docCount: 0,
+          docCountByKind: {},
+          pendingSources: 0,
+          backfillComplete: false,
+          lastUpdatedAt: null,
+          indexPath: path.join(deps.cacheDir, SEARCH_INDEX_DB_FILENAME),
+        };
+      }
       const db = ensureDb();
       const byKind: Partial<Record<SearchDocKind, number>> = {};
       for (const row of all<{ kind: string; n: number }>(

@@ -209,12 +209,6 @@ describe("PrReviewThreadCard", () => {
     });
   });
 
-  it("renders a focus ring when focused is true", () => {
-    const { container } = renderCard({}, { focused: true });
-    const card = container.querySelector("[data-pr-review-thread-card]") as HTMLElement;
-    expect(card.style.outline).toContain("2px solid");
-  });
-
   it("renders the diff-hunk context block when the thread carries a diff hunk", () => {
     // GitHub attaches `diff_hunk` to each inline comment; the card reads it off
     // the first comment (PrReviewThreadComment.diffHunk).

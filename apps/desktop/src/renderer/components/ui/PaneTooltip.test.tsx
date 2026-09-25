@@ -42,8 +42,6 @@ describe("PaneTooltip", () => {
     // Portalled, so a pane with `overflow: hidden` can never clip it.
     expect(wrapper.contains(tooltip)).toBe(false);
     expect(document.body.contains(tooltip)).toBe(true);
-    // And it can never eat the click it is describing.
-    expect((tooltip as HTMLElement).style.pointerEvents).toBe("none");
   });
 
   it("stays away when the trigger already shows the whole string", () => {

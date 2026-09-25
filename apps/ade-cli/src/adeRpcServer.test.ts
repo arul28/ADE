@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createAdeRpcRequestHandler,
   _resetGlobalAskUserRateLimit,
+  MAC_DESKTOP_AGENT_DRIVING_ACTIONS,
+  MAC_DESKTOP_LANE_BOUND_ACTIONS,
   resolveComputerUseOwners,
 } from "./adeRpcServer";
 import { JsonRpcError, JsonRpcErrorCode } from "./jsonrpc";
@@ -744,7 +746,11 @@ function createRuntime() {
     computerUseArtifactBrokerService: {
       getBackendStatus: vi.fn(() => ({ backends: [] })),
       listArtifacts: vi.fn(() => []),
-      ingest: vi.fn(() => ({ artifacts: [] })),
+      // One spy for both doors: attaches use the async ingest.
+      ...(() => {
+        const ingest = vi.fn(() => ({ artifacts: [] }));
+        return { ingest, ingestAsync: ingest };
+      })(),
       readArtifactPreview: vi.fn(async () => "data:image/png;base64,AAAA"),
     } as any,
     eventBuffer: {
@@ -1478,6 +1484,27 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.computerUseArtifactBrokerService.listArtifacts).toHaveBeenCalledTimes(2);
     expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
       artifactIds: [owned.id],
+    });
+
+    /*
+     * regression: a broken artifact that belongs to NOBODY must be prunable.
+     *
+     * The filter above asks "is this in one of MY owners' sets", and an
+     * ownerless row is in nobody's — so every scoped caller skipped it and
+     * only a project-wide one could clean it up. Twenty such rows sat in the
+     * owner's database for two months: files deleted long ago, invisible in
+     * every drawer, and immune to the tool whose job is removing exactly that.
+     * Both halves must hold — ownerless AND broken — so this can never reach
+     * another lane's proof.
+     */
+    fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts.mockClear();
+    fixture.runtime.computerUseArtifactBrokerService.listBrokenArtifacts.mockReturnValueOnce([
+      { artifactId: "orphan-1", ownerCount: 0 },
+      { artifactId: "someone-elses", ownerCount: 1 },
+    ] as never);
+    await callTool(handler, "prune_broken_computer_use_artifacts", {});
+    expect(fixture.runtime.computerUseArtifactBrokerService.deleteArtifacts).toHaveBeenCalledWith({
+      artifactIds: ["orphan-1"],
     });
 
     const foreignRecover = await callTool(handler, "recover_computer_use_artifact", {
@@ -2216,6 +2243,95 @@ describe("adeRpcServer", () => {
     );
   });
 
+  it("infers the lane for a standalone caller when the brain's ceiling is cto, as a real brain's is", async () => {
+    // The helper above sets ADE_DEFAULT_ROLE to whatever role the test asks
+    // for, so every existing case runs against an "agent" ceiling. A real
+    // brain runs at "cto" — `ps -wwE` on the installed service and on a dev
+    // brain both say so — and this is the only dimension the fixture fakes.
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+
+    const previousRole = process.env.ADE_DEFAULT_ROLE;
+    process.env.ADE_DEFAULT_ROLE = "cto";
+    try {
+      await handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/initialize",
+        params: { identity: { callerId: "ade-cli:4242", role: "agent" } },
+      });
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        toolName: "proof attach",
+        callerRoot: laneRoot,
+        inputs: [{ kind: "screenshot", title: "Proof", path: path.join(laneRoot, "proof.png") }],
+      });
+
+      expect(response.isError).toBeUndefined();
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          owners: expect.arrayContaining([expect.objectContaining({ kind: "lane", id: "lane-1" })]),
+        }),
+      );
+    } finally {
+      if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+      else process.env.ADE_DEFAULT_ROLE = previousRole;
+    }
+  });
+
+  it("accepts the lane an unbound caller names while standing inside its worktree", async () => {
+    // An OpenCode agent's shell carries no chat session: one `opencode serve`
+    // is shared across chats, so it cannot hold a per-chat environment. Naming
+    // its lane used to be refused for not matching a session lane it could not
+    // have. Containment is the stronger claim — it is where the caller IS.
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    const laneRoot = fixture.runtime.laneService.getLaneWorktreePath("lane-1");
+    fs.mkdirSync(laneRoot, { recursive: true });
+
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+    const response = await callTool(handler, "ingest_computer_use_artifacts", {
+      backendStyle: "manual",
+      backendName: "ade-cli",
+      toolName: "proof attach",
+      callerRoot: laneRoot,
+      laneId: "lane-1",
+      inputs: [{ kind: "screenshot", title: "Named lane proof", path: path.join(laneRoot, "proof.png") }],
+    });
+
+    expect(response.isError).toBeUndefined();
+    expect(fixture.runtime.computerUseArtifactBrokerService.ingest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owners: expect.arrayContaining([expect.objectContaining({ kind: "lane", id: "lane-1" })]),
+      }),
+    );
+  });
+
+  it("still refuses a lane an unbound caller names from outside its worktree", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    fs.mkdirSync(fixture.runtime.laneService.getLaneWorktreePath("lane-1"), { recursive: true });
+    const strayRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stray-named-lane-"));
+
+    await initialize(handler, { callerId: "ade-cli:4242", role: "agent" });
+    try {
+      const response = await callTool(handler, "ingest_computer_use_artifacts", {
+        backendStyle: "manual",
+        backendName: "ade-cli",
+        callerRoot: strayRoot,
+        laneId: "lane-1",
+        inputs: [{ kind: "screenshot", title: "Stray proof", path: path.join(strayRoot, "proof.png") }],
+      });
+      expect(response.isError).toBe(true);
+      expect(fixture.runtime.computerUseArtifactBrokerService.ingest).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(strayRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a relative caller root, which would resolve differently on each side", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -2500,7 +2616,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2553,9 +2669,13 @@ describe("adeRpcServer", () => {
   it("omits activity guidance when the runtime cannot accept activity reports", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionActivityReportingEnabled = false;
+    fixture.runtime.sessionService.get.mockReturnValue({
+      id: "chat-agent",
+      laneId: "lane-1",
+    });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "agent", chatSessionId: "chat-agent", callerId: "agent-1" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2653,7 +2773,7 @@ describe("adeRpcServer", () => {
 
     try {
       const response = await withEnv({ ADE_HOME: adeHome }, async () => {
-        await initialize(handler, { role: "agent" });
+        await initialize(handler, { role: "cto" });
         return await callTool(handler, "start_cli_session", {
           laneId: "lane-1",
           provider: "codex",
@@ -2690,7 +2810,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "droid",
@@ -2733,9 +2853,11 @@ describe("adeRpcServer", () => {
       orchestrationParentSessionId: "parent-session-1",
       spawnKind: "peer",
     });
+    const notifyParentOfCliChildSpawn = vi.fn(() => true);
+    (fixture.runtime.agentChatService as any).notifyParentOfCliChildSpawn = notifyParentOfCliChildSpawn;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2744,6 +2866,10 @@ describe("adeRpcServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
+    // The parent gets the same spawn chip + card a chat child gets, keyed on
+    // the terminal session the PTY create just returned.
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(1);
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledWith("session-1");
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
     expect(createCall).toEqual(expect.objectContaining({
       resumeMetadata: expect.objectContaining({
@@ -2765,10 +2891,171 @@ describe("adeRpcServer", () => {
     }));
   });
 
+  it("lets an agent start a CLI child only as itself in an authorized lane", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
+      return null;
+    });
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "chat-agent", callerId: "agent-1" });
+
+    const allowed = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "chat-agent",
+      spawnKind: "subagent",
+    });
+    expect(allowed.isError).toBeUndefined();
+
+    const foreignParent = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "other-chat",
+    });
+    expect(foreignParent.isError).toBe(true);
+    expect(JSON.stringify(foreignParent.error ?? foreignParent)).toMatch(/PTY access is limited/i);
+
+    const foreignLane = await callTool(handler, "start_cli_session", {
+      laneId: "lane-2",
+      provider: "codex",
+      orchestrationParentSessionId: "chat-agent",
+    });
+    expect(foreignLane.isError).toBe(true);
+  });
+
+  it("reopens the parent card only when a CLI send actually resumes the child", async () => {
+    const fixture = createRuntime();
+    const notifyParentOfCliChildSpawn = vi.fn(() => true);
+    (fixture.runtime.agentChatService as any).notifyParentOfCliChildSpawn = notifyParentOfCliChildSpawn;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "cto" });
+
+    fixture.runtime.ptyService.sendToSession.mockResolvedValueOnce({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      pid: 123,
+      session: null,
+      resumed: false,
+      reusedExistingRuntime: true,
+    });
+    await callTool(handler, "send_to_session", { sessionId: "session-1", text: "still running" });
+    expect(notifyParentOfCliChildSpawn).not.toHaveBeenCalled();
+
+    fixture.runtime.ptyService.sendToSession.mockResolvedValueOnce({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      pid: 123,
+      session: null,
+      resumed: true,
+      reusedExistingRuntime: false,
+    });
+    await callTool(handler, "send_to_session", { sessionId: "session-1", text: "continue" });
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(1);
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledWith("session-1", { resumed: true });
+
+    await handler({
+      jsonrpc: "2.0",
+      id: 9,
+      method: "pty.sendToSession",
+      params: { args: { sessionId: "session-1", text: "again" } },
+    });
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(1);
+
+    fixture.runtime.ptyService.sendToSession.mockResolvedValueOnce({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      pid: 124,
+      session: null,
+      resumed: true,
+      reusedExistingRuntime: false,
+    });
+    await handler({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "pty.sendToSession",
+      params: { args: { sessionId: "session-1", text: "reopen" } },
+    });
+    expect(notifyParentOfCliChildSpawn).toHaveBeenCalledTimes(2);
+    expect(notifyParentOfCliChildSpawn).toHaveBeenLastCalledWith("session-1", { resumed: true });
+  });
+
+  it("lane-filters CLI children for an agent and denies a transcript from another lane", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
+      if (sessionId === "cli-foreign") {
+        return { id: sessionId, laneId: "lane-2", toolType: "codex" };
+      }
+      if (sessionId === "cli-own") {
+        return { id: sessionId, laneId: "lane-1", toolType: "codex" };
+      }
+      return null;
+    });
+    const listCliChildSessions = vi.fn((args: { laneId?: string } = {}) => [
+      { sessionId: "cli-own", laneId: "lane-1" },
+      { sessionId: "cli-foreign", laneId: "lane-2" },
+    ].filter((row) => !args.laneId || row.laneId === args.laneId));
+    (fixture.runtime.agentChatService as any).listCliChildSessions = listCliChildSessions;
+    const getChatTranscript = vi.fn(async () => ({ sessionId: "cli-own", entries: [], truncated: false, totalEntries: 0 }));
+    (fixture.runtime.agentChatService as any).getChatTranscript = getChatTranscript;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "chat-agent", callerId: "agent-1" });
+
+    const listed = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listCliChildSessions",
+      args: {},
+    });
+    expect(listed.isError).toBeUndefined();
+    expect(listCliChildSessions).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-1" }));
+    expect(listed.result).toEqual([{ sessionId: "cli-own", laneId: "lane-1" }]);
+
+    const deniedList = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "listCliChildSessions",
+      args: { laneId: "lane-2" },
+    });
+    expect(deniedList.isError).toBe(true);
+
+    const deniedRead = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "readTranscript",
+      args: { sessionId: "cli-foreign" },
+    });
+    expect(deniedRead.isError).toBe(true);
+    expect(getChatTranscript).not.toHaveBeenCalled();
+
+    const allowedRead = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "readTranscript",
+      args: { sessionId: "cli-own" },
+    });
+    expect(allowedRead.isError).toBeUndefined();
+    expect(getChatTranscript).toHaveBeenCalled();
+  });
+
+  it("does not notify any parent for an unparented CLI session", async () => {
+    const fixture = createRuntime();
+    const notifyParentOfCliChildSpawn = vi.fn(() => false);
+    (fixture.runtime.agentChatService as any).notifyParentOfCliChildSpawn = notifyParentOfCliChildSpawn;
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+
+    await initialize(handler, { role: "cto" });
+    const response = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+    });
+
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledTimes(1);
+    expect(notifyParentOfCliChildSpawn).not.toHaveBeenCalled();
+  });
+
   it("requires subagent or peer for every parented agent CLI session", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
 
     const missingType = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
@@ -2806,7 +3093,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -2837,7 +3124,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ SHELL: "/bin/zsh" }, async () => {
-      await initialize(handler, { role: "agent" });
+      await initialize(handler, { role: "cto" });
       return await callTool(handler, "start_cli_session", {
         laneId: "lane-1",
         provider: "shell",
@@ -2872,7 +3159,7 @@ describe("adeRpcServer", () => {
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
-      await initialize(handler, { role: "agent" });
+      await initialize(handler, { role: "cto" });
       return await callTool(handler, "spawn_agent", {
         laneId: "lane-1",
         provider: "codex",
@@ -2907,7 +3194,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -2947,7 +3234,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -2976,7 +3263,7 @@ describe("adeRpcServer", () => {
     });
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -3008,7 +3295,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "cursor",
@@ -3035,7 +3322,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -3055,7 +3342,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "send_to_session", {
       sessionId: "session-existing",
       text: "continue here",
@@ -3076,7 +3363,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "list_ade_actions", { domain: "pty" });
 
     expect(response?.isError).toBeUndefined();
@@ -3088,7 +3375,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
@@ -3106,7 +3393,7 @@ describe("adeRpcServer", () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
-    await initialize(handler, { role: "agent" });
+    await initialize(handler, { role: "cto" });
     const response = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "claude",
@@ -5418,6 +5705,241 @@ describe("adeRpcServer", () => {
     expect(setActiveTool).not.toHaveBeenCalled();
   });
 
+  it("scopes work_tools.show to the agent's own chat and keeps the desktop's answer for user clients", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const show = vi.fn(async (args: unknown) => ({ status: "shown", ...(args as object) }));
+    const acknowledgeShow = vi.fn(() => ({ ok: true }));
+    fixture.runtime.workToolsStateService = { show, acknowledgeShow };
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    // The chat and lane come from the caller, not from what it sent.
+    const shown = await callTool(agent, "run_ade_action", {
+      domain: "work_tools",
+      action: "show",
+      args: { surface: "apple" },
+    });
+    expect(shown?.isError).toBeUndefined();
+    expect(show).toHaveBeenCalledWith({ surface: "apple", chatSessionId: "chat-a", laneId: "lane-a" });
+
+    // Another chat's surfaces are not this agent's to show.
+    const other = await callTool(agent, "run_ade_action", {
+      domain: "work_tools",
+      action: "show",
+      args: { surface: "proof", chatSessionId: "chat-b" },
+    });
+    expect(other.isError).toBe(true);
+    expect(show).toHaveBeenCalledTimes(1);
+
+    // An agent cannot forge the desktop's answer to its own request.
+    const forged = await callTool(agent, "run_ade_action", {
+      domain: "work_tools",
+      action: "acknowledgeShow",
+      args: { requestId: "wts-1", status: "shown" },
+    });
+    expect(forged.isError).toBe(true);
+    expect(acknowledgeShow).not.toHaveBeenCalled();
+
+    // The desktop renderer is a user client: it answers, and a human at a
+    // terminal names the chat with --session.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const ack = await callTool(desktop, "run_ade_action", {
+      domain: "work_tools",
+      action: "acknowledgeShow",
+      args: { requestId: "wts-1", status: "shown" },
+    });
+    expect(ack?.isError).toBeUndefined();
+    expect(acknowledgeShow).toHaveBeenCalledWith({ requestId: "wts-1", status: "shown" });
+    const humanShow = await callTool(desktop, "run_ade_action", {
+      domain: "work_tools",
+      action: "show",
+      args: { surface: "browser", chatSessionId: "chat-b" },
+    });
+    expect(humanShow?.isError).toBeUndefined();
+    expect(show).toHaveBeenLastCalledWith({ surface: "browser", chatSessionId: "chat-b" });
+  });
+
+  it("tells the desktop when an agent drives its chat's Apple device, and not for reads or the user's own input", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const noteAgentAppleActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentAppleActivity };
+    fixture.runtime.iosSimulatorService = {
+      tap: vi.fn(async () => ({ ok: true })),
+      getStatus: vi.fn(async () => ({ ok: true })),
+    };
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const tapped = await callTool(agent, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "tap",
+      args: { x: 10, y: 20 },
+    });
+    expect(tapped?.isError).toBeUndefined();
+    expect(noteAgentAppleActivity).toHaveBeenCalledWith({ chatSessionId: "chat-a", laneId: "lane-a" });
+
+    noteAgentAppleActivity.mockClear();
+    await callTool(agent, "run_ade_action", { domain: "ios_simulator", action: "getStatus", args: {} });
+    expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+
+    // The desktop pane's own taps are the user's, not an agent's.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await callTool(desktop, "run_ade_action", { domain: "ios_simulator", action: "tap", args: { x: 1, y: 2 } });
+    expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+  });
+
+  it("tells the desktop when an agent drives its lane's Mac Desktop, and not for reads or the user's own input", async () => {
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const noteAgentAppleActivity = vi.fn();
+    const noteAgentMacDesktopActivity = vi.fn();
+    fixture.runtime.workToolsStateService = { noteAgentAppleActivity, noteAgentMacDesktopActivity };
+    fixture.runtime.macDesktopService = {
+      click: vi.fn(async (args: unknown) => args),
+      getStatus: vi.fn(async () => ({ supported: true })),
+    } as any;
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const clicked = await callTool(agent, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { x: 10, y: 20 },
+    });
+    expect(clicked?.isError).toBeUndefined();
+    // Accessibility-mode input takes no lease, so this note is what lets the
+    // card float for the acting chat, and only for it.
+    expect(noteAgentMacDesktopActivity).toHaveBeenCalledWith({ chatSessionId: "chat-a", laneId: "lane-a" });
+    expect(noteAgentAppleActivity).not.toHaveBeenCalled();
+
+    noteAgentMacDesktopActivity.mockClear();
+    await callTool(agent, "run_ade_action", { domain: "mac_desktop", action: "getStatus", args: {} });
+    expect(noteAgentMacDesktopActivity).not.toHaveBeenCalled();
+
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { laneId: "lane-a", x: 1, y: 2 },
+    });
+    expect(noteAgentMacDesktopActivity).not.toHaveBeenCalled();
+  });
+
+  it("lets only user clients delete an installed simulator", async () => {
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+
+    const agent = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(agent, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+    const refused = await callTool(agent, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(deviceDeleteInstalled).not.toHaveBeenCalled();
+
+    // The desktop's device picker is a user client and keeps its delete.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" }, { clientInfo: { name: "ade-desktop-local" } });
+    const deleted = await callTool(desktop, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(deleted?.isError).toBeUndefined();
+    expect(deviceDeleteInstalled).toHaveBeenCalledWith({ udid: "SIM-1" });
+  });
+
+  it("refuses user-only verbs to a CLI process with no chat, and never lists them to it", async () => {
+    const fixture = createRuntime();
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    const deviceDelete = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled, deviceDelete };
+
+    // An agent's shell with no chat identity runs `ade` as `ade-cli:<pid>`.
+    const shell = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(shell, { callerId: "ade-cli:4242", role: "cto" });
+    const refused = await callTool(shell, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(refused.isError).toBe(true);
+    expect(deviceDeleteInstalled).not.toHaveBeenCalled();
+    const listed = await callTool(shell, "list_ade_actions", { domain: "ios_simulator" });
+    const names = (listed.structuredContent?.actions ?? listed.actions ?? []).map((entry: any) => entry.action);
+    expect(names).toContain("deviceDelete");
+    expect(names).not.toContain("deviceDeleteInstalled");
+
+    // The desktop's runtime connection is also a process id, and is the device picker.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(
+      desktop,
+      { callerId: "ade-desktop-local:77", role: "cto" },
+      { clientInfo: { name: "ade-desktop-local" } },
+    );
+    const deleted = await callTool(desktop, "run_ade_action", {
+      domain: "ios_simulator",
+      action: "deviceDeleteInstalled",
+      args: { udid: "SIM-1" },
+    });
+    expect(deleted?.isError).toBeUndefined();
+    expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
+  });
+
+  it("user-only verbs go to the desktop's own client names and to no other caller", async () => {
+    const fixture = createRuntime();
+    const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
+    fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
+    const tryDelete = async (identity: Record<string, unknown> | undefined, params: Record<string, unknown>) => {
+      const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+      await initialize(handler, identity, params);
+      deviceDeleteInstalled.mockClear();
+      const result = await callTool(handler, "run_ade_action", {
+        domain: "ios_simulator",
+        action: "deviceDeleteInstalled",
+        args: { udid: "SIM-1" },
+      });
+      return result?.isError !== true && deviceDeleteInstalled.mock.calls.length === 1;
+    };
+
+    // The local picker and a paired or SSH remote runtime's picker.
+    for (const name of ["ade-desktop-local", "ade-desktop-remote"]) {
+      expect(await tryDelete({ callerId: `${name}:77`, role: "cto" }, { clientInfo: { name } })).toBe(true);
+    }
+    // A client that never names itself is "unknown".
+    expect(await tryDelete({ callerId: "raw-socket", role: "cto" }, {})).toBe(false);
+    expect(await tryDelete({ callerId: "raw-socket", role: "cto" }, { clientInfo: { name: "unknown" } })).toBe(false);
+    // The `ade` CLI, even one that borrows a desktop-shaped caller id.
+    expect(await tryDelete({ callerId: "ade-cli:4242", role: "cto" }, { clientInfo: { name: "ade-cli" } })).toBe(false);
+    expect(await tryDelete({ callerId: "ade-desktop-local:1", role: "cto" }, { clientInfo: { name: "ade-cli" } })).toBe(false);
+    // No identity at all.
+    expect(await tryDelete(undefined, {})).toBe(false);
+    // A desktop name is not enough for an agent.
+    expect(await tryDelete(
+      { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" },
+      { clientInfo: { name: "ade-desktop-local" } },
+    )).toBe(false);
+  });
+
   it("denies work_tools reads to an agent-shaped caller with no resolvable lane", async () => {
     // `isUserClientSession` and `resolveChatSessionLaneId` are not complements:
     // an orchestration step identified only by `runId`, or a chat whose session
@@ -5506,6 +6028,196 @@ describe("adeRpcServer", () => {
     });
     expect(humanWrite?.isError).toBeUndefined();
     expect(setActiveTool).toHaveBeenCalledWith({ laneId: "lane-b", tool: "browser" });
+  });
+
+  it("pins mac_desktop to the caller's own chat session and lane", async () => {
+    // `chatSessionId` on this domain is WHO holds the display's input lease and
+    // whose turn a clip is charged to. Nothing checked it belonged to the
+    // caller, so an agent in chat A could act as chat B.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const getStatus = vi.fn(async () => ({ supported: true, running: false }));
+    const observe = vi.fn(async (args: unknown) => args);
+    fixture.runtime.macDesktopService = { getStatus, observe } as any;
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    // A foreign lane is refused outright rather than silently swapped for the
+    // caller's own: the old behavior made `--lane lane-b` fail with a message
+    // naming lane-a, which reads as a bug in the wrong place. Both lanes are
+    // named in the refusal.
+    const foreign = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(foreign?.isError).toBe(true);
+    const foreignText = JSON.stringify(foreign);
+    expect(foreignText).toContain("bound to lane lane-a");
+    expect(foreignText).toContain("--lane lane-b was ignored");
+    expect(observe).not.toHaveBeenCalled();
+
+    // Naming the caller's own lane is a no-op, and the chat attribution is
+    // filled in rather than trusted: an agent's call belongs to the chat that
+    // made it.
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-a", chatSessionId: "chat-b" },
+    });
+    expect(own?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-a",
+      chatSessionId: "chat-a",
+    }));
+
+    // Omitting it entirely is filled in, not left blank: an agent's call is
+    // always attributed to the chat that made it.
+    observe.mockClear();
+    const missing = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-a" },
+    });
+    expect(missing?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-a",
+      chatSessionId: "chat-a",
+    }));
+
+    // A run/step identity has no chat of its own and no lane to be pinned to,
+    // so an acting command is refused rather than run against whichever lane it
+    // named. The capability probe still answers.
+    observe.mockClear();
+    getStatus.mockClear();
+    const stepHandler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(stepHandler, { callerId: "step-1", role: "agent", runId: "run-1", stepId: "step-1" });
+    const step = await callTool(stepHandler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(step.isError).toBe(true);
+    expect(observe).not.toHaveBeenCalled();
+    const stepStatus = await callTool(stepHandler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "getStatus",
+      args: { laneId: "lane-b" },
+    });
+    expect(stepStatus?.isError).toBeUndefined();
+    expect(getStatus).toHaveBeenCalled();
+
+    // A user client keeps what it sent: the desktop renderer, the web client and
+    // a paired phone each drive whichever lane's display their UI is showing.
+    observe.mockClear();
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "observe",
+      args: { laneId: "lane-b", chatSessionId: "chat-b" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(observe).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-b",
+      chatSessionId: "chat-b",
+    }));
+  });
+
+  it("refuses CTO-only mac_desktop actions to an agent-shaped CTO caller, not to user clients", async () => {
+    // A chat identity is clamped to `agent`, but a run/step identity keeps the
+    // CTO role it asked for, and the role gate alone let it through:
+    // `startStream` returns the unredacted loopback token, and with it the
+    // agent could post real input under the human's takeover id read off
+    // `getStatus`.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const startStream = vi.fn(async () => ({ token: "secret" }));
+    const requestPermission = vi.fn(async () => ({ ok: true }));
+    const takeControl = vi.fn(async () => ({ ok: true }));
+    const getStatus = vi.fn(async () => ({ supported: true }));
+    fixture.runtime.macDesktopService = { getStatus, startStream, requestPermission, takeControl } as any;
+
+    const cto = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(cto, { callerId: "step-1", role: "cto", runId: "run-1", stepId: "step-1" });
+    for (const action of ["startStream", "requestPermission", "takeControl"]) {
+      const refused = await callTool(cto, "run_ade_action", {
+        domain: "mac_desktop",
+        action,
+        args: { laneId: "lane-a" },
+      });
+      expect(refused?.isError).toBe(true);
+    }
+    expect(startStream).not.toHaveBeenCalled();
+    expect(requestPermission).not.toHaveBeenCalled();
+    expect(takeControl).not.toHaveBeenCalled();
+
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "startStream",
+      args: { laneId: "lane-b" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(startStream).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b" }));
+  });
+
+  it("strips a caller-supplied controllerId and holderId from mac_desktop calls", async () => {
+    // `getStatus().lease.holderId` prints the human's takeover controller id to
+    // any caller that can read the lane. The service prefers `controllerId` over
+    // the chat id when it decides who is holding the input lease, so echoing the
+    // id back would have let an agent post real input as the user. Reading it
+    // stays possible; using it does not.
+    setPlatform("darwin");
+    const fixture = createRuntime();
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => (
+      sessionId === "chat-a" ? { id: "chat-a", laneId: "lane-a" } : null
+    ));
+    const click = vi.fn(async (args: unknown) => args);
+    const getStatus = vi.fn(async () => ({ supported: true }));
+    fixture.runtime.macDesktopService = { click, getStatus } as any;
+
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-a", role: "agent", chatSessionId: "chat-a" });
+
+    const forged = await callTool(handler, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: {
+        laneId: "lane-a",
+        x: 10,
+        y: 10,
+        controllerId: "ade-window:human-takeover",
+        holderId: "ade-window:human-takeover",
+        mode: "real",
+      },
+    });
+    expect(forged?.isError).toBeUndefined();
+    const forwarded = click.mock.calls[0]?.[0] as Record<string, unknown>;
+    expect(forwarded).not.toHaveProperty("controllerId");
+    expect(forwarded).not.toHaveProperty("holderId");
+    expect(forwarded).toMatchObject({ laneId: "lane-a", chatSessionId: "chat-a" });
+
+    // A user client keeps both: the takeover itself is driven by a controller id.
+    const desktop = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(desktop, { callerId: "desktop-1", role: "cto" });
+    const human = await callTool(desktop, "run_ade_action", {
+      domain: "mac_desktop",
+      action: "click",
+      args: { laneId: "lane-a", x: 10, y: 10, controllerId: "ade-window:human-takeover" },
+    });
+    expect(human?.isError).toBeUndefined();
+    expect(click).toHaveBeenLastCalledWith(expect.objectContaining({
+      controllerId: "ade-window:human-takeover",
+    }));
   });
 
   it("strips a caller-supplied callerLaneId from work_tools reads", async () => {
@@ -5676,14 +6388,7 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOutsideCliResume.isError).toBe(true);
-    expect(importExternalSession).toHaveBeenCalledWith({
-      provider: "codex",
-      sessionId: "outside-codex",
-      laneId: "lane-1",
-      target: "cli",
-      mode: "resume",
-      enforceLaneScopeCwd: lane1Cwd,
-    });
+    // Refused before the service runs: the session is not this lane's.
 
     const deniedOutsideCliFork = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -5697,14 +6402,7 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOutsideCliFork.isError).toBe(true);
-    expect(importExternalSession).toHaveBeenCalledWith({
-      provider: "claude",
-      sessionId: "outside-session",
-      laneId: "lane-1",
-      target: "cli",
-      mode: "fork",
-      enforceLaneScopeCwd: lane1Cwd,
-    });
+    // Refused before the service runs: the session is not this lane's.
 
     const deniedOutsideChatImport = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -5719,7 +6417,7 @@ describe("adeRpcServer", () => {
     });
     expect(deniedOutsideChatImport.isError).toBe(true);
     expect(deniedOutsideChatImport.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
-    expect(importExternalSession).toHaveBeenCalledTimes(2);
+    expect(importExternalSession).not.toHaveBeenCalled();
 
     const importedOwnCliResume = await callTool(handler, "run_ade_action", {
       domain: "external-sessions",
@@ -5796,7 +6494,130 @@ describe("adeRpcServer", () => {
       },
     });
     expect(deniedOtherLaneImport.isError).toBe(true);
-    expect(importExternalSession).toHaveBeenCalledTimes(5);
+    expect(importExternalSession).toHaveBeenCalledTimes(3);
+  });
+
+  it("scopes external-sessions.getDetail to a session inside the caller's lane", async () => {
+    const fixture = createRuntime();
+    const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-1") return ownChat;
+      return null;
+    });
+    const lane1Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-1"));
+    const detail = {
+      provider: "qwen",
+      sessionId: "own-qwen",
+      sourcePath: `${lane1Cwd}/session.json`,
+      watchable: true,
+      events: [],
+      messages: [],
+      hasOlder: false,
+      olderCursor: null,
+    };
+    const list = vi.fn(async () => [
+      { provider: "qwen", id: "own-qwen", cwd: lane1Cwd, title: "Own Qwen", preview: "own" },
+      // Project scope also lists another lane's session; its id must not open.
+      { provider: "qwen", id: "other-lane-qwen", cwd: path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-2")), title: "Other", preview: "other" },
+    ]);
+    const getDetail = vi.fn(async () => detail);
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession: vi.fn(), getDetail };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "qwen", sessionId: "own-qwen", before: "cursor-1", extra: "drop" },
+    });
+    expect(own?.isError).toBeUndefined();
+    expect(getDetail).toHaveBeenCalledWith({
+      provider: "qwen",
+      sessionId: "own-qwen",
+      before: "cursor-1",
+    });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "grok", sessionId: "outside-grok" },
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
+    const otherLane = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "qwen", sessionId: "other-lane-qwen" },
+    });
+    expect(otherLane.isError).toBe(true);
+    expect(otherLane.error?.code).toBe(JsonRpcErrorCode.methodNotFound);
+    expect(getDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a primary-lane agent out of child lanes' external sessions", async () => {
+    const fixture = createRuntime();
+    const lane1Cwd = path.resolve(fixture.runtime.laneService.getLaneWorktreePath("lane-1"));
+    const projectRoot = path.dirname(path.dirname(path.dirname(lane1Cwd)));
+    // Real session folders exist; the owner check resolves symlinks (macOS /var).
+    for (const dir of [path.join(projectRoot, "apps"), lane1Cwd, path.join(projectRoot, ".ade", "worktrees", "gone")]) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const lanes = await fixture.runtime.laneService.list({});
+    const primary = { ...lanes[0], id: "lane-primary", laneType: "primary", worktreePath: projectRoot };
+    fixture.runtime.laneService.list.mockImplementation(async () => [primary, ...lanes]);
+    fixture.runtime.laneService.getLaneWorktreePath.mockImplementation((laneId: string) =>
+      laneId === "lane-primary" ? projectRoot : lanes.find((lane: { id: string }) => lane.id === laneId)?.worktreePath);
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) =>
+      sessionId === "chat-p" ? { id: "chat-p", laneId: "lane-primary", chatSessionId: "chat-p" } : null);
+    const list = vi.fn(async (args?: { sessionId?: string }) => [
+      { provider: "qwen", id: "root-qwen", cwd: path.join(projectRoot, "apps"), title: "Root", preview: "root" },
+      // Tracked by an ADE terminal: only an exact lookup returns it.
+      ...(args?.sessionId === "tracked-qwen"
+        ? [{ provider: "qwen", id: "tracked-qwen", cwd: path.join(projectRoot, "apps"), title: "Tracked", preview: "tracked" }]
+        : []),
+      { provider: "qwen", id: "child-qwen", cwd: lane1Cwd, title: "Child", preview: "child" },
+      { provider: "qwen", id: "removed-qwen", cwd: path.join(projectRoot, ".ade", "worktrees", "gone"), title: "Gone", preview: "gone" },
+    ]);
+    const getDetail = vi.fn(async () => ({ provider: "qwen", id: "root-qwen", events: [], messages: [] }));
+    const importExternalSession = vi.fn(async () => ({ kind: "chat", chatSessionId: "chat-copy", laneId: "lane-primary" }));
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession, getDetail };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-p", role: "agent", chatSessionId: "chat-p" });
+
+    const listed = await callTool(handler, "run_ade_action", { domain: "external-sessions", action: "list", args: {} });
+    expect(JSON.stringify(listed)).toContain("root-qwen");
+    expect(JSON.stringify(listed)).not.toContain("child-qwen");
+    expect(JSON.stringify(listed)).not.toContain("removed-qwen");
+    for (const sessionId of ["child-qwen", "removed-qwen"]) {
+      const denied = await callTool(handler, "run_ade_action", {
+        domain: "external-sessions",
+        action: "getDetail",
+        args: { provider: "qwen", sessionId },
+      });
+      expect(denied.isError).toBe(true);
+    }
+    const own = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "getDetail",
+      args: { provider: "qwen", sessionId: "root-qwen" },
+    });
+    expect(own?.isError).toBeUndefined();
+    expect(getDetail).toHaveBeenCalledTimes(1);
+    // A chat copy moves the transcript into this lane; it needs ownership too.
+    const copied = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: { provider: "qwen", sessionId: "child-qwen", target: "chat", mode: "fork" },
+    });
+    expect(copied.isError).toBe(true);
+    expect(importExternalSession).not.toHaveBeenCalled();
+    const tracked = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "import",
+      args: { provider: "qwen", sessionId: "tracked-qwen", target: "cli", mode: "resume" },
+    });
+    expect(tracked?.isError).toBeUndefined();
+    expect(importExternalSession).toHaveBeenCalledTimes(1);
   });
 
   it("allows CTO callers to use unscoped external-sessions ADE actions", async () => {
@@ -7112,6 +7933,35 @@ describe("adeRpcServer", () => {
       expect(caught).toBeInstanceOf(JsonRpcError);
       expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
     });
+
+    it("never owns proof by a synthetic <client>:<pid> caller id", () => {
+      // The shape of a real incident. An agent whose shell carried no chat
+      // session filed two screenshots; the only owner written was
+      // `chat_session: ade-cli:56056`, so no lane resolved and no drawer could
+      // scope to it. The images were on disk and reachable by nobody.
+      const session = makeSession();
+      session.identity.callerId = "ade-cli:56056";
+      session.identity.role = "agent";
+
+      const owners = resolveComputerUseOwners(session, { laneId: "lane-1" });
+
+      expect(owners).toEqual([
+        expect.objectContaining({ kind: "lane", id: "lane-1" }),
+      ]);
+      expect(owners.some((owner) => owner.id.includes(":"))).toBe(false);
+    });
+
+    it("still owns proof by a real chat session id that merely arrived as the caller id", () => {
+      const session = makeSession();
+      session.identity.callerId = "824b0410-b015-4aa5-82c9-125d5d7e6f15";
+      session.identity.role = "agent";
+
+      const owners = resolveComputerUseOwners(session, {});
+
+      expect(owners).toEqual([
+        expect.objectContaining({ kind: "chat_session", id: "824b0410-b015-4aa5-82c9-125d5d7e6f15" }),
+      ]);
+    });
   });
 });
 
@@ -7213,5 +8063,56 @@ describe("run_ade_action search scope", () => {
     });
     expect(status?.isError).toBeUndefined();
     expect(search.indexStatus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("MAC_DESKTOP_LANE_BOUND_ACTIONS", () => {
+  it("covers every acting mac_desktop action, derived from the allowlist", () => {
+    // Pinned deliberately: the set is DERIVED from the action allowlist, so a
+    // new `mac_desktop` action lands here automatically and this assertion is
+    // the place the reviewer decides whether it is an act or a read.
+    expect([...MAC_DESKTOP_LANE_BOUND_ACTIONS].sort()).toEqual([
+      "claimWindow",
+      "click",
+      "drag",
+      "move",
+      "observe",
+      "open",
+      "present",
+      "press",
+      "releaseWindow",
+      "requestInputLease",
+      "screenshot",
+      "scroll",
+      "start",
+      "startRecording",
+      "stop",
+      "stopRecording",
+      "type",
+      "wait",
+    ]);
+    // Everything absent from that list is either a read that answers without a
+    // lane (`getStatus`, `listWindows`, `getStreamStatus`) or one of the
+    // CTO-only viewing actions gated by role — the pin above is what says so.
+  });
+});
+
+describe("MAC_DESKTOP_AGENT_DRIVING_ACTIONS", () => {
+  it("covers every acting mac_desktop action, derived from the allowlist", () => {
+    // Derived like the lane-bound set: a new acting action lands here on its
+    // own, and this pin is where a reviewer decides it drives the display.
+    expect([...MAC_DESKTOP_AGENT_DRIVING_ACTIONS].sort()).toEqual([
+      "claimWindow",
+      "click",
+      "drag",
+      "move",
+      "open",
+      "present",
+      "press",
+      "scroll",
+      "start",
+      "startRecording",
+      "type",
+    ]);
   });
 });

@@ -411,7 +411,7 @@ describe("ProviderAccountsPanel", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
 
     expect(await screen.findByText("Remove account")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "CANCEL" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(harness.providerInstances.remove).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));

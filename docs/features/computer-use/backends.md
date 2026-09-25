@@ -47,6 +47,35 @@ an ADE pending-input card with Allow once / Deny and, only when the server's
 authorization link in ADE's built-in browser. Full-auto chat permissions do not
 silently approve a per-app elicitation.
 
+## ADE Mac Desktop (current)
+
+**Transport:** ADE's own native helper, `ade-desktop-driver`, spoken to as NDJSON
+over stdin/stdout by `apps/desktop/src/main/services/macDesktop/macDesktopDriverClient.ts`.
+Ops use the grouped wire names only (`display.create`, `stream.start`, `ping`).
+The helper's stderr is copied into the brain logger as `mac_desktop.driver_stderr`
+(`~/.ade/runtime/brain.jsonl` when the service runs in the brain). The process
+itself is owned by `macDesktopDriverLifecycle.ts`. No external CLI, no
+code-signature negotiation with another vendor — the binary is built and bundled
+by ADE (`apps/desktop/scripts/build-mac-desktop-driver.mjs`).
+
+**Platform:** macOS runtime hosts only. Elsewhere the service reports
+`supported: false` and every method rejects with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+
+**Scope:** a per-lane virtual display. The driver parks the lane's windows on it
+and acts through the Accessibility API; global `CGEvent` posts are the one
+capability behind a per-chat input lease. Capture is display- or window-scoped,
+never screen-scoped.
+
+**Proof kinds:** `screenshot` and `video_recording`, ingested as
+`backendName: "ade-mac-desktop"`, `backendStyle: "manual"` through
+`ingest_computer_use_artifacts` — the same explicit-proof path as
+`ade browser proof` and `ade ios-sim proof`. `ade mac-desktop screenshot` and
+`record start` without a `--caption` file nothing.
+
+**Surface:** `ade mac-desktop …` (aliases `desk`, `mac-desk`), the `mac_desktop`
+action domain, and the Work tools pane tool. Full model in
+[`../mac-desktop/README.md`](../mac-desktop/README.md).
+
 ## Historical proof backends
 
 The remaining sections document the retired readiness/policy model.
@@ -182,4 +211,5 @@ To register a new external backend:
 
 - `README.md` — control-plane role and proof kinds.
 - `artifact-broker.md` — how ingested artifacts are stored and routed.
+- `../mac-desktop/README.md` — the `ade-mac-desktop` backend in full.
 - `settings-and-readiness.md` — the Settings surface.

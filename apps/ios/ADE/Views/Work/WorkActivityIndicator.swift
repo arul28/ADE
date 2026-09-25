@@ -234,7 +234,7 @@ struct WorkActivityIndicator: View {
           tint: ADEColor.accent
         )
 
-      case .toolResult(let tool, _, _, _, let turnId, let status):
+      case .toolResult(let tool, _, _, _, let turnId, let status, _, _):
         if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           let activity = workToolActivityPresentation(tool: tool, argsText: nil)
@@ -308,7 +308,7 @@ struct WorkActivityIndicator: View {
       case .reasoning:
         return Presentation(label: "Thinking", detail: nil, tint: ADEColor.accent)
 
-      case .plan, .planText,
+      case .plan, .planProposal, .taskListUpdate, .planText, .sources,
            .todoUpdate, .approvalRequest, .structuredQuestion, .toolUseSummary,
            .systemNotice, .error, .promptSuggestion, .contextCompact,
            .autoApprovalReview, .pendingInputResolved, .subagentResult,

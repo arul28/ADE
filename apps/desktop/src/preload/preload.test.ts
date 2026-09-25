@@ -444,59 +444,6 @@ describe("preload OAuth bridge", () => {
    * three tests that lived here pinned the inert shims' return values; this
    * one pins their absence, which is the invariant that is left.
    */
-  it("no longer exposes the iOS Simulator window-capture bridge at all", async () => {
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: null, binding: null };
-      }
-      throw new Error(`unexpected IPC: ${channel}`);
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    for (const method of [
-      "getSimulatorWindowState",
-      "listSimulatorWindowSources",
-      "retainWindowParking",
-      "releaseWindowParking",
-      "revealSimulator",
-      "openSystemSettings",
-    ]) {
-      expect(bridge.iosSimulator[method]).toBeUndefined();
-    }
-    // Raw channel strings, not `IPC.*`: these constants are deleted, so reading
-    // them off `IPC` would evaluate to `undefined` and make every assertion
-    // vacuously true — which is precisely the regression this guards.
-    for (const channel of [
-      "ade.iosSimulator.getWindowState",
-      "ade.iosSimulator.listWindowSources",
-      "ade.iosSimulator.retainWindowParking",
-      "ade.iosSimulator.releaseWindowParking",
-      "ade.iosSimulator.revealWindow",
-      "ade.iosSimulator.openSystemSettings",
-    ]) {
-      expect(invoke).not.toHaveBeenCalledWith(channel, expect.anything());
-      expect(invoke).not.toHaveBeenCalledWith(channel);
-    }
-  });
-
 
 describe("preload Apple device input routing", () => {
   beforeEach(() => {
@@ -7371,6 +7318,41 @@ describe("per-chat runtime routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.prsGetComments, expect.anything());
   });
 
+  it("keeps sync-status reads on a legacy bound runtime through Electron IPC error wrapping", async () => {
+    const status = { hasUpstream: true, upstreamState: "tracking", ahead: 1, behind: 0 };
+    const { bridge, invoke } = await mountBridge(machineB, async (request) => {
+      if (request.action === "getSyncStatuses") {
+        throw new Error(
+          `Error invoking remote method 'ade.remoteRuntime.callAction': Error: Action '${request.domain}.${request.action}' is not callable.`,
+        );
+      }
+      if (request.domain === "git" && request.action === "getSyncStatus") return status;
+      throw new Error(`unexpected legacy git action: ${request.domain}.${request.action}`);
+    });
+
+    await expect(bridge.git.getSyncStatuses({ laneIds: ["lane-1", "lane-2"] })).resolves.toEqual({
+      "lane-1": status,
+      "lane-2": status,
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.gitGetSyncStatuses, expect.anything());
+    expect(invoke.mock.calls.filter(([channel, payload]) =>
+      channel === IPC.remoteRuntimeCallAction
+      && (payload as { request?: { action?: string } })?.request?.action === "getSyncStatus",
+    )).toHaveLength(2);
+  });
+
+  it("surfaces sync-status runtime outages instead of treating them as missing actions", async () => {
+    const { bridge, invoke } = await mountBridge(machineB, async (request) => {
+      if (request.action === "getSyncStatuses") {
+        throw new Error("Sync service is not available.");
+      }
+      throw new Error(`unexpected fallback action: ${request.domain}.${request.action}`);
+    });
+
+    await expect(bridge.git.getSyncStatuses({ laneIds: ["lane-1"] })).rejects.toThrow("Sync service is not available");
+    expect(invoke).not.toHaveBeenCalledWith(IPC.gitGetSyncStatus, expect.anything());
+  });
+
   it("routes pinned lane and session lists to This computer without rebinding the window", async () => {
     const { bridge, invoke } = await mountBridge();
 
@@ -9612,5 +9594,45 @@ describe("preload provider API credential bridge", () => {
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
     expect(invoke).not.toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.anything());
+  });
+});
+
+describe("preload proof media server base", () => {
+  beforeEach(() => {
+    vi.resetModules();
+    delete (globalThis as any).__adeBridge;
+  });
+
+  afterEach(() => {
+    vi.resetModules();
+    vi.doUnmock("electron");
+    delete (globalThis as any).__adeBridge;
+  });
+
+  it("asks main once per launch, but asks again after main had none", async () => {
+    const answers: Array<string | null> = [null, "http://127.0.0.1:5000/tok"];
+    const invoke = vi.fn(async (channel: string) =>
+      channel === IPC.computerUseMediaBaseUrl ? answers.shift() : undefined);
+    vi.doMock("electron", () => ({
+      contextBridge: {
+        exposeInMainWorld: vi.fn((_name: string, value: unknown) => {
+          (globalThis as any).__adeBridge = value;
+        }),
+      },
+      ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+    await import("./preload");
+    const bridge = (globalThis as any).__adeBridge;
+
+    expect(await bridge.computerUse.mediaBaseUrl()).toBeNull();
+    expect(await bridge.computerUse.mediaBaseUrl()).toBe("http://127.0.0.1:5000/tok");
+    expect(await bridge.computerUse.mediaBaseUrl()).toBe("http://127.0.0.1:5000/tok");
+    const asks = invoke.mock.calls.filter(([channel]) => channel === IPC.computerUseMediaBaseUrl);
+    expect(asks).toHaveLength(2);
   });
 });

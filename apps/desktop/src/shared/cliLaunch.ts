@@ -660,11 +660,18 @@ function claudeArgsCarrySessionId(args: readonly string[]): boolean {
 
 /**
  * `claude --session-id <uuid>` starts a NEW conversation with that id, so it
- * is mutually exclusive with `--resume`/`--continue`: assigning one to a
- * continuation launch would either be rejected by the CLI or silently start a
+ * is mutually exclusive with a plain `--resume`/`--continue`: assigning one to
+ * a continuation launch would either be rejected by the CLI or silently start a
  * fresh session in place of the one the user asked to resume.
+ *
+ * A fork (`--resume <id> --fork-session`) is the exception: it also starts a
+ * new conversation, and Claude Code accepts `--session-id` to name it. The
+ * 2.1.280 binary rejects the combination only without the fork flag: "Error:
+ * --session-id can only be used with --continue or --resume if --fork-session
+ * is also specified."
  */
 export function claudeArgsResumeExistingSession(args: readonly string[]): boolean {
+  if (args.includes("--fork-session")) return false;
   return args.some((arg) =>
     arg === "--resume"
     || arg === "-r"
@@ -673,6 +680,134 @@ export function claudeArgsResumeExistingSession(args: readonly string[]): boolea
     || arg.startsWith("--resume=")
     || arg.startsWith("--continue="),
   );
+}
+
+/**
+ * ACP CLIs that accept a caller-chosen session id for a NEW session, and the
+ * exact spelling each one takes. Verified against the installed CLIs:
+ *
+ * - qwen 0.22.3: `--session-id <uuid>` ("Specify a session ID for this run";
+ *   rejected beside `--continue`/`--resume`, which it validates as "Cannot use
+ *   --session-id with --continue or --resume").
+ * - grok 1.0.40: `-s, --session-id <SESSION_ID>` ("Use a specific session UUID
+ *   for a **new** conversation … With --resume/--continue, only valid together
+ *   with --fork-session").
+ * - copilot 1.0.88: `--session-id <id>` ("Resume an existing session or task by
+ *   ID, or set the UUID for a new session").
+ *
+ * Kimi has no such flag; its id is adopted from the file it writes.
+ */
+export type PreassignedSessionIdProvider = "qwen" | "grok" | "copilot";
+
+export function isPreassignedSessionIdProvider(provider: string | null | undefined): provider is PreassignedSessionIdProvider {
+  return provider === "qwen" || provider === "grok" || provider === "copilot";
+}
+
+export function preassignedSessionIdArgs(provider: PreassignedSessionIdProvider, sessionId: string): string[] {
+  if (provider === "grok") return ["-s", sessionId];
+  if (provider === "copilot") return [`--session-id=${sessionId}`];
+  return ["--session-id", sessionId];
+}
+
+const PREASSIGNED_SESSION_ID_FLAGS: Record<PreassignedSessionIdProvider, readonly string[]> = {
+  qwen: ["--session-id"],
+  grok: ["-s", "--session-id"],
+  copilot: ["--session-id"],
+};
+
+const PROVIDER_RESUME_SELECTORS: Record<PreassignedSessionIdProvider, readonly string[]> = {
+  qwen: ["-r", "--resume", "-c", "--continue"],
+  grok: ["-r", "--resume", "-c", "--continue"],
+  copilot: ["-r", "--resume", "--continue", "--connect"],
+};
+
+/** The session id a launch's argv already names with the provider's assign flag. */
+export function preassignedSessionIdInArgs(
+  provider: PreassignedSessionIdProvider,
+  args: readonly string[],
+): string | null {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    for (const flag of PREASSIGNED_SESSION_ID_FLAGS[provider]) {
+      if (arg === flag) {
+        const value = args[index + 1]?.trim();
+        return value && !value.startsWith("-") ? value : null;
+      }
+      if (flag.startsWith("--") && arg.startsWith(`${flag}=`)) {
+        return arg.slice(flag.length + 1).trim() || null;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * True when argv continues an existing conversation. A pre-assigned id names a
+ * NEW session, so it must never be added to such a launch.
+ */
+export function providerArgsResumeExistingSession(
+  provider: PreassignedSessionIdProvider,
+  args: readonly string[],
+): boolean {
+  const selectors = PROVIDER_RESUME_SELECTORS[provider];
+  return args.some((arg) =>
+    selectors.includes(arg)
+    || selectors.some((selector) => selector.startsWith("--") && arg.startsWith(`${selector}=`)),
+  );
+}
+
+/** True when a command word names `binary` (bare, absolute path, or a Windows `.exe`/`.cmd`/`.bat`/`.ps1` shim). */
+export function isProviderBinaryCommand(word: string | null | undefined, binary: string): boolean {
+  const trimmed = stripSurroundingQuotes(String(word ?? ""));
+  if (!trimmed) return false;
+  const base = trimmed.replace(/[\\/]+$/, "").split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  return base === binary || base.replace(/\.(exe|cmd|bat|ps1)$/u, "") === binary;
+}
+
+/**
+ * Locate the provider binary token of a shell command line (allowing leading
+ * `KEY=value` env prefixes) and return the args that follow it. Same rules as
+ * {@link claudeInvocationInCommandLine}.
+ */
+export function providerInvocationInCommandLine(
+  commandLine: string,
+  binary: string,
+): { binaryIndex: number; providerArgs: string[] } | null {
+  if (!commandLine?.trim()) return null;
+  let commandArgs: string[] = [];
+  try {
+    commandArgs = parseCommandLine(commandLine);
+  } catch {
+    return null;
+  }
+  const spans = shellWordSpans(commandLine);
+  const binaryIndex = commandArgs.findIndex((arg, index) => {
+    const span = spans[index];
+    const raw = span ? commandLine.slice(span.start, span.end) : arg;
+    return (isProviderBinaryCommand(arg, binary) || isProviderBinaryCommand(raw, binary))
+      && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix));
+  });
+  if (binaryIndex < 0) return null;
+  return { binaryIndex, providerArgs: commandArgs.slice(binaryIndex + 1) };
+}
+
+/**
+ * Insert the provider's pre-assign flag right after its binary token. Returns
+ * the line unchanged when the binary is absent, the line already names an id,
+ * or the line continues an existing session.
+ */
+export function withPreassignedSessionIdInCommandLine(
+  commandLine: string,
+  provider: PreassignedSessionIdProvider,
+  sessionId: string,
+): string {
+  const invocation = providerInvocationInCommandLine(commandLine, provider);
+  if (!invocation) return commandLine;
+  if (preassignedSessionIdInArgs(provider, invocation.providerArgs)) return commandLine;
+  if (providerArgsResumeExistingSession(provider, invocation.providerArgs)) return commandLine;
+  const span = shellWordSpans(commandLine)[invocation.binaryIndex];
+  if (!span) return commandLine;
+  return `${commandLine.slice(0, span.end)} ${commandArrayToLine(preassignedSessionIdArgs(provider, sessionId))}${commandLine.slice(span.end)}`;
 }
 
 export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
@@ -684,7 +819,7 @@ export function defaultTrackedCliStartupCommand(provider: CliProvider): string {
   if (provider === "qwen") return "qwen";
   if (provider === "kimi") return "kimi";
   if (provider === "grok") return "grok --no-alt-screen";
-  if (provider === "copilot") return "copilot --no-alt-screen";
+  if (provider === "copilot") return "copilot";
   return "claude";
 }
 
@@ -1094,7 +1229,7 @@ export function buildTrackedCliLaunchCommand(args: {
     if (assignedSessionId) {
       // Same mutual exclusion as Claude: `--session-id` starts a NEW session
       // with that id, so it can never appear beside `--resume`/`--continue`.
-      commandArgs.push("--session-id", assignedSessionId);
+      commandArgs.push(...preassignedSessionIdArgs("qwen", assignedSessionId));
     }
     commandArgs.push(...qwenModelFlags(modelForLaunch));
     commandArgs.push(...permissionModeToQwenFlags(permissionMode));
@@ -1146,7 +1281,7 @@ export function buildTrackedCliLaunchCommand(args: {
     if (assignedSessionId) {
       // `-s` names a NEW session's UUID; with `--resume`/`--continue` it is
       // only legal alongside `--fork-session`. Fresh launches only.
-      commandArgs.push("-s", assignedSessionId);
+      commandArgs.push(...preassignedSessionIdArgs("grok", assignedSessionId));
     }
     commandArgs.push(...grokModelFlags(modelForLaunch));
     commandArgs.push(...grokReasoningEffortFlags(args.reasoningEffort));
@@ -1177,12 +1312,14 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "copilot") {
     const assignedSessionId = args.sessionId?.trim() || null;
-    const commandArgs: string[] = ["--no-alt-screen"];
+    // Copilot 1.0.88 has no `--no-alt-screen` flag and exits 1 when it gets one.
+    const commandArgs: string[] = [];
     if (assignedSessionId) {
-      // Copilot has no separate assign flag: `--resume=<uuid>` starts a new
-      // session under that id when the id does not exist yet, and resumes it
-      // when it does. One spelling, both jobs.
-      commandArgs.push(`--resume=${assignedSessionId}`);
+      // `copilot --help` (1.0.88): "--session-id <id>  Resume an existing
+      // session or task by ID, or set the UUID for a new session", with the
+      // example `copilot --session-id=<uuid>` to "Start a new session with a
+      // specific UUID". `--resume=<id>` is documented only for existing ids.
+      commandArgs.push(...preassignedSessionIdArgs("copilot", assignedSessionId));
     }
     commandArgs.push(...copilotModelFlags(modelForLaunch));
     commandArgs.push(...copilotReasoningEffortFlags(args.reasoningEffort));
@@ -2053,6 +2190,50 @@ export function buildTrackedCliResumeLaunchCommand(
   return { ...launch, env: { ...(launch.env ?? {}), ...resumeEnv } };
 }
 
+const CLAUDE_SESSION_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+
+/**
+ * Claude same-folder copy with the new conversation's id chosen up front:
+ * `claude … --resume <source> --fork-session --session-id <new>`. Claude Code
+ * 2.1.280 accepts `--session-id` beside `--resume` only together with
+ * `--fork-session` (see {@link claudeArgsResumeExistingSession}), so ADE knows
+ * the copy's id before the process starts instead of discovering it later.
+ *
+ * `metadata.targetId` is the SOURCE session; `newSessionId` must be a UUID.
+ * The returned `assignedSessionId` is the id to store as the copy's resume
+ * target.
+ */
+export function buildClaudeForkLaunchCommand(
+  metadata: TerminalResumeMetadata,
+  newSessionId: string,
+  overrides: TrackedCliResumeOverrides = {},
+  options: { platform?: NodeJS.Platform } = {},
+): TrackedCliLaunchCommand & { command: string; assignedSessionId: string } {
+  if (metadata.provider !== "claude") {
+    throw new Error(`buildClaudeForkLaunchCommand only forks Claude sessions, not ${metadata.provider}.`);
+  }
+  if (!sanitizeTrackedCliResumeTargetId(metadata.targetId)) {
+    throw new Error("A Claude fork needs the source session id.");
+  }
+  const forkId = newSessionId.trim();
+  if (!CLAUDE_SESSION_UUID.test(forkId)) {
+    throw new Error("A Claude fork's new session id must be a UUID.");
+  }
+  const prompt = normalizeCliFlagValue(overrides.prompt);
+  // The resume builder appends the prompt after the target; build without it so
+  // the fork flags stay ahead of the positional prompt.
+  const base = buildTrackedCliResumeLaunchCommand(metadata, { ...overrides, prompt: null }, options);
+  const command = base.command ?? "claude";
+  const args = [...base.args, "--fork-session", "--session-id", forkId, ...(prompt ? [prompt] : [])];
+  return {
+    ...base,
+    command,
+    args,
+    startupCommand: commandArrayToLine([command, ...args], { platform: "linux" }),
+    assignedSessionId: forkId,
+  };
+}
+
 function buildProviderResumeLaunchCommand(
   metadata: TerminalResumeMetadata,
   overrides: TrackedCliResumeOverrides,
@@ -2149,11 +2330,11 @@ function buildProviderResumeLaunchCommand(
       ...permissionModeToCursorFlags(permissionMode),
       ...modelToCliFlag(cursorModel),
     ];
-    if (targetId) {
-      parts.push("--resume", targetId);
-    } else {
-      parts.push("--continue");
-    }
+    // Only a captured chat id resumes. `cursor-agent --continue` means "the most
+    // recent chat", which can be another terminal's or an ADE chat's — the same
+    // wrong-conversation hazard Pi refuses. Without an id this is a fresh
+    // launch, and the PTY resume path refuses to treat it as a resume at all.
+    if (targetId) parts.push("--resume", targetId);
     if (prompt) parts.push(prompt);
     return {
       command: parts[0]!,
@@ -2299,7 +2480,6 @@ function buildProviderResumeLaunchCommand(
   if (metadata.provider === "copilot") {
     const parts = [
       "copilot",
-      "--no-alt-screen",
       ...copilotModelFlags(modelForLaunch),
       ...copilotReasoningEffortFlags(reasoningEffort),
       ...permissionModeToCopilotFlags(permissionMode),

@@ -15,6 +15,8 @@ import {
   SettingsManagerTable,
 } from "./primitives/SettingsManagerPage";
 import { laneSetupScriptHasWork } from "../../../shared/types";
+import { confirmDialog } from "../ui/dialog/confirm";
+import { showToast } from "../app/toast/toastStore";
 import type {
   LaneTemplate,
   LaneCopyPathConfig,
@@ -294,7 +296,7 @@ export function LaneTemplatesSection() {
       setEditing(null);
       await refresh();
     } catch (err: unknown) {
-      alert(`Failed to save template: ${err instanceof Error ? err.message : String(err)}`);
+      showToast({ title: "Failed to save template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
   }, [refresh]);
 
@@ -303,7 +305,7 @@ export function LaneTemplatesSection() {
       await window.ade.lanes.deleteTemplate({ templateId });
       await refresh();
     } catch (err: unknown) {
-      alert(`Failed to delete template: ${err instanceof Error ? err.message : String(err)}`);
+      showToast({ title: "Failed to delete template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
   }, [refresh]);
 
@@ -438,7 +440,10 @@ function TemplateRow({
             </button>
             <button
               style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6, color: COLORS.danger, borderColor: "color-mix(in srgb, var(--color-error) 30%, transparent)" })}
-              onClick={() => { if (confirm(`Delete template "${template.name}"?`)) onDelete(); }}
+              onClick={() => {
+                void confirmDialog({ title: `Delete template "${template.name}"?`, confirmLabel: "Delete", destructive: true })
+                  .then((ok) => { if (ok) onDelete(); });
+              }}
             >
               Delete
             </button>

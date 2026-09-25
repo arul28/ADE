@@ -41,6 +41,20 @@ final class AppleDeviceStreamTests: XCTestCase {
     return try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
   }
 
+  // MARK: - Ticket refusals
+
+  func testAnOffDeviceReadsAsOffOnTheMacNotAsTheWireCode() {
+    XCTAssertEqual(
+      appleStreamTicketFailureMessage("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it."),
+      "iPhone 17 Pro is off on your Mac. Start it in ADE on the Mac to watch it here."
+    )
+    XCTAssertEqual(
+      appleStreamTicketFailureMessage("APPLE_DEVICE_OFF"),
+      "The simulator is off on your Mac. Start it in ADE on the Mac to watch it here."
+    )
+    XCTAssertEqual(appleStreamTicketFailureMessage("Something else broke."), "Something else broke.")
+  }
+
   func testParsesAConfigThenAKeyframeFromOneChunk() throws {
     var parser = AppleStreamRecordParser()
     let payload = Data([0, 0, 0, 1, 0x67, 0x42])
@@ -416,6 +430,7 @@ final class AppleDeviceStreamTests: XCTestCase {
       },
       "recording": { "active": true, "id": "rec-1", "startedAt": "2026-09-21T10:00:00.000Z", "mode": "auto" },
       "owner": { "chatSessionId": "chat-9", "chatTitle": "Fix the login screen" },
+      "laneDevice": { "udid": "UDID-1" },
       "somethingANewerMacAdded": { "enabled": true }
     }
     """#.utf8)
@@ -439,6 +454,20 @@ final class AppleDeviceStreamTests: XCTestCase {
     XCTAssertEqual(status.recording?.active, true)
     XCTAssertEqual(status.owner?.chatSessionId, "chat-9")
     XCTAssertEqual(status.owner?.chatTitle, "Fix the login screen")
+    // The lane's own device. The simulator chip shows only when this udid is
+    // the same as `device.udid`.
+    XCTAssertEqual(status.laneDevice?.udid, "UDID-1")
+  }
+
+  func testStatusDecodesALaneWithNoDeviceOfItsOwn() throws {
+    // The host sends `laneDevice: null` when `device` is only its fallback
+    // (a booted simulator that no lane holds).
+    let status = try JSONDecoder().decode(
+      AppleDeviceStatus.self,
+      from: Data(#"{"laneId":"lane-1","device":{"udid":"UDID-9","state":"Booted"},"laneDevice":null}"#.utf8)
+    )
+    XCTAssertEqual(status.device?.udid, "UDID-9")
+    XCTAssertNil(status.laneDevice)
   }
 
   func testOwnerLabelKeepsTheClaimWhenTheHostCouldNotNameTheChat() throws {
@@ -508,6 +537,8 @@ final class AppleDeviceStreamTests: XCTestCase {
     let status = try JSONDecoder().decode(AppleDeviceStatus.self, from: Data("{}".utf8))
     XCTAssertNil(status.laneId)
     XCTAssertNil(status.device)
+    // An older Mac sends no `laneDevice`.
+    XCTAssertNil(status.laneDevice)
   }
 
   func testStreamTicketDecodesTheLandedShapeWithANullUrl() throws {

@@ -325,10 +325,24 @@ describe("describePublishHealth", () => {
     });
   });
 
+  it("alarms on a sync host that never came back, but not on a boot-time blip", () => {
+    // The brain stamps `failingSinceMs` with when it first found no host.
+    // 2026-09-21: a dev brain took the lease and exited, and the installed
+    // brain reported this state for an hour with nothing to press.
+    expect(
+      describePublishHealth(health({ state: "sync_not_started", failingSinceMs: NOW - 60 * 60_000 }), NOW),
+    ).toEqual({ kind: "failing", minutes: 60 });
+    expect(
+      describePublishHealth(health({ state: "sync_not_started", failingSinceMs: NOW - 30_000 }), NOW),
+    ).toEqual({ kind: "none" });
+    expect(
+      describePublishHealth(health({ state: "sync_not_started", failingSinceMs: null }), NOW),
+    ).toEqual({ kind: "none" });
+  });
+
   it("stays silent for non-publishing states", () => {
     for (const state of [
       "sync_disabled",
-      "sync_not_started",
       "no_active_sync_scope",
       "not_host",
       "account_signed_out",

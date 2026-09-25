@@ -332,6 +332,8 @@ func workTimelineEntryExpansionSignature(
   case .eventCard(let card): owned.insert(card.id)
   case .adeCard(let card): owned.insert(card.id)
   case .artifact(let artifact): owned.insert(artifact.id)
+  case .backgroundJobRun(let run): owned.insert(run.id)
+  case .turnFold(let model): owned.insert(model.id)
   case .toolGroup(let group):
     owned.insert(group.id)
     for member in group.members { owned.insert(member.id) }
@@ -446,7 +448,6 @@ struct WorkChatSessionView: View {
   @State var transcriptFrameInColumn: CGRect = .zero
   @State var bottomChromeMinY: CGFloat = 0
   @State var transcriptSafeInsets = EdgeInsets()
-  @State var toolsRowHeight: CGFloat = 0
   /// The transcript's handle on its own `UICollectionView`. Replaces the
   /// `ScrollViewProxy` that used to be threaded through every row builder.
   @State var transcriptScroller = WorkChatTranscriptScroller()
@@ -500,7 +501,7 @@ struct WorkChatSessionView: View {
   let onRetryLoad: @MainActor () async -> Void
   let onOpenFile: @MainActor (String) async -> Void
   let onOpenPr: @MainActor (Int) async -> Void
-  let onLoadArtifact: @MainActor (ComputerUseArtifactSummary) async -> Void
+  let onLoadArtifact: WorkArtifactLoader
   let onRefreshArtifacts: @MainActor () async -> Void
   let onCancelSteer: @MainActor (String) async -> Void
   let onEditSteer: @MainActor (String, String) async -> Void
@@ -583,6 +584,14 @@ struct WorkChatSessionView: View {
   /// impossible to get wrong; a Bool reset from an observer would be one more
   /// thing that can fall out of step and leave a fresh question hidden.
   @State var collapsedPendingInputId: String?
+  /// The lane's tool chips (simulator, browser, App Control) for the badge row.
+  /// Publishes only when the chips themselves change, so its 10 s poll does not
+  /// re-render the chat on every tick.
+  @StateObject private var laneTools = WorkLaneToolsModel()
+  #if DEBUG
+  /// Fixture seam: installs these chips instead of polling the sync socket.
+  var previewLaneTools: WorkLaneToolsPreview? = nil
+  #endif
 
   var sessionStatus: String {
     resolvedSessionStatus ?? session.normalizedStatus
@@ -925,15 +934,21 @@ struct WorkChatSessionView: View {
     inputLockMessage == nil && prBadge != nil && onOpenPrDetails != nil
   }
 
+  /// Lane tool chips: the lane's running simulator, browser tabs and App
+  /// Control on the Mac. Lane chrome, so a personal chat (no lane) has none.
+  var showsComposerLaneToolChips: Bool {
+    inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
+  }
+
   /// Whether the floating badge row is on screen. The row is part of the
   /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
-    showsComposerChatInfoBadge || showsComposerPrBadge
+    showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
   }
 
-  /// Chat-info / PR badges: small glass capsules sitting just above the
-  /// composer, with the jump-to-latest button at the right end of the same
-  /// line. The thread scrolls behind them.
+  /// Chat-info / PR / lane tool badges: small glass capsules sitting just
+  /// above the composer, with the jump-to-latest button at the right end of
+  /// the same line. The thread scrolls behind them.
   @ViewBuilder
   var composerBadgeChipRow: some View {
     let chatInfoCount = composerBadgeChatInfoCount
@@ -944,12 +959,21 @@ struct WorkChatSessionView: View {
       if showsComposerPrBadge, let prBadge, let onOpenPrDetails {
         WorkChatPrActivePopup(badge: prBadge, onOpen: onOpenPrDetails)
       }
+      if showsComposerLaneToolChips {
+        ForEach(laneTools.chips) { chip in
+          WorkLaneToolChipView(chip: chip) {
+            ADEHaptics.light()
+            laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
+          }
+        }
+      }
     }
-    // Today's two chips always fit, and a plain HStack leaves the rest of the
+    // The common case fits, and a plain HStack leaves the rest of the
     // row non-interactive — important now that the row floats over the
     // transcript, since a full-width horizontal ScrollView would swallow
-    // vertical drags in that band. A future chip that overflows still gets the
-    // scroller (and then the band is genuinely its own).
+    // vertical drags in that band. A row that overflows (chat info, PR and
+    // several lane tools on a narrow phone) gets the scroller, and then the
+    // band is genuinely its own.
     ViewThatFits(in: .horizontal) {
       chips
       ScrollView(.horizontal, showsIndicators: false) {
@@ -1616,20 +1640,6 @@ struct WorkChatSessionView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .coordinateSpace(.named(workChatColumnCoordinateSpace))
-    .overlay(alignment: .top) {
-      // Read-only summary of the Work tools pane running on the user's Mac.
-      // It hides itself when the brain cannot describe one; it floats just
-      // under the header and the transcript's top inset makes room for it.
-      WorkToolsRow(laneId: session.laneId)
-        .padding(.horizontal, 16)
-        .onGeometryChange(for: CGFloat.self) { proxy in
-          proxy.size.height
-        } action: { height in
-          if abs(toolsRowHeight - height) > 0.5 {
-            toolsRowHeight = height
-          }
-        }
-    }
     .background(workChatCanvasBackground.ignoresSafeArea())
     .adeNavigationGlass()
     #if DEBUG
@@ -1704,11 +1714,10 @@ struct WorkChatSessionView: View {
     .transition(.scale(scale: 0.6).combined(with: .opacity))
   }
 
-  /// Band the header (and the tools row under it) covers at the top of the
-  /// transcript: the status bar and header the transcript grew under, plus
-  /// the floating tools row.
+  /// Band the header covers at the top of the transcript: the status bar and
+  /// header the transcript grew under.
   var transcriptTopInset: CGFloat {
-    max(9, transcriptSafeInsets.top.rounded() + toolsRowHeight + 6)
+    max(9, transcriptSafeInsets.top.rounded() + 6)
   }
 
   /// Band the composer stack (chips included) covers at the bottom: the
@@ -1814,6 +1823,8 @@ struct WorkChatSessionView: View {
         }
         // A card finished opening or closing. The latch re-reads where the
         // reader ended up; it never moves them on its own.
+        // A fold opening or closing reaches the engine as an overlay change
+        // (`expandedTurnIds`), which rebuilds the presentation off-main.
         .onChange(of: cardExpansionRenderSignature) { _, _ in
           transcriptScroller.noteDisclosureSettled()
         }
@@ -1947,7 +1958,17 @@ struct WorkChatSessionView: View {
       sessionLifecycleHandlers(
         timelineScrollHandlers(chatColumn)
       )
+      .modifier(laneToolsPresenter)
     )
+  }
+
+  /// The lane tool chips' poll and the two surfaces they open.
+  private var laneToolsPresenter: WorkLaneToolsPresenter {
+    var presenter = WorkLaneToolsPresenter(model: laneTools, laneId: session.laneId, enabled: !isPersonalChat)
+    #if DEBUG
+    presenter.preview = previewLaneTools
+    #endif
+    return presenter
   }
 }
 
@@ -1999,6 +2020,9 @@ func workLoadedArtifactContentRenderSignature(_ content: [String: WorkLoadedArti
     case .video(let url):
       hasher.combine("video")
       hasher.combine(url.absoluteString)
+    case .videoOnDemand(let sizeBytes):
+      hasher.combine("videoOnDemand")
+      hasher.combine(sizeBytes)
     case .remoteURL(let url):
       hasher.combine("remoteURL")
       hasher.combine(url.absoluteString)

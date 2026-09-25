@@ -1,45 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { PictureInPicture } from "@phosphor-icons/react";
-import { cn } from "../ui/cn";
 import { AppleDeviceStage } from "./AppleDeviceStage";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
+import { appleMiniPlayerSourceSize } from "./appleMiniPlayerLayout";
 import {
-  APPLE_MINI_PLAYER_CORNER_RADIUS,
-  appleMiniPlayerSourceSize,
-  clampAppleMiniPlayerPosition,
-  resizeAppleMiniPlayer,
-  resolveAppleMiniPlayerFrame,
-  type AppleMiniPlayerFrame,
-  type AppleMiniPlayerPosition,
-  type AppleMiniPlayerResizeDirection,
-} from "./appleMiniPlayerLayout";
-import {
+  appleMiniPlayerBelongsToSurface,
   closeAppleMiniPlayer,
   releaseAppleMiniPlayerHandoverHold,
   retakeAppleMiniPlayer,
   takeAppleMiniPlayerPoster,
   useAppleMiniPlayerTarget,
+  type AppleMiniPlayerSurface,
   type AppleMiniPlayerTarget,
 } from "./appleMiniPlayerStore";
+import { isWorkLivePictureInPictureSupported } from "../work/workLiveIosPictureInPicture";
 import {
-  enterCanvasPictureInPicture,
-  isWorkLivePictureInPictureSupported,
-  WORK_LIVE_PIP_UNSUPPORTED_LABEL,
-  type WorkLivePipSession,
-} from "../work/workLiveIosPictureInPicture";
+  FloatingPlayerShell,
+  useCanvasPictureInPicture,
+  useFloatingPlayerFrame,
+} from "../shared/FloatingPlayer";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
-import { PaneTooltip } from "../ui/PaneTooltip";
-
-const RESIZE_ZONES: { direction: AppleMiniPlayerResizeDirection; className: string }[] = [
-  { direction: "north", className: "left-2 right-2 top-0 h-2 cursor-ns-resize" },
-  { direction: "south", className: "bottom-0 left-2 right-2 h-2 cursor-ns-resize" },
-  { direction: "west", className: "bottom-2 left-0 top-2 w-2 cursor-ew-resize" },
-  { direction: "east", className: "bottom-2 right-0 top-2 w-2 cursor-ew-resize" },
-  { direction: "north-west", className: "left-0 top-0 h-2 w-2 cursor-nwse-resize" },
-  { direction: "north-east", className: "right-0 top-0 h-2 w-2 cursor-nesw-resize" },
-  { direction: "south-west", className: "bottom-0 left-0 h-2 w-2 cursor-nesw-resize" },
-  { direction: "south-east", className: "bottom-0 right-0 h-2 w-2 cursor-nwse-resize" },
-];
+import { describeAppleError, isAppleDeviceOffError } from "./appleErrors";
 
 /**
  * The device, floating over the chat.
@@ -51,10 +31,17 @@ const RESIZE_ZONES: { direction: AppleMiniPlayerResizeDirection; className: stri
  */
 export function AppleDeviceMiniPlayer({
   onOpenInPane,
+  surface,
   recording = false,
 }: {
   /** Brings the device back into the Apple pane. */
   onOpenInPane: (target: AppleMiniPlayerTarget) => void;
+  /**
+   * The Work surface in front, or null on the new-chat screen. Required, not
+   * optional: a mount that forgot it would float the device over every
+   * surface again, which is the bug this exists to prevent.
+   */
+  surface: AppleMiniPlayerSurface | null;
   recording?: boolean;
 }) {
   const target = useAppleMiniPlayerTarget();
@@ -63,6 +50,7 @@ export function AppleDeviceMiniPlayer({
     <AppleMiniPlayerFrameView
       key={target.deviceUdid}
       target={target}
+      visible={appleMiniPlayerBelongsToSurface(target, surface)}
       recording={recording}
       onOpenInPane={onOpenInPane}
     />
@@ -71,30 +59,35 @@ export function AppleDeviceMiniPlayer({
 
 function AppleMiniPlayerFrameView({
   target,
+  visible,
   recording,
   onOpenInPane,
 }: {
   target: AppleMiniPlayerTarget;
+  /**
+   * False while the surface in front is another lane's, another machine's, or
+   * the new-chat screen (the owner's 2026-09-23 report: a lane's simulator
+   * floated over a new chat). Hidden, NOT closed: the target stays in the
+   * store, so going back to a surface of the device's lane brings the player
+   * back where it was, at the size it was. Staying mounted is what keeps the
+   * position and width; the stream is what must not stay, and `hidden` below
+   * gives this viewer's lease back exactly as an unmount would.
+   *
+   * Picture in picture overrides this. The PiP window is how you watch the
+   * device from somewhere else, so it keeps the stream while another surface
+   * is in front. The rule applies again once PiP closes.
+   */
+  visible: boolean;
   recording: boolean;
   onOpenInPane: (target: AppleMiniPlayerTarget) => void;
 }) {
-  const hostRef = useRef<HTMLDivElement | null>(null);
   const canvasHostRef = useRef<HTMLDivElement | null>(null);
-  const pipRef = useRef<WorkLivePipSession | null>(null);
   const pinRef = useRef(target.runtimePin);
-  /**
-   * The teardown for an in-flight drag/resize. A gesture that outlives the
-   * player (device stops, handover, close) would otherwise keep calling
-   * `setPosition`/`setWidth` on an unmounted component against a stale box.
-   */
-  const gestureCleanupRef = useRef<(() => void) | null>(null);
   pinRef.current = target.runtimePin;
 
-  const [container, setContainer] = useState({ width: 0, height: 0 });
-  const [width, setWidth] = useState<number | null>(null);
-  const [position, setPosition] = useState<AppleMiniPlayerPosition | null>(null);
-  const [hovered, setHovered] = useState(false);
-  const [pipActive, setPipActive] = useState(false);
+  const pip = useCanvasPictureInPicture(() => canvasHostRef.current?.querySelector("canvas"));
+  const pipActive = pip.active;
+  const stopPip = pip.stop;
   const [screen, setScreen] = useState<{ width: number; height: number } | null>(null);
   /**
    * The pane's last frame, claimed once at mount (round 4 §B4).
@@ -106,6 +99,16 @@ function AppleMiniPlayerFrameView({
    * it gets nothing rather than a photograph of an old session.
    */
   const [poster, setPoster] = useState<string | null>(() => takeAppleMiniPlayerPoster(target.deviceUdid));
+  /*
+   * The owner's 2026-09-23 ask: while the device is in a PiP window, the box
+   * inside ADE goes away, and it comes back when PiP closes.
+   *
+   * The PiP window is fed from this box's own canvas, so "away" cannot mean
+   * `hidden`: that drops the lease, and the stage unmounts the decoder when
+   * the URL goes, which freezes the PiP window. So the box stays mounted,
+   * laid out and streaming, and is only concealed (the shell's `concealed`).
+   */
+  const streaming = visible || pipActive;
 
   const noop = useCallback(() => {}, []);
   const stream = useAppleDeviceStream({
@@ -113,7 +116,10 @@ function AppleMiniPlayerFrameView({
     laneId: target.laneId,
     chatSessionId: target.chatSessionId,
     enabled: true,
-    hidden: false,
+    // Hidden releases this viewer's lease (and stops the capture when it was
+    // the last one), so a player nobody can see is not encoding H.264. A PiP
+    // window is somebody seeing it.
+    hidden: !streaming,
     machineName: null,
     bitrateKbpsCap: null,
     runtimePinRef: pinRef,
@@ -128,127 +134,32 @@ function AppleMiniPlayerFrameView({
    * lease is acquired — has already run by the time this one does. Releasing
    * first would drop the count to zero between the two and stop the capture,
    * which is exactly the tear-down this whole mechanism exists to avoid.
+   *
+   * Only while streaming: a hidden player holds no lease of its own, and this
+   * release never stops a capture, so giving the hold back here would leave
+   * the helper encoding for nobody. Left alone, the hold's own expiry stops it
+   * — or, if the user comes back within the window, this runs then instead.
    */
   useEffect(() => {
-    releaseAppleMiniPlayerHandoverHold();
-  }, []);
+    if (streaming) releaseAppleMiniPlayerHandoverHold();
+  }, [streaming]);
 
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {
     if (stream.frameVersion > 0) setPoster(null);
   }, [stream.frameVersion]);
 
-  useEffect(() => {
-    const node = hostRef.current?.parentElement;
-    if (!node) return undefined;
-    const read = () => {
-      const rect = node.getBoundingClientRect();
-      setContainer({ width: rect.width, height: rect.height });
-    };
-    read();
-    if (typeof ResizeObserver === "undefined") return undefined;
-    const observer = new ResizeObserver(read);
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, []);
-
-  // A drag or resize still held when the player unmounts must not outlive it.
-  useEffect(() => () => {
-    gestureCleanupRef.current?.();
-    gestureCleanupRef.current = null;
-  }, []);
-
   const source = appleMiniPlayerSourceSize(screen);
-  const frame = resolveAppleMiniPlayerFrame({
-    width,
-    position,
-    source,
-    container: container.width > 0 ? container : { width: 960, height: 640 },
-  });
+  const { hostRef, frame, startDrag, startResize } = useFloatingPlayerFrame({ source });
 
-  const startDrag = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    const origin = { x: event.clientX, y: event.clientY };
-    const start = { x: frame.x, y: frame.y };
-    const size = { width: frame.width, height: frame.height };
-    const box = container;
-    const move = (moveEvent: PointerEvent) => {
-      setPosition(clampAppleMiniPlayerPosition(
-        { x: start.x + moveEvent.clientX - origin.x, y: start.y + moveEvent.clientY - origin.y },
-        box,
-        size,
-      ));
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (gestureCleanupRef.current === up) gestureCleanupRef.current = null;
-    };
-    gestureCleanupRef.current = up;
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }, [container, frame.height, frame.width, frame.x, frame.y]);
-
-  const startResize = useCallback((
-    event: React.PointerEvent<HTMLDivElement>,
-    direction: AppleMiniPlayerResizeDirection,
-  ) => {
-    if (event.button !== 0) return;
-    event.preventDefault();
-    event.stopPropagation();
-    const origin = { x: event.clientX, y: event.clientY };
-    const start: AppleMiniPlayerFrame = { ...frame };
-    const box = container;
-    const move = (moveEvent: PointerEvent) => {
-      const next = resizeAppleMiniPlayer({
-        start,
-        direction,
-        delta: { x: moveEvent.clientX - origin.x, y: moveEvent.clientY - origin.y },
-        source,
-        container: box,
-      });
-      setWidth(next.width);
-      setPosition({ x: next.x, y: next.y });
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      if (gestureCleanupRef.current === up) gestureCleanupRef.current = null;
-    };
-    gestureCleanupRef.current = up;
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-  }, [container, frame, source]);
-
-  const stopPip = useCallback(() => {
-    pipRef.current?.stop();
-    pipRef.current = null;
-    setPipActive(false);
-  }, []);
-
-  const enterPip = useCallback(async () => {
-    const canvas = canvasHostRef.current?.querySelector("canvas");
-    if (!canvas) return;
-    try {
-      const session = await enterCanvasPictureInPicture(canvas);
-      pipRef.current?.stop();
-      pipRef.current = session;
-      setPipActive(true);
-      session.video.addEventListener("leavepictureinpicture", () => {
-        session.stop();
-        if (pipRef.current === session) pipRef.current = null;
-        setPipActive(false);
-      }, { once: true });
-    } catch {
-      stopPip();
-    }
-  }, [stopPip]);
-
-  useEffect(() => () => {
-    pipRef.current?.stop();
-    pipRef.current = null;
-  }, []);
+  // The stream failed for good: an error, or the hook's own reconnects ran
+  // out. A stop it is still recovering from keeps PiP; ending it there closed
+  // the user's window on a hiccup that healed a second later. Ending PiP shows
+  // the box again (or leaves it hidden on another surface).
+  useEffect(() => {
+    if (!pipActive) return;
+    if (stream.state === "error" || stream.gaveUp) stopPip();
+  }, [pipActive, stopPip, stream.gaveUp, stream.state]);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreen((value) => (
@@ -275,6 +186,30 @@ function AppleMiniPlayerFrameView({
     runtimePinRef: pinRef,
   });
 
+  /*
+   * The device is off. Watching never boots a device (the service answers
+   * `APPLE_DEVICE_OFF`), so without this the player sat on a generic error.
+   * It says so and offers the pane's own Start; "Open in pane" stays on the
+   * hover bar.
+   */
+  const deviceOff = stream.state === "error" && isAppleDeviceOffError(stream.error);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const reconnect = stream.reconnect;
+  const startDevice = useCallback(() => {
+    const api = window.ade?.iosSimulator;
+    if (!api?.deviceStart || !target.laneId) return;
+    setStarting(true);
+    setStartError(null);
+    void api.deviceStart(
+      { laneId: target.laneId, chatSessionId: target.chatSessionId, udid: target.deviceUdid },
+      pinRef.current,
+    )
+      .then(() => reconnect())
+      .catch((cause: unknown) => setStartError(describeAppleError(cause).sentence))
+      .finally(() => setStarting(false));
+  }, [reconnect, target.chatSessionId, target.deviceUdid, target.laneId]);
+
   const pipSupported = isWorkLivePictureInPictureSupported();
   /*
    * Picture-in-picture needs a canvas that has actually drawn something.
@@ -293,24 +228,32 @@ function AppleMiniPlayerFrameView({
   const hasPicture = stream.frameVersion > 0;
 
   return (
-    <div
-      ref={hostRef}
-      data-apple-mini-player={target.deviceUdid}
-      role="group"
-      aria-label={`${target.deviceName}, floating`}
-      onPointerEnter={() => setHovered(true)}
-      onPointerLeave={() => setHovered(false)}
-      onFocus={() => setHovered(true)}
-      onBlur={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setHovered(false);
+    <FloatingPlayerShell
+      hostRef={hostRef}
+      frame={frame}
+      hidden={!streaming}
+      concealed={pipActive}
+      attrPrefix="apple-mini"
+      playerId={target.deviceUdid}
+      ariaLabel={`${target.deviceName}, floating`}
+      recording={recording}
+      onStartDrag={startDrag}
+      onStartResize={startResize}
+      onOpenInPane={() => {
+        stopPip();
+        // The device is moving back into the pane, not being refused:
+        // a dismissal here would stop A4 from ever floating it again.
+        retakeAppleMiniPlayer(target.deviceUdid);
+        onOpenInPane(target);
       }}
-      className="absolute z-40 overflow-hidden rounded-xl bg-surface shadow-2xl ring-1 ring-inset ring-border"
-      style={{
-        left: frame.x,
-        top: frame.y,
-        width: frame.width,
-        height: frame.height,
-        borderRadius: APPLE_MINI_PLAYER_CORNER_RADIUS,
+      onClose={() => {
+        stopPip();
+        closeAppleMiniPlayer(target.deviceUdid);
+      }}
+      pip={{
+        supported: pipSupported,
+        ready: hasPicture,
+        onToggle: () => (pipActive ? stopPip() : void pip.enter()),
       }}
     >
       {/*
@@ -357,7 +300,8 @@ function AppleMiniPlayerFrameView({
           deviceTypeName={target.deviceName}
           orientation="portrait"
           devicePointSize={stream.devicePointSize}
-          interactive
+          // Concealed, the screen must not take focus or keys you cannot see.
+          interactive={!pipActive}
           onDeviceInput={input.send}
           onDeviceScroll={input.scroll}
           onDeviceKey={input.key}
@@ -368,82 +312,25 @@ function AppleMiniPlayerFrameView({
         />
       </div>
 
-      <div
-        data-apple-mini-drag=""
-        aria-hidden="true"
-        className="absolute left-2 right-2 top-2 z-[2] h-4 cursor-grab active:cursor-grabbing"
-        onPointerDown={startDrag}
-      />
-
-      {RESIZE_ZONES.map((zone) => (
+      {deviceOff ? (
         <div
-          key={zone.direction}
-          data-apple-mini-resize={zone.direction}
-          className={cn("absolute z-[2]", zone.className)}
-          onPointerDown={(event) => startResize(event, zone.direction)}
-        />
-      ))}
-
-      <div className="absolute right-2 top-2 z-[3]">
-        {hovered ? (
-          /* `shrink-0` + `nowrap` on every child: at the 240px minimum the bar
-             is nearly as wide as the player, and flex was shrinking the two
-             word buttons until "Close" sat on top of the picture-in-picture
-             glyph. The bar may reach the player's edges; it may not overlap
-             itself. */
-          <div className="flex max-w-full items-center gap-1 overflow-hidden rounded-full border border-border bg-surface px-1 py-0.5 shadow-lg">
+          data-apple-mini-off=""
+          className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-2 bg-surface px-4 text-center"
+        >
+          <p className="font-sans text-[12px] text-fg/85">{target.deviceName} is off</p>
+          {target.laneId ? (
             <button
               type="button"
-              className="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg"
-              onClick={() => {
-                stopPip();
-                // The device is moving back into the pane, not being refused:
-                // a dismissal here would stop A4 from ever floating it again.
-                retakeAppleMiniPlayer(target.deviceUdid);
-                onOpenInPane(target);
-              }}
+              disabled={starting}
+              className="rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg disabled:opacity-50"
+              onClick={startDevice}
             >
-              Open in pane
+              {starting ? "Starting…" : "Start"}
             </button>
-            <PaneTooltip
-              label={!pipSupported
-                ? WORK_LIVE_PIP_UNSUPPORTED_LABEL
-                : hasPicture
-                  ? "Picture in picture"
-                  : "Waiting for the first frame"}
-            >
-              <button
-                type="button"
-                aria-label="Picture in picture"
-                disabled={!pipSupported || !hasPicture}
-                className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-muted-fg hover:bg-white/[0.07] hover:text-fg disabled:opacity-40"
-                onClick={() => (pipActive ? stopPip() : void enterPip())}
-              >
-                <PictureInPicture size={12} />
-              </button>
-            </PaneTooltip>
-            <button
-              type="button"
-              className="shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg"
-              onClick={() => {
-                stopPip();
-                closeAppleMiniPlayer(target.deviceUdid);
-              }}
-            >
-              Close
-            </button>
-          </div>
-        ) : (
-          <span
-            aria-hidden="true"
-            data-apple-mini-dot={recording ? "recording" : "idle"}
-            className={cn(
-              "block h-2 w-2 rounded-full",
-              recording ? "bg-[var(--color-error)] motion-safe:animate-pulse" : "bg-fg/45",
-            )}
-          />
-        )}
-      </div>
-    </div>
+          ) : null}
+          {startError ? <p className="font-sans text-[11px] text-muted-fg">{startError}</p> : null}
+        </div>
+      ) : null}
+    </FloatingPlayerShell>
   );
 }

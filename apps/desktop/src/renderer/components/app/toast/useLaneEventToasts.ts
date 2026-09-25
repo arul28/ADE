@@ -41,11 +41,11 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
             message: "Lane created",
             tone: "success",
             colorDot: dot,
-            action: {
+            actions: [{
               label: "View",
               onClick: () =>
                 navigate(`/lanes?laneId=${event.laneId}&focus=single`),
-            },
+            }],
           });
           return;
         }

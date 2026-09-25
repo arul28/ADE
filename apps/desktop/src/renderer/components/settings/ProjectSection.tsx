@@ -11,6 +11,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import { SettingsCard } from "./primitives";
 import { SettingsSectionShell } from "./settingsSectionUi";
+import { Banner } from "../ui/notice";
 
 const summaryRowStyle: React.CSSProperties = {
   display: "grid",
@@ -328,14 +329,10 @@ export function ProjectSection() {
         ) : null}
 
         {notice ? (
-          <div style={{ marginTop: 14, padding: "8px 10px", border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)", background: "color-mix(in srgb, var(--color-success) 15%, transparent)", color: COLORS.success, fontSize: 12, fontFamily: SANS_FONT }}>
-            {notice}
-          </div>
+          <Banner layout="inline" style={{ marginTop: 14 }} model={{ id: "project-section-notice", tone: "success", title: notice }} />
         ) : null}
         {error ? (
-          <div style={{ marginTop: 14, padding: "8px 10px", border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)", background: "color-mix(in srgb, var(--color-error) 15%, transparent)", color: COLORS.danger, fontSize: 12, fontFamily: SANS_FONT }}>
-            {error}
-          </div>
+          <Banner layout="inline" style={{ marginTop: 14 }} model={{ id: "project-section-error", tone: "error", title: error }} />
         ) : null}
 
         <CollapsiblePanel

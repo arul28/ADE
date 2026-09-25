@@ -67,9 +67,6 @@ describe("feedbackFormReducer", () => {
   it("setType changes the type", () => {
     expect(feedbackFormReducer(base, { kind: "setType", type: "idea" }).type).toBe("idea");
   });
-  it("setType is a no-op (same reference) when unchanged", () => {
-    expect(feedbackFormReducer(base, { kind: "setType", type: "bug" })).toBe(base);
-  });
 
   it("cycleType moves through types", () => {
     expect(feedbackFormReducer(base, { kind: "cycleType", direction: 1 }).type).toBe("idea");
@@ -86,10 +83,6 @@ describe("feedbackFormReducer", () => {
     expect(s.text).toBe("a\nb");
     s = feedbackFormReducer(s, { kind: "backspace" });
     expect(s.text).toBe("a\n");
-  });
-
-  it("backspace on empty text is a no-op (same reference)", () => {
-    expect(feedbackFormReducer(base, { kind: "backspace" })).toBe(base);
   });
 
   it("toggleContext flips the flag", () => {

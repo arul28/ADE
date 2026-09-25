@@ -3,7 +3,8 @@ import type {
   AgentChatEventEnvelope,
   AgentChatTranscriptEntry,
 } from "../../../shared/types/chat";
-import { canAppendBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
+import { canonicalSteerRows } from "../../../shared/chatTranscript";
+import { canCoalesceBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
 
 /**
  * Flatten a transcript envelope stream into role-tagged entries.
@@ -108,7 +109,7 @@ function assistantStream(event: TextEvent): AssistantStream | null {
     : turnId ? `turn:${turnId}`
     : null;
   if (!key) return null;
-  return { key, identified: Boolean(messageId || itemId) };
+  return { key: `${key}\u0000${event.phase ?? ""}`, identified: Boolean(messageId || itemId) };
 }
 
 export type TranscriptEntriesOptions = {
@@ -116,38 +117,20 @@ export type TranscriptEntriesOptions = {
   onEntrySourceOffset?: (offset: number | null) => void;
 };
 
-/**
- * Steer ids that already have a non-queued `user_message` in this batch.
- *
- * The host writes a steered message twice: once as `deliveryState: "queued"`
- * when it is staged, and again when the provider consumes it. Both are real
- * transcript history, but they are one message — emitting both makes
- * `ade chat read` (and every client that merges this canonical text against the
- * live event stream) show the text twice. A still-pending queued steer has no
- * graduating row and is kept, because it is the only record of that message.
- */
-function graduatedSteerIds(
-  sessionId: string,
-  envelopes: readonly AgentChatEventEnvelope[],
-): ReadonlySet<string> {
-  const graduated = new Set<string>();
-  for (const entry of envelopes) {
-    if (entry.sessionId !== sessionId) continue;
-    if (entry.event.type !== "user_message") continue;
-    const steerId = entry.event.steerId?.trim();
-    if (!steerId) continue;
-    if (entry.event.deliveryState === "queued") continue;
-    graduated.add(steerId);
-  }
-  return graduated;
-}
-
 export function transcriptEntriesFromEnvelopes(
   sessionId: string,
   envelopes: readonly AgentChatEventEnvelope[],
   options?: TranscriptEntriesOptions,
 ): AgentChatTranscriptEntry[] {
-  const graduated = graduatedSteerIds(sessionId, envelopes);
+  /**
+   * A steer's row is written once per lifecycle state (`queued` then
+   * `delivered`, `accepted` then `inline`, ...). Every row is real history, but
+   * they are one message: emitting each makes `ade chat read` (and every client
+   * that merges this canonical text against the live event stream) show the
+   * text more than once. A still-pending queued steer has no settled row and is
+   * kept, because it is the only record of that message.
+   */
+  const steerRows = canonicalSteerRows(envelopes, { sessionId });
   type TranscriptDraftEntry = AgentChatTranscriptEntry & Partial<BufferedAssistantText>;
   const entries: TranscriptDraftEntry[] = [];
   const sourceOffsetByDraft = new WeakMap<TranscriptDraftEntry, number>();
@@ -170,6 +153,7 @@ export function transcriptEntriesFromEnvelopes(
         ...(assistantDraft.turnId ? { turnId: assistantDraft.turnId } : {}),
         ...(assistantDraft.messageId ? { messageId: assistantDraft.messageId } : {}),
         ...(assistantDraft.itemId ? { itemId: assistantDraft.itemId } : {}),
+        ...(assistantDraft.phase ? { phase: assistantDraft.phase } : {}),
       };
       const sourceOffset = sourceOffsetByDraft.get(assistantDraft);
       if (sourceOffset != null) sourceOffsetByDraft.set(flushed, sourceOffset);
@@ -194,31 +178,34 @@ export function transcriptEntriesFromEnvelopes(
     return `${existing.trimEnd()}\n\n${incoming.trimStart()}`;
   };
 
-  for (const entry of envelopes) {
+  for (let index = 0; index < envelopes.length; index += 1) {
+    const entry = envelopes[index]!;
     if (entry.sessionId !== sessionId) continue;
     if (entry.event.type === "user_message") {
-      const steerId = entry.event.steerId?.trim();
-      // A queued steer whose delivered twin is in the same batch is the same
-      // message; the delivered row carries it. Skipped BEFORE the stream state
+      const steerRow = steerRows.get(index);
+      // Another row of this steer carries it. Skipped BEFORE the stream state
       // is reset: a row that is never emitted must not break the assistant run
       // it landed inside, or a mid-turn steer splits one message into two
       // entries with no user entry between them.
-      if (entry.event.deliveryState === "queued" && steerId && graduated.has(steerId)) continue;
+      if (steerRow === null) continue;
       flushAssistantDraft();
       openStreamKey = null;
       assistantDraftsByKey.clear();
-      const text = entry.event.text.trim();
+      // Emitted at this row's place and time, with the content of the row the
+      // steer settled on (its turn and message id).
+      const { event, timestamp } = steerRow ?? { event: entry.event, timestamp: entry.timestamp };
+      const text = event.text.trim();
       if (!text.length) continue;
-      const displayText = typeof entry.event.displayText === "string" && entry.event.displayText.trim().length > 0
-        ? entry.event.displayText.trim()
+      const displayText = typeof event.displayText === "string" && event.displayText.trim().length > 0
+        ? event.displayText.trim()
         : undefined;
       const draft: TranscriptDraftEntry = {
         role: "user",
         text,
         ...(displayText ? { displayText } : {}),
-        timestamp: entry.timestamp,
-        turnId: entry.event.turnId,
-        ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
+        timestamp,
+        turnId: event.turnId,
+        ...(event.messageId ? { messageId: event.messageId } : {}),
       };
       rememberDraftSource(draft, entry);
       entries.push(draft);
@@ -254,6 +241,7 @@ export function transcriptEntriesFromEnvelopes(
           ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
           ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
           ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+          ...(entry.event.phase ? { phase: entry.event.phase } : {}),
         };
         rememberDraftSource(draft, entry);
         assistantDraftsByKey.set(stream.key, draft);
@@ -261,7 +249,7 @@ export function transcriptEntriesFromEnvelopes(
         openStreamKey = stream.key;
         continue;
       }
-      if (assistantDraft && canAppendBufferedAssistantText(assistantDraft, entry.event)) {
+      if (assistantDraft && canCoalesceBufferedAssistantText(assistantDraft, entry.event)) {
         assistantDraft.text = `${assistantDraft.text}${entry.event.text}`;
         openStreamKey = null;
         continue;
@@ -275,6 +263,7 @@ export function transcriptEntriesFromEnvelopes(
         ...(entry.event.messageId ? { messageId: entry.event.messageId } : {}),
         ...(entry.event.turnId ? { turnId: entry.event.turnId } : {}),
         ...(entry.event.itemId ? { itemId: entry.event.itemId } : {}),
+        ...(entry.event.phase ? { phase: entry.event.phase } : {}),
       };
       rememberDraftSource(assistantDraft, entry);
       openStreamKey = null;
@@ -297,6 +286,7 @@ export function transcriptEntriesFromEnvelopes(
       ...(entry.turnId ? { turnId: entry.turnId } : {}),
       ...(entry.messageId ? { messageId: entry.messageId } : {}),
       ...(entry.itemId ? { itemId: entry.itemId } : {}),
+      ...(entry.phase ? { phase: entry.phase } : {}),
     };
     options?.onEntrySourceOffset?.(sourceOffsetByDraft.get(entry) ?? null);
     return [normalized];

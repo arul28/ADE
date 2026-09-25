@@ -3,15 +3,11 @@ import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 import {
   ChatView,
-  chatScrollMaxOffsetFromSelectableRows,
   computeChatScrollMaxOffset,
-  markdownSpacersBetween,
   renderChatSelectableRows,
   renderChatSelectableRowTexts,
-  renderChatSelectableRowTextsFromRows,
   renderChatTranscriptPlainText,
   renderChatVisibleSelectionRows,
-  renderChatVisibleSelectionRowsFromRows,
   selectedTextFromChatRows,
   workFileDiffKey,
   workGroupExpandKey,
@@ -139,64 +135,6 @@ describe("ChatView", () => {
     expect(rows.join("\n")).toContain("selectable row 12");
     expect(selectedTextFromChatRows(rows, { startRow: 0, startColumn: 0, endRow: rows.length - 1, endColumn: 200 }))
       .toContain("selectable row 12");
-  });
-
-  it("derives scroll and selection data from one selectable row pass", () => {
-    const events = Array.from({ length: 8 }, (_, index): AgentChatEventEnvelope => ({
-      sessionId: "s1",
-      timestamp: `2026-01-01T12:00:${String(index).padStart(2, "0")}.000Z`,
-      sequence: index + 1,
-      event: {
-        type: index % 2 === 0 ? "user_message" : "text",
-        text: `single pass row ${index + 1}`,
-      },
-    }));
-    const blocks = aggregateChatBlocks({ events, notices: [], activeSession: session });
-    const selectableRows = renderChatSelectableRows({
-      blocks,
-      width: 80,
-      streaming: true,
-      showWorkingIndicator: true,
-    });
-
-    expect(chatScrollMaxOffsetFromSelectableRows({ rows: selectableRows, maxRows: 5 })).toBe(
-      computeChatScrollMaxOffset({
-        blocks,
-        events,
-        notices: [],
-        activeSession: session,
-        maxRows: 5,
-        width: 80,
-        streaming: true,
-        showWorkingIndicator: true,
-      }),
-    );
-    expect(renderChatVisibleSelectionRowsFromRows({
-      rows: selectableRows,
-      maxRows: 5,
-      scrollOffsetRows: 1,
-      unseenMessageCount: 2,
-    })).toEqual(renderChatVisibleSelectionRows({
-      blocks,
-      events,
-      notices: [],
-      activeSession: session,
-      maxRows: 5,
-      scrollOffsetRows: 1,
-      unseenMessageCount: 2,
-      width: 80,
-      streaming: true,
-      showWorkingIndicator: true,
-    }));
-    expect(renderChatSelectableRowTextsFromRows(selectableRows)).toEqual(renderChatSelectableRowTexts({
-      blocks,
-      events,
-      notices: [],
-      activeSession: session,
-      width: 80,
-      streaming: true,
-      showWorkingIndicator: true,
-    }));
   });
 
   it("renders a bordered hero card with the ADE wordmark when the chat is empty", () => {
@@ -628,7 +566,7 @@ describe("ChatView", () => {
     expect(frame).not.toContain("queued version");
     expect(frame).not.toContain("staged message");
     expect(frame).toContain("delivered version");
-    expect(frame).toContain("accepted · waiting to be processed");
+    expect(frame).toContain("Sent after turn");
   });
 
   it("renders one user bubble for steer lifecycle updates with the latest state", () => {
@@ -648,8 +586,8 @@ describe("ChatView", () => {
     ], { width: 80 });
 
     expect(frame.match(/run release checks/g)).toHaveLength(1);
-    expect(frame).toContain("processed");
-    expect(frame).not.toContain("accepted · waiting");
+    expect(frame).toContain("Steered");
+    expect(frame).not.toContain("Steering");
   });
 
   it("keeps raw moderation quiet and renders cumulative turn diagnostics", () => {
@@ -1789,77 +1727,6 @@ describe("ChatView", () => {
     // And confirm parseInlineRuns produces a run with code: true for those.
     const runs = parseInlineRuns(bullets[0]!.text);
     expect(runs.some((r) => r.code && r.text === "LaneRuntimeBar")).toBe(true);
-  });
-
-  it("does not render the left vertical rail bar on assistant lines", () => {
-    const events: AgentChatEventEnvelope[] = [
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:00.000Z",
-        sequence: 1,
-        event: { type: "text", text: "plain assistant text" },
-      },
-    ];
-    const frame = renderEvents(events, { width: 80 });
-    expect(frame).toContain("plain assistant text");
-    // The rail prefix was "▎ " on every assistant line; assert it's gone.
-    expect(frame).not.toMatch(/▎\s+plain assistant/);
-  });
-
-  it("adds a single blank line between bullets for readability", () => {
-    const events: AgentChatEventEnvelope[] = [
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:00.000Z",
-        sequence: 1,
-        event: { type: "text", text: "What changed:\n- First item\n- Second item\n- Third item" },
-      },
-    ];
-    const frame = renderEvents(events, { width: 80 });
-    const lines = transcriptLines(frame).map((line) => line.trimEnd());
-    const itemLines = ["First item", "Second item", "Third item"].map((item) => {
-      const hit = lines.find((line) => line.includes(item));
-      expect(hit).toBeDefined();
-      return hit!;
-    });
-    expect(itemLines.length).toBe(3);
-    // Each consecutive bullet should sit two lines apart (one blank between).
-    const indices = itemLines.map((line) => lines.indexOf(line));
-    for (let i = 1; i < indices.length; i += 1) {
-      expect(indices[i]! - indices[i - 1]!).toBe(2);
-    }
-  });
-
-  it("opens paragraph gaps toward desktop prose-p:my-3 breathing room", () => {
-    expect(markdownSpacersBetween("paragraph", "paragraph")).toBe(2);
-    expect(markdownSpacersBetween("heading", "paragraph")).toBe(2);
-    expect(markdownSpacersBetween("paragraph", "bullet")).toBe(2);
-    expect(markdownSpacersBetween("bullet", "bullet")).toBe(1);
-    expect(markdownSpacersBetween("numbered", "numbered")).toBe(1);
-
-    const events: AgentChatEventEnvelope[] = [
-      {
-        sessionId: "s1",
-        timestamp: "2026-01-01T12:00:00.000Z",
-        sequence: 1,
-        event: {
-          type: "text",
-          text: "Alpha paragraph one.\n\nBravo paragraph two.\n\nCharlie paragraph three.",
-        },
-      },
-    ];
-    const frame = renderEvents(events, { width: 80 });
-    const lines = transcriptLines(frame).map((line) => line.trimEnd());
-    const markers = ["Alpha paragraph one.", "Bravo paragraph two.", "Charlie paragraph three."];
-    const indices = markers.map((marker) => {
-      const index = lines.findIndex((line) => line.includes(marker));
-      expect(index).toBeGreaterThanOrEqual(0);
-      return index;
-    });
-    // Two blank spacer rows between paragraphs ? adjacent markers are 3 rows apart.
-    for (let i = 1; i < indices.length; i += 1) {
-      expect(indices[i]! - indices[i - 1]!).toBe(3);
-    }
   });
 
   it("shows the \"↓ N new messages\" pill when scrolled up and new events arrived", () => {

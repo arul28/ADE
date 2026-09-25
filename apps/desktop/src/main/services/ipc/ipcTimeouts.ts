@@ -67,6 +67,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     deviceStop: IPC.iosSimulatorDeviceStop,
     deviceCreate: IPC.iosSimulatorDeviceCreate,
     deviceDelete: IPC.iosSimulatorDeviceDelete,
+    deviceDetach: IPC.iosSimulatorDeviceDetach,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
@@ -195,6 +196,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorDeviceStop:
     case IPC.iosSimulatorDeviceCreate:
     case IPC.iosSimulatorDeviceDelete:
+    case IPC.iosSimulatorDeviceDetach:
       return IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;

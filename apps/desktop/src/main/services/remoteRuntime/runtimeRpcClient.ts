@@ -1,9 +1,19 @@
+import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
+import { syntheticCallerId } from "../../../shared/syntheticCallerId";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
 export type RuntimeRpcTransportCloseInfo = {
   exitCode?: number | null;
   signal?: string | null;
   stderr?: string | null;
+  /**
+   * Who closed a socket transport, and why: the WebSocket close code and
+   * reason, or that this computer closed it. Without it every paired close read
+   * "connection closed", and a flapping connection could not be diagnosed.
+   */
+  detail?: string | null;
+  /** The host replaced this connection with a newer one from the same device. */
+  superseded?: boolean;
 };
 
 export type RuntimeRpcTransport = JsonRpcTransport & {
@@ -98,13 +108,17 @@ export class RuntimeRpcClient {
       const details = [
         info?.exitCode != null ? `exit code ${info.exitCode}` : null,
         info?.signal ? `signal ${info.signal}` : null,
-        info?.stderr?.trim() ? `stderr: ${info.stderr.trim()}` : null,
+        info?.stderr?.trim() ? `stderr: ${summarizeRemoteRuntimeStderr(info.stderr)}` : null,
+        info?.detail?.trim() ? info.detail.trim() : null,
       ].filter((value): value is string => value != null);
-      this.failConnection(new Error(
-        details.length > 0
-          ? `Remote ADE service connection closed (${details.join(", ")}).`
-          : "Remote ADE service connection closed.",
-      ));
+      const message = details.length > 0
+        ? `Remote ADE service connection closed (${details.join(", ")}).`
+        : "Remote ADE service connection closed.";
+      this.failConnection(
+        info?.superseded
+          ? new Error(message, { cause: new PairedRuntimeSupersededError() })
+          : new Error(message),
+      );
     });
   }
 
@@ -120,7 +134,7 @@ export class RuntimeRpcClient {
       protocolVersion: "2025-06-18",
       clientInfo: { name: clientName, version },
       identity: {
-        callerId: `${clientName}:${process.pid}`,
+        callerId: syntheticCallerId(clientName),
         role: "cto",
       },
       ...(options.desktopBridgeAuthToken?.trim()
@@ -349,4 +363,28 @@ export class RuntimeRpcClient {
       pending.reject(error);
     }
   }
+}
+
+/**
+ * The remote CLI's stderr, reduced to what a person can act on.
+ *
+ * On a failed connect the remote `ade` prints its error line, then a stack
+ * trace into a bundled `.sea` file, and Node adds an ExperimentalWarning and
+ * a "--trace-warnings" hint. All of it landed in the Machines dialog verbatim
+ * (2026-09-22), three times over. Keep the error lines; drop stack frames and
+ * runtime warnings. The CLI's own "ade: Error: " prefix goes too — the dialog
+ * already says the remote ADE failed.
+ */
+export function summarizeRemoteRuntimeStderr(stderr: string): string {
+  const kept = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) =>
+      line.length > 0
+      && !/^at\s/.test(line)
+      && !/\b(?:Experimental|Deprecation)Warning\b/.test(line)
+      && !/--trace-(?:warnings|deprecation)\b/.test(line)
+    )
+    .map((line) => line.replace(/^ade:\s+(?:Error:\s+)?/, ""));
+  return kept.length > 0 ? kept.join(" ") : stderr.trim();
 }

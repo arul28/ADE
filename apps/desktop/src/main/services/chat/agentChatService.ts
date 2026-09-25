@@ -1,3 +1,4 @@
+import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 // Static import so bundlers (tsup → apps/ade-cli brain) include the module; a
@@ -8,6 +9,11 @@ import {
   transplantClaudeSession as staticTransplantClaudeSession,
 } from "../externalSessions/claudeSessionTransplant";
 import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
+import { loadExternalSessionEvents } from "../externalSessions/events";
+import {
+  EXTERNAL_SESSION_PROVIDER_LABELS,
+  isExternalSessionProvider,
+} from "../../../shared/types/externalSessions";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import net from "node:net";
@@ -73,6 +79,7 @@ import {
   repairClaudeResumeTranscript,
 } from "./claudeThinkingTranscriptRepair";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
+import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
 import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
@@ -89,6 +96,7 @@ import {
   normalizeChatRuntimeOwner,
   resolveAdeHomeForOwnership,
   type ChatRuntimeOwner,
+  type ChatRuntimeOwnershipDecision,
 } from "./chatRuntimeOwnership";
 import {
   createChatScheduledWorkScheduler,
@@ -144,6 +152,8 @@ import {
   countHumanChildMessagesForTurn,
   formatHumanChildMessageAnnotation,
   messageClearsAttentionMarkers,
+  resolveSpawnEndedTurnId,
+  spawnDeliveryFailedChildTurnId,
 } from "./spawnMissionOwnership";
 import {
   classifyCodexResumeFailure,
@@ -169,6 +179,7 @@ import type {
 import {
   appendBufferedAssistantText,
   canAppendBufferedAssistantText,
+  canCoalesceBufferedAssistantText,
   shouldFlushBufferedAssistantTextForEvent,
   type BufferedAssistantText,
 } from "./chatTextBatching";
@@ -230,6 +241,12 @@ import {
   compactChatEventForStorage,
   compactRunningCommandOutput,
 } from "../../../shared/chatEventCompaction";
+import {
+  claudeMessageCitationSourceRefs,
+  claudeWebToolSourceRefs,
+  codexMemoryCitationSourceRefs,
+  openCodeWebToolSourceRefs,
+} from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
@@ -486,6 +503,7 @@ import type {
   AgentChatSubagentTranscriptArgs,
   AgentChatSubagentTranscriptMessage,
   AgentChatSuggestLaneNameArgs,
+  AgentChatTextPhase,
   AutoLaneIdentitySuggestion,
   AgentChatCursorConfigOption,
   AgentChatCursorConfigValue,
@@ -659,6 +677,7 @@ import { createChatMentionService, markChatMentionsExpanded } from "./chatMentio
 import { refreshModelManifestIfStale } from "../ai/modelManifestService";
 import {
   claudeJsonlToChatEvents,
+  codexMessagePhase,
   codexTurnsToChatEvents,
   deriveImportedChatTitle,
   MAX_IMPORT_TRANSCRIPT_BYTES,
@@ -667,6 +686,7 @@ import {
 import {
   getActiveModelManifest,
   onModelManifestApplied,
+  getAppDefaultModelDescriptor,
   getDefaultModelDescriptor,
   getDynamicOpenCodeModelDescriptors,
   getDynamicPiModelDescriptors,
@@ -689,6 +709,7 @@ import {
   resolveModelAlias,
   resolveOpenCodeFastEffortSelection,
   resolveModelDescriptorForProvider,
+  findProviderModelByRecordedName,
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
   type LocalProviderFamily,
@@ -739,6 +760,8 @@ import {
   CTO_MEMORY_GARDENER_TITLE,
 } from "../cto/ctoPromptContent";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
+import { buildMacDesktopDirective } from "../ai/tools/macDesktopPrompt";
+import type { MacDesktopRuntimeService } from "../macDesktop/macDesktopService";
 import { resolveClaudeCliModel } from "../ai/claudeModelUtils";
 import {
   isExecutablePath,
@@ -825,7 +848,13 @@ import {
   logSkillDelivery as recordSkillDelivery,
   type SkillDeliveryDetail,
 } from "../skills/skillDelivery";
-import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import {
+  isDroppedSteerDeliveryState,
+  isSettledSteerDeliveryState,
+  parseAgentChatTranscript,
+  steerReachedModel,
+  type UserMessageChatEvent,
+} from "../../../shared/chatTranscript";
 import {
   SESSION_STALE_AFTER_MS,
   summarizeBackgroundWork,
@@ -876,7 +905,14 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
+import { readOpenCodeSessionStatuses, withOpenCodeIdleProbe } from "../opencode/openCodeIdleProbe";
+import type { OpenCodeRuntimeEvent } from "../opencode/openCodeRuntime";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
+import {
+  createLaneAppleDeviceLookup,
+  resolveLaneAppleDeviceDirective,
+  type LaneAppleDeviceLookup,
+} from "./laneAppleDeviceDirective";
 import {
   buildOpenCodePromptParts,
   buildOpenCodeV2PromptAttachments,
@@ -1157,6 +1193,22 @@ import {
   createStaleRunSweep,
   type StaleRunSweepChatRow,
 } from "./chatStaleRunSweep";
+import {
+  createCliChildSessionAccess,
+  cliChildLineageFromRow,
+  cliChildResultStatus,
+  cliChildRunKey,
+  composeCliChildReport,
+  lastMeaningfulTerminalLines,
+  readCliProviderFinalMessage,
+  type CliChildLineage,
+  type TrackedCliRow,
+} from "./cliChildSessions";
+import {
+  TRACKED_AGENT_CLI_TOOL_TYPES,
+  type AgentChatCliChildSessionSummary,
+  type CliSessionFacts,
+} from "../../../shared/cliChildSession";
 
 export function restartRecoveryStopAttribution(args: {
   ownerSocketPath?: string | null;
@@ -1978,6 +2030,8 @@ type CodexSubagentThreadState = {
   interruptPending: boolean;
   activeTurnId: string | null;
   itemTurnIdByItemId: Map<string, string>;
+  /** Codex `phase` per in-flight `agentMessage` item; cleared when the item or turn ends. */
+  agentMessagePhaseByItemId: Map<string, AgentChatTextPhase>;
   commandOutputByItemId: Map<string, string>;
   commandOutputStorageClosedItemIds: Set<string>;
   fileDeltaByItemId: Map<string, string>;
@@ -2060,6 +2114,12 @@ type CodexRuntime = {
   terminalTurnIds: Set<string>;
   agentMessageScopeByTurn: Map<string, "item" | "turn">;
   agentMessageTextByTurn: Map<string, string>;
+  /**
+   * Codex `phase` ("commentary" | "final_answer") per `agentMessage` item,
+   * learned from `item/started` (or `item/completed`) and stamped onto that
+   * item's streamed `text` deltas. Cleared at every turn boundary.
+   */
+  agentMessagePhaseByItemId: Map<string, AgentChatTextPhase>;
   recentNotificationKeys: Set<string>;
   emittedErrorKeys: Set<string>;
   reconciledItemSignaturesByTurn: Map<string, Set<string>>;
@@ -2144,6 +2204,15 @@ type QueuedSteer = {
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
 };
+
+/** The fields a steer's transcript row is built from (`emitSteerUserRow`). */
+type SteerUserRowFields = Pick<
+  QueuedSteer,
+  "steerId" | "text" | "displayText" | "attachments" | "contextAttachments" | "metadata"
+>;
+
+/** One `ManagedChatSession.acceptedSteerRows` entry. */
+type AcceptedSteerRow = { turnId: string | undefined; shown: "accepted" | "queued" };
 
 /**
  * The fields one inline OpenCode steer needs. `uuid` doubles as the v2 prompt's
@@ -2692,6 +2761,42 @@ async function rejectOpenCodePendingApproval(
   pending: PendingOpenCodeApproval,
 ): Promise<void> {
   await replyToOpenCodePendingApproval(handle, pending, "reject");
+}
+
+/**
+ * Whether every external-directory pattern names somewhere inside the
+ * project's own `.ade` state.
+ *
+ * The blocked ask in the test drive was `external_directory:
+ * /Users/<user>/Projects/ADE/.ade/*` — the observations, artifacts and cache
+ * the mac-desktop commands read and write. Those paths are outside the lane
+ * worktree (the lane lives under `<project>/.ade/worktrees/<lane>`), so
+ * OpenCode's default asks, and full-auto never answered: the chat sat blocked
+ * on a prompt for its own workspace.
+ *
+ * Only literal paths with an optional trailing glob are accepted. A pattern
+ * with wildcards in the middle cannot be proven inside the root without a glob
+ * engine, and guessing it allowed is how a rule meant for `.ade/cache` ends up
+ * covering `~/.ssh`. Anything unproven keeps the approval card.
+ */
+export function isOpenCodeExternalDirectoryInsideAdeRoot(
+  projectRoot: string,
+  patterns: readonly string[],
+): boolean {
+  const adeRoot = path.resolve(projectRoot, ".ade");
+  const normalizedPatterns = patterns
+    .map((pattern) => pattern.trim())
+    .filter((pattern) => pattern.length > 0);
+  if (!normalizedPatterns.length) return false;
+  return normalizedPatterns.every((pattern) => {
+    const literal = pattern.replace(/\/\*\*$|\/\*$|\*$/, "");
+    if (/[*?[\]{}]/.test(literal)) return false;
+    const absolute = path.isAbsolute(literal)
+      ? path.resolve(literal)
+      : path.resolve(projectRoot, literal);
+    const relative = path.relative(adeRoot, absolute);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  });
 }
 
 type OpenCodeRuntime = {
@@ -3970,6 +4075,18 @@ type ReconstructionSectionSpan = {
   start: number;
 };
 
+/**
+ * The epoch directives that live only in memory. Each is re-sent when its key
+ * changes, and forgotten with the provider thread. A new one adds its name
+ * here and its key in `prepareSendMessage`.
+ */
+type EpochDirective =
+  /** The computer-use block, keyed by lane and available backends. */
+  | "computerUse"
+  /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
+  | "appleDevice";
+type EpochDirectiveKeys = Partial<Record<EpochDirective, string>>;
+
 type ManagedChatSession = {
   session: AgentChatSession;
   transcriptPath: string;
@@ -4074,6 +4191,26 @@ type ManagedChatSession = {
     displayText?: string;
     turnId?: string;
   }>;
+  /**
+   * Steers whose row this process showed as `accepted` and that no one has
+   * moved on yet, keyed by steerId, with the turn that row was offered on and
+   * what the row reads now: `accepted` while a provider decides, `queued`
+   * once a refused steer is back on the queue. A refused steer stays here
+   * while it waits, so a drain can land it on that same row and a lost one
+   * can be told apart from one a drain or a cancel already took.
+   *
+   * Added by `emitSteerUserRow`. `commitChatEvent` tracks the row's state and
+   * removes it once the row settles. Otherwise removed only where a path takes
+   * the steer off its row: a drain or a "Delivering…" promotion (put back if
+   * that delivery throws and the row is restored), and a cancel.
+   */
+  acceptedSteerRows?: Map<string, AcceptedSteerRow>;
+  /**
+   * Steers a cancel took while their row still read `accepted` (a dispatch was
+   * offering them to the live turn), so that dispatch can report the message
+   * as dropped rather than sent. Consumed by `dispatchSteer`.
+   */
+  cancelledInFlightSteerIds?: Set<string>;
   continuitySummary: string | null;
   /**
    * One-shot: the next Cursor send may expire a still-active persisted run
@@ -4097,7 +4234,12 @@ type ManagedChatSession = {
   preferredExecutionLaneId: string | null;
   selectedExecutionLaneId: string | null;
   lastLaneDirectiveKey: string | null;
-  lastComputerUseDirectiveKey: string | null;
+  /**
+   * The key of each epoch directive this session's provider thread was last
+   * told. In memory only: a brain restart re-announces once, which is cheaper
+   * than persisting it.
+   */
+  deliveredDirectiveKeys: EpochDirectiveKeys;
   runtimeInvalidated: boolean;
   /** True when a transient Qwen effort update is the reason the runtime is invalidated. */
   acpReasoningEffortInvalidated: boolean;
@@ -4292,7 +4434,8 @@ type PreparedSendMessage = {
   reasoningEffort?: string | null;
   interactionMode?: AgentChatInteractionMode | null;
   laneDirectiveKey?: string | null;
-  computerUseDirectiveKey?: string | null;
+  /** The epoch directives this turn's prompt carries, marked delivered after the run. */
+  epochDirectiveKeys?: EpochDirectiveKeys;
   providerSlashCommand?: boolean;
   forceClaudeUserMessage?: boolean;
   onDispatched?: () => void;
@@ -4305,6 +4448,14 @@ type PreparedSendMessage = {
   runtime?: AgentChatRuntime;
   cloudOverrides?: AgentChatCloudOverrides;
 };
+
+/** Where a Cursor turn runs: the turn's own choice, then the chat's default. */
+function effectiveCursorRuntime(
+  managed: ManagedChatSession,
+  runtime: AgentChatRuntime | null | undefined,
+): AgentChatRuntime {
+  return runtime ?? managed.session.cursorRuntime ?? "local";
+}
 
 type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath: string;
@@ -4472,6 +4623,13 @@ const HANDOFF_NOTE_TOO_LONG_MESSAGE = "Handoff note is too long. Keep it under 4
 // can always interrupt manually if something is genuinely stuck.
 const SESSION_INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const OPENCODE_SESSION_INACTIVITY_TIMEOUT_MS = 60 * 1000; // 1 minute
+/**
+ * How long an OpenCode turn's event stream may stay silent before the server
+ * is asked whether the sessions it waits on are still busy. Long enough that a
+ * normal tool call never triggers it; short enough that a lost `session.idle`
+ * costs half a minute, not a turn that never ends.
+ */
+const OPENCODE_IDLE_PROBE_QUIET_MS = 30 * 1000;
 const SESSION_CLEANUP_INTERVAL_MS = 15 * 1000; // check every 15 seconds
 
 const MAX_RECENT_CONVERSATION_ENTRIES = 50;
@@ -7095,10 +7253,14 @@ function normalizeClaudeTodoItems(
     }
 
     const explicitId = typeof record.id === "string" && record.id.trim().length > 0 ? record.id.trim() : null;
+    // TodoWrite's `activeForm` ("Running tests") is what Claude shows while the
+    // item runs; the task list does the same.
+    const activeForm = typeof record.activeForm === "string" ? record.activeForm.trim() : "";
     return [{
       id: explicitId ?? `todo-${index}`,
       description,
       status,
+      ...(activeForm && activeForm !== description ? { activeForm } : {}),
     }];
   });
 
@@ -7211,10 +7373,12 @@ function updateClaudeTaskTodosFromToolInput(
     const id = firstNonEmptyString(record.taskId, record.id, record.metadata && typeof record.metadata === "object"
       ? (record.metadata as Record<string, unknown>).taskId
       : null) ?? fallbackId;
+    const activeForm = firstNonEmptyString(record.activeForm);
     tasksById.set(id, {
       id,
       description,
       status: normalizeClaudeTaskTodoStatus(record.status),
+      ...(activeForm && activeForm !== description ? { activeForm } : {}),
     });
   } else if (normalizedToolName === "TaskUpdate") {
     const id = firstNonEmptyString(record.taskId, record.id);
@@ -7238,10 +7402,12 @@ function updateClaudeTaskTodosFromToolInput(
       // Never fabricate a row from a bare id — an update for a task this
       // tracker cannot resolve or describe changes nothing user-visible.
       if (!description) return null;
+      const activeForm = firstNonEmptyString(record.activeForm, existing?.activeForm);
       tasksById.set(id, {
         id,
         description,
         status: normalizeClaudeTaskTodoStatus(record.status ?? existing?.status),
+        ...(activeForm && activeForm !== description ? { activeForm } : {}),
       });
     }
   } else {
@@ -7560,6 +7726,15 @@ export function computerUseDirectiveFingerprint(directive: string): string {
 
 export function buildComputerUseDirective(
   backendStatus: ComputerUseBackendStatus | null,
+  options: {
+    /**
+     * This host can give the lane a private macOS screen (Mac Desktop). The
+     * lane need not have one yet: an agent that is never told the lane screen
+     * exists reaches for the user's real screen instead (2026-09-23 baseline:
+     * a plain "record opening Safari" quit the user's own Safari).
+     */
+    macDesktopAvailable?: boolean;
+  } = {},
 ): string | null {
   const hasExternalBackends = backendStatus
     ? backendStatus.backends.some((b) => b.available)
@@ -7586,12 +7761,31 @@ export function buildComputerUseDirective(
       "When the user asks for proof, capture visual proof first. Console logs and text files are supporting diagnostics only; do not use them as the only proof unless the user explicitly asks for logs or visual capture fails and you say so.",
       "ADE does not passively ingest computer-use output. When a capture is worth keeping as reviewer-visible proof, attach it intentionally with `ade proof ...` or `ingest_computer_use_artifacts`.",
       "",
-      "When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
+      "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
+      options.macDesktopAvailable
+        ? "`mcp__computer_use` (and any Codex or OpenAI computer-use plugin) drives the user's real screen and apps. This lane has its own screen, so do not use it for task work; use it only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
+        : "When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
       "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
     ].join("\n"),
   );
+
+  // --- Mac Desktop (this host can give the lane its own screen) ---
+  if (options.macDesktopAvailable) {
+    sections.push(
+      [
+        "### Mac Desktop — this lane's own screen (use it for desktop apps)",
+        "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-desktop** skill before your first action.",
+        "For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default. Open Safari or another browser on the Mac Desktop only when the user names that app or asks for the Mac Desktop.",
+        "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened, unsaved work included; `release` gives an app the lane opened to the user, whole.",
+        "The loop: `ade mac-desktop start` (viewing the screen does not start it), `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`. To show the screen to the user, run `ade mac-desktop show`.",
+        "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade mac-desktop observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
+        "If recording fails, say so. Never attach an older recording or a file you did not just record.",
+        "If the shell answers `Unknown command 'mac-desktop'`, it found an older `ade` on PATH: run the same command as `\"$ADE_CLI_PATH\" mac-desktop …` and keep using `\"$ADE_CLI_PATH\"`. Close or `release` only the windows you opened on the lane screen; do not quit apps yourself. If `ade mac-desktop` still refuses, stop and report it; do not fall back to the user's real screen.",
+      ].join("\n"),
+    );
+  }
 
   // --- Ghost OS section (only if a Ghost OS backend is detected) ---
   const ghostOsBackend = backendStatus?.backends.find(
@@ -7643,7 +7837,9 @@ export function buildComputerUseDirective(
   sections.push(
     [
       "### Proof Capture",
-      "Proof is intentional. Use `ade proof capture` for a reviewer-facing checkpoint, or `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them.",
+      options.macDesktopAvailable
+        ? "Proof is intentional. For work on the lane's Mac Desktop, record with `ade mac-desktop record` or file a still with `ade mac-desktop proof`. `ade proof capture` and `ade proof record` capture the user's whole real screen — use them only when the proof is of that screen. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
+        : "Proof is intentional. Use `ade proof capture` for a reviewer-facing checkpoint, or `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them.",
     ].join("\n"),
   );
 
@@ -7869,9 +8065,13 @@ function normalizeOpenCodePermissionMode(mode: string | undefined): AgentChatOpe
   return undefined;
 }
 
+// App-server `TurnPlanStepStatus` is camelCase (`inProgress`); the `update_plan`
+// tool arguments and the Cursor `ade_update_plan` fence use snake_case
+// (`in_progress`). Both spellings mean the same step state.
 const PLAN_STEP_STATUS_MAP: Record<string, "pending" | "in_progress" | "completed" | "failed"> = {
   completed: "completed",
   inProgress: "in_progress",
+  in_progress: "in_progress",
   failed: "failed",
 };
 
@@ -9049,7 +9249,10 @@ function normalizeImportedFrom(value: unknown): AgentChatImportedFrom | undefine
     ? record.importedAt
     : undefined;
   if (!provider || !sessionId || importedAt === undefined) return undefined;
-  return { provider, sessionId, importedAt };
+  // Dropping `mode` here would turn every copy back into a continue on the
+  // next persist, and the importer would hide the untouched original again.
+  const mode = record.mode === "fork" || record.mode === "continue" ? record.mode : undefined;
+  return { provider, sessionId, importedAt, ...(mode ? { mode } : {}) };
 }
 
 function normalizeIdentityKey(value: unknown): AgentChatIdentityKey | undefined {
@@ -9227,10 +9430,11 @@ export function createAgentChatService(args: {
       ReturnType<typeof createPtyService>,
       "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "getRuntimeState"
     >
-    // Optional so narrow test doubles keep compiling; used only by composer
-    // @-mention suggestions/expansion, which degrade to "no terminals" when
-    // the runtime supplies a reduced pty surface.
-    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal">>
+    // Optional so narrow test doubles keep compiling. `listTerminals` /
+    // `previewTerminal` serve composer @-mentions (and a CLI child's report
+    // tail); `onExit` lets a tracked CLI child close its parent's card. Each
+    // degrades to "nothing" when the runtime supplies a reduced pty surface.
+    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill">>
   ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
   /**
@@ -9246,6 +9450,21 @@ export function createAgentChatService(args: {
   /** NAMES ONLY — the type carries no value accessor, so no tool can read a secret. */
   getProjectSecretService?: () => CtoOperatorToolDeps["projectSecretService"];
   getIosSimulatorService?: () => CtoOperatorToolDeps["iosSimulatorService"];
+  /**
+   * The Mac Desktop runtime, in the three calls this service makes.
+   *
+   * One dependency, not two: whether a lane has a display is the same question
+   * for the one-line prompt directive and for the turn clip, and asking it
+   * twice through two differently-shaped deps was a second answer that could
+   * disagree with the first. Synchronous on purpose — the answer costs one line
+   * of system prompt, so it must not make the send path wait on a service call
+   * — and an unwired runtime (`ade code`, the headless brain, any non-Mac host)
+   * leaves it undefined and emits nothing.
+   */
+  macDesktopTurnRecorder?: Pick<
+    MacDesktopRuntimeService,
+    "hasDisplaySync" | "beginTurn" | "noteTurnEnded"
+  > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync">> | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
@@ -9259,6 +9478,11 @@ export function createAgentChatService(args: {
     Pick<AdeDb, "getJson" | "setJson">
     & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync">>
   ) | null;
+  /**
+   * Which Apple device a lane holds, for the `<ade-lane-tools>` hint. Defaults
+   * to a `lane_apple_devices` row read on `db` (macOS only); tests inject it.
+   */
+  lookupLaneAppleDevice?: LaneAppleDeviceLookup | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   /**
@@ -9383,6 +9607,7 @@ export function createAgentChatService(args: {
     getBudgetService,
     getProjectSecretService,
     getIosSimulatorService,
+    macDesktopTurnRecorder,
     getAppControlService,
     getBuiltInBrowserService,
     getGitService,
@@ -9393,6 +9618,7 @@ export function createAgentChatService(args: {
     processRegistry,
     projectConfigService,
     db,
+    lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
     aiIntegrationService,
     logger,
     appVersion,
@@ -9425,6 +9651,13 @@ export function createAgentChatService(args: {
   const browserActorCapabilityIssuer =
     args.browserActorCapabilityIssuer ?? localBrowserActorCapabilityIssuer;
   const nativeTitleWaitMs = Math.max(0, args.nativeTitleWaitMs ?? NATIVE_TITLE_WAIT_MS);
+  // `undefined` means "use the lanes DB"; an explicit `null` turns the hint off.
+  const laneAppleDeviceLookup: LaneAppleDeviceLookup | null = injectedLaneAppleDeviceLookup !== undefined
+    ? injectedLaneAppleDeviceLookup
+    : createLaneAppleDeviceLookup({
+        platform: process.platform,
+        store: db?.get ? { get: db.get } : null,
+      });
   const resolveCodexComputerUseMcp = resolveCodexComputerUseMcpOverride
     ?? resolveCodexComputerUseMcpConfig;
   const resolveCodexConfiguredMcpServerNames = resolveCodexConfiguredMcpServerNamesOverride
@@ -9601,8 +9834,8 @@ export function createAgentChatService(args: {
    * by `const ready = prepareBrowserActorCapability(managed); if (ready) await
    * ready;` in the same launch. Forget it and the env silently ships without
    * `ADE_BROWSER_ACTOR_TOKEN` on daemon-hosted chats — an omission that
-   * compiles and reviews clean. `agentChatBrowserActorOrdering.test.ts` fails
-   * when a new call site appears without a preamble.
+   * compiles and reviews clean. The "browser actor capability on a
+   * daemon-hosted chat" tests in `agentChatServiceProviderLaunch.test.ts` cover each launch.
    */
   const prepareBrowserActorCapability = (
     managed: ManagedChatSession,
@@ -9810,8 +10043,7 @@ export function createAgentChatService(args: {
    *
    * `buildAgentRuntimeEnv` issues a browser actor token as a side effect and
    * carries an ordering rule (`prepareBrowserActorCapability` must be awaited
-   * first) that `agentChatBrowserActorOrdering.test.ts` enforces by counting
-   * call sites. Reading skill roots needs none of that, so it reads the two
+   * first). Reading skill roots needs none of that, so it reads the two
    * variables `adeCliService.agentEnv()` sets and nothing else.
    */
   const agentSkillRootEnv = (): NodeJS.ProcessEnv => getAdeCliAgentEnv?.(process.env) ?? process.env;
@@ -10243,6 +10475,13 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  /**
+   * When each chat's latest turn started. `currentTurnStartedAt` clears when
+   * the turn settles, and the proof broker still needs the time afterwards to
+   * tell a fresh video from an older one. An entry goes when its session ends
+   * or is deleted.
+   */
+  const lastTurnStartedAtBySession = new Map<string, string>();
   // Declared here rather than next to its only caller further down the file:
   // `notifyChatSessionEnded` (immediately below) calls `autoResume.forgetSession`,
   // and a `const` declared thousands of lines later is in its temporal dead zone
@@ -11148,6 +11387,9 @@ export function createAgentChatService(args: {
         taskId: event.taskId,
         agentId: event.agentId ?? previous?.agentId,
         parentAgentId: event.parentAgentId ?? previous?.parentAgentId ?? null,
+        ...(event.provider ?? previous?.provider
+          ? { provider: event.provider ?? previous?.provider }
+          : {}),
         agentType: event.agentType ?? previous?.agentType,
         label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -11175,6 +11417,7 @@ export function createAgentChatService(args: {
         taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
         agentId: event.agentId ?? previous?.agentId,
         parentAgentId: event.parentAgentId ?? previous?.parentAgentId ?? null,
+        ...(previous?.provider ? { provider: previous.provider } : {}),
         agentType: event.agentType ?? previous?.agentType,
         label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -11209,6 +11452,7 @@ export function createAgentChatService(args: {
       taskId: adoptEventTaskId ? event.taskId : previous?.taskId ?? event.taskId,
       agentId: event.agentId ?? previous?.agentId,
       parentAgentId: event.parentAgentId ?? previous?.parentAgentId ?? null,
+      ...(previous?.provider ? { provider: previous.provider } : {}),
       agentType: event.agentType ?? previous?.agentType,
       label: event.label?.trim() || previous?.label,
       parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
@@ -11658,10 +11902,21 @@ export function createAgentChatService(args: {
     entries: AgentChatTranscriptEntry[];
     truncated: boolean;
     totalEntries: number;
+    /** Set when the id names a tracked CLI terminal: the entry is its report, not a chat transcript. */
+    cliSession?: CliSessionFacts;
   }> => {
-    const managed = ensureManagedSession(sessionId);
     const normalizedLimit = Math.max(1, Math.min(MAX_TRANSCRIPT_READ_LIMIT, Math.floor(limit)));
     const normalizedMaxChars = Math.max(200, Math.min(MAX_TRANSCRIPT_READ_CHARS, Math.floor(maxChars)));
+    if (!managedSessions.has(sessionId.trim())) {
+      const cliTranscript = await readCliTranscript(sessionId);
+      if (cliTranscript) {
+        return {
+          ...cliTranscript,
+          entries: cliTranscript.entries.map((entry) => boundTranscriptEntry(entry, normalizedMaxChars)),
+        };
+      }
+    }
+    const managed = ensureManagedSession(sessionId);
     // Flush any pending buffered text so the transcript includes all content
     flushBufferedText(managed);
     const transcriptEntries = await readTranscriptEntries(managed, signal);
@@ -11727,6 +11982,12 @@ export function createAgentChatService(args: {
     nextCursor: number | null;
     cursorKind: "byte";
   }> => {
+    if (!managedSessions.has(sessionId.trim()) && readTrackedCliRow(sessionId)) {
+      throw new Error(
+        `Session '${sessionId.trim()}' is a CLI terminal session and has no paged chat transcript. `
+          + `Read it with \`ade chat read ${sessionId.trim()}\` (latest report) or \`ade terminal read ${sessionId.trim()}\` (full output).`,
+      );
+    }
     const managed = ensureManagedSession(sessionId);
     flushBufferedText(managed);
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
@@ -13502,6 +13763,9 @@ export function createAgentChatService(args: {
 
   const appendRecentConversationEntry = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     if (event.type !== "user_message" && event.type !== "text") return;
+    // A steer is one entry, on the row where the model read it: not its
+    // `queued` or `accepted` rows, and not at all when it was dropped.
+    if (event.type === "user_message" && event.steerId && !steerReachedModel(event.deliveryState)) return;
     const text = event.text.trim();
     if (!text.length) return;
 
@@ -16879,6 +17143,15 @@ export function createAgentChatService(args: {
     });
   };
 
+  const chatRuntimeOwnershipDecision = (
+    owner: ChatRuntimeOwner | null,
+  ): ChatRuntimeOwnershipDecision => decideChatRuntimeOwnership({
+    owner,
+    self: { brainId: brainInstanceId, pid: processRegistry?.pid ?? process.pid, startedAt: processRegistry?.startedAt ?? null, adeHome: brainAdeHome },
+    isProcessIdentityLive: (pid, startedAt) =>
+      processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
+  });
+
   const chatRuntimeAdoptable = (
     sessionId: string,
     persisted?: PersistedChatState | null,
@@ -16892,12 +17165,7 @@ export function createAgentChatService(args: {
     const owner = persisted === undefined
       ? readPersistedState(sessionId)?.runtimeOwner ?? null
       : persisted?.runtimeOwner ?? null;
-    const decision = decideChatRuntimeOwnership({
-      owner,
-      self: { brainId: brainInstanceId, pid: processRegistry?.pid ?? process.pid, startedAt: processRegistry?.startedAt ?? null, adeHome: brainAdeHome },
-      isProcessIdentityLive: (pid, startedAt) =>
-        processRegistry?.isProcessIdentityLive(pid, startedAt) ?? false,
-    });
+    const decision = chatRuntimeOwnershipDecision(owner);
     if (!decision.adoptable && options?.quiet !== true) {
       logger.warn("agent_chat.runtime_owned_by_other_brain", {
         sessionId,
@@ -17085,13 +17353,15 @@ export function createAgentChatService(args: {
 
   const seedForkedProviderPointer = (
     managed: ManagedChatSession,
-    patch: { providerSessionId?: string; droidSdkSessionId?: string },
+    patch: { providerSessionId?: string; droidSdkSessionId?: string; piSessionId?: string; acpSessionId?: string },
   ): void => {
     // Mirror in memory first: a persist that runs while the new runtime is
     // starting cannot read prevPersisted (runtime is non-null), so the disk
     // write alone would be clobbered in that window.
     if (patch.providerSessionId) managed.seededProviderSessionId = patch.providerSessionId;
     if (patch.droidSdkSessionId) managed.seededDroidSdkSessionId = patch.droidSdkSessionId;
+    if (patch.piSessionId) managed.seededPiSessionId = patch.piSessionId;
+    if (patch.acpSessionId) managed.seededAcpSessionId = patch.acpSessionId;
     const sessionId = managed.session.id;
     const current = readPersistedState(sessionId);
     if (!current) return;
@@ -17299,6 +17569,7 @@ export function createAgentChatService(args: {
   const setSessionActive = (managed: ManagedChatSession): void => {
     if (managed.session.status !== "active") {
       managed.session.currentTurnStartedAt = nowIso();
+      lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -17384,6 +17655,57 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
+  };
+
+  /**
+   * Fail every Cursor / OpenCode / Pi steer row a previous process left
+   * reading `accepted` (see `emitSteerUserRow`).
+   *
+   * That state only lasts while this process awaits the provider, so a crash
+   * in that window leaves the row "Steering…" forever: those providers do not
+   * persist their queue, so nothing in the next process owns the message. Runs
+   * when the session is first loaded into this process, before any runtime of
+   * this process could have shown a live `accepted` row. A steer on the
+   * restored queue is skipped; it still has an owner. Codex is left alone: its
+   * `accepted` rows are matched against the live thread by
+   * `hydrateAcceptedCodexSteers`.
+   */
+  const failOrphanedAcceptedSteerRows = (
+    managed: ManagedChatSession,
+    transcriptEvents: AgentChatEventEnvelope[],
+    persisted: PersistedChatState | null,
+  ): void => {
+    const provider = managed.session.provider;
+    if (provider !== "cursor" && provider !== "opencode" && provider !== "pi") return;
+    // A brain that owns the chat may be mid-steer on a live row: a live
+    // sibling, or one under another ADE_HOME (whose pid we cannot probe, so
+    // it may still be awaiting `Run.steer()`). Only this brain's own, a dead
+    // owner's, or an unowned chat's rows are orphans.
+    const { verdict } = chatRuntimeOwnershipDecision(persisted?.runtimeOwner ?? null);
+    if (verdict !== "self" && verdict !== "dead-owner" && verdict !== "legacy") return;
+    const latestBySteerId = new Map<string, UserMessageChatEvent>();
+    for (const envelope of mergeEnvelopeStreams(
+      transcriptEvents,
+      eventHistoryBySession.get(managed.session.id) ?? [],
+    )) {
+      const event = envelope.event;
+      if (event.type !== "user_message" || !event.steerId) continue;
+      latestBySteerId.set(event.steerId, event);
+    }
+    const restoredSteerIds = new Set(persisted?.pendingSteers?.map((steer) => steer.steerId) ?? []);
+    let failedCount = 0;
+    for (const [steerId, event] of latestBySteerId) {
+      if (event.deliveryState !== "accepted" || restoredSteerIds.has(steerId)) continue;
+      emitChatEvent(managed, { ...event, deliveryState: "failed" });
+      failedCount += 1;
+    }
+    if (!failedCount) return;
+    persistChatState(managed);
+    logger.info("agent_chat.orphaned_accepted_steers_failed", {
+      sessionId: managed.session.id,
+      provider,
+      count: failedCount,
+    });
   };
 
   const cursorDroidTurnStillActive = (managed: ManagedChatSession): boolean => {
@@ -18134,7 +18456,21 @@ export function createAgentChatService(args: {
     }
     const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
-    managed.session.lastActivityAt = nowIso();
+    // Keeps `acceptedSteerRows` in step with the row the user sees: a settled
+    // row moves the steer on, a re-emitted `queued` row is waiting again.
+    // Notices never touch it; the paths that take a steer off its row do.
+    if (liveEvent.type === "user_message" && liveEvent.steerId) {
+      const acceptedRow = managed.acceptedSteerRows?.get(liveEvent.steerId);
+      if (acceptedRow && isSettledSteerDeliveryState(liveEvent.deliveryState)) {
+        managed.acceptedSteerRows?.delete(liveEvent.steerId);
+      } else if (acceptedRow && liveEvent.deliveryState === "queued") {
+        acceptedRow.shown = "queued";
+      }
+    }
+    // A steer that went nowhere is not activity: the chat did nothing new.
+    if (!(liveEvent.type === "user_message" && isDroppedSteerDeliveryState(liveEvent.deliveryState))) {
+      managed.session.lastActivityAt = nowIso();
+    }
     trackSubagentEvent(managed, liveEvent);
     appendRecentConversationEntry(managed, liveEvent);
 
@@ -18457,6 +18793,7 @@ export function createAgentChatService(args: {
       ...(buffered.originTimestamp ? { originTimestamp: buffered.originTimestamp } : {}),
       ...(buffered.turnId ? { turnId: buffered.turnId } : {}),
       ...(buffered.itemId ? { itemId: buffered.itemId } : {}),
+      ...(buffered.phase ? { phase: buffered.phase } : {}),
     });
   };
 
@@ -18475,7 +18812,7 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     event: Extract<AgentChatEvent, { type: "text" }>,
   ): void => {
-    if (canAppendBufferedAssistantText(managed.bufferedText, event)) {
+    if (canCoalesceBufferedAssistantText(managed.bufferedText, event)) {
       noteChatTextDelta(managed.session.id);
       managed.bufferedText = {
         ...appendBufferedAssistantText(managed.bufferedText, event),
@@ -18547,6 +18884,23 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Whether this user row means the message reached the provider, so the side
+   * effects of a delivery (clearing an armed usage-limit resume, marking a
+   * scheduled wake's turn as started) may run. Not for a staged row, a row
+   * that went nowhere (`failed`), or an inline steer still awaiting its
+   * provider — except Codex, whose `accepted` is the server taking it into the
+   * live turn.
+   */
+  const userMessageStartsWork = (
+    managed: ManagedChatSession,
+    event: Extract<AgentChatEvent, { type: "user_message" }>,
+  ): boolean => {
+    if (event.deliveryState === "queued" || event.deliveryState === "failed") return false;
+    if (event.deliveryState === "accepted") return managed.session.provider === "codex";
+    return true;
+  };
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -18615,7 +18969,7 @@ export function createAgentChatService(args: {
       // turns wake the parent; human-dispatched turns and peers leave a quiet
       // completion notice. Causality and dedupe are derived from persisted
       // transcript metadata, so process restarts do not sever the channel.
-      reportChildSpawnEnded(managed.session.id, normalizedEvent.status, normalizedEvent.turnId);
+      reportChildSpawnEnded(managed.session.id, normalizedEvent.status, "done", normalizedEvent.turnId);
       if (normalizedEvent.status === "failed") {
         sessionService.markLastTurnFailed(managed.session.id);
       } else if (normalizedEvent.status === "completed") {
@@ -18633,7 +18987,7 @@ export function createAgentChatService(args: {
     if (
       (managed.usageLimitResume || managed.usageLimitParkedUntil)
       && normalizedEvent.type === "user_message"
-      && normalizedEvent.deliveryState !== "queued"
+      && userMessageStartsWork(managed, normalizedEvent)
     ) {
       const autoResumeTurn = isAutoResumeScheduledWork({
         id: normalizedEvent.metadata?.scheduledWake?.scheduleId,
@@ -18684,7 +19038,7 @@ export function createAgentChatService(args: {
 
     if (
       normalizedEvent.type === "user_message"
-      && normalizedEvent.deliveryState !== "queued"
+      && userMessageStartsWork(managed, normalizedEvent)
       && normalizedEvent.metadata?.scheduledWake?.scheduleId
     ) {
       const scheduleId = normalizedEvent.metadata.scheduledWake.scheduleId;
@@ -18723,9 +19077,42 @@ export function createAgentChatService(args: {
     }
 
     commitChatEventWithCanonical(managed, normalizedEvent, options);
+    noteMacDesktopTurnBoundary(managed, normalizedEvent);
     if (normalizedEvent.type === "done") {
       notifyTurnSettled(managed, normalizedEvent);
     }
+  };
+
+  /**
+   * Opens and closes the lane's time-lapse clip around one agent turn.
+   *
+   * Hung off the one funnel every provider's events pass through, because
+   * there is no provider-agnostic turn object to hang it off: `status/started`
+   * and `done` are the only two edges Claude, Codex, Cursor, ACP and the rest
+   * all emit. Everything is behind `hasDisplaySync`, so a lane with no screen —
+   * which is nearly all of them — costs one map lookup per event.
+   */
+  const noteMacDesktopTurnBoundary = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+  ): void => {
+    const recorder = macDesktopTurnRecorder;
+    if (!recorder) return;
+    const laneId = managed.session.laneId;
+    if (!laneId || !recorder.hasDisplaySync(laneId)) return;
+    const isStart = event.type === "status" && event.turnStatus === "started";
+    if (!isStart && event.type !== "done") return;
+    const turnId = event.turnId?.trim();
+    if (!turnId) return;
+    const args = { laneId, chatSessionId: managed.session.id, turnId };
+    const call = isStart ? recorder.beginTurn(args) : recorder.noteTurnEnded(args);
+    void Promise.resolve(call).catch((error: unknown) => {
+      logger.debug("mac_desktop.turn_clip_hook_failed", {
+        sessionId: managed.session.id,
+        phase: isStart ? "begin" : "end",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const applyClaudeActiveGoal = (
@@ -19367,6 +19754,8 @@ export function createAgentChatService(args: {
     if (!toolMeta) return false;
     openToolUses.delete(payload.toolUseId);
     const structured = record.tool_use_result;
+    // `structured` never reaches clients, so WebSearch/WebFetch hits travel as `sources`.
+    const webSources = claudeWebToolSourceRefs(toolMeta.toolName, structured);
     emitChatEvent(managed, {
       type: "tool_result",
       tool: toolMeta.toolName,
@@ -19374,6 +19763,7 @@ export function createAgentChatService(args: {
       structured,
       ...(record.tool_result_meta !== undefined ? { toolResultMeta: record.tool_result_meta } : {}),
       ...claudeStructuredToolResultFields(toolMeta.toolName, structured),
+      ...(webSources.length ? { sources: webSources } : {}),
       itemId: payload.toolUseId,
       ...(turnId ? { turnId } : {}),
       status: "completed",
@@ -20545,10 +20935,13 @@ export function createAgentChatService(args: {
 
   const appendImportedChatEvents = async (
     managed: ManagedChatSession,
-    envelopes: AgentChatEventEnvelope[],
+    rawEnvelopes: AgentChatEventEnvelope[],
   ): Promise<void> => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
+    // Provider transcripts have no turn boundaries, and the transcript shows
+    // finished tool calls only in a turn's `done` summary.
+    const envelopes = withImportedTurnBoundaries(rawEnvelopes);
 
     // Imported envelopes are historical: no client can be viewing a session
     // whose history is still being seeded, and every reader loads seeded
@@ -21274,6 +21667,13 @@ export function createAgentChatService(args: {
     return runtime.activeTurnId ?? null;
   };
 
+  /** Whether the runtime itself says a turn is running: Codex by its live turn id, every other provider by `busy`. */
+  const runtimeMidTurn = (managed: ManagedChatSession): boolean => (
+    managed.runtime?.kind === "codex"
+      ? managed.runtime.activeTurnId != null
+      : managed.runtime?.busy === true
+  );
+
   // ── Host sleep ───────────────────────────────────────────────────────────
   //
   // A machine that suspends mid-turn kills the agent's in-flight API call. The
@@ -21802,7 +22202,13 @@ export function createAgentChatService(args: {
       (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor" || managed.runtime.kind === "pi"
         // Every ACP dialect can rejoin a session by id, so an idle or
         // shutdown teardown must keep the pointer it would resume from.
-        || managed.runtime.kind === "acp")
+        || managed.runtime.kind === "acp"
+        // OpenCode keeps its sessions in its own database, and `session.get`
+        // re-opens one by id on any later server. Left off this list, every
+        // idle teardown set `runtimeInvalidated`, the next persist dropped
+        // `providerSessionId`, and each follow-up message started a brand-new
+        // OpenCode session that had to rediscover the whole thread.
+        || managed.runtime.kind === "opencode")
       && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
@@ -21928,6 +22334,10 @@ export function createAgentChatService(args: {
       managed.runtime.handle.setBusy(false);
       settleOpenCodePendingApprovals(managed, managed.runtime);
       managed.runtime.handle.setEvictionHandler(null);
+      // Written while the handle is still here, so the pointer comes from the
+      // live session id and not from whatever the last persist happened to
+      // hold.
+      if (preserveProviderResumeState) persistChatState(managed);
       try { managed.runtime.handle.close(openCodeReason); } catch { /* ignore */ }
       managed.runtime = null;
     }
@@ -22167,6 +22577,7 @@ export function createAgentChatService(args: {
     }
 
     managedSessions.delete(managed.session.id);
+    lastTurnStartedAtBySession.delete(managed.session.id);
     revokeBrowserActorToken(managed.session.id);
   };
 
@@ -22361,7 +22772,7 @@ export function createAgentChatService(args: {
       lastLaneDirectiveKey: persisted?.lastLaneDirectiveKey ?? null,
       // Deliberately in-memory only: after a restart the directive is re-sent
       // once, which is the safe direction to fail.
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -22462,6 +22873,9 @@ export function createAgentChatService(args: {
         });
       }
     }
+    // Any status, not only `detached`: a clean shutdown can also end the
+    // process mid-steer.
+    failOrphanedAcceptedSteerRows(managed, transcriptHydration.transcriptEvents, persisted);
     return managed;
   };
 
@@ -22508,13 +22922,13 @@ export function createAgentChatService(args: {
   /**
    * Forget what this session's provider threads have been told, so a
    * replacement runtime (model switch, thread recycle, resume) is re-announced
-   * to. Both the lane directive and the computer-use directive are epoch-scoped
+   * to. The lane, computer-use and Apple-device directives are epoch-scoped
    * and would otherwise be suppressed for the new thread by a key the old one
    * set.
    */
   const clearDeliveredDirectiveEpoch = (managed: ManagedChatSession): void => {
     managed.lastLaneDirectiveKey = null;
-    managed.lastComputerUseDirectiveKey = null;
+    managed.deliveredDirectiveKeys = {};
     persistChatState(managed);
   };
 
@@ -24518,6 +24932,16 @@ export function createAgentChatService(args: {
       const turnId = startClaudeIdleTurn(managed, runtime, state);
       emitClaudeTranscriptRetraction(managed, assistantMsg.supersedes, "assistant_supersedes", turnId, providerMessageId);
       const content = Array.isArray(betaMessage?.content) ? betaMessage.content : [];
+      // Text-block citations the answer makes (web_search_result_location, …).
+      const citationSources = claudeMessageCitationSourceRefs(content);
+      if (citationSources.length) {
+        emitChatEvent(managed, {
+          type: "sources",
+          sources: citationSources,
+          ...(assistantMessageId ? { itemId: assistantMessageId } : {}),
+          turnId,
+        });
+      }
       for (const [index, rawBlock] of content.entries()) {
         const block = asRecord(rawBlock);
         if (!block) continue;
@@ -24673,7 +25097,13 @@ export function createAgentChatService(args: {
                 `${state.streamedTextByContentIndex.get(contentIndex) ?? ""}${text}`,
               );
             }
-            const providerMessageId = state.currentStreamMessageId ?? compactString(streamMsg.uuid);
+            // `streamMsg.uuid` names this one SDK frame, not the message, so it
+            // is latched: when the reader missed the `message_start` (it went to
+            // the foreground turn that just ended), every delta of the message
+            // still shares one id and draws as one text row instead of one row
+            // per delta. The next `message_start` replaces it.
+            if (!state.currentStreamMessageId) state.currentStreamMessageId = compactString(streamMsg.uuid) ?? null;
+            const providerMessageId = state.currentStreamMessageId;
             if (providerMessageId && contentIndex != null) {
               const record = claudeEmittedTextRecord(runtime, providerMessageId);
               record.set(contentIndex, `${record.get(contentIndex) ?? ""}${text}`);
@@ -25215,6 +25645,8 @@ export function createAgentChatService(args: {
     // accumulated stream text by index and match the snapshot by TEXT.
     const streamedClaudeThinkingTextByContentIndex = new Map<number, string>();
     let currentClaudeStreamMessageId: string | null = null;
+    /** Stand-in message id for deltas whose `message_start` never arrived. */
+    let claudeStreamFallbackMessageId: string | null = null;
     let pendingWorkerShutdownReason: string | null = null;
     let recentClaudeTextDeltaBuffer = "";
     let onBackendDispatched = args.onBackendDispatched;
@@ -26663,6 +27095,16 @@ export function createAgentChatService(args: {
           }
           reportedAssistantModel = normalizeReportedModelName(betaMessage?.model) ?? reportedAssistantModel;
           if (betaMessage?.content && Array.isArray(betaMessage.content)) {
+            // Text-block citations the answer makes (web_search_result_location, …).
+            const citationSources = claudeMessageCitationSourceRefs(betaMessage.content);
+            if (citationSources.length) {
+              emitChatEvent(managed, {
+                type: "sources",
+                sources: citationSources,
+                ...(assistantMessageId ? { itemId: assistantMessageId } : {}),
+                turnId,
+              });
+            }
             for (const [blockIndex, block] of betaMessage.content.entries()) {
               for (const structuredEvent of mapClaudeStructuredActivityBlock({
                 block,
@@ -26826,7 +27268,12 @@ export function createAgentChatService(args: {
                   if (textKey) streamedClaudeTextContentKeys.add(textKey);
                   recentClaudeTextDeltaBuffer += text;
                   assistantText += text;
-                  const streamProviderMessageId = currentClaudeStreamMessageId ?? compactString(streamMsg.uuid);
+                  // `streamMsg.uuid` names one SDK frame, so the fallback is latched
+                  // until the next `message_start`: one message, one text row.
+                  if (!currentClaudeStreamMessageId && !claudeStreamFallbackMessageId) {
+                    claudeStreamFallbackMessageId = compactString(streamMsg.uuid) ?? null;
+                  }
+                  const streamProviderMessageId = currentClaudeStreamMessageId ?? claudeStreamFallbackMessageId;
                   if (streamProviderMessageId && contentIndex != null) {
                     const record = claudeEmittedTextRecord(runtime, streamProviderMessageId);
                     record.set(contentIndex, `${record.get(contentIndex) ?? ""}${text}`);
@@ -27005,6 +27452,7 @@ export function createAgentChatService(args: {
             }
           } else if (event.type === "message_start") {
             currentClaudeStreamMessageId = typeof event.message?.id === "string" ? event.message.id : null;
+            claudeStreamFallbackMessageId = null;
             recentClaudeTextDeltaBuffer = "";
             streamedClaudeThinkingTextByContentIndex.clear();
             const msgUsage = event.message?.usage;
@@ -28947,6 +29395,11 @@ export function createAgentChatService(args: {
       laneDirectiveKey?: string | null;
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
+      /**
+       * See `CursorSdkTurnArgs.steerId`. Read by the OpenCode path below and
+       * by `runClaudeTurn`; Pi and ACP ignore it.
+       */
+      steerId?: string;
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
@@ -28993,6 +29446,7 @@ export function createAgentChatService(args: {
       contextAttachments,
       metadata: args.metadata,
       turnId,
+      ...(args.steerId ? { steerId: args.steerId } : {}),
       laneDirectiveKey: args.laneDirectiveKey,
       onDispatched: args.onDispatched,
     });
@@ -29032,11 +29486,21 @@ export function createAgentChatService(args: {
       if (!acc || acc.totalTokens <= 0) return undefined;
       return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
     };
+    // Children this turn has already settled. OpenCode keeps publishing
+    // `session.updated` for a finished child (its summary, its `time.updated`
+    // when the parent reads the result) AFTER that child's `session.idle`, and
+    // the "missed the created event" synthesis below used to re-add the child
+    // on that update. Nothing settles it a second time, so the parent's idle
+    // then waited on a child that had already reported, and the turn never
+    // ended: 2026-09-21, two dev-loop turns with start → result → start in the
+    // transcript and no `done`.
+    const settledOpenCodeSubagentKeys = new Set<string>();
     const settleOpenCodeSubagent = (
       childKey: string,
       status: "completed" | "failed" | "stopped",
       summaryOverride?: string,
     ): boolean => {
+      settledOpenCodeSubagentKeys.add(childKey);
       const child = runtime.subagentSessions.get(childKey);
       if (!child) return false;
       const summary = summaryOverride ?? child.summary;
@@ -29228,7 +29692,40 @@ export function createAgentChatService(args: {
         if (viewEvent) emitChatEvent(managed, viewEvent);
       };
       let parentSessionIdle = false;
-      for await (const event of eventStream) {
+      // The stream is not trusted alone for the end of the turn: an idle that
+      // lands while the socket is between connections is gone, and the loop
+      // used to wait forever with the chat showing "Working". While the stream
+      // is quiet the server is asked directly, and a session it reports idle
+      // gets its idle synthesized here. See `openCodeIdleProbe.ts`.
+      const probedStream = withOpenCodeIdleProbe<OpenCodeRuntimeEvent>(eventStream, {
+        quietMs: OPENCODE_IDLE_PROBE_QUIET_MS,
+        waitingOn: () => [
+          ...(parentSessionIdle ? [] : [runtime.handle.sessionId]),
+          ...runtime.subagentSessions.keys(),
+        ],
+        probe: async () => {
+          const status = runtime.handle.client.session.status;
+          if (typeof status !== "function") return null;
+          const reply = await status.call(
+            runtime.handle.client.session,
+            { directory: runtime.handle.directory },
+            { throwOnError: true },
+          );
+          return readOpenCodeSessionStatuses((reply as { data?: unknown }).data);
+        },
+        makeIdleEvent: (sessionID) => ({
+          type: "session.idle",
+          properties: { sessionID },
+        }) as OpenCodeRuntimeEvent,
+        onSynthesized: (sessionIDs) => {
+          logger.warn("agent_chat.opencode_idle_recovered_by_probe", {
+            sessionId: managed.session.id,
+            turnId,
+            sessionIDs: [...sessionIDs],
+          });
+        },
+      });
+      for await (const event of probedStream) {
         const resolveSessionId = (): string | null => {
           const legacyPermission = asLegacyOpenCodePermissionUpdated(event);
           if (legacyPermission) return legacyPermission.properties.sessionID;
@@ -29357,6 +29854,7 @@ export function createAgentChatService(args: {
             };
             const ensureSubagentStarted = (): void => {
               if (runtime.subagentSessions.has(childKey)) return;
+              if (settledOpenCodeSubagentKeys.has(childKey)) return;
               runtime.subagentSessions.set(childKey, {
                 summary: formatSummary(),
                 turnId,
@@ -29378,6 +29876,12 @@ export function createAgentChatService(args: {
             if (event.type === "session.created") {
               ensureSubagentStarted();
             } else if (event.type === "session.updated") {
+              // A finished child keeps publishing updates; they are not a new
+              // run and must not re-add it (see `settledOpenCodeSubagentKeys`).
+              if (settledOpenCodeSubagentKeys.has(childKey)) {
+                if (parentSessionIdle && runtime.subagentSessions.size === 0) break;
+                continue;
+              }
               // Synthesize started first if we missed the created event so the
               // panel has a row to update.
               ensureSubagentStarted();
@@ -29739,6 +30243,12 @@ export function createAgentChatService(args: {
                 if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
                 else emitOpenCodeImageAttachment(attachment);
               }
+              const webSources = openCodeWebToolSourceRefs(
+                part.tool,
+                part.state.input,
+                part.state.output,
+                part.state.title,
+              );
               emitChatEvent(managed, {
                 type: "tool_result",
                 tool: part.tool,
@@ -29748,6 +30258,7 @@ export function createAgentChatService(args: {
                   metadata: part.state.metadata ?? part.metadata ?? {},
                   attachments: part.state.attachments,
                 },
+                ...(webSources.length ? { sources: webSources } : {}),
                 itemId,
                 logicalItemId: part.id,
                 turnId,
@@ -29882,6 +30393,33 @@ export function createAgentChatService(args: {
           const description = permission.patterns?.length
             ? `${normalizedType}: ${permission.patterns.join(", ")}`
             : normalizedType || "Approval required";
+          // Full access means no prompts, including for the project's own
+          // `.ade` state (`isOpenCodeExternalDirectoryInsideAdeRoot`). The
+          // reply goes out before any card exists, so there is no card for a
+          // later sweep to close while `chat status` still calls it blocked.
+          if (
+            runtime.permissionMode === "full-auto"
+            && normalizedType === "external_directory"
+            && isOpenCodeExternalDirectoryInsideAdeRoot(projectRoot, permission.patterns ?? [])
+          ) {
+            try {
+              await replyToOpenCodePendingApproval(
+                runtime.handle,
+                { category: "write", permissionId: permission.id, protocol: "v2" },
+                "always",
+              );
+              continue;
+            } catch (error) {
+              // Answering failed. Falling through re-raises the card rather
+              // than dropping an ask, which is the better of the two failures.
+              logger.warn("agent_chat.opencode_external_directory_auto_approve_failed", {
+                sessionId: managed.session.id,
+                turnId,
+                requestId: permission.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
           const category: PendingOpenCodeApproval["category"] = normalizedType.includes("bash")
             || normalizedType.includes("command")
             || description.toLowerCase().includes("command")
@@ -29997,11 +30535,15 @@ export function createAgentChatService(args: {
                 // todo mapper above already derives a stable id.
                 id: openCodeTodoId(todo, index),
                 description: todo.content,
-                status: todo.status === "completed"
+                // `cancelled` (the SDK's fourth status) is settled: the wire
+                // keeps `completed` for clients that know no cancelled state,
+                // and the flag lets the task list draw it as skipped.
+                status: todo.status === "completed" || todo.status === "cancelled"
                   ? "completed"
                   : todo.status === "in_progress"
                     ? "in_progress"
                     : "pending",
+                ...(todo.status === "cancelled" ? { cancelled: true as const } : {}),
               })),
             turnId,
           });
@@ -30784,7 +31326,9 @@ export function createAgentChatService(args: {
         const rawStatus = typeof entry.status === "string" ? entry.status : "pending";
         return {
           text: normalizedText,
-          status: PLAN_STEP_STATUS_MAP[rawStatus] ?? "pending",
+          // `Object.hasOwn`: the status is model-controlled, and "constructor"
+          // would otherwise read an inherited value.
+          status: Object.hasOwn(PLAN_STEP_STATUS_MAP, rawStatus) ? PLAN_STEP_STATUS_MAP[rawStatus]! : "pending",
         };
       })
       .filter((entry): entry is { text: string; status: "pending" | "in_progress" | "completed" | "failed" } => entry != null);
@@ -31127,6 +31671,7 @@ export function createAgentChatService(args: {
     runtime.webSearchActionsByItemId.clear();
     runtime.agentMessageScopeByTurn.clear();
     runtime.agentMessageTextByTurn.clear();
+    runtime.agentMessagePhaseByItemId.clear();
     runtime.recentNotificationKeys.clear();
     runtime.reconciledItemSignaturesByTurn.clear();
     settleCodexPendingInputs(managed, runtime);
@@ -31872,6 +32417,7 @@ export function createAgentChatService(args: {
       interruptPending: false,
       activeTurnId: null,
       itemTurnIdByItemId: new Map<string, string>(),
+      agentMessagePhaseByItemId: new Map<string, AgentChatTextPhase>(),
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
       commandOutputStorageClosedItemIds: new Set<string>(),
@@ -32021,6 +32567,7 @@ export function createAgentChatService(args: {
   ): void {
     const wasRunning = state.status === "running" || runtime.activeSubagents.has(state.threadId);
     state.activeTurnId = null;
+    state.agentMessagePhaseByItemId.clear();
     state.status = status;
     state.interruptPending = false;
     runtime.activeSubagents.delete(state.threadId);
@@ -32321,6 +32868,7 @@ export function createAgentChatService(args: {
       const messageId = itemId
         ? `codex-subagent:${threadId}:${turnId ?? "no-turn"}:${itemId}:text`
         : `codex-subagent:${threadId}:${turnId ?? "no-turn"}:text`;
+      const phase = itemId ? state.agentMessagePhaseByItemId.get(itemId) : undefined;
       recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
         transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
           type: "text",
@@ -32328,6 +32876,7 @@ export function createAgentChatService(args: {
           messageId,
           ...(turnId ? { turnId } : {}),
           ...(itemId ? { itemId } : {}),
+          ...(phase ? { phase } : {}),
         }, "assistant", delta), codexSubagentMetadataForThread(runtime, threadId)),
       ]);
       return true;
@@ -32425,6 +32974,11 @@ export function createAgentChatService(args: {
       const itemId = stringOrNull(item.id);
       const itemType = stringOrNull(item.type);
       if (itemId && turnIdFromParams) state.itemTurnIdByItemId.set(itemId, turnIdFromParams);
+      const agentMessagePhase = itemType === "agentMessage" ? codexMessagePhase(item) : undefined;
+      if (itemId && agentMessagePhase) {
+        state.agentMessagePhaseByItemId.set(itemId, agentMessagePhase);
+        evictOldestEntries(state.agentMessagePhaseByItemId, MAX_SESSION_MAP_ENTRIES);
+      }
       if (itemId && itemType === "fileChange") {
         const changes = Array.isArray(item.changes) ? item.changes : [];
         state.fileChangesByItemId.set(itemId, changes
@@ -32454,6 +33008,7 @@ export function createAgentChatService(args: {
         state.commandOutputByItemId.delete(itemId);
         state.commandOutputStorageClosedItemIds.delete(itemId);
       }
+      if (itemId) state.agentMessagePhaseByItemId.delete(itemId);
       recordCodexSubagentItem(managed, runtime, state, item, "completed", turnIdFromParams);
       return true;
     }
@@ -33187,6 +33742,16 @@ export function createAgentChatService(args: {
       const kind = stringOrNull(item.kind)?.toLowerCase() ?? "";
       const label = agentPath ?? assignCodexAgentLabel(runtime, turnId, agentThreadId);
       const existing = runtime.activeSubagents.get(agentThreadId);
+      // Codex delivers every `subAgentActivity` item twice — item/started, then
+      // item/completed with the same `kind` — and the second delivery can land
+      // after the child's own turn/completed settled it. Only the first
+      // delivery is news. Treating the echo as fresh activity used to re-mark a
+      // finished child "running" (and emit "Agent active" after its result),
+      // which a later restart sweep then closed as "stopped · the ADE brain
+      // restarted".
+      const knownThread = runtime.codexSubagentThreads.get(agentThreadId);
+      const wasRunning = knownThread?.status === "running" || existing != null;
+      const firstDelivery = eventKind === "started" || knownThread == null;
       const threadState = registerCodexSubagentThread(managed, runtime, {
         threadId: agentThreadId,
         parentToolUseId: existing?.parentToolUseId ?? itemId,
@@ -33194,12 +33759,19 @@ export function createAgentChatService(args: {
         prompt: existing?.description ?? label,
         background: existing?.background ?? false,
         label,
-        status: kind === "interrupted" ? "stopped" : "running",
+        // Only a first-delivery start (re)opens the thread; an interrupt closes
+        // it. Every other kind leaves the settled/running state alone.
+        status: kind === "started" && firstDelivery
+          ? "running"
+          : kind === "interrupted" && (wasRunning || knownThread == null)
+            ? "stopped"
+            : undefined,
         model: stringOrNull(item.model),
         reasoningEffort: stringOrNull(item.reasoningEffort ?? item.reasoning_effort),
       });
       refreshCodexSubagentThreadMetadata(managed, runtime, threadState.threadId);
       if (kind === "started") {
+        if (!firstDelivery) return;
         runtime.activeSubagents.set(agentThreadId, {
           taskId: agentThreadId,
           description: label,
@@ -33227,6 +33799,9 @@ export function createAgentChatService(args: {
         return;
       }
       if (kind === "interrupted") {
+        // The second delivery (or an interrupt for a child that already
+        // settled) has nothing left to stop.
+        if (!wasRunning) return;
         threadState.status = "stopped";
         runtime.activeSubagents.delete(agentThreadId);
         emitChatEvent(managed, {
@@ -33243,6 +33818,9 @@ export function createAgentChatService(args: {
         });
         return;
       }
+      // Activity for a child that is not running (settled, or never announced
+      // to this runtime) is an echo, never a reason to reopen its row.
+      if (eventKind !== "started" || knownThread?.status !== "running") return;
       emitChatEvent(managed, {
         type: "subagent_progress",
         taskId: agentThreadId,
@@ -33649,6 +34227,34 @@ export function createAgentChatService(args: {
     }
 
     if (itemType === "agentMessage") {
+      // Codex labels an assistant message as commentary or final answer on the
+      // item, not on its deltas. Remember it so the deltas carry it. A phase
+      // first seen at completion can still label text that has not left the
+      // 100ms buffer; text already flushed stays unlabeled (no extra event is
+      // emitted, because every client drops empty text events).
+      const phase = codexMessagePhase(item);
+      if (eventKind === "started") {
+        // Consecutive messages in a turn can share a message id, which would
+        // let the buffer run the previous message into this one under one
+        // itemId and one label. Close it first; clients still merge by id.
+        if (managed.bufferedText && managed.bufferedText.itemId !== itemId) {
+          flushBufferedText(managed, "identityBreak");
+        }
+        if (phase) {
+          runtime.agentMessagePhaseByItemId.set(itemId, phase);
+          evictOldestEntries(runtime.agentMessagePhaseByItemId, MAX_SESSION_MAP_ENTRIES);
+        }
+      } else {
+        runtime.agentMessagePhaseByItemId.delete(itemId);
+        if (phase && managed.bufferedText?.itemId === itemId) {
+          managed.bufferedText.phase = phase;
+        }
+        // v2 `memoryCitation.entries` are the memory files this answer cites.
+        const citationSources = codexMemoryCitationSourceRefs(item.memoryCitation);
+        if (citationSources.length) {
+          emitChatEvent(managed, { type: "sources", sources: citationSources, itemId, turnId });
+        }
+      }
       // Prose `agentMessage` text reaches the transcript through the streamed
       // delta handler; the only shape this branch owns is the async question,
       // and emitting it as assistant text instead would turn a control the user
@@ -33782,12 +34388,18 @@ export function createAgentChatService(args: {
         delta: text,
       });
       if (!normalizedText) return false;
+      const phase = codexMessagePhase(item);
       emitChatEvent(managed, {
         type: "text",
         text: normalizedText,
         itemId,
         turnId,
+        ...(phase ? { phase } : {}),
       });
+      const citationSources = codexMemoryCitationSourceRefs(item.memoryCitation);
+      if (citationSources.length) {
+        emitChatEvent(managed, { type: "sources", sources: citationSources, itemId, turnId });
+      }
       rememberReconciledItemSignature(runtime, turnId, signature);
       return true;
     }
@@ -34078,6 +34690,7 @@ export function createAgentChatService(args: {
     runtime.agentMessageScopeByTurn.clear();
     runtime.codexAgentIndexByTurn.delete(turnId);
     runtime.agentMessageTextByTurn.clear();
+    runtime.agentMessagePhaseByItemId.clear();
     runtime.recentNotificationKeys.clear();
     runtime.reconciledItemSignaturesByTurn.delete(turnId);
     const usage = normalizeUsagePayload(turn.usage ?? turn.totalUsage);
@@ -34574,6 +35187,7 @@ export function createAgentChatService(args: {
       resetAssistantMessageStream(managed);
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
+      runtime.agentMessagePhaseByItemId.clear();
       runtime.recentNotificationKeys.clear();
       runtime.reconciledItemSignaturesByTurn.clear();
       setSessionActive(managed);
@@ -34646,6 +35260,7 @@ export function createAgentChatService(args: {
       runtime.agentMessageScopeByTurn.clear();
       runtime.codexAgentIndexByTurn.delete(turnId);
       runtime.agentMessageTextByTurn.clear();
+      runtime.agentMessagePhaseByItemId.clear();
       runtime.recentNotificationKeys.clear();
       runtime.reconciledItemSignaturesByTurn.delete(turnId);
       const usage = normalizeUsagePayload(turn?.usage ?? turn?.totalUsage);
@@ -34736,11 +35351,13 @@ export function createAgentChatService(args: {
       if (!normalizedDelta?.length) {
         return;
       }
+      const phase = itemId ? runtime.agentMessagePhaseByItemId.get(itemId) : undefined;
       emitChatEvent(managed, {
         type: "text",
         text: normalizedDelta,
         ...(emitTurnId ? { turnId: emitTurnId } : {}),
         ...(itemId ? { itemId } : {}),
+        ...(phase ? { phase } : {}),
       });
       return;
     }
@@ -34932,6 +35549,7 @@ export function createAgentChatService(args: {
       runtime.webSearchActionsByItemId.clear();
       runtime.agentMessageScopeByTurn.clear();
       runtime.agentMessageTextByTurn.clear();
+      runtime.agentMessagePhaseByItemId.clear();
       runtime.recentNotificationKeys.clear();
       runtime.reconciledItemSignaturesByTurn.clear();
       settleCodexPendingInputs(managed, runtime);
@@ -35396,6 +36014,7 @@ export function createAgentChatService(args: {
       terminalTurnIds: new Set<string>(managed.codexTerminalTurnIds),
       agentMessageScopeByTurn: new Map<string, "item" | "turn">(),
       agentMessageTextByTurn: new Map<string, string>(),
+      agentMessagePhaseByItemId: new Map<string, AgentChatTextPhase>(),
       recentNotificationKeys: new Set<string>(),
       emittedErrorKeys: new Set<string>(),
       reconciledItemSignaturesByTurn: new Map<string, Set<string>>(),
@@ -36773,6 +37392,7 @@ export function createAgentChatService(args: {
 
     for (const steer of cancelled) {
       if (!claimSteerSettlement(managed, steer.steerId)) continue;
+      settleCancelledSteerRow(managed, steer);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -37195,6 +37815,14 @@ export function createAgentChatService(args: {
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
+    // A Cursor or OpenCode steer the live turn refused already has a row of
+    // its own. Its turn lands on that row as `delivered` instead of leaving it
+    // beside a second bubble. Taken at the shift, so a refusal still awaiting
+    // its answer sees the steer as taken, not lost.
+    const acceptedRowSteerId = takeAcceptedSteerRow(managed, nextSteer.steerId)
+      && (runtime.kind === "cursor" || runtime.kind === "opencode")
+      ? nextSteer.steerId
+      : undefined;
 
     const trimmed = nextSteer.text.trim();
     if (!trimmed.length) {
@@ -37284,6 +37912,7 @@ export function createAgentChatService(args: {
         promptText,
         userText: trimmed,
         displayText,
+        ...(acceptedRowSteerId ? { steerId: acceptedRowSteerId } : {}),
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -37317,6 +37946,7 @@ export function createAgentChatService(args: {
         promptText,
         userText: trimmed,
         displayText,
+        ...(acceptedRowSteerId ? { steerId: acceptedRowSteerId } : {}),
         attachments: nextSteer.attachments,
         contextAttachments: nextSteer.contextAttachments,
         resolvedAttachments: nextSteer.resolvedAttachments,
@@ -37854,7 +38484,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -38053,6 +38683,57 @@ export function createAgentChatService(args: {
    */
   const spawnCompletionDeliveriesInFlight = new Set<string>();
 
+  /**
+   * The two parent-side rows every spawned child gets: the spawn chip notice
+   * and the `chat:<childId>` subagent card. Chat children and tracked CLI
+   * children both land here, so a CLI child renders in the parent's card grid
+   * exactly like a chat child (provider logo from `agentType`, click opens the
+   * child session by id).
+   */
+  const emitSpawnIntoParent = (parent: ManagedChatSession, child: {
+    sessionId: string;
+    laneId: string | null;
+    label: string;
+    spawnKind: "subagent" | "peer";
+    provider: string;
+    model: string | null | undefined;
+    resumed?: boolean;
+  }): void => {
+    if (!child.resumed) {
+      emitChatEvent(parent, {
+        type: "system_notice",
+        noticeKind: "info",
+        status: "subagent_spawned",
+        message: `Subagent spawned: ${child.label}`,
+        detail: {
+          spawnedSession: {
+            sessionId: child.sessionId,
+            laneId: child.laneId,
+            title: child.label,
+          },
+          spawnKind: child.spawnKind,
+          // A spawn always emits an inline `subagent_started` card below, so the
+          // renderer suppresses the quiet deep-link pill.
+          hasInlineCard: true,
+        },
+      });
+    }
+    emitChatEvent(parent, {
+      type: "subagent_started",
+      taskId: `chat:${child.sessionId}`,
+      agentId: child.sessionId,
+      provider: child.provider,
+      ...(child.resumed ? { resumed: true } : {}),
+      agentType: child.provider,
+      parentToolUseId: null,
+      description: child.label,
+      background: false,
+      taskType: "subagent",
+      spawnKind: child.spawnKind,
+      ...optionalSubagentModelFields(child.model),
+    });
+  };
+
   const notifyParentSessionOfSpawn = (child: ManagedChatSession, label: string): void => {
     const parentSessionId = child.session.orchestrationParentSessionId?.trim();
     if (!parentSessionId || parentSessionId === child.session.id) return;
@@ -38060,34 +38741,13 @@ export function createAgentChatService(args: {
     if (spawnKind !== "subagent" && spawnKind !== "peer") return;
     const parent = managedSessions.get(parentSessionId);
     if (!parent || parent.deleted || parent.closed) return;
-    emitChatEvent(parent, {
-      type: "system_notice",
-      noticeKind: "info",
-      status: "subagent_spawned",
-      message: `Subagent spawned: ${label}`,
-      detail: {
-        spawnedSession: {
-          sessionId: child.session.id,
-          laneId: child.session.laneId ?? null,
-          title: label,
-        },
-        spawnKind,
-        // A spawn always emits an inline `subagent_started` card below, so the
-        // renderer suppresses the quiet deep-link pill.
-        hasInlineCard: true,
-      },
-    });
-    emitChatEvent(parent, {
-      type: "subagent_started",
-      taskId: `chat:${child.session.id}`,
-      agentId: child.session.id,
-      agentType: child.session.provider,
-      parentToolUseId: null,
-      description: label,
-      background: false,
-      taskType: "subagent",
+    emitSpawnIntoParent(parent, {
+      sessionId: child.session.id,
+      laneId: child.session.laneId ?? null,
+      label,
       spawnKind,
-      ...optionalSubagentModelFields(child.session.model),
+      provider: child.session.provider,
+      model: child.session.model,
     });
   };
 
@@ -38120,6 +38780,17 @@ export function createAgentChatService(args: {
     ).some((envelope) =>
       envelope.event.type === "system_notice" && envelope.event.status === status
     );
+
+  /**
+   * Only a delivery-failure notice for this child turn counts: each failed
+   * turn needs its own, because a later end report for that turn is allowed
+   * through only when one exists.
+   */
+  const childHasDeliveryFailureNotice = (child: ManagedChatSession, childTurnId: string): boolean =>
+    mergeEnvelopeStreams(
+      readTranscriptEnvelopes(child),
+      eventHistoryBySession.get(child.session.id) ?? [],
+    ).some((envelope) => spawnDeliveryFailedChildTurnId(envelope.event) === childTurnId.trim());
 
   const noteUnreachableParent = (
     child: ManagedChatSession,
@@ -38256,76 +38927,54 @@ export function createAgentChatService(args: {
     return managed.session;
   };
 
-  const reportChildSpawnEnded = (
-    childSessionId: string,
-    status: "completed" | "interrupted" | "failed",
-    turnId?: string,
-  ): void => {
-    const child = managedSessions.get(childSessionId);
-    if (!child || child.deleted) return;
-    const parentSessionId = child.session.orchestrationParentSessionId?.trim();
-    if (!parentSessionId || parentSessionId === childSessionId) return;
-    const spawnKind = child.session.spawnKind;
-    // Old persisted sessions may still carry `none` or no type. They remain
-    // readable but cannot create new silent completion behavior.
-    if (spawnKind !== "subagent" && spawnKind !== "peer") return;
+  type ChildCompletionDelivery = {
+    parentSessionId: string;
+    childSessionId: string;
+    childTitle: string;
+    /** Provider id the parent's card and CTO line name the child by. */
+    childProvider: string;
+    spawnKind: "subagent" | "peer";
+    resultStatus: AgentChatSpawnCompletion["status"];
+    summary: string;
+    /** Carries `childTurnId`, the durable dedupe anchor in the parent transcript. */
+    spawnCompletion: AgentChatSpawnCompletion;
+    ctoPrNumber: number | null;
+    /** CLI children need their existing inline spawn card closed in CTO threads. */
+    emitCtoSubagentResult?: boolean;
+    /** What the woken parent agent reads (subagents only). */
+    wakeText: string;
+    /**
+     * Close the card and leave a quiet note instead of waking the parent. A
+     * restart reconcile uses it: like the stale-run sweep, recovering a
+     * child's end after the fact never starts a parent turn by itself.
+     */
+    routeQuietly?: boolean;
+    onParentGone: (reason: string) => void;
+    onDeliveryFailed: (lastError: unknown) => void;
+  };
 
-    if (!parentChatStillExists(parentSessionId)) {
-      noteUnreachableParent(child, parentSessionId, "parent_missing");
-      return;
-    }
-
-    const resolvedTurnId = turnId?.trim()
-      || [...child.recentConversationEntries].reverse().find((entry) => entry.turnId?.trim())?.turnId?.trim()
-      || `event-${child.eventSequence + 1}`;
-    const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
-    if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
-
-    // Subagent completions always wake the parent. Human messages no longer
-    // steal that channel — only an explicit demote to peer does. Peers skip
-    // the transcript read because they never wake.
-    const parentShouldWake = spawnKind === "subagent";
-    const humanMessageCount = parentShouldWake
-      ? countHumanChildMessagesForTurn(
-          mergeEnvelopeStreams(
-            readTranscriptEnvelopes(child),
-            eventHistoryBySession.get(childSessionId) ?? [],
-          ),
-          resolvedTurnId,
-        )
-      : 0;
-    const humanAnnotation = formatHumanChildMessageAnnotation(humanMessageCount);
-    const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
-    const assistantSummary = [...child.recentConversationEntries]
-      .reverse()
-      .find((entry) => entry.role === "assistant" && entry.turnId === resolvedTurnId)
-      ?.text
-      .replace(/\s+/g, " ")
-      .trim();
-    let baseSummary: string;
-    if (resultStatus === "completed" && assistantSummary) {
-      baseSummary = assistantSummary.length > 1_200
-        ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
-        : assistantSummary;
-    } else if (resultStatus === "completed") {
-      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Chat turn finished.";
-    } else if (resultStatus === "stopped") {
-      baseSummary = "Stopped before finishing.";
-    } else {
-      baseSummary = "Turn failed.";
-    }
-    const summary = humanAnnotation ? `${baseSummary}\n${humanAnnotation}` : baseSummary;
-    const childTitle = sessionService.get(childSessionId)?.title?.trim()
-      || defaultChatSessionTitle(child.session.provider);
-    const spawnCompletion: AgentChatSpawnCompletion = {
+  /**
+   * Route one child completion into its parent: the `subagent_result` that
+   * closes the parent's card, then a wake (subagent) or a quiet notice (peer),
+   * or the one-line CTO report. Shared by chat children (per finished turn) and
+   * tracked CLI children (per PTY exit), so both close the same card the same
+   * way. Deduped in flight by key and durably by `spawnCompletion.childTurnId`
+   * in the parent transcript.
+   */
+  const deliverChildCompletionToParent = (delivery: ChildCompletionDelivery): void => {
+    const {
+      parentSessionId,
       childSessionId,
       childTitle,
       spawnKind,
-      childTurnId: resolvedTurnId,
-      status: resultStatus,
+      resultStatus,
       summary,
-      ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
-    };
+      spawnCompletion,
+    } = delivery;
+    const childTurnId = spawnCompletion.childTurnId ?? "";
+    const deliveryKey = `${parentSessionId}:${childSessionId}:${childTurnId}`;
+    if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
+    const parentShouldWake = spawnKind === "subagent" && delivery.routeQuietly !== true;
 
     const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
       mergeEnvelopeStreams(
@@ -38339,7 +38988,7 @@ export function createAgentChatService(args: {
             ? (event.detail as { spawnCompletion?: AgentChatSpawnCompletion } | undefined)?.spawnCompletion
             : undefined;
         return completion?.childSessionId === childSessionId
-          && completion.childTurnId === resolvedTurnId;
+          && completion.childTurnId === childTurnId;
       });
 
     spawnCompletionDeliveriesInFlight.add(deliveryKey);
@@ -38360,17 +39009,18 @@ export function createAgentChatService(args: {
           const ctoReportLine = parentIsCto
             ? formatCtoChildReportLine({
                 childTitle,
-                provider: child.session.provider,
+                provider: delivery.childProvider as AgentChatProvider,
                 status: resultStatus,
-                prNumber: readChildPullRequestNumber(child.session.completion, summary),
+                prNumber: delivery.ctoPrNumber,
               })
             : null;
-          if (!inlineEventEmitted && !parentIsCto) {
+          if (!inlineEventEmitted && (!parentIsCto || delivery.emitCtoSubagentResult === true)) {
             emitChatEvent(parent, {
               type: "subagent_result",
               taskId: `chat:${childSessionId}`,
               agentId: childSessionId,
-              agentType: child.session.provider,
+              provider: delivery.childProvider,
+              agentType: delivery.childProvider,
               parentToolUseId: null,
               status: resultStatus,
               summary,
@@ -38410,7 +39060,7 @@ export function createAgentChatService(args: {
             await messageSession({
               sessionId: parentSessionId,
               kind: "wake",
-              text: `Your subagent "${childTitle}" finished a turn — ${summary}`,
+              text: delivery.wakeText,
               metadata: { spawnCompletion },
             }, { trustedSpawnCompletion: true });
           } else {
@@ -38430,7 +39080,7 @@ export function createAgentChatService(args: {
           logger.info("agent_chat.spawn_completion_routed", {
             childSessionId,
             parentSessionId,
-            childTurnId: resolvedTurnId,
+            childTurnId,
             spawnKind,
             status: resultStatus,
             routedTo: parentShouldWake ? "wake" : "quiet_notice",
@@ -38439,12 +39089,12 @@ export function createAgentChatService(args: {
         } catch (error) {
           lastError = error;
           if (isMissingParentError(error, parentSessionId) || !parentChatStillExists(parentSessionId)) {
-            noteUnreachableParent(child, parentSessionId, "parent_missing_during_delivery");
+            delivery.onParentGone("parent_missing_during_delivery");
             return;
           }
           logger.warn("agent_chat.spawn_completion_delivery_failed", {
             childSessionId,
-            childTurnId: resolvedTurnId,
+            childTurnId,
             parentSessionId,
             spawnKind,
             attempt,
@@ -38455,7 +39105,111 @@ export function createAgentChatService(args: {
           }
         }
       }
-      if (!child.deleted && !childHasNoticeStatus(child, "spawn_completion_delivery_failed")) {
+      delivery.onDeliveryFailed(lastError);
+    })().finally(() => {
+      spawnCompletionDeliveriesInFlight.delete(deliveryKey);
+    });
+  };
+
+  const reportChildSpawnEnded = (
+    childSessionId: string,
+    status: "completed" | "interrupted" | "failed",
+    source: "done" | "delete",
+    turnId?: string,
+  ): void => {
+    const child = managedSessions.get(childSessionId);
+    if (!child || child.deleted) return;
+    const parentSessionId = child.session.orchestrationParentSessionId?.trim();
+    if (!parentSessionId || parentSessionId === childSessionId) return;
+    const spawnKind = child.session.spawnKind;
+    // Old persisted sessions may still carry `none` or no type. They remain
+    // readable but cannot create new silent completion behavior.
+    if (spawnKind !== "subagent" && spawnKind !== "peer") return;
+
+    if (!parentChatStillExists(parentSessionId)) {
+      noteUnreachableParent(child, parentSessionId, "parent_missing");
+      return;
+    }
+
+    // Read once, and only when needed: the turn resolver and the human-message
+    // count both walk the child's merged history.
+    let childHistory: AgentChatEventEnvelope[] | null = null;
+    const readChildHistory = (): AgentChatEventEnvelope[] => {
+      childHistory ??= mergeEnvelopeStreams(
+        readTranscriptEnvelopes(child),
+        eventHistoryBySession.get(childSessionId) ?? [],
+      );
+      return childHistory;
+    };
+    const resolvedTurnId = turnId?.trim() || resolveSpawnEndedTurnId({
+      history: readChildHistory(),
+      // A live turn that has not recorded its id yet still reports, or the
+      // parent would wait on a child that is gone.
+      childMidTurn: child.session.status === "active" || runtimeMidTurn(child),
+      liveTurnId: activeTurnIdForManaged(child),
+      recentEntryTurnId: [...child.recentConversationEntries].reverse().find((entry) => entry.turnId?.trim())?.turnId,
+      // On the done path this is the sequence the done event is about to take.
+      fallbackId: `event-${child.eventSequence + 1}`,
+      source,
+    });
+    if (!resolvedTurnId) return;
+    const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
+    if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
+
+    // Subagent completions always wake the parent. Human messages no longer
+    // steal that channel — only an explicit demote to peer does. Peers skip
+    // the transcript read because they never wake.
+    const parentShouldWake = spawnKind === "subagent";
+    const humanMessageCount = parentShouldWake
+      ? countHumanChildMessagesForTurn(readChildHistory(), resolvedTurnId)
+      : 0;
+    const humanAnnotation = formatHumanChildMessageAnnotation(humanMessageCount);
+    const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
+    const assistantSummary = [...child.recentConversationEntries]
+      .reverse()
+      .find((entry) => entry.role === "assistant" && entry.turnId === resolvedTurnId)
+      ?.text
+      .replace(/\s+/g, " ")
+      .trim();
+    let baseSummary: string;
+    if (resultStatus === "completed" && assistantSummary) {
+      baseSummary = assistantSummary.length > 1_200
+        ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
+        : assistantSummary;
+    } else if (resultStatus === "completed") {
+      baseSummary = spawnKind === "subagent" ? "Subagent turn finished." : "Chat turn finished.";
+    } else if (resultStatus === "stopped") {
+      baseSummary = "Stopped before finishing.";
+    } else {
+      baseSummary = "Turn failed.";
+    }
+    const summary = humanAnnotation ? `${baseSummary}\n${humanAnnotation}` : baseSummary;
+    const childTitle = sessionService.get(childSessionId)?.title?.trim()
+      || defaultChatSessionTitle(child.session.provider);
+    const spawnCompletion: AgentChatSpawnCompletion = {
+      childSessionId,
+      childTitle,
+      spawnKind,
+      childTurnId: resolvedTurnId,
+      status: resultStatus,
+      summary,
+      ...(humanMessageCount > 0 ? { humanMessageCount } : {}),
+    };
+
+    deliverChildCompletionToParent({
+      parentSessionId,
+      childSessionId,
+      childTitle,
+      childProvider: child.session.provider,
+      spawnKind,
+      resultStatus,
+      summary,
+      spawnCompletion,
+      ctoPrNumber: readChildPullRequestNumber(child.session.completion, summary),
+      wakeText: `Your subagent "${childTitle}" finished a turn — ${summary}`,
+      onParentGone: (reason) => noteUnreachableParent(child, parentSessionId, reason),
+      onDeliveryFailed: (lastError) => {
+        if (child.deleted || childHasDeliveryFailureNotice(child, resolvedTurnId)) return;
         emitChatEvent(child, {
           type: "system_notice",
           noticeKind: "warning",
@@ -38469,10 +39223,207 @@ export function createAgentChatService(args: {
             },
           },
         });
-      }
-    })().finally(() => {
-      spawnCompletionDeliveriesInFlight.delete(deliveryKey);
+      },
     });
+  };
+
+  // --- Tracked CLI children -------------------------------------------------
+  //
+  // `ade new chat --mode cli --parent … --type …` starts a tracked PTY session,
+  // not a chat, so nothing in the chat lifecycle reaches the parent on its own.
+  // These close that gap: the spawn lands the same chip + card a chat child
+  // gets, the PTY exit (or, after a brain restart, the stale-run sweep) closes
+  // the card with the CLI's own report, and status/read answer for the child.
+
+  const readCliTerminalTail = async (terminalId: string): Promise<string | null> => {
+    const preview = ptyService?.previewTerminal;
+    if (!preview) return null;
+    try {
+      const result = await preview.call(ptyService, { terminalId });
+      const screen = result.snapshot?.visibleRows?.map((row) => row.text).join("\n") ?? "";
+      return lastMeaningfulTerminalLines(screen) ?? lastMeaningfulTerminalLines(result.transcript);
+    } catch {
+      return null;
+    }
+  };
+
+  const readCliProviderMessage = async (row: TrackedCliRow, provider: string): Promise<string | null> => {
+    let cwd: string | null = null;
+    try {
+      cwd = laneService.getLaneBaseAndBranch(row.laneId).worktreePath ?? null;
+    } catch {
+      cwd = null;
+    }
+    return await readCliProviderFinalMessage({ provider, targetId: row.resumeMetadata?.targetId ?? null, cwd });
+  };
+
+  const {
+    readTrackedCliRow,
+    getCliTurnStatus,
+    readCliTranscript,
+    listCliChildSessions,
+  } = createCliChildSessionAccess({
+    getSession: (sessionId) => sessionService.get(sessionId),
+    listSessions: (query) => sessionService.list(query),
+    enrichSessions: (rows) => ptyService?.enrichSessions(rows) ?? rows,
+    isChatToolType,
+    readTerminalTail: readCliTerminalTail,
+    readProviderMessage: readCliProviderMessage,
+  });
+
+  const cliChildLabel = (row: TrackedCliRow, provider: string): string =>
+    row.title?.trim() || row.goal?.trim() || `${provider} CLI`;
+
+  const resolveLiveOrPersistedParent = (parentSessionId: string): ManagedChatSession | null => {
+    const live = managedSessions.get(parentSessionId);
+    if (live) return live.deleted || live.closed ? null : live;
+    if (!parentChatStillExists(parentSessionId)) return null;
+    try {
+      const managed = ensureManagedSession(parentSessionId);
+      return managed.deleted ? null : managed;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * Land the spawn chip and the running subagent card in the parent of a CLI
+   * child that was just started. Returns whether anything was emitted (false
+   * for an unparented CLI, a plain shell, or a parent that is gone).
+   */
+  const notifyParentOfCliChildSpawn = (
+    terminalSessionId: string,
+    options?: { resumed?: boolean },
+  ): boolean => {
+    const tracked = readTrackedCliRow(terminalSessionId);
+    const lineage = tracked?.lineage;
+    if (!tracked || !lineage) return false;
+    const parent = resolveLiveOrPersistedParent(lineage.parentSessionId);
+    if (!parent) {
+      logger.info("agent_chat.cli_child_spawn_parent_gone", {
+        childSessionId: tracked.row.id,
+        parentSessionId: lineage.parentSessionId,
+      });
+      return false;
+    }
+    emitSpawnIntoParent(parent, {
+      sessionId: tracked.row.id,
+      laneId: tracked.row.laneId ?? null,
+      label: cliChildLabel(tracked.row, lineage.provider),
+      spawnKind: lineage.spawnKind,
+      provider: lineage.provider,
+      model: lineage.model,
+      ...(options?.resumed ? { resumed: true } : {}),
+    });
+    logger.info("agent_chat.cli_child_spawn_routed", {
+      childSessionId: tracked.row.id,
+      parentSessionId: lineage.parentSessionId,
+      spawnKind: lineage.spawnKind,
+      provider: lineage.provider,
+    });
+    return true;
+  };
+
+  /**
+   * Close the parent's card for a CLI child whose PTY has ended, with the CLI's
+   * own closing message (or its last terminal lines) as the report. A no-op
+   * while the child still runs, for a CLI without a parent, and for a run the
+   * parent already has — the run key is the persisted end time, so the live
+   * exit and a post-restart reconcile of the same exit resolve to one delivery.
+   */
+  const reportCliChildEnded = async (terminalSessionId: string, trigger: "exit" | "reconcile"): Promise<void> => {
+    if (cliChildReportsClosed) return;
+    const tracked = readTrackedCliRow(terminalSessionId);
+    const lineage = tracked?.lineage;
+    if (!tracked || !lineage) return;
+    const { row } = tracked;
+    const endStatus = cliChildResultStatus(row);
+    if (!endStatus) return;
+    if (!parentChatStillExists(lineage.parentSessionId)) {
+      logger.info("agent_chat.cli_child_completion_parent_gone", {
+        childSessionId: row.id,
+        parentSessionId: lineage.parentSessionId,
+        trigger,
+      });
+      return;
+    }
+    await ptyService?.waitForResumeTargetBackfill?.(row.id);
+    const refreshed = readTrackedCliRow(row.id);
+    const latestRow = refreshed?.lineage ? refreshed.row : row;
+    const providerMessage = await readCliProviderMessage(latestRow, lineage.provider);
+    const terminalTail = await readCliTerminalTail(row.id);
+    // The host may have started tearing down while the tail was read (a
+    // project close disposes its PTYs first); that is not the child's end.
+    if (cliChildReportsClosed) return;
+    // A terminal closed by hand (or cut off by a restart) after the CLI already
+    // wrote its answer is a finished delegate, not a casualty — the same rule
+    // the stale-run sweep applies to an ended chat that left a report. Without
+    // a closing message it stays stopped. A non-zero exit is always failed.
+    const resultStatus = endStatus === "stopped" && providerMessage ? "completed" : endStatus;
+    const summary = composeCliChildReport({
+      status: resultStatus,
+      exitCode: row.exitCode ?? null,
+      providerMessage,
+      terminalTail,
+    });
+    const childTitle = cliChildLabel(row, lineage.provider);
+    const spawnCompletion: AgentChatSpawnCompletion = {
+      childSessionId: row.id,
+      childTitle,
+      spawnKind: lineage.spawnKind,
+      childTurnId: cliChildRunKey(row),
+      status: resultStatus,
+      summary,
+    };
+    const outcome = resultStatus === "completed" ? "finished" : resultStatus === "failed" ? "failed" : "was stopped";
+    deliverChildCompletionToParent({
+      parentSessionId: lineage.parentSessionId,
+      childSessionId: row.id,
+      childTitle,
+      childProvider: lineage.provider,
+      spawnKind: lineage.spawnKind,
+      resultStatus,
+      summary,
+      spawnCompletion,
+      ctoPrNumber: readChildPullRequestNumber(null, summary),
+      emitCtoSubagentResult: true,
+      routeQuietly: trigger === "reconcile",
+      wakeText: `Your ${lineage.spawnKind} CLI session "${childTitle}" ${outcome} — ${summary}\n(Full terminal output: \`ade terminal read ${row.id}\`.)`,
+      onParentGone: (reason) => {
+        logger.info("agent_chat.cli_child_completion_parent_gone", {
+          childSessionId: row.id,
+          parentSessionId: lineage.parentSessionId,
+          reason,
+        });
+      },
+      onDeliveryFailed: (lastError) => {
+        logger.warn("agent_chat.cli_child_completion_delivery_failed", {
+          childSessionId: row.id,
+          parentSessionId: lineage.parentSessionId,
+          error: lastError instanceof Error ? lastError.message : String(lastError),
+        });
+      },
+    });
+  };
+
+  /**
+   * Stale-run sweep hook: a `chat:<id>` card whose id is a tracked CLI child is
+   * closed by the CLI path, never by the sweep's chat verdict (which would read
+   * a terminal row as "the subagent chat is gone" and stamp a false stop). An
+   * ended child is reported here; a running one is left to its PTY exit.
+   */
+  const deferCliChildTerminal = (childSessionId: string): boolean => {
+    const tracked = readTrackedCliRow(childSessionId);
+    if (!tracked?.lineage) return false;
+    if (cliChildResultStatus(tracked.row)) {
+      void reportCliChildEnded(tracked.row.id, "reconcile").catch((error) => {
+        logger.warn("agent_chat.cli_child_reconcile_failed", {
+          childSessionId: tracked.row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }
+    return true;
   };
 
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
@@ -39052,7 +40003,7 @@ export function createAgentChatService(args: {
       preferredExecutionLaneId: null,
       selectedExecutionLaneId: null,
       lastLaneDirectiveKey: null,
-      lastComputerUseDirectiveKey: null,
+      deliveredDirectiveKeys: {},
       runtimeInvalidated: false,
       acpReasoningEffortInvalidated: false,
       claudeRateLimitWarningEmitted: false,
@@ -41416,21 +42367,121 @@ export function createAgentChatService(args: {
     return { transplantClaudeSession: staticTransplantClaudeSession };
   };
 
+  const importProviderLabel = (provider: AgentChatImportProvider): string =>
+    EXTERNAL_SESSION_PROVIDER_LABELS[provider] ?? provider;
+
+  /**
+   * Providers whose own session an ADE chat continues in place, by seeding the
+   * provider pointer the chat already restores from after a restart. Each one
+   * is here because its runtime opens that pointer from the store the CLI
+   * writes: Droid's SDK `resumeSession` (`droid.load_session`, same binary and
+   * `~/.factory/sessions`), OpenCode's `session.get` on the user-env server
+   * (same data dir as the CLI), Pi's `SessionManager.list(cwd)` over the one
+   * store chat and CLI share. Copilot's ACP server loads a CLI-created
+   * session over `session/load` from the same `~/.copilot/session-state`
+   * (verified live on 1.0.88, 2026-09-24); ADE already holds the transcript,
+   * so the load replay is suppressed. Qwen, Kimi and Grok are left out until
+   * the same is shown for them.
+   */
+  const NATIVE_CHAT_CONTINUE_PROVIDERS: ReadonlySet<AgentChatImportProvider> = new Set<AgentChatImportProvider>([
+    "droid",
+    "opencode",
+    "pi",
+    "copilot",
+  ]);
+
+  const importedChatTitle = (
+    envelopes: AgentChatEventEnvelope[],
+    provider: AgentChatImportProvider,
+  ): string => {
+    const derived = deriveImportedChatTitle(envelopes, provider);
+    // The shared converter only knows the Claude and Codex fallback names.
+    return provider !== "codex" && derived === "Imported Codex chat"
+      ? `Imported ${importProviderLabel(provider)} chat`
+      : derived;
+  };
+
   const applyImportedChatMetadata = (
     managed: ManagedChatSession,
     args: AgentChatImportExternalSessionArgs,
     envelopes: AgentChatEventEnvelope[],
     importedAt: number,
+    mode: NonNullable<AgentChatImportedFrom["mode"]>,
   ): void => {
     managed.session.importedFrom = {
       provider: args.provider,
       sessionId: args.externalSessionId,
       importedAt,
+      mode,
     };
     const explicitTitle = typeof args.title === "string" ? args.title.trim() : "";
     if (!explicitTitle) {
-      setManagedSessionTitle(managed, deriveImportedChatTitle(envelopes, args.provider), { syncToRuntime: false });
+      setManagedSessionTitle(managed, importedChatTitle(envelopes, args.provider), { syncToRuntime: false });
     }
+  };
+
+  /**
+   * A model of `provider`'s own family named by `value` (a catalog id, an
+   * alias, or the provider's native model string), or null.
+   */
+  /**
+   * The source session's thinking level, when the chat keeps the source's own
+   * model and that model accepts the level. A continue of a low-effort session
+   * otherwise resumed on the default (medium).
+   */
+  const importedReasoningEffort = (
+    args: AgentChatImportExternalSessionArgs,
+    targetDescriptor: ReturnType<typeof getModelById> | null | undefined,
+  ): string | null => {
+    const effort = typeof args.sourceReasoningEffort === "string" ? args.sourceReasoningEffort.trim() : "";
+    if (!effort || !targetDescriptor) return null;
+    const source = typeof args.sourceModel === "string" ? args.sourceModel.trim() : "";
+    const sameModel = source.length > 0 && (
+      targetDescriptor.id === source
+      || targetDescriptor.providerModelId === source
+      || resolveModelAlias(source)?.id === targetDescriptor.id
+    );
+    if (!sameModel) return null;
+    const tiers = targetDescriptor.reasoningTiers ?? [];
+    return tiers.length === 0 || tiers.includes(effort) ? effort : null;
+  };
+
+  const resolveImportFamilyModel = (
+    provider: AgentChatImportProvider,
+    value: string | null | undefined,
+  ): NonNullable<ReturnType<typeof getModelById>> | null => {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) return null;
+    const storedId = resolveModelIdFromStoredValue(trimmed, provider);
+    const descriptor = getModelById(trimmed)
+      ?? resolveModelAlias(trimmed)
+      ?? (storedId ? getModelById(storedId) : undefined);
+    if (descriptor && !descriptor.deprecated && resolveProviderGroupForModel(descriptor) === provider) {
+      return descriptor;
+    }
+    // A name another provider also registers (Pi's `openai/gpt-5.2`).
+    return findProviderModelByRecordedName(provider, trimmed) ?? null;
+  };
+
+  /**
+   * The external session's conversation as chat events, from the per-provider
+   * converter registry. Written under a placeholder chat id; the caller
+   * re-keys the envelopes onto the chat it creates.
+   */
+  const loadExternalImportEvents = async (
+    args: AgentChatImportExternalSessionArgs,
+    importedAt: number,
+  ): Promise<AgentChatEventEnvelope[]> => {
+    const page = await loadExternalSessionEvents({
+      provider: args.provider,
+      sessionId: args.externalSessionId,
+      record: null,
+      chatSessionId: "import-preview",
+      laneId: args.laneId,
+      purpose: "import",
+      importedAt,
+    });
+    return page.events;
   };
 
   const persistedImportedChatResult = async (
@@ -41520,6 +42571,7 @@ export function createAgentChatService(args: {
           : defaultClaudeModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -41551,7 +42603,14 @@ export function createAgentChatService(args: {
         transcriptBytesTruncated: targetTranscriptTruncated,
         transcriptByteLimit: MAX_IMPORT_TRANSCRIPT_BYTES,
       });
-      applyImportedChatMetadata(managed, args, events, importedAt);
+      // A transplant writes a new Claude session and leaves the source as-is.
+      applyImportedChatMetadata(
+        managed,
+        args,
+        events,
+        importedAt,
+        targetClaudeSessionId === externalSessionId ? "continue" : "fork",
+      );
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
@@ -41648,6 +42707,7 @@ export function createAgentChatService(args: {
           : defaultCodexModel(),
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+        ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -41704,7 +42764,7 @@ export function createAgentChatService(args: {
         importedAt,
         laneId: managed.session.laneId,
       });
-      applyImportedChatMetadata(managed, args, events, importedAt);
+      applyImportedChatMetadata(managed, args, events, importedAt, args.fork ? "fork" : "continue");
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
@@ -41807,10 +42867,7 @@ export function createAgentChatService(args: {
         }
       }
     } else {
-      throw externalChatImportError(
-        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
-        `Cross-provider replay import from ${args.provider} is not available yet; import as ${args.provider} first, then fork to the target model.`,
-      );
+      envelopes = await loadExternalImportEvents(args, options.importedAt);
     }
 
     // A replay import with nothing to replay would create an empty chat and
@@ -41847,7 +42904,7 @@ export function createAgentChatService(args: {
           sourceSessionId: externalSessionId,
         },
       }));
-      applyImportedChatMetadata(managed, args, seeded, options.importedAt);
+      applyImportedChatMetadata(managed, args, seeded, options.importedAt, "fork");
       persistChatState(managed);
       if (seeded.length) await appendImportedChatEvents(managed, seeded);
       const replayFork = stageTranscriptReplayOnSession(
@@ -41871,13 +42928,107 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Continue a Droid, OpenCode or Pi session as an ADE chat: a chat in the
+   * session's own lane whose provider pointer is the external session id, so
+   * the first turn opens that session the same way a restart reopens one of
+   * ADE's own chats. The history is written for display only — the provider
+   * already holds it, so nothing is replayed into the prompt.
+   */
+  const importNativeContinueExternalChatSession = async (
+    args: AgentChatImportExternalSessionArgs,
+    laneWorktreePath: string,
+    importedAt: number,
+    requestedDescriptor: ReturnType<typeof getModelById> | null,
+  ): Promise<AgentChatImportExternalSessionResult> => {
+    const provider = args.provider;
+    const label = importProviderLabel(provider);
+    const externalSessionId = args.externalSessionId;
+    if (!NATIVE_CHAT_CONTINUE_PROVIDERS.has(provider)) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `${label} sessions can't be continued as an ADE chat. Open a copy instead.`,
+      );
+    }
+    if (hasPathSeparator(externalSessionId)) {
+      throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `${label} session id must be an id, not a path.`);
+    }
+    // Every one of these runtimes opens the session in the lane root; a
+    // session from another folder would run against the wrong files (Pi
+    // refuses it outright).
+    if (!args.cwd || !isSameCwd(args.cwd, laneWorktreePath)) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `${label} sessions can only be continued in the lane folder they ran in. Open a copy instead.`,
+      );
+    }
+    if (requestedDescriptor && resolveProviderGroupForModel(requestedDescriptor) !== provider) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `A ${label} session can only be continued on a ${label} model. Open a copy to switch models.`,
+      );
+    }
+    const descriptor = requestedDescriptor
+      ?? resolveImportFamilyModel(provider, args.sourceModel)
+      ?? getDefaultModelDescriptor(provider)
+      ?? null;
+    if (!descriptor) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `No ${label} model is available to continue this session.`,
+      );
+    }
+    // Read before the chat exists, so an unreadable session creates nothing.
+    const loaded = await loadExternalImportEvents(args, importedAt);
+
+    let createdSessionId: string | null = null;
+    try {
+      const created = await createSession({
+        laneId: args.laneId,
+        provider,
+        model: descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id,
+        modelId: descriptor.id,
+        ...(provider === "pi" ? { piSessionId: externalSessionId } : {}),
+        ...(importedReasoningEffort(args, descriptor) ? { reasoningEffort: importedReasoningEffort(args, descriptor) } : {}),
+        ...(args.title?.trim() ? { title: args.title.trim() } : {}),
+      });
+      createdSessionId = created.id;
+      const managed = ensureManagedSession(created.id);
+      if (provider === "droid") {
+        seedForkedProviderPointer(managed, { droidSdkSessionId: externalSessionId });
+      } else if (provider === "opencode") {
+        seedForkedProviderPointer(managed, { providerSessionId: externalSessionId });
+      } else if (provider === "pi") {
+        seedForkedProviderPointer(managed, { piSessionId: externalSessionId });
+      } else if (provider === "copilot") {
+        seedForkedProviderPointer(managed, { acpSessionId: externalSessionId });
+      }
+      const events = loaded.map((envelope) => ({ ...envelope, sessionId: created.id }));
+      applyImportedChatMetadata(managed, args, events, importedAt, "continue");
+      persistChatState(managed);
+      if (events.length) await appendImportedChatEvents(managed, events);
+      persistChatState(managed);
+      return await persistedImportedChatResult(managed, provider, externalSessionId);
+    } catch (error) {
+      if (createdSessionId) {
+        await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
+          logger.warn("agent_chat.external_import_cleanup_failed", {
+            sessionId: createdSessionId,
+            error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+          });
+        });
+      }
+      throw error;
+    }
+  };
+
   const importExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const provider = args.provider;
     const externalSessionId = typeof args.externalSessionId === "string" ? args.externalSessionId.trim() : "";
     const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
-    if (provider !== "claude" && provider !== "codex") {
+    if (!isExternalSessionProvider(provider)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unsupported chat import provider '${String(provider)}'.`);
     }
     if (!externalSessionId) {
@@ -41893,13 +43044,15 @@ export function createAgentChatService(args: {
     if (requestedModelId && (!targetDescriptor || targetDescriptor.deprecated)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", `Unknown model '${requestedModelId}'.`);
     }
-    const targetProvider = targetDescriptor ? resolveProviderGroupForModel(targetDescriptor) : provider;
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
       laneId,
       purpose: "import this chat",
     });
+    const sourceModel = typeof args.sourceModel === "string" && args.sourceModel.trim().length
+      ? args.sourceModel.trim()
+      : null;
     const normalizedArgs: AgentChatImportExternalSessionArgs = {
       ...args,
       provider,
@@ -41909,20 +43062,57 @@ export function createAgentChatService(args: {
       fork: args.fork === true,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       ...(requestedModelId ? { model: requestedModelId } : {}),
+      sourceModel,
+      sourceReasoningEffort: typeof args.sourceReasoningEffort === "string" && args.sourceReasoningEffort.trim()
+        ? args.sourceReasoningEffort.trim()
+        : null,
     };
     const importedAt = Date.now();
-    if (targetProvider !== provider) {
-      return importExternalChatSessionViaReplay(normalizedArgs, {
-        targetProvider,
-        targetDescriptor: targetDescriptor!,
-        laneWorktreePath: launchContext.laneWorktreePath,
+    if (provider === "claude" || provider === "codex") {
+      // No model chosen (a continue): keep the one the session ran on, so a
+      // Haiku session does not silently resume on the default model.
+      const effectiveDescriptor = targetDescriptor ?? resolveImportFamilyModel(provider, sourceModel) ?? null;
+      const targetProvider = effectiveDescriptor ? resolveProviderGroupForModel(effectiveDescriptor) : provider;
+      if (targetProvider !== provider) {
+        return importExternalChatSessionViaReplay(normalizedArgs, {
+          targetProvider,
+          targetDescriptor: effectiveDescriptor!,
+          laneWorktreePath: launchContext.laneWorktreePath,
+          importedAt,
+        });
+      }
+      if (provider === "claude") {
+        return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, effectiveDescriptor ?? undefined);
+      }
+      return importCodexExternalChatSession(normalizedArgs, importedAt, effectiveDescriptor ?? undefined);
+    }
+    if (!normalizedArgs.fork) {
+      return importNativeContinueExternalChatSession(
+        normalizedArgs,
+        launchContext.laneWorktreePath,
         importedAt,
-      });
+        targetDescriptor,
+      );
     }
-    if (provider === "claude") {
-      return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, targetDescriptor ?? undefined);
+    // Every other provider copies by replay, into the family's own model too:
+    // none of them can fork a session into an ADE chat natively.
+    const replayDescriptor = targetDescriptor
+      ?? resolveImportFamilyModel(provider, sourceModel)
+      ?? getDefaultModelDescriptor(provider)
+      ?? getAppDefaultModelDescriptor()
+      ?? null;
+    if (!replayDescriptor) {
+      throw externalChatImportError(
+        "EXTERNAL_CHAT_SESSION_INVALID_ARGS",
+        `No model is available to open this ${importProviderLabel(provider)} session as an ADE chat.`,
+      );
     }
-    return importCodexExternalChatSession(normalizedArgs, importedAt, targetDescriptor ?? undefined);
+    return importExternalChatSessionViaReplay(normalizedArgs, {
+      targetProvider: resolveProviderGroupForModel(replayDescriptor),
+      targetDescriptor: replayDescriptor,
+      laneWorktreePath: launchContext.laneWorktreePath,
+      importedAt,
+    });
   };
 
   const prepareSendMessage = ({
@@ -42107,12 +43297,35 @@ export function createAgentChatService(args: {
     // it is available on the next turn that re-announces.
     const computerUseDirective = personalSession
       ? null
-      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null);
+      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
+        macDesktopAvailable: macDesktopTurnRecorder?.supportsLaneDisplaySync?.() === true,
+      });
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
       : null;
     const shouldInjectComputerUseDirective = computerUseDirectiveKey != null
-      && managed.lastComputerUseDirectiveKey !== computerUseDirectiveKey;
+      && managed.deliveredDirectiveKeys.computerUse !== computerUseDirectiveKey;
+    // The lane's Apple device, named at turn time so the agent drives it with
+    // `ade apple` instead of `simctl` / `open -a Simulator` without first
+    // having to find the `ade-apple` skill. Sent on the first turn after a
+    // device is bound and again only when the bound udid changes; a lookup
+    // failure means no hint, never a failed send. A Cursor cloud turn runs on
+    // Cursor's VM, which cannot reach this Mac's simulator, so it gets none.
+    const cursorCloudTurn = managed.session.provider === "cursor"
+      && effectiveCursorRuntime(managed, runtime) === "cloud";
+    const appleDevice = personalSession || cursorCloudTurn
+      ? null
+      : resolveLaneAppleDeviceDirective({
+          laneId: executionContext.laneId,
+          lookup: laneAppleDeviceLookup,
+          onLookupError: (error) => logger.warn("agent_chat.lane_apple_device_lookup_failed", {
+            sessionId,
+            laneId: executionContext.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        });
+    const shouldInjectAppleDeviceDirective = appleDevice != null
+      && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
     const claudeRuntimeSlashCommandNames = managed.runtime?.kind === "claude"
       ? new Set(managed.runtime.slashCommands.map((command) => slashCommandKey(command.name)))
       : new Set<string>();
@@ -42168,6 +43381,16 @@ export function createAgentChatService(args: {
               ))
             : null,
           shouldInjectComputerUseDirective ? computerUseDirective : null,
+          // Exactly one line, and only for a lane that has a screen. A lane
+          // with the tool off contributes `null` here, which
+          // `composeLaunchDirectives` drops — so its prompt is byte-identical
+          // to the pre-Mac-Desktop one.
+          personalSession
+            ? null
+            : buildMacDesktopDirective(
+                macDesktopTurnRecorder?.hasDisplaySync(executionContext.laneId ?? null) === true,
+              ),
+          shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -42206,13 +43429,16 @@ export function createAgentChatService(args: {
       interactionMode: managed.session.provider === "claude" ? managed.session.interactionMode ?? "default" : null,
       laneDirectiveKey: providerSlashCommand && !personalSession ? null : shouldInjectLaneDirective ? laneDirectiveKey : null,
       // A provider slash-command turn replaces the user text with the command's
-      // own markdown and never runs `composeLaunchDirectives`, so the directive
-      // above is not in `promptText`. Null the key for the same reason the lane
-      // key is nulled, or a slash-command turn would mark it delivered without
-      // delivering it and suppress it for the rest of the session.
-      computerUseDirectiveKey: providerSlashCommand && !personalSession
-        ? null
-        : shouldInjectComputerUseDirective ? computerUseDirectiveKey : null,
+      // own markdown and never runs `composeLaunchDirectives`, so no epoch
+      // directive is in `promptText`. It carries no keys for the same reason
+      // the lane key is nulled, or it would mark them delivered without
+      // delivering them and suppress them for the rest of the session.
+      epochDirectiveKeys: providerSlashCommand && !personalSession
+        ? {}
+        : {
+            ...(shouldInjectComputerUseDirective ? { computerUse: computerUseDirectiveKey } : {}),
+            ...(shouldInjectAppleDeviceDirective ? { appleDevice: appleDevice.key } : {}),
+          },
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
       forceClaudeUserMessage: managed.session.provider === "claude" && (providerSlashCommand == null || personalSession) && slashCommand != null,
       ...(runtime ? { runtime } : {}),
@@ -42260,6 +43486,7 @@ export function createAgentChatService(args: {
       managed.runtime.webSearchActionsByItemId.clear();
       managed.runtime.agentMessageScopeByTurn.clear();
       managed.runtime.agentMessageTextByTurn.clear();
+      managed.runtime.agentMessagePhaseByItemId.clear();
       managed.runtime.recentNotificationKeys.clear();
       managed.runtime.reconciledItemSignaturesByTurn.clear();
       if (isCodexRequestTimeoutError(error)) {
@@ -44251,20 +45478,34 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The user row a steer emits when it lands (`inline`) or is put back on the
-   * queue (`queued`). Every provider's delivery path and every restore path
-   * emits this one shape, so a failed promotion can never render a different
-   * bubble than the delivery it is undoing.
+   * The user row a steer emits through its lifecycle. Every provider's delivery
+   * path and every restore path emits this one shape, so a failed promotion can
+   * never render a different bubble than the delivery it is undoing.
+   *
+   * - `accepted`: shown before an inline steer (Cursor, OpenCode, Pi) awaits
+   *   its provider, so the message is on screen ("Steering…") while the turn
+   *   decides. Cursor's `Run.steer()` stays pending until the turn actually
+   *   reads the message, which can be many seconds; showing nothing until then
+   *   read as a failed send. OpenCode and Pi do the same so every provider's
+   *   inline steer reads "Steering…" then "Steered" on one row. Not a delivery
+   *   yet (`userMessageStartsWork`). Whoever owns the message afterwards moves
+   *   this same row on; a crash in between is swept on reopen
+   *   (`failOrphanedAcceptedSteerRows`).
+   * - `inline`: the live turn took it.
+   * - `queued`: staged, or put back on the queue.
+   * - `failed`: an `accepted` row that ended up going nowhere, so it never
+   *   stays "Steering…" (`failAcceptedSteerRow`).
    */
   const emitSteerUserRow = (
     managed: ManagedChatSession,
-    steer: Pick<
-      QueuedSteer,
-      "steerId" | "text" | "displayText" | "attachments" | "contextAttachments" | "metadata"
-    >,
-    deliveryState: "inline" | "queued",
+    steer: SteerUserRowFields,
+    deliveryState: "accepted" | "inline" | "queued" | "failed",
     turnId: string | undefined,
   ): void => {
+    // Tracked, then removed, by `commitChatEvent` (see `acceptedSteerRows`).
+    if (deliveryState === "accepted") {
+      (managed.acceptedSteerRows ??= new Map()).set(steer.steerId, { turnId, shown: "accepted" });
+    }
     emitChatEvent(managed, {
       type: "user_message",
       text: steer.text,
@@ -44276,6 +45517,62 @@ export function createAgentChatService(args: {
       deliveryState,
       turnId,
     });
+  };
+
+  /**
+   * Move a steer row that already reads `accepted` to `failed`: nothing owns
+   * the message any more. A deleted chat has no transcript left to correct.
+   * With no `turnId`, the row stays on the turn it was offered on, so the
+   * transcript shows the failure where the user saw the message.
+   */
+  const failAcceptedSteerRow = (
+    managed: ManagedChatSession,
+    row: SteerUserRowFields,
+    turnId: string | undefined,
+  ): void => {
+    const acceptedTurnId = takeAcceptedSteerRow(managed, row.steerId)?.turnId;
+    if (managed.deleted) return;
+    emitSteerUserRow(managed, row, "failed", turnId ?? acceptedTurnId);
+    persistChatState(managed);
+  };
+
+  /**
+   * Take a steer off its row: a path is about to deliver it some other way.
+   * Returns the entry so a delivery that throws can put it back.
+   */
+  const takeAcceptedSteerRow = (
+    managed: ManagedChatSession,
+    steerId: string,
+  ): AcceptedSteerRow | undefined => {
+    const row = managed.acceptedSteerRows?.get(steerId);
+    managed.acceptedSteerRows?.delete(steerId);
+    return row;
+  };
+
+  /** Undo `takeAcceptedSteerRow` after the steer went back on the queue. */
+  const restoreAcceptedSteerRow = (
+    managed: ManagedChatSession,
+    steerId: string,
+    row: AcceptedSteerRow | undefined,
+  ): void => {
+    if (row) (managed.acceptedSteerRows ??= new Map()).set(steerId, row);
+  };
+
+  /**
+   * A cancel-all (Stop, a failed or closed turn, a recycle) took this steer.
+   * A row still reading `accepted` was being offered to the live turn, so it
+   * moves to `failed` rather than staying "Steering…", and the dispatch that
+   * offered it is told the message was dropped. A row that already reads
+   * `queued` is cancelled like a user cancel: the notice resolves it. A plain
+   * queued steer has no entry and is left to the notice. A user cancel after a
+   * Cursor recycle settles the same way: the old runtime's inline offer may
+   * still be awaiting, and only this marks the row for it.
+   */
+  const settleCancelledSteerRow = (managed: ManagedChatSession, steer: SteerUserRowFields): void => {
+    const row = takeAcceptedSteerRow(managed, steer.steerId);
+    if (row?.shown !== "accepted") return;
+    (managed.cancelledInFlightSteerIds ??= new Set()).add(steer.steerId);
+    failAcceptedSteerRow(managed, steer, row.turnId);
   };
 
   /**
@@ -44302,8 +45599,17 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Try to fold one message into the live Cursor run. True only when the run
-   * took ownership of it; the caller owns every other outcome.
+   * `delivered`: the run took ownership and the row reads `inline`.
+   * `declined`: refused before the SDK was asked; no row was emitted for it.
+   * `refused`: the SDK was asked and did not take it. The row already reads
+   * `accepted`, so the caller must move it on — stage it (`queued`), send it as
+   * its own turn (`delivered`), or drop it (`failed`).
+   */
+  type CursorInlineSteerResult = "delivered" | "declined" | "refused";
+
+  /**
+   * Try to fold one message into the live Cursor run. `delivered` only when
+   * the run took ownership of it; the caller owns every other outcome.
    *
    * Both inline dispatch paths — a fresh send during a turn, and the promotion
    * of an already staged row — go through here, so the refusal rules and the
@@ -44317,21 +45623,23 @@ export function createAgentChatService(args: {
    * delivery on the dying run would emit `inline` and drop the only surviving
    * copy. `steer()` then restages onto that replacement; `dispatchSteer` leaves
    * the copied row staged.
+   *
+   * The row reads `accepted` before the await (see `emitSteerUserRow`).
    */
   const tryCursorInlineSteer = async (
     managed: ManagedChatSession,
     runtime: CursorRuntime,
     row: QueuedSteer,
     onDelivered?: () => void,
-  ): Promise<boolean> => {
+  ): Promise<CursorInlineSteerResult> => {
     if (row.attachments.length || row.contextAttachments.length || row.resolvedAttachments.length) {
-      return false;
+      return "declined";
     }
     // Per-message overrides cannot ride a text-only channel either. No caller
     // pairs them with an inline dispatch today; this keeps the next one from
     // losing them silently.
     if (rowHasPerMessageOverrides(row)) {
-      return false;
+      return "declined";
     }
     // Gated here, not only in the renderer: a cloud run refuses every steer, and
     // the CLI, the TUI, iOS and `messageSession` auto-routing all reach this
@@ -44340,28 +45648,62 @@ export function createAgentChatService(args: {
     // NOT covered by a unit test: reaching it needs a promoted cloud session
     // running a stalled cloud turn, which the local-turn harness cannot build.
     // Verified by review of every caller instead.
-    if (cursorSessionRunsInCloud(managed.session)) return false;
-    if (managed.closed || managed.runtime !== runtime || !runtime.busy) return false;
+    if (cursorSessionRunsInCloud(managed.session)) return "declined";
+    if (managed.closed || managed.runtime !== runtime || !runtime.busy) return "declined";
 
+    emitSteerUserRow(managed, row, "accepted", runtime.activeTurnId ?? undefined);
+    persistChatState(managed);
     const outcome = await cursorSdkSteerText(managed, runtime, row.text);
-    if (outcome !== "complete_delivered") return false;
 
     // Recycle during the await copies `pendingSteers` onto a replacement
     // runtime and kills this one. An ack from the dying run is not ownership
     // on the session that remains: treat it as a refusal so the caller keeps
     // (or restages) the only surviving copy. Emitting `inline` here would also
     // retire the chip for a message the replacement turn never saw.
-    if (managed.runtime !== runtime) return false;
+    if (outcome !== "complete_delivered" || managed.runtime !== runtime) return "refused";
 
     // The run took the text, so the caller's bookkeeping runs even if the
     // session closed meanwhile. Skipping it there would leave a delivered row
     // on `pendingSteers`, which `persistChatState` carries forward — the
     // message would be sent again on reopen.
     onDelivered?.();
-    if (managed.closed) return true;
+    // Still emitted on an ended session: the row already reads `accepted`, and
+    // leaving it there would show "Steering…" forever on reopen.
+    if (managed.deleted) return "delivered";
     emitSteerUserRow(managed, row, "inline", runtime.activeTurnId ?? undefined);
     persistChatState(managed);
-    return true;
+    return "delivered";
+  };
+
+  /**
+   * Send a steer the live turn refused as its own turn, on the SAME row.
+   *
+   * The row may already read `accepted`, so the turn's user message carries
+   * the steer's id and lands on it as `delivered` ("Sent after turn") instead
+   * of a second bubble. If the send throws before it emits that message, the
+   * row moves to `failed`, so it never stays "Steering…".
+   */
+  const sendRefusedSteerAsOwnTurn = async (
+    managed: ManagedChatSession,
+    prepared: PreparedSendMessage,
+    steer: SteerUserRowFields,
+    onAcceptedDispatch: (() => void) | undefined,
+  ): Promise<void> => {
+    prepared.steerId = steer.steerId;
+    prepared.onBackendDispatched = onAcceptedDispatch;
+    // `onDispatched` runs right after the turn emits its user message.
+    let rowSettled = false;
+    const onDispatched = prepared.onDispatched;
+    prepared.onDispatched = () => {
+      rowSettled = true;
+      onDispatched?.();
+    };
+    try {
+      await executePreparedSendMessage(prepared);
+    } catch (error) {
+      if (!rowSettled) failAcceptedSteerRow(managed, steer, undefined);
+      throw error;
+    }
   };
 
   /**
@@ -44399,6 +45741,9 @@ export function createAgentChatService(args: {
     // `deliverNextQueuedSteer` shifts the head, so the row has to be read first.
     const head = runtime.pendingSteers[0];
     if (!head) return null;
+    // Taken by the delivery at the shift; put back with the row, so the next
+    // drain still lands on it.
+    const headRow = managed.acceptedSteerRows?.get(head.steerId);
     try {
       return (await deliverNextQueuedSteer(managed, runtime)) ? head.steerId : null;
     } catch (error) {
@@ -44425,6 +45770,7 @@ export function createAgentChatService(args: {
       ) {
         runtime.pendingSteers.unshift(head);
         reopenSteerSettlement(managed, head.steerId);
+        restoreAcceptedSteerRow(managed, head.steerId, headRow);
         restoreRow(head);
         persistChatState(managed);
       }
@@ -44470,6 +45816,7 @@ export function createAgentChatService(args: {
   ): void => {
     for (const steer of steers) {
       if (!claimSteerSettlement(managed, steer.steerId)) continue;
+      settleCancelledSteerRow(managed, steer);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -44490,6 +45837,12 @@ export function createAgentChatService(args: {
     metadata?: AgentChatEventMetadata | null | undefined;
     laneDirectiveKey?: string | null;
     turnId?: string;
+    /**
+     * Set when this turn sends a refused inline steer (`sendRefusedSteerAsOwnTurn`):
+     * its user message lands on the steer's `accepted` row as `delivered`
+     * instead of opening a second bubble.
+     */
+    steerId?: string;
     optimisticCursorTurnStart?: boolean;
     onDispatched?: () => void;
     onBackendDispatched?: () => void;
@@ -44619,6 +45972,7 @@ export function createAgentChatService(args: {
         contextAttachments: args.contextAttachments,
         metadata: args.metadata,
         turnId,
+        ...(args.steerId ? { steerId: args.steerId } : {}),
         laneDirectiveKey: args.laneDirectiveKey,
         onDispatched: args.onDispatched,
       });
@@ -47022,7 +48376,7 @@ export function createAgentChatService(args: {
       metadata,
       reasoningEffort,
       laneDirectiveKey,
-      computerUseDirectiveKey,
+      epochDirectiveKeys,
       providerSlashCommand,
       forceClaudeUserMessage,
       steerId,
@@ -47064,10 +48418,10 @@ export function createAgentChatService(args: {
     //
     // Marking after the run returns is the safe direction: a duplicate delivery
     // is wasted tokens, a missed one leaves the agent unaware of a capability.
-    const markComputerUseDirectiveDelivered = (): void => {
-      if (computerUseDirectiveKey) {
-        managed.lastComputerUseDirectiveKey = computerUseDirectiveKey;
-      }
+    //
+    // The Apple-device hint (`<ade-lane-tools>`) follows the same rule.
+    const markEpochDirectivesDelivered = (): void => {
+      Object.assign(managed.deliveredDirectiveKeys, epochDirectiveKeys);
     };
 
     // OpenCode runtime dispatch
@@ -47103,10 +48457,11 @@ export function createAgentChatService(args: {
         metadata,
         laneDirectiveKey,
         providerSlashCommand,
+        ...(steerId ? { steerId } : {}),
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47123,12 +48478,7 @@ export function createAgentChatService(args: {
         chatConfig.opencodePermissionMode,
       );
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
-      const requestedRuntime = prepared.runtime;
-      const sessionDefaultRuntime = managed.session.cursorRuntime;
-      const effectiveRuntime: AgentChatRuntime = requestedRuntime
-        ?? sessionDefaultRuntime
-        ?? "local";
-      if (effectiveRuntime === "cloud") {
+      if (effectiveCursorRuntime(managed, prepared.runtime) === "cloud") {
         await runCursorCloudTurn(managed, {
           promptText,
           userText: submittedText,
@@ -47144,7 +48494,7 @@ export function createAgentChatService(args: {
           onBackendDispatched,
           ...(prepared.cloudOverrides ? { cloudOverrides: prepared.cloudOverrides } : {}),
         });
-        markComputerUseDirectiveDelivered();
+        markEpochDirectivesDelivered();
         return;
       }
       await runCursorSdkTurn(managed, {
@@ -47157,11 +48507,12 @@ export function createAgentChatService(args: {
         metadata,
         laneDirectiveKey,
         turnId,
+        ...(steerId ? { steerId } : {}),
         optimisticCursorTurnStart,
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47186,7 +48537,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47209,7 +48560,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47253,7 +48604,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47375,7 +48726,7 @@ export function createAgentChatService(args: {
         optimisticCodexTurnStart,
         onDispatched: onBackendDispatched ?? onDispatched,
       });
-      markComputerUseDirectiveDelivered();
+      markEpochDirectivesDelivered();
       return;
     }
 
@@ -47424,7 +48775,7 @@ export function createAgentChatService(args: {
       onDispatched,
       onBackendDispatched,
     });
-    markComputerUseDirectiveDelivered();
+    markEpochDirectivesDelivered();
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
@@ -47842,6 +49193,11 @@ export function createAgentChatService(args: {
       ? `${contextPrompt}\n\n${steer.text}${attachmentHint}`
       : `${steer.text}${attachmentHint}`;
     const promptFiles = buildOpenCodeV2PromptAttachments(files);
+    // `accepted` before the round trip (see `emitSteerUserRow`). On a throw the
+    // caller owns the row: it restages it (`queued`), sends it as its own turn
+    // (`delivered`), or drops it (`failed`).
+    emitSteerUserRow(managed, steer, "accepted", runtime.activeTurnId ?? undefined);
+    persistChatState(managed);
     await runtime.handle.client.v2.session.prompt({
       sessionID: runtime.handle.sessionId,
       // The admission id is the row's own uuid under the server's `msg_` brand:
@@ -47952,6 +49308,9 @@ export function createAgentChatService(args: {
         // consumes it — the queue fallback builds its own through
         // `enqueueSteerOrDrop`.
         let inlineRefused = false;
+        // Set once the refused steer's row reads `accepted`, so every exit below
+        // moves that row on instead of leaving it "Steering…".
+        let refusedRow: OpenCodeInlineSteer | null = null;
         // The v2 steer prompt carries text and file parts only, so a per-message
         // reasoning/execution/interaction override cannot ride it. Cursor refuses
         // the same shape for the same reason: fall through to staging, which
@@ -47980,6 +49339,7 @@ export function createAgentChatService(args: {
             return { steerId, queued: false };
           } catch (error) {
             inlineRefused = true;
+            refusedRow = immediateSteer;
             logger.warn("agent_chat.opencode_inline_steer_refused", {
               sessionId,
               turnId: runtime.activeTurnId,
@@ -47994,11 +49354,17 @@ export function createAgentChatService(args: {
         // persisted, so staging onto the captured runtime would show a queued
         // chip for a message nothing owns.
         let stageRuntime = runtime;
-        if (managed.closed) return { steerId, queued: false };
+        if (managed.closed) {
+          if (refusedRow) failAcceptedSteerRow(managed, refusedRow, undefined);
+          return { steerId, queued: false };
+        }
         if (managed.runtime !== runtime) {
           const current = managed.runtime;
           if (current?.kind === "opencode" && (current.busy || managed.session.status === "active")) {
             stageRuntime = current;
+          } else if (refusedRow) {
+            await sendRefusedSteerAsOwnTurn(managed, preparedSteer, refusedRow, options?.onAcceptedDispatch);
+            return { steerId, queued: false };
           } else {
             preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
             await executePreparedSendMessage(preparedSteer);
@@ -48018,6 +49384,7 @@ export function createAgentChatService(args: {
           { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
         );
         if (!queued) {
+          if (refusedRow) failAcceptedSteerRow(managed, refusedRow, stageRuntime.activeTurnId ?? undefined);
           return { steerId, queued: false, reason: "queue_full" };
         }
         // Emitted only once the message is genuinely queued — above the
@@ -48066,19 +49433,27 @@ export function createAgentChatService(args: {
           preparedSteer.submittedText,
           preparedSteer.resolvedAttachments,
         );
-        await runtime.sdk.steer(promptText, images);
+        // Pi's row carries the visible text in `text`, with no `displayText`.
+        const piSteer = {
+          steerId,
+          text: preparedSteer.visibleText,
+          attachments: preparedSteer.attachments,
+          contextAttachments: preparedSteer.contextAttachments,
+          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
+        };
+        // `accepted` before the worker round trip (see `emitSteerUserRow`). Pi
+        // has no queue fallback: a throw fails the row and propagates.
+        emitSteerUserRow(managed, piSteer, "accepted", runtime.activeTurnId ?? undefined);
+        persistChatState(managed);
+        try {
+          await runtime.sdk.steer(promptText, images);
+        } catch (error) {
+          failAcceptedSteerRow(managed, piSteer, runtime.activeTurnId ?? undefined);
+          throw error;
+        }
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
-        emitChatEvent(managed, {
-          type: "user_message",
-          text: preparedSteer.visibleText,
-          ...(preparedSteer.attachments.length ? { attachments: preparedSteer.attachments } : {}),
-          ...(preparedSteer.contextAttachments.length ? { contextAttachments: preparedSteer.contextAttachments } : {}),
-          ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
-          steerId,
-          turnId: runtime.activeTurnId ?? undefined,
-          deliveryState: "inline",
-        });
+        emitSteerUserRow(managed, piSteer, "inline", runtime.activeTurnId ?? undefined);
         persistDeliveredLaneDirectiveKey(managed, preparedSteer.laneDirectiveKey);
         persistChatState(managed);
         return { steerId, queued: false };
@@ -48158,8 +49533,11 @@ export function createAgentChatService(args: {
           ...(interactionMode ? { interactionMode } : {}),
         };
         let inlineRefused = false;
+        // Set once the refused row reads `accepted`, so every exit below moves
+        // that row on instead of leaving it "Steering…". Same as OpenCode's.
+        let refusedRow: QueuedSteer | null = null;
         if (dispatchMode === "inline") {
-          const delivered = await tryCursorInlineSteer(
+          const result = await tryCursorInlineSteer(
             managed,
             rt,
             queuedRow,
@@ -48174,8 +49552,9 @@ export function createAgentChatService(args: {
               // `dispatchClaudeSteerMessage` omits it for the same reason.
             },
           );
-          if (delivered) return { steerId, queued: false };
+          if (result === "delivered") return { steerId, queued: false };
           inlineRefused = true;
+          if (result === "refused") refusedRow = queuedRow;
           // `tryCursorInlineSteer` awaits the worker, so the runtime can be
           // recycled while the steer is in flight. Staging onto a detached
           // runtime's array strands the message where nothing drains it.
@@ -48184,7 +49563,10 @@ export function createAgentChatService(args: {
           // fresh pooled worker that nothing will ever release, because the
           // managed session is already out of the registry. On Windows that
           // leaked db handle also blocks the runtime directory cleanup.
-          if (managed.closed) return { steerId, queued: false };
+          if (managed.closed) {
+            if (refusedRow) failAcceptedSteerRow(managed, refusedRow, undefined);
+            return { steerId, queued: false };
+          }
           if (managed.runtime !== rt) {
             const current = managed.runtime;
             // A recycle re-sends carried steers on the rotated agent, so a BUSY
@@ -48193,6 +49575,9 @@ export function createAgentChatService(args: {
             // "Turn already active" and lose the message entirely.
             if (current?.kind === "cursor" && current.busy) {
               rt = current;
+            } else if (refusedRow) {
+              await sendRefusedSteerAsOwnTurn(managed, preparedSteer, refusedRow, options?.onAcceptedDispatch);
+              return { steerId, queued: false };
             } else {
               preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
               await executePreparedSendMessage(preparedSteer);
@@ -48202,6 +49587,7 @@ export function createAgentChatService(args: {
         }
         if (rt.pendingSteers.length >= MAX_PENDING_STEERS) {
           logger.warn("agent_chat.steer_queue_full", { sessionId, queueSize: rt.pendingSteers.length });
+          if (refusedRow) failAcceptedSteerRow(managed, refusedRow, rt.activeTurnId ?? undefined);
           emitChatEvent(managed, {
             type: "system_notice",
             noticeKind: "info",
@@ -48771,10 +50157,7 @@ export function createAgentChatService(args: {
     if (awaitingInputBefore && normalizedKind !== "wake") {
       throw new Error(`${PENDING_INPUT_SEND_BLOCKED_MESSAGE} Use chat.respondToInput for the pending input instead.`);
     }
-    const runtimeBusy = managed.runtime?.kind === "codex"
-      ? managed.runtime.activeTurnId != null
-      : managed.runtime?.busy === true;
-    const activeTarget = statusBefore === "active" || runtimeBusy;
+    const activeTarget = statusBefore === "active" || runtimeMidTurn(managed);
     // Scheduled wakes intentionally start fresh work at a turn boundary. A
     // subagent completion is different: it is live context returning to the
     // parent and should join the active turn wherever the provider supports
@@ -49002,10 +50385,12 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     steerId: string,
     turnId?: string | null,
-    options: { tombstonePersistedSteer?: boolean } = {},
+    options: { tombstonePersistedSteer?: boolean; removedSteer?: SteerUserRowFields } = {},
   ): void => {
     if (options.tombstonePersistedSteer) forgetPersistedSteer(managed, steerId);
     claimSteerSettlement(managed, steerId);
+    if (options.removedSteer) settleCancelledSteerRow(managed, options.removedSteer);
+    else takeAcceptedSteerRow(managed, steerId);
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
@@ -49024,6 +50409,9 @@ export function createAgentChatService(args: {
   const cancelSteer = async ({ sessionId, steerId, requireQueued = false }: AgentChatCancelSteerArgs): Promise<void> => {
     const managed = ensureManagedSession(sessionId);
     const runtime = managed.runtime;
+    // The row taken off a local queue, so a carried steer whose old inline
+    // offer is still awaiting settles instead of reading "Steering..." forever.
+    let removedSteer: QueuedSteer | undefined;
     if (runtime?.kind === "codex") {
       const submissionId = runtime.queuedSubmissionBySteerId.get(steerId)
         ?? await recoverCodexQueueSubmissionId(managed, runtime, steerId);
@@ -49072,8 +50460,8 @@ export function createAgentChatService(args: {
       }
       const idx = queue.findIndex((s) => s.steerId === steerId);
       if (idx !== -1) {
-        const [removed] = queue.splice(idx, 1);
-        if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
+        [removedSteer] = queue.splice(idx, 1);
+        if (runtime.kind === "claude" && removedSteer) runtime.knownQueuedMessages.delete(removedSteer.uuid);
       } else if (requireQueued) {
         throw new Error("This message is no longer queued.");
       }
@@ -49084,6 +50472,7 @@ export function createAgentChatService(args: {
     // the client display clears the staged chip on the delete-button path.
     finalizeCancelledSteer(managed, steerId, runtime?.activeTurnId, {
       tombstonePersistedSteer: runtime == null && !managed.runtimeInvalidated,
+      removedSteer,
     });
   };
 
@@ -49136,6 +50525,8 @@ export function createAgentChatService(args: {
       const [removed] = runtime.pendingSteers.splice(idx, 1);
       if (runtime.kind === "claude" && removed) runtime.knownQueuedMessages.delete(removed.uuid);
       claimSteerSettlement(managed, steerId);
+      if (removed) settleCancelledSteerRow(managed, removed);
+      else takeAcceptedSteerRow(managed, steerId);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
@@ -49192,6 +50583,7 @@ export function createAgentChatService(args: {
     if (args.canDeliver && !args.canDeliver(queue[index])) return { dispatchedAt: null };
     const [promoted] = queue.splice(index, 1);
     claimSteerSettlement(managed, steerId);
+    const acceptedRow = takeAcceptedSteerRow(managed, steerId);
     // Resolves the staged chip in the composer; without it the row stays
     // parked there after the steer has already landed.
     emitChatEvent(managed, {
@@ -49210,6 +50602,7 @@ export function createAgentChatService(args: {
       if (!queue.some((entry) => entry.steerId === steerId)) {
         queue.splice(Math.min(index, queue.length), 0, promoted);
         reopenSteerSettlement(managed, steerId);
+        restoreAcceptedSteerRow(managed, steerId, acceptedRow);
         emitSteerUserRow(managed, promoted, "queued", activeTurnId ?? undefined);
         persistChatState(managed);
         restored = true;
@@ -49281,9 +50674,9 @@ export function createAgentChatService(args: {
         // below, because `drainCursorQueueHeadIfIdle` refuses to run while any
         // dispatch is marked in flight.
         runtime.dispatchingSteerIds.add(steerId);
-        let delivered: boolean;
+        let result: CursorInlineSteerResult;
         try {
-          delivered = await tryCursorInlineSteer(
+          result = await tryCursorInlineSteer(
             managed,
             runtime,
             staged,
@@ -49299,7 +50692,28 @@ export function createAgentChatService(args: {
         } finally {
           runtime.dispatchingSteerIds.delete(steerId);
         }
-        if (delivered) return { dispatchedAt: Date.now() };
+        const cancelledInFlight = managed.cancelledInFlightSteerIds?.delete(steerId) === true;
+        if (result === "delivered") return { dispatchedAt: Date.now() };
+        if (result === "refused") {
+          // Looked up on the session's live queue, not the captured one: a
+          // recycle during the await carries the row onto the replacement.
+          const live = !managed.closed && managed.runtime?.kind === "cursor" ? managed.runtime : null;
+          const stillStaged = live?.pendingSteers.find((entry) => entry.steerId === steerId);
+          if (!live || !stillStaged) {
+            // Off the queue, but a replacement runtime's drain or cancel may
+            // have taken it meanwhile; that path owns its row (and took it out
+            // of `acceptedSteerRows`). A drain sent it; a cancel failed it, so
+            // it went nowhere. Still listed means nothing will send this
+            // message, so the row fails rather than promising a new message
+            // that never comes.
+            if (cancelledInFlight) return { dispatchedAt: null, reason: "dropped" };
+            if (!managed.acceptedSteerRows?.has(steerId)) return { dispatchedAt: null };
+            failAcceptedSteerRow(managed, staged, undefined);
+            return { dispatchedAt: null, reason: "dropped" };
+          }
+          // Still staged: the row reads queued again, so its chip returns.
+          emitQueuedCursorSteerRow(managed, live, stillStaged);
+        }
         emitInlineSteerFallbackNotice(managed, runtime);
         persistChatState(managed);
         // The row is still staged and Cursor only drains at a turn boundary. If
@@ -49319,6 +50733,7 @@ export function createAgentChatService(args: {
       }
       const [promoted] = cursorQueue.splice(cursorIdx, 1);
       claimSteerSettlement(managed, steerId);
+      const acceptedRow = takeAcceptedSteerRow(managed, steerId);
       // The staged row is resolved by this notice; without it the chip would
       // stay parked in the composer's staging area after the redirect.
       emitChatEvent(managed, {
@@ -49356,6 +50771,7 @@ export function createAgentChatService(args: {
         if (!cursorQueue.some((entry) => entry.steerId === steerId)) {
           cursorQueue.splice(Math.min(cursorIdx, cursorQueue.length), 0, promoted);
           reopenSteerSettlement(managed, steerId);
+          restoreAcceptedSteerRow(managed, steerId, acceptedRow);
           emitSteerUserRow(managed, promoted, "queued", runtime.activeTurnId ?? undefined);
           persistChatState(managed);
         }
@@ -51468,7 +52884,9 @@ export function createAgentChatService(args: {
 
   const getTurnStatus = async (sessionId: string): Promise<ChatTurnStatusSnapshot | null> => {
     const summary = await getSessionSummary(sessionId);
-    if (!summary) return null;
+    // Not a chat: a tracked CLI terminal (e.g. a `--mode cli` child) still
+    // answers, so a parent agent can poll its CLI children.
+    if (!summary) return getCliTurnStatus(sessionId);
     const trimmed = sessionId.trim();
     const managed = managedSessions.get(trimmed) ?? null;
     const pending = managed ? collectPendingInputRequests(managed)[0] : undefined;
@@ -52163,6 +53581,7 @@ export function createAgentChatService(args: {
     flushQueuedTranscriptWrite(managed.transcriptPath);
     flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${sessionId}.jsonl`));
     managedSessions.delete(sessionId);
+    lastTurnStartedAtBySession.delete(sessionId);
     revokeBrowserActorToken(sessionId);
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
@@ -52784,7 +54203,7 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Settle a card the user answered but whose asker is already gone.
+   * Close a card nothing can consume, with a receipt and a notice.
    *
    * Returning silently is not enough, and "the UI will clear the stale entry"
    * is no longer true: the renderer defers to the summary for a card swept
@@ -52796,9 +54215,11 @@ export function createAgentChatService(args: {
    *
    * An accept is recorded as `cancel` because nothing consumed the acceptance;
    * saying "accepted" of an approval no runtime received would be a lie in the
-   * durable, synced transcript.
+   * durable, synced transcript. Reaching here with an ANSWER in hand is the
+   * one case this must not decide on its own — see
+   * `settleUnclaimedPendingInput`, which re-routes that answer first.
    */
-  const settleUnclaimedPendingInput = (
+  const settleDeadPendingInput = (
     managed: ManagedChatSession,
     itemId: string,
     decision: AgentChatApprovalDecision,
@@ -52815,6 +54236,97 @@ export function createAgentChatService(args: {
       message: "That request is no longer active.",
     });
     persistChatState(managed);
+  };
+
+  const PENDING_INPUT_ANSWER_REROUTED_MESSAGE =
+    "That request had already closed, so ADE sent your answer as a message instead.";
+
+  /**
+   * Deliver an answer whose waiter is gone, or refuse to lose it.
+   *
+   * The reported bug: an OpenCode question card sat open for 19 minutes while
+   * its runtime went away (a pooled server eviction, an idle teardown, or a
+   * brain restart — the card survives all three because it is a transcript
+   * event). The answer then arrived at a session with no waiter and no
+   * runtime, and the old settle recorded it as `cancelled` / "unanswered",
+   * painted "That request is no longer active.", and returned SUCCESS — so the
+   * composer cleared the draft too. The answer was lost twice: never delivered,
+   * and not even left on screen to retype. `answers` and `responseText` were
+   * not so much as read.
+   *
+   * So: a question answered with actual content is re-routed as an ordinary
+   * user message — the exact move that unblocked the reporter by hand, and the
+   * same mechanism `responseMode: "message"` already uses for Codex async
+   * questions. The receipt then says `accepted`, because the answer really did
+   * reach the agent.
+   *
+   * If even that fails, this THROWS rather than settling: a throw leaves the
+   * card open and makes the composer put the typed answer back, which is a
+   * re-offered question instead of a dead end. Approvals, plans and
+   * elicitations are not re-routed — "Approve and implement" is not prose, and
+   * the tool call behind it is long gone — so they keep the old settle.
+   */
+  const settleUnclaimedPendingInput = async (
+    managed: ManagedChatSession,
+    itemId: string,
+    decision: AgentChatApprovalDecision,
+    answer?: {
+      answers?: Record<string, string | string[]> | undefined;
+      responseText?: string | null | undefined;
+    },
+  ): Promise<void> => {
+    const sessionId = managed.session.id;
+    const { request, resolvedAs } = await getChatEventHistory(sessionId, { maxEvents: 512 })
+      .then((history) => readPendingInputRecord(history.events, itemId))
+      .catch(() => ({ request: null, resolvedAs: null }));
+    if (resolvedAs === "accepted") {
+      // One gesture can still send two responses for one card (a click racing
+      // a keypress). The first one delivered; this one must not overwrite its
+      // receipt with a cancellation that reads as "unanswered", and must not
+      // re-send the same answer as a message either.
+      logger.info("agent_chat.pending_input_already_answered", { sessionId, itemId, decision });
+      return;
+    }
+    const accepted = decision === "accept" || decision === "accept_for_session";
+    if (accepted && isQuestionShapedPendingInput(request) && request) {
+      const normalizedAnswers = normalizePendingInputAnswers(request, answer?.answers, answer?.responseText);
+      const messageText = formatPendingInputAnswersAsMessage(request, normalizedAnswers);
+      if (messageText.trim().length) {
+        try {
+          // `kind: "auto"` steers into a live turn and starts one when there is
+          // none, so this works whether the runtime died or merely moved on.
+          await messageSession({ sessionId, text: messageText, kind: "auto" });
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          logger.warn("agent_chat.pending_input_answer_reroute_failed", { sessionId, itemId, error: reason });
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "warning",
+            severity: "warning",
+            message: "That request closed before your answer reached it, and ADE could not send the answer as a message either. It is back in the composer — send it again.",
+          });
+          persistChatState(managed);
+          throw new Error(`That request is no longer active, and your answer could not be sent as a message: ${reason}`);
+        }
+        logger.info("agent_chat.pending_input_answer_rerouted", { sessionId, itemId, provider: managed.session.provider });
+        emitPendingInputResolved(managed, {
+          itemId,
+          decision,
+          turnId: request.turnId ?? null,
+          ...(answer?.answers ? { answers: answer.answers } : {}),
+          ...(answer?.responseText !== undefined ? { responseText: answer.responseText } : {}),
+          questions: request.questions ?? [],
+        });
+        emitChatEvent(managed, {
+          type: "system_notice",
+          noticeKind: "info",
+          message: PENDING_INPUT_ANSWER_REROUTED_MESSAGE,
+        });
+        persistChatState(managed);
+        return;
+      }
+    }
+    settleDeadPendingInput(managed, itemId, decision);
   };
 
   /**
@@ -52931,7 +54443,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       const ensureWritable = (): void => {
@@ -53046,7 +54558,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.approvals.delete(itemId);
@@ -53091,7 +54603,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.pendingApprovals.delete(itemId);
@@ -53126,7 +54638,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       cursorRuntime.permissionWaiters.delete(itemId);
@@ -53151,7 +54663,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
         });
-        settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+        await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
         return;
       }
       managed.runtime.permissionWaiters.delete(itemId);
@@ -53174,7 +54686,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: resolvedDecision,
     });
-    settleUnclaimedPendingInput(managed, itemId, resolvedDecision);
+    await settleUnclaimedPendingInput(managed, itemId, resolvedDecision, { answers, responseText });
   };
 
   /**
@@ -53239,7 +54751,7 @@ export function createAgentChatService(args: {
       // No card by that id: settle it anyway rather than throwing. A click that
       // lands after the card is gone must still write a receipt, or the
       // transcript fallback keeps naming it.
-      settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
+      await settleUnclaimedPendingInput(managed, trimmedItemId, "cancel");
       onPendingInputDismissed?.({ provider: managed.session.provider });
       return;
     }
@@ -54347,7 +55859,7 @@ export function createAgentChatService(args: {
     // ignores deleted sessions so late provider events cannot recreate lineage
     // after deletion.
     const tombstoned = managedSessions.get(trimmedSessionId);
-    reportChildSpawnEnded(trimmedSessionId, "interrupted");
+    reportChildSpawnEnded(trimmedSessionId, "interrupted", "delete");
 
     // Tombstone the session before any other async work so in-flight
     // persistence (auto-title, summary, chat state writes) bails instead of
@@ -54400,6 +55912,7 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(trimmedSessionId);
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
+    lastTurnStartedAtBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
@@ -54472,6 +55985,10 @@ export function createAgentChatService(args: {
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     staleRunSweep.dispose();
+    // Before the host tears its PTYs down: a brain shutting down must not read
+    // its own terminal disposal as every CLI child stopping.
+    cliChildReportsClosed = true;
+    unsubscribeCliChildExit?.();
     clearCursorCloudMirrorWatches();
     clearAllCursorCloudHydrationState();
     scheduledWorkScheduler?.dispose();
@@ -54604,6 +56121,7 @@ export function createAgentChatService(args: {
       if (!row || !isChatToolType(row.toolType)) return null;
       return row satisfies StaleRunSweepChatRow;
     },
+    deferChildTerminal: (childSessionId) => deferCliChildTerminal(childSessionId),
     chatRuntimeOwnerLive: (sessionId) => {
       const owner = readPersistedState(sessionId)?.runtimeOwner ?? null;
       if (!owner) return false;
@@ -54632,6 +56150,19 @@ export function createAgentChatService(args: {
   // through an unrelated suite would inject reconciliation events into that
   // test's stream. Tests drive `reconcileStaleRuns()` directly instead.
   if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") staleRunSweep.start();
+
+  // A tracked CLI child's end closes its parent's card. Every PTY exit path
+  // (natural exit, close, orphan dispose) reaches this listener after the row
+  // is ended; unparented terminals are a single row read and a no-op.
+  let cliChildReportsClosed = false;
+  const unsubscribeCliChildExit = ptyService?.onExit?.((event) => {
+    void reportCliChildEnded(event.sessionId, "exit").catch((error) => {
+      logger.warn("agent_chat.cli_child_exit_report_failed", {
+        childSessionId: event.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }) ?? null;
 
   // --- Warm-runtime budget participation ---
   /**
@@ -55948,7 +57479,8 @@ export function createAgentChatService(args: {
       case "agentMessage": {
         const text = typeof item.text === "string" ? item.text : "";
         if (!text.trim()) return [];
-        return [baseMessage({ type: "text", text, itemId, ...(turnId ? { turnId } : {}) }, "assistant", { text })];
+        const phase = codexMessagePhase(item);
+        return [baseMessage({ type: "text", text, itemId, ...(turnId ? { turnId } : {}), ...(phase ? { phase } : {}) }, "assistant", { text })];
       }
       case "userMessage": {
         const content = Array.isArray(item.content) ? item.content : [];
@@ -56046,8 +57578,11 @@ export function createAgentChatService(args: {
       case "webSearch": {
         const query = typeof item.query === "string" ? item.query : "";
         if (!query.trim()) return [];
-        const actionRecord = (item.action ?? null) as { kind?: unknown } | null;
-        const action = actionRecord && typeof actionRecord.kind === "string" ? actionRecord.kind : undefined;
+        // Codex's WebSearchAction is tagged by `type` (search/openPage/findInPage);
+        // `kind` never existed on it, so the action was always dropped.
+        const actions = normalizeCodexWebSearchActions(item.action, item.actions);
+        const action = actions[0]?.type;
+        const normalizedResults = normalizeCodexWebSearchResults(item.results);
         return [
           baseMessage(
             {
@@ -56056,6 +57591,11 @@ export function createAgentChatService(args: {
               itemId,
               status: "completed",
               ...(action ? { action } : {}),
+              ...(actions.length ? { actions } : {}),
+              ...(normalizedResults ? {
+                results: normalizedResults.results,
+                resultsTotal: normalizedResults.total,
+              } : {}),
               ...(turnId ? { turnId } : {}),
             },
             "system",
@@ -57901,10 +59441,24 @@ export function createAgentChatService(args: {
           return { retry: true };
         }
         try {
-          await ptyService.sendToSession({
+          const sent = await ptyService.sendToSession({
             sessionId: schedule.sessionId,
             text: schedule.prompt,
           });
+          // sendToSession relaunches an ended CLI. The parent card closed when
+          // that process exited, so a resume has to reopen it the same way the
+          // RPC, sync, and desktop send paths do.
+          if (sent.resumed) {
+            try {
+              notifyParentOfCliChildSpawn(sent.sessionId, { resumed: true });
+            } catch (notifyError) {
+              logger.warn("agent_chat.scheduled_cli_resume_parent_notify_failed", {
+                sessionId: sent.sessionId,
+                scheduleId: schedule.id,
+                error: notifyError instanceof Error ? notifyError.message : String(notifyError),
+              });
+            }
+          }
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           if (isPtySendPreDeliveryError(error)) {
@@ -58144,7 +59698,16 @@ export function createAgentChatService(args: {
     recoverContinuity,
     resumeSession,
     listSessions,
+    listCliChildSessions,
+    notifyParentOfCliChildSpawn,
     getSessionSummary,
+    /** The current turn's start, or the latest one's. Null when none ran in this process. */
+    getTurnStartedAt: (sessionId: string): string | null => {
+      const live = managedSessions.get(sessionId)?.session;
+      return (live?.status === "active" ? live.currentTurnStartedAt ?? null : null)
+        ?? lastTurnStartedAtBySession.get(sessionId)
+        ?? null;
+    },
     getTurnStatus,
     ensureSessionSurface,
     hasActiveWorkloads,

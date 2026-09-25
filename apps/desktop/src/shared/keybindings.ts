@@ -8,6 +8,42 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     scope: "global"
   },
   {
+    id: "shell.sidebar.toggle",
+    description: "Show or hide the project sidebar",
+    defaultBinding: "Mod+B",
+    scope: "global"
+  },
+  {
+    id: "shell.tab.work",
+    description: "Open Work",
+    defaultBinding: "Mod+1",
+    scope: "global"
+  },
+  {
+    id: "shell.tab.lanes",
+    description: "Open Lanes",
+    defaultBinding: "Mod+2",
+    scope: "global"
+  },
+  {
+    id: "shell.tab.files",
+    description: "Open Files",
+    defaultBinding: "Mod+3",
+    scope: "global"
+  },
+  {
+    id: "shell.tab.prs",
+    description: "Open PRs",
+    defaultBinding: "Mod+4",
+    scope: "global"
+  },
+  {
+    id: "shell.tab.automations",
+    description: "Open Automations",
+    defaultBinding: "Mod+5",
+    scope: "global"
+  },
+  {
     id: "lanes.filter.focus",
     description: "Focus lanes filter",
     defaultBinding: "/,Mod+F",

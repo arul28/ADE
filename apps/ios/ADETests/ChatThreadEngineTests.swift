@@ -441,7 +441,7 @@ final class ChatThreadEngineTests: XCTestCase {
 
     let childRows = frame?.transcript.filter { envelope in
       switch envelope.event {
-      case .toolCall(_, _, let itemId, _, _), .toolResult(_, _, let itemId, _, _, _):
+      case .toolCall(_, _, let itemId, _, _), .toolResult(_, _, let itemId, _, _, _, _, _):
         return itemId == "child-1"
       default:
         return false
@@ -956,6 +956,72 @@ final class ChatThreadEngineTests: XCTestCase {
     await assertResumed(result.engine)
   }
 
+  func testRefusedSteerHidesItsEarlierBubbleExactly() async {
+    // A Cursor/OpenCode steer shows as `accepted` while the live turn decides
+    // and comes back `queued` when it refuses; the newest row hides the
+    // earlier bubble. The accepted row is below the checkpoint, so the message
+    // fold cannot adopt the new hidden set and refolds.
+    let result = await foldAfter(
+      [user(1, "q", turn: "t1"), text(2, "a", item: "msg-a", turn: "t1"),
+       user(3, "also this", steerId: "s1", delivery: "accepted"), text(4, "b", item: "msg-b", turn: "t1")],
+      live: [[user(5, "also this", steerId: "s1", delivery: "queued")]]
+    )
+    await assertResumed(result.engine, refolded: ["messages"])
+    XCTAssertFalse(texts(result.frame).contains("user:also this"))
+    XCTAssertEqual(result.frame?.pendingSteers.map(\.id), ["s1"])
+  }
+
+  func testQueuedSteerWithNoSettledRowAdoptsWithoutRefold() async {
+    let result = await foldAfter(
+      [user(1, "q", turn: "t1"), text(2, "a", item: "msg-a", turn: "t1"), toolCall(3, item: "t1", turn: "t1")],
+      live: [[user(4, "later", steerId: "s2", delivery: "queued")], [toolResult(5, item: "t1", turn: "t1")]]
+    )
+    await assertResumed(result.engine)
+  }
+
+  func testSourcesTaskListAndTurnFoldStayExactAcrossTheCheckpoint() async {
+    let sourceA: [String: Any] = ["kind": "web", "url": "https://example.com/a", "title": "A"]
+    let sourceB: [String: Any] = ["kind": "web", "url": "https://www.example.com/b/", "title": "B"]
+    let result = await foldAfter(
+      [user(1, "research", turn: "turn-1"), status(2, "started"), text(3, "Looking.", item: "msg-a"),
+       toolCall(4, item: "w1", tool: "WebSearch")],
+      live: [
+        [event(5, ["type": "tool_result", "tool": "WebSearch", "result": "ok", "itemId": "w1", "turnId": "turn-1",
+                   "status": "completed", "sources": [sourceA]])],
+        [event(6, ["type": "todo_update", "turnId": "turn-1", "items": [
+          ["id": "a", "description": "Read", "status": "completed"],
+          ["id": "b", "description": "Write", "status": "in_progress", "activeForm": "Writing"],
+        ]])],
+        [toolCall(7, item: "t2")], [toolResult(8, item: "t2")],
+        [event(9, ["type": "sources", "turnId": "turn-1", "sources": [sourceB]])],
+        [text(10, "See https://example.com/a for details.", item: "msg-b")],
+        [event(11, ["type": "done", "turnId": "turn-1", "status": "completed"])],
+      ]
+    )
+    await assertResumed(result.engine)
+    XCTAssertEqual(result.frame?.snapshot.sourceRefs.count, 2)
+    XCTAssertEqual(result.frame?.snapshot.sourceRefs.first?.cited, true)
+    XCTAssertEqual(result.frame?.snapshot.taskList?.items.map(\.label), ["Read", "Write"])
+    let folds = (result.frame?.presentation.visibleEntries ?? []).compactMap { entry -> WorkTurnFoldModel? in
+      if case .turnFold(let model) = entry.payload { return model }
+      return nil
+    }
+    XCTAssertEqual(folds.map(\.turnId), ["turn-1"])
+    XCTAssertTrue(folds.first?.label.contains("2 sources") == true, folds.first?.label ?? "no fold")
+
+    // Opening the fold is an overlay change: presentation only, still exact.
+    var overlays = result.overlays
+    overlays.expandedTurnIds = ["turn-1"]
+    let opened = await result.engine.setOverlays(overlays)
+    let frame = await result.engine.flush() ?? opened
+    XCTAssertNil(chatThreadFrameMismatch(frame, overlays: overlays))
+    let openFold = (frame?.presentation.visibleEntries ?? []).compactMap { entry -> WorkTurnFoldModel? in
+      if case .turnFold(let model) = entry.payload { return model }
+      return nil
+    }.first
+    XCTAssertEqual(openFold?.isExpanded, true)
+  }
+
   func testUnsortedTranscriptDelegatesToTheFullBuilder() {
     func envelope(_ sequence: Int, _ at: String, _ event: WorkChatEvent) -> WorkChatEnvelope {
       WorkChatEnvelope(sessionId: sessionId, timestamp: at, sequence: sequence, event: event)
@@ -1364,6 +1430,9 @@ func chatThreadSnapshotMismatch(_ got: WorkChatTimelineSnapshot, _ full: WorkCha
   if got.fileChangeCards != full.fileChangeCards { return "fileChangeCards" }
   if got.subagentSnapshots != full.subagentSnapshots { return "subagentSnapshots" }
   if got.scheduledWorkSnapshots != full.scheduledWorkSnapshots { return "scheduledWorkSnapshots" }
+  if got.sourceRefs != full.sourceRefs { return "sourceRefs" }
+  if got.omittedSourceRefCount != full.omittedSourceRefCount { return "omittedSourceRefCount" }
+  if got.taskList != full.taskList { return "taskList" }
   if got.transcriptIndicatesActiveTurn != full.transcriptIndicatesActiveTurn { return "transcriptIndicatesActiveTurn" }
   if got.transcriptLatestTurnEnded != full.transcriptLatestTurnEnded { return "transcriptLatestTurnEnded" }
   if got.transcriptHasInterruptibleActivity != full.transcriptHasInterruptibleActivity { return "transcriptHasInterruptibleActivity" }
@@ -1420,7 +1489,8 @@ private func chatThreadFramePresentationMismatch(
     modelId: summary.modelId,
     transcript: frame.transcript,
     assistantPreviewCache: WorkAssistantPreviewCache(),
-    streamingAssistantMessageId: streamingId
+    streamingAssistantMessageId: streamingId,
+    expandedTurnIds: overlays.expandedTurnIds
   )
   let gotPresentation = frame.presentation
   if gotPresentation.visibleEntries != presentation.visibleEntries { return "presentation.visibleEntries" }

@@ -450,8 +450,9 @@ describe("ChatAttachmentTray file chips", () => {
       />,
     );
     fireEvent.click(screen.getByTestId("chat-file-attachment-chip"));
-    const dialog = await screen.findByRole("dialog", { name: "9f3a.csv" });
-    fireEvent.click(dialog);
+    await screen.findByRole("dialog", { name: "9f3a.csv" });
+    // A press on the shared Dialog's scrim, outside the panel.
+    fireEvent.pointerDown(document.body.querySelector(".ade-dialog-scrim")!);
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "9f3a.csv" })).toBeNull());
   });
 });

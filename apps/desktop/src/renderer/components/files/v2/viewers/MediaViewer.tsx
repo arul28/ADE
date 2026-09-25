@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { ArrowSquareOut, MusicNotes, VideoCamera } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { revealLabel } from "../../../../lib/platform";
+import { playableVideoMime } from "../../../../lib/playableMedia";
 import { streamFileBytes } from "../streamBytes";
 import type { ViewerProps } from "./types";
 
@@ -35,7 +36,7 @@ export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }
           maxBytes: MAX_MEDIA_STREAM_BYTES,
         });
         if (cancelled) return;
-        const blob = new Blob([bytes], { type: mimeType });
+        const blob = new Blob([bytes], { type: playableVideoMime(mimeType) });
         objectUrl = URL.createObjectURL(blob);
         setSrc(objectUrl);
       } catch (err) {

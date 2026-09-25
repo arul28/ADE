@@ -15,38 +15,34 @@ import {
   Folder,
   FolderOpen,
   Plus,
-  Minus,
   Plugs,
   Trash,
   UploadSimple,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
-import * as Dialog from "@radix-ui/react-dialog";
+import { Dialog as AppDialog } from "../ui/dialog/Dialog";
 
 import { useAppStore } from "../../state/appStore";
+import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { useGithubProjectRemote } from "../../lib/useGithubProjectRemote";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { rememberProjectOriginSummaries } from "../lanes/laneMachines";
-import {
-  ZOOM_LEVEL_KEY,
-  MIN_ZOOM_LEVEL,
-  MAX_ZOOM_LEVEL,
-  DEFAULT_ZOOM,
-  ZOOM_STEP,
-  displayZoomToLevel,
-  getStoredZoomLevel,
-  applyShellHeaderInset,
-} from "../../lib/zoom";
+import { resetAppZoom, zoomAppIn, zoomAppOut } from "../../lib/appZoom";
 import { consumeAppMenuCommand } from "../../lib/appMenuCommands";
 import { consumeAppZoomCommand } from "../../lib/appZoomCommands";
-import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice/Banner";
 import {
   readStoredProjectRoute,
   removeStoredProjectRoute,
 } from "./projectRouteStorage";
+import { ProjectSidebarToggle } from "./projectSidebar/ProjectSidebarToggle";
+import {
+  PROJECT_SIDEBAR_TOGGLE_KEYBINDING,
+  projectSidebarShortcutLabel,
+} from "./projectSidebar/projectSidebarTabs";
 import {
   activeMachineForGroup,
   groupProjectTabs,
@@ -56,7 +52,9 @@ import {
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { isMac, modifierKeyLabel } from "../../lib/platform";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { confirmDialog } from "../ui/dialog/confirm";
+import { isMac } from "../../lib/platform";
 import type {
   ProjectIcon,
   OpenProjectBinding,
@@ -69,9 +67,7 @@ import type {
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
 import { ChannelBadge } from "./ChannelBadge";
-import { FeedbackReporterModal } from "./FeedbackReporterModal";
-import { useDialogFocusTrap } from "./HeaderSheet";
-import { HelpMenu } from "../onboarding/HelpMenu";
+import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
@@ -80,7 +76,6 @@ import {
   subscribeOpenConnectionsPanel,
   type ConnectionsPanelTab,
 } from "../../lib/connectionsPanel";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
@@ -399,6 +394,7 @@ function ShellConnectionChip({
   );
 }
 
+
 function HeaderStatusMenu({
   remoteConnected,
   syncConnected,
@@ -436,29 +432,6 @@ function HeaderStatusMenu({
     if (!compact) close();
   }, [close, compact]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (menuRef.current?.contains(target)) return;
-      if (buttonRef.current?.contains(target)) return;
-      close();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [close, open]);
-
   const anyConnected = remoteConnected || (showSyncControl && syncConnected);
 
   if (!compact) return null;
@@ -474,7 +447,7 @@ function HeaderStatusMenu({
         )}
         data-variant="ghost"
         aria-label="Connections and usage"
-        aria-haspopup="menu"
+        aria-haspopup="dialog"
         aria-expanded={open}
         title="Connections and usage"
         onClick={() => (open ? close() : openMenu())}
@@ -489,23 +462,26 @@ function HeaderStatusMenu({
           aria-hidden
         />
       </button>
-      {open && menuPos
-        ? createPortal(
-            <div
-              ref={menuRef}
-              role="menu"
-              aria-label="Connections and usage"
-              className={cn(
-                "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-                "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
-              )}
-              style={{ top: menuPos.top, right: menuPos.right }}
-            >
-              {children(close)}
-            </div>,
-            document.body,
-          )
-        : null}
+      <HeaderSheet
+        open={open && menuPos !== null}
+        panelRef={menuRef}
+        title="Connections and usage"
+        bare
+        width="w-max min-w-[220px] max-w-[calc(100vw-16px)]"
+        panelStyle={menuPos ? {
+          top: menuPos.top,
+          right: menuPos.right,
+          left: "auto",
+          maxHeight: "calc(100vh - 80px)",
+          overflowY: "auto",
+        } : undefined}
+        surfaceClassName="min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        onClose={close}
+      >
+        <div role="menu" aria-label="Connections and usage">
+          {children(close)}
+        </div>
+      </HeaderSheet>
     </>
   );
 }
@@ -565,62 +541,62 @@ function MachineSwitcherMenu({
   }, [onClose]);
 
   return createPortal(
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-label={`Machines for ${group.displayName}`}
-      className={cn(
-        "fixed z-[90] min-w-[220px] overflow-hidden rounded-xl border border-white/10",
-        "bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45",
-      )}
-      style={
-        {
-          left: anchor.left,
-          top: anchor.top,
-          WebkitAppRegion: "no-drag",
-        } as React.CSSProperties
-      }
-    >
-      {group.machines.map((machine) => {
-        const isActive = machine.bindingKey === group.activeBindingKey;
-        const status = machineStatus(machine);
-        return (
-          <button
-            key={machine.bindingKey}
-            type="button"
-            role="menuitemradio"
-            aria-checked={isActive}
-            className={cn(
-              "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
-              "hover:bg-white/8",
-              isActive && "bg-white/6 font-semibold",
-            )}
-            onClick={() => {
-              onClose();
-              onSelect(machine);
-            }}
-          >
-            <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
-            {status ? (
-              <span className="shrink-0 text-[10px] opacity-60">{status}</span>
-            ) : null}
-          </button>
-        );
-      })}
-      <div className="my-1 h-px bg-white/8" />
-      <button
-        type="button"
-        role="menuitem"
-        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
-        onClick={() => {
-          onClose();
-          onConnectAnother();
-        }}
+    <ViewportOverlayHost layer="tabMenu">
+      <div
+        ref={menuRef}
+        role="menu"
+        aria-label={`Machines for ${group.displayName}`}
+        className="absolute min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
+        style={
+          {
+            left: anchor.left,
+            top: anchor.top,
+            pointerEvents: "auto",
+            WebkitAppRegion: "no-drag",
+          } as React.CSSProperties
+        }
       >
-        <Plus size={11} weight="regular" className="shrink-0" />
-        <span className="truncate">Connect another machine…</span>
-      </button>
-    </div>,
+        {group.machines.map((machine) => {
+          const isActive = machine.bindingKey === group.activeBindingKey;
+          const status = machineStatus(machine);
+          return (
+            <button
+              key={machine.bindingKey}
+              type="button"
+              role="menuitemradio"
+              aria-checked={isActive}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
+                "hover:bg-white/8",
+                isActive && "bg-white/6 font-semibold",
+              )}
+              onClick={() => {
+                onClose();
+                onSelect(machine);
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
+              {status ? (
+                <span className="shrink-0 text-[10px] opacity-60">{status}</span>
+              ) : null}
+            </button>
+          );
+        })}
+        <div className="my-1 h-px bg-white/8" />
+        <button
+          type="button"
+          role="menuitem"
+          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
+          onClick={() => {
+            onClose();
+            onConnectAnother();
+          }}
+        >
+          <Plus size={11} weight="regular" className="shrink-0" />
+          <span className="truncate">Connect another machine…</span>
+        </button>
+      </div>
+    </ViewportOverlayHost>,
     document.body,
   );
 }
@@ -638,11 +614,13 @@ function fallbackProjectName(rootPath: string): string {
   return rootPath.split(/[\\/]/).filter(Boolean).pop() ?? rootPath;
 }
 
-function confirmProjectTabRemoval(projectName: string): boolean {
+function confirmProjectTabRemoval(projectName: string): Promise<boolean> {
   const label = projectName.trim() || "this project";
-  return window.confirm(
-    `Close "${label}" project tab?\n\nThis does not remove it from Recent Projects or delete any files on disk.`,
-  );
+  return confirmDialog({
+    title: `Close "${label}" project tab?`,
+    message: "This does not remove it from Recent Projects or delete any files on disk.",
+    confirmLabel: "Close",
+  });
 }
 
 function ProjectTabIcon({
@@ -843,123 +821,84 @@ function ProjectTabIcon({
   }
 
   return (
-    <Dialog.Root
-      open={iconDialogOpen}
-      onOpenChange={(open) => {
-        setIconDialogOpen(open);
-        if (!open) setIconError(null);
-      }}
-    >
-      <Dialog.Trigger asChild>
-        <button
-          type="button"
-          aria-label="Project icon"
-          title="Project icon"
-          className={cn(
-            "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
-            "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
-          )}
-          onClick={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-        >
-          {choosing || removing ? (
-            <CircleNotch
-              size={15}
-              weight="bold"
-              className="animate-spin opacity-80"
+    <>
+      <button
+        type="button"
+        aria-label="Project icon"
+        title="Project icon"
+        aria-haspopup="dialog"
+        aria-expanded={iconDialogOpen}
+        className={cn(
+          "inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-[4px]",
+          "text-current transition-colors hover:bg-white/10 focus-visible:outline focus-visible:outline-1 focus-visible:outline-accent/70",
+        )}
+        onClick={(event) => {
+          event.stopPropagation();
+          setIconDialogOpen(true);
+        }}
+        onKeyDown={(event) => event.stopPropagation()}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        {choosing || removing ? (
+          <CircleNotch
+            size={15}
+            weight="bold"
+            className="animate-spin opacity-80"
+          />
+        ) : (
+          iconNode
+        )}
+      </button>
+      <AppDialog
+        open={iconDialogOpen}
+        onOpenChange={(open) => {
+          setIconDialogOpen(open);
+          if (!open) setIconError(null);
+        }}
+        title="Project icon"
+        size="sm"
+        width={320}
+        tone="accent"
+        stopClickPropagation
+        actions={[
+          {
+            label: "Remove",
+            variant: "secondary",
+            busy: removing,
+            disabled: choosing || removing,
+            onClick: () => void handleRemoveIcon(),
+          },
+          {
+            label: "Replace",
+            variant: "solid",
+            busy: choosing,
+            disabled: choosing || removing,
+            onClick: () => void handleChooseIcon(),
+          },
+        ]}
+      >
+        <div className="flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
+          {icon?.dataUrl && !failed ? (
+            <img
+              src={icon.dataUrl}
+              alt=""
+              className="h-20 w-20 rounded-md object-contain"
+              draggable={false}
             />
           ) : (
-            iconNode
+            <Folder size={52} className="text-muted-fg" />
           )}
-        </button>
-      </Dialog.Trigger>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-[120] bg-black/45 backdrop-blur-sm" />
-        <Dialog.Content
-          className={cn(
-            "fixed left-1/2 top-1/2 z-[121] w-[min(320px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2",
-            "rounded-lg border border-border bg-surface p-4 text-fg shadow-2xl",
-          )}
-          onClick={(event) => event.stopPropagation()}
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <Dialog.Title className="text-sm font-semibold">
-                Project icon
-              </Dialog.Title>
-              <Dialog.Description className="sr-only">
-                Preview and manage this project's shared icon.
-              </Dialog.Description>
-            </div>
-            <Dialog.Close asChild>
-              <button
-                type="button"
-                className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/10 hover:text-fg"
-                aria-label="Close"
-              >
-                <X size={15} />
-              </button>
-            </Dialog.Close>
-          </div>
+        </div>
 
-          <div className="mt-4 flex items-center justify-center rounded-md border border-border bg-bg/60 p-5">
-            {icon?.dataUrl && !failed ? (
-              <img
-                src={icon.dataUrl}
-                alt=""
-                className="h-20 w-20 rounded-md object-contain"
-                draggable={false}
-              />
-            ) : (
-              <Folder size={52} className="text-muted-fg" />
-            )}
-          </div>
-
-          {iconError ? (
-            <div
-              role="alert"
-              className="mt-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-200"
-            >
-              {iconError}
-            </div>
-          ) : null}
-
-          <div className="mt-4 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              className="inline-flex h-8 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-muted-fg transition-colors hover:bg-white/10 hover:text-fg disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={choosing || removing}
-              onClick={handleRemoveIcon}
-            >
-              {removing ? (
-                <CircleNotch
-                  size={13}
-                  weight="bold"
-                  className="mr-1.5 animate-spin"
-                />
-              ) : null}
-              Remove
-            </button>
-            <button
-              type="button"
-              className="inline-flex h-8 items-center justify-center rounded-md bg-accent px-3 text-xs font-semibold text-accent-fg transition-colors hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
-              disabled={choosing || removing}
-              onClick={handleChooseIcon}
-            >
-              {choosing ? (
-                <CircleNotch
-                  size={13}
-                  weight="bold"
-                  className="mr-1.5 animate-spin"
-                />
-              ) : null}
-              Replace
-            </button>
-          </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+        {iconError ? (
+          <Banner
+            model={{ id: "project-icon-error", tone: "error", title: iconError }}
+            layout="inline"
+            style={{ marginTop: 12 }}
+          />
+        ) : null}
+      </AppDialog>
+    </>
   );
 }
 
@@ -978,6 +917,7 @@ export function TopBar({
   onOpenActivityPane?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  const theme = useAppStore((s) => s.theme);
   const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
@@ -1007,17 +947,11 @@ export function TopBar({
   // In the browser web client there are no OS windows to open/close and no
   // desktop auto-updater; hide those controls so web shows no dead buttons.
   const webMode = isWebClientMode();
-  const [zoom, setZoom] = useState(getStoredZoomLevel);
   const [syncSnapshot, setSyncSnapshot] = useState<SyncRoleSnapshot | null>(
     null,
   );
   const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [connectionsTab, setConnectionsTab] = useState<ConnectionsPanelTab>("machines");
-  const {
-    state: remoteDisconnectConfirmState,
-    confirmAsync: confirmRemoteDisconnect,
-    close: closeRemoteDisconnectConfirm,
-  } = useConfirmDialog();
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -1028,7 +962,6 @@ export function TopBar({
     },
     [],
   );
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
   const setOpenProjectTabRoots = useAppStore((s) => s.setOpenProjectTabRoots);
@@ -1064,11 +997,6 @@ export function TopBar({
     setConnectionsTab(tab);
     setConnectionsOpen(true);
   }, [webMode]);
-  const handleConnectionsPanelKeyDown = useDialogFocusTrap(
-    connectionsPanelRef,
-    closeConnections,
-    connectionsOpen,
-  );
   const dragCounterRef = useRef(0);
   const isProjectBusy = projectTransition != null || relocatingPath != null;
   const remoteBinding =
@@ -1081,6 +1009,18 @@ export function TopBar({
     Boolean(project?.rootPath) &&
     !remoteBinding;
   const resourceUsage = useResourcePressureUsage(workspaceProjectOpen);
+  // The sidebar toggle only shows while a project surface is on screen: not on
+  // the welcome page, a new tab, Chats, or the account page.
+  const projectSurfaceVisible =
+    projectHydrated === true &&
+    showWelcome !== true &&
+    isNewTabOpen !== true &&
+    Boolean(project?.rootPath) &&
+    !personalChatsRouteActive &&
+    !accountRouteActive &&
+    !hubRouteActive;
+  const keybindings = useAppStore((s) => s.keybindings);
+  const sidebarToggleShortcut = projectSidebarShortcutLabel(keybindings, PROJECT_SIDEBAR_TOGGLE_KEYBINDING);
 
   const projectRootForRemote = workspaceProjectOpen
     ? (project?.rootPath ?? null)
@@ -1133,28 +1073,10 @@ export function TopBar({
     openRemoteProjectTabsRef.current = openRemoteProjectTabs;
   }, [openRemoteProjectTabs]);
 
-  // Mirrors the latest applied zoom so menu/keyboard commands compound off the
-  // current level. Updated synchronously inside applyZoom (not via a passive
-  // effect) so back-to-back commands before the next render don't reuse a stale
-  // value and collapse multiple steps into one.
-  const zoomRef = useRef(zoom);
-  const applyZoom = useCallback((pct: number) => {
-    const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
-    window.ade.zoom.setLevel(displayZoomToLevel(clamped));
-    localStorage.setItem(ZOOM_LEVEL_KEY, String(clamped));
-    applyShellHeaderInset(clamped);
-    // Windows twin of the traffic-light inset: the native caption strip is
-    // sized in DIP and does not follow renderer zoom on its own.
-    syncWindowsTitleBarOverlay({ displayZoom: clamped });
-    zoomRef.current = clamped;
-    setZoom(clamped);
-  }, []);
-
-  const zoomIn = useCallback(() => applyZoom(zoom + ZOOM_STEP), [applyZoom, zoom]);
-  const zoomOut = useCallback(() => applyZoom(zoom - ZOOM_STEP), [applyZoom, zoom]);
-
-  // Route native View-menu (and keyboard) zoom through the same applyZoom path
-  // so display %, persistence, and the macOS traffic-light inset stay in sync.
+  // Route native View-menu (and keyboard) zoom through the shared zoom store,
+  // the same path the settings sidebar's zoom buttons use, so the display %,
+  // persistence, and the traffic-light inset stay in sync. The bar has no zoom
+  // buttons of its own; it listens here because it is always mounted.
   useEffect(() => {
     const onCommand = window.ade?.zoom?.onCommand;
     if (typeof onCommand !== "function") return;
@@ -1164,11 +1086,11 @@ export function TopBar({
       // content — the built-in browser's page zoom — has to be offered the
       // command here. It declines unless it actually has focus.
       if (consumeAppZoomCommand(command)) return;
-      if (command === "in") applyZoom(zoomRef.current + ZOOM_STEP);
-      else if (command === "out") applyZoom(zoomRef.current - ZOOM_STEP);
-      else applyZoom(DEFAULT_ZOOM);
+      if (command === "in") zoomAppIn();
+      else if (command === "out") zoomAppOut();
+      else resetAppZoom();
     });
-  }, [applyZoom]);
+  }, []);
 
   /**
    * ⌘F and ⌘W, offered to the pane that has the keyboard before the app
@@ -1633,14 +1555,18 @@ export function TopBar({
         if (warnings.length === 0) return true;
 
         const message = [
-          "You are about to close this project.",
           "The following active work items will be terminated:",
           ...warnings.map((line) => `- ${line}`),
           "",
           "Do you want to continue?",
         ].join("\n");
 
-        return window.confirm(message);
+        return await confirmDialog({
+          title: "You are about to close this project.",
+          message,
+          confirmLabel: "Continue",
+          destructive: true,
+        });
       } catch {
         return true;
       }
@@ -1802,7 +1728,7 @@ export function TopBar({
       void (async () => {
         const target = projectTabs.find((entry) => entry.rootPath === rootPath);
         const fallbackName = fallbackProjectName(rootPath);
-        const confirmed = confirmProjectTabRemoval(
+        const confirmed = await confirmProjectTabRemoval(
           target?.displayName ?? fallbackName,
         );
         if (!confirmed) return;
@@ -1937,13 +1863,13 @@ export function TopBar({
             ? "Removing this machine will delete its saved SSH details."
             : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
 
-      const confirmed = await confirmRemoteDisconnect({
+      const confirmed = await confirmDialog({
         title: action === "remove"
           ? `Remove ${targetName}?`
           : `Disconnect ${targetName}?`,
         message,
         confirmLabel: action === "remove" ? "REMOVE" : "DISCONNECT",
-        danger: true,
+        destructive: true,
       });
       if (!confirmed) return false;
       if (affectedTabs.length === 0) return true;
@@ -2018,7 +1944,7 @@ export function TopBar({
       finishAffectedTabClose();
       return true;
     },
-    [confirmRemoteDisconnect],
+    [],
   );
 
   const handleRemoteTargetDisconnectRequested = useCallback(
@@ -2326,9 +2252,17 @@ export function TopBar({
 
   return (
     <header
-      className="ade-shell-header flex items-center gap-3"
+      className="ade-shell-header relative isolate flex items-center gap-3"
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
+      {/* The top bar's part of the window gradient. It is one field with the
+          welcome screen and the new chat pane, so where they meet there is
+          no seam. */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 -z-10 overflow-hidden">
+        <WorkToolPickerBackdrop theme={theme} field="window" />
+      </div>
+      {projectSurfaceVisible ? <ProjectSidebarToggle shortcut={sidebarToggleShortcut} /> : null}
+
       {/* Branding */}
       <img
         src="./logo.png"
@@ -2865,166 +2799,56 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Trailing controls: activity · status · updates · utility cluster.
+      {/* Trailing controls: activity · status · updates.
           The group must be able to shrink: the header reserves room for the
           native window controls (macOS traffic lights at the start, Windows
           caption buttons at the end) with padding, and a shrink-0 group would
           simply overflow that padding at narrow widths and slide back under
-          them. The status/update strip therefore clips first so the utility
-          cluster — feedback, help, zoom — always stays inside the reservation. */}
-      <div className="flex min-w-0 items-center gap-2">
-        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-          {/* Account-wide Activity — the one place every machine's work surfaces,
-              reachable from every tab and project without a nav detour. */}
-          <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+          them, so it clips instead. Feedback, help, and zoom live in the
+          settings sidebar. */}
+      <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+        {/* Account-wide Activity — the one place every machine's work surfaces,
+            reachable from every tab and project without a nav detour. */}
+        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
-          {/* App-global voice capture — visible from any tab while recording. */}
-          <GlobalVoiceCaptureIndicator />
+        {/* App-global voice capture — visible from any tab while recording. */}
+        <GlobalVoiceCaptureIndicator />
 
-          <ResourcePressureIndicator usage={resourceUsage} />
-          <StoragePressureIndicator enabled={workspaceProjectOpen} />
+        <ResourcePressureIndicator usage={resourceUsage} />
+        <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
-          <div className="hidden md:flex items-center gap-1.5">
-            {renderHeaderStatusControls()}
-          </div>
-
-          <HeaderStatusMenu
-            remoteConnected={remoteConnected}
-            syncConnected={syncConnected || (!webMode && webConnected)}
-            showSyncControl={showSyncControl}
-          >
-            {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
-          </HeaderStatusMenu>
-
-          {!webMode ? <AutoUpdateControl /> : null}
+        <div className="hidden md:flex items-center gap-1.5">
+          {renderHeaderStatusControls()}
         </div>
 
-        <div
-          className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        <HeaderStatusMenu
+          remoteConnected={remoteConnected}
+          syncConnected={syncConnected || (!webMode && webConnected)}
+          showSyncControl={showSyncControl}
         >
-          <SmartTooltip
-            content={{
-              label: "Send feedback",
-              description: "Report a bug, suggest a feature, or ask a question — the report goes to the ADE team with helpful context attached.",
-            }}
-          >
-            <button
-              type="button"
-              className={cn(
-                "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-                "transition-[background-color,color,border-color,box-shadow] duration-150",
-              )}
-              data-variant="ghost"
-              onClick={() => setFeedbackOpen(true)}
-              aria-label="Report bug or suggest feature"
-            >
-              <ChatCircleDots size={13} weight="regular" />
-            </button>
-          </SmartTooltip>
+          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+        </HeaderStatusMenu>
 
-          <HelpMenu />
-
-          <div className="inline-flex items-center gap-0">
-            <SmartTooltip
-              content={{
-                label: "Zoom out",
-                description: "Shrink everything in the window.",
-                shortcut: `${modifierKeyLabel}-`,
-              }}
-            >
-              <button
-                type="button"
-                className={cn(
-                  "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-                  "transition-[background-color,color,border-color,box-shadow] duration-150",
-                )}
-                data-variant="ghost"
-                onClick={zoomOut}
-                aria-label="Zoom out"
-              >
-                <Minus size={11} weight="bold" />
-              </button>
-            </SmartTooltip>
-            <span
-              className={cn(
-                "ade-shell-control-kbd ade-shell-header-utility-zoom inline-flex items-center justify-center border-x-0",
-                "select-none text-center font-mono",
-              )}
-            >
-              {zoom}%
-            </span>
-            <SmartTooltip
-              content={{
-                label: "Zoom in",
-                description: "Enlarge everything in the window.",
-                shortcut: `${modifierKeyLabel}+`,
-              }}
-            >
-              <button
-                type="button"
-                className={cn(
-                  "ade-shell-control ade-shell-header-utility-btn inline-flex items-center justify-center",
-                  "transition-[background-color,color,border-color,box-shadow] duration-150",
-                )}
-                data-variant="ghost"
-                onClick={zoomIn}
-                aria-label="Zoom in"
-              >
-                <Plus size={11} weight="bold" />
-              </button>
-            </SmartTooltip>
-          </div>
-        </div>
+        {!webMode ? <AutoUpdateControl /> : null}
       </div>
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
-      {typeof document !== "undefined"
-        ? createPortal(
-            <ConfirmDialog
-              state={remoteDisconnectConfirmState}
-              onClose={closeRemoteDisconnectConfirm}
-            />,
-            document.body,
-          )
-        : null}
-      {typeof document !== "undefined" && !webMode && connectionsOpen
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[120]"
-              style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-              onClick={closeConnections}
-            >
-              <div
-                ref={connectionsPanelRef}
-                className={cn(
-                  "absolute right-3 top-10 max-h-[calc(100vh-72px)] w-[min(560px,calc(100vw-24px))]",
-                  "rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] shadow-2xl shadow-black/45",
-                )}
-                role="dialog"
-                aria-modal="true"
-                aria-label="Connections"
-                tabIndex={-1}
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={handleConnectionsPanelKeyDown}
-              >
-                <ConnectionsPanel
-                  initialTab={connectionsTab}
-                  onClose={closeConnections}
-                  onDisconnectRequested={handleRemoteTargetDisconnectRequested}
-                  onRemoveRequested={handleRemoteTargetRemoveRequested}
-                />
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
-
-      <FeedbackReporterModal
-        open={feedbackOpen}
-        onOpenChange={setFeedbackOpen}
-      />
+      <HeaderSheet
+        open={connectionsOpen && !webMode}
+        bare
+        panelRef={connectionsPanelRef}
+        title="Connections"
+        width="w-[min(560px,calc(100vw-24px))]"
+        onClose={closeConnections}
+      >
+        <ConnectionsPanel
+          initialTab={connectionsTab}
+          onClose={closeConnections}
+          onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+          onRemoveRequested={handleRemoteTargetRemoveRequested}
+        />
+      </HeaderSheet>
 
       <PublishToGitHubDialog
         open={publishOpen}

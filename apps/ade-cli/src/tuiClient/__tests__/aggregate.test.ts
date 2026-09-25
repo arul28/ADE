@@ -565,6 +565,18 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(derivePendingSteers(events)).toEqual([{ steerId: "steer-1", text: "queued" }]);
   });
 
+  it.each([
+    // A refused Cursor/OpenCode inline steer comes back as `queued` on the same steerId.
+    { label: "shows a steer staged again after its inline offer is refused", states: ["queued", "accepted", "queued"], staged: true },
+    { label: "clears a steer the live turn took inline", states: ["queued", "accepted", "inline"], staged: false },
+    { label: "clears a steer that went nowhere", states: ["accepted", "failed"], staged: false },
+  ] as const)("$label", ({ states, staged }) => {
+    const events = states.map((deliveryState, index) =>
+      env(`2026-01-01T12:00:0${index}.000Z`, { type: "user_message", text: "steer me", steerId: "steer-1", deliveryState }));
+
+    expect(derivePendingSteers(events)).toEqual(staged ? [{ steerId: "steer-1", text: "steer me" }] : []);
+  });
+
   it("treats a stateless context_compact as a completed (done) block", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", turnId: "turn-1" }),
@@ -604,31 +616,6 @@ describe("aggregateChatBlocks typed groups", () => {
 
     expect(assistantBlocks).toHaveLength(1);
     expect(assistantBlocks[0]!.line.body).toBe("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
-  });
-
-  it("does not duplicate the tail when a provider re-emits an overlapping fragment of the same message", () => {
-    // Regression (real Codex chat): "…so I can split the review instead of
-    // doing it as one giant pass." rendered twice because the provider re-sent
-    // the final sentence for the same messageId and the merge was plain concat.
-    const events: AgentChatEventEnvelope[] = [
-      env("2026-01-01T12:00:00.000Z", { type: "text", text: "I found the entry point so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
-      env("2026-01-01T12:00:01.000Z", { type: "text", text: " so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
-    ];
-    const blocks = aggregate(events);
-    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
-    expect(assistantBlocks).toHaveLength(1);
-    expect(assistantBlocks[0]!.line.body).toBe("I found the entry point so I can split the review instead of doing it as one giant pass.");
-  });
-
-  it("replaces the buffer when a provider re-emits the cumulative message text", () => {
-    const events: AgentChatEventEnvelope[] = [
-      env("2026-01-01T12:00:00.000Z", { type: "text", text: "Hello", turnId: "turn-1", messageId: "msg-1" }),
-      env("2026-01-01T12:00:01.000Z", { type: "text", text: "Hello world.", turnId: "turn-1", messageId: "msg-1" }),
-    ];
-    const blocks = aggregate(events);
-    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
-    expect(assistantBlocks).toHaveLength(1);
-    expect(assistantBlocks[0]!.line.body).toBe("Hello world.");
   });
 
   it("dedupes re-emitted reasoning tails within the same reasoning item", () => {
@@ -1214,12 +1201,19 @@ describe("aggregateChatBlocks claude history accuracy", () => {
     ];
 
     const blocks = aggregate(events);
-    expect(blocks).toEqual([expect.objectContaining({
-      kind: "user-bubble",
-      line: expect.objectContaining({
-        header: "not processed · dismissed",
-        body: "Continue",
+    expect(blocks).toEqual([
+      expect.objectContaining({
+        kind: "user-bubble",
+        line: expect.objectContaining({
+          body: "Continue",
+        }),
       }),
-    })]);
+      expect.objectContaining({
+        kind: "notice",
+        line: expect.objectContaining({
+          body: "↳ Not processed · dismissed",
+        }),
+      }),
+    ]);
   });
 });

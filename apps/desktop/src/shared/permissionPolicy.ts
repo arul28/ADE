@@ -2,7 +2,7 @@ import path from "node:path";
 
 // `PermissionPolicyPlatform` is the flavor `"posix" | "win32"`, never
 // `"darwin"`, so a `sandboxRoot` comparison does not fold case on macOS.
-// `foldsCase` in `pathContainment.ts` states why that is the safe direction
+// `foldsCase` in `pathCase.ts` states why that is the safe direction
 // for a check that grants.
 import { pathIsWithinRoot } from "./pathContainment";
 import type { AgentChatPermissionPolicy } from "./types/chat";

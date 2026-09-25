@@ -18,6 +18,7 @@ import { COLORS, SANS_FONT, formatTimestamp, outlineButton, primaryButton } from
 import { CustomToolMark } from "../../shared/CustomToolMark";
 import { HarnessLogo } from "../../shared/HarnessLogo";
 import { HelpHint } from "../primitives/HelpHint";
+import { Banner as NoticeBanner } from "../../ui/notice";
 import {
   SettingsManagerEmpty,
   SettingsManagerPage,
@@ -264,8 +265,28 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
         }}
       />
 
-      {notice ? <Banner tone="success" message={notice} onDismiss={() => setNotice(null)} /> : null}
-      {error ? <Banner tone="error" message={error} onDismiss={() => setError(null)} /> : null}
+      {notice ? (
+        <NoticeBanner
+          layout="inline"
+          model={{
+            id: "harnesses-notice",
+            tone: "success",
+            title: notice,
+            actions: [{ label: "Dismiss", variant: "secondary", onClick: () => setNotice(null) }],
+          }}
+        />
+      ) : null}
+      {error ? (
+        <NoticeBanner
+          layout="inline"
+          model={{
+            id: "harnesses-error",
+            tone: "error",
+            title: error,
+            actions: [{ label: "Dismiss", variant: "secondary", onClick: () => setError(null) }],
+          }}
+        />
+      ) : null}
 
       {rows.length === 0 ? (
         <SettingsManagerEmpty
@@ -496,38 +517,5 @@ function RenameDialog({
       <button type="submit" style={primaryButton()} disabled={!trimmed}>Save</button>
       <button type="button" style={outlineButton()} onClick={onCancel}>Cancel</button>
     </form>
-  );
-}
-
-function Banner({
-  tone,
-  message,
-  onDismiss,
-}: {
-  tone: "success" | "error";
-  message: string;
-  onDismiss: () => void;
-}) {
-  const color = tone === "error" ? COLORS.danger : COLORS.success;
-  return (
-    <div
-      role={tone === "error" ? "alert" : "status"}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 12,
-        padding: "9px 12px",
-        borderRadius: 8,
-        border: `1px solid ${color}`,
-        background: `color-mix(in srgb, ${color} 10%, transparent)`,
-        fontFamily: SANS_FONT,
-        fontSize: 11.5,
-        color: COLORS.textPrimary,
-      }}
-    >
-      <span style={{ minWidth: 0 }}>{message}</span>
-      <button type="button" style={outlineButton()} onClick={onDismiss}>Dismiss</button>
-    </div>
   );
 }

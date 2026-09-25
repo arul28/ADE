@@ -13,16 +13,22 @@ import type { AgentChatSessionSummary } from "../../../../desktop/src/shared/typ
 import type { TuiChatSessionSummary } from "../adeApi";
 import { theme } from "../theme";
 import {
+  EXTERNAL_SESSION_SURFACE_LABELS,
   externalSessionActionKey,
   externalSessionAnchors,
   externalSessionBrowserActions,
+  externalSessionBrowserTargetOptions,
+  externalSessionLaneLabel,
   externalSessionProviderLabel,
   externalSessionRowTitle,
-  shortenCwd,
+  externalSessionTargetLaneName,
+  isImportEntry,
   visibleExternalSessions,
 } from "../externalSessionBrowser";
 import { formatRelativePastTime } from "../relativeTime";
 import { usageLimitResumePill } from "../../../../desktop/src/shared/usageLimitResumePresentation";
+import { formatExternalSessionSize } from "../../../../desktop/src/shared/externalSessionAffordances";
+import { chatTaskItemDisplayLabel, chatTaskListProgress, type ChatTaskItem } from "../../../../desktop/src/shared/chatTaskList";
 import {
   isEarlierBackgroundItem,
   isEarlierScheduleItem,
@@ -823,11 +829,11 @@ function chatInfoIdentityLines(info: ChatInfoSnapshot): number {
 }
 
 function chatInfoPlanLines(info: ChatInfoSnapshot): number {
-  const plan = info.plan;
-  if (!plan || !plan.steps.length) return 0;
+  const items = info.taskList?.items.length ?? 0;
+  if (!items && !info.planStreamingText) return 0;
   return 2
-    + Math.min(6, plan.steps.length)
-    + (info.planExplanation ? 1 : 0)
+    + Math.min(TASKS_VISIBLE_CAP, items)
+    + (items > TASKS_VISIBLE_CAP ? 1 : 0)
     + (info.planStreamingText ? 1 : 0);
 }
 
@@ -857,21 +863,42 @@ export function resolveChatInfoRosterViewState(viewState: SubagentPaneViewState 
   };
 }
 
+const TASK_STEP_STATUS: Record<ChatTaskItem["status"], ChatInfoPlanStep["status"]> = {
+  pending: "pending",
+  running: "in_progress",
+  done: "completed",
+  failed: "failed",
+};
+
+/**
+ * The chat's one task list (plan or todos, every provider) as one PLAN/TASKS
+ * section above the roster — the TUI's copy of desktop's Tasks section.
+ */
 function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
-  const plan = info.plan;
+  const list = info.taskList;
   const inner = Math.max(10, width - 4);
-  if (!plan || !plan.steps.length) return null;
+  if (!list?.items.length && !info.planStreamingText) return null;
+  const items = list?.items ?? [];
+  const progress = chatTaskListProgress(items);
+  const visible = items.slice(0, TASKS_VISIBLE_CAP);
+  const hiddenAfter = items.length - visible.length;
+  const title = list?.source === "todo" ? "TASKS" : "PLAN";
+  // A short plan explanation is the list's label; it rides on the header line.
+  const label = list && list.label !== "Plan" && list.label !== "Tasks"
+    ? endTruncate(list.label, Math.max(8, inner - title.length - 10))
+    : undefined;
   return (
     <Box flexDirection="column">
-      <ChatInfoSectionHead title="PLAN" hint={`${plan.current}/${plan.total}`} color={brandColor} width={width} />
-      {plan.steps.slice(0, 6).map((step, index) => (
-        <Text key={`${index}:${step.text}`} color={planStepColor(step.status)} wrap="truncate-end">
-          {planStepGlyph(step.status)} {endTruncate(step.text, inner - 2)}
-        </Text>
-      ))}
-      {info.planExplanation ? (
-        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.planExplanation, inner)}</Text>
-      ) : null}
+      <ChatInfoSectionHead title={title} dimSuffix={label} hint={items.length ? `${progress.done}/${progress.total}` : undefined} color={brandColor} width={width} />
+      {visible.map((item) => {
+        const status = TASK_STEP_STATUS[item.status];
+        return (
+          <Text key={item.id} color={item.skipped ? theme.color.t4 : planStepColor(status)} dimColor={item.skipped} wrap="truncate-end">
+            {item.skipped ? "–" : planStepGlyph(status)} {endTruncate(chatTaskItemDisplayLabel(item), inner - 2)}
+          </Text>
+        );
+      })}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
       {info.planStreamingText ? (
         <Text color={theme.color.t4} dimColor italic wrap="truncate-end">{endTruncate(info.planStreamingText, inner)}</Text>
       ) : null}
@@ -1296,30 +1323,6 @@ function ChatInfoBackgroundBlock({ info, brandColor, width, viewState }: { info:
   );
 }
 
-function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
-  if (!info.todos.length) return null;
-  const inner = Math.max(10, width - 4);
-  const done = info.todos.filter((todo) => todo.status === "completed").length;
-  const visible = info.todos.slice(0, TASKS_VISIBLE_CAP);
-  const hiddenAfter = info.todos.length - visible.length;
-  return (
-    <Box flexDirection="column">
-      <ChatInfoSectionHead title="TASKS" hint={`${done}/${info.todos.length}`} color={brandColor} width={width} />
-      {visible.map((todo, index) => {
-        const status = todo.status === "completed" || todo.status === "failed" || todo.status === "in_progress"
-          ? todo.status
-          : "pending";
-        return (
-          <Text key={`${todo.id || "todo"}:${index}`} color={planStepColor(status as ChatInfoPlanStep["status"])} wrap="truncate-end">
-            {planStepGlyph(status as ChatInfoPlanStep["status"])} {endTruncate(todo.description, inner - 2)}
-          </Text>
-        );
-      })}
-      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
-    </Box>
-  );
-}
-
 /** Same tones as the desktop Merge card, in the TUI palette. */
 function prNextStepColor(tone: PrNextStepTone): string {
   switch (tone) {
@@ -1415,7 +1418,6 @@ function ChatInfoPane({
       <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} viewState={rosterState} />
-      <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoBackgroundBlock info={info} brandColor={brand.color} width={width} viewState={rosterState} />
       <ChatInfoScheduleBlock info={info} brandColor={brand.color} width={width} viewState={rosterState} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
@@ -1671,7 +1673,8 @@ function ExternalSessionBrowserPane({
     ? Math.min(Math.max(0, content.selectedIndex), visible.length - 1)
     : 0;
   const selectedSession = visible[selectedIndex] ?? null;
-  const actionRows = selectedSession ? externalSessionBrowserActions(selectedSession) : [];
+  const targetOptions = externalSessionBrowserTargetOptions(content);
+  const actionRows = selectedSession ? externalSessionBrowserActions(selectedSession, targetOptions) : [];
   const selectedActionIndex = actionRows.length
     ? Math.min(Math.max(0, content.actionIndex), actionRows.length - 1)
     : 0;
@@ -1730,7 +1733,11 @@ function ExternalSessionBrowserPane({
             const brand = theme.provider(session.provider);
             const title = externalSessionRowTitle(session);
             const anchors = externalSessionAnchors(session);
-            const cwd = shortenCwd(session.cwd, { maxSegments: 4 });
+            const laneLabel = externalSessionLaneLabel(session);
+            const laneColor = session.home?.kind === "lane" && session.home.color
+              ? session.home.color
+              : theme.color.t5;
+            const size = formatExternalSessionSize(session.sizeBytes);
             const messageCount = typeof session.messageCount === "number" && Number.isFinite(session.messageCount)
               ? `${compactNumber(session.messageCount)} prompt${session.messageCount === 1 ? "" : "s"}`
               : "prompts ?";
@@ -1747,8 +1754,14 @@ function ExternalSessionBrowserPane({
                     {endTruncate(title, Math.max(8, inner - 15))}
                   </Text>
                 </Text>
-                <Text color={selected ? theme.color.t3 : theme.color.t4} dimColor={!selected} wrap="truncate-end">
-                  {`  ${externalSessionAge(session)} · ${messageCount} · ${endTruncate(cwd, Math.max(8, inner - 20))}`}
+                <Text wrap="truncate-end">
+                  <Text color={laneColor}>{"  ● "}</Text>
+                  <Text color={selected ? theme.color.t2 : theme.color.t3} dimColor={!selected}>
+                    {endTruncate(laneLabel, Math.max(8, Math.floor(inner / 2)))}
+                  </Text>
+                  <Text color={selected ? theme.color.t3 : theme.color.t4} dimColor={!selected}>
+                    {` · ${[externalSessionAge(session), messageCount, size].filter(Boolean).join(" · ")}`}
+                  </Text>
                 </Text>
                 {badges.length ? (
                   <Text color={session.possiblyActive ? theme.color.warning : theme.color.t5} dimColor={!session.possiblyActive} wrap="truncate-end">
@@ -1796,27 +1809,40 @@ function ExternalSessionBrowserPane({
           <Text color={theme.color.t5}>Actions</Text>
           {actionRows.length ? actionRows.map((action, index) => {
             const focused = index === selectedActionIndex;
-            const importing = content.importingKey === externalSessionActionKey(selectedSession, action);
-            const color = !action.enabled
-              ? theme.color.t5
-              : focused
-                ? theme.color.violet
-                : action.hero
-                  ? theme.color.t1
-                  : theme.color.t3;
-            const supplemental = ("hint" in action ? action.hint : null)
-              ?? ("foreignCwd" in action && action.foreignCwd ? `Runs in ${shortenCwd(action.foreignCwd, { maxSegments: 4 })}.` : null);
-            const hint = ("disabledReason" in action ? action.disabledReason : null)
-              ?? [action.description, supplemental].filter(Boolean).join(" ");
+            const actionKey = externalSessionActionKey(selectedSession, action);
+            const importing = content.importingKey === actionKey;
+            const confirming = content.confirmKey === actionKey;
+            const main = !isImportEntry(action) || action.primary;
+            const color = focused ? theme.color.violet : main ? theme.color.t1 : theme.color.t3;
+            const previous = index > 0 ? actionRows[index - 1] : null;
+            // One lane line per surface, above its first action.
+            const laneLine = isImportEntry(action)
+              && (!previous || !isImportEntry(previous) || previous.surface !== action.surface)
+              ? `${EXTERNAL_SESSION_SURFACE_LABELS[action.surface]} in ${
+                  externalSessionTargetLaneName(selectedSession, action.laneId, targetOptions)
+                }${action.laneLocked ? " · locked" : ""}`
+              : null;
+            const hint = !isImportEntry(action)
+              ? action.description
+              : confirming
+                ? "Open elsewhere — press enter again to continue anyway."
+                : [action.laneLocked && laneLine ? action.lockReason : null, action.note]
+                  .filter(Boolean)
+                  .join(" ");
             return (
-              <Box key={action.kind} flexDirection="column">
-                <Text color={color} dimColor={!action.enabled}>
+              <Box key={action.key} flexDirection="column">
+                {laneLine ? (
+                  <Text color={theme.color.t4} wrap="truncate-end">
+                    {`  ${endTruncate(laneLine, Math.max(8, inner - 3))}`}
+                  </Text>
+                ) : null}
+                <Text color={color}>
                   <Text color={focused ? theme.color.violet : theme.color.t5}>{focused ? theme.rail : " "}</Text>
                   {importing ? "◐ " : focused ? "↵ " : "  "}
-                  <Text bold={focused || action.hero}>{endTruncate(action.label, Math.max(8, inner - 4))}</Text>
+                  <Text bold={focused || main}>{endTruncate(action.label, Math.max(8, inner - 4))}</Text>
                 </Text>
                 {hint ? (
-                  <Text color={theme.color.t5} dimColor wrap="truncate-end">
+                  <Text color={confirming ? theme.color.warning : theme.color.t5} dimColor={!confirming} wrap="truncate-end">
                     {`   ${endTruncate(hint, Math.max(8, inner - 3))}`}
                   </Text>
                 ) : null}
@@ -1830,7 +1856,7 @@ function ExternalSessionBrowserPane({
 
       <Box marginTop={1}>
         <Text color={theme.color.t5} dimColor wrap="truncate-end">
-          {endTruncate("up/down rows · left/right actions · enter run action · O open existing · R refresh · P provider · type search", inner)}
+          {endTruncate("up/down rows · left/right actions · enter run action · L lane · O open existing · R refresh · P provider · type search", inner)}
         </Text>
       </Box>
     </Box>

@@ -92,10 +92,10 @@ function showSetupFailureToast(params: DetachedSetupParams, detail?: string): vo
     message: detail ?? "Environment setup failed. Retry to finish setting up this lane.",
     tone: "error",
     durationMs: 0,
-    action: {
+    actions: [{
       label: "Retry",
       onClick: () => runDetachedLaneSetup(params),
-    },
+    }],
   });
 }
 

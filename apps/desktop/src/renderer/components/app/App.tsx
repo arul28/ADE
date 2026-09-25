@@ -12,18 +12,21 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
-import { resolveSettingsTab } from "../settings/settingsManifest";
+import { ACCOUNT_SETTINGS_ROUTE, resolveSettingsTab } from "../settings/settingsManifest";
 import {
   InboundDeeplinkModal,
   type InboundDeeplinkDispatchOptions,
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
+import { DialogHost } from "../ui/dialog/confirm";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
 import { ProjectHostRecoveryScreen, ProjectHostStartingBanner } from "./ProjectHostRecoveryScreen";
 import { PageErrorBoundary } from "./PageErrorBoundary";
+import { ProjectSidebar } from "./projectSidebar/ProjectSidebar";
+import { ProjectSidebarHold, ProjectSidebarSlotProvider } from "./projectSidebar/ProjectSidebarSlot";
 import { ProjectWelcomePage } from "../projects/ProjectWelcomePage";
 import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
@@ -83,9 +86,6 @@ const HistoryPage = React.lazy(() =>
 const AutomationsPage = React.lazy(() =>
   import("../automations/AutomationsPage").then((m) => ({ default: m.AutomationsPage }))
 );
-const AutomationsTemplatesPage = React.lazy(() =>
-  import("../automations/AutomationsTemplatesPage").then((m) => ({ default: m.AutomationsTemplatesPage }))
-);
 const SettingsPage = React.lazy(() =>
   import("./SettingsPage").then((m) => ({ default: m.SettingsPage }))
 );
@@ -115,6 +115,7 @@ import { filesProjectCacheKey, releaseFilesProjectCaches } from "../files/v2/fil
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
 import { requestWorkTool } from "../terminals/workToolRequests";
+import { useWorkToolShowRequestListener } from "../../lib/workToolShowRequests";
 import {
   ADE_NAVIGATE_TARGET_EVENT,
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
@@ -215,6 +216,23 @@ function isWorkRoutePath(pathname: string): boolean {
 function isLanesRoutePath(pathname: string): boolean {
   return pathname === "/lanes" || pathname.startsWith("/lanes/");
 }
+
+/**
+ * CTO and History open over the page you were on: they fill the main area,
+ * and that page stays mounted behind them with its list still in the sidebar.
+ */
+function isOverlayRoutePath(pathname: string): boolean {
+  return pathname === "/cto" || pathname.startsWith("/cto/")
+    || pathname === "/history" || pathname.startsWith("/history/");
+}
+
+const HIDDEN_PAGE_STYLE: React.CSSProperties = {
+  position: "absolute",
+  inset: 0,
+  zIndex: -1,
+  opacity: 0,
+  pointerEvents: "none",
+};
 
 const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
@@ -337,16 +355,31 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const lanesSurfaceRef = React.useRef<HTMLDivElement | null>(null);
-  const isWorkRoute = isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work");
-  const isLanesRoute = isLanesRoutePath(route.split(/[?#]/, 1)[0] || "/work");
+  const pageSurfaceRef = React.useRef<HTMLDivElement | null>(null);
+  const pathname = route.split(/[?#]/, 1)[0] || "/work";
+  const isWorkRoute = isWorkRoutePath(pathname);
+  const isLanesRoute = isLanesRoutePath(pathname);
+  const overlayOpen = isOverlayRoutePath(pathname);
+  // The last page route that was not CTO or History. While one of those is
+  // open, this page stays mounted (hidden) and holds the sidebar. When the app
+  // opens straight onto CTO or History there is no such page, so none is held.
+  const [heldRoute, setHeldRoute] = React.useState<string | null>(() => overlayOpen ? null : route);
+  const pageRoute = overlayOpen ? heldRoute : route;
+  const pagePath = pageRoute ? pageRoute.split(/[?#]/, 1)[0] || "/work" : null;
+  const heldWork = overlayOpen && pagePath != null && isWorkRoutePath(pagePath);
+  const heldLanes = overlayOpen && pagePath != null && isLanesRoutePath(pagePath);
   const [workRoute, setWorkRoute] = React.useState(() => isWorkRoute ? route : "/work");
   const [workMounted, setWorkMounted] = React.useState(isWorkRoute);
   const [lanesRoute, setLanesRoute] = React.useState(() => isLanesRoute ? route : "/lanes");
-  const routeProps = { active } as { active?: boolean };
-  const shouldRenderWork = workMounted || isWorkRoute;
-  const shouldRenderLanes = active && isLanesRoute;
+  const pageActive = active && !overlayOpen;
+  const shouldRenderWork = workMounted || isWorkRoute || heldWork;
+  const shouldRenderLanes = active && (isLanesRoute || heldLanes);
   const visibleWorkRoute = isWorkRoute ? route : workRoute;
   const visibleLanesRoute = isLanesRoute ? route : lanesRoute;
+  // `ade ui show` for this project's runtime. Answered here, whatever tab is
+  // showing, so the agent hears "held" instead of "no desktop" while the user
+  // is somewhere else; the pane showing the chat takes it when it mounts.
+  useWorkToolShowRequestListener(Boolean(active && projectRoot));
 
   React.useEffect(() => {
     if (!isWorkRoute) return;
@@ -358,6 +391,17 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     if (!isLanesRoute) return;
     setLanesRoute(route);
   }, [isLanesRoute, route]);
+
+  React.useEffect(() => {
+    if (!overlayOpen) setHeldRoute(route);
+  }, [overlayOpen, route]);
+
+  React.useEffect(() => {
+    const node = pageSurfaceRef.current;
+    if (!node) return;
+    if (overlayOpen) node.setAttribute("inert", "");
+    else node.removeAttribute("inert");
+  }, [overlayOpen, pagePath]);
 
   React.useEffect(() => {
     if (active && isWorkRoute) return;
@@ -415,19 +459,13 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
           className="h-full min-h-0 w-full"
           aria-hidden={!isWorkRoute}
           data-ade-animation-state={isWorkRoute ? "running" : "paused"}
-          style={!isWorkRoute
-            ? {
-              position: "absolute",
-              inset: 0,
-              zIndex: -1,
-              opacity: 0,
-              pointerEvents: "none",
-            }
-            : undefined}
+          style={!isWorkRoute ? HIDDEN_PAGE_STYLE : undefined}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
-              <TerminalsPage active={active && isWorkRoute} />
+              <ProjectSidebarHold held={heldWork}>
+                <TerminalsPage active={active && isWorkRoute} />
+              </ProjectSidebarHold>
             </React.Suspense>
           </PageErrorBoundary>
         </div>
@@ -440,22 +478,16 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
       <Route path="/lanes/*" element={
         <div
           ref={lanesSurfaceRef}
-          className="h-full min-h-0 w-full"
+          className="ade-project-page h-full min-h-0 w-full"
           aria-hidden={!isLanesRoute}
           data-ade-animation-state={isLanesRoute ? "running" : "paused"}
-          style={!isLanesRoute
-            ? {
-              position: "absolute",
-              inset: 0,
-              zIndex: -1,
-              opacity: 0,
-              pointerEvents: "none",
-            }
-            : undefined}
+          style={!isLanesRoute ? HIDDEN_PAGE_STYLE : undefined}
         >
           <PageErrorBoundary>
             <React.Suspense fallback={LazyFallback}>
-              <LanesPage active={active && isLanesRoute} />
+              <ProjectSidebarHold held={heldLanes}>
+                <LanesPage active={active && isLanesRoute} />
+              </ProjectSidebarHold>
             </React.Suspense>
           </PageErrorBoundary>
         </div>
@@ -464,52 +496,68 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   ) : null;
 
   return (
-    <div className="relative h-full min-h-0 w-full">
-      {workSurface}
-      {lanesSurface}
-      {active && !isWorkRoute && !isLanesRoute ? (
-        <Routes location={route}>
-          <Route path="/" element={<Navigate to="/work" replace />} />
-          <Route path="/onboarding" element={<Navigate to="/work" replace />} />
-          <Route path="/files" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(FilesTab as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/prs" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(PRsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/history" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(HistoryPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/automations" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(AutomationsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/automations/templates" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(AutomationsTemplatesPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/cto" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(CtoPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="/settings" element={
-            <PageErrorBoundary>
-              <React.Suspense fallback={LazyFallback}>{React.createElement(SettingsPage as React.ComponentType<{ active?: boolean }>, routeProps)}</React.Suspense>
-            </PageErrorBoundary>
-          } />
-          <Route path="*" element={<Navigate to="/work" replace />} />
-        </Routes>
-      ) : null}
-    </div>
+    <ProjectSidebarSlotProvider>
+      <div className="flex h-full min-h-0 w-full">
+        <ProjectSidebar route={route} heldRoute={overlayOpen ? heldRoute : null} />
+        <div className="ade-project-main relative h-full min-h-0 min-w-0 flex-1">
+          {workSurface}
+          {lanesSurface}
+          {active && pageRoute && pagePath && !isWorkRoutePath(pagePath) && !isLanesRoutePath(pagePath) ? (
+            <div
+              ref={pageSurfaceRef}
+              className="ade-project-page h-full min-h-0 w-full"
+              aria-hidden={overlayOpen || undefined}
+              style={overlayOpen ? HIDDEN_PAGE_STYLE : undefined}
+            >
+              <ProjectSidebarHold held={overlayOpen}>
+                <Routes location={pageRoute}>
+                  <Route path="/" element={<Navigate to="/work" replace />} />
+                  <Route path="/onboarding" element={<Navigate to="/work" replace />} />
+                  <Route path="/files" element={
+                    <PageErrorBoundary>
+                      <React.Suspense fallback={LazyFallback}><FilesTab active={pageActive} /></React.Suspense>
+                    </PageErrorBoundary>
+                  } />
+                  <Route path="/prs" element={
+                    <PageErrorBoundary>
+                      <React.Suspense fallback={LazyFallback}><PRsPage active={pageActive} /></React.Suspense>
+                    </PageErrorBoundary>
+                  } />
+                  <Route path="/automations/*" element={
+                    <PageErrorBoundary>
+                      <React.Suspense fallback={LazyFallback}><AutomationsPage active={pageActive} /></React.Suspense>
+                    </PageErrorBoundary>
+                  } />
+                  <Route path="/settings" element={
+                    <PageErrorBoundary>
+                      <React.Suspense fallback={LazyFallback}><SettingsPage active={pageActive} /></React.Suspense>
+                    </PageErrorBoundary>
+                  } />
+                  <Route path="*" element={<Navigate to="/work" replace />} />
+                </Routes>
+              </ProjectSidebarHold>
+            </div>
+          ) : null}
+          {active && overlayOpen ? (
+            <div className="ade-project-page h-full min-h-0 w-full">
+              <Routes location={route}>
+                <Route path="/cto" element={
+                  <PageErrorBoundary>
+                    <React.Suspense fallback={LazyFallback}><CtoPage active={active} /></React.Suspense>
+                  </PageErrorBoundary>
+                } />
+                <Route path="/history" element={
+                  <PageErrorBoundary>
+                    <React.Suspense fallback={LazyFallback}><HistoryPage active={active} /></React.Suspense>
+                  </PageErrorBoundary>
+                } />
+                <Route path="*" element={<Navigate to="/work" replace />} />
+              </Routes>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </ProjectSidebarSlotProvider>
   );
 }
 
@@ -801,6 +849,17 @@ function ProjectTabHost() {
     return warm;
   }, [activeSurfaceKey, projectEntries]);
 
+  // Inside a project, the account lives in Settings. `/account` (sign-in
+  // banners, the Connections panel, old links) lands there. With no project
+  // open there is no Settings to land in, so the standalone page stays.
+  const projectSurfaceOnScreen = Boolean(activeProject) && !showWelcome && mountedProjects.length > 0;
+  const accountOpensInSettings = location.pathname === "/account" && projectSurfaceOnScreen;
+  React.useEffect(() => {
+    if (accountOpensInSettings) {
+      navigate(ACCOUNT_SETTINGS_ROUTE, { replace: true, state: location.state });
+    }
+  }, [accountOpensInSettings, location.state, navigate]);
+
   for (const entry of mountedProjects) {
     if (!storesRef.current.has(entry.surfaceKey)) {
       storesRef.current.set(entry.surfaceKey, createProjectAppStore(
@@ -929,7 +988,7 @@ function ProjectTabHost() {
           </React.Suspense>
         </PageErrorBoundary>
       ) : null}
-      {isAccountRoute ? (
+      {isAccountRoute && !accountOpensInSettings ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>
             <AccountPage />
@@ -1344,6 +1403,8 @@ export function App() {
             <Route path="/startup" element={<Navigate to="/work" replace />} />
             <Route path="*" element={<ShellLayout />} />
           </Routes>
+          {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
+          <DialogHost />
         </div>
       </Router>
     </LaunchGate>

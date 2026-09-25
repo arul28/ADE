@@ -1298,7 +1298,8 @@ predicates, because every caller needs the same three things together (is there
 an outage, what do we say, where does the button go). It returns null when
 nothing is corroborated, and every GitHub-blaming surface gates on it:
 
-- `IntegrationBannerHost` collapses the whole GitHub banner family into one
+- `IntegrationBanners` registers GitHub integration states with `AppBannerHost`,
+  which collapses the whole GitHub banner family into one
   neutral `info` notice linking the live incident. The other banners (AI
   provider, mock provider, relay) are untouched, and the suppression is gated
   on the same condition that renders the replacement, so the GitHub family can
@@ -1323,7 +1324,7 @@ nothing is corroborated, and every GitHub-blaming surface gates on it:
 
 `describeGithubAuthFailure` and `describeGithubCliBanner` both consult
 `describeGithubOutage` first, so a corroborated outage outranks every
-credential-shaped reading of the same failure even though `IntegrationBannerHost`
+credential-shaped reading of the same failure even though `IntegrationBanners`
 already suppresses those banners — the redundancy exists so a future refactor of
 that suppression cannot silently reintroduce the accusation. Without
 corroboration, a bare `service_unavailable` still renders its own honest copy
@@ -1583,6 +1584,16 @@ interval (clamped to 5 s–5 min, jittered ±10%). Each sweep:
 4. Emits `PrEventPayload` for lifecycle and status transitions
    (opened, reopened, closed, merged, checks failing, review requested,
    changes requested, merge ready).
+
+`checks_failing` fires once per red stretch. `pending`, `none`, and `not_run`
+do not arm another toast, so a newer attempt of the same check going red again
+on the same head stays quiet. The toast arms again when checks return to
+`passing` and then fail. A new head commit does not toast on the poll that
+first sees it — that poll can still be the previous commit's rollup — and
+toasts on a later poll if that same head is still failing. A missing head SHA
+keeps the last one we had. A pull request that is already failing on the first
+poll after start is not announced. A failed checks fetch does not store the
+new head SHA, so the old red result stays paired with the commit it belongs to.
 
 `prService.ingestGithubWebhook` does not emit one `prs-updated` for each
 delivery. The event carries the whole PR list (about 225 KB for 194 PRs), and a
@@ -2003,8 +2014,8 @@ long as the URL still points at the selected PR and drops them when the
 PR changes. `PrDetailPane` reads them on mount to scroll / open the
 right card and to pick the right sub-tab. `PRsPage` also writes the
 most recent `/prs...` path to `localStorage` via `writeStoredPrsRoute`
-scoped per project root, so the top-bar `TabNav` can route back to the
-user's last PR selection when they click the PRs tab from elsewhere.
+scoped per project root, so the project sidebar's PRs tab
+(`projectSidebarTabs.ts`) can route back to the user's last PR selection when they click the PRs tab from elsewhere.
 
 Event sources: `buildTimelineEvents` prepends a synthetic `pr_opened`
 event (title, PR number, head/base branches, draft flag, additions /

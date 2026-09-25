@@ -68,6 +68,7 @@ import {
 import { runRemoteRuntimeDoctor } from "./connectionDoctor";
 import {
   isPairedRuntimeRpcOverBudgetError,
+  isPairedRuntimeSupersededError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
@@ -223,6 +224,9 @@ function isImplicitConnectionFailure(error: unknown): boolean {
   // One oversized reply closed one RPC channel. The host answered, so the
   // machine is reachable; the next call opens a new channel.
   if (isPairedRuntimeRpcOverBudgetError(error)) return false;
+  // Another client took the connection. The machine answered; nothing here is
+  // a failure to back off from.
+  if (isPairedRuntimeSupersededError(error)) return false;
   if (isRemoteRuntimeConnectionError(error)) return true;
   const message = errorMessage(error);
   return /remote (?:runtime|ADE service) connection was interrupted|sync (?:connection|websocket|endpoint).*(?:closed|failed)|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
@@ -292,6 +296,23 @@ export class RemoteConnectionService {
       // The host answered and refused one reply as too large. The next call
       // opens a new channel, so the machine is still reachable.
       if (isPairedRuntimeRpcOverBudgetError(error)) return;
+      if (isPairedRuntimeSupersededError(error)) {
+        // Another client with this computer's pairing took the connection.
+        // Reconnecting would close it in turn, and the two would trade the
+        // machine every few seconds. Held in memory only: nothing is written
+        // to the saved machine, and Connect takes the connection back.
+        this.manuallyDisconnectedTargetIds.add(targetId);
+        const name = this.registry.get(targetId)?.name ?? "this machine";
+        this.mergeStatus(targetId, {
+          state: "error",
+          ...errorStatusPatch(
+            error,
+            `Another ADE on this computer is using the connection to ${name}. Connect to use it here.`,
+          ),
+          lastAttemptedAt: Date.now(),
+        });
+        return;
+      }
       this.mergeStatus(targetId, {
         state: "error",
         ...errorStatusPatch(error),

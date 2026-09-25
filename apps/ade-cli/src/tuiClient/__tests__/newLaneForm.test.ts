@@ -2,16 +2,13 @@ import { describe, expect, it } from "vitest";
 import type { LaneLinearIssue, LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import { LANE_COLOR_PALETTE } from "../../../../desktop/src/shared/laneColorPalette";
 import {
-  NEW_LANE_COLOR_OPTIONS,
   NEW_LANE_START_LABEL,
-  NEW_LANE_TYPEAHEAD_ROWS,
   buildNewLaneSubmission,
   cycleNewLaneColor,
   cycleNewLaneStart,
   filterNewLaneBranchMatches,
   newLaneColorIndex,
   newLaneCreateAction,
-  newLaneFormFieldRowOffsets,
   newLaneFormFields,
   newLaneStartForClickRow,
   newLaneTypeaheadField,
@@ -97,11 +94,6 @@ describe("start/source/color cycling", () => {
 });
 
 describe("color picker", () => {
-  it("offers auto plus the desktop lane palette", () => {
-    expect(NEW_LANE_COLOR_OPTIONS[0]).toEqual({ hex: null, name: "auto" });
-    expect(NEW_LANE_COLOR_OPTIONS).toHaveLength(LANE_COLOR_PALETTE.length + 1);
-    expect(NEW_LANE_COLOR_OPTIONS[1]?.hex).toBe(LANE_COLOR_PALETTE[0]?.hex);
-  });
 
   it("cycles from auto through the palette and wraps", () => {
     expect(cycleNewLaneColor("", 1)).toBe(LANE_COLOR_PALETTE[0]?.hex);
@@ -136,18 +128,6 @@ describe("branch typeahead", () => {
     ]);
     expect(filterNewLaneBranchMatches({ branches: undefined, query: "x", remote: true })).toEqual([]);
     expect(filterNewLaneBranchMatches({ branches, query: "", remote: true, limit: 1 })).toEqual(["origin/feature-x"]);
-  });
-});
-
-describe("newLaneFormFieldRowOffsets", () => {
-  it("matches the NewLaneFormPane block heights (start = 5 rows, typeahead +4, create = 2)", () => {
-    // primary: name(1), color(4), start(7), baseBranch(12, +typeahead), issue(19), template(22), create(25)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("primary"))).toEqual([1, 4, 7, 12, 19, 22, 25]);
-    // child has no typeahead: name(1), color(4), start(7), parent(12), base(15), issue(18), template(21), create(24)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("child"))).toEqual([1, 4, 7, 12, 15, 18, 21, 24]);
-    // import: name(1), color(4), start(7), source(12), branch(15, +typeahead), base(22), issue(25), template(28), create(31)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("import"))).toEqual([1, 4, 7, 12, 15, 22, 25, 28, 31]);
-    expect(NEW_LANE_TYPEAHEAD_ROWS).toBe(4);
   });
 });
 

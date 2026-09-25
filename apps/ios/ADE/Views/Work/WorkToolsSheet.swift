@@ -3,13 +3,15 @@ import UIKit
 
 /// Read-only view of the Work tools pane running on the user's Mac.
 ///
-/// Four cards, in the order a user actually asks about them: what the desktop
-/// has open right now (with the last frame it captured), the lane's Apple
-/// device (a view-only live stream), what the browser has in it, and what App
-/// Control is driving. Apart from the Apple card's view-only `Watch` button,
-/// there are no controls in this sheet — the browser is a `WebContentsView` in
-/// ADE Desktop and App Control is a CDP socket to a local process; neither can
-/// be reached from a phone, so offering a button would be a lie.
+/// Five cards, in the order a user actually asks about them: what the desktop
+/// has open right now (with the last frame it captured), the two screens the
+/// phone can watch — the lane's Apple device (view only) and, when this Mac can
+/// host one, the lane's own private screen — then what the browser has in it
+/// and what App Control is driving. The browser is a `WebContentsView` in ADE
+/// Desktop and App Control is a CDP socket to a local process; neither can be
+/// reached from a phone, so those cards stay read-only. The Apple card offers
+/// only a view-only `Watch` button. Mac Desktop is the exception: when the host
+/// advertises takeover, the picture takes a finger, inline or full screen.
 ///
 /// Refresh is a poll, not a subscription. The brain has no generic named-event
 /// channel to the phone — its push surface is cr-sqlite changesets and this
@@ -33,6 +35,21 @@ struct WorkToolsSheet: View {
   /// `loadFrameIfNeeded`: only a definitive answer lands here, never a
   /// transport failure.
   @State private var unreadableFramePath: String?
+  /// The Mac Desktop card's own still image, separate from the active-tool
+  /// frame above. While a live session is up it is the placeholder behind the
+  /// stream and is fetched exactly once; it is only polled on hosts without
+  /// the stream feature.
+  @State private var macDesktopFrame: UIImage?
+  @State private var loadedMacDesktopFramePath: String?
+  /// While the full-screen viewer is up it owns the picture and the poll, so
+  /// the inline session stops rather than streaming the same screen twice.
+  @State private var macDesktopViewerPresented = false
+  /// True while the card holds a live subscription. The active-tool frame
+  /// reuses the card's still instead of polling the same path.
+  @State private var isLiveMacDesktopMounted = false
+  /// Bumped after each tools poll. The card retries a stopped stream and
+  /// reloads its still on that tick.
+  @State private var macDesktopRefreshTick = 0
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots. When set, `refresh`
@@ -70,8 +87,14 @@ struct WorkToolsSheet: View {
       while !Task.isCancelled {
         try? await Task.sleep(for: Self.refreshInterval)
         guard !Task.isCancelled else { return }
+        // The viewer polls the same read itself while it is up.
+        guard !macDesktopViewerPresented else { continue }
         await refresh()
       }
+    }
+    .onChange(of: macDesktopViewerPresented) { _, presented in
+      // Catch up on whatever changed while the viewer was up.
+      if !presented { Task { await refresh() } }
     }
   }
 
@@ -79,17 +102,29 @@ struct WorkToolsSheet: View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
         activeToolCard
-        // Above the browser because it is the only card in this sheet that is
-        // live: the others describe what the Mac has open, this one can be
-        // watched. Gated on the host advertising `apple.status` so an older
+        // Above the browser because it is live: the browser and App Control
+        // cards describe what the Mac has open, this one can be watched. Gated on the host advertising `apple.status` so an older
         // Mac shows the sheet it always showed rather than a new card that
         // only ever says "update".
         if syncService.supportsAppleDeviceStatus {
           AppleDeviceCard(laneId: laneId)
         }
+        // The other screen the phone can watch, so it sits with the Apple one.
+        MacDesktopCard(
+          laneId: laneId,
+          macDesktop: state?.macDesktop,
+          refreshTick: macDesktopRefreshTick,
+          refreshLane: { await refresh() },
+          macDesktopViewerPresented: $macDesktopViewerPresented,
+          macDesktopFrame: $macDesktopFrame,
+          loadedMacDesktopFramePath: $loadedMacDesktopFramePath,
+          isLiveMacDesktopMounted: $isLiveMacDesktopMounted
+        )
         browserCard
         appControlCard
-        Text("Control from the desktop")
+        Text(syncService.supportsMacDesktopControl
+          ? "Browser and App Control stay on the desktop."
+          : "Control from the desktop")
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
           .frame(maxWidth: .infinity, alignment: .center)
@@ -253,6 +288,7 @@ struct WorkToolsSheet: View {
     }
   }
 
+
   private var loadingState: some View {
     VStack(spacing: 12) {
       ProgressView()
@@ -311,10 +347,16 @@ struct WorkToolsSheet: View {
   /// otherwise whichever tool captured something.
   private var latestObservation: WorkToolsObservation? {
     guard let state else { return nil }
-    if state.activeTool == "app-control" {
-      return state.appControl?.latestObservation ?? state.browser?.latestObservation
+    let macDesktop = state.macDesktop?.lastObservation.map {
+      WorkToolsObservation(path: $0.screenshotPath, caption: $0.caption)
     }
-    return state.browser?.latestObservation ?? state.appControl?.latestObservation
+    if state.activeTool == "mac-desktop" {
+      return macDesktop ?? state.browser?.latestObservation ?? state.appControl?.latestObservation
+    }
+    if state.activeTool == "app-control" {
+      return state.appControl?.latestObservation ?? state.browser?.latestObservation ?? macDesktop
+    }
+    return state.browser?.latestObservation ?? state.appControl?.latestObservation ?? macDesktop
   }
 
   /// What the frame slot renders. Split out of the view so the one case that
@@ -331,6 +373,36 @@ struct WorkToolsSheet: View {
     )
   }
 
+  /// The window's own title when the lane still knows it, else its id — the
+  /// same choice the desktop panel makes, so one screen does not name a window
+  /// the other cannot.
+  static func strandedWindowLabel(
+    _ stranded: WorkToolsMacDesktopNotParked,
+    in windows: [WorkToolsMacDesktopWindow]
+  ) -> String {
+    let title = windows.first { $0.id == stranded.windowId }?.title?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if let title, !title.isEmpty { return title }
+    return String(stranded.windowId)
+  }
+
+  /// The human half of a driver reason code. Mirrors
+  /// `macDesktopNotParkedPhrase` in `shared/types/macDesktop.ts`; the host only
+  /// sends codes worth showing, so there is no retry case to hide here — it is
+  /// still mapped, because an older host may send one.
+  static func notParkedPhrase(_ reason: String) -> String {
+    let code = reason.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if code == "not_ready" || code == "window_not_ready" { return "is still opening" }
+    if code == "escaped" || code == "window_escaped" || code == "gave_up" {
+      return "keeps leaving the lane screen"
+    }
+    if code.contains("permission") || code.contains("accessibility") || code.contains("not_trusted") {
+      return "needs Accessibility permission"
+    }
+    // Never the raw code: a user cannot act on "window_not_movable".
+    return "couldn't move to the lane screen"
+  }
+
   private func refresh() async {
     #if DEBUG
     if let previewState {
@@ -341,10 +413,10 @@ struct WorkToolsSheet: View {
       return
     }
     #endif
-    // Same gate the row uses. The sheet is only reachable from a row that has
-    // already checked this, but a reconnect to an older brain can drop the
-    // action while the sheet is open — and a 3s timer must not keep putting an
-    // unknown command on the wire.
+    // Same gate the lane tool chips use. The sheet is only reachable from a
+    // chip that has already checked this, but a reconnect to an older brain can
+    // drop the action while the sheet is open — and a 3s timer must not keep
+    // putting an unknown command on the wire.
     guard syncService.supportsWorkToolsState else {
       loaded = true
       return
@@ -354,6 +426,11 @@ struct WorkToolsSheet: View {
     state = next
     loaded = true
     await loadFrameIfNeeded()
+    // The card retries a stopped stream and reloads its still on this tick.
+    // While a live session is mounted that still is not polled: the picture
+    // arrives on the socket and the one-shot placeholder loaded at session
+    // start is all the fallback that is ever needed.
+    macDesktopRefreshTick += 1
   }
 
   private func loadFrameIfNeeded() async {
@@ -364,6 +441,17 @@ struct WorkToolsSheet: View {
       return
     }
     guard loadedFramePath != path else { return }
+    // The live view owns the mac-desktop observation while it is mounted. If
+    // the top card is showing that tool, reuse the placeholder already loaded
+    // for the card instead of starting the 3s still poll the stream replaced.
+    if isLiveMacDesktopMounted, path == state?.macDesktop?.lastObservation?.screenshotPath {
+      if loadedMacDesktopFramePath == path, let macDesktopFrame {
+        frame = macDesktopFrame
+        loadedFramePath = path
+        unreadableFramePath = nil
+      }
+      return
+    }
     // A host that advertises the state read but not the preview read cannot
     // send bytes at all. Nothing is put on the wire, and `frameState` says so
     // instead of spinning under a frame that is never coming.
@@ -539,5 +627,20 @@ func workToolsBrowserUnavailableMessage(_ reason: String?) -> String {
     return "Open the Browser tool on the desktop to see tabs here."
   default:
     return "The browser runs in ADE Desktop. Open ADE on your Mac to see its tabs."
+  }
+}
+
+/// Who has the lane's screen, in the sheet's one line.
+///
+/// Worded identically to the desktop's takeover strip so the two surfaces
+/// cannot describe one lease two ways. An unknown holder from a newer host
+/// falls back to the neutral sentence rather than guessing which side it is.
+func macDesktopLeaseLine(_ lease: WorkToolsMacDesktopLease?) -> String {
+  guard let lease else { return "Nobody has taken control." }
+  let label = lease.holderLabel.flatMap { $0.isEmpty ? nil : " · \($0)" } ?? ""
+  switch lease.holder {
+  case "user": return "You have control\(label)"
+  case "agent": return "Agent driving\(label)"
+  default: return "Nobody has taken control."
   }
 }

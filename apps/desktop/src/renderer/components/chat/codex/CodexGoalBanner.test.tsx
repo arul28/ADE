@@ -56,7 +56,8 @@ describe("CodexGoalBanner", () => {
     const input = screen.getByLabelText("Edit goal objective");
     fireEvent.change(input, { target: { value: "Temporary draft" } });
     const clearButton = screen.getByLabelText("Clear goal");
-    fireEvent.mouseDown(clearButton);
+    // Pressing the × must not move focus off the input (which would commit the draft).
+    expect(fireEvent.mouseDown(clearButton)).toBe(false);
     fireEvent.click(clearButton);
 
     expect(onClear).toHaveBeenCalledTimes(1);

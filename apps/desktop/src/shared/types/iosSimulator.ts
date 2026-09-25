@@ -151,6 +151,7 @@ export const APPLE_AGENT_ACTIONS = [
   "deviceAttach",
   "deviceStart",
   "deviceStop",
+  "deviceDetach",
   "deviceDelete",
 
   /* Video. */
@@ -233,6 +234,16 @@ export const APPLE_AGENT_ACTIONS = [
 ] as const;
 
 export type AppleAgentAction = (typeof APPLE_AGENT_ACTIONS)[number];
+
+/**
+ * `ios_simulator` actions only the person may take, from a device picker.
+ *
+ * The action domain allows them, so the desktop and the web client can call
+ * them. Agents are never told about them (`getStatus().capabilities` reports
+ * {@link APPLE_AGENT_ACTIONS} only), the RPC server refuses them to agent
+ * callers, and automations cannot run them.
+ */
+export const APPLE_USER_ONLY_ACTIONS = ["deviceDeleteInstalled"] as const;
 
 /** The live recording, as `getStatus` reports it. */
 export type IosSimulatorStatusRecording = {
@@ -635,6 +646,15 @@ export type IosSimulatorStartStreamArgs = {
    * without this the tab closing would black out the column.
    */
   localViewer?: boolean;
+  /**
+   * Boot the device first if it is off.
+   *
+   * Only explicit start paths set this: `deviceStart` and the CLI's
+   * `stream-start`. A viewer attaching leaves it unset and gets
+   * `APPLE_DEVICE_OFF` for a device that is off, so opening a pane never
+   * powers a simulator on behind the user's back.
+   */
+  boot?: boolean;
 };
 
 export type IosSimulatorFrame = {
@@ -853,7 +873,25 @@ export type IosSimulatorEventPayload =
   | { type: "device-session-started"; deviceSession: IosSimulatorDeviceSession }
   | { type: "device-session-released"; previousDeviceSession: IosSimulatorDeviceSession | null }
   | { type: "device-settings-changed"; settings: IosSimulatorDeviceSettings }
-  | AppleDeviceStateEvent;
+  | AppleDeviceStateEvent
+  | AppleRecordingStateEvent;
+
+export type AppleRecordingPhase = "started" | "updated" | "stopped";
+
+/**
+ * A lane's recording started, changed, or stopped, whoever asked for it.
+ *
+ * The pane's recording bar reads the recording list once on mount. Without
+ * this event a recording an agent starts from the CLI after the pane opened
+ * never showed (the owner's 2026-09-23 report).
+ */
+export type AppleRecordingStateEvent = {
+  type: "apple.recording.state";
+  laneId: string;
+  phase: AppleRecordingPhase;
+  recordingId: string;
+  chatSessionId: string | null;
+};
 
 /**
  * Where `deviceStart` is in bringing a lane's device up.
@@ -1323,6 +1361,18 @@ export type IosSimulatorProofBundle = {
   logPath: string | null;
   caption: string | null;
   capturedAt: string;
+  /** The device the bundle was taken from, carried so the drawer row can name it. */
+  deviceUdid: string;
+  width: number | null;
+  height: number | null;
+  /**
+   * The proof-drawer row for `screen.png`, or null when no filer is attached.
+   *
+   * `proof-bundle` is a proof verb and filed nothing at all until this existed:
+   * it wrote the directory and returned, so a reviewer had no row to open and
+   * an agent reporting "proof filed" was wrong.
+   */
+  proofArtifactId?: string | null;
 };
 
 /* ───────────────────────── Apple device environment ───────────────────────── */
@@ -1331,14 +1381,38 @@ export type IosSimulatorProofBundle = {
 export const APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE = "APPLE_DEVICE_ATTACHED_NOT_DELETABLE" as const;
 /** The lane already owns a device; delete it before creating another. */
 export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
+/**
+ * A lane holds this simulator, so it is not the picker's to delete.
+ *
+ * Deleting a device out from under another lane would take its live view away
+ * with no warning on that lane's screen. The lane that owns it gives it up
+ * through `deviceDelete`, which stops its stream first.
+ */
+export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
+/**
+ * The chosen clone template is running, and `simctl` cannot clone a booted
+ * device (error 405, "Unable to clone device in current state: Booted").
+ */
+export const APPLE_TEMPLATE_BOOTED_CODE = "APPLE_TEMPLATE_BOOTED" as const;
 /** No simulator runtime is installed, and ADE never downloads one. */
 export const APPLE_NO_INSTALLED_SIMULATORS_CODE = "APPLE_NO_INSTALLED_SIMULATORS" as const;
 /** The vendored Swift helper is missing, not running, or not answering. */
 export const APPLE_HELPER_UNAVAILABLE_CODE = "APPLE_HELPER_UNAVAILABLE" as const;
 /** `frame` needs a running stream; `screenshot` does not. */
 export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const;
+/**
+ * The device is powered off, and the caller only asked to WATCH it.
+ *
+ * Watching never boots. A pane mounting, the floating player, a phone or web
+ * viewer and a desktop reconnect all get this instead, and show "{name} is
+ * off." with a Start button. Only an explicit start (`deviceStart`, `launch`,
+ * `openDevice`, or `startStream` with `boot: true`) powers a device on.
+ */
+export const APPLE_DEVICE_OFF_CODE = "APPLE_DEVICE_OFF" as const;
 /** A recording marked `proof` cannot be deleted by an agent. */
 export const APPLE_RECORDING_PINNED_CODE = "APPLE_RECORDING_PINNED" as const;
+/** Another lane's recording holds this device; the message names the lane. */
+export const APPLE_DEVICE_ALREADY_RECORDING_CODE = "APPLE_DEVICE_ALREADY_RECORDING" as const;
 /**
  * A hardware button this helper (and this Xcode's `simctl`) cannot press.
  *
@@ -1487,10 +1561,54 @@ export type AppleDeviceListResult = {
   disk?: AppleDeviceDiskUsage | null;
 };
 
+/**
+ * `deviceDelete`: the lane gives up its device for good. Same single-owner
+ * rule as `deviceDetach`; `force` does not step around it.
+ */
 export type AppleDeviceDeleteArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /** Detach an attached device instead of refusing it. */
   force?: boolean | null;
+  /** Delete for whoever is running, without claiming to be them (the Work pane). */
+  ignoreOwnership?: boolean | null;
+};
+
+/**
+ * `deviceDetach`: the lane gives up its device; the simulator stays installed.
+ * Same single-owner rule as `deviceStop`: refused while another chat owns the
+ * lane's session, unless `force` or `ignoreOwnership` is passed.
+ */
+export type AppleDeviceDetachArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** Detach a device another chat is driving as well. */
+  force?: boolean | null;
+  /** Detach for whoever is running, without claiming to be them (the Work pane). */
+  ignoreOwnership?: boolean | null;
+};
+
+/**
+ * `deviceDeleteInstalled`: remove one simulator the owner picked from the list.
+ *
+ * Not the same verb as `deviceDelete`, which means "this lane gives up its own
+ * device". This one is housekeeping — usually disk — and it refuses any
+ * simulator a lane holds with `APPLE_DEVICE_OWNED_BY_LANE`.
+ */
+export type AppleDeviceDeleteInstalledArgs = {
+  udid: string;
+  /**
+   * The owner said yes to THIS device, by name, in a confirmation.
+   *
+   * Required, and deliberately not defaulted. Deleting a simulator is not
+   * recoverable, and the owner's standing rule is that nothing deletes one
+   * without their approval. The RPC server takes this verb from user clients
+   * only; an agent is refused. A caller that has to write the claim out
+   * cannot arrive here by drifting through a default.
+   */
+  confirmedByUser: true;
+  laneId?: string | null;
+  projectRoot?: string | null;
 };
 
 /**
@@ -1602,7 +1720,12 @@ export type AppleFrameResult = {
   height: number;
 };
 
-/** Hardware buttons `pressButton` accepts. `shake` is named here so the column can call it; the service refuses it with `APPLE_BUTTON_UNSUPPORTED`. */
+/**
+ * Hardware buttons `pressButton` accepts. `shake` is named here so the column
+ * can call it; the service refuses it with `APPLE_BUTTON_UNSUPPORTED`.
+ * `app-switcher` is Simulator's own App Switcher command: two home presses
+ * 150 ms apart, sent by the helper.
+ */
 export const APPLE_HARDWARE_BUTTONS = [
   "home",
   "lock",
@@ -1610,6 +1733,7 @@ export const APPLE_HARDWARE_BUTTONS = [
   "volume-down",
   "siri",
   "shake",
+  "app-switcher",
 ] as const;
 export type AppleHardwareButtonName = (typeof APPLE_HARDWARE_BUTTONS)[number];
 
@@ -1712,28 +1836,43 @@ export type AppleRotateResult = {
   frameAfter: AppleRotateFrame | null;
 };
 
-export type AppleRecordStartArgs = {
+/** Which lane's recordings a record verb acts on. */
+export type AppleRecordScopeArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
-  overlays?: boolean | null;
-  label?: string | null;
+  /**
+   * The caller's workspace, so a caller with no lane id is placed by the
+   * worktree it stands in — the same field the screenshot verbs send.
+   *
+   * Recordings were the one capture path that did not carry it, so an unbound
+   * caller's recording filed against whichever lane owned the DEVICE.
+   */
+  projectRoot?: string | null;
 };
 
-export type AppleRecordStopArgs = {
-  laneId?: string | null;
-  chatSessionId?: string | null;
+export type AppleRecordStartArgs = AppleRecordScopeArgs & {
+  overlays?: boolean | null;
+  label?: string | null;
+  /**
+   * Keep still stretches at wall-clock length. By default the helper cuts a
+   * still screen longer than 2 s down to 0.75 s (`record-start --keep-idle`).
+   */
+  keepIdle?: boolean | null;
+  /**
+   * Wall-clock seconds after which the recording stops and files itself.
+   * Defaults to ten minutes for a recording a chat owns.
+   */
+  maxSeconds?: number | null;
+};
+
+export type AppleRecordStopArgs = AppleRecordScopeArgs & {
   keep?: boolean | null;
   discard?: boolean | null;
 };
 
-export type AppleRecordListArgs = {
-  laneId?: string | null;
-  chatSessionId?: string | null;
-};
+export type AppleRecordListArgs = AppleRecordScopeArgs;
 
-export type AppleRecordDeleteArgs = {
-  laneId?: string | null;
-  chatSessionId?: string | null;
+export type AppleRecordDeleteArgs = AppleRecordScopeArgs & {
   id: string;
   force?: boolean | null;
   /**

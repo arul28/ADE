@@ -12,10 +12,10 @@
  * (Claude's OAuth-apps allowance) wrapped to its own line anyway — so the row
  * was already one-and-a-half rows tall and pretending to be one.
  *
- * Colour: the bar is the PROVIDER's brand colour, from `providerColors`, and
- * `usagePressureColor` still overrides at 70/90 so a nearly-dry window reads
- * hot. Accounts get no colour of their own — hashing an account id into a
- * palette is what drew a Claude window in Gemini's blue.
+ * Colour: the bar follows its headroom (`usageHeadroomColor` — green, yellow,
+ * red as it runs out), the same rule as the header rings, for every provider.
+ * Accounts get no colour of their own — hashing an account id into a palette
+ * is what drew a Claude window in Gemini's blue.
  *
  * The tinted fill is the HEADROOM and the number says the same thing in words.
  * What has been spent is left plain: it was drawn as a diagonal hatch, which at
@@ -23,10 +23,10 @@
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type React from "react";
 import { ArrowClockwise, ArrowSquareOut } from "@phosphor-icons/react";
 import type { UsageProvider } from "../../../shared/types";
-import type { ThemeId } from "../../state/appStore";
 import { openExternalUrl } from "../../lib/openExternal";
 import {
   RESET_CREDIT_OUTCOME_TEXT,
@@ -34,14 +34,13 @@ import {
 } from "../../../shared/usageResetCredit";
 import { cn } from "../ui/cn";
 import { usageProviderLogo } from "../terminals/ToolLogos";
-import { providerColor } from "./providerColors";
 import { PacePill } from "./UsagePaceBar";
 import type { AccountLimitRow, AccountWindowCell } from "./usageLimitModel";
 import {
   USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_CLASS,
   USAGE_TEXT,
-  usagePressureColor,
+  usageHeadroomColor,
 } from "./usageDesign";
 import {
   formatCountdown,
@@ -141,7 +140,6 @@ export function ProviderMark({
 
 export function UsageAccountRow({
   row,
-  theme,
   providerTitle,
   fallbackAccountUrl,
   fallbackEmail,
@@ -150,7 +148,6 @@ export function UsageAccountRow({
   dim,
 }: {
   row: AccountLimitRow;
-  theme: ThemeId;
   /** "OAuth · 2m ago" — where this reading came from, on the account's title. */
   providerTitle?: string;
   /** Limits page for a host that sends no account directory. */
@@ -265,7 +262,6 @@ export function UsageAccountRow({
               key={cell.card.key}
               cell={cell}
               provider={row.provider}
-              theme={theme}
               accountLabel={email ?? "this machine"}
               accountUrl={account?.url ?? fallbackAccountUrl}
               nowMs={nowMs}
@@ -291,7 +287,6 @@ export function UsageAccountRow({
 function WindowMeter({
   cell,
   provider,
-  theme,
   accountLabel,
   accountUrl,
   nowMs,
@@ -301,7 +296,6 @@ function WindowMeter({
 }: {
   cell: AccountWindowCell;
   provider: UsageProvider;
-  theme: ThemeId;
   accountLabel: string;
   accountUrl?: string;
   nowMs: number;
@@ -313,9 +307,7 @@ function WindowMeter({
   const anchorRef = useRef<HTMLDivElement | null>(null);
   const { segment, card } = cell;
   const left = Math.round(segment.percentLeft);
-  // Colour is fed CONSUMPTION even though the bar draws headroom: a nearly-dry
-  // window has to read hot, and "10% left" is the hot case.
-  const fill = usagePressureColor(100 - segment.percentLeft, providerColor(provider, theme));
+  const fill = usageHeadroomColor(segment.percentLeft);
 
   const close = useCallback(() => onOpenChange(false), [onOpenChange]);
   const closeTimerRef = useRef<number | null>(null);
@@ -531,33 +523,32 @@ function WindowPopover({
     .map(([model, percent]) => `${model} ${Math.round(percent)}%`)
     .join(" · ");
   return createPortal(
-    <div
-      ref={panelRef}
-      id={id}
-      role="dialog"
-      aria-label={`${card.label} details`}
-      style={{
-        position: "fixed",
-        top: position?.top ?? 0,
-        left: position?.left ?? 0,
-        width: POPOVER_WIDTH,
-        // Measured before it is placed: showing it at 0,0 for one frame would
-        // be a visible jump in the corner of the screen.
-        visibility: position ? "visible" : "hidden",
-      }}
-      className={cn(
-        // `bg-surface-raised` is translucent on the light theme, and this panel
-        // floats over the rows beneath it — they read straight through. The
-        // overlay token is the one every other floating usage readout uses.
-        // Above the header usage scrim (`z-[80]`). At `z-[60]` the panel was
-        // painted under that scrim, so the pointer never entered it and the
-        // meter’s mouseleave closed it on the way to the link.
-        "z-[90] p-3",
-        USAGE_OVERLAY_CLASS,
-      )}
-      onMouseEnter={onPointerEnter}
-      onMouseLeave={onPointerLeave}
-    >
+    <ViewportOverlayHost layer="tooltip">
+      <div
+        ref={panelRef}
+        id={id}
+        role="dialog"
+        aria-label={`${card.label} details`}
+        style={{
+          position: "absolute",
+          top: position?.top ?? 0,
+          left: position?.left ?? 0,
+          width: POPOVER_WIDTH,
+          pointerEvents: "auto",
+          // Measured before it is placed: showing it at 0,0 for one frame would
+          // be a visible jump in the corner of the screen.
+          visibility: position ? "visible" : "hidden",
+        }}
+        className={cn(
+          // `bg-surface-raised` is translucent on the light theme, and this panel
+          // floats over the rows beneath it — they read straight through. The
+          // overlay token is the one every other floating usage readout uses.
+          "p-3",
+          USAGE_OVERLAY_CLASS,
+        )}
+        onMouseEnter={onPointerEnter}
+        onMouseLeave={onPointerLeave}
+      >
       {/* The window's own colour runs down the header, so a panel that has
           floated away from its bar still says which bar it came from. */}
       <div
@@ -623,7 +614,8 @@ function WindowPopover({
           Open limits
         </button>
       ) : null}
-    </div>,
+      </div>
+    </ViewportOverlayHost>,
     document.body,
   );
 }

@@ -1,7 +1,8 @@
 import React from "react";
-import { Warning, XCircle } from "@phosphor-icons/react";
+import { GitBranch } from "@phosphor-icons/react";
 import type { RebaseNeed, AutoRebaseLaneStatus } from "../../../shared/types";
 import { findLaneBaseNeed } from "./shared/rebaseNeedUtils";
+import { Banner } from "../ui/notice";
 
 type PrRebaseBannerProps = {
   laneId: string;
@@ -34,40 +35,15 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
   if (dismissed) return null;
   if (hasAutoRebaseError) {
     return (
-      <div
-        style={{
-          background: "#EF44440A",
-          border: "1px solid #EF444430",
-          padding: "10px 14px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 12,
+      <Banner
+        layout="inline"
+        model={{
+          id: `pr-rebase-failed:${laneId}`,
+          tone: "error",
+          title: "Auto-rebase failed — manual follow-up required",
+          actions: [{ label: "Resolve in rebase tab", onClick: () => onTabChange("rebase") }],
         }}
-      >
-        <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
-          <XCircle size={14} weight="fill" style={{ color: "#EF4444", flexShrink: 0 }} />
-          <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px", color: "#FCA5A5" }}>
-            AUTO-REBASE FAILED — manual follow-up required
-          </span>
-        </div>
-        <button
-          type="button"
-          className="font-mono font-bold uppercase tracking-[1px]"
-          style={{
-            fontSize: 10,
-            padding: "4px 10px",
-            background: "transparent",
-            color: "#EF4444",
-            border: "1px solid #EF444440",
-            cursor: "pointer",
-            flexShrink: 0,
-          }}
-          onClick={() => onTabChange("rebase")}
-        >
-          RESOLVE IN REBASE TAB
-        </button>
-      </div>
+      />
     );
   }
 
@@ -101,82 +77,27 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
   };
 
   return (
-    <div
-      style={{
-        background: "#F59E0B0A",
-        border: "1px solid #F59E0B30",
-        padding: "10px 14px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
+    <Banner
+      layout="inline"
+      model={{
+        id: `pr-rebase:${laneId}`,
+        tone: "warning",
+        icon: <GitBranch size={13} weight="bold" />,
+        title: `${need.behindBy} commit${need.behindBy !== 1 ? "s" : ""} behind ${need.baseBranch}${
+          need.conflictPredicted ? " — conflicts predicted, rebase required" : " — no conflicts, rebase recommended"
+        }`,
+        busy: syncBusy,
+        actions: [
+          {
+            label: syncBusy ? "Rebasing..." : "Rebase now (local only)",
+            onClick: () => void handleSync(),
+            disabled: syncBusy,
+          },
+          { label: "View rebase details", onClick: () => onTabChange("rebase") },
+          { label: "Hide banner", variant: "link", onClick: () => void handleDismiss() },
+        ],
+        error: actionError ?? undefined,
       }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <div className="flex items-center" style={{ gap: 8, minWidth: 0 }}>
-          <Warning size={14} weight="fill" style={{ color: "#F59E0B", flexShrink: 0 }} />
-          <span className="font-mono font-bold" style={{ fontSize: 11, color: "#F5D08B" }}>
-            {need.behindBy} commit{need.behindBy !== 1 ? "s" : ""} behind {need.baseBranch}
-            {need.conflictPredicted
-              ? " — conflicts predicted, rebase required"
-              : " — no conflicts, rebase recommended"}
-          </span>
-        </div>
-        <div className="flex items-center" style={{ gap: 6, flexShrink: 0 }}>
-          <button
-            type="button"
-            disabled={syncBusy}
-            className="font-mono font-bold uppercase tracking-[1px]"
-            style={{
-              fontSize: 10,
-              padding: "4px 10px",
-              background: "transparent",
-              color: "#F59E0B",
-              border: "1px solid #F59E0B40",
-              cursor: syncBusy ? "not-allowed" : "pointer",
-              opacity: syncBusy ? 0.5 : 1,
-            }}
-            onClick={() => void handleSync()}
-          >
-            {syncBusy ? "REBASING..." : "REBASE NOW (LOCAL ONLY)"}
-          </button>
-          <button
-            type="button"
-            className="font-mono font-bold uppercase tracking-[1px]"
-            style={{
-              fontSize: 10,
-              padding: "4px 10px",
-              background: "transparent",
-              color: "#A1A1AA",
-              border: "1px solid #27272A",
-              cursor: "pointer",
-            }}
-            onClick={() => onTabChange("rebase")}
-          >
-            VIEW REBASE DETAILS
-          </button>
-          <button
-            type="button"
-            className="font-mono font-bold uppercase tracking-[1px]"
-            style={{
-              fontSize: 10,
-              padding: "4px 10px",
-              background: "transparent",
-              color: "#71717A",
-              border: "1px solid #27272A",
-              cursor: "pointer",
-            }}
-            onClick={() => void handleDismiss()}
-          >
-            HIDE BANNER
-          </button>
-        </div>
-      </div>
-      {actionError ? (
-        <div className="flex items-center" style={{ gap: 6, fontSize: 11, color: "#FCA5A5" }}>
-          <XCircle size={13} weight="fill" />
-          <span>{actionError}</span>
-        </div>
-      ) : null}
-    </div>
+    />
   );
 }

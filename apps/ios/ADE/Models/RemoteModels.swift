@@ -2373,6 +2373,7 @@ enum AgentChatTodoStatus: String, Codable, Equatable {
   case pending
   case inProgress = "in_progress"
   case completed
+  case failed
 }
 
 enum AgentChatAutoApprovalReviewStatus: String, Codable, Equatable {
@@ -2440,6 +2441,8 @@ extension AgentChatInputAnswerValue: Codable {
 struct AgentChatPlanStep: Codable, Equatable {
   var text: String
   var status: String
+  var priority: String?
+  var cancelled: Bool?
 }
 
 struct AgentChatStructuredQuestionOption: Codable, Equatable {
@@ -2455,6 +2458,8 @@ struct AgentChatTodoItem: Codable, Equatable {
   var id: String
   var description: String
   var status: AgentChatTodoStatus
+  var activeForm: String?
+  var cancelled: Bool?
 }
 
 struct AgentChatSubagentUsage: Codable, Equatable {
@@ -2572,6 +2577,21 @@ struct AgentChatMcpToolSource: Codable, Equatable {
   }
 }
 
+/// Provider source citation carried on tool results and data-only `sources`
+/// events. Old hosts omit the optional fields; newer mobile wires intentionally
+/// leave out excerpts and queries while keeping destinations and citations.
+struct AgentChatSourceRef: Decodable, Equatable, Hashable {
+  var kind: String
+  var url: String?
+  var title: String?
+  var snippet: String?
+  var path: String?
+  var lineStart: Int?
+  var lineEnd: Int?
+  var query: String?
+  var cited: Bool?
+}
+
 struct CodexSafetyBufferingState: Codable, Equatable {
   var threadId: String?
   var turnId: String?
@@ -2662,11 +2682,16 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// Raw subagent fields retained for desktop-parity classification without
   /// widening every AgentChatEvent lifecycle associated value.
   var subagentTaskType: String?
+  var subagentProvider: String?
   var subagentCommand: String?
   var subagentSpawnKind: AgentChatSpawnKind?
   var subagentParentAgentId: String?
   var subagentSpawnDepth: Int?
   var subagentResourceLinks: [AgentChatResourceLink]?
+  /// True when this start reopens a tracked child that had already settled.
+  /// Preserved raw so the Work timeline can reopen the existing card without
+  /// widening the shared lifecycle event enum.
+  var subagentResumed: Bool?
   /// HTTP status the host attached to a terminal SDK API error on a `done`
   /// frame (429 = provider usage limit).
   ///
@@ -2719,11 +2744,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     sequence: Int? = nil,
     provenance: AgentChatEventProvenance? = nil,
     subagentTaskType: String? = nil,
+    subagentProvider: String? = nil,
     subagentCommand: String? = nil,
     subagentSpawnKind: AgentChatSpawnKind? = nil,
     subagentParentAgentId: String? = nil,
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink]? = nil,
+    subagentResumed: Bool? = nil,
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
@@ -2736,11 +2763,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.sequence = sequence
     self.provenance = provenance
     self.subagentTaskType = subagentTaskType
+    self.subagentProvider = subagentProvider
     self.subagentCommand = subagentCommand
     self.subagentSpawnKind = subagentSpawnKind
     self.subagentParentAgentId = subagentParentAgentId
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
+    self.subagentResumed = subagentResumed
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
@@ -2767,6 +2796,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var stopReason: String?
     var resultTruncatedForMobile: Bool?
     var resultOriginalBytes: Int?
+    var resumed: Bool?
 
     private enum CodingKeys: String, CodingKey {
       case type
@@ -2776,6 +2806,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       case stopReason
       case resultTruncatedForMobile
       case resultOriginalBytes
+      case resumed
     }
 
     /// Each field is decoded on its own tolerant path, never a shared throwing
@@ -2794,11 +2825,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       stopReason = (try? container.decodeIfPresent(String.self, forKey: .stopReason)) ?? nil
       resultTruncatedForMobile = (try? container.decodeIfPresent(Bool.self, forKey: .resultTruncatedForMobile)) ?? nil
       resultOriginalBytes = (try? container.decodeIfPresent(Int.self, forKey: .resultOriginalBytes)) ?? nil
+      resumed = (try? container.decodeIfPresent(Bool.self, forKey: .resumed)) ?? nil
     }
   }
 
   private struct SubagentMetadata: Decodable {
     var taskType: String?
+    var provider: String?
     var command: String?
     var spawnKind: AgentChatSpawnKind?
     var parentAgentId: String?
@@ -2808,6 +2841,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey {
       case taskType
       case taskTypeSnake = "task_type"
+      case provider
       case command
       case spawnKind
       case parentAgentId
@@ -2821,6 +2855,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       let container = try decoder.container(keyedBy: CodingKeys.self)
       taskType = try container.decodeIfPresent(String.self, forKey: .taskType)
         ?? container.decodeIfPresent(String.self, forKey: .taskTypeSnake)
+      provider = try container.decodeIfPresent(String.self, forKey: .provider)
       command = try container.decodeIfPresent(String.self, forKey: .command)
       spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
       parentAgentId = try container.decodeIfPresent(String.self, forKey: .parentAgentId)
@@ -2840,12 +2875,14 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     provenance = try container.decodeIfPresent(AgentChatEventProvenance.self, forKey: .provenance)
     let metadata = try? container.decode(SubagentMetadata.self, forKey: .event)
     subagentTaskType = metadata?.taskType
+    subagentProvider = metadata?.provider
     subagentCommand = metadata?.command
     subagentSpawnKind = metadata?.spawnKind
     subagentParentAgentId = metadata?.parentAgentId
     subagentSpawnDepth = metadata?.spawnDepth
     subagentResourceLinks = metadata?.resourceLinks
     let rawEvent = try? container.decode(EventRawFields.self, forKey: .event)
+    subagentResumed = rawEvent?.resumed
     apiErrorStatus = rawEvent?.apiErrorStatus
     isLegacySubagentCompletedFrame = rawEvent?.type == "subagent.completed"
     stopSource = rawEvent?.stopSource
@@ -3048,12 +3085,12 @@ enum AgentChatEvent: Decodable, Equatable {
     replacementMessageId: String?,
     turnId: String?
   )
-  case text(text: String, messageId: String?, turnId: String?, itemId: String?)
+  case text(text: String, messageId: String?, turnId: String?, itemId: String?, phase: String? = nil)
   case toolCall(tool: String, args: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?)
-  case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?)
+  case toolResult(tool: String, result: RemoteJSONValue, itemId: String, logicalItemId: String?, parentItemId: String?, turnId: String?, status: String?, sources: [AgentChatSourceRef]?, sourceRefsOmittedForMobile: Int?)
   case fileChange(path: String, diff: String, kind: AgentChatFileChangeKind, itemId: String, logicalItemId: String?, turnId: String?, status: String?)
   case command(command: String, cwd: String, output: String, itemId: String, logicalItemId: String?, turnId: String?, exitCode: Int?, durationMs: Int?, status: String)
-  case plan(steps: [AgentChatPlanStep], turnId: String?, explanation: String?)
+  case plan(steps: [AgentChatPlanStep], turnId: String?, explanation: String?, state: String?, streamingText: String?)
   case reasoning(text: String, turnId: String?, itemId: String?, summaryIndex: Int?)
   case approvalRequest(itemId: String, logicalItemId: String?, kind: AgentChatApprovalRequestKind, description: String, turnId: String?, detail: RemoteJSONValue?)
   case pendingInputResolved(itemId: String, resolution: String, turnId: String?)
@@ -3072,7 +3109,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
   case stepBoundary(stepNumber: Int, turnId: String?)
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
-  case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
+  case subagentStarted(taskId: String, agentId: String?, agentType: String?, provider: String?, parentAgentId: String?, parentToolUseId: String?, description: String, background: Bool?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, description: String?, summary: String, usage: AgentChatSubagentUsage?, lastToolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentResult(taskId: String, agentId: String?, agentType: String?, parentAgentId: String?, parentToolUseId: String?, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, label: String?, model: String?, reasoningEffort: String?, turnId: String?, stopSource: String?, stopReason: String?)
   case scheduledWorkUpdate(id: String, kind: String, status: String, origin: String?, title: String?, summary: String?, prompt: String?, reason: String?, cron: String?, nextRunAt: String?, lastRunAt: String?, firedAt: String?, late: Bool?, recurring: Bool?, durable: Bool?, sourceToolUseId: String?, sourceTaskId: String?, turnId: String?, error: String?)
@@ -3151,6 +3188,7 @@ enum AgentChatEvent: Decodable, Equatable {
   case codexThreadDeleted(threadId: String, turnId: String?)
   case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
+  case sources(refs: [AgentChatSourceRef], itemId: String?, turnId: String?, omittedForMobile: Int?)
   case webSearch(query: String, action: String?, actions: [CodexWebSearchAction]?, results: [CodexWebSearchResult]?, resultsTotal: Int?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
   case codexImageGeneration(itemId: String, turnId: String?, prompt: String?, revisedPrompt: String?, result: String?, savedPath: String?, resultOriginalBytes: Int?, resultOmittedBytes: Int?, status: String)
   case codexImageView(itemId: String, turnId: String?, path: String?, url: String?, title: String?, urlOriginalBytes: Int?, urlOmittedBytes: Int?, status: String)
@@ -3306,12 +3344,16 @@ extension AgentChatEvent {
     case replacementMessageId
     case messageId
     case itemId
+    case phase
+    case streamingText
     case logicalItemId
     case parentItemId
     case tool
     case mcp
     case args
     case result
+    case sources
+    case sourceRefsOmittedForMobile
     case path
     case diff
     case kind
@@ -3473,12 +3515,12 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "text":
-      self = .text(
-        text: try container.decode(String.self, forKey: .text),
-        messageId: try container.decodeIfPresent(String.self, forKey: .messageId),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        itemId: try container.decodeIfPresent(String.self, forKey: .itemId)
-      )
+      let text = try container.decode(String.self, forKey: .text)
+      let messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let itemId = try container.decodeIfPresent(String.self, forKey: .itemId)
+      let phase = try container.decodeIfPresent(String.self, forKey: .phase)
+      self = .text(text: text, messageId: messageId, turnId: turnId, itemId: itemId, phase: phase)
     case "tool_call":
       let rawTool = try container.decode(String.self, forKey: .tool)
       let mcp = try? container.decodeIfPresent(AgentChatMcpToolSource.self, forKey: .mcp)
@@ -3500,7 +3542,16 @@ extension AgentChatEvent {
         logicalItemId: try container.decodeIfPresent(String.self, forKey: .logicalItemId),
         parentItemId: try container.decodeIfPresent(String.self, forKey: .parentItemId),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        status: try container.decodeIfPresent(String.self, forKey: .status)
+        status: try container.decodeIfPresent(String.self, forKey: .status),
+        sources: try container.decodeIfPresent([AgentChatSourceRef].self, forKey: .sources),
+        sourceRefsOmittedForMobile: try container.decodeIfPresent(Int.self, forKey: .sourceRefsOmittedForMobile)
+      )
+    case "sources":
+      self = .sources(
+        refs: try container.decodeIfPresent([AgentChatSourceRef].self, forKey: .sources) ?? [],
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        omittedForMobile: try container.decodeIfPresent(Int.self, forKey: .sourceRefsOmittedForMobile)
       )
     case "file_change":
       self = .fileChange(
@@ -3525,11 +3576,12 @@ extension AgentChatEvent {
         status: try container.decode(String.self, forKey: .status)
       )
     case "plan":
-      self = .plan(
-        steps: try container.decode([AgentChatPlanStep].self, forKey: .steps),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        explanation: try container.decodeIfPresent(String.self, forKey: .explanation)
-      )
+      let steps = try container.decode([AgentChatPlanStep].self, forKey: .steps)
+      let turnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      let explanation = try container.decodeIfPresent(String.self, forKey: .explanation)
+      let state = try container.decodeIfPresent(String.self, forKey: .state)
+      let streamingText = try container.decodeIfPresent(String.self, forKey: .streamingText)
+      self = .plan(steps: steps, turnId: turnId, explanation: explanation, state: state, streamingText: streamingText)
     case "reasoning":
       self = .reasoning(
         text: try container.decode(String.self, forKey: .text),
@@ -3678,6 +3730,7 @@ extension AgentChatEvent {
         taskId: try container.decode(String.self, forKey: .taskId),
         agentId: try container.decodeIfPresent(String.self, forKey: .agentId),
         agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        provider: try container.decodeIfPresent(String.self, forKey: .provider),
         parentAgentId: try container.decodeIfPresent(String.self, forKey: .parentAgentId),
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try container.decode(String.self, forKey: .description),
@@ -3693,6 +3746,7 @@ extension AgentChatEvent {
         taskId: agentId,
         agentId: agentId,
         agentType: try container.decodeIfPresent(String.self, forKey: .agentType),
+        provider: try container.decodeIfPresent(String.self, forKey: .provider),
         parentAgentId: nil,
         parentToolUseId: try container.decodeIfPresent(String.self, forKey: .parentToolUseId),
         description: try decodeNonEmptyString(forKey: .description) ?? "Subagent task",
@@ -4095,6 +4149,7 @@ extension AgentChatEvent {
     case .codexThreadDeleted: return "codex_thread_deleted"
     case .systemNotice: return "system_notice"
     case .completionReport: return "completion_report"
+    case .sources: return "sources"
     case .webSearch: return "web_search"
     case .codexImageGeneration: return "codex_image_generation"
     case .codexImageView: return "codex_image_view"
@@ -5861,6 +5916,58 @@ struct ExternalSessionMessage: Codable, Equatable {
   }
 }
 
+/// Where an external session lives, resolved by the host against the project's
+/// lanes. `kind` is "lane", "removed-lane" or "outside". Every field decodes
+/// leniently: a malformed `home` must never drop the whole row.
+struct ExternalSessionHome: Codable, Equatable {
+  var kind: String
+  var laneId: String?
+  var laneName: String?
+  var branchRef: String?
+  var color: String?
+  var laneType: String?
+  var atLaneRoot: Bool
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case laneId
+    case laneName
+    case branchRef
+    case color
+    case laneType
+    case atLaneRoot
+  }
+
+  init(
+    kind: String,
+    laneId: String? = nil,
+    laneName: String? = nil,
+    branchRef: String? = nil,
+    color: String? = nil,
+    laneType: String? = nil,
+    atLaneRoot: Bool = false
+  ) {
+    self.kind = kind
+    self.laneId = laneId
+    self.laneName = laneName
+    self.branchRef = branchRef
+    self.color = color
+    self.laneType = laneType
+    self.atLaneRoot = atLaneRoot
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    kind = (try? container.decodeIfPresent(String.self, forKey: .kind)) ?? "outside"
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    laneName = try? container.decodeIfPresent(String.self, forKey: .laneName)
+    branchRef = try? container.decodeIfPresent(String.self, forKey: .branchRef)
+    color = try? container.decodeIfPresent(String.self, forKey: .color)
+    laneType = try? container.decodeIfPresent(String.self, forKey: .laneType)
+    atLaneRoot = (try? container.decodeIfPresent(Bool.self, forKey: .atLaneRoot)) ?? false
+  }
+}
+
 struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var provider: String
   var id: String
@@ -5874,8 +5981,15 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
   var alreadyImported: Bool
   var importedSessionRef: ExternalSessionImportedRef?
   var possiblyActive: Bool
+  /// ADE imported this session before and that ADE row is gone. A hint shown
+  /// as "Copied before"; the row stays importable.
+  var importedBefore: Bool
   var cwdMatchesRequestedLane: Bool?
   var capabilities: ExternalSessionCapabilities
+  /// The lane this session belongs to. Older hosts do not send it.
+  var home: ExternalSessionHome?
+  /// Size of the provider's session store entry on disk, when the host has it.
+  var sizeBytes: Double?
 
   private enum CodingKeys: String, CodingKey {
     case provider
@@ -5890,8 +6004,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     case alreadyImported
     case importedSessionRef
     case possiblyActive
+    case importedBefore
     case cwdMatchesRequestedLane
     case capabilities
+    case home
+    case sizeBytes
   }
 
   init(
@@ -5907,8 +6024,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     alreadyImported: Bool = false,
     importedSessionRef: ExternalSessionImportedRef? = nil,
     possiblyActive: Bool = false,
+    importedBefore: Bool = false,
     cwdMatchesRequestedLane: Bool? = nil,
-    capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities()
+    capabilities: ExternalSessionCapabilities = ExternalSessionCapabilities(),
+    home: ExternalSessionHome? = nil,
+    sizeBytes: Double? = nil
   ) {
     self.provider = provider
     self.id = id
@@ -5922,8 +6042,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     self.alreadyImported = alreadyImported
     self.importedSessionRef = importedSessionRef
     self.possiblyActive = possiblyActive
+    self.importedBefore = importedBefore
     self.cwdMatchesRequestedLane = cwdMatchesRequestedLane
     self.capabilities = capabilities
+    self.home = home
+    self.sizeBytes = sizeBytes
   }
 
   init(from decoder: Decoder) throws {
@@ -5953,6 +6076,11 @@ struct ExternalSessionSummary: Codable, Identifiable, Equatable {
     cwdMatchesRequestedLane = try container.decodeIfPresent(Bool.self, forKey: .cwdMatchesRequestedLane)
     capabilities = try container.decodeIfPresent(ExternalSessionCapabilities.self, forKey: .capabilities)
       ?? ExternalSessionCapabilities()
+    // Newer optional fields decode with `try?`: a malformed value drops the
+    // field, never the row.
+    home = try? container.decodeIfPresent(ExternalSessionHome.self, forKey: .home)
+    sizeBytes = try? container.decodeIfPresent(Double.self, forKey: .sizeBytes)
+    importedBefore = (try? container.decodeIfPresent(Bool.self, forKey: .importedBefore)) ?? false
   }
 }
 
@@ -5990,6 +6118,108 @@ struct ExternalSessionListResult: Decodable, Equatable {
   }
 }
 
+/// One external session's conversation from `work.getExternalSessionDetail`:
+/// a page of ADE chat events (oldest to newest), plus the cursor for the page
+/// before it. Every field decodes leniently — a bad field is dropped, never the
+/// whole detail — and a row this build cannot decode drops out of `events`
+/// alone. `messages` is the text tail a host sends when it produced no events.
+struct ExternalSessionDetail: Decodable, Equatable {
+  var provider: String?
+  var id: String?
+  var cwd: String?
+  var title: String?
+  var model: String?
+  var createdAt: Double?
+  var updatedAt: Double?
+  var messageCount: Int?
+  var events: [AgentChatEventEnvelope]
+  var messages: [ExternalSessionMessage]
+  var sourcePath: String?
+  var watchable: Bool?
+  var hasOlder: Bool
+  var olderCursor: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case provider
+    case id
+    case cwd
+    case title
+    case model
+    case createdAt
+    case updatedAt
+    case messageCount
+    case events
+    case messages
+    case sourcePath
+    case watchable
+    case hasOlder
+    case olderCursor
+  }
+
+  init(
+    provider: String? = nil,
+    id: String? = nil,
+    cwd: String? = nil,
+    title: String? = nil,
+    model: String? = nil,
+    createdAt: Double? = nil,
+    updatedAt: Double? = nil,
+    messageCount: Int? = nil,
+    events: [AgentChatEventEnvelope] = [],
+    messages: [ExternalSessionMessage] = [],
+    sourcePath: String? = nil,
+    watchable: Bool? = nil,
+    hasOlder: Bool = false,
+    olderCursor: String? = nil
+  ) {
+    self.provider = provider
+    self.id = id
+    self.cwd = cwd
+    self.title = title
+    self.model = model
+    self.createdAt = createdAt
+    self.updatedAt = updatedAt
+    self.messageCount = messageCount
+    self.events = events
+    self.messages = messages
+    self.sourcePath = sourcePath
+    self.watchable = watchable
+    self.hasOlder = hasOlder
+    self.olderCursor = olderCursor
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    provider = try? container.decodeIfPresent(String.self, forKey: .provider)
+    id = try? container.decodeIfPresent(String.self, forKey: .id)
+    cwd = try? container.decodeIfPresent(String.self, forKey: .cwd)
+    title = try? container.decodeIfPresent(String.self, forKey: .title)
+    model = try? container.decodeIfPresent(String.self, forKey: .model)
+    createdAt = try? container.decodeIfPresent(Double.self, forKey: .createdAt)
+    updatedAt = try? container.decodeIfPresent(Double.self, forKey: .updatedAt)
+    messageCount = try? container.decodeIfPresent(Int.self, forKey: .messageCount)
+    events = (try? container.decodeIfPresent(
+      ADELossyArray<AgentChatEventEnvelope>.self,
+      forKey: .events
+    ))?.wrappedValue ?? []
+    messages = (try? container.decodeIfPresent(
+      ADELossyArray<ExternalSessionMessage>.self,
+      forKey: .messages
+    ))?.wrappedValue ?? []
+    sourcePath = try? container.decodeIfPresent(String.self, forKey: .sourcePath)
+    watchable = try? container.decodeIfPresent(Bool.self, forKey: .watchable)
+    hasOlder = (try? container.decodeIfPresent(Bool.self, forKey: .hasOlder)) ?? false
+    let cursor = (try? container.decodeIfPresent(String.self, forKey: .olderCursor))?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    olderCursor = cursor.isEmpty ? nil : cursor
+  }
+}
+
+/// The host's answer to `work.importExternalSession`. By the time it arrives
+/// the import already happened on the host, so only `kind` and the ids are
+/// required: an embedded `session`/`chatSummary` this build cannot decode is
+/// dropped (the screen re-fetches the chat summary) instead of failing the
+/// whole result and inviting a duplicate import.
 struct ExternalSessionImportResult: Codable, Equatable {
   var kind: String
   var sessionId: String?
@@ -5998,6 +6228,45 @@ struct ExternalSessionImportResult: Codable, Equatable {
   var chatSessionId: String?
   var session: TerminalSessionSummary?
   var chatSummary: AgentChatSessionSummary?
+
+  private enum CodingKeys: String, CodingKey {
+    case kind
+    case sessionId
+    case ptyId
+    case laneId
+    case chatSessionId
+    case session
+    case chatSummary
+  }
+
+  init(
+    kind: String,
+    sessionId: String? = nil,
+    ptyId: String? = nil,
+    laneId: String? = nil,
+    chatSessionId: String? = nil,
+    session: TerminalSessionSummary? = nil,
+    chatSummary: AgentChatSessionSummary? = nil
+  ) {
+    self.kind = kind
+    self.sessionId = sessionId
+    self.ptyId = ptyId
+    self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.session = session
+    self.chatSummary = chatSummary
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    kind = try container.decode(String.self, forKey: .kind)
+    sessionId = try? container.decodeIfPresent(String.self, forKey: .sessionId)
+    ptyId = try? container.decodeIfPresent(String.self, forKey: .ptyId)
+    laneId = try? container.decodeIfPresent(String.self, forKey: .laneId)
+    chatSessionId = try? container.decodeIfPresent(String.self, forKey: .chatSessionId)
+    session = try? container.decodeIfPresent(TerminalSessionSummary.self, forKey: .session)
+    chatSummary = try? container.decodeIfPresent(AgentChatSessionSummary.self, forKey: .chatSummary)
+  }
 }
 
 struct SyncScalarBytes: Codable, Equatable {
@@ -6666,9 +6935,257 @@ struct WorkToolsLaneState: Codable, Equatable {
   /// than the field, and empty is the normal state; both read as "nobody".
   var agentBrowserPresence: [WorkToolsAgentBrowserPresence]?
   var appControl: WorkToolsAppControlState?
+  /// The lane's macOS desktop seat. Nil from any host without the feature, and
+  /// `supported: false` from one that has it on a machine that cannot hold a
+  /// display; the sheet hides the card on both.
+  var macDesktop: WorkToolsMacDesktopState?
+}
+
+/// A point on the host's global screen plane. `x` and `y` are display points,
+/// the same unit `CGEvent` posts in.
+struct MacDesktopPoint: Codable, Equatable {
+  var x: Double
+  var y: Double
+}
+
+/// The lane's private macOS screen, as the phone sees it.
+///
+/// The snapshot is still a description: display, windows, lease, stream, and
+/// the last frame. Taking the pointer is a separate set of commands
+/// (`macDesktop.takeControl` and the three beside it), announced by
+/// `hello_ok.features.macDesktopControl`. The display origin is decoded
+/// because a click without it would land on the person's real screen.
+///
+/// A host with no Mac Desktop service at all omits the whole `macDesktop` key,
+/// and a host that has one but cannot hold a display sends `supported: false`.
+/// Both hide the tool.
+struct WorkToolsMacDesktopDisplay: Codable, Equatable {
+  var name: String
+  var width: Int
+  var height: Int
+  /// `virtual` | `offscreen-region` | `unavailable`, kept as a raw string so a
+  /// newer mode renders verbatim instead of failing to decode.
+  var mode: String
+  /// Origin of the display on the host's global plane. Optional because an
+  /// older host omits it; a client that clicks without one would post the
+  /// event on the person's real screen, so control stays off until it arrives.
+  var origin: MacDesktopPoint?
+}
+
+/// One window parked on the lane's display. The host also sends a pid, a frame
+/// and a bundle id; nothing on the phone can act on any of them, so only what
+/// is shown is decoded.
+struct WorkToolsMacDesktopWindow: Codable, Equatable, Identifiable {
+  var id: Int
+  var appName: String
+  var title: String?
+}
+
+/// Who is driving the lane's screen. `holder` is `agent` or `user`; an unknown
+/// value from a newer host reads as neither and falls back to the neutral line.
+struct WorkToolsMacDesktopLease: Codable, Equatable {
+  var holder: String
+  var holderLabel: String?
+  /// Present when the host named who holds the lease. The phone compares it
+  /// with the id `takeControl` returned, so a poll can tell "still me" from
+  /// "someone else took it".
+  var holderId: String?
+}
+
+/// The lease `macDesktop.takeControl` / `renewLease` / `returnControl` return.
+///
+/// Separate from `WorkToolsMacDesktopLease` because those replies always carry
+/// the holder id the next call has to name, and a missing one is a failed
+/// decode rather than "an older snapshot".
+struct MacDesktopControlLease: Codable, Equatable {
+  var laneId: String
+  var holder: String
+  var holderId: String
+  var holderLabel: String?
+  var grantedAt: String
+  var expiresAt: String
+}
+
+/// Whether frames are flowing, and how hard. Never carries the stream token —
+/// the host redacts it before this ever leaves the Mac.
+struct WorkToolsMacDesktopStream: Codable, Equatable {
+  var running: Bool
+  var idle: Bool
+  /// The encoder's current rate and bitrate, and the host's own last capture
+  /// error. All optional: an older snapshot, or one from a test fixture, may
+  /// omit them, and none of them decides whether the tool is shown.
+  var fps: Double?
+  var bitrateKbps: Double?
+  var lastError: String?
+}
+
+/// Whether the lane's screen is being recorded right now. The host keeps the
+/// file path and caption to itself; `startedAt` is ISO-8601 when present.
+struct WorkToolsMacDesktopRecording: Codable, Equatable {
+  var running: Bool
+  var startedAt: String?
+}
+
+/// The newest frame captured on the lane's screen. `screenshotPath` is opaque
+/// and goes straight back to `workTools.readObservationPreview`, exactly like a
+/// `WorkToolsObservation.path`.
+struct WorkToolsMacDesktopObservation: Codable, Equatable {
+  var screenshotPath: String
+  var caption: String?
+  /// Optional on newer hosts; the phone can still show the frame when the
+  /// accessibility walk reports that it stopped early.
+  var truncatedReason: String?
+  var stalledApps: [String]?
+}
+
+/// A window the driver could not park, so it stayed on the human's own screen.
+///
+/// `at` is the host client's clock and is only used for ordering, so it is not
+/// decoded here — the host already sends the list newest first.
+struct WorkToolsMacDesktopNotParked: Codable, Equatable {
+  var windowId: Int
+  var reason: String
+}
+
+struct WorkToolsMacDesktopState: Codable, Equatable {
+  var supported: Bool
+  var display: WorkToolsMacDesktopDisplay?
+  /// Absent from a host that sends no list; both nil and empty read as "nothing
+  /// is parked here".
+  var windows: [WorkToolsMacDesktopWindow]?
+  var lease: WorkToolsMacDesktopLease?
+  var stream: WorkToolsMacDesktopStream?
+  var lastObservation: WorkToolsMacDesktopObservation?
+  /// Newest first, at most three. Absent from an older host, which is not the
+  /// same as "nothing is stranded" — it is "this host cannot say".
+  var notParked: [WorkToolsMacDesktopNotParked]?
+  /// Absent from an older host; nil reads as "not recording".
+  var recording: WorkToolsMacDesktopRecording?
 }
 
 struct WorkToolsObservationPreview: Codable, Equatable {
   var dataUrl: String
   var mimeType: String
+}
+
+// MARK: - Mac Desktop live stream (view-only)
+
+/// A redacted `macDesktop.getStatus` reply.
+///
+/// Only the fields the phone renders are modelled, exactly like
+/// `WorkToolsMacDesktopState`: a newer host sends the desktop's full status
+/// (driver health, permissions, lanes, recording) and `Codable` ignores what
+/// this type does not name. The stream token is deliberately absent — the host
+/// redacts it on this method and only `startStream` ever carries it.
+struct MacDesktopStatus: Codable, Equatable {
+  var supported: Bool
+  var display: WorkToolsMacDesktopDisplay?
+  var windows: [WorkToolsMacDesktopWindow]?
+  var lease: WorkToolsMacDesktopLease?
+  var stream: WorkToolsMacDesktopStream?
+}
+
+/// An app the lane opened that remained open when the display stopped.
+struct MacDesktopAppLeftOpen: Codable, Equatable {
+  var pid: Int
+  var appName: String
+  var message: String
+}
+
+/// The phone does not currently expose Stop, but this mirrors the sync reply
+/// so older hosts (which omit the new app lists) and newer hosts both decode.
+struct MacDesktopStopResult: Codable, Equatable {
+  var stopped: Bool
+  var releasedWindows: Int
+  var quitApps: [String]?
+  var appsLeftOpen: [MacDesktopAppLeftOpen]?
+}
+
+/// `macDesktop.streamSubscribe` reply: the picture's shape, then records flow.
+struct MacDesktopStreamSubscribeResult: Codable, Equatable {
+  var ok: Bool
+  var width: Int?
+  var height: Int?
+  var codec: String?
+}
+
+/// The `config` record's payload — JSON inside the record's `data` bytes.
+struct MacDesktopStreamConfig: Codable, Equatable {
+  var codec: String
+  var width: Int
+  var height: Int
+  var annexB: Bool
+}
+
+/// A pushed `macDesktop.streamRecord` before its base64 `data` is decoded.
+///
+/// Split from `MacDesktopStreamRecord` so the whole access unit's base64 can be
+/// decoded off the main actor: a keyframe on a 2560-wide display is hundreds of
+/// kilobytes of base64, and this lands on the socket's receive path.
+struct MacDesktopStreamRecordEnvelope: Equatable {
+  enum Kind: String {
+    case config
+    case frame
+  }
+
+  var subscriptionId: String
+  var seq: Int
+  var kind: Kind
+  var keyframe: Bool
+  var timestampUs: Int
+  var base64Data: String
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let kind = (payload["kind"] as? String).flatMap(Kind.init(rawValue:)),
+      let encoded = payload["data"] as? String
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.seq = (payload["seq"] as? NSNumber)?.intValue ?? 0
+    self.kind = kind
+    self.keyframe = (payload["keyframe"] as? Bool) ?? false
+    self.timestampUs = (payload["timestampUs"] as? NSNumber)?.intValue ?? 0
+    self.base64Data = encoded
+  }
+}
+
+/// One pushed stream record, its access unit decoded.
+struct MacDesktopStreamRecord: Equatable {
+  var subscriptionId: String
+  var seq: Int
+  var kind: MacDesktopStreamRecordEnvelope.Kind
+  var keyframe: Bool
+  var timestampUs: Int
+  /// `frame`: one Annex-B access unit. `config`: the `MacDesktopStreamConfig`
+  /// JSON object's bytes.
+  var data: Data
+
+  init(envelope: MacDesktopStreamRecordEnvelope, data: Data) {
+    self.subscriptionId = envelope.subscriptionId
+    self.seq = envelope.seq
+    self.kind = envelope.kind
+    self.keyframe = envelope.keyframe
+    self.timestampUs = envelope.timestampUs
+    self.data = data
+  }
+}
+
+/// A pushed `macDesktop.streamEnded`. `reason` stays a raw string so a reason a
+/// newer host invents degrades to the generic stopped sentence instead of
+/// failing to decode.
+struct MacDesktopStreamEnded: Equatable {
+  var subscriptionId: String
+  var reason: String
+  var message: String?
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let reason = payload["reason"] as? String
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.reason = reason
+    self.message = payload["message"] as? String
+  }
 }

@@ -4,9 +4,10 @@ import UserNotifications
 import WidgetKit
 
 /// Minimal `UIApplicationDelegate` bridged into the SwiftUI lifecycle via
-/// `@UIApplicationDelegateAdaptor`. It exists only to receive the APNs token
-/// callbacks and route incoming notifications — all policy lives in
-/// `PushNotificationService` and `DeepLinkRouter`.
+/// `@UIApplicationDelegateAdaptor`. It receives the APNs token callbacks,
+/// routes incoming notifications, and answers
+/// `supportedInterfaceOrientationsFor` from `ADEOrientationLock`.
+/// Push policy lives in `PushNotificationService` and `DeepLinkRouter`.
 final class ADEAppDelegate: NSObject, UIApplicationDelegate {
     func application(
         _ application: UIApplication,
@@ -35,6 +36,16 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         MainActor.assumeIsolated {
             WorkPendingUploadPreviewStore.shared.purge()
         }
+    }
+
+    /// The orientations the app allows right now. `ADEOrientationLock` holds
+    /// the answer. It is `.all` except while a view forces one, and the result
+    /// is still limited by `UISupportedInterfaceOrientations` in `Info.plist`.
+    func application(
+        _ application: UIApplication,
+        supportedInterfaceOrientationsFor window: UIWindow?
+    ) -> UIInterfaceOrientationMask {
+        MainActor.assumeIsolated { ADEOrientationLock.mask }
     }
 
     /// Register the approval-alert category so approval pushes carry inline
@@ -290,4 +301,16 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         }
         return nil
     }
+}
+
+// MARK: - Orientation lock
+
+/// An app-wide orientation limit that one view can set for as long as it is on
+/// screen. The macOS desktop viewer sets `.landscape` during Take control and
+/// puts `.all` back when control ends or the viewer closes. A view that sets it
+/// must also call `setNeedsUpdateOfSupportedInterfaceOrientations()` so UIKit
+/// reads the new value.
+@MainActor
+enum ADEOrientationLock {
+    static var mask: UIInterfaceOrientationMask = .all
 }

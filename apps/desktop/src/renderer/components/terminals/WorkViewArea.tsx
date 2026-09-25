@@ -1308,10 +1308,15 @@ export function WorkViewArea({
         />
       </SingleSessionGridDropZone>
     ) : (
-      <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
-        <WorkToolPickerBackdrop theme={theme} playing={pageActive} />
+      <div className="relative flex h-full min-h-0 flex-col overflow-hidden" data-work-draft-surface="">
+        {/* The new chat pane is part of the window gradient, so the top bar above
+            flows into it with no seam. */}
+        <WorkToolPickerBackdrop theme={theme} playing={pageActive} field="window" />
         <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
-          <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
+          {/* Flies up off screen when a sent chat opens (`chatLaunchDock`). */}
+          <div data-draft-depart="rise">
+            <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
+          </div>
         </div>
         <div className="relative z-10 min-h-0 flex-1">
           <WorkStartSurface

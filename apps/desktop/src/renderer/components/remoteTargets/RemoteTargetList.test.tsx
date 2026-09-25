@@ -76,6 +76,7 @@ const appMock = {
   writeClipboardText: vi.fn(),
   getInfo: vi.fn(),
   restartBackgroundService: vi.fn(),
+  openExternal: vi.fn(async () => undefined),
 };
 
 const accountMock = {
@@ -83,6 +84,10 @@ const accountMock = {
   renameMachine: vi.fn(),
   getLocalMachineIdentity: vi.fn(),
   onPairMachineProgress: vi.fn(),
+  repairMachinePairing: vi.fn(),
+  startDeviceLogin: vi.fn(),
+  pollDeviceLogin: vi.fn(),
+  cancelDeviceLogin: vi.fn(async () => ({})),
 };
 
 function installAdeMock(): void {
@@ -100,6 +105,14 @@ function installAdeMock(): void {
   appMock.getInfo.mockResolvedValue({ localRuntime: null });
   accountMock.getLocalMachineIdentity.mockResolvedValue({ machineKey: "local-mk", deviceId: "local-dev" });
   accountMock.onPairMachineProgress.mockReturnValue(() => {});
+  accountMock.repairMachinePairing.mockResolvedValue({
+    repaired: false,
+    wasRevoked: true,
+    published: false,
+    pushRestored: false,
+    state: "not_revoked",
+    reason: null,
+  });
   accountMock.renameMachine.mockImplementation(async (machineKey: string, customName: string | null) => ({
     ...accountMachine({ machineKey, name: customName ?? "Studio" }),
     customName,
@@ -164,47 +177,6 @@ describe("RemoteTargetList", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  it("offers Repair on the publish-failing banner only for an unreadable brain session", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.restartBackgroundService.mockResolvedValue(undefined);
-    const publishHealth = {
-      state: "token_unreadable",
-      failingSinceMs: Date.now() - 5 * 60_000,
-      lastLegDurations: { snapshot: null, token: null, http: null },
-    };
-    appMock.getInfo.mockResolvedValue({ localRuntime: { publishHealth } });
-
-    render(<RemoteTargetList />);
-    const repair = await screen.findByRole("button", { name: "Repair" });
-
-    // The brain comes back healthy, so the banner and its button disappear.
-    appMock.getInfo.mockResolvedValue({ localRuntime: null });
-    fireEvent.click(repair);
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Repair" })).toBeNull());
-    expect(appMock.restartBackgroundService).toHaveBeenCalledTimes(1);
-  });
-
-  it("leaves the publish-failing banner unrepairable when a restart cannot help", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
-    installAdeMock();
-    appMock.getInfo.mockResolvedValue({
-      localRuntime: {
-        publishHealth: {
-          state: "http_error",
-          failingSinceMs: Date.now() - 5 * 60_000,
-          lastLegDurations: { snapshot: null, token: null, http: null },
-        },
-      },
-    });
-
-    render(<RemoteTargetList accountSignedIn />);
-    expect(await screen.findByText(/couldn't publish it for 5 min/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
-  });
-
   it("hides a publish-failing banner while signed out", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
@@ -223,6 +195,30 @@ describe("RemoteTargetList", () => {
     await screen.findByRole("button", { name: "Add machine" });
     expect(screen.queryByText(/couldn't publish it/)).toBeNull();
     expect(screen.queryByText(/route publish failing/)).toBeNull();
+  });
+
+  it("signed-in refusal hides the sign-in helper", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+    appMock.getInfo.mockResolvedValue({
+      localRuntime: {
+        publishHealth: {
+          state: "http_error",
+          failingSinceMs: Date.now() - 5 * 60_000,
+          lastLegDurations: { snapshot: null, token: null, http: null },
+          lastHttpStatus: 403,
+          lastHttpReason: "machine_revoked",
+        },
+      },
+    });
+
+    render(<RemoteTargetList accountSignedIn />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
+    // A publish refusal is not "signed out": the sign-in path must not appear.
+    expect(screen.queryByRole("button", { name: /Sign in to ADE/ })).toBeNull();
+    expect(screen.getByRole("button", { name: /Find nearby computers/ })).toBeTruthy();
   });
 
   it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {

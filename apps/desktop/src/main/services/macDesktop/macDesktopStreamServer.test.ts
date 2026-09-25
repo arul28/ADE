@@ -1,0 +1,391 @@
+import { createServer, type Server } from "node:net";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+import { MAC_DESKTOP_STREAM_PATH } from "../../../shared/types/macDesktop";
+import { MAC_DESKTOP_INPUT_PATH } from "./macDesktopStreamServer";
+import {
+  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  IOS_VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/iosSimulator";
+import { encodeVideoRecord } from "../media/videoRecords";
+// The renderer's own reader, used as the assertion: a test that re-implements
+// the framing proves the test agrees with itself and nothing else.
+import { createIosSimVideoRecordParser } from "../../../renderer/components/chat/iosSimVideoRecords";
+import { createMacDesktopStreamServer } from "./macDesktopStreamServer";
+
+/** What the Swift driver actually writes: the config payload is a bare codec. */
+const driverConfigRecord = (codec: string): Buffer =>
+  Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, Buffer.from(codec, "utf8")));
+
+const driverAccessUnit = (payload: Buffer, keyframe: boolean): Buffer =>
+  Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }));
+
+/** Reads the response body until `count` records have been parsed, or it ends. */
+async function readRecords(response: Response, count: number) {
+  const parser = createIosSimVideoRecordParser();
+  const reader = response.body!.getReader();
+  const records: ReturnType<typeof parser.push> = [];
+  while (records.length < count) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) records.push(...parser.push(value));
+  }
+  await reader.cancel().catch(() => {});
+  return records;
+}
+
+const logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+};
+
+/** Stands in for the helper's raw H.264 socket. */
+async function startUpstream(payload: Buffer): Promise<{ port: number; close: () => void; server: Server }> {
+  const server = createServer((socket) => {
+    socket.write(payload);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("no port");
+  return { port: address.port, close: () => server.close(), server };
+}
+
+describe("macDesktopStreamServer", () => {
+  const cleanups: Array<() => void> = [];
+
+  afterEach(() => {
+    while (cleanups.length) cleanups.pop()?.();
+  });
+
+  it("logs each reader that attaches and leaves, so a stop by the last reader is visible", async () => {
+    // The owner's 2026-09-24 log could not tell a stream nobody read from a
+    // stream whose reader left: both lines were debug-only.
+    const upstream = await startUpstream(Buffer.from([]));
+    cleanups.push(upstream.close);
+    const info = vi.fn();
+    const server = createMacDesktopStreamServer({ logger: { ...logger, info } });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+
+    const abort = new AbortController();
+    const response = await fetch(transport.url, { signal: abort.signal });
+    expect(response.status).toBe(200);
+    await vi.waitFor(() => expect(info).toHaveBeenCalledWith(
+      "mac_desktop.stream_client_attached",
+      expect.objectContaining({ laneId: "lane-1", clients: 1 }),
+    ));
+    abort.abort();
+    await vi.waitFor(() => expect(info).toHaveBeenCalledWith(
+      "mac_desktop.stream_client_dropped",
+      expect.objectContaining({ laneId: "lane-1", clients: 0 }),
+    ));
+  });
+
+  it("refuses a request with no token, a wrong token, and an unknown lane", async () => {
+    const upstream = await startUpstream(Buffer.from([1, 2, 3]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+
+    const base = `http://127.0.0.1:${transport.port}${MAC_DESKTOP_STREAM_PATH}`;
+    const noToken = await fetch(`${base}?lane=lane-1`);
+    expect(noToken.status).toBe(403);
+    await noToken.arrayBuffer();
+
+    const wrongToken = await fetch(`${base}?lane=lane-1&token=${"0".repeat(64)}`);
+    expect(wrongToken.status).toBe(403);
+    await wrongToken.arrayBuffer();
+
+    // A lane that exists with the right-looking token still gets one answer:
+    // distinguishing "no such lane" would leak which lanes run on this Mac.
+    const unknownLane = await fetch(`${base}?lane=lane-2&token=${transport.token}`);
+    expect(unknownLane.status).toBe(403);
+    await unknownLane.arrayBuffer();
+
+    const wrongPath = await fetch(`http://127.0.0.1:${transport.port}/nope?lane=lane-1&token=${transport.token}`);
+    expect(wrongPath.status).toBe(404);
+    await wrongPath.arrayBuffer();
+  });
+
+  it("serves the takeover fast path on the stream token and hands the body to the input module", async () => {
+    const upstream = await startUpstream(Buffer.from([]));
+    cleanups.push(() => upstream.close());
+    const posted: unknown[] = [];
+    const server = createMacDesktopStreamServer({
+      logger,
+      postRealInput: async (args) => { posted.push(args); },
+    });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    const base = `http://127.0.0.1:${transport.port}${MAC_DESKTOP_INPUT_PATH}`;
+    const body = JSON.stringify({
+      controllerId: "ade-window:abc",
+      chatSessionId: "chat-1",
+      command: "click",
+      payload: { x: 10, y: 20, button: "left", count: 1 },
+    });
+
+    // Same token as the stream: no token, or the wrong one, is refused.
+    const noToken = await fetch(`${base}?lane=lane-1`, { method: "POST", body });
+    expect(noToken.status).toBe(403);
+    const wrongToken = await fetch(`${base}?lane=lane-1&token=nope`, { method: "POST", body });
+    expect(wrongToken.status).toBe(403);
+    expect(posted).toEqual([]);
+
+    const ok = await fetch(`${base}?lane=lane-1&token=${transport.token}`, { method: "POST", body });
+    expect(ok.status).toBe(204);
+    expect(posted).toEqual([{
+      laneId: "lane-1",
+      controllerId: "ade-window:abc",
+      chatSessionId: "chat-1",
+      command: "click",
+      payload: { x: 10, y: 20, button: "left", count: 1 },
+    }]);
+
+    // A refusal from the input module (a lost lease) comes back as 409 with its code.
+    const refused = createMacDesktopStreamServer({
+      logger,
+      postRealInput: async () => { throw Object.assign(new Error("Someone else has control."), { code: "MAC_DESKTOP_USER_HAS_CONTROL" }); },
+    });
+    cleanups.push(() => refused.dispose());
+    const t2 = await refused.start({ laneId: "lane-2", sourcePort: upstream.port });
+    const denied = await fetch(`http://127.0.0.1:${t2.port}${MAC_DESKTOP_INPUT_PATH}?lane=lane-2&token=${t2.token}`, { method: "POST", body });
+    expect(denied.status).toBe(409);
+    expect(await denied.json()).toEqual({ code: "MAC_DESKTOP_USER_HAS_CONTROL", message: "Someone else has control." });
+  });
+
+  it("rewrites the helper's bare-codec config into the record the renderer parses", async () => {
+    // The driver writes `avc1.640032` as the config payload; the renderer
+    // JSON.parses it. Forwarding it untouched is what produced "The video
+    // stream sent an unreadable configuration." in the panel.
+    const accessUnit = Buffer.from([0, 0, 0, 1, 0x65, 0xb8, 0x10]);
+    const upstream = await startUpstream(Buffer.concat([
+      driverConfigRecord("avc1.640032"),
+      driverAccessUnit(accessUnit, true),
+    ]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({
+      laneId: "lane-1",
+      sourcePort: upstream.port,
+      width: 1512,
+      height: 945,
+    });
+
+    const response = await fetch(transport.url);
+    expect(response.status).toBe(200);
+    const records = await readRecords(response, 2);
+    expect(records[0]).toEqual({
+      kind: "config",
+      codec: "avc1.640032",
+      width: 1512,
+      height: 945,
+      annexB: true,
+    });
+    expect(records[1]?.kind).toBe("access-unit");
+    expect(records[1]!.kind === "access-unit" && records[1]!.keyframe).toBe(true);
+    expect(Buffer.from((records[1] as { bytes: Uint8Array }).bytes)).toEqual(accessUnit);
+    // The codec the helper only learns at its first keyframe is now the
+    // server's too, so a status read reports it.
+    expect(server.metrics("lane-1")?.codec).toBe("avc1.640032");
+  });
+
+  it("sends one config per reader when the helper repeats it", async () => {
+    const upstream = await startUpstream(Buffer.concat([
+      driverConfigRecord("avc1.640032"),
+      driverConfigRecord("avc1.640032"),
+      driverAccessUnit(Buffer.from([1, 2, 3]), true),
+    ]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+
+    const records = await readRecords(await fetch(transport.url), 2);
+    // A second config record would make the renderer rebuild its decoder and
+    // wait for another keyframe.
+    expect(records.filter((record) => record.kind === "config")).toHaveLength(1);
+    expect(records[1]?.kind).toBe("access-unit");
+  });
+
+  it("passes a config the helper already wrote as JSON through unchanged", async () => {
+    const json = JSON.stringify({ codec: "avc1.42E01E", width: 800, height: 600, annexB: true });
+    const upstream = await startUpstream(Buffer.concat([
+      Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, Buffer.from(json, "utf8"))),
+      driverAccessUnit(Buffer.from([9]), true),
+    ]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port, width: 1, height: 2 });
+
+    const records = await readRecords(await fetch(transport.url), 1);
+    expect(records[0]).toEqual({
+      kind: "config",
+      codec: "avc1.42E01E",
+      width: 800,
+      height: 600,
+      annexB: true,
+    });
+  });
+
+  it("drops a reader when the helper's bytes are not framed at all", async () => {
+    const upstream = await startUpstream(Buffer.from("not-a-record-at-all"));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+
+    const response = await fetch(transport.url);
+    await response.body?.getReader().read().catch(() => {});
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(server.clientCount("lane-1")).toBe(0);
+    expect(server.metrics("lane-1")?.lastError).toContain("not framed");
+  });
+
+  it("keeps the token — and the reader — when a second viewer starts the same lane", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const first = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    const response = await fetch(first.url);
+    expect(response.status).toBe(200);
+
+    // The second chat opening the same lane's tab must not evict the first:
+    // a rotated token would leave the running reader holding a dead URL.
+    const second = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    expect(second.token).toBe(first.token);
+    expect(second.url).toBe(first.url);
+    expect(server.clientCount("lane-1")).toBe(1);
+    await response.body?.cancel();
+  });
+
+  it("reports the running transport without starting anything", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    expect(server.getTransport("lane-1")).toBeNull();
+    const started = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    expect(server.getTransport("lane-1")).toEqual(started);
+    server.stop("lane-1");
+    expect(server.getTransport("lane-1")).toBeNull();
+  });
+
+  it("mints a new token for a run started after the last one stopped", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const first = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    server.stop("lane-1");
+    const second = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    expect(second.token).not.toBe(first.token);
+    const stale = await fetch(`http://127.0.0.1:${second.port}${MAC_DESKTOP_STREAM_PATH}?lane=lane-1&token=${first.token}`);
+    expect(stale.status).toBe(403);
+    await stale.arrayBuffer();
+  });
+
+  it("drops to the idle rate after quiet, and back to full on activity", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const rates: number[] = [];
+    const server = createMacDesktopStreamServer({
+      logger,
+      setRate: ({ fps }) => {
+        rates.push(fps);
+      },
+    });
+    cleanups.push(() => server.dispose());
+    await server.start({ laneId: "lane-1", sourcePort: upstream.port, fps: 30, idleFps: 3 });
+    expect(server.metrics("lane-1")?.fps).toBe(30);
+
+    await new Promise((resolve) => setTimeout(resolve, 5_100));
+    expect(rates).toContain(3);
+    expect(server.metrics("lane-1")?.idle).toBe(true);
+
+    server.noteActivity("lane-1");
+    expect(rates).toContain(30);
+    expect(server.metrics("lane-1")?.idle).toBe(false);
+  }, 10_000);
+
+  it("never goes idle while a viewer keeps noting activity", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const rates: number[] = [];
+    const server = createMacDesktopStreamServer({
+      logger,
+      setRate: ({ fps }) => {
+        rates.push(fps);
+      },
+    });
+    cleanups.push(() => server.dispose());
+    vi.useFakeTimers();
+    try {
+      await server.start({ laneId: "lane-1", sourcePort: upstream.port, fps: 30, idleFps: 3 });
+      // The sync fan-out notes activity once a second while records flow, so
+      // the five-second idle timer is always re-armed before it can fire.
+      for (let second = 0; second < 8; second += 1) {
+        vi.advanceTimersByTime(1_000);
+        server.noteActivity("lane-1");
+      }
+      expect(rates).not.toContain(3);
+      expect(server.metrics("lane-1")?.idle).toBe(false);
+      expect(server.metrics("lane-1")?.fps).toBe(30);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops reporting a lane once it is stopped", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const server = createMacDesktopStreamServer({ logger });
+    cleanups.push(() => server.dispose());
+    const transport = await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+    expect(server.isStreaming("lane-1")).toBe(true);
+    expect(server.stop("lane-1")).toBe(true);
+    expect(server.isStreaming("lane-1")).toBe(false);
+    const after = await fetch(transport.url);
+    expect(after.status).toBe(403);
+    await after.arrayBuffer();
+  });
+
+  it("binds one server when two lanes start at the same time", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const info = vi.fn();
+    const server = createMacDesktopStreamServer({ logger: { ...logger, info } });
+    cleanups.push(() => server.dispose());
+    const [first, second] = await Promise.all([
+      server.start({ laneId: "lane-1", sourcePort: upstream.port }),
+      server.start({ laneId: "lane-2", sourcePort: upstream.port }),
+    ]);
+    expect(info.mock.calls.filter(([event]) => event === "mac_desktop.stream_server_listening")).toHaveLength(1);
+    expect(first.port).toBe(second.port);
+    expect(server.port()).toBe(first.port);
+  });
+
+  it("ends a run no reader ever connected to after the zero-client grace", async () => {
+    const upstream = await startUpstream(Buffer.from([1]));
+    cleanups.push(upstream.close);
+    const onZeroClients = vi.fn();
+    const server = createMacDesktopStreamServer({ logger, onZeroClients });
+    cleanups.push(() => server.dispose());
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      await server.start({ laneId: "lane-1", sourcePort: upstream.port });
+      vi.advanceTimersByTime(2_999);
+      expect(onZeroClients).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onZeroClients).toHaveBeenCalledWith("lane-1");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

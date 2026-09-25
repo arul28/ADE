@@ -16,6 +16,13 @@ import Foundation
 ///   calls/results, commands, file changes and web searches. The checkpoint
 ///   keeps the sparse prefix too. The subagent/scheduled builders, the
 ///   costliest of these, are reused while their input is unchanged.
+/// - The source list reads two dense kinds: tool results that carry sources
+///   and assistant text (link detection). The checkpoint keeps the indices of
+///   every source-carrying row and of every assistant text row by turn, and
+///   the source builder runs over just those rows (source rows plus the text
+///   of turns that have any).
+/// - The task-list card is anchored to the whole transcript's session id and
+///   latest timestamp, which the fold passes in.
 /// - Pending inputs and the activity indicator read dense kinds and stay whole-
 ///   transcript passes (cheap single scans).
 /// - Ranks, sort, id dedupe and the collapse passes run through the same
@@ -32,8 +39,10 @@ import Foundation
 /// - One component refolded from index 0, the rest resumed — a whole-
 ///   transcript input it reads while folding changed: the pending-input ids
 ///   that suppress tool calls (tool cards), or the usage-limit turn id (turn-
-///   end markers). Per-turn model metadata and steer resolutions are applied
-///   by the message fold at finish, so they never force a refold.
+///   end markers), or the steers hidden by a newer queued row when one that
+///   changed had a settled row in the prefix (messages). Per-turn model
+///   metadata, steer resolutions and per-turn source counts are applied at
+///   finish, so they never force a refold.
 /// - Delegated to `buildWorkChatTimelineSnapshot` — the transcript is not
 ///   time-sorted (the turn-end fold relies on that order).
 /// Everything a later envelope can reach in an earlier one without touching
@@ -49,6 +58,10 @@ struct ChatThreadTimelineFold {
     var turnEnds: WorkTurnEndMarkerFold
     var signature: WorkTimelineSignatureFold
     var latestTimestamp: String?
+    /// Indices in `transcript[..<count]` of rows that can carry sources.
+    var sourceIndices: [Int]
+    /// Indices in `transcript[..<count]` of assistant text, by normalized turn id.
+    var assistantTextIndicesByTurn: [String: [Int]]
     /// Sparse envelopes of `transcript[..<count]`, with their indices.
     var sparse: [WorkChatEnvelope]
     var sparseIndices: [Int]
@@ -141,6 +154,7 @@ struct ChatThreadTimelineFold {
     // Whole-transcript inputs.
     let pendingInputQueue = deriveWorkPendingInputQueue(from: transcript)
     let suppressedItemIds = Set(pendingInputQueue.liveItems.map(\.itemId))
+    let hiddenSteerIds = workSteerIdsWithLatestQueuedRow(from: sparse)
 
     let start = resume?.count ?? 0
     var componentRefolds: [String] = []
@@ -149,11 +163,20 @@ struct ChatThreadTimelineFold {
         ? .full(reason: dropReason ?? "no checkpoint")
         : .resumed(from: start, refolded: componentRefolds)
     }
-    var messages = resume?.messages ?? WorkChatMessageFold()
+    var messages = resume?.messages ?? WorkChatMessageFold(hiddenSteerIds: hiddenSteerIds)
     var tools = resume?.tools ?? WorkToolCardFold(suppressedPendingItemIds: suppressedItemIds)
     var turnEnds = resume?.turnEnds ?? WorkTurnEndMarkerFold(usageLimitTurnId: usageLimitTurnId)
     // A component whose whole-transcript input changed refolds the prefix on
     // its own; the others keep their checkpointed state.
+    if messages.hiddenSteerIds != hiddenSteerIds {
+      if messages.canAdopt(hiddenSteerIds: hiddenSteerIds) {
+        messages.adopt(hiddenSteerIds: hiddenSteerIds)
+      } else {
+        messages = WorkChatMessageFold(hiddenSteerIds: hiddenSteerIds)
+        for index in 0..<start { messages.consume(transcript[index]) }
+        componentRefolds.append("messages")
+      }
+    }
     if tools.suppressedPendingItemIds != suppressedItemIds {
       tools = WorkToolCardFold(suppressedPendingItemIds: suppressedItemIds)
       for index in 0..<start { tools.consume(transcript[index]) }
@@ -166,6 +189,8 @@ struct ChatThreadTimelineFold {
     }
     var signature = resume?.signature ?? WorkTimelineSignatureFold()
     var latestTimestamp = resume?.latestTimestamp
+    var sourceIndices = resume?.sourceIndices ?? []
+    var assistantTextIndicesByTurn = resume?.assistantTextIndicesByTurn ?? [:]
 
     // Where the next checkpoint goes: before the latest assistant text when it
     // is near the end (it may still be streaming), else at the end.
@@ -189,6 +214,8 @@ struct ChatThreadTimelineFold {
         turnEnds: turnEnds,
         signature: signature,
         latestTimestamp: latestTimestamp,
+        sourceIndices: sourceIndices,
+        assistantTextIndicesByTurn: assistantTextIndicesByTurn,
         sparse: Array(sparse.prefix(sparseCount)),
         sparseIndices: Array(sparseIndices.prefix(sparseCount))
       )
@@ -201,6 +228,18 @@ struct ChatThreadTimelineFold {
       turnEnds.consume(envelope)
       signature.combine(envelope)
       latestTimestamp = workLatestTranscriptTimestamp(latestTimestamp, envelope.timestamp)
+      switch envelope.event {
+      case .sources:
+        sourceIndices.append(index)
+      case .toolResult(_, _, _, _, _, _, let refs, let omitted):
+        if !(refs ?? []).isEmpty || (omitted ?? 0) > 0 { sourceIndices.append(index) }
+      case .assistantText(_, let turnId, _):
+        if let key = normalizedWorkTurnId(turnId) {
+          assistantTextIndicesByTurn[key, default: []].append(index)
+        }
+      default:
+        break
+      }
     }
     if nextCheckpointAt == count { nextCheckpoint = makeCheckpoint(at: count) }
     checkpoint = nextCheckpoint
@@ -213,8 +252,21 @@ struct ChatThreadTimelineFold {
     let stampedMessages = stamped(rawMessages)
 
     let toolCards = tools.cards.filter(workMobileShowsToolCardInTimeline)
-    let eventCards = buildWorkEventCards(from: sparse, suppressedItemIds: suppressedItemIds)
+    let taskList = buildWorkChatTaskListSnapshot(from: sparse)
+    let eventCards = buildWorkEventCards(
+      from: sparse,
+      suppressedItemIds: suppressedItemIds,
+      taskList: taskList,
+      // `transcript.map(\.timestamp).max()`: empty timestamps sort first, so
+      // it is the latest non-empty one, or "" when every one is empty.
+      taskListAnchor: (transcript.last?.sessionId, latestTimestamp ?? (count > 0 ? "" : nil))
+    )
       .filter { $0.kind != "toolUseSummary" }
+    let sourceList = sourceList(
+      transcript: transcript,
+      sourceIndices: sourceIndices,
+      assistantTextIndicesByTurn: assistantTextIndicesByTurn
+    )
     let pendingSteers = derivePendingWorkSteers(from: sparse)
     let subagent = subagentOutputs(sparse: sparse)
     let timeline = assembleWorkTimeline(
@@ -224,9 +276,10 @@ struct ChatThreadTimelineFold {
       commandCards: [],
       fileChangeCards: [],
       subagentRows: subagent.rows,
+      scheduledWorkSnapshots: subagent.scheduled,
       eventCards: eventCards,
       adeCards: buildWorkAdeCards(from: sparse),
-      turnEndMarkers: turnEnds.markers,
+      turnEndMarkers: turnEnds.markers(sourceCountsByTurn: sourceList.countsByTurn),
       doneEnvelopes: sparse,
       artifacts: artifacts,
       localEchoMessages: localEchoMessages
@@ -249,8 +302,38 @@ struct ChatThreadTimelineFold {
       transcriptLatestTurnEnded: workTranscriptLatestTurnEnded(sparse),
       transcriptHasInterruptibleActivity: WorkActivityIndicator.derivePresentation(from: transcript) != nil,
       latestTranscriptTimestamp: latestTimestamp,
+      sourceList: sourceList,
+      taskList: taskList,
       timeline: timeline
     )
+  }
+
+  /// `buildWorkChatSourceList` over only the rows it can read something from:
+  /// every source-carrying row, plus the assistant text of the turns those
+  /// rows name (link detection only scans turns with visible sources). Both
+  /// are kept in transcript order, so the subsequence stays time-sorted.
+  private func sourceList(
+    transcript: [WorkChatEnvelope],
+    sourceIndices: [Int],
+    assistantTextIndicesByTurn: [String: [Int]]
+  ) -> WorkChatSourceList {
+    guard !sourceIndices.isEmpty else {
+      return WorkChatSourceList(refs: [], omittedCount: 0, countsByTurn: [:])
+    }
+    var indices = sourceIndices
+    var turns = Set<String>()
+    for index in sourceIndices {
+      switch transcript[index].event {
+      case .sources(_, let turnId, _), .toolResult(_, _, _, _, let turnId, _, _, _):
+        if let key = normalizedWorkTurnId(turnId), turns.insert(key).inserted {
+          indices.append(contentsOf: assistantTextIndicesByTurn[key] ?? [])
+        }
+      default:
+        break
+      }
+    }
+    indices.sort()
+    return buildWorkChatSourceList(from: indices.map { transcript[$0] })
   }
 
   /// `workTimelineStampedMessage` per message, reusing the stamped copy while

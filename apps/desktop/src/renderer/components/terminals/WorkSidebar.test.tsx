@@ -550,7 +550,7 @@ describe("WorkSidebar context targets", () => {
   });
 
   it("withholds the context callbacks — and says nothing about it — with no target", () => {
-    const { container } = renderSidebar({
+    renderSidebar({
       tab: "ios",
       contextTarget: null,
       contextDisabledReason: "This shell cannot receive inserted context.",
@@ -561,7 +561,6 @@ describe("WorkSidebar context targets", () => {
     // panels drop the controls that depend on it instead of explaining their
     // absence in a bar above controls you can still see.
     expect(screen.queryByText(/cannot receive inserted context/)).toBeNull();
-    expect(container.querySelector(".bg-amber-500\\/\\[0\\.055\\]")).toBeNull();
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
   });
@@ -611,7 +610,7 @@ describe("WorkSidebar context targets", () => {
     await waitFor(() => expect(terminalWrite).toHaveBeenCalledTimes(1));
   });
 
-  it("warns when the iOS Simulator is attached to another lane while keeping Work controls usable", async () => {
+  it("never claims Apple Development for another lane, because a lane owns a device and not the pane", async () => {
     const { terminalWrite } = installAdeMock({ iosSession: otherLaneIosSession });
 
     renderSidebar({
@@ -620,7 +619,10 @@ describe("WorkSidebar context targets", () => {
       lanes: [lane, laneTwo],
     });
 
-    expect(await screen.findByText(/This Apple Development view is claimed by Lane 2, not Lane 1/)).toBeTruthy();
+    expect(await screen.findByTestId("ios-panel")).toBeTruthy();
+    // The picker states ownership per DEVICE. A pane-level claim said the view
+    // was second-hand while the page below offered every free simulator.
+    expect(screen.queryByText(/Apple Development view is claimed by/)).toBeNull();
     expect(screen.getByTestId("ios-panel").getAttribute("data-control-disabled")).toBe("");
     expect(screen.getByTestId("ios-panel").getAttribute("data-ignore-chat-ownership")).toBe("true");
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(false);

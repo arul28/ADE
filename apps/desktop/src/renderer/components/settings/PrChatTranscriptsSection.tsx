@@ -1,17 +1,7 @@
-import React, { useEffect, useState } from "react";
-import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { useEffect, useState } from "react";
+import { GithubLogo } from "@phosphor-icons/react";
+import { Banner } from "../ui/notice";
 import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
-
-const infoBoxStyle: React.CSSProperties = {
-  background: "color-mix(in srgb, var(--color-info) 8%, transparent)",
-  border: "1px solid color-mix(in srgb, var(--color-info) 20%, transparent)",
-  borderRadius: 8,
-  padding: "10px 14px",
-  fontSize: 11,
-  fontFamily: MONO_FONT,
-  color: COLORS.textSecondary,
-  lineHeight: "18px",
-};
 
 export function PrChatTranscriptsSection() {
   const [configBusy, setConfigBusy] = useState(false);
@@ -81,19 +71,21 @@ export function PrChatTranscriptsSection() {
         {saveNotice || actionError || transcriptGistsEnabled ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {saveNotice ? (
-              <p role="status" style={{ ...NOTICE_STYLE, color: COLORS.success }}>
-                {saveNotice}
-              </p>
+              <Banner layout="inline" model={{ id: "pr-transcripts-saved", tone: "success", title: saveNotice }} />
             ) : null}
             {actionError ? (
-              <p role="alert" style={{ ...NOTICE_STYLE, color: COLORS.danger }}>
-                {actionError}
-              </p>
+              <Banner layout="inline" model={{ id: "pr-transcripts-error", tone: "error", title: actionError }} />
             ) : null}
             {transcriptGistsEnabled ? (
-              <div style={infoBoxStyle}>
-                GitHub CLI auth needs the gist scope. Classic PATs need gist, and fine-grained tokens need Gists read/write permission.
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "pr-transcripts-gist-scope",
+                  tone: "info",
+                  icon: <GithubLogo size={13} weight="fill" />,
+                  title: "GitHub CLI auth needs the gist scope. Classic PATs need gist, and fine-grained tokens need Gists read/write permission.",
+                }}
+              />
             ) : null}
           </div>
         ) : null}
@@ -101,10 +93,3 @@ export function PrChatTranscriptsSection() {
     </SettingsGroup>
   );
 }
-
-const NOTICE_STYLE: React.CSSProperties = {
-  margin: 0,
-  fontFamily: SANS_FONT,
-  fontSize: 11,
-  lineHeight: 1.5,
-};

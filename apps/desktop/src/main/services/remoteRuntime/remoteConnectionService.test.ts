@@ -30,6 +30,7 @@ import {
   PairedRuntimeRpcOverBudgetError,
   PairedRuntimeSshTrustRequiredError,
   PairedRuntimeTransportUnavailableError,
+  PairedRuntimeSupersededError,
 } from "./pairedRuntimeErrors";
 
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
@@ -288,6 +289,43 @@ describe("RemoteConnectionService", () => {
         "ws://studio.local:8787/",
       ],
     );
+  });
+
+  it("requires explicit reconnection after another client takes the machine", async () => {
+    // Two ADEs sharing this computer's pairing each reconnected the moment the
+    // host closed them with "Superseded by a newer connection", and took the
+    // MacBook from each other every few seconds (2026-09-23).
+    const remote = target("studio", 1);
+    const registry = {
+      list: vi.fn(() => [remote]),
+      get: vi.fn((id: string) => id === remote.id ? remote : null),
+      update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...remote, ...patch })),
+    } as unknown as RemoteTargetRegistry;
+    let evicted: ((targetId: string, error: Error) => void) | null = null;
+    const pool = {
+      connect: vi.fn(async () => connectResult(remote)),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn((listener: (targetId: string, error: Error) => void) => {
+        evicted = listener;
+        return () => {};
+      }),
+    } as unknown as RemoteConnectionPool;
+    const service = new RemoteConnectionService(registry, pool);
+    await service.connect(remote.id, { explicit: true });
+
+    evicted!(remote.id, new Error("Remote ADE service connection closed.", { cause: new PairedRuntimeSupersededError() }));
+
+    const status = service.snapshot().connections[0]!;
+    expect(status.state).toBe("error");
+    expect(status.lastError).toMatch(/another ADE on this computer is using the connection to studio/i);
+    expect(status.lastError).toMatch(/connect to use it here/i);
+    await expect(service.connect(remote.id)).rejects.toThrow(/manually disconnected/);
+    expect(pool.connect).toHaveBeenCalledTimes(1);
+    // Nothing was written to the saved machine: the hold lives in memory only.
+    expect(registry.update).not.toHaveBeenCalledWith(remote.id, expect.objectContaining({ manuallyDisconnectedAt: expect.any(Number) }));
+
+    await service.connect(remote.id, { explicit: true });
+    expect(pool.connect).toHaveBeenCalledTimes(2);
   });
 
   it("stores structured connect errors with bounded detail and legacy text", async () => {

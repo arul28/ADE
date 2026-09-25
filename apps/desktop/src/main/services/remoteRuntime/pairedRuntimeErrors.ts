@@ -69,14 +69,40 @@ export class PairedRuntimeRpcOverBudgetError extends Error {
   }
 }
 
-/** True for `PairedRuntimeRpcOverBudgetError`, also when a wrapper carries it as `cause`. */
-export function isPairedRuntimeRpcOverBudgetError(error: unknown): boolean {
+/** True when `error`, or an error up to five `cause` links below it, is a `Ctor`. */
+function hasCauseOfType(error: unknown, Ctor: new (...args: never[]) => Error): boolean {
   let current: unknown = error;
   for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
-    if (current instanceof PairedRuntimeRpcOverBudgetError) return true;
+    if (current instanceof Ctor) return true;
     current = (current as Error & { cause?: unknown }).cause;
   }
   return false;
+}
+
+/** True for `PairedRuntimeRpcOverBudgetError`, also when a wrapper carries it as `cause`. */
+export function isPairedRuntimeRpcOverBudgetError(error: unknown): boolean {
+  return hasCauseOfType(error, PairedRuntimeRpcOverBudgetError);
+}
+
+/**
+ * The host closed this connection because another connection from the same
+ * device replaced it. Something else on this computer that shares this
+ * machine's pairing (a second ADE on the same home, for example) is connected
+ * now. Reconnecting on our own would only close that one in turn, and the two
+ * would take the machine from each other forever.
+ */
+export class PairedRuntimeSupersededError extends Error {
+  readonly code = "PAIRED_RUNTIME_SUPERSEDED" as const;
+
+  constructor(message = "Another ADE on this computer is using this connection.") {
+    super(message);
+    this.name = "PairedRuntimeSupersededError";
+  }
+}
+
+/** True for `PairedRuntimeSupersededError`, also when a wrapper carries it as `cause`. */
+export function isPairedRuntimeSupersededError(error: unknown): boolean {
+  return hasCauseOfType(error, PairedRuntimeSupersededError);
 }
 
 export class PairedRuntimeCompatibilityError extends Error {

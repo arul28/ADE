@@ -1,7 +1,5 @@
-import * as Dialog from "@radix-ui/react-dialog";
-import { BorderBeam } from "border-beam";
 import type { ComponentType, ReactNode } from "react";
-import { Button } from "../ui/Button";
+import { Dialog } from "../ui/dialog";
 
 export function LaneDialogShell({
   open,
@@ -11,8 +9,8 @@ export function LaneDialogShell({
   description,
   headerExtra,
   icon: Icon,
-  widthClassName,
-  heightClassName,
+  width,
+  height,
   busy = false,
   onCloseAutoFocus,
   children,
@@ -27,8 +25,8 @@ export function LaneDialogShell({
   description?: string;
   headerExtra?: ReactNode;
   icon?: ComponentType<{ size?: number | string; className?: string }>;
-  widthClassName?: string;
-  heightClassName?: string;
+  width?: number | string;
+  height?: number | string;
   busy?: boolean;
   onCloseAutoFocus?: (event: Event) => void;
   children: ReactNode;
@@ -39,91 +37,24 @@ export function LaneDialogShell({
    */
   scrollBody?: boolean;
 }) {
-  const width = widthClassName ?? "w-[min(720px,calc(100vw-1rem))]";
-  const maxHeight = "max-h-[min(92dvh,calc(100vh-1rem))]";
-  const height = heightClassName ?? "";
-
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => { if (!busy || next) onOpenChange(next); }}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm" />
-        <Dialog.Content
-          className={`fixed left-1/2 top-1/2 z-50 flex ${maxHeight} ${height} ${width} -translate-x-1/2 -translate-y-1/2 overflow-hidden focus:outline-none`}
-          onCloseAutoFocus={onCloseAutoFocus}
-        >
-          <BorderBeam
-            className="w-full"
-            size="md"
-            colorVariant="mono"
-            duration={25}
-            strength={0.85}
-            borderRadius={12}
-          >
-            <div
-              className={`relative flex w-full ${maxHeight} ${height} min-h-0 flex-col overflow-hidden rounded-xl border border-white/[0.1] shadow-float`}
-              style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
-            >
-              <div className="pointer-events-none absolute inset-x-6 top-0 h-px bg-gradient-to-r from-transparent via-accent/45 to-transparent" />
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="shrink-0 border-b border-white/[0.06] bg-white/[0.02] px-4 pb-3 pt-4 sm:px-5 sm:pt-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <Dialog.Title className={titleContent
-                        ? "sr-only"
-                        : "flex items-center gap-2 text-base font-semibold text-fg sm:text-lg"}
-                      >
-                        {titleContent ? title : (
-                          <>
-                            {Icon ? (
-                              <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-white/[0.08] bg-accent/[0.12] text-accent">
-                                <Icon size={16} />
-                              </span>
-                            ) : null}
-                            <span className="truncate">{title}</span>
-                          </>
-                        )}
-                      </Dialog.Title>
-                      {titleContent ? <div className="min-w-0">{titleContent}</div> : null}
-                      {headerExtra ? <div className="mt-3 min-w-0">{headerExtra}</div> : null}
-                      {description ? (
-                        <Dialog.Description className="mt-2 text-sm leading-relaxed text-muted-fg sm:max-w-2xl">
-                          {description}
-                        </Dialog.Description>
-                      ) : (
-                        <Dialog.Description className="sr-only">
-                          {title}
-                        </Dialog.Description>
-                      )}
-                    </div>
-                    <Dialog.Close asChild>
-                      <Button variant="ghost" size="sm" className="shrink-0" disabled={busy}>
-                        Esc
-                      </Button>
-                    </Dialog.Close>
-                  </div>
-                </div>
-                <div
-                  className={`min-h-0 flex-1 overflow-x-hidden overscroll-contain px-4 py-3 sm:px-5 sm:py-4 ${
-                    scrollBody ? "overflow-y-auto" : "overflow-hidden"
-                  }`}
-                  data-scroll-lock-scrollable=""
-                  onWheel={(event) => event.stopPropagation()}
-                >
-                  {children}
-                </div>
-                {footer ? (
-                  <div
-                    className="shrink-0 border-t border-white/[0.06] px-4 py-3 sm:px-5"
-                    style={{ backgroundColor: "var(--color-modal-bg, var(--color-card, #1A1830))" }}
-                  >
-                    {footer}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </BorderBeam>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+    <Dialog
+      open={open}
+      onOpenChange={(next) => { if (!busy || next) onOpenChange(next); }}
+      title={title}
+      titleContent={titleContent}
+      description={description}
+      headerExtra={headerExtra}
+      icon={Icon ? <Icon size={16} /> : undefined}
+      width={width ?? "min(720px, calc(100vw - 1rem))"}
+      height={height}
+      maxHeight="min(92dvh, calc(100vh - 1rem))"
+      scrollBody={scrollBody}
+      dismissible={!busy}
+      footer={footer}
+      onCloseAutoFocus={onCloseAutoFocus}
+    >
+      {children}
+    </Dialog>
   );
 }

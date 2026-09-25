@@ -1,7 +1,7 @@
 import React from "react";
-import { ArrowSquareOut, Link as LinkIcon, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, GitPullRequest } from "@phosphor-icons/react";
 
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import type {
   AppNavigationRequest,
   RecentProjectSummary,
@@ -21,7 +21,7 @@ type Candidate = {
  * The PRs page itself still renders normally — this banner is purely a
  * convenience nudge for the cross-machine PR deeplink case.
  */
-export function CrossRepoPrBanner(): React.ReactElement | null {
+export function CrossRepoPrBanner(): null {
   const [candidate, setCandidate] = React.useState<Candidate | null>(null);
   const [activeRepo, setActiveRepo] = React.useState<{
     owner: string;
@@ -120,8 +120,6 @@ export function CrossRepoPrBanner(): React.ReactElement | null {
     };
   }, [candidate, activeRepo]);
 
-  if (!candidate) return null;
-
   const dismiss = () => {
     setCandidate(null);
     setMatchingProject(null);
@@ -143,75 +141,39 @@ export function CrossRepoPrBanner(): React.ReactElement | null {
     dismiss();
   };
 
-  const repoLabel = `${candidate.repoOwner}/${candidate.repoName}`;
-  const prLabel = candidate.prNumber ? `PR #${candidate.prNumber}` : "PR";
+  const repoLabel = candidate ? `${candidate.repoOwner}/${candidate.repoName}` : "";
+  const prLabel = candidate?.prNumber ? `PR #${candidate.prNumber}` : "PR";
+  const notRepo = activeRepo ? `, not ${activeRepo.owner}/${activeRepo.name}` : "";
 
-  return (
-    <div
-      style={{
-        position: "fixed",
-        top: 14,
-        left: "50%",
-        transform: "translateX(-50%)",
-        zIndex: 140,
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "8px 14px",
-        borderRadius: 999,
-        background: COLORS.cardBgSolid,
-        border: `1px solid ${COLORS.border}`,
-        boxShadow: "0 18px 40px rgba(0,0,0,0.35)",
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-        color: COLORS.textPrimary,
-        maxWidth: "min(640px, calc(100vw - 28px))",
-      }}
-    >
-      <LinkIcon size={14} weight="bold" />
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {prLabel} is in <strong>{repoLabel}</strong>
-        {activeRepo ? `, not ${activeRepo.owner}/${activeRepo.name}` : ""}.
-      </span>
-      {matchingProject ? (
-        <button
-          type="button"
-          onClick={() => void switchProject()}
-          style={{
-            padding: "4px 10px",
-            borderRadius: 999,
-            border: "none",
-            background: "var(--color-accent, #6ee7b7)",
-            color: "var(--color-bg, #0a0a0a)",
-            fontWeight: 600,
-            cursor: "pointer",
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-          }}
-        >
-          <ArrowSquareOut size={11} /> Switch to {matchingProject.displayName}
-        </button>
-      ) : (
-        <span style={{ color: COLORS.textSecondary, fontSize: 11 }}>
-          No matching recent project — open it from Recent Projects first.
-        </span>
-      )}
-      <button
-        type="button"
-        onClick={dismiss}
-        aria-label="Dismiss"
-        style={{
-          padding: 4,
-          borderRadius: 999,
-          border: "none",
-          background: "transparent",
-          color: COLORS.textSecondary,
-          cursor: "pointer",
-        }}
-      >
-        <X size={12} />
-      </button>
-    </div>
+  useAppBanner(
+    candidate
+      ? {
+          id: "cross-repo-pr",
+          tone: "accent",
+          icon: <GitPullRequest size={14} weight="bold" />,
+          title: (
+            <>
+              {prLabel} is in <strong>{repoLabel}</strong>
+              {notRepo}.
+            </>
+          ),
+          ariaLabel: `${prLabel} is in ${repoLabel}${notRepo}.`,
+          detail: matchingProject
+            ? undefined
+            : "No matching recent project — open it from Recent Projects first.",
+          actions: matchingProject
+            ? [{
+                label: `Switch to ${matchingProject.displayName}`,
+                icon: <ArrowSquareOut size={11} />,
+                variant: "solid",
+                onClick: () => void switchProject(),
+              }]
+            : undefined,
+          dismiss: { onDismiss: dismiss },
+        }
+      : null,
+    { placement: "floating", priority: APP_BANNER_PRIORITY.prompt },
   );
+
+  return null;
 }

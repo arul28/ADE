@@ -93,6 +93,8 @@ import {
   type SourceCheck,
 } from "./crossMachineHandoffPresentation";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice/Banner";
+import { Dialog } from "../ui/dialog";
 
 export function CrossMachineHandoffModal({
   open,
@@ -279,7 +281,6 @@ export function CrossMachineHandoffModal({
     return (
       <PermissionModePicker
         ariaLabel="Permission mode for the new chat"
-        menuLayerClassName="z-[200]"
         selectedValue={current}
         options={pickerOptions}
         onSelect={(value) => {
@@ -479,18 +480,6 @@ export function CrossMachineHandoffModal({
     }));
     return () => { cancelled = true; };
   }, [eligibleTargetIds, sourceCheck.originUrl, stage]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && stage !== "sending") {
-        event.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [onClose, open, stage]);
 
   const runDestinationPreflight = useCallback(async (
     connection: RemoteRuntimeConnectionStatus,
@@ -877,27 +866,123 @@ export function CrossMachineHandoffModal({
     ? "This connection is authenticated but not end-to-end encrypted. The full chat history is sent exactly as recorded."
     : "This connection is authenticated but not end-to-end encrypted. Only the summary is sent — never secrets.";
 
+  const sending = stage === "sending";
   return (
-    <div
-      className="fixed inset-0 z-[190] flex items-center justify-center bg-black/70 p-4 backdrop-blur-md"
-      role="presentation"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget && stage !== "sending") onClose();
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
       }}
+      title="Continue on another computer"
+      hideHeader
+      width={760}
+      maxHeight="min(780px, calc(100vh - 32px))"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      // Nothing inside takes focus on open; the panel holds it.
+      preventAutoFocus
+      // A handoff in flight cannot be backed out of.
+      dismissible={!sending}
+      onEscapeKeyDown={(event) => {
+        // An open permission list takes Escape first and closes itself only.
+        // (Dialog stops the key either way, so it never reaches the chat.)
+        if (document.querySelector("[data-permission-mode-picker-dropdown]")) event.preventDefault();
+      }}
+      footerStart={
+        <div className="min-w-0 text-[10px] text-fg/38">
+          {stage === "sending" ? (
+            <div className="flex flex-col gap-1">
+              {SEND_STEPS.map((step) => {
+                const done = sendProgress.includes(step.id);
+                const current = !done && sendProgress.length === SEND_STEPS.findIndex((item) => item.id === step.id);
+                return (
+                  <span
+                    key={step.id}
+                    className={cn(
+                      "inline-flex items-center gap-1.5",
+                      done ? "text-emerald-200/70" : current ? "text-fg/62" : "text-fg/26",
+                    )}
+                  >
+                    {done ? (
+                      <Check size={11} weight="bold" />
+                    ) : current ? (
+                      <CircleNotch size={11} className="animate-spin" />
+                    ) : (
+                      <span className="h-[11px] w-[11px] rounded-full border border-current opacity-45" />
+                    )}
+                    {step.label}
+                  </span>
+                );
+              })}
+            </div>
+          ) : busyLabel ? (
+            <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
+          ) : stage === "choose" ? "Nothing is sent until you confirm." : stage === "complete" ? "This chat stays here too." : "Retrying is safe."}
+        </div>
+      }
+      footer={
+        <div className="flex shrink-0 items-center gap-2">
+          {stage === "clone" || stage === "review" ? (
+            <button
+              type="button"
+              disabled={Boolean(busyLabel)}
+              onClick={() => {
+                setStage("choose");
+                setPrepared(null);
+                setDestinationProject(null);
+                setDestinationPreflight(null);
+                setStoragePreflight(null);
+                setCloneApproved(false);
+                setError(null);
+              }}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 text-[10px] font-semibold text-fg/58 hover:text-fg/80 disabled:opacity-40"
+            >
+              <ArrowLeft size={12} /> Back
+            </button>
+          ) : null}
+          {stage === "choose" ? (
+            <BlockedActionButton
+              reasons={loading ? [] : continueBlockers}
+              busy={loading || Boolean(busyLabel)}
+              onClick={() => void prepareDestination()}
+            >
+              Continue <ArrowRight size={12} />
+            </BlockedActionButton>
+          ) : null}
+          {stage === "clone" ? (
+            <button
+              type="button"
+              disabled={Boolean(busyLabel) || !cloneApproved || Boolean(storagePreflight?.blockingErrors.length)}
+              onClick={() => void cloneDestination()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/12 px-3 text-[10px] font-semibold text-sky-100 hover:bg-sky-400/17 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              Clone repository <ArrowRight size={12} />
+            </button>
+          ) : null}
+          {stage === "review" ? (
+            <button
+              type="button"
+              disabled={Boolean(busyLabel) || reviewBlocked}
+              onClick={() => void sendHandoff()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              Send chat <ArrowRight size={12} />
+            </button>
+          ) : null}
+          {stage === "complete" ? (
+            <button type="button" onClick={onClose} className="h-8 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17">Done</button>
+          ) : null}
+        </div>
+      }
     >
-      <section
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cross-machine-handoff-title"
-        className="grid max-h-[min(780px,calc(100vh-32px))] w-[min(760px,calc(100vw-32px))] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl border border-white/[0.09] bg-[#11131a] shadow-[0_32px_120px_rgba(0,0,0,0.65)]"
-      >
-        <header className="flex items-start justify-between gap-4 border-b border-white/[0.065] px-5 py-4">
+        <header className="flex shrink-0 items-start justify-between gap-4 border-b border-white/[0.065] px-5 py-4">
           <div className="flex min-w-0 items-start gap-3">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-sky-300/20 bg-sky-400/10 text-sky-200">
               <CloudArrowUp size={19} weight="duotone" />
             </div>
             <div className="min-w-0">
-              <h2 id="cross-machine-handoff-title" className="font-sans text-[14px] font-semibold text-fg/92">
+              <h2 aria-hidden="true" className="font-sans text-[14px] font-semibold text-fg/92">
                 Continue on another computer
               </h2>
               <p className="mt-1 text-[11px] leading-4 text-fg/48">
@@ -909,14 +994,14 @@ export function CrossMachineHandoffModal({
             type="button"
             aria-label="Close handoff setup"
             onClick={onClose}
-            disabled={stage === "sending"}
+            disabled={sending}
             className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-fg/42 transition-colors hover:bg-white/[0.06] hover:text-fg/80 disabled:opacity-30"
           >
             <X size={15} />
           </button>
         </header>
 
-        <div className="min-h-0 overflow-y-auto px-5 py-4">
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {stage === "complete" && result && selectedConnection ? (
             <div className="mx-auto flex max-w-[520px] flex-col items-center py-8 text-center">
               <div className="grid h-14 w-14 place-items-center rounded-full border border-emerald-300/25 bg-emerald-400/10 text-emerald-200">
@@ -931,23 +1016,27 @@ export function CrossMachineHandoffModal({
                 <CheckRow label="Destination chat" detail={result.reusedSession ? "Existing handoff chat resumed safely" : "New chat started with bounded context"} state="ok" />
               </div>
               {sourceMarkerWarning ? (
-                <div className="mt-4 w-full rounded-lg border border-amber-300/20 bg-amber-400/[0.07] p-3 text-left text-[10px] leading-4 text-amber-100/75">
-                  The destination succeeded, but ADE could not mark the source chat: {sourceMarkerWarning}
-                  <button
-                    type="button"
-                    className="ml-2 font-semibold text-amber-100 underline decoration-amber-200/35 underline-offset-2"
-                    onClick={() => {
+                <Banner
+                  model={{
+                    id: "handoff-source-marker-warning",
+                    tone: "warning",
+                    title: `The destination succeeded, but ADE could not mark the source chat: ${sourceMarkerWarning}`,
+                    actions: [{
+                      label: "Retry marker",
+                      variant: "secondary",
+                      onClick: () => {
                       void markSource(result, selectedConnection, runtimePinRef.current)
                         .then(() => {
                           setSourceMarkerWarning(null);
                           onFinished();
                         })
                         .catch((markerError) => setSourceMarkerWarning(markerError instanceof Error ? markerError.message : String(markerError)));
-                    }}
-                  >
-                    Retry marker
-                  </button>
-                </div>
+                      },
+                    }],
+                  }}
+                  layout="inline"
+                  style={{ marginTop: 16, width: "100%" }}
+                />
               ) : null}
             </div>
           ) : null}
@@ -1139,17 +1228,15 @@ export function CrossMachineHandoffModal({
               </div>
               </div>
               {forkFallbackReason ? (
-                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] px-3 py-2.5">
-                  <div className="text-[10.5px] leading-4 text-amber-100/80">{forkFallbackReason}</div>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyLabel)}
-                    onClick={sendAsBrief}
-                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-45"
-                  >
-                    Send as brief instead
-                  </button>
-                </div>
+                <Banner
+                  model={{
+                    id: "handoff-fork-fallback",
+                    tone: "warning",
+                    title: forkFallbackReason,
+                    actions: [{ label: "Send as brief instead", disabled: Boolean(busyLabel), onClick: sendAsBrief }],
+                  }}
+                  layout="inline"
+                />
               ) : null}
             </div>
           ) : null}
@@ -1171,13 +1258,25 @@ export function CrossMachineHandoffModal({
                   state={storagePreflight.blockingErrors.some((item) => /space/i.test(item)) ? "error" : storagePreflight.warnings.length ? "warn" : "ok"}
                 />
               </div>
-              {[...storagePreflight.blockingErrors, ...storagePreflight.warnings].map((message) => (
-                <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
+              {storagePreflight.blockingErrors.map((message, index) => (
+                <Banner
+                  key={`error:${index}:${message}`}
+                  model={{ id: `handoff-storage-error-${index}`, tone: "error", title: message }}
+                  layout="inline"
+                />
+              ))}
+              {storagePreflight.warnings.map((message, index) => (
+                <Banner
+                  key={`warning:${index}:${message}`}
+                  model={{ id: `handoff-storage-warning-${index}`, tone: "warning", title: message }}
+                  layout="inline"
+                />
               ))}
               {isInsecureRoute(selectedConnection) ? (
-                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.065] px-3 py-2.5 text-[10px] leading-4 text-amber-100/72">
-                  {insecureRouteNotice}
-                </div>
+                <Banner
+                  model={{ id: "handoff-insecure-route", tone: "warning", title: insecureRouteNotice }}
+                  layout="inline"
+                />
               ) : null}
               <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-white/[0.07] bg-white/[0.025] px-3 py-2.5">
                 <input
@@ -1210,19 +1309,15 @@ export function CrossMachineHandoffModal({
                 </div>
               </div>
               {forkUnsupportedAtReview ? (
-                <div className="rounded-lg border border-amber-300/20 bg-amber-400/[0.07] px-3 py-2.5">
-                  <div className="text-[10.5px] leading-4 text-amber-100/80">
-                    {forkFallbackReason ?? forkHandoffSupport?.reason ?? "That machine needs an ADE update for fork handoff."}
-                  </div>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyLabel)}
-                    onClick={sendAsBrief}
-                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/15 disabled:opacity-45"
-                  >
-                    Send as brief instead
-                  </button>
-                </div>
+                <Banner
+                  model={{
+                    id: "handoff-fork-fallback-review",
+                    tone: "warning",
+                    title: forkFallbackReason ?? forkHandoffSupport?.reason ?? "That machine needs an ADE update for fork handoff.",
+                    actions: [{ label: "Send as brief instead", disabled: Boolean(busyLabel), onClick: sendAsBrief }],
+                  }}
+                  layout="inline"
+                />
               ) : null}
               {/* The four checks ARE the "is this ready" answer, so they stay —
                   now with the subject's own mark instead of four identical rows. */}
@@ -1237,11 +1332,19 @@ export function CrossMachineHandoffModal({
                 />
                 <CheckRow icon={<GitFork size={13} weight="duotone" />} label="Lane plan" detail={destinationPreflight.existingLaneId ? "Reuse the existing clean lane" : "Start a new lane from your branch"} state="ok" />
               </div>
-              {destinationPreflight.warnings.map((message) => (
-                <div key={message} className="rounded-lg border border-amber-300/18 bg-amber-400/[0.06] px-3 py-2 text-[10px] leading-4 text-amber-100/70">{message}</div>
+              {destinationPreflight.warnings.map((message, index) => (
+                <Banner
+                  key={`warning:${index}:${message}`}
+                  model={{ id: `handoff-destination-warning-${index}`, tone: "warning", title: message }}
+                  layout="inline"
+                />
               ))}
-              {destinationPreflight.blockingErrors.map((message) => (
-                <div key={message} className="rounded-lg border border-red-300/18 bg-red-400/[0.06] px-3 py-2 text-[10px] leading-4 text-red-100/72">{message}</div>
+              {destinationPreflight.blockingErrors.map((message, index) => (
+                <Banner
+                  key={`error:${index}:${message}`}
+                  model={{ id: `handoff-destination-error-${index}`, tone: "error", title: message }}
+                  layout="inline"
+                />
               ))}
               {destinationPreflight.laneFastForward ? (
                 /*
@@ -1250,23 +1353,21 @@ export function CrossMachineHandoffModal({
                   rather than done automatically: this rewrites git state on a
                   machine the user isn't sitting at.
                 */
-                <div className="rounded-lg border border-amber-300/22 bg-amber-400/[0.07] px-3 py-2.5">
-                  <div className="text-[11px] font-semibold text-amber-100/90">
-                    Lane &lsquo;{destinationPreflight.laneFastForward.laneName}&rsquo; is {destinationPreflight.laneFastForward.behindBy}{" "}
-                    {destinationPreflight.laneFastForward.behindBy === 1 ? "commit" : "commits"} behind
-                  </div>
-                  <div className="mt-1 text-[10px] leading-4 text-amber-100/60">
-                    It&rsquo;s clean, so ADE can fast-forward it to your commit on {selectedConnection?.target.name ?? "that machine"}. Nothing is discarded.
-                  </div>
-                  <button
-                    type="button"
-                    disabled={Boolean(busyLabel)}
-                    onClick={() => void fastForwardDestinationLane()}
-                    className="mt-2 inline-flex h-7 items-center gap-1.5 rounded-md border border-amber-200/25 bg-amber-300/10 px-2.5 text-[10px] font-semibold text-amber-100 hover:bg-amber-300/16 disabled:opacity-45"
-                  >
-                    <GitBranch size={12} /> Fetch &amp; fast-forward there
-                  </button>
-                </div>
+                <Banner
+                  model={{
+                    id: "handoff-lane-fast-forward",
+                    tone: "warning",
+                    title: `Lane ‘${destinationPreflight.laneFastForward.laneName}’ is ${destinationPreflight.laneFastForward.behindBy} ${destinationPreflight.laneFastForward.behindBy === 1 ? "commit" : "commits"} behind`,
+                    detail: `It’s clean, so ADE can fast-forward it to your commit on ${selectedConnection?.target.name ?? "that machine"}. Nothing is discarded.`,
+                    actions: [{
+                      label: "Fetch & fast-forward there",
+                      icon: <GitBranch size={12} />,
+                      disabled: Boolean(busyLabel),
+                      onClick: () => void fastForwardDestinationLane(),
+                    }],
+                  }}
+                  layout="inline"
+                />
               ) : null}
               {/* What travels, as marks rather than a paragraph. */}
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-xl border border-white/[0.065] bg-white/[0.025] px-3.5 py-2.5 text-[10.5px] text-fg/55">
@@ -1307,116 +1408,28 @@ export function CrossMachineHandoffModal({
                   has to be visible but must not stand between the user and a
                   button they just read.
                 */
-                <div
-                  className="flex items-start gap-2 rounded-lg border border-amber-300/16 bg-amber-400/[0.055] px-3 py-2 text-[10px] leading-4 text-amber-100/70"
-                  data-testid="insecure-route-notice"
-                >
-                  <ShieldWarning size={13} className="mt-0.5 shrink-0" />
-                  <span>{insecureRouteNotice}</span>
-                </div>
+                <Banner
+                  model={{ id: "handoff-insecure-route-review", tone: "warning", title: insecureRouteNotice }}
+                  layout="inline"
+                  testId="insecure-route-notice"
+                />
               ) : null}
             </div>
           ) : null}
 
           {error && stage !== "complete" ? (
-            <div
-              className={cn(
-                "mx-auto mt-4 max-w-[620px] rounded-lg border px-3 py-2.5 text-[10px] leading-4",
-                handoffMayStillComplete
-                  ? "border-amber-300/20 bg-amber-400/[0.07] text-amber-100/75"
-                  : "border-red-300/20 bg-red-400/[0.07] text-red-100/75",
-              )}
-            >
-              {error}
-            </div>
+            <Banner
+              model={{
+                id: "handoff-error",
+                tone: handoffMayStillComplete ? "warning" : "error",
+                title: error,
+              }}
+              layout="inline"
+              style={{ margin: "16px auto 0", maxWidth: 620 }}
+            />
           ) : null}
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-white/[0.065] px-5 py-3.5">
-          <div className="min-w-0 text-[10px] text-fg/38">
-            {stage === "sending" ? (
-              <div className="flex flex-col gap-1">
-                {SEND_STEPS.map((step) => {
-                  const done = sendProgress.includes(step.id);
-                  const current = !done && sendProgress.length === SEND_STEPS.findIndex((item) => item.id === step.id);
-                  return (
-                    <span
-                      key={step.id}
-                      className={cn(
-                        "inline-flex items-center gap-1.5",
-                        done ? "text-emerald-200/70" : current ? "text-fg/62" : "text-fg/26",
-                      )}
-                    >
-                      {done ? (
-                        <Check size={11} weight="bold" />
-                      ) : current ? (
-                        <CircleNotch size={11} className="animate-spin" />
-                      ) : (
-                        <span className="h-[11px] w-[11px] rounded-full border border-current opacity-45" />
-                      )}
-                      {step.label}
-                    </span>
-                  );
-                })}
-              </div>
-            ) : busyLabel ? (
-              <span className="inline-flex items-center gap-1.5"><CircleNotch size={12} className="animate-spin" />{busyLabel}</span>
-            ) : stage === "choose" ? "Nothing is sent until you confirm." : stage === "complete" ? "This chat stays here too." : "Retrying is safe."}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {stage === "clone" || stage === "review" ? (
-              <button
-                type="button"
-                disabled={Boolean(busyLabel)}
-                onClick={() => {
-                  setStage("choose");
-                  setPrepared(null);
-                  setDestinationProject(null);
-                  setDestinationPreflight(null);
-                  setStoragePreflight(null);
-                  setCloneApproved(false);
-                  setError(null);
-                }}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 text-[10px] font-semibold text-fg/58 hover:text-fg/80 disabled:opacity-40"
-              >
-                <ArrowLeft size={12} /> Back
-              </button>
-            ) : null}
-            {stage === "choose" ? (
-              <BlockedActionButton
-                reasons={loading ? [] : continueBlockers}
-                busy={loading || Boolean(busyLabel)}
-                onClick={() => void prepareDestination()}
-              >
-                Continue <ArrowRight size={12} />
-              </BlockedActionButton>
-            ) : null}
-            {stage === "clone" ? (
-              <button
-                type="button"
-                disabled={Boolean(busyLabel) || !cloneApproved || Boolean(storagePreflight?.blockingErrors.length)}
-                onClick={() => void cloneDestination()}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-sky-300/24 bg-sky-400/12 px-3 text-[10px] font-semibold text-sky-100 hover:bg-sky-400/17 disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                Clone repository <ArrowRight size={12} />
-              </button>
-            ) : null}
-            {stage === "review" ? (
-              <button
-                type="button"
-                disabled={Boolean(busyLabel) || reviewBlocked}
-                onClick={() => void sendHandoff()}
-                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17 disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                Send chat <ArrowRight size={12} />
-              </button>
-            ) : null}
-            {stage === "complete" ? (
-              <button type="button" onClick={onClose} className="h-8 rounded-md border border-emerald-300/24 bg-emerald-400/12 px-3 text-[10px] font-semibold text-emerald-100 hover:bg-emerald-400/17">Done</button>
-            ) : null}
-          </div>
-        </footer>
-      </section>
-    </div>
+    </Dialog>
   );
 }

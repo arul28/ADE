@@ -136,15 +136,12 @@ describe("ManageLaneDialog tabs", () => {
 
     expect(screen.queryByText("Manage Lane")).toBeNull();
     expect(screen.getByRole("heading", { name: "Manage tabs" })).toBeTruthy();
-    const name = screen.getByText("Manage tabs", { selector: "span" });
-    expect(name.style.color).toBe("rgb(94, 234, 212)");
   });
 
-  it("keeps Select everything compact and separate from the delete targets", () => {
+  it("keeps Select everything separate from the delete targets", () => {
     render(<ManageLaneDialog {...makeProps()} />);
 
     const selectEverything = screen.getByRole("button", { name: "Select everything" });
-    expect(selectEverything.className).toContain("h-8");
     expect(screen.queryByText("Worktree, local & remote branch")).toBeNull();
     const targets = screen.getByRole("checkbox", { name: /Worktree/i }).closest(".ml-3");
     expect(targets).toBeTruthy();
@@ -165,6 +162,26 @@ describe("ManageLaneDialog tabs", () => {
     );
 
     expect(selectedTabLabel()).toBe("Delete");
+  });
+
+  it("opens on the tab the caller asks for, e.g. Archive all from the sidebar", () => {
+    const firstLane = makeLane({ id: "lane-1", name: "First lane" });
+    const secondLane = makeLane({ id: "lane-2", name: "Second lane" });
+
+    render(
+      <ManageLaneDialog
+        {...makeProps({
+          managedLane: null,
+          managedLanes: [firstLane, secondLane],
+          allLanes: [firstLane, secondLane],
+          initialTab: "archive",
+        })}
+      />,
+    );
+
+    expect(selectedTabLabel()).toBe("Archive");
+    expect(screen.getByText("First lane")).toBeTruthy();
+    expect(screen.getByText("Second lane")).toBeTruthy();
   });
 
   it("does not reset the selected tab when the lane object refreshes", () => {
@@ -269,7 +286,7 @@ describe("ManageLaneDialog tabs", () => {
     );
 
     await screen.findByRole("button", { name: /delete lane/i });
-    expect(screen.getByText("Removes the working folder and ADE registration.")).toBeTruthy();
+    expect(screen.getByText(/Removes the working folder and ADE registration/)).toBeTruthy();
     expect(screen.queryByText(/unlink from ade/i)).toBeNull();
     expect(screen.queryByText(/keeps the folder/i)).toBeNull();
   });

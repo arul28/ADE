@@ -195,6 +195,10 @@ struct ChatThreadOverlays: Equatable, @unchecked Sendable {
   var optimisticallyAnsweredInputIds: Set<String> = []
   var artifacts: [ComputerUseArtifactSummary] = []
   var cardExpansionSignature: Int = 0
+  /// Finished turns the reader unfolded (`turn-fold:<turnId>` expansions).
+  /// Unlike other card expansion this changes which rows exist, so it
+  /// rebuilds the presentation.
+  var expandedTurnIds: Set<String> = []
   var summary = ChatThreadSummaryContext()
   var turnActiveHint: Bool? = nil
   var sessionStatus: String? = nil

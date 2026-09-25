@@ -169,6 +169,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the whole question this backend exists to answer. Never a device, lane,
   // machine name, address, codec, resolution, or duration.
   "ios_live_view",
+  // Whether an installation uses its lane's Mac Desktop at all: a display was
+  // created, an agent drove it, or a recording was filed as proof. Three
+  // coarse outcomes and nothing about the lane, the chat, or the screen.
+  "mac_desktop",
   // One coarse fact per CTO voice call, at the call's end. Whether calls are
   // had at all, and whether they work, is the only question the feature has —
   // and a call that dies on a rejected key looks identical to a short one in
@@ -203,6 +207,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "reset_credit_consumed",
   "pending_input_dismissed",
   "new_lane_launch",
+  // How an external CLI session came into ADE: continued or copied, into a
+  // chat or a terminal. Never the session, its folder, or its title.
+  "session_continue_chat",
+  "session_copy_chat",
+  "session_continue_cli",
+  "session_copy_cli",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -345,13 +355,17 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // `shared/types/workTools.ts` — a new tool has to be added here
     // deliberately rather than arriving as free text.
     "tool_terminal", "tool_git", "tool_files", "tool_ios", "tool_app_control",
-    "tool_browser", "tool_pr",
+    "tool_browser", "tool_pr", "tool_mac_desktop",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and
     // is the only one that works when that machine is not this one. A third
     // spelling is dropped, not widened.
     "backend_window", "backend_host_encoded",
+    // The three Mac Desktop facts. `started` above already covers a display
+    // being created; these two are an agent driving it and a recording filed
+    // as proof. A fourth spelling is dropped, not widened.
+    "agent_drove", "recorded",
     // The three auto-resume transitions. `cancelled` above is deliberately NOT
     // reused for the fourth one: cancellation fires on ordinary user activity,
     // so it would be a typing signal rather than a workflow outcome, and it is

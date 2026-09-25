@@ -1,52 +1,43 @@
 import { useEffect } from "react";
-import { X } from "@phosphor-icons/react";
+import { AnimatePresence, motion, type HTMLMotionProps } from "motion/react";
 
-import { cn } from "../../ui/cn";
+import { ToastCard } from "../../ui/notice/ToastCard";
 import {
   dismissToast,
   pauseToast,
   resumeToast,
   useToasts,
   type Toast,
-  type ToastTone,
 } from "./toastStore";
 
 /**
- * Renders the shared toast store as compact cards, matching the bespoke
- * bottom-right notices in `AppShell`. Mounted inside AppShell's existing
- * bottom-right container so all toasts share one visual stack; the container is
- * `pointer-events-none`, so each card re-enables `pointer-events-auto`.
+ * Enter/exit motion for every card in the bottom-right corner — store toasts
+ * and the viewport's slot — so they all move the same way.
  */
+export const TOAST_MOTION_PROPS = {
+  layout: "position",
+  initial: { opacity: 0, y: 8, scale: 0.985 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: { opacity: 0, x: 18, transition: { duration: 0.14 } },
+  transition: { duration: 0.18, ease: [0.2, 0, 0, 1] },
+} as const satisfies HTMLMotionProps<"div">;
 
-function toneClasses(tone: ToastTone): { panel: string; action: string } {
-  if (tone === "success") {
-    return {
-      panel: "border-emerald-500/25 bg-card/95",
-      action: "text-emerald-300 hover:text-emerald-200",
-    };
-  }
-  if (tone === "error") {
-    return {
-      panel: "border-red-500/25 bg-card/95",
-      action: "text-red-300 hover:text-red-200",
-    };
-  }
-  return {
-    panel: "border-border/60 bg-card/95",
-    action: "text-[#A78BFA] hover:text-[#C4B5FD]",
-  };
-}
-
+/**
+ * Renders the shared toast store through the one `ToastCard`. Mounted inside
+ * AppShell's bottom-right viewport; the viewport is `pointer-events-none`, so
+ * each card re-enables pointer events itself. Oldest first, so the newest toast
+ * sits closest to the corner.
+ */
 export function ToastStack() {
   const toasts = useToasts();
-  if (toasts.length === 0) return null;
-
   return (
-    <>
+    <AnimatePresence initial={false}>
       {toasts.map((toast) => (
-        <ToastCard key={toast.id} toast={toast} />
+        <motion.div key={toast.id} {...TOAST_MOTION_PROPS}>
+          <ToastStackCard toast={toast} />
+        </motion.div>
       ))}
-    </>
+    </AnimatePresence>
   );
 }
 
@@ -57,82 +48,24 @@ export function ToastStack() {
  * after React commits this card, which is the difference between "queued" and
  * "shown" for the callers that report delivery upstream.
  */
-function ToastCard({ toast }: { toast: Toast }) {
+function ToastStackCard({ toast }: { toast: Toast }) {
   const onRendered = toast.onRendered;
   useEffect(() => {
     onRendered?.();
   }, [onRendered]);
 
-  const tone = toneClasses(toast.tone);
   return (
-    <div
-      className={cn(
-        "ade-toast-enter pointer-events-auto overflow-hidden rounded-xl border px-3 py-3 shadow-float backdrop-blur",
-        tone.panel,
-      )}
+    <ToastCard
+      model={toast}
       onMouseEnter={() => pauseToast(toast.id)}
       onMouseLeave={() => resumeToast(toast.id)}
-    >
-      <div className="flex items-start justify-between gap-2">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5">
-            {toast.colorDot ? (
-              <span
-                className="h-1.5 w-1.5 shrink-0 rounded-full"
-                style={{ backgroundColor: toast.colorDot }}
-              />
-            ) : null}
-            <div className="min-w-0 truncate text-[13px] font-medium leading-tight text-fg">
-              {toast.title}
-            </div>
-          </div>
-          {toast.message ? (
-            <div className="mt-1.5 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">
-              {toast.message}
-            </div>
-          ) : null}
-          {toast.action || toast.secondaryAction ? (
-            <div className="mt-2 flex items-center gap-3">
-              {toast.action ? (
-                <button
-                  type="button"
-                  className={cn(
-                    "inline-flex items-center text-[11px] font-medium transition-colors",
-                    tone.action,
-                  )}
-                  onClick={() => {
-                    toast.action?.onClick();
-                    dismissToast(toast.id);
-                  }}
-                >
-                  {toast.action.label} -&gt;
-                </button>
-              ) : null}
-              {toast.secondaryAction ? (
-                <button
-                  type="button"
-                  className="inline-flex items-center text-[11px] font-medium text-muted-fg transition-colors hover:text-fg"
-                  onClick={() => {
-                    toast.secondaryAction?.onClick();
-                    dismissToast(toast.id);
-                  }}
-                >
-                  {toast.secondaryAction.label}
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-        <button
-          type="button"
-          className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-          onClick={() => dismissToast(toast.id)}
-          aria-label="Dismiss notification"
-          title="Dismiss"
-        >
-          <X size={12} weight="bold" aria-hidden />
-        </button>
-      </div>
-    </div>
+      onClose={() => {
+        toast.onClose?.();
+        dismissToast(toast.id);
+      }}
+      onAction={(action) => {
+        if (!action.keepOpen) dismissToast(toast.id);
+      }}
+    />
   );
 }

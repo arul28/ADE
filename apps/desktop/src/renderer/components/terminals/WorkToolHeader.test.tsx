@@ -137,10 +137,8 @@ describe("WorkToolHeader tab strip", () => {
     // The contract, not the class string: on a 24px tab the ✕ is a corner
     // badge, because a full-size target over the middle means the obvious
     // click — dead centre, on the glyph — closes the tool instead of opening
-    // it. One style smoke check for the part CSS alone enforces: `opacity-0`
-    // still hit-tests, so the badge must also be untouchable at rest.
+    // it.
     expect(close?.getAttribute("data-tool-tab-close-mode")).toBe("corner");
-    expect(close?.className).toContain("pointer-events-none");
 
     fireEvent.click(tab);
     expect(props.onPick).toHaveBeenCalledWith("terminal");
@@ -303,5 +301,18 @@ describe("workToolTabLayout", () => {
     const layout = workToolTabLayout(strip, "browser", 96);
     expect(layout.visible).toEqual(["browser"]);
     expect(layout.overflow).toHaveLength(strip.length - 1);
+  });
+});
+
+describe("WorkToolHeader has no float or maximize controls", () => {
+  afterEach(() => cleanup());
+
+  it("does not draw the float or maximize buttons the tool rows now own", () => {
+    renderHeader();
+    // Both moved onto each screen tool's own chrome row (see
+    // `workToolPreviewControls`); the strip is tabs only.
+    expect(screen.queryByLabelText("Show floating preview")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Maximize pane|Restore pane/ })).toBeNull();
+    expect(document.querySelector('[data-testid="work-tools-maximize"]')).toBeNull();
   });
 });

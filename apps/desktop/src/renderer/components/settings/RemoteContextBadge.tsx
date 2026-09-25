@@ -2,6 +2,7 @@ import React from "react";
 import { Desktop, HardDrives } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { Banner } from "../ui/notice";
 
 /**
  * Settings reflect whichever machine the active project is bound to. When the
@@ -30,30 +31,21 @@ export function RemoteSettingsBanner() {
   if (!isRemote) return null;
 
   return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "10px 14px",
-        marginBottom: 20,
-        borderRadius: 8,
-        background: COLORS.accentSubtle,
-        border: `1px solid ${COLORS.accentBorder}`,
-        fontFamily: SANS_FONT,
-        fontSize: 12,
-        color: COLORS.textSecondary,
+    <Banner
+      layout="inline"
+      style={{ marginBottom: 20 }}
+      model={{
+        id: "settings-remote-runtime",
+        tone: "accent",
+        icon: <HardDrives size={13} weight="regular" />,
+        title: (
+          <span style={{ fontWeight: 500 }}>
+            Showing settings for <strong style={{ fontWeight: 600 }}>{runtimeName ?? "the remote machine"}</strong>
+            . Connections and credentials reflect that machine, not this one.
+          </span>
+        ),
       }}
-    >
-      <HardDrives size={16} weight="regular" style={{ flexShrink: 0, color: COLORS.accent }} />
-      <span>
-        Showing settings for{" "}
-        <strong style={{ color: COLORS.textPrimary, fontWeight: 600 }}>
-          {runtimeName ?? "the remote machine"}
-        </strong>
-        . Connections and credentials reflect that machine, not this one.
-      </span>
-    </div>
+    />
   );
 }
 

@@ -1,17 +1,14 @@
+import { useCallback, useEffect, type KeyboardEvent, type RefObject } from "react";
+
 /**
- * What can be tabbed to inside a dialog.
+ * The app's one focus trap for surfaces that are not Radix dialogs.
  *
- * The traps that read THIS module share one selector and one set of visibility
- * rules, so `HeaderSheet` and `AutoHandoffModal` cannot quietly disagree about
- * whether a `<summary>`, an `[aria-hidden]` subtree or a closed `<details>` is
- * reachable. Kept as a plain module rather than a hook because the two shapes
- * differ — `HeaderSheet`'s trap is a hook, `AutoHandoffModal`'s is a
- * window-level handler — and both need the same list.
- *
- * Not yet the app's only answer: `providerSectionPrimitives`,
- * `StorageCleanupDialog`, `ChatAttachmentPreviewModal` and `LanePrHoverCard`
- * still carry their own selector lists. Converging them is a separate change;
- * this note is here so the next reader knows there is something left to do.
+ * Centered modals use `ui/dialog/Dialog`, whose Radix FocusScope is the trap.
+ * The top-bar sheets (`HeaderSheet` and the Activity popover in
+ * `HeaderActivityControl`) use `useDialogFocusTrap` below, built on
+ * `getFocusableElements`: one selector and one set of visibility rules, so no
+ * two surfaces disagree about whether a `<summary>`, an `[aria-hidden]` subtree
+ * or a closed `<details>` is reachable.
  */
 export const DIALOG_FOCUSABLE_SELECTOR = [
   "a[href]",
@@ -39,4 +36,60 @@ export function getFocusableElements(root: HTMLElement): HTMLElement[] {
       element.tabIndex >= 0
     );
   });
+}
+
+/**
+ * Focus the panel on open, close on Escape, and keep Tab / Shift+Tab inside
+ * the panel. Returns the panel's `onKeyDown` handler.
+ *
+ * Keys whose target is outside the panel are ignored: React bubbles events
+ * from portaled children (a dialog raised from inside the sheet) through the
+ * panel's handler, and those keys belong to that child, not to the sheet.
+ */
+export function useDialogFocusTrap(
+  panelRef: RefObject<HTMLElement | null>,
+  onClose: () => void,
+  open: boolean,
+): (event: KeyboardEvent<HTMLElement>) => void {
+  useEffect(() => {
+    if (!open) return;
+    const frame = window.requestAnimationFrame(() => {
+      panelRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, panelRef]);
+
+  return useCallback(
+    (event: KeyboardEvent<HTMLElement>) => {
+      const panel = panelRef.current;
+      if (!panel || !(event.target instanceof Node) || !panel.contains(event.target)) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+
+      const focusable = getFocusableElements(panel);
+      if (focusable.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (document.activeElement === panel) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [onClose, panelRef],
+  );
 }

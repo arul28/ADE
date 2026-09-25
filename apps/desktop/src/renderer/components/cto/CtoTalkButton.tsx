@@ -1,11 +1,11 @@
-import React, { useCallback, useEffect, useId, useRef, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { Microphone } from "@phosphor-icons/react";
 
 import { CtoVoiceStartSheet } from "./CtoVoiceStartSheet";
 import { isVoiceCallLive } from "../../../shared/types/ctoVoice";
 import { COLORS } from "../lanes/laneDesignTokens";
 import type { CtoTalkNotice } from "./CtoTalkNoticeLine";
-import { getFocusableElements } from "../ui/dialogFocus";
+import { Dialog } from "../ui/dialog";
 import { useCtoVoiceCall } from "./useCtoVoiceCall";
 
 /**
@@ -72,8 +72,8 @@ const TALK_CSS = `
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 29px;
-  padding: 0 12px;
+  height: 22px;
+  padding: 0 10px;
   border-radius: 999px;
   white-space: nowrap;
   font-size: 11.5px;
@@ -107,17 +107,9 @@ function useTalkStyle(): void {
 }
 
 /**
- * The key sheet's modal shell.
- *
- * It was a bare `div` over a backdrop: no role, no `aria-modal`, no Escape,
- * nothing stopping Tab from walking out of it into the page behind, and no way
- * back to the button that opened it. A dialog asking for a secret is the last
- * place to leave keyboard users stranded.
- *
- * Local to this file rather than shared with `AutoHandoffModal`'s trap: both
- * read the one focusable-element list in `ui/dialogFocus`, which is the part
- * that must not drift. Lifting a common `ui/Modal` means editing that modal
- * too, which belongs to another surface.
+ * The key sheet's modal shell: the shared `Dialog` (role, `aria-modal`, focus
+ * trap, Escape, focus back to Talk on close). No × — the sheet's own buttons,
+ * Escape and the scrim close it, as they always have.
  */
 function KeyDialog({
   title,
@@ -128,68 +120,22 @@ function KeyDialog({
   onClose: () => void;
   children: React.ReactNode;
 }) {
-  const panelRef = useRef<HTMLDivElement | null>(null);
-  const titleId = useId();
-
-  // Focus lands inside on open and goes back where it came from on close.
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    const panel = panelRef.current;
-    if (panel) getFocusableElements(panel)[0]?.focus();
-    return () => { opener?.focus?.(); };
-  }, []);
-
-  // Bound at the window, not the panel: clicking the dialog's plain text
-  // leaves focus on <body>, where a panel-level handler never sees the key.
-  const closeRef = useRef(onClose);
-  closeRef.current = onClose;
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      closeRef.current();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
-
   return (
-    <div
-      className="fixed inset-0 z-[200] grid place-items-center bg-black/55 p-6"
-      onClick={onClose}
-      data-testid="cto-voice-key-sheet"
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title={title}
+      hideClose
+      width={440}
+      testId="cto-voice-key-sheet"
+      // The sheet owns Escape; it must not also reach the CTO page behind it.
+      onEscapeKeyDown={(event) => event.stopPropagation()}
+      bodyStyle={{ paddingTop: 4, paddingBottom: 20 }}
     >
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className="w-full max-w-[440px] rounded-2xl p-5"
-        style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.border}` }}
-        onClick={(event) => event.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key !== "Tab") return;
-          const nodes = getFocusableElements(event.currentTarget);
-          if (nodes.length === 0) return;
-          const first = nodes[0]!;
-          const last = nodes[nodes.length - 1]!;
-          const active = document.activeElement as HTMLElement | null;
-          if (event.shiftKey && (active === first || !event.currentTarget.contains(active))) {
-            event.preventDefault();
-            last.focus();
-          } else if (!event.shiftKey && active === last) {
-            event.preventDefault();
-            first.focus();
-          }
-        }}
-      >
-        <div id={titleId} className="mb-1 text-[13px] font-semibold" style={{ color: COLORS.textPrimary }}>
-          {title}
-        </div>
-        {children}
-      </div>
-    </div>
+      {children}
+    </Dialog>
   );
 }
 

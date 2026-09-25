@@ -1,15 +1,30 @@
 /**
  * Read-only "what tool is the desktop using in this lane" state.
  *
- * The Work tools pane (browser, App Control, iOS, terminal, git, files) runs on
- * the desktop: it owns a `WebContentsView`, a CDP connection, and a simulator
+ * The Work tools pane (browser, App Control, iOS, Mac Desktop, terminal, git,
+ * files) runs on the desktop: it owns a `WebContentsView`, a CDP connection, and a simulator
  * stream. None of that can exist on a phone or in a browser tab. What CAN cross
  * is the *description* of it — which tool is open, which tabs the browser has,
- * which app App Control is driving, and the last frame either of them captured.
+ * which app App Control is driving, which windows are parked on the lane's
+ * private macOS display, and the last frame any of them captured.
  *
  * So iOS and the hosted web client render this shape and nothing else. There is
- * no control surface here on purpose; see `WORK_TOOLS_CONTROL_HINT`.
+ * no control surface in the snapshot on purpose; see `WORK_TOOLS_CONTROL_HINT`.
+ * Mac Desktop takeover is the exception, and it is negotiated separately over
+ * the sync socket (`macDesktop.takeControl` and friends) for both the phone and
+ * the hosted web client. The host announces it with
+ * `hello_ok.features.macDesktopControl`. This state shape still carries only
+ * the description either way.
  */
+
+import type {
+  MacDesktopDisplay,
+  MacDesktopLeaseState,
+  MacDesktopNotParked,
+  MacDesktopPermissions,
+  MacDesktopStreamSummary,
+  MacDesktopWindow,
+} from "./macDesktop";
 
 /**
  * Mirrors the renderer's `WorkSidebarTab`. It cannot import that union (this
@@ -24,6 +39,7 @@ export const WORK_TOOL_IDS = [
   "ios",
   "app-control",
   "browser",
+  "mac-desktop",
   "pr",
 ] as const;
 
@@ -35,6 +51,17 @@ export function isWorkToolId(value: unknown): value is WorkToolId {
 
 /** Shown wherever a read-only client renders a tool it cannot drive. */
 export const WORK_TOOLS_CONTROL_HINT = "Control from the desktop";
+
+/**
+ * The Mac Desktop pane's variant when the host advertises web takeover.
+ *
+ * The pane carries a real Take control affordance in that case, so the
+ * watch-only sentence would be a lie about the button right above it. Kept as a
+ * second constant rather than a parameter on the first so the three surfaces
+ * that render the read-only hint keep one string, and only the Mac Desktop pane
+ * — the one with a capability check to read — picks between them.
+ */
+export const WORK_TOOLS_MAC_DESKTOP_CONTROL_HINT = "Take control here, or watch from the desktop";
 
 /** Empty state when this machine has no desktop attached at all. */
 export const WORK_TOOLS_NO_DESKTOP_MESSAGE =
@@ -170,6 +197,70 @@ export type WorkToolsAgentBrowserPresence = {
   lastActivityAt: string;
 };
 
+/**
+ * The lane's private macOS screen, as a read-only client sees it.
+ *
+ * A deliberately small cut of `MacDesktopStatus`. Driving the display — the
+ * lease, the pointer — is a sync command (`macDesktop.takeControl` /
+ * `macDesktop.input`), not a field of this snapshot, so only what explains the
+ * lane travels: whether this host can host a screen at all, the display
+ * itself, what is parked on it, who is driving, whether frames are flowing,
+ * and the last frame that was captured.
+ *
+ * `supported: false` is how a non-macOS host says "this tool does not apply
+ * here", exactly as `MacDesktopStatus.supported` does; clients hide the tool on
+ * it rather than drawing an empty pane.
+ */
+export type WorkToolsMacDesktopState = {
+  supported: boolean;
+  display: MacDesktopDisplay | null;
+  windows: MacDesktopWindow[];
+  lease: MacDesktopLeaseState | null;
+  stream: MacDesktopStreamSummary | null;
+  permissions: MacDesktopPermissions;
+  /**
+   * The newest observation, flattened. The full `MacDesktopObservation` carries
+   * an element tree a read-only client has no use for, and a state broadcast
+   * that carried it would be the biggest thing on the wire.
+   */
+  lastObservation: {
+    id: string;
+    capturedAt: string;
+    caption: string | null;
+    /** Host-absolute. Opaque — hand it back to `readObservationPreview`. */
+    screenshotPath: string;
+  } | null;
+  /**
+   * True when the client asking is on the Mac that hosts the display. Mirrors
+   * `MacDesktopStatus.hostIsLocal`; a phone or a browser tab always reads false.
+   */
+  hostIsLocal: boolean;
+  /**
+   * Windows the driver could not park, newest first, at most
+   * `MAC_DESKTOP_NOT_PARKED_MAX`. The desktop panel keeps the same list from the
+   * same event; this is how a phone learns a window is sitting on the human's
+   * own screen without being on that Mac to see it.
+   *
+   * Optional on the wire: an older daemon publishes no such field, and a client
+   * must read it as `notParked ?? []` rather than as "none stranded".
+   */
+  notParked?: MacDesktopNotParked[];
+  /**
+   * Whether a recording of the lane's screen is being written right now, and
+   * since when. Only the two fields a viewer shows: the file path and caption
+   * stay on the host.
+   *
+   * Optional on the wire: an older daemon publishes no such field, and a client
+   * reads its absence as "not recording".
+   */
+  recording?: WorkToolsMacDesktopRecording | null;
+};
+
+export type WorkToolsMacDesktopRecording = {
+  running: boolean;
+  startedAt: string | null;
+};
+
 export type WorkToolsLaneState = {
   laneId: string;
   /** Last tool the desktop published for this lane; null if it never did. */
@@ -195,6 +286,13 @@ export type WorkToolsLaneState = {
    */
   agentBrowserPresence: WorkToolsAgentBrowserPresence[];
   appControl: WorkToolsAppControlState | null;
+  /**
+   * The lane's macOS desktop seat. Null when this runtime has no Mac Desktop
+   * service at all (an older host, or one built without it); `supported: false`
+   * when the service answered and this host cannot host a screen. Both hide the
+   * tool — the difference only matters to whoever is debugging the host.
+   */
+  macDesktop: WorkToolsMacDesktopState | null;
   capturedAt: string;
 };
 

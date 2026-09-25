@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,6 +47,7 @@ import type { SearchService } from "../../desktop/src/main/services/search/searc
 import {
   createExternalSessionsService,
 } from "../../desktop/src/main/services/externalSessions/externalSessionsService";
+import { chatImportedRefsProvider } from "../../desktop/src/main/services/externalSessions/liveChatProviderRefs";
 import { createSupervisedPtyLoader } from "../../desktop/src/main/services/pty/supervisedPtyHost";
 import { createTestService } from "../../desktop/src/main/services/tests/testService";
 import { createKeybindingsService } from "../../desktop/src/main/services/keybindings/keybindingsService";
@@ -153,12 +153,17 @@ import {
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureMacDesktopAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
-import { captureNewLaneLaunchAnalytics, capturePendingInputDismissedAnalytics } from "../../desktop/src/main/services/analytics/featureProductAnalytics";
+import {
+  captureNewLaneLaunchAnalytics,
+  capturePendingInputDismissedAnalytics,
+  captureSessionImportAnalytics,
+} from "../../desktop/src/main/services/analytics/featureProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
 import type { createAutoUpdateService } from "../../desktop/src/main/services/updates/autoUpdateService";
@@ -174,6 +179,11 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import {
+  createMacDesktopService,
+  type MacDesktopService,
+} from "../../desktop/src/main/services/macDesktop/macDesktopService";
+import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBridgeBrowserActorCapabilityIssuer,
@@ -189,8 +199,10 @@ import {
   createWorkToolsStateService,
   type WorkToolsStateService,
 } from "./services/workTools/workToolsStateService";
+import { createWorkToolShowRequests } from "./services/workTools/workToolShowRequests";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { createBrainLogger } from "./services/runtime/brainLogger";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
@@ -209,17 +221,11 @@ import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNo
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
-import {
-  createAutomationService,
-  type AutomationAdeActionRegistry,
-} from "../../desktop/src/main/services/automations/automationService";
+import { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
 import { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
 import {
-  ADE_ACTION_ALLOWLIST,
-  type AdeActionDomain,
+  createAutomationAdeActionLookup,
   getAdeActionDomainServices,
-  isAutomationAllowedAdeAction,
-  isCtoOnlyAdeAction,
 } from "../../desktop/src/main/services/adeActions/registry";
 import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import { createHeadlessLinearServices } from "./headlessLinearServices";
@@ -234,6 +240,12 @@ import {
   registerAccountConfigProjectRoot,
 } from "./services/account/sharedAccountAuthService";
 import { createTeardownStack } from "./services/runtime/startupTeardown";
+import {
+  adeCliShimDirName,
+  renderAdeCliShim,
+  resolveAdeCliShimBrain,
+  type AdeCliShimBrain,
+} from "./services/runtime/adeCliShim";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { createPrEventFanout } from "./prEventFanout";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
@@ -392,6 +404,7 @@ export type AdeRuntime = {
   computerUseArtifactBrokerService: ComputerUseArtifactBrokerService;
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
+  macDesktopService?: MacDesktopService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   /** Read-only Work tools-pane state for iOS and the hosted web client. */
   workToolsStateService?: WorkToolsStateService | null;
@@ -477,32 +490,16 @@ function resolveCurrentAdeCliEntry(): string | null {
   return null;
 }
 
-function isJavaScriptCliEntry(entryPath: string): boolean {
-  return /\.(?:cjs|mjs|js)$/i.test(entryPath);
-}
-
-function ensureAdeCliShim(entryPath: string): { dir: string; path: string } | null {
-  const hash = createHash("sha256").update(entryPath).digest("hex").slice(0, 16);
-  const shimDir = path.join(os.tmpdir(), "ade-cli-shims", hash);
+function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain): { dir: string; path: string } | null {
+  const shimDir = path.join(os.tmpdir(), "ade-cli-shims", adeCliShimDirName(entryPath, process.execPath, brain));
   const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
   try {
     fs.mkdirSync(shimDir, { recursive: true });
-    if (process.platform === "win32") {
-      const body = isJavaScriptCliEntry(entryPath)
-        ? `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${entryPath}" %*\r\n`
-        : `@echo off\r\n"${entryPath}" %*\r\n`;
-      if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
-        fs.writeFileSync(shimPath, body, "utf8");
-      }
-    } else {
-      const body = isJavaScriptCliEntry(entryPath)
-        ? `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec ${JSON.stringify(process.execPath)} ${JSON.stringify(entryPath)} "$@"\n`
-        : `#!/bin/sh\nexec ${JSON.stringify(entryPath)} "$@"\n`;
-      if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
-        fs.writeFileSync(shimPath, body, "utf8");
-      }
-      fs.chmodSync(shimPath, 0o755);
+    const body = renderAdeCliShim({ entryPath, execPath: process.execPath, brain });
+    if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
+      fs.writeFileSync(shimPath, body, "utf8");
     }
+    if (process.platform !== "win32") fs.chmodSync(shimPath, 0o755);
     return { dir: shimDir, path: shimPath };
   } catch {
     return null;
@@ -605,6 +602,24 @@ export function inferAgentSkillsRootForCliEntry(
 let legacyAdeSkillsCleanedForCli = false;
 
 /**
+ * `brain.jsonl`, for the Mac Desktop service. One per process: the driver, its
+ * displays and its permission probes are machine facts, whichever project
+ * runtime spawned the helper. Null when the machine layout cannot be resolved,
+ * in which case the service still logs to its project log.
+ */
+let macDesktopMachineLogger: Logger | null | undefined;
+
+function getMacDesktopMachineLogger(): Logger | null {
+  if (macDesktopMachineLogger !== undefined) return macDesktopMachineLogger;
+  try {
+    macDesktopMachineLogger = createBrainLogger(path.join(resolveMachineAdeLayout().runtimeDir, "brain.jsonl"));
+  } catch {
+    macDesktopMachineLogger = null;
+  }
+  return macDesktopMachineLogger;
+}
+
+/**
  * Remove legacy ADE-managed user-global copies when they are provably unchanged.
  * Session-scoped discovery now uses ADE_AGENT_SKILLS_DIRS instead.
  */
@@ -622,7 +637,13 @@ export function cleanupLegacyBundledAdeSkillsForCli(): void {
 
 export function createHeadlessAdeCliAgentEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
-  options: { cliEntry?: string | null; resourcesPath?: string | null; cwd?: string | null } = {},
+  options: {
+    cliEntry?: string | null;
+    resourcesPath?: string | null;
+    cwd?: string | null;
+    /** The brain the shim defaults to. This process's own, unless a test says otherwise. */
+    brain?: AdeCliShimBrain;
+  } = {},
 ): NodeJS.ProcessEnv {
   cleanupLegacyBundledAdeSkillsForCli();
   const next: NodeJS.ProcessEnv = { ...baseEnv };
@@ -634,7 +655,7 @@ export function createHeadlessAdeCliAgentEnv(
   if (nextPath) setPathEnvValue(next, nextPath);
   const cliEntry = options.cliEntry === undefined ? resolveCurrentAdeCliEntry() : options.cliEntry;
   if (cliEntry) {
-    const shim = ensureAdeCliShim(cliEntry);
+    const shim = ensureAdeCliShim(cliEntry, options.brain ?? resolveAdeCliShimBrain(process.env));
     if (shim) {
       next.ADE_CLI_PATH = shim.path;
       next.ADE_CLI_BIN_DIR = shim.dir;
@@ -666,34 +687,55 @@ type ChatSessionEndedListenerHost = {
   registerChatSessionEndedListener?: (listener: (sessionId: string) => void) => void;
 };
 
-type ChatOwnedSimulator = {
+type ChatOwnedDevice = {
   releaseIfOwnedBy: (sessionId: string) => Promise<unknown>;
 };
 
 /**
+ * Drops a chat's hold on a device when the chat ends.
+ *
  * Headless chat (omitted / headless-stub runtime) has no session-end listener.
  * Calling the desktop method unguarded threw during brain startup and left CLI
  * tests hanging on a runtime that never came up.
+ *
+ * The `logEvent` parameter is not decoration: both the iOS simulator and the
+ * Mac Desktop display bind through here, and a failure logged under the wrong
+ * feature's event name is a failure nobody looking at that feature will find.
  */
-export function bindIosSimulatorReleaseOnChatEnd(args: {
+export function bindDeviceReleaseOnChatEnd(args: {
   agentChatService: ChatSessionEndedListenerHost | null;
-  iosSimulatorService: ChatOwnedSimulator | null;
+  device: ChatOwnedDevice | null;
+  logEvent: string;
   logger: Pick<Logger, "debug">;
 }): boolean {
   const registerChatSessionEndedListener = args.agentChatService?.registerChatSessionEndedListener;
-  if (typeof registerChatSessionEndedListener !== "function" || !args.iosSimulatorService) {
+  if (typeof registerChatSessionEndedListener !== "function" || !args.device) {
     return false;
   }
-  const iosSimulatorService = args.iosSimulatorService;
+  const device = args.device;
   registerChatSessionEndedListener.call(args.agentChatService, (sessionId) => {
-    void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
-      args.logger.debug("ios_simulator.release_on_chat_end_failed", {
+    void device.releaseIfOwnedBy(sessionId).catch((error) => {
+      args.logger.debug(args.logEvent, {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
     });
   });
   return true;
+}
+
+/** The iOS simulator's binding. Kept named for the call sites and the test. */
+export function bindIosSimulatorReleaseOnChatEnd(args: {
+  agentChatService: ChatSessionEndedListenerHost | null;
+  iosSimulatorService: ChatOwnedDevice | null;
+  logger: Pick<Logger, "debug">;
+}): boolean {
+  return bindDeviceReleaseOnChatEnd({
+    agentChatService: args.agentChatService,
+    device: args.iosSimulatorService,
+    logEvent: "ios_simulator.release_on_chat_end_failed",
+    logger: args.logger,
+  });
 }
 
 export async function createAdeRuntime(args: {
@@ -1438,6 +1480,24 @@ export async function createAdeRuntime(args: {
             return null;
           }
         },
+        /*
+         * The reverse map, and it matters MORE here than in the desktop.
+         *
+         * Agent `ade apple` calls arrive at the brain, and an agent whose shell
+         * carries no `ADE_LANE_ID` — every OpenCode agent, since one shared
+         * `opencode serve` cannot hold a per-chat environment — names no lane.
+         * Without this the service falls back to "whichever single lane is
+         * running something", and one agent's screenshot was filed against an
+         * unrelated lane. The desktop got this dep first and the brain did not,
+         * which is exactly why the live check still failed after the fix.
+         */
+        resolveLaneIdForPath: (absolutePath: string): string | null => {
+          try {
+            return laneService.getLaneIdForPath(absolutePath);
+          } catch {
+            return null;
+          }
+        },
         // The lanes DB backs `lane_apple_devices`; without it a lane device is
         // remembered only for the life of the process.
         laneDeviceStore: db,
@@ -1531,6 +1591,55 @@ export async function createAdeRuntime(args: {
         },
       });
     teardown.push(() => appControlService?.dispose());
+    /**
+     * One private macOS screen per lane.
+     *
+     * Constructed next to the iOS simulator and App Control services, and for
+     * the same reason: it owns a host capability a chat can claim, so it needs
+     * the same chat-end release and the same lane teardown. It is created on
+     * every platform — `getStatus` answers everywhere and says `supported:
+     * false` off macOS, which is what lets a Windows desktop hide the tab by
+     * reading rather than by catching a throw.
+     */
+    const macDesktopService = chatOnlyRuntime
+      ? null
+      : createMacDesktopService({
+        projectRoot,
+        logger: createMacDesktopLogger(logger, getMacDesktopMachineLogger()),
+        onEvent: (event) => pushEvent("runtime", { type: "mac_desktop_event", event }),
+        resolveLaneWorktreePath: (laneId: string): string | null => {
+          try {
+            return laneService.getLaneWorktreePath(laneId);
+          } catch {
+            return null;
+          }
+        },
+        resolveLaneName: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId).catch(() => null);
+          return lane?.name ?? null;
+        },
+        // The lane's primary pull request becomes a `github_pr` proof owner
+        // with the existing `published_to` relation, exactly as the browser and
+        // simulator proof paths do.
+        resolvePrimaryPrUrl: (laneId: string): string | null =>
+          prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
+        ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        // The lease question rides the normal pending-input card.
+        requestChatInput: async (input) => {
+          const chat = agentChatServiceHolder.current;
+          if (!chat?.requestChatInput) {
+            throw new Error("This runtime cannot ask for input, so real desktop input cannot be granted.");
+          }
+          return await chat.requestChatInput(input);
+        },
+        readSetting: <T,>(key: string): T | null => db.getJson<T>(key),
+        writeSetting: (key: string, value: unknown) => db.setJson(key, value),
+        captureAnalytics: (properties) => captureMacDesktopAnalytics({
+          analytics: productAnalyticsService,
+          properties,
+        }),
+      });
+    teardown.push(() => macDesktopService?.dispose());
     // `built_in_browser` is hosted by the desktop's Electron main process (the
     // browser pane owns a WebContentsView). The runtime daemon proxies calls
     // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
@@ -1584,8 +1693,18 @@ export async function createAdeRuntime(args: {
       getAppControlStatus: appControlService
         ? () => appControlService.getStatus()
         : null,
+      // The runtime's own Mac Desktop service, read-only: the mirror holds
+      // `getStatus` + `subscribe` and nothing that can start a display or move
+      // a pointer. Null only on a chat-only runtime, which builds no service.
+      macDesktopService,
       onStateChanged: (laneId) =>
         pushEvent("runtime", { type: WORK_TOOLS_STATE_CHANGED_EVENT, laneId }),
+      // `ade ui show`: the desktops on this project read the same runtime
+      // stream, so the request reaches a paired desktop on another machine too.
+      showRequests: createWorkToolShowRequests({
+        emitEvent: (payload) => pushEvent("runtime", payload),
+        logger,
+      }),
       logger,
     });
     teardown.push(() => workToolsStateService.dispose());
@@ -1620,6 +1739,13 @@ export async function createAdeRuntime(args: {
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
     prServiceRef = headlessLinearServices.prService;
+    if (macDesktopService) {
+      // Runs on every platform: off macOS `destroyForLane` is a no-op, so the
+      // teardown step never has to know what host it is on.
+      laneTeardownDeps.macDesktopService = {
+        destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
+      };
+    }
     laneTeardownDeps.fileWatcherService = {
       countActiveForWorkspace: (id) => headlessLinearServices.fileService.countActiveWatchersForWorkspace(id),
       stopAllForWorkspace: (id) => headlessLinearServices.fileService.stopAllWatchersForWorkspace(id),
@@ -1683,6 +1809,18 @@ export async function createAdeRuntime(args: {
         getGitService: () => gitService,
         conflictService,
         computerUseArtifactBrokerService,
+        // One line of system prompt and the per-turn time-lapse clip, both
+        // behind the same synchronous gate: the send path must not await a
+        // service to decide to say nothing, so it reads the in-memory display
+        // registry, and an idle lane pays nothing.
+        macDesktopTurnRecorder: macDesktopService
+          ? {
+            hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
+            supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
+            beginTurn: (args) => macDesktopService.beginTurn(args),
+            noteTurnEnded: (args) => macDesktopService.noteTurnEnded(args),
+          }
+          : null,
         laneService,
         sessionService,
         processRegistry,
@@ -1745,9 +1883,23 @@ export async function createAdeRuntime(args: {
     }
     agentChatServiceHolder.current = agentChatService;
     teardown.push(() => agentChatService?.forceDisposeAll?.());
+    // The broker judges an attached video against the chat's turn start.
+    computerUseArtifactBrokerService.setChatTurnStartResolver(
+      (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,
+    );
     bindIosSimulatorReleaseOnChatEnd({
       agentChatService,
       iosSimulatorService,
+      logger,
+    });
+    // A chat that ends must drop its Mac Desktop input lease; otherwise the
+    // lane stays un-drivable until the lease TTL lapses.
+    bindDeviceReleaseOnChatEnd({
+      agentChatService,
+      device: macDesktopService
+        ? { releaseIfOwnedBy: (sessionId: string) => macDesktopService.releaseIfOwnedBy(sessionId) }
+        : null,
+      logEvent: "mac_desktop.release_on_chat_end_failed",
       logger,
     });
     if (agentChatService) {
@@ -2452,6 +2604,7 @@ export async function createAdeRuntime(args: {
         getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
+        macDesktopService,
         appleDeviceService: iosSimulatorService,
         appleStreamRelay,
         getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
@@ -2526,25 +2679,6 @@ export async function createAdeRuntime(args: {
         }
       },
     ));
-    const agentChatImportedRefsSource = agentChatService;
-    const chatImportedRefsProvider = agentChatImportedRefsSource
-      ? async () => {
-        const sessions = await agentChatImportedRefsSource.listSessions(undefined, {
-          includeIdentity: true,
-          includeAutomation: true,
-          includeArchived: true,
-        });
-        return sessions.flatMap((session) => {
-          const importedFrom = session.importedFrom;
-          if (!importedFrom?.provider?.trim() || !importedFrom.sessionId?.trim()) return [];
-          return [{
-            provider: importedFrom.provider,
-            externalId: importedFrom.sessionId,
-            chatSessionId: session.sessionId,
-          }];
-        });
-      }
-      : undefined;
     externalSessionsService = createExternalSessionsService({
       projectRoot,
       laneService,
@@ -2552,7 +2686,16 @@ export async function createAdeRuntime(args: {
       ptyService,
       logger,
       chatImporter: agentChatService,
-      ...(chatImportedRefsProvider ? { chatImportedRefsProvider } : {}),
+      ...(agentChatService ? { chatImportedRefsProvider: chatImportedRefsProvider(agentChatService) } : {}),
+      chatSessionsDir: paths.chatSessionsDir,
+      onImportOutcome: ({ provider, target, mode, outcome }) => captureSessionImportAnalytics({
+        analytics: productAnalyticsService,
+        surface: "api",
+        target,
+        mode,
+        outcome,
+        provider,
+      }),
     });
 
     // Constructed below the chat service on purpose: a call reaches the CTO
@@ -2647,6 +2790,7 @@ export async function createAdeRuntime(args: {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
+      macDesktopService,
       builtInBrowserService: builtInBrowserBridge,
       workToolsStateService,
       configureBuiltInBrowserDesktopBridgeAuth: async (authToken: string) => {
@@ -2679,23 +2823,9 @@ export async function createAdeRuntime(args: {
       }
     };
 
-    const adeActionLookup: AutomationAdeActionRegistry = {
-      isAllowed(domain: string, action: string): boolean {
-        return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
-      },
-      getService(domain: string): Record<string, unknown> | null {
-        const services = getAdeActionDomainServices(runtime);
-        return (services[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
-      },
-      listDomains(): string[] {
-        return Object.keys(ADE_ACTION_ALLOWLIST);
-      },
-      listActions(domain: string): string[] {
-        return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
-          .filter((action) => !isCtoOnlyAdeAction(domain as AdeActionDomain, action));
-      },
-    };
-    automationService?.bindAdeActionRegistry(adeActionLookup);
+    automationService?.bindAdeActionRegistry(
+      createAutomationAdeActionLookup(() => getAdeActionDomainServices(runtime)),
+    );
 
     usageTrackingService.start();
     runtimeCreated = true;

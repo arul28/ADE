@@ -209,9 +209,9 @@ export interface CtoOperatorToolDeps {
     cancel: (args: { sessionId: string; scheduleId: string }) => Promise<any>;
     setPaused: (args: { sessionId: string; paused: boolean }) => Promise<any>;
   } | null;
-  /** Proof capture. `ingest` is the only write; there is no delete tool on purpose. */
+  /** Proof capture. `ingestAsync` is the only write; there is no delete tool on purpose. */
   proofIngestService?: {
-    ingest: (args: any) => Promise<any> | any;
+    ingestAsync: (args: any) => Promise<any>;
   } | null;
   searchService?: {
     query: (args: { query: string; laneId?: string; limit?: number }) => Promise<{ results: unknown[]; totalByKind: unknown; nextCursor?: unknown }>;
@@ -3017,8 +3017,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     execute: async ({ sourcePath, kind, title, description, ownerKind, ownerId }) => {
       const proofIngest = deps.proofIngestService;
       if (!proofIngest) return unavailable("The proof artifact broker");
-      return attempt(() => proofIngest.ingest({
+      return attempt(() => proofIngest.ingestAsync({
         backend: { name: "cto", style: "manual", toolName: "captureProof" },
+        // An existing file: the broker refuses bytes that are already proof.
+        provenance: { source: "attached" },
         inputs: [{
           kind,
           title,

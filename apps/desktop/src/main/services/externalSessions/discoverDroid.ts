@@ -6,6 +6,7 @@ import {
   asRecord,
   asString,
   cleanSessionTitle,
+  clipExternalSessionText,
   countJsonlUserMessagesCheap,
   cwdIsInScope,
   firstUserTextFromRecords,
@@ -137,6 +138,13 @@ export async function discoverDroidSessions(
     const jsonl = readJsonlRecords(candidate.filePath);
     const first = asRecord(jsonl[0]);
     if (!first || asString(first.type) !== "session_start") continue;
+    // A session a Droid Task tool started for another session (`callingSessionId`)
+    // is that session's subagent, not a conversation of the user's: on
+    // 2026-09-23 they were 149 of 247 listed rows.
+    if (asString(first.callingSessionId)) continue;
+    // Workers a Droid mission spawned for its features (`decompSessionType:
+    // "worker"`, 318 files on 2026-09-23) belong to that mission, not to the user.
+    if (asString(first.decompSessionType) === "worker") continue;
     const id = asString(first.id) ?? path.basename(candidate.filePath, ".jsonl");
     if (!id || (lookupId && id !== lookupId)) continue;
     // The recorded id can differ from the file name; candidates arrive best-first,
@@ -154,11 +162,16 @@ export async function discoverDroidSessions(
         asEpochMs(row?.timestamp) != null
         || asEpochMs(asRecord(row?.message)?.timestamp) != null
       ));
-    recordsById.set(id, recordWithFile({
+    const record = recordWithFile({
       provider: "droid",
       id,
       cwd,
-      title: cleanSessionTitle(asString(first.title)) ?? cleanSessionTitle(asString(first.sessionTitle)),
+      // `sessionTitle` is Droid's own summary title; `title` is the first
+      // prompt cut at ~150 characters, so it is only the fallback.
+      // `title` is only the prompt, so it goes through the prompt cleaner:
+      // ADE's own launch text must never become a heading.
+      title: cleanSessionTitle(asString(first.sessionTitle))
+        ?? cleanSessionTitle(clipExternalSessionText(asString(first.title))),
       preview: firstUserText,
       createdAt: asEpochMs(first.timestamp)
         ?? asEpochMs(firstMessageTimestamp?.timestamp)
@@ -166,7 +179,9 @@ export async function discoverDroidSessions(
       messageCount: countJsonlUserMessagesCheap(candidate.filePath, "droid"),
       filePath: candidate.filePath,
       sourceMtimeMs: candidate.mtimeMs,
-    }));
+    });
+    record.sizeBytes = candidate.size;
+    recordsById.set(id, record);
   }
 
   return sortDiscoveryRecords(Array.from(recordsById.values()), limit);

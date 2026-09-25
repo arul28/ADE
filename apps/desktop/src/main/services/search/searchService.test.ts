@@ -132,36 +132,48 @@ describe("searchService", () => {
     expect(hit!.deepLink).toContain("event=0");
   });
 
-  it("indexes one searchable hit across accepted steer lifecycle snapshots", async () => {
+  // A steer writes one row per lifecycle state on its steerId. The last row
+  // lands in a second index pass, the way a live steer settles.
+  // A refused steer goes back to the staging strip with its bubble hidden, so
+  // it has no hit until it is sent; the sent row then owns the hit.
+  it.each([
+    ["Codex", ["queued", "accepted", "processed", "unprocessed"], 2],
+    ["Cursor inline", ["accepted", "inline"], 1],
+    ["Cursor refused then sent", ["accepted", "queued", "delivered"], 3],
+    ["Cursor refused and still staged", ["accepted", "queued"], null],
+  ] as const)("indexes at most one searchable hit across a %s steer's lifecycle rows", async (_label, states, anchorEvent) => {
     const session = makeSession({ id: "chat-steer-lifecycle", title: "Steer lifecycle" });
     sessions.push(session);
-    for (const [sequence, deliveryState] of [
-      [1, "queued"],
-      [2, "accepted"],
-      [3, "processed"],
-      [4, "unprocessed"],
-    ] as const) {
-      writeChatLine(
-        session.id,
-        {
-          type: "user_message",
-          text: "only one searchable follow-up",
-          steerId: "steer-1",
-          turnId: "turn-1",
-          deliveryState,
-          processed: deliveryState === "processed",
-        },
-        `2026-07-05T10:00:0${sequence}.000Z`,
-        sequence,
-      );
-    }
+    const writeRow = (index: number) => writeChatLine(
+      session.id,
+      {
+        type: "user_message",
+        text: "only one searchable follow-up",
+        steerId: "steer-1",
+        turnId: "turn-1",
+        deliveryState: states[index],
+        processed: states[index] === "processed",
+      },
+      `2026-07-05T10:00:0${index + 1}.000Z`,
+      index + 1,
+    );
+    const hits = async () => (await service.query({ query: "searchable follow-up" })).results
+      .filter((item) => item.kind === "chat" && item.sessionId === session.id);
+
+    for (let index = 0; index < states.length - 1; index += 1) writeRow(index);
+    service.notifyChatEvent(session.id);
+    await service.processPendingNow();
+    writeRow(states.length - 1);
     service.notifyChatEvent(session.id);
     await service.processPendingNow();
 
-    const result = await service.query({ query: "searchable follow-up" });
-    expect(result.results.filter((item) =>
-      item.kind === "chat" && item.sessionId === session.id
-    )).toHaveLength(1);
+    const result = await hits();
+    if (anchorEvent === null) {
+      expect(result).toHaveLength(0);
+      return;
+    }
+    expect(result).toHaveLength(1);
+    expect(result[0]!.deepLink).toContain(`event=${anchorEvent}`);
   });
 
   it("rebuilds searchable chat and terminal history from compressed transcripts", async () => {

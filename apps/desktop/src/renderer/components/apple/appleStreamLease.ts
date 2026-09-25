@@ -19,8 +19,13 @@
  * a capture the desktop brought up either.
  */
 
+import type { OpenProjectBinding } from "../../../shared/types";
+import { laneOnMachineKey } from "../../lib/chatMachineRouting";
+
 type AppleStreamLeaseEntry = {
   count: number;
+  /** The key the first holder took it under. */
+  key: AppleStreamLeaseKey;
   /**
    * Which RUN of this stream the holders belong to.
    *
@@ -51,7 +56,15 @@ let epochCounter = 0;
 export type AppleStreamViewer = {
   laneId: string | null;
   deviceUdid: string;
-  pinKey: string | null;
+  pinKey: string;
+};
+
+type AppleStreamScopeArgs = {
+  /** The session's pin; null means the machine this window is bound to. */
+  pin: OpenProjectBinding | null | undefined;
+  /** The window's current binding, which a null pin resolves to. */
+  bound: OpenProjectBinding | null | undefined;
+  laneId: string | null | undefined;
 };
 
 /**
@@ -60,14 +73,25 @@ export type AppleStreamViewer = {
  * The machine is in the key because two tabs bound to different Macs can show
  * the same lane id, and they are not watching the same capture.
  */
-export function appleStreamLeaseKey(args: {
-  pinKey: string | null | undefined;
-  laneId: string | null | undefined;
-  deviceUdid: string;
-}): string {
-  const pin = args.pinKey?.trim() || "bound";
-  const lane = args.laneId?.trim() || "no-lane";
-  return `${pin}::${lane}::${args.deviceUdid}`;
+export type AppleStreamLeaseKey = {
+  /** The stream: machine, lane and device. */
+  id: string;
+  /**
+   * The machine and lane. `stopStream` is scoped to this, not to one device.
+   *
+   * The pin is resolved here, so a viewer holding a null pin and one holding
+   * the same machine resolved (`local:/…`) count in one bucket. Two spellings
+   * were two buckets, and each viewer leaving was "the last one" of its own.
+   */
+  laneScope: string;
+  /** The lane id, or "no-lane". */
+  laneId: string;
+};
+
+export function appleStreamLeaseKey(args: AppleStreamScopeArgs & { deviceUdid: string }): AppleStreamLeaseKey {
+  const laneId = args.laneId?.trim() || "no-lane";
+  const laneScope = laneOnMachineKey(args.pin, args.bound, laneId);
+  return { id: `${laneScope}::${args.deviceUdid}`, laneScope, laneId };
 }
 
 /**
@@ -79,16 +103,16 @@ export function appleStreamLeaseKey(args: {
  * that stopped a freshly-opened pane's capture.
  */
 export function acquireAppleStreamLease(
-  key: string,
+  key: AppleStreamLeaseKey,
   /** What this viewer is watching. Omitted by a holder that only parks a count. */
   viewer?: AppleStreamViewer,
 ): { first: boolean; epoch: number } {
-  const entry = leases.get(key);
+  const entry = leases.get(key.id);
   if (!entry || entry.count <= 0) {
     epochCounter += 1;
-    const fresh: AppleStreamLeaseEntry = { count: 1, epoch: epochCounter };
+    const fresh: AppleStreamLeaseEntry = { count: 1, epoch: epochCounter, key };
     if (viewer) fresh.viewer = viewer;
-    leases.set(key, fresh);
+    leases.set(key.id, fresh);
     return { first: true, epoch: fresh.epoch };
   }
   entry.count += 1;
@@ -103,10 +127,10 @@ export function acquireAppleStreamLease(
  * Releasing a key nobody holds reports `last: false`: an unmount that already
  * released must not be able to stop a stream a LATER viewer has since started.
  */
-export function releaseAppleStreamLease(key: string, epoch?: number): { last: boolean } {
-  const entry = leases.get(key);
+export function releaseAppleStreamLease(key: AppleStreamLeaseKey, epoch?: number): { last: boolean } {
+  const entry = leases.get(key.id);
   if (!entry || entry.count <= 0) {
-    leases.delete(key);
+    leases.delete(key.id);
     return { last: false };
   }
   /*
@@ -125,7 +149,7 @@ export function releaseAppleStreamLease(key: string, epoch?: number): { last: bo
   if (epoch !== undefined && epoch !== entry.epoch) return { last: false };
   entry.count -= 1;
   if (entry.count === 0) {
-    leases.delete(key);
+    leases.delete(key.id);
     return { last: true };
   }
   return { last: false };
@@ -140,12 +164,15 @@ export function releaseAppleStreamLease(key: string, epoch?: number): { last: bo
  */
 export function appleStreamViewerForLane(
   laneId: string | null | undefined,
-): (AppleStreamViewer & { key: string }) | null {
+  /** The machine, as `workRuntimeScopeKey` spells it. */
+  pinKey: string,
+): (AppleStreamViewer & { key: AppleStreamLeaseKey }) | null {
   const wanted = laneId?.trim() || null;
   if (!wanted) return null;
-  for (const [key, entry] of leases) {
+  for (const entry of leases.values()) {
     if (entry.count <= 0 || !entry.viewer) continue;
-    if (entry.viewer.laneId === wanted) return { ...entry.viewer, key };
+    if (entry.viewer.pinKey !== pinKey) continue;
+    if (entry.viewer.laneId === wanted) return { ...entry.viewer, key: entry.key };
   }
   return null;
 }
@@ -163,22 +190,35 @@ export function appleStreamViewerForLane(
 export function forgetAppleStreamLeasesForLane(laneId: string | null | undefined): void {
   const wanted = laneId?.trim() || null;
   if (!wanted) return;
-  for (const [key, entry] of [...leases]) {
-    // The lane is the middle segment of the key, which also catches a parked
-    // hold — one that carries a count but no viewer to match on.
-    const matchesKey = key.split("::")[1] === wanted;
-    if (matchesKey || entry.viewer?.laneId === wanted) leases.delete(key);
+  for (const [id, entry] of [...leases]) {
+    // The entry's own lane also catches a parked hold, which has no viewer.
+    if (entry.key.laneId === wanted || entry.viewer?.laneId === wanted) leases.delete(id);
   }
 }
 
+/**
+ * How many leases are held on the lane and machine of `key`, on any device.
+ *
+ * The stop the last viewer arms is lane-scoped, so a new device on the same
+ * lane (a swap inside one viewer, or the floating player moving to another
+ * device) must keep it from firing.
+ */
+export function appleStreamLaneLeaseCount(key: AppleStreamLeaseKey): number {
+  let count = 0;
+  for (const entry of leases.values()) {
+    if (entry.key.laneScope === key.laneScope) count += Math.max(0, entry.count);
+  }
+  return count;
+}
+
 /** How many viewers hold this stream. Diagnostics and tests. */
-export function appleStreamLeaseCount(key: string): number {
-  return leases.get(key)?.count ?? 0;
+export function appleStreamLeaseCount(key: AppleStreamLeaseKey): number {
+  return leases.get(key.id)?.count ?? 0;
 }
 
 /** Which run this key is on, or 0 when nobody holds it. Diagnostics and tests. */
-export function appleStreamLeaseEpoch(key: string): number {
-  return leases.get(key)?.epoch ?? 0;
+export function appleStreamLeaseEpoch(key: AppleStreamLeaseKey): number {
+  return leases.get(key.id)?.epoch ?? 0;
 }
 
 /** Test-only: drops every lease. */

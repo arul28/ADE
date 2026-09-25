@@ -95,6 +95,7 @@ struct WorkToolCardModel: Identifiable, Hashable {
   /// off a history page. Turns the fetch into an exact read rather than a
   /// bounded scan that may not reach back this far.
   let resultSourceOffset: Int?
+  let turnId: String?
 
   init(
     id: String,
@@ -109,7 +110,8 @@ struct WorkToolCardModel: Identifiable, Hashable {
     remoteResultBytes: Int? = nil,
     sessionId: String? = nil,
     resultSequence: Int? = nil,
-    resultSourceOffset: Int? = nil
+    resultSourceOffset: Int? = nil,
+    turnId: String? = nil
   ) {
     self.id = id
     self.toolName = toolName
@@ -124,6 +126,7 @@ struct WorkToolCardModel: Identifiable, Hashable {
     self.sessionId = sessionId
     self.resultSequence = resultSequence
     self.resultSourceOffset = resultSourceOffset
+    self.turnId = turnId
   }
 }
 
@@ -148,6 +151,9 @@ struct WorkChatMessage: Identifiable, Equatable {
   let timestamp: String
   let turnId: String?
   let itemId: String?
+  /// Provider text phase (for example Codex `commentary` vs `final_answer`).
+  /// Kept on the visible message so turn folds can select the actual answer.
+  var textPhase: String? = nil
   var turnProvider: String? = nil
   var turnModelId: String? = nil
   var steerId: String? = nil
@@ -866,6 +872,7 @@ struct WorkCommandCardModel: Identifiable, Hashable {
   let timestamp: String
   let exitCode: Int?
   let durationMs: Int?
+  var turnId: String? = nil
 }
 
 struct WorkFileChangeCardModel: Identifiable, Hashable {
@@ -875,6 +882,7 @@ struct WorkFileChangeCardModel: Identifiable, Hashable {
   let kind: String
   let status: WorkToolCardStatus
   let timestamp: String
+  var turnId: String? = nil
 }
 
 // MARK: - ade_card
@@ -1066,6 +1074,9 @@ indirect enum WorkTimelinePayload: Equatable {
   /// spawn/result rows hard timeline boundaries that tool/activity folding
   /// cannot absorb.
   case subagent(WorkSubagentTimelineRow)
+  /// Adjacent lifecycle cards share a compact grid, with the same stable key
+  /// as their first member so start → result transitions do not move slots.
+  case subagentGrid(WorkSubagentTimelineGrid)
   /// A run of 2+ consecutive same-source stopped subagent result rows, folded
   /// into one calm attributed card (desktop parity: `subagent_stopped_group`).
   /// Keeps a mass stop from rendering as a wall of identical rows.
@@ -1092,6 +1103,14 @@ indirect enum WorkTimelinePayload: Equatable {
   /// event. Completed turns say "Ran for"; interrupted/failed turns say
   /// "Elapsed" so wall time is never presented as continuous agent work.
   case turnEndMarker(WorkTurnEndMarker)
+  /// Completed turn history folded to a single mobile-sized disclosure row.
+  case turnFold(WorkTurnFoldModel)
+  /// One background shell job, anchored at its first lifecycle update.
+  case backgroundJob(WorkBackgroundJobModel)
+  /// Consecutive background jobs summarized to one compact run row.
+  case backgroundJobRun(WorkBackgroundJobRunModel)
+  /// One scheduled wake/cron/loop line, merged in place by its schedule id.
+  case scheduledWork(WorkScheduledWorkSnapshot)
   case pendingQuestion(WorkPendingQuestionModel)
   case pendingPermission(WorkPendingPermissionModel)
   /// Plan-approval gate: agent has finished planning and is waiting for the
@@ -1134,6 +1153,9 @@ extension WorkTimelinePayload: Hashable {
     case .subagent(let model):
       hasher.combine(4)
       hasher.combine(model)
+    case .subagentGrid(let model):
+      hasher.combine(18)
+      hasher.combine(model)
     case .subagentStoppedGroup(let model):
       hasher.combine(5)
       hasher.combine(model)
@@ -1160,6 +1182,18 @@ extension WorkTimelinePayload: Hashable {
       hasher.combine(model)
     case .turnEndMarker(let model):
       hasher.combine(13)
+      hasher.combine(model)
+    case .turnFold(let model):
+      hasher.combine(19)
+      hasher.combine(model)
+    case .backgroundJob(let model):
+      hasher.combine(20)
+      hasher.combine(model)
+    case .backgroundJobRun(let model):
+      hasher.combine(22)
+      hasher.combine(model)
+    case .scheduledWork(let model):
+      hasher.combine(21)
       hasher.combine(model)
     case .pendingQuestion(let model):
       hasher.combine(14)
@@ -1268,6 +1302,7 @@ enum WorkToolGroupMember: Hashable, Identifiable {
 struct WorkToolGroupModel: Identifiable, Hashable {
   let id: String
   let members: [WorkToolGroupMember]
+  var turnId: String? = nil
 
   var count: Int { members.count }
 }
@@ -1289,6 +1324,7 @@ struct WorkChangedFileEntry: Identifiable, Hashable {
 struct WorkChangedFilesGroupModel: Identifiable, Hashable {
   let id: String
   let files: [WorkChangedFileEntry]
+  var turnId: String? = nil
 
   var count: Int { files.count }
 }
@@ -1314,9 +1350,48 @@ struct WorkTurnEndMarker: Hashable {
   /// one quiet line instead of a red FAILED divider — a limit is a wait, not a
   /// fault of the turn.
   var usageLimitPaused: Bool = false
+  var sourceCount: Int = 0
+  /// Stable transcript row keys that were still live when `done` arrived.
+  /// Later completion updates never change this snapshot, so a fold cannot
+  /// hide work that was still running at the turn boundary.
+  var liveEntryIds: Set<String> = []
   /// Usage for a usage-limit turn, folded in from the standalone USAGE row so it
   /// moves behind the footer's details toggle instead of shouting beside it.
   var usage: WorkUsageSummary? = nil
+}
+
+struct WorkBackgroundJobModel: Identifiable, Hashable {
+  let id: String
+  let taskId: String?
+  let title: String
+  let status: String
+  let startedAt: String
+  let updatedAt: String
+  let durationLabel: String
+  let turnId: String?
+}
+
+struct WorkBackgroundJobRunModel: Identifiable, Hashable {
+  let id: String
+  let jobs: [WorkBackgroundJobModel]
+
+  var runningCount: Int {
+    jobs.filter { $0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "running" }.count
+  }
+
+  var failedCount: Int {
+    jobs.filter { ["failed", "error"].contains($0.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }.count
+  }
+
+  var turnId: String? { jobs.first?.turnId }
+}
+
+struct WorkTurnFoldModel: Identifiable, Hashable {
+  let id: String
+  let turnId: String
+  let label: String
+  let isExpanded: Bool
+  let status: String
 }
 
 func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
@@ -1353,6 +1428,7 @@ struct WorkTimelineEntry: Identifiable, Equatable {
   let timestamp: String
   let rank: Int
   let payload: WorkTimelinePayload
+  var turnId: String? = nil
 }
 
 struct WorkSubagentSnapshot: Identifiable, Hashable {
@@ -1361,6 +1437,7 @@ struct WorkSubagentSnapshot: Identifiable, Hashable {
   let taskId: String
   let agentId: String?
   let agentType: String?
+  var provider: String? = nil
   let parentToolUseId: String?
   let description: String
   let background: Bool
@@ -1410,6 +1487,23 @@ struct WorkSubagentTimelineRow: Identifiable, Hashable {
 
   var id: String {
     "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+  }
+}
+
+struct WorkSubagentTimelineGrid: Identifiable, Hashable {
+  let id: String
+  let rows: [WorkSubagentTimelineRow]
+}
+
+enum WorkSubagentTimelineItem: Identifiable, Hashable {
+  case row(WorkSubagentTimelineRow)
+  case grid(WorkSubagentTimelineGrid)
+
+  var id: String {
+    switch self {
+    case .row(let row): return row.id
+    case .grid(let grid): return grid.id
+    }
   }
 }
 
@@ -1519,7 +1613,7 @@ func workApplyingSpawnKindUpdate(
   return summary
 }
 
-struct WorkScheduledWorkSnapshot: Identifiable, Equatable {
+struct WorkScheduledWorkSnapshot: Identifiable, Equatable, Hashable {
   let id: String
   let kind: String
   var status: String
@@ -1560,6 +1654,9 @@ struct WorkChatTimelineSnapshot: Equatable {
   var fileChangeCards: [WorkFileChangeCardModel]
   var subagentSnapshots: [WorkSubagentSnapshot]
   var scheduledWorkSnapshots: [WorkScheduledWorkSnapshot]
+  var sourceRefs: [AgentChatSourceRef]
+  var omittedSourceRefCount: Int
+  var taskList: WorkChatTaskListSnapshot?
   var transcriptIndicatesActiveTurn: Bool
   var transcriptLatestTurnEnded: Bool
   var transcriptHasInterruptibleActivity: Bool
@@ -1582,6 +1679,9 @@ struct WorkChatTimelineSnapshot: Equatable {
     fileChangeCards: [],
     subagentSnapshots: [],
     scheduledWorkSnapshots: [],
+    sourceRefs: [],
+    omittedSourceRefCount: 0,
+    taskList: nil,
     transcriptIndicatesActiveTurn: false,
     transcriptLatestTurnEnded: false,
     transcriptHasInterruptibleActivity: false,
@@ -1602,6 +1702,45 @@ struct WorkPlanStep: Equatable, Hashable {
   let text: String
   /// Raw host status (e.g. "pending", "in_progress", "completed"). Display code normalizes it.
   let status: String
+  let priority: String?
+  let cancelled: Bool
+
+  init(text: String, status: String, priority: String? = nil, cancelled: Bool = false) {
+    self.text = text
+    self.status = status
+    self.priority = priority
+    self.cancelled = cancelled
+  }
+}
+
+enum WorkChatTaskStatus: String, Hashable {
+  case pending
+  case running
+  case done
+  case failed
+}
+
+struct WorkChatTaskItem: Identifiable, Hashable {
+  var id: String
+  let label: String
+  var status: WorkChatTaskStatus
+  var activeLabel: String?
+  var skipped: Bool
+  var priority: String?
+
+  var note: String? { skipped ? "skipped" : nil }
+}
+
+struct WorkChatTaskListSnapshot: Hashable {
+  let source: String
+  let label: String
+  let items: [WorkChatTaskItem]
+  let turnId: String?
+  let timestamp: String
+
+  var completedCount: Int {
+    items.count { $0.status == .done }
+  }
 }
 
 struct WorkEventCardModel: Identifiable, Hashable {
@@ -1611,6 +1750,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
   let icon: String
   let tint: ColorToken
   let timestamp: String
+  var turnId: String? = nil
   let body: String?
   let bullets: [String]
   let metadata: [String]
@@ -1657,6 +1797,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
   let spawnCompletionChildId: String?
   let technicalDetail: String?
   let nextAction: String?
+  let taskList: WorkChatTaskListSnapshot?
 
   init(
     id: String,
@@ -1665,6 +1806,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     icon: String,
     tint: ColorToken,
     timestamp: String,
+    turnId: String? = nil,
     body: String?,
     bullets: [String],
     metadata: [String],
@@ -1682,7 +1824,8 @@ struct WorkEventCardModel: Identifiable, Hashable {
     diagnosticIntegrationFailures: [AgentChatOptionalIntegrationFailure] = [],
     spawnCompletionChildId: String? = nil,
     technicalDetail: String? = nil,
-    nextAction: String? = nil
+    nextAction: String? = nil,
+    taskList: WorkChatTaskListSnapshot? = nil
   ) {
     self.id = id
     self.kind = kind
@@ -1690,6 +1833,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.icon = icon
     self.tint = tint
     self.timestamp = timestamp
+    self.turnId = turnId
     self.body = body
     self.bullets = bullets
     self.metadata = metadata
@@ -1708,6 +1852,7 @@ struct WorkEventCardModel: Identifiable, Hashable {
     self.spawnCompletionChildId = spawnCompletionChildId
     self.technicalDetail = technicalDetail
     self.nextAction = nextAction
+    self.taskList = taskList
   }
 }
 
@@ -1755,9 +1900,77 @@ struct WorkFullscreenImage: Identifiable {
 enum WorkLoadedArtifactContent {
   case image(UIImage)
   case video(URL)
+  /// A stored video too large to fetch just to draw a row. It downloads when
+  /// the user plays it.
+  case videoOnDemand(sizeBytes: Int)
   case remoteURL(URL)
   case text(String)
   case error(String)
+}
+
+/// Why an artifact is being loaded. A row or card appearing is `.preview`;
+/// only `.play` downloads a video larger than `workArtifactEagerVideoMaxBytes`.
+enum WorkArtifactLoadIntent {
+  case preview
+  case play
+}
+
+typealias WorkArtifactLoader = @MainActor (ComputerUseArtifactSummary, WorkArtifactLoadIntent) async -> Void
+
+/// The largest stored video fetched when its row appears: the host's
+/// whole-file cap (`MAX_SYNC_ARTIFACT_BYTES`), which bounded every preview
+/// load before videos were read in slices.
+let workArtifactEagerVideoMaxBytes = 8 * 1024 * 1024
+
+/// A fresh temp file for one load of a stored video. Each load gets its own,
+/// so a stale load that deletes its file never deletes the one on screen.
+func workArtifactVideoTempURL(artifactId: String, fileExtension: String) -> URL {
+  FileManager.default.temporaryDirectory
+    .appendingPathComponent("ade-work-artifact-\(artifactId)-\(UUID().uuidString)")
+    .appendingPathExtension(fileExtension)
+}
+
+/// True when a row that appears must not download this video: a preview of a
+/// video larger than `workArtifactEagerVideoMaxBytes` shows only its size, and
+/// the download waits for `.play`.
+func workArtifactVideoWaitsForPlay(intent: WorkArtifactLoadIntent, sizeBytes: Int) -> Bool {
+  intent == .preview && sizeBytes > workArtifactEagerVideoMaxBytes
+}
+
+/// What a failed video load does next.
+enum WorkArtifactVideoLoadFailure: Equatable {
+  /// Scrolled away or left: stay unloaded, so the next appear retries.
+  case retryLater
+  /// A host older than the slice read: use the whole-file read.
+  case useWholeFileRead
+  /// Anything else: show the error.
+  case show
+}
+
+func workArtifactVideoLoadFailure(_ error: Error) -> WorkArtifactVideoLoadFailure {
+  if error is CancellationError { return .retryLater }
+  if workArtifactHostLacksRangeRead(error) { return .useWholeFileRead }
+  return .show
+}
+
+/// True when the host is older than the slice read (`readArtifactRange`).
+/// Such a host answers "Unsupported file action: readArtifactRange", and the
+/// phone then uses the whole-file read (`readArtifact`) instead.
+func workArtifactHostLacksRangeRead(_ error: Error) -> Bool {
+  error.localizedDescription.contains("Unsupported file action")
+}
+
+/// "34 MB" for the play placeholder.
+func workArtifactSizeLabel(_ sizeBytes: Int) -> String {
+  ByteCountFormatter.string(fromByteCount: Int64(sizeBytes), countStyle: .file)
+}
+
+/// Loads started under one scope stop when the chat view that started them
+/// goes away, so a download does not finish into a view that is gone.
+@MainActor
+final class WorkArtifactLoadScope {
+  private(set) var isActive = true
+  func end() { isActive = false }
 }
 
 func workRemoveLoadedArtifactTempFile(_ content: WorkLoadedArtifactContent?) {
@@ -1775,12 +1988,15 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     case .assistantText(_, let turnId, let itemId):
       let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
       if !normalizedItemId.isEmpty {
-        return [
+        var parts = [
           sessionId,
           "assistant-text",
           turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
           normalizedItemId,
-        ].joined(separator: ":")
+        ]
+        let phase = textPhase?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !phase.isEmpty { parts.append(phase) }
+        return parts.joined(separator: ":")
       }
     default:
       break
@@ -1791,15 +2007,20 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   let timestamp: String
   let sequence: Int?
   let event: WorkChatEvent
+  /// Provider text phase retained beside the normalized event.
+  var textPhase: String? = nil
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.
   let subagentTaskType: String?
+  let subagentProvider: String?
   let subagentCommand: String?
   let subagentSpawnKind: AgentChatSpawnKind?
   let subagentParentAgentId: String?
   let subagentSpawnDepth: Int?
   let subagentResourceLinks: [AgentChatResourceLink]
+  /// True when this start reopens a completed tracked child session.
+  let subagentResumed: Bool?
   /// HTTP status attached to an SDK terminal API error on a `done` frame
   /// (notably 429). Kept beside the event for the same reason as the subagent
   /// fields above: the turn footer needs "this turn ended at a usage limit"
@@ -1835,12 +2056,15 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     timestamp: String,
     sequence: Int?,
     event: WorkChatEvent,
+    textPhase: String? = nil,
     subagentTaskType: String? = nil,
+    subagentProvider: String? = nil,
     subagentCommand: String? = nil,
     subagentSpawnKind: AgentChatSpawnKind? = nil,
     subagentParentAgentId: String? = nil,
     subagentSpawnDepth: Int? = nil,
     subagentResourceLinks: [AgentChatResourceLink] = [],
+    subagentResumed: Bool? = nil,
     apiErrorStatus: Int? = nil,
     isLegacySubagentCompletedFrame: Bool = false,
     stopSource: String? = nil,
@@ -1854,12 +2078,15 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.timestamp = timestamp
     self.sequence = sequence
     self.event = event
+    self.textPhase = textPhase
     self.subagentTaskType = subagentTaskType
+    self.subagentProvider = subagentProvider
     self.subagentCommand = subagentCommand
     self.subagentSpawnKind = subagentSpawnKind
     self.subagentParentAgentId = subagentParentAgentId
     self.subagentSpawnDepth = subagentSpawnDepth
     self.subagentResourceLinks = subagentResourceLinks
+    self.subagentResumed = subagentResumed
     self.apiErrorStatus = apiErrorStatus
     self.isLegacySubagentCompletedFrame = isLegacySubagentCompletedFrame
     self.stopSource = stopSource
@@ -1883,9 +2110,12 @@ enum WorkChatEvent: Equatable {
   )
   case assistantText(text: String, turnId: String?, itemId: String?)
   case toolCall(tool: String, argsText: String, itemId: String, parentItemId: String?, turnId: String?)
-  case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus)
+  case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus, sources: [AgentChatSourceRef]?, sourceRefsOmittedForMobile: Int?)
+  case sources(refs: [AgentChatSourceRef], turnId: String?, omittedForMobile: Int?)
   case activity(kind: String, detail: String?, turnId: String?)
   case plan(steps: [WorkPlanStep], explanation: String?, turnId: String?)
+  case planProposal(text: String, turnId: String?)
+  case taskListUpdate(items: [AgentChatTodoItem], turnId: String?)
   case subagentStarted(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String, background: Bool, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentProgress(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, description: String?, summary: String, toolName: String?, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
   case subagentResult(taskId: String, agentId: String?, agentType: String?, parentToolUseId: String?, status: String, summary: String, label: String?, model: String?, reasoningEffort: String?, turnId: String?)
@@ -1946,8 +2176,11 @@ enum WorkChatEvent: Equatable {
     case .assistantText: return "text"
     case .toolCall: return "tool_call"
     case .toolResult: return "tool_result"
+    case .sources: return "sources"
     case .activity: return "activity"
     case .plan: return "plan"
+    case .planProposal: return "plan"
+    case .taskListUpdate: return "todo_update"
     case .subagentStarted: return "subagent_started"
     case .subagentProgress: return "subagent_progress"
     case .subagentResult: return "subagent_result"

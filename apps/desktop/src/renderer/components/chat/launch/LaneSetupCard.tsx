@@ -47,7 +47,7 @@ import {
 } from "../../../../shared/chatLaunch";
 import { cn } from "../../ui/cn";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
-import { ConfirmDialog, useConfirmDialog } from "../../shared/InlineDialogs";
+import { confirmDialog } from "../../ui/dialog";
 import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
 import { getChatLaunchEntry, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
@@ -584,9 +584,9 @@ export function LaneSetupCard({
   const [busy, setBusy] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const confirm = useConfirmDialog();
-  // True while the Cancel/Delete confirmation is up.
-  const confirmingCancelRef = useRef(false);
+  // Set while the Cancel/Delete confirmation is up; aborting withdraws it.
+  const [confirmAbort, setConfirmAbort] = useState<AbortController | null>(null);
+  const confirmAbortRef = useRef<AbortController | null>(null);
   const actions = laneSetupActions(snapshot);
   const failed = snapshot.phase === "failed";
   const envStage = snapshot.stages.find((stage) => stage.id === "environment");
@@ -607,14 +607,18 @@ export function LaneSetupCard({
   const confirmDelete = (name: "cancel" | "delete") => {
     const subject = snapshot.kind === "cli" ? "CLI session" : "chat";
     const launchId = snapshot.launchId;
-    confirmingCancelRef.current = true;
-    void confirm.confirmAsync({
+    const abort = new AbortController();
+    confirmAbortRef.current = abort;
+    setConfirmAbort(abort);
+    void confirmDialog({
       title: name === "cancel" ? "Cancel this launch?" : "Delete this launch?",
       message: `ADE deletes the lane it created for this ${subject} — its worktree and its local and remote branch — and the ${subject} itself. Your prompt goes back into the composer.`,
       confirmLabel: `Delete lane and ${subject}`,
-      danger: true,
+      destructive: true,
+      signal: abort.signal,
     }).then((ok) => {
-      confirmingCancelRef.current = false;
+      if (confirmAbortRef.current === abort) confirmAbortRef.current = null;
+      setConfirmAbort((current) => (current === abort ? null : current));
       if (!ok) return;
       // The launch may have moved on while the dialog was up: never cancel a
       // chat that already runs (its lane is now the user's to delete).
@@ -632,21 +636,21 @@ export function LaneSetupCard({
   // close it and say why, rather than leave a confirm that no longer applies.
   const pastCancel = launchPastCancel(snapshot);
   const cancelledElsewhere = snapshot.phase === "cancelled";
-  const confirmOpen = Boolean(confirm.state?.open);
-  const closeConfirm = confirm.close;
   useEffect(() => {
-    if (!confirmOpen || !confirmingCancelRef.current || (!pastCancel && !cancelledElsewhere)) return;
-    closeConfirm();
+    if (!confirmAbort || (!pastCancel && !cancelledElsewhere)) return;
+    confirmAbort.abort();
     if (pastCancel) setNotice(NOTHING_TO_CANCEL_NOTICE);
-  }, [cancelledElsewhere, closeConfirm, confirmOpen, pastCancel]);
+  }, [cancelledElsewhere, confirmAbort, pastCancel]);
 
   // A finished launch can also collapse this card (thread) or drop its row
   // (slide-out) in the same update, taking the dialog with it: say so in a toast.
   const launchIdRef = useRef(snapshot.launchId);
   launchIdRef.current = snapshot.launchId;
   useEffect(() => () => {
-    if (!confirmingCancelRef.current) return;
-    confirmingCancelRef.current = false;
+    const abort = confirmAbortRef.current;
+    if (!abort) return;
+    confirmAbortRef.current = null;
+    abort.abort();
     const latest = getChatLaunchEntry(launchIdRef.current)?.snapshot;
     if (latest && launchPastCancel(latest)) showToast({ title: NOTHING_TO_CANCEL_NOTICE, tone: "info" });
   }, []);
@@ -785,7 +789,6 @@ export function LaneSetupCard({
           ) : null}
         </div>
       ) : null}
-      <ConfirmDialog state={confirm.state} onClose={confirm.close} />
     </div>
   );
 }

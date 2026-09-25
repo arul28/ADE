@@ -30,6 +30,7 @@ import type {
 } from "../../../shared/types";
 import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice/Banner";
 import { Button } from "../ui/Button";
 import {
   issueProjectLabel,
@@ -40,6 +41,7 @@ import {
 import { LinearPriorityIcon, LinearStateIcon } from "../lanes/linearBrand";
 import { LinearProjectIcon } from "../lanes/linearProjectIcon";
 import { LinearIssueOpenLink } from "./LinearIssueResolveModals";
+import { confirmDialog } from "../ui/dialog/confirm";
 import type { IssueConflict } from "../../lib/linearBatchLaunch";
 
 export type BrowserIssue = NormalizedLinearIssue | LaneLinearIssue;
@@ -936,7 +938,7 @@ export function LinearIssueBrowser({
   // heads-up. Once confirmed (or when there is no conflict) we hand off to the
   // host's onBatchLaunch.
   const onBatchLaunch = batchActions?.onBatchLaunch;
-  const handleBatchLaunch = useCallback((issues: BrowserIssue[], options: { laneOnly?: boolean }) => {
+  const handleBatchLaunch = useCallback(async (issues: BrowserIssue[], options: { laneOnly?: boolean }) => {
     if (!onBatchLaunch || issues.length === 0) return;
     const conflicting = conflicts
       ? issues.map((issue) => conflicts.get(issue.id)).filter((c): c is IssueConflict => Boolean(c))
@@ -952,7 +954,12 @@ export function LinearIssueBrowser({
         ? "This issue is already attached to"
         : `${conflicting.length} of these issues are already attached to`;
       const ok = typeof window !== "undefined"
-        ? window.confirm(`${subject} ${target}. You can attach ${conflicting.length === 1 ? "it" : "them"} again — proceed?`)
+        ? await confirmDialog({
+          title: `${subject} ${target}.`,
+          message: `You can attach ${conflicting.length === 1 ? "it" : "them"} again — proceed?`,
+          confirmLabel: "Proceed",
+          tone: "warning",
+        })
         : true;
       if (!ok) return;
     }
@@ -981,15 +988,18 @@ export function LinearIssueBrowser({
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden">
       {error ? (
-        <div className="mx-4 mt-3 flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-red-500/25 px-3 py-2 text-[12px] text-red-100" style={{ backgroundColor: "#321B20" }}>
-          <Warning size={14} className="shrink-0" />
-          <span className="min-w-0 flex-1">{error}</span>
-          {showSettingsAction ? (
-            <Button type="button" variant="danger" size="sm" onClick={onOpenLinearSettings}>
-              Open Linear settings
-            </Button>
-          ) : null}
-        </div>
+        <Banner
+          model={{
+            id: "linear-issue-browser-error",
+            tone: "error",
+            title: error,
+            actions: showSettingsAction
+              ? [{ label: "Open Linear settings", variant: "secondary", onClick: onOpenLinearSettings }]
+              : undefined,
+          }}
+          layout="inline"
+          style={{ margin: "12px 16px 0" }}
+        />
       ) : null}
 
       <div className="grid min-h-0 flex-1 overflow-hidden md:grid-cols-[240px_minmax(0,1fr)_480px] lg:grid-cols-[280px_minmax(420px,1fr)_600px]">

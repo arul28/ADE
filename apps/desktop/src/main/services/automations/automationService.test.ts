@@ -10,6 +10,7 @@ import {
   normalizeRuntimeRule,
   presetToTemplate,
   resolveLaneNameTemplate,
+  scopeAutomationAdeActionArgs,
   triggerMatches,
 } from "./automationService";
 import { openKvDb } from "../state/kvDb";
@@ -1864,46 +1865,53 @@ describe("automationService integration", () => {
   });
 
   it("computes nextRunAt for scheduled rules", async () => {
-    const { db } = createInMemoryAdeDb();
-    const logger = createLogger();
-    const projectId = "proj";
-    const projectRoot = "/tmp";
+    // Saturday noon, local time: the weekday 09:00 rule next fires on Monday.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(2026, 8, 26, 12, 0, 0));
+    try {
+      const { db } = createInMemoryAdeDb();
+      const logger = createLogger();
+      const projectId = "proj";
+      const projectRoot = "/tmp";
 
-    const rule = {
-      id: "daily",
-      name: "Daily summary",
-      triggers: [{ type: "schedule" as const, cron: "0 9 * * 1-5" }],
-      trigger: { type: "schedule" as const, cron: "0 9 * * 1-5" },
-      actions: [],
-      enabled: true,
-    };
+      const rule = {
+        id: "daily",
+        name: "Daily summary",
+        triggers: [{ type: "schedule" as const, cron: "0 9 * * 1-5" }],
+        trigger: { type: "schedule" as const, cron: "0 9 * * 1-5" },
+        actions: [],
+        enabled: true,
+      };
 
-    const projectConfigService = {
-      get: () => ({
-        trust: { sharedHash: "", localHash: "" },
-        shared: {},
-        local: { automations: [rule] },
-        effective: { automations: [rule], providerMode: "guest" }
-      })
-    } as any;
+      const projectConfigService = {
+        get: () => ({
+          trust: { sharedHash: "", localHash: "" },
+          shared: {},
+          local: { automations: [rule] },
+          effective: { automations: [rule], providerMode: "guest" }
+        })
+      } as any;
 
-    const laneService = {
-      list: async () => [],
-      getLaneWorktreePath: () => projectRoot,
-      getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
-    } as any;
+      const laneService = {
+        list: async () => [],
+        getLaneWorktreePath: () => projectRoot,
+        getLaneBaseAndBranch: () => ({ baseRef: "main", branchRef: "main", worktreePath: projectRoot })
+      } as any;
 
-    const service = createAutomationService({
-      db: db as any,
-      logger,
-      projectId,
-      projectRoot,
-      laneService,
-      projectConfigService
-    });
+      const service = createAutomationService({
+        db: db as any,
+        logger,
+        projectId,
+        projectRoot,
+        laneService,
+        projectConfigService
+      });
 
-    const listed = service.list();
-    expect(listed[0]?.nextRunAt).toBeTruthy();
+      const listed = service.list();
+      expect(Date.parse(listed[0]?.nextRunAt ?? "")).toBe(new Date(2026, 8, 28, 9, 0, 0).getTime());
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("dispatches git.pr_merged automations on merge transitions", async () => {
@@ -2030,7 +2038,7 @@ describe("automationService integration", () => {
   // gone: an automation is personal now, so no rule reaches this service that
   // the signed-in user did not write. What matters instead is that a rule which
   // once would have been blocked simply runs.
-  it("runs a rule that the retired trust gate would have blocked", async () => {
+  it("runs a shared rule that has no trust record", async () => {
     const { db } = createInMemoryAdeDb();
     const logger = createLogger();
     const projectId = "proj";
@@ -2068,7 +2076,10 @@ describe("automationService integration", () => {
       projectConfigService
     });
 
-    await expect(service.triggerManually({ id: rule.id })).resolves.toBeTruthy();
+    await expect(service.triggerManually({ id: rule.id })).resolves.toMatchObject({
+      automationId: rule.id,
+      status: "succeeded",
+    });
   });
 
 
@@ -3416,5 +3427,52 @@ describe("automation ingress storage bounds", () => {
     expect(mapExecRows(raw.exec(
       "select count(*) as count from automation_ingress_events where raw_payload_json is not null",
     ))[0]?.count).toBe(1);
+  });
+});
+
+describe("scopeAutomationAdeActionArgs", () => {
+  it("strips host-authored chat message provenance from automation args", () => {
+    const args = {
+      chatSessionId: "chat-1",
+      metadata: { spawnCompletion: { childSessionId: "child-1" }, note: "keep" },
+    };
+    scopeAutomationAdeActionArgs("chat", args, "rule-1");
+    expect(args.metadata).toEqual({ note: "keep" });
+    // The chat domain derives its own session scoping; only provenance is cut.
+    expect(args.chatSessionId).toBe("chat-1");
+  });
+
+  it("strips forged takeover identity from mac_desktop automation args", () => {
+    const args: Record<string, unknown> = {
+      laneId: "lane-1",
+      controllerId: "controller-the-human-minted",
+      holderId: "controller-the-human-minted",
+      chatSessionId: "someone-elses-chat",
+      x: 10,
+      y: 20,
+    };
+    scopeAutomationAdeActionArgs("mac_desktop", args, "rule-1");
+    // The borrowed identity is replaced, not just emptied: an empty
+    // `chatSessionId` collapses every rule on the host onto one shared
+    // `anonymous-agent` lease holder.
+    expect(args).toEqual({ laneId: "lane-1", x: 10, y: 20, chatSessionId: "automation:rule-1" });
+  });
+
+  it("strips mac_desktop identity from positional automation args too", () => {
+    const args = [{ laneId: "lane-1", controllerId: "c", holderId: "h", chatSessionId: "s" }];
+    scopeAutomationAdeActionArgs("mac_desktop", args, "rule-2");
+    expect(args[0]).toEqual({ laneId: "lane-1", chatSessionId: "automation:rule-2" });
+  });
+
+  it("refuses to scope mac_desktop args without a rule id", () => {
+    // A fallback id would put every unnamed rule on one shared lease holder.
+    expect(() => scopeAutomationAdeActionArgs("mac_desktop", { laneId: "lane-1" }, "  "))
+      .toThrow(/rule id/);
+  });
+
+  it("leaves other domains' args untouched", () => {
+    const args = { controllerId: "c", holderId: "h" };
+    scopeAutomationAdeActionArgs("lane", args, "rule-1");
+    expect(args).toEqual({ controllerId: "c", holderId: "h" });
   });
 });

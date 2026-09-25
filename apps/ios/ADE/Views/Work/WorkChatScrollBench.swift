@@ -377,7 +377,7 @@ struct WorkChatScrollBenchScreen: View {
       onRetryLoad: {},
       onOpenFile: { _ in },
       onOpenPr: { _ in },
-      onLoadArtifact: { _ in },
+      onLoadArtifact: { _, _ in },
       onRefreshArtifacts: {},
       onCancelSteer: { _ in },
       onEditSteer: { _, _ in },

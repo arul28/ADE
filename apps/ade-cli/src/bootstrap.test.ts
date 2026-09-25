@@ -1,15 +1,18 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
+import { spawnSync } from "node:child_process";
 import {
+  bindDeviceReleaseOnChatEnd,
   bindIosSimulatorReleaseOnChatEnd,
+  createAdeRuntime,
   createHeadlessAdeCliAgentEnv,
   emitRuntimePrCardsForChanges,
   inferAgentSkillsRootForCliEntry,
 } from "./bootstrap";
+import { adeCliShimDirName } from "./services/runtime/adeCliShim";
 import { createPrEventFanout } from "./prEventFanout";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import type { PrCardChange } from "../../desktop/src/main/services/prs/prChatCards";
@@ -42,151 +45,86 @@ function writeSkillsManifest(skillsRoot: string): void {
 
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const root of tempRoots.splice(0)) {
     await removeTestTree(root);
   }
 });
 
-describe("createAdeRuntime startup teardown", () => {
-  // `createAdeRuntime` builds ~25 services around a native SQLite handle and has
-  // no injection seam, so these assertions read the source. They exist because a
-  // throw after the database open used to leak the handle and every started
-  // service, once per sync-host retry.
-  // Line endings are normalized because a Windows checkout writes CRLF, and
-  // every anchor below is written against "\n".
-  const source = fs.readFileSync(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), "bootstrap.ts"),
-    "utf8",
-  ).replace(/\r\n/g, "\n");
-  const runtimeFn = source.slice(source.indexOf("export async function createAdeRuntime"));
-
-  /** Index of the first match of `pattern` at or after `from`, or -1. */
-  function indexOfPattern(pattern: RegExp, from = 0): number {
-    const search = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
-    search.lastIndex = from;
-    const match = search.exec(runtimeFn);
-    return match ? match.index : -1;
+describe("createAdeRuntime dispose", () => {
+  /** Live resources (timers, sockets, pipes, child processes, watchers), by kind. */
+  function liveResources(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const kind of process.getActiveResourcesInfo()) counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    return counts;
   }
 
-  // Every anchor below is indentation-insensitive on purpose: the guarded body
-  // is reindented whenever the guard moves, and a test that breaks on that is a
-  // test about layout, not about the leak.
-  const openIndex = runtimeFn.indexOf("clearLastFailure({ kind: \"project\", projectRoot });");
-  const tryIndex = indexOfPattern(/\n[ \t]*try \{\n/, openIndex);
-  const finallyIndex = indexOfPattern(/\n[ \t]*\} finally \{\n/, tryIndex);
-  const guardedBody = runtimeFn.slice(tryIndex, finallyIndex);
-
-  it("guards everything after the database open", () => {
-    const firstServiceStart = runtimeFn.indexOf("usageProductAnalyticsExporter.start();");
-
-    expect(openIndex).toBeGreaterThan(-1);
-    expect(tryIndex).toBeGreaterThan(openIndex);
-    expect(finallyIndex).toBeGreaterThan(tryIndex);
-    expect(tryIndex).toBeLessThan(firstServiceStart);
-    expect(firstServiceStart).toBeLessThan(finallyIndex);
-  });
-
-  it("registers the database close first, so it releases last", () => {
-    const firstPush = runtimeFn.indexOf("teardown.push(");
-    const dbClose = runtimeFn.indexOf("db.close();");
-    const secondPush = runtimeFn.indexOf("teardown.push(", firstPush + 1);
-
-    expect(firstPush).toBeGreaterThan(-1);
-    expect(dbClose).toBeGreaterThan(firstPush);
-    expect(dbClose).toBeLessThan(secondPush);
-  });
-
-  it("drains the stack when construction fails and when the runtime is disposed", () => {
-    const failurePath = runtimeFn.slice(finallyIndex);
-    expect(failurePath).toContain("if (!runtimeCreated) {");
-    expect(failurePath).toContain("teardown.drain();");
-
-    const disposeIndex = runtimeFn.indexOf("dispose: () => {");
-    expect(disposeIndex).toBeGreaterThan(-1);
-    expect(runtimeFn.slice(disposeIndex, disposeIndex + 400)).toContain("teardown.drain();");
-  });
-
-  /**
-   * Services that are started here on purpose without a release on this stack.
-   *
-   * The list is exceptions, not coverage: a service added tomorrow is NOT on it,
-   * so it has to register a release or fail the test below. Each entry needs a
-   * reason that survives review.
-   */
-  const startedWithoutRelease = new Map<string, string>([
-    // Shared across every project scope in this process, so it outlives the one
-    // being built. Only this scope's signal wiring is detached, by
-    // `detachPushSources`.
-    ["pushPublisherService", "shared publisher; outlives this runtime scope"],
-  ]);
-
-  /**
-   * The body of every `teardown.push(...)` call in `code`.
-   *
-   * Scanning to the matching close paren, rather than to the next semicolon,
-   * is what makes a release count: a release that spans statements -- a `try`
-   * around a `stop()`, an `if` guard -- ends at a semicolon inside its own
-   * body, so a semicolon-bounded match reads only the first line of it and
-   * reports a released service as leaked.
-   */
-  function teardownPushSlices(code: string): string[] {
-    const slices: string[] = [];
-    const marker = "teardown.push(";
-    for (let at = code.indexOf(marker); at !== -1; at = code.indexOf(marker, at + 1)) {
-      let depth = 0;
-      let end = -1;
-      for (let i = at + marker.length - 1; i < code.length; i++) {
-        if (code[i] === "(") depth += 1;
-        else if (code[i] === ")") {
-          depth -= 1;
-          if (depth === 0) {
-            end = i;
-            break;
-          }
-        }
-      }
-      // An unbalanced tail means the slice would be a guess, so drop it rather
-      // than assert against half a call.
-      if (end !== -1) slices.push(code.slice(at, end + 1));
-    }
-    return slices;
+  /** Kinds with more live resources now than in `baseline`. */
+  function leakedSince(baseline: Map<string, number>): string[] {
+    return [...liveResources()]
+      .filter(([kind, count]) => count > (baseline.get(kind) ?? 0))
+      .map(([kind, count]) => `${kind} x${count - (baseline.get(kind) ?? 0)}`);
   }
 
-  it("registers a release for every service the runtime starts", () => {
-    // A start without a matching release is the leak this stack removes. The
-    // started set is read out of the source rather than hand-listed: a
-    // hand-list passes for exactly the service nobody remembered to add to it.
-    const code = guardedBody
-      .split("\n")
-      .filter((line) => !line.trim().startsWith("//"))
-      .join("\n");
-    const started = new Set<string>();
-    for (const match of code.matchAll(/\b([A-Za-z_$][\w$]*)\.start\(/g)) {
-      started.add(match[1]);
-    }
-    // Guards the extraction itself: a regex that silently matched nothing would
-    // make every assertion below vacuous.
-    expect(started.size).toBeGreaterThan(5);
-    expect([...started]).toContain("usageProductAnalyticsExporter");
+  async function buildRuntime(runtimeProfile: "embedded" | "chat" | "full") {
+    const projectRoot = makeTempRoot();
+    return await createAdeRuntime({
+      projectRoot,
+      workspaceRoot: projectRoot,
+      runtimeProfile,
+      chatRuntime: "headless-stub",
+    });
+  }
 
-    const releases = teardownPushSlices(guardedBody);
-    // Guards the extraction the same way `started.size` above does.
-    expect(releases.length).toBeGreaterThan(5);
+  // A runtime that outlives its dispose keeps the database handle and every
+  // started service alive; the sync-host retry loop builds one per attempt.
+  it.each(["embedded", "chat", "full"] as const)(
+    "releases the database and everything a %s runtime started",
+    async (runtimeProfile) => {
+      vi.stubEnv("ADE_HOME", makeTempRoot());
+      // The first runtime in a process also creates process-wide state (module
+      // caches and their timers) that later runtimes share, so measure the
+      // second, once the first one's processes, pipes and sockets are gone.
+      const beforeWarmUp = liveResources();
+      (await buildRuntime(runtimeProfile)).dispose();
+      // Sampled inside vi.waitFor, like the final check, so both see its own timers.
+      const before = await vi.waitFor(() => {
+        expect(leakedSince(beforeWarmUp).filter((kind) => !kind.startsWith("Timeout"))).toEqual([]);
+        return liveResources();
+      }, { timeout: 15_000 });
 
-    const unreleased = [...started].filter(
-      (service) =>
-        !startedWithoutRelease.has(service)
-        && !releases.some((release) => new RegExp(`\\b${service}\\b`).test(release)),
+      const runtime = await buildRuntime(runtimeProfile);
+      expect(leakedSince(before)).not.toEqual([]);
+      runtime.dispose();
+
+      expect(() => runtime.db.getJson("probe")).toThrow(/not open/);
+      await vi.waitFor(() => expect(leakedSince(before)).toEqual([]), { timeout: 15_000 });
+    },
+    60_000,
+  );
+});
+
+describe("bindDeviceReleaseOnChatEnd", () => {
+  it("logs a failure under the caller's own event name", async () => {
+    const listeners: Array<(sessionId: string) => void> = [];
+    const debug = vi.fn();
+    expect(bindDeviceReleaseOnChatEnd({
+      agentChatService: {
+        registerChatSessionEndedListener(listener: (sessionId: string) => void) {
+          listeners.push(listener);
+        },
+      },
+      device: { releaseIfOwnedBy: () => Promise.reject(new Error("no display")) },
+      logEvent: "mac_desktop.release_on_chat_end_failed",
+      logger: { debug },
+    })).toBe(true);
+    listeners[0]!("chat-1");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(debug).toHaveBeenCalledWith(
+      "mac_desktop.release_on_chat_end_failed",
+      { sessionId: "chat-1", error: "no display" },
     );
-    expect(unreleased).toEqual([]);
-
-    // And the exception list may not outlive its reason: an entry for a service
-    // nobody starts any more is stale documentation.
-    expect([...startedWithoutRelease.keys()].filter((service) => !started.has(service))).toEqual([]);
-  });
-
-  it("wires the chat-end simulator release through bindIosSimulatorReleaseOnChatEnd", () => {
-    expect(runtimeFn).toContain("bindIosSimulatorReleaseOnChatEnd({");
   });
 });
 
@@ -311,6 +249,28 @@ describe("headless ADE CLI agent skill roots", () => {
       cwd: path.join(sourceRoot, "elsewhere"),
       resourcesPath: null,
     }).bundledRoot).toBeNull();
+  });
+});
+
+describe("ade CLI shim names the brain that wrote it", () => {
+  it.skipIf(process.platform === "win32")("reaches the brain's socket from a stripped env, and yields to a caller's", () => {
+    const root = makeTempRoot();
+    const fakeCli = path.join(root, "fake cli");
+    writeFile(fakeCli, '#!/bin/sh\nprintf "%s|%s|%s" "${ADE_HOME:-}" "${ADE_RUNTIME_SOCKET_PATH:-}" "$*"\n');
+    fs.chmodSync(fakeCli, 0o755);
+    const brain = { socketPath: path.join(root, "brain dir", "ade.sock"), adeHome: path.join(root, ".ade-alpha") };
+    const env = createHeadlessAdeCliAgentEnv({ PATH: "/usr/bin:/bin" }, { cliEntry: fakeCli, cwd: root, resourcesPath: null, brain });
+    const shim = env.ADE_CLI_PATH!;
+    try {
+      expect(path.basename(path.dirname(shim))).toBe(adeCliShimDirName(fakeCli, process.execPath, brain));
+      const run = (callerEnv: NodeJS.ProcessEnv) =>
+        spawnSync(shim, ["apple", "status"], { env: { PATH: "/usr/bin:/bin", ...callerEnv }, encoding: "utf8" }).stdout;
+      expect(run({})).toBe(`${brain.adeHome}|${brain.socketPath}|apple status`);
+      expect(run({ ADE_RUNTIME_SOCKET_PATH: "/tmp/mine.sock" })).toBe("|/tmp/mine.sock|apple status");
+      expect(run({ ADE_HOME: "/Users/a/.ade" })).toBe("/Users/a/.ade||apple status");
+    } finally {
+      fs.rmSync(path.dirname(shim), { recursive: true, force: true });
+    }
   });
 });
 

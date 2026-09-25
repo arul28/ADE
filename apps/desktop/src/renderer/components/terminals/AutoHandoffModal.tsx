@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { ArrowsLeftRight, CaretDown, CaretRight, Flag, Timer, WarningCircle, X, type Icon } from "@phosphor-icons/react";
+import { ArrowsLeftRight, CaretDown, CaretRight, Flag, Timer, WarningCircle, type Icon } from "@phosphor-icons/react";
 import type {
   AutomationAction,
   AutomationRule,
@@ -19,7 +18,7 @@ import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { cn } from "../ui/cn";
-import { getFocusableElements } from "../ui/dialogFocus";
+import { Dialog } from "../ui/dialog";
 import { LaneCombobox, type LaneComboboxLane } from "./LaneCombobox";
 import { automationRulesReadable, listAutomationRules, saveAutoHandoffRules } from "./sessionLifecycleActions";
 
@@ -308,78 +307,6 @@ export function staleAutoHandoffRuleIds(args: {
 
 const FIELD_LABEL_CLASS = "text-[10px] font-medium uppercase tracking-[0.13em] text-muted-fg";
 
-function FocusTrapDialog({
-  labelledBy,
-  onClose,
-  onSubmit,
-  children,
-}: {
-  labelledBy: string;
-  onClose: () => void;
-  onSubmit: () => void;
-  children: React.ReactNode;
-}) {
-  const ref = useRef<HTMLElement | null>(null);
-
-  const focusables = useCallback((): HTMLElement[] => {
-    const root = ref.current;
-    if (!root) return [];
-    return getFocusableElements(root);
-  }, []);
-
-  // Escape and Enter are bound at the window, not the panel: clicking any of the
-  // dialog's plain text leaves focus on <body>, and a panel-level handler would
-  // then never see the key at all.
-  const handlersRef = useRef({ onClose, onSubmit });
-  handlersRef.current = { onClose, onSubmit };
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        event.stopPropagation();
-        handlersRef.current.onClose();
-        return;
-      }
-      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
-      // A textarea owns Enter (the prompt is multi-line), and so does any
-      // control that already answers it — buttons, links, selects, pickers.
-      const tag = (event.target as HTMLElement | null)?.tagName?.toLowerCase();
-      if (tag === "textarea" || tag === "button" || tag === "a" || tag === "select") return;
-      event.preventDefault();
-      handlersRef.current.onSubmit();
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, []);
-
-  return (
-    <section
-      ref={(node) => { ref.current = node; }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={labelledBy}
-      className="grid max-h-[min(720px,calc(100vh-32px))] w-[min(640px,calc(100vw-32px))] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-2xl border border-border/70 bg-surface-overlay text-fg shadow-float"
-      onKeyDown={(event) => {
-        if (event.key !== "Tab") return;
-        const nodes = focusables();
-        if (nodes.length === 0) return;
-        const first = nodes[0]!;
-        const last = nodes[nodes.length - 1]!;
-        const active = document.activeElement as HTMLElement | null;
-        if (event.shiftKey && (active === first || !ref.current?.contains(active))) {
-          event.preventDefault();
-          last.focus();
-        } else if (!event.shiftKey && active === last) {
-          event.preventDefault();
-          first.focus();
-        }
-      }}
-    >
-      {children}
-    </section>
-  );
-}
-
 export type AutoHandoffModalProps = {
   /**
    * Minimal shape the editor needs. Deliberately not `TerminalSessionSummary`:
@@ -461,10 +388,23 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
     if (preferred) setForm((current) => (current.targetModelId ? current : { ...current, targetModelId: preferred }));
   }, [availableModelIds, form.targetModelId, session.modelId]);
 
+  // Enter saves — bound at the window, not the panel: clicking any of the
+  // dialog's plain text leaves focus off the controls, and a panel-level
+  // handler would then never see the key at all. Escape is the Dialog's.
+  const submitRef = useRef<() => void>(() => {});
   useEffect(() => {
-    firstControlRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      // A textarea owns Enter (the prompt is multi-line), and so does any
+      // control that already answers it — buttons, links, selects, pickers.
+      const tag = (event.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (tag === "textarea" || tag === "button" || tag === "a" || tag === "select") return;
+      event.preventDefault();
+      submitRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
-
   const conditionsChosen = AUTO_HANDOFF_CONDITIONS.some((condition) => form.conditions[condition.key]);
   const valid = autoHandoffFormIsValid(form);
   const targetLabel = useMemo(
@@ -509,43 +449,49 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
     setSaving(false);
     if (ok) onClose();
   }, [binding, existingRules, form, onClose, saving, session]);
+  submitRef.current = () => { void save(true); };
 
-  const body = (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
-      role="presentation"
-      onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
-    >
-      <FocusTrapDialog
-        labelledBy="auto-handoff-title"
-        onClose={onClose}
-        onSubmit={() => { void save(true); }}
-      >
-        <header className="flex items-start justify-between gap-4 border-b border-border/60 bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_13%,transparent),transparent_78%)] px-5 py-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_14%,transparent)] text-accent">
-              <ArrowsLeftRight size={18} weight="duotone" />
-            </div>
-            <div className="min-w-0">
-              <h2 id="auto-handoff-title" className="font-sans text-[14px] font-semibold text-fg/92">
-                Auto handoff
-              </h2>
-              <p className="mt-1 truncate text-[11px] leading-4 text-muted-fg" title={session.title}>
-                {session.title}
-              </p>
-            </div>
-          </div>
+  return (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) onClose();
+      }}
+      title="Auto handoff"
+      description={session.title}
+      icon={<ArrowsLeftRight size={16} weight="duotone" />}
+      tone="accent"
+      width={640}
+      maxHeight="min(720px, calc(100vh - 32px))"
+      bodyPadding={false}
+      scrollBody={false}
+      bodyStyle={{ display: "flex", flexDirection: "column" }}
+      initialFocusRef={firstControlRef}
+      onEscapeKeyDown={(event) => {
+        // An open lane list takes Escape first and closes itself only.
+        // (The Dialog hosts the list inside its panel; see ui/portalContainer.)
+        // (Dialog stops the key either way, so it never reaches the chat.)
+        if (document.querySelector(".ade-lane-popover")) event.preventDefault();
+      }}
+      footerStart={
+        <div className="min-w-0 text-[10.5px] text-muted-fg">
+          Applies to this chat only ·{" "}
           <button
             type="button"
-            aria-label="Close auto handoff"
-            onClick={onClose}
-            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-fg transition-colors hover:bg-[color:color-mix(in_srgb,var(--color-fg)_8%,transparent)] hover:text-fg/85"
+            disabled={!valid || saving}
+            onClick={() => { void save(false); }}
+            className="font-semibold text-accent underline decoration-[color:color-mix(in_srgb,var(--color-accent)_40%,transparent)] underline-offset-2 hover:decoration-accent disabled:cursor-not-allowed disabled:opacity-40"
           >
-            <X size={15} />
+            Make it a rule for all →
           </button>
-        </header>
-
-        <div className="min-h-0 overflow-y-auto px-5 py-4">
+        </div>
+      }
+      actions={[
+        { label: "Cancel", onClick: onClose, variant: "secondary" },
+        { label: saving ? "Saving…" : "Save", onClick: () => { void save(true); }, variant: "solid", disabled: !valid || saving },
+      ]}
+    >
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
           {/* The sentence. One card, read left to right, not a form grid. */}
           <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--color-accent)_22%,transparent)] bg-[linear-gradient(150deg,color-mix(in_srgb,var(--color-accent)_8%,transparent),color-mix(in_srgb,var(--color-fg)_3%,transparent)_62%)] px-4 py-3.5">
             <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px] leading-6 text-fg/70">
@@ -795,39 +741,6 @@ export function AutoHandoffModal({ session, binding = null, existingRules, onClo
           </div>
         </div>
 
-        <footer className="flex items-center justify-between gap-3 border-t border-border/60 px-5 py-3.5">
-          <div className="min-w-0 text-[10.5px] text-muted-fg">
-            Applies to this chat only ·{" "}
-            <button
-              type="button"
-              disabled={!valid || saving}
-              onClick={() => { void save(false); }}
-              className="font-semibold text-accent underline decoration-[color:color-mix(in_srgb,var(--color-accent)_40%,transparent)] underline-offset-2 hover:decoration-accent disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Make it a rule for all →
-            </button>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex h-8 items-center rounded-md border border-border/60 px-3 text-[11px] font-semibold text-muted-fg transition-colors hover:text-fg/85"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              disabled={!valid || saving}
-              onClick={() => { void save(true); }}
-              className="inline-flex h-8 items-center rounded-md border border-[color:color-mix(in_srgb,var(--color-accent)_40%,transparent)] bg-[color:color-mix(in_srgb,var(--color-accent)_18%,transparent)] px-3 text-[11px] font-semibold text-fg transition-colors hover:bg-[color:color-mix(in_srgb,var(--color-accent)_26%,transparent)] disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {saving ? "Saving…" : "Save"}
-            </button>
-          </div>
-        </footer>
-      </FocusTrapDialog>
-    </div>
+    </Dialog>
   );
-
-  return typeof document === "undefined" ? body : createPortal(body, document.body);
 }

@@ -48,7 +48,7 @@ for vendored runtimes without changing the union.
 | Provider | Runtime | Adapter location |
 |---|---|---|
 | `claude` | `@anthropic-ai/claude-agent-sdk` `query()` stream with an ADE async input pump, `startup()` warmup, bundled Claude Code binary, SDK sessions, hooks, output styles, plugins, context usage, rewind, and slash-command dispatch. | `agentChatService.ts` (inline; the file carries the full Claude adapter). |
-| `codex` | Pinned `@openai/codex` 0.156.0 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
+| `codex` | Pinned `@openai/codex` 0.156.1 `codex app-server` subprocess, JSON-RPC protocol. Spawn failures surface as error events. | `agentChatService.ts` (Codex adapter and thread config); executable resolution via `services/ai/codexExecutable.ts`. |
 | `opencode` | OpenCode server runtime: the provider catalog and model list come from OpenCode/Models.dev, with provider-native OAuth, API-key, custom, and local-server paths. | `agentChatService.ts` (OpenCode adapter); inventory in `openCodeInventory.ts`; auth in `openCodeAuthService.ts`. |
 | `cursor` | Official `@cursor/sdk` running in a Node worker pool. ADE owns permissions, hooks, and the system prompt; the SDK owns the model + tool execution. Slash commands are discovered from `.cursor/commands/`, `.cursor/agents/`, built-in subagents, and Agent Skill roots via `cursorSlashCommandDiscovery.ts`. A transport failure can wedge the server-side agent thread while the worker process stays alive, so every local turn carries a 90 s first-event watchdog and one automatic recycle-and-resend — see [Cursor thread recycling and the first-event watchdog](README.md#cursor-thread-recycling-and-the-first-event-watchdog). | `cursorSdkPool.ts`, `cursorSdkWorker.ts`, `cursorSdkProtocol.ts`, `cursorSdkPolicy.ts`, `cursorSdkSystemPrompt.ts`, `cursorSdkEventMapper.ts`, `cursorSdkErrors.ts`, `cursorSlashCommandDiscovery.ts`. |
 | `droid` | Factory Droid models exposed as dynamic `droid/<modelId>` descriptors and driven through the official `@factory/droid-sdk` running in a forked Node worker pool. The adapter reports cumulative turn token usage, live context occupancy, provider-reported compaction, and Factory subscription account identity; mission-worker token usage is derived from the worker's bounded local settings file. The legacy ACP bridge (`droidAcpPool.ts`) has been retired. | `droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts`, `droidModelsDiscovery.ts`; model helpers in `modelRegistry.ts`. |
@@ -204,8 +204,8 @@ medium | high | xhigh | max`; both Sols and Terra expose `low | medium | high |
 xhigh | max | ultra`. Desktop, ADE Code, and iOS label those values Light,
 Medium, High, Extra High, Max, and (for the Sols/Terra) Ultra. Runtime app-server ladders retain
 their advertised order. `ultra` is the multi-agent tier and carries a usage
-warning. Codex 0.156.0 is the pinned app-server that advertises Astra; older
-PATH installs without Astra metadata cannot start it.
+warning. The pinned Codex app-server (0.156.1) advertises Astra; older PATH
+installs without Astra metadata cannot start it.
 
 On 0.156.0 a resumed thread reports its `collaborationMode`; ADE adopts that
 mode (plan or default) as the chat's interaction mode, so the plan toggle
@@ -1196,15 +1196,28 @@ Two consequences worth stating rather than discovering:
 
 The service never throws for a refused inline steer. `tryCursorInlineSteer`
 declines up front for attachments, per-message overrides, a cloud session, or a
-dead runtime, and otherwise asks the worker; only a `complete_delivered` outcome
-transfers ownership of the message to the turn (`CursorSdkSteerOutcome` in
+dead runtime (`declined`, no row emitted), and otherwise writes the user row as
+`accepted` and asks the worker. `Run.steer()` stays pending until the turn
+reads the message at its next model step, so the row is on screen for that
+wait instead of appearing only when it ends. Only a `complete_delivered`
+outcome moves the row to `inline` and transfers ownership of the message to
+the turn (`CursorSdkSteerOutcome` in
 `cursorSdkProtocol.ts` — `revert_to_followup` is the SDK's refusal and
 `unsupported` is ADE's diagnostics-only third value, treated identically). Every
-other outcome stages the row exactly as a queued send would have, emits one
-"couldn't go into the running turn" notice, and — because Cursor drains
-`pendingSteers` only at a turn boundary — runs `drainCursorQueueHeadIfIdle` so a
-row that landed after that boundary already passed is not left waiting for the
-user to send something else.
+other outcome (`refused`) moves the same row on: it stages the row exactly as a
+queued send would have (`queued`), sends it as its own turn when the runtime
+was recycled and nothing is running (`delivered`, same `steerId`, through
+`sendRefusedSteerAsOwnTurn`), or marks it `failed` when the session closed or
+the queue is full. It emits one "couldn't go into the running turn" notice,
+and — because Cursor drains `pendingSteers` only at a turn boundary — runs
+`drainCursorQueueHeadIfIdle` so a row that landed after that boundary already
+passed is not left waiting for the user to send something else. A drained
+Cursor or OpenCode row is sent with its `steerId`, as Claude's is, so it lands
+on its own row as `delivered` rather than as a second bubble. OpenCode and Pi
+write `accepted` before their admission round trip the same way, so every
+inline steer shares one lifecycle; a refused OpenCode steer is settled by the
+same three outcomes, and a Pi steer has no queue fallback, so a throw marks the
+row `failed`.
 
 #### Cursor turn telemetry
 

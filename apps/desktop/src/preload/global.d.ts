@@ -8,6 +8,8 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDetachArgs,
+  AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
   AppleFrameArgs,
@@ -28,6 +30,44 @@ import type {
   SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
 import type { LocalizedRemoteUrl } from "../shared/remoteLoopbackUrl";
+import type {
+  MacDesktopActionResult,
+  MacDesktopClaimArgs,
+  MacDesktopClickArgs,
+  MacDesktopDragArgs,
+  MacDesktopEventPayload,
+  MacDesktopGetStatusArgs,
+  MacDesktopInputResult,
+  MacDesktopLeaseState,
+  MacDesktopMoveArgs,
+  MacDesktopObservation,
+  MacDesktopObserveArgs,
+  MacDesktopOpenArgs,
+  MacDesktopOpenResult,
+  MacDesktopPermissions,
+  MacDesktopPressArgs,
+  MacDesktopPresentArgs,
+  MacDesktopRecordStartArgs,
+  MacDesktopRecordingStatus,
+  MacDesktopRecheckPermissionsArgs,
+  MacDesktopReleaseArgs,
+  MacDesktopRequestPermissionArgs,
+  MacDesktopScreenshotArgs,
+  MacDesktopScreenshotResult,
+  MacDesktopScrollArgs,
+  MacDesktopStartArgs,
+  MacDesktopStartStreamArgs,
+  MacDesktopStopStreamArgs,
+  MacDesktopStatus,
+  MacDesktopStopArgs,
+  MacDesktopStopResult,
+  MacDesktopStreamStatus,
+  MacDesktopTakeoverArgs,
+  MacDesktopTypeArgs,
+  MacDesktopWaitArgs,
+  MacDesktopWaitResult,
+  MacDesktopWindow,
+} from "../shared/types/macDesktop";
 import type {
   BuiltInBrowserRemoteRequest,
   BuiltInBrowserRemoteRequestAck,
@@ -401,6 +441,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -421,6 +463,7 @@ import type {
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
   AdeAccountMachinePairingRepairResult,
+  AdeAccountSyncHostStartResult,
   AdeAccountSessionRepairResult,
   AccountSettingRow,
   AccountSettingsResult,
@@ -899,6 +942,7 @@ import type {
   WorkToolsLaneState,
   WorkToolsObservationPreview,
 } from "../shared/types/workTools";
+import type { WorkToolShowAck, WorkToolShowRequest } from "../shared/types/workToolShow";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -943,6 +987,8 @@ declare global {
         packageChannel: AppPackageChannel;
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
+        /** Swallow this window's menu accelerators while a takeover drives. */
+        setIgnoreMenuShortcuts: (ignore: boolean) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
         getInstalledEditors: () => Promise<EditorTarget[]>;
         onRuntimeStatusChanged: (
@@ -2193,6 +2239,8 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ dataUrl: string }>;
         resolveSmartLinkPreview: (args: { url: string }) => Promise<SmartLinkPreview | null>;
+        /** Sources favicons as data URLs (null: the site has none), keyed by each domain as given. */
+        resolveSourceFavicons: (args: { domains: string[] }) => Promise<{ icons: Record<string, string | null> }>;
         getEventHistory: (
           args: {
             sessionId: string;
@@ -2318,6 +2366,8 @@ declare global {
           args: { uri: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<string | null>;
+        /** `http://127.0.0.1:<port>/<token>` for proof videos, or null when main has none. */
+        mediaBaseUrl: () => Promise<string | null>;
         onEvent: (
           cb: (ev: ComputerUseEventPayload) => void,
           pin?: OpenProjectBinding | null,
@@ -2448,6 +2498,15 @@ declare global {
         ) => Promise<AppleDeviceListResult>;
         deviceDelete: (
           args?: AppleDeviceDeleteArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        /** The lane gives up its device and the simulator stays installed. */
+        deviceDetach: (
+          args?: AppleDeviceDetachArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleLaneDevice | null>;
+        deviceDeleteInstalled: (
+          args: AppleDeviceDeleteInstalledArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         frame: (
@@ -2642,6 +2701,136 @@ declare global {
         ) => Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
         onEvent: (
           cb: (ev: IosSimulatorEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+      };
+      /**
+       * The lane's private macOS screen. Mirrors `iosSimulator`: every method
+       * takes an optional pin, because the display belongs to the lane's host
+       * rather than to this window.
+       */
+      macDesktop: {
+        getStatus: (
+          args?: MacDesktopGetStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
+        recheckPermissions: (
+          args?: MacDesktopRecheckPermissionsArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopPermissions>;
+        requestPermission: (
+          args: MacDesktopRequestPermissionArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopPermissions>;
+        start: (
+          args: MacDesktopStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStatus>;
+        stop: (
+          args: MacDesktopStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStopResult>;
+        listWindows: (
+          args?: { laneId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWindow[]>;
+        open: (
+          args: MacDesktopOpenArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopOpenResult>;
+        claimWindow: (
+          args: MacDesktopClaimArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWindow>;
+        releaseWindow: (
+          args: MacDesktopReleaseArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ released: number }>;
+        observe: (
+          args: MacDesktopObserveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopObservation>;
+        click: (
+          args: MacDesktopClickArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        type: (
+          args: MacDesktopTypeArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        press: (
+          args: MacDesktopPressArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        scroll: (
+          args: MacDesktopScrollArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        drag: (
+          args: MacDesktopDragArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopActionResult>;
+        move: (
+          args: MacDesktopMoveArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopInputResult>;
+        wait: (
+          args: MacDesktopWaitArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopWaitResult>;
+        screenshot: (
+          args: MacDesktopScreenshotArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopScreenshotResult>;
+        startRecording: (
+          args: MacDesktopRecordStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopRecordingStatus>;
+        stopRecording: (
+          args: { laneId: string; chatSessionId?: string | null },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopRecordingStatus>;
+        startStream: (
+          args: MacDesktopStartStreamArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStreamStatus>;
+        stopStream: (
+          args: MacDesktopStopStreamArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStreamStatus>;
+        getStreamStatus: (
+          args: { laneId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopStreamStatus>;
+        takeControl: (
+          args: MacDesktopTakeoverArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopLeaseState>;
+        returnControl: (
+          args: { laneId: string; controllerId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopLeaseState | null>;
+        renewLease: (
+          args: { laneId: string; holderId: string },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<MacDesktopLeaseState | null>;
+        present: (
+          args: MacDesktopPresentArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ moved: number }>;
+        resolveStreamUrl: (
+          streamUrl: string | null,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
+        /**
+         * Escape while a takeover holds THIS Mac, caught before the app that
+         * has the keyboard. No pin: the accelerator belongs to the Electron
+         * app the person is sitting at, never to the lane's host.
+         */
+        setEscapeHotkey: (args: { laneId: string; armed: boolean }) => Promise<{ armed: boolean }>;
+        onEscapeHotkey: (cb: () => void) => () => void;
+        onEvent: (
+          cb: (ev: MacDesktopEventPayload) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };
@@ -3287,6 +3476,10 @@ declare global {
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitUpstreamSyncStatus>;
+        getSyncStatuses: (
+          args: GitSyncStatusesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitSyncStatuses>;
         getOriginRemote: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
@@ -3491,6 +3684,8 @@ declare global {
         removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
         /** Re-pairs THIS machine after an account-side removal. */
         repairMachinePairing: () => Promise<AdeAccountMachinePairingRepairResult>;
+        /** Starts (or re-hosts) mobile sync on THIS machine. Optional: older preloads lack it. */
+        startSyncHost?: () => Promise<AdeAccountSyncHostStartResult>;
         /**
          * Repairs the stored sign-in on THIS Mac: converge the credential
          * file's key binding, restore anything set aside, then restart the
@@ -3760,6 +3955,16 @@ declare global {
         readObservationPreview: (
           observationPath: string,
         ) => Promise<WorkToolsObservationPreview | null>;
+        /** `ade ui show`: an agent asking this desktop to show a surface of its chat. */
+        onShowRequest: (
+          cb: (request: WorkToolShowRequest) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        /** Answer a show request on the runtime it came from. */
+        acknowledgeShow: (
+          ack: WorkToolShowAck,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: boolean }>;
       };
       tests: {
         listSuites: () => Promise<TestSuiteDefinition[]>;

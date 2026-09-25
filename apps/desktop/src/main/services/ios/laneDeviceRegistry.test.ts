@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
+import path from "node:path";
+import { bareSimulatorPowerOff, createSimulatorPower } from "./simulatorPower";
 import {
   appleDeviceDataRoot,
   appleDeviceFamily,
@@ -9,13 +11,19 @@ import {
   pickAppleTemplate,
   releaseLaneAppleDevice,
   type LaneDeviceStore,
+  AppleDeviceAttachedNotDeletableError,
+  type LaneDeviceRegistry,
 } from "./laneDeviceRegistry";
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
+  APPLE_DEVICE_OWNED_BY_LANE_CODE,
+  APPLE_TEMPLATE_BOOTED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
   type AppleInstalledSimulator,
 } from "../../../shared/types/iosSimulator";
+import { type AppleLaneDevice } from "../../../shared/types";
+import { createLaneDeviceLifecycle, type LifecycleLaneRuntime } from "./laneDeviceLifecycle";
 
 const noopLogger = {
   info: () => {},
@@ -121,6 +129,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
       store,
       registry: createLaneDeviceRegistry({
         run: run as never,
+        powerOffDevice: bareSimulatorPowerOff(run as never),
         listInstalledSimulators: async () => installed,
         store,
         logger: noopLogger,
@@ -151,6 +160,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
     const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
     const registry = createLaneDeviceRegistry({
       run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
       listInstalledSimulators: async () => [],
       store: memoryStore(),
       logger: noopLogger,
@@ -173,11 +183,26 @@ describe("laneDeviceRegistry device lifecycle", () => {
     await expect(registry.deviceDelete({ laneId: "lane-1" })).rejects.toMatchObject({
       code: APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
     });
-    // force DETACHES. It never runs `simctl delete` on a device ADE did not
-    // create — that is not a recoverable mistake.
-    await registry.deviceDelete({ laneId: "lane-1", force: true });
+    // Detaching is `deviceDetach`. Nothing here runs `simctl delete` on a
+    // device ADE did not create.
+    expect(store.rows["lane-1"]).toBeDefined();
+    await registry.deviceDetach({ laneId: "lane-1" });
     expect(store.rows["lane-1"]).toBeUndefined();
     expect(run).not.toHaveBeenCalled();
+  });
+
+  it("detaches a clone without deleting it or touching its power", async () => {
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
+    const { registry, store } = registryWith(run);
+    await registry.deviceCreate({ laneId: "lane-1" });
+    run.mockClear();
+
+    const detached = await registry.deviceDetach({ laneId: "lane-1" });
+
+    expect(detached).toMatchObject({ udid: "clone-udid", origin: "clone", laneId: "lane-1" });
+    expect(store.rows["lane-1"]).toBeUndefined();
+    expect(run).not.toHaveBeenCalled();
+    await expect(registry.deviceDetach({ laneId: "lane-1" })).resolves.toBeNull();
   });
 
   it("shuts a clone down before deleting it", async () => {
@@ -194,6 +219,117 @@ describe("laneDeviceRegistry device lifecycle", () => {
       ["simctl", "shutdown"],
       ["simctl", "delete"],
     ]);
+  });
+
+  type Registry = ReturnType<typeof registryWith>["registry"];
+  it.each([
+    ["cloned", (registry: Registry) => registry.deviceCreate({ laneId: "lane-1" })],
+    ["attached", (registry: Registry) => registry.deviceAttach({ laneId: "lane-1", simulator: "iPhone 17 Pro" })],
+  ] as const)(
+    "ignores a stale device ID when deleting a lane's %s device",
+    async (_label, giveLaneADevice) => {
+      const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
+      const { registry, store } = registryWith(run);
+      await giveLaneADevice(registry);
+      const before = store.rows["lane-1"] ? { ...store.rows["lane-1"] } : undefined;
+      run.mockClear();
+
+      await registry.deviceDelete({ laneId: "lane-1", udid: "some-older-clone" });
+
+      expect(run).not.toHaveBeenCalled();
+      expect(store.rows["lane-1"]).toEqual(before);
+      expect(before).toBeTruthy();
+    },
+  );
+
+  it("never picks a booted device as the clone template", async () => {
+    // `simctl clone` fails on a booted device with error 405, "Unable to clone
+    // device in current state: Booted". Nothing looked at state, so on a Mac
+    // whose newest iPhone was running, the automatic pick chose the one device
+    // that could not be cloned. An agent hit it as a raw simctl error from
+    // `open-device`.
+    const booted = simulator({ udid: "hot", name: "iPhone 17 Pro", state: "Booted" });
+    const stopped = simulator({ udid: "cold", name: "iPhone 17", state: "Shutdown" });
+
+    expect(pickAppleTemplate({ installed: [booted, stopped] })?.udid).toBe("cold");
+    // Even when the booted one is the project's last used template.
+    expect(pickAppleTemplate({ installed: [booted, stopped], lastUsedUdid: "hot" })?.udid).toBe("cold");
+    // A template named outright is still the caller's choice.
+    expect(pickAppleTemplate({ installed: [booted, stopped], from: "hot" })?.udid).toBe("hot");
+  });
+
+  it("names the booted template instead of letting simctl error 405 escape", async () => {
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
+    // Every installed simulator is booted, so there is no cloneable template.
+    const registry = createLaneDeviceRegistry({
+      run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
+      listInstalledSimulators: async () => [
+        simulator({ udid: "only", name: "iPhone 17 Pro", state: "Booted" }),
+      ],
+      store: memoryStore(),
+      logger: noopLogger,
+    });
+
+    await expect(registry.deviceCreate({ laneId: "lane-1" })).rejects.toMatchObject({
+      code: APPLE_TEMPLATE_BOOTED_CODE,
+    });
+    // Nothing was cloned, so nothing has to be cleaned up.
+    expect(run.mock.calls.some((call) => (call[1] as string[])?.[1] === "clone")).toBe(false);
+  });
+
+  it("a takeover ends EVERY stale binding, not just the first", async () => {
+    // On the owner's machine ADE Repro was bound to two lanes at once — a
+    // state this file is supposed to make impossible, from before the move was
+    // atomic. `rebind` moves one row, so a takeover moved one and left the
+    // other, and the duplicate survived the operation meant to end it.
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "", stderr: "" }));
+    const { registry, store } = registryWith(run);
+    store.rows["lane-a"] = {
+      lane_id: "lane-a",
+      udid: "template-1",
+      name: "Shared",
+      origin: "attached",
+      family: "iphone",
+      runtime: "iOS 26.3",
+      created_at: "2026-09-20T00:00:00.000Z",
+      template_udid: null,
+    };
+    store.rows["lane-b"] = { ...store.rows["lane-a"], lane_id: "lane-b" };
+
+    await registry.deviceAttach({ laneId: "lane-c", simulator: "template-1" });
+
+    expect(registry.list().filter((device) => device.udid === "template-1").map((d) => d.laneId))
+      .toEqual(["lane-c"]);
+    expect(store.rows["lane-a"]).toBeUndefined();
+    expect(store.rows["lane-b"]).toBeUndefined();
+  });
+
+  it("deletes an installed simulator no lane holds, shutting it down first", async () => {
+    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "", stderr: "" }));
+    const { registry } = registryWith(run);
+
+    await registry.deviceDeleteInstalled({ udid: "template-1" });
+
+    expect(run.mock.calls.map((call) => (call[1] as string[]).slice(0, 3))).toEqual([
+      ["simctl", "shutdown", "template-1"],
+      ["simctl", "delete", "template-1"],
+    ]);
+  });
+
+  it("refuses to delete a simulator a lane holds, and runs no simctl at all", async () => {
+    // The picker renders these as TAKEN with no menu, but the guard belongs
+    // here: a CLI caller and a stale renderer reach the same method, and the
+    // cost of getting it wrong is another lane's live view vanishing.
+    const run = vi.fn(async () => ({ stdout: "clone-udid\n", stderr: "" }));
+    const { registry } = registryWith(run);
+    const device = await registry.deviceCreate({ laneId: "lane-1" });
+    run.mockClear();
+
+    await expect(registry.deviceDeleteInstalled({ udid: device.udid })).rejects.toMatchObject({
+      code: APPLE_DEVICE_OWNED_BY_LANE_CODE,
+    });
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("creates on first ask and returns the same device after", async () => {
@@ -237,7 +373,7 @@ describe("releaseLaneAppleDevice", () => {
       });
 
       expect(result.deletedUdid).toBe("clone-udid");
-      expect(removed).toEqual(["/repo/.ade/artifacts/apple-recordings/lane-1"]);
+      expect(removed).toEqual([path.join("/repo", ".ade", "artifacts", "apple-recordings", "lane-1")]);
       expect(store.rows["lane-1"]).toBeUndefined();
     } finally {
       platformSpy.mockRestore();
@@ -311,6 +447,7 @@ describe("laneDeviceRegistry deviceList ownership and disk", () => {
       store,
       registry: createLaneDeviceRegistry({
         run: run as never,
+        powerOffDevice: bareSimulatorPowerOff(run as never),
         listInstalledSimulators: async () => installed,
         store,
         deviceDataRoot: "/devices",
@@ -460,6 +597,7 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
     const released: unknown[] = [];
     const registry = createLaneDeviceRegistry({
       run: (async () => ({ stdout: "", stderr: "" })) as never,
+      powerOffDevice: async () => true,
       listInstalledSimulators: async () => installed,
       store,
       logger: noopLogger,
@@ -559,6 +697,7 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
     const released: string[] = [];
     const registry = createLaneDeviceRegistry({
       run: (async () => ({ stdout: "", stderr: "" })) as never,
+      powerOffDevice: async () => true,
       listInstalledSimulators: async () => installed,
       logger: noopLogger,
       releaseLaneDevice: (device) => { released.push(device.laneId); },
@@ -571,5 +710,296 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
     expect(registry.get("lane-b")?.udid).toBe("repro");
     expect(registry.list()).toHaveLength(1);
     expect(released).toEqual(["lane-a"]);
+  });
+});
+
+describe("simulator power", () => {
+  /** Every step in the order it ran, as one readable line each. */
+  function harness(options: { bootError?: string; shutdownError?: string } = {}) {
+    const steps: string[] = [];
+    const power = createSimulatorPower({
+      run: async (file, args) => {
+        steps.push(`${file} ${args.join(" ")}`);
+        if (args[1] === "boot" && options.bootError) throw new Error(options.bootError);
+        if (args[1] === "shutdown" && options.shutdownError) throw new Error(options.shutdownError);
+        return { stdout: "", stderr: "" };
+      },
+      waitForBootStatus: async (device) => {
+        steps.push(`bootstatus ${device.udid}`);
+      },
+      invalidateDeviceList: () => {
+        steps.push("invalidate");
+      },
+      resetHelperDevice: async (udid, reason) => {
+        steps.push(`reset ${udid} ${reason}`);
+      },
+      stopDeviceRecording: async (udid, reason) => {
+        steps.push(`stop-recording ${udid} ${reason}`);
+      },
+    });
+    return { power, steps };
+  }
+
+  const device = { udid: "D1", name: "iPhone 17", state: "Shutdown" };
+
+  describe("simulatorPower", () => {
+    it("boots, waits for bootstatus, then drops the device list and the helper session", async () => {
+      const { power, steps } = harness();
+
+      await expect(power.bootDevice(device)).resolves.toBe(true);
+
+      expect(steps).toEqual(["xcrun simctl boot D1", "bootstatus D1", "invalidate", "reset D1 boot"]);
+    });
+
+    it("only waits for a device that is already booted, and keeps its helper session", async () => {
+      const { power, steps } = harness();
+
+      await expect(power.bootDevice({ ...device, state: "Booted" })).resolves.toBe(false);
+
+      expect(steps).toEqual(["bootstatus D1"]);
+    });
+
+    it("treats simctl's already-booted refusal as a device someone else booted", async () => {
+      const { power, steps } = harness({ bootError: "Unable to boot device in current state: Booted" });
+
+      await expect(power.bootDevice(device)).resolves.toBe(false);
+
+      expect(steps).toEqual(["xcrun simctl boot D1", "bootstatus D1"]);
+    });
+
+    it("stops the recording and resets the helper before it powers off, then drops the device list", async () => {
+      const { power, steps } = harness();
+
+      await expect(power.powerOffDevice("D1", "hub-power")).resolves.toBe(true);
+
+      expect(steps).toEqual([
+        "stop-recording D1 device-off",
+        "reset D1 hub-power",
+        "xcrun simctl shutdown D1",
+        "invalidate",
+      ]);
+    });
+
+    it("answers false for a device that is already off, and throws any other failure", async () => {
+      const off = harness({ shutdownError: "Unable to shutdown device in current state: Shutdown" });
+      await expect(off.power.powerOffDevice("D1", "power-off")).resolves.toBe(false);
+
+      const broken = harness({ shutdownError: "CoreSimulator is not responding" });
+      await expect(broken.power.powerOffDevice("D1", "power-off")).rejects.toThrow(/not responding/);
+      // The cached list is dropped either way.
+      expect(broken.steps.at(-1)).toBe("invalidate");
+    });
+  });
+});
+
+describe("lane device lifecycle", () => {
+  const device: AppleLaneDevice = {
+    laneId: "lane-b",
+    udid: "device-clone",
+    name: "ADE · lane-b",
+    origin: "clone",
+    family: "iphone",
+    runtime: "iOS 26.3",
+    createdAt: "2026-09-23T00:00:00.000Z",
+    templateUdid: "device-2",
+  };
+
+  function setup(initialOwner: string | null) {
+    let owner = initialOwner;
+    let bound: AppleLaneDevice | null = device;
+    // The service's queue: one step at a time per lane.
+    let queue: Promise<unknown> = Promise.resolve();
+    const serializeDeviceLifecycle = <T>(_runtime: unknown, step: () => Promise<T>): Promise<T> => {
+      const next = queue.then(step, step);
+      queue = next.then(() => undefined, () => undefined);
+      return next;
+    };
+    const runtime: LifecycleLaneRuntime = {
+      key: "lane-b",
+      laneId: "lane-b",
+      streamStatus: { running: true, deviceUdid: device.udid },
+      hub: null,
+    };
+    const laneDevices = {
+      get: () => bound,
+      list: () => (bound ? [bound] : []),
+      deviceDetach: vi.fn(async () => {
+        const detached = bound;
+        bound = null;
+        return detached;
+      }),
+      deviceDelete: vi.fn(async () => {}),
+      deviceDeleteInstalled: vi.fn(async () => {}),
+    } as unknown as LaneDeviceRegistry;
+    const shutdown = vi.fn(async () => ({ released: true, previousSession: null }));
+    const emit = vi.fn();
+    const lifecycle = createLaneDeviceLifecycle({
+      laneDevices,
+      runtimeForLane: () => runtime,
+      allRuntimes: () => [runtime],
+      resolveRuntime: () => runtime,
+      requireLaneScope: () => runtime,
+      serializeDeviceLifecycle,
+      assertDarwin: () => {},
+      // The service's rule, as `shutdown` applies it.
+      assertSessionOwner: (_runtime, caller) => {
+        if (owner && owner !== (caller.chatSessionId ?? null) && !caller.force && !caller.ignoreOwnership) {
+          throw new Error("IOS_SIMULATOR_OWNED_BY_OTHER_SESSION: owned by another chat");
+        }
+      },
+      shutdown,
+      stopRuntimeStream: vi.fn(async () => {}),
+      stopDeviceRecording: vi.fn(async () => {}),
+      invalidateStatus: vi.fn(),
+      invalidateDeviceList: vi.fn(),
+      emit,
+      logger: { info: vi.fn(), debug: vi.fn() },
+    });
+    return {
+      lifecycle,
+      laneDevices,
+      shutdown,
+      emit,
+      serializeDeviceLifecycle,
+      bound: () => bound,
+      setBound: (next: AppleLaneDevice | null) => { bound = next; },
+      setOwner: (next: string | null) => { owner = next; },
+    };
+  }
+
+  describe("laneDeviceLifecycle", () => {
+    it("deviceDetach refuses a device another chat is driving, as deviceStop does", async () => {
+      const { lifecycle, laneDevices, shutdown, bound } = setup("chat-owner");
+
+      await expect(lifecycle.deviceDetach({ laneId: "lane-b", chatSessionId: "chat-other" }))
+        .rejects.toThrow(/IOS_SIMULATOR_OWNED_BY_OTHER_SESSION/);
+      // Refused before anything changed.
+      expect(laneDevices.deviceDetach).not.toHaveBeenCalled();
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(bound()).toBe(device);
+
+      await expect(lifecycle.deviceDetach({ laneId: "lane-b", chatSessionId: "chat-owner" }))
+        .resolves.toMatchObject({ udid: "device-clone" });
+    });
+
+    it("detaches for the pane that ignores ownership, and releases the lane's hold", async () => {
+      const { lifecycle, shutdown, emit } = setup("chat-owner");
+      await expect(lifecycle.deviceDetach({ laneId: "lane-b", ignoreOwnership: true }))
+        .resolves.toMatchObject({ udid: "device-clone" });
+      expect(shutdown).toHaveBeenCalledWith({ laneId: "lane-b", ignoreOwnership: true });
+      expect(emit).toHaveBeenCalledWith(expect.objectContaining({ type: "apple.device.state", phase: "released" }));
+    });
+
+    it("a forced delete of an attached device detaches it and deletes nothing", async () => {
+      const { lifecycle, laneDevices } = setup("chat-owner");
+      const attached = { ...device, origin: "attached" as const };
+      (laneDevices as unknown as { get: () => AppleLaneDevice }).get = () => attached;
+      (laneDevices.deviceDetach as ReturnType<typeof vi.fn>).mockResolvedValueOnce(attached);
+
+      await lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-owner", force: true });
+
+      expect(laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b" });
+      expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+    });
+
+    it("a forced deviceDelete from another chat cannot detach or delete the owner's device", async () => {
+      const attachedCase = setup("chat-a");
+      const attached = { ...device, origin: "attached" as const };
+      (attachedCase.laneDevices as unknown as { get: () => AppleLaneDevice }).get = () => attached;
+
+      await expect(attachedCase.lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-b", force: true }))
+        .rejects.toThrow(/IOS_SIMULATOR_OWNED_BY_OTHER_SESSION/);
+      expect(attachedCase.laneDevices.deviceDetach).not.toHaveBeenCalled();
+      expect(attachedCase.shutdown).not.toHaveBeenCalled();
+
+      const cloneCase = setup("chat-a");
+      await expect(cloneCase.lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-b", force: true }))
+        .rejects.toThrow(/IOS_SIMULATOR_OWNED_BY_OTHER_SESSION/);
+      expect(cloneCase.laneDevices.deviceDelete).not.toHaveBeenCalled();
+      expect(cloneCase.shutdown).not.toHaveBeenCalled();
+      expect(cloneCase.bound()).toBe(device);
+
+      // The Work pane deletes for whoever is running.
+      await cloneCase.lifecycle.deviceDelete({ laneId: "lane-b", ignoreOwnership: true });
+      expect(cloneCase.laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b", udid: "device-clone" });
+    });
+
+    it("a delete queued behind another chat's start is refused once that chat claims the session", async () => {
+      const { lifecycle, laneDevices, shutdown, serializeDeviceLifecycle, setOwner, bound } = setup(null);
+      let claimed = () => {};
+      const claim = new Promise<void>((resolve) => { claimed = resolve; });
+      // Chat A's start, in flight: it claims the session when it finishes.
+      const start = serializeDeviceLifecycle(null, async () => {
+        await claim;
+        setOwner("chat-a");
+      });
+
+      // No owner yet, so the up-front check passes and the delete waits its turn.
+      const deleted = lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-b" });
+      claimed();
+      await start;
+
+      await expect(deleted).rejects.toThrow(/IOS_SIMULATOR_OWNED_BY_OTHER_SESSION/);
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+      expect(bound()).toBe(device);
+    });
+
+    it("an unforced delete of an attached device is refused before the stream stops", async () => {
+      const { lifecycle, laneDevices, shutdown, setBound } = setup("chat-owner");
+      const attached = { ...device, origin: "attached" as const };
+      setBound(attached);
+
+      await expect(lifecycle.deviceDelete({ laneId: "lane-b", chatSessionId: "chat-owner" }))
+        .rejects.toBeInstanceOf(AppleDeviceAttachedNotDeletableError);
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(laneDevices.deviceDetach).not.toHaveBeenCalled();
+      expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+    });
+
+    it("a delete reads the lane's device once, in the queue, after a start in flight has changed it", async () => {
+      const attached = { ...device, origin: "attached" as const };
+
+      // Forced: the device the start left behind is attached, so it is detached, not deleted.
+      const forced = setup(null);
+      forced.setBound(null);
+      const forcedStart = forced.serializeDeviceLifecycle(null, async () => { forced.setBound(attached); });
+      await forced.lifecycle.deviceDelete({ laneId: "lane-b", force: true });
+      await forcedStart;
+      expect(forced.laneDevices.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-b" });
+      expect(forced.laneDevices.deviceDelete).not.toHaveBeenCalled();
+
+      // Unforced: refused, and the stream the start opened keeps running.
+      const unforced = setup(null);
+      unforced.setBound(null);
+      const unforcedStart = unforced.serializeDeviceLifecycle(null, async () => { unforced.setBound(attached); });
+      await expect(unforced.lifecycle.deviceDelete({ laneId: "lane-b" }))
+        .rejects.toBeInstanceOf(AppleDeviceAttachedNotDeletableError);
+      await unforcedStart;
+      expect(unforced.shutdown).not.toHaveBeenCalled();
+      expect(unforced.laneDevices.deviceDetach).not.toHaveBeenCalled();
+      expect(unforced.laneDevices.deviceDelete).not.toHaveBeenCalled();
+    });
+
+    it("a delete on a lane with no device does nothing: no shutdown, no registry call", async () => {
+      const { lifecycle, laneDevices, shutdown, emit, setBound } = setup(null);
+      setBound(null);
+      await lifecycle.deviceDelete({ laneId: "lane-b", force: true });
+      expect(shutdown).not.toHaveBeenCalled();
+      expect(laneDevices.deviceDetach).not.toHaveBeenCalled();
+      expect(laneDevices.deviceDelete).not.toHaveBeenCalled();
+      expect(emit).not.toHaveBeenCalled();
+    });
+
+    it("deletes a clone: the stream stops first, then the registry deletes and the lane hears released", async () => {
+      const { lifecycle, laneDevices, shutdown, emit } = setup(null);
+      await lifecycle.deviceDelete({ laneId: "lane-b" });
+      expect(shutdown).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-b", ignoreOwnership: true }));
+      expect(laneDevices.deviceDelete).toHaveBeenCalledWith({ laneId: "lane-b", udid: "device-clone" });
+      expect(shutdown.mock.invocationCallOrder[0]).toBeLessThan(
+        (laneDevices.deviceDelete as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0],
+      );
+      expect(emit).toHaveBeenCalledWith({ type: "apple.device.state", laneId: "lane-b", udid: "device-clone", phase: "released" });
+    });
   });
 });

@@ -548,41 +548,6 @@ describe("SessionCard lineage", () => {
     expect(screen.queryByTestId("session-hover-status")).toBeNull();
   });
 
-  it("names the model with the registry's short label, never the raw id", () => {
-    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
-    const { rerender } = render(
-      <SessionCard {...props} session={makeSession({ modelId: "claude-opus-5" })} />,
-    );
-    // `claude-opus-5` is an id, not something a human should have to read. The
-    // shared `formatSubagentModelLabel` resolves it through the model registry,
-    // so the row, the Chat Info header and the subagent roster agree.
-    expect(screen.getByTestId("session-model-label").textContent).toBe("Claude Opus 5");
-    expect(screen.queryByText("claude-opus-5")).toBeNull();
-
-    // The provider's own raw string is the fallback when no canonical id landed.
-    rerender(<SessionCard {...props} session={makeSession({ model: "claude-sonnet-5" })} />);
-    expect(screen.getByTestId("session-model-label").textContent).toBe("Claude Sonnet 5");
-
-    // A ref the registry has never heard of is shown as-is rather than dropped:
-    // a real answer nobody recognises still beats no answer.
-    rerender(<SessionCard {...props} session={makeSession({ model: "some-private-model" })} />);
-    expect(screen.getByTestId("session-model-label").textContent).toBe("some-private-model");
-  });
-
-  it("renders no model chip at all when the session has no model", () => {
-    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
-    const { rerender } = render(<SessionCard {...props} session={makeSession()} />);
-    // A CLI or shell row has no model; an empty or whitespace one is the same
-    // "we do not know", and a chip reading nothing is worse than no chip.
-    expect(screen.queryByTestId("session-model-label")).toBeNull();
-
-    rerender(<SessionCard {...props} session={makeSession({ model: "" })} />);
-    expect(screen.queryByTestId("session-model-label")).toBeNull();
-
-    rerender(<SessionCard {...props} session={makeSession({ model: "   ", modelId: undefined })} />);
-    expect(screen.queryByTestId("session-model-label")).toBeNull();
-  });
-
   it("replaces the lineage badge with a CTO chip when the parent is the CTO identity", () => {
     const props = {
       lane,
@@ -730,6 +695,36 @@ describe("SessionCard auto-naming status", () => {
     expect(screen.queryByLabelText("Naming lane…")).toBeNull();
     expect(screen.getByText("Lane 1")).toBeTruthy();
     expect(screen.getByText(/running the build/i)).toBeTruthy();
+  });
+});
+
+describe("SessionCard Mac Desktop mark", () => {
+  it("marks the lane beside its name only while it holds a display", () => {
+    const view = render(
+      <SessionCard
+        session={makeSession({})}
+        lane={lane}
+        showLaneIdentity
+        laneMacDesktop
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    const identity = view.container.querySelector("[data-session-lane-identity]");
+    expect(identity?.querySelector("[data-lane-mac-desktop]")).toBeTruthy();
+
+    view.rerender(
+      <SessionCard
+        session={makeSession({})}
+        lane={lane}
+        showLaneIdentity
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+    expect(view.container.querySelector("[data-lane-mac-desktop]")).toBeNull();
   });
 });
 

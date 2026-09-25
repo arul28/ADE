@@ -11,6 +11,8 @@ import {
   RECOVERY_ACK_STORAGE_KEY,
   shouldShowRecoveryNotice,
 } from "./BrainRecoveryNotice";
+import { AppBannerHost } from "../ui/notice";
+import { resetAppBannersForTests } from "../ui/notice/appBannerStore";
 
 const wedge = (ts: string, lastCommand = "npm run build") => ({
   ts,
@@ -20,6 +22,7 @@ const wedge = (ts: string, lastCommand = "npm run build") => ({
 
 afterEach(() => {
   cleanup();
+  resetAppBannersForTests();
   window.localStorage.removeItem(RECOVERY_ACK_STORAGE_KEY);
   Reflect.deleteProperty(window, "ade");
 });
@@ -48,7 +51,7 @@ describe("BrainRecoveryNotice lifecycle", () => {
       },
     });
 
-    render(React.createElement(BrainRecoveryNotice));
+    render(React.createElement(React.Fragment, null, React.createElement(BrainRecoveryNotice), React.createElement(AppBannerHost)));
     await waitFor(() => expect(order).toEqual(["subscribe", "read"]));
 
     act(() => {
@@ -63,6 +66,32 @@ describe("BrainRecoveryNotice lifecycle", () => {
       await Promise.resolve();
     });
     expect(screen.getByText(/chat\.send/)).toBeTruthy();
+  });
+});
+
+describe("BrainRecoveryNotice banner", () => {
+  it("renders as a docked app banner and remembers the acknowledged wedge on dismiss", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        app: {
+          onRuntimeStatusChanged: () => () => {},
+          getInfo: async () => ({ localRuntime: { lastWedge: wedge("2026-07-23T11:00:00Z", "git.status") } }),
+        },
+      },
+    });
+
+    render(React.createElement(React.Fragment, null, React.createElement(BrainRecoveryNotice), React.createElement(AppBannerHost)));
+
+    expect(await screen.findByText(/git\.status/)).toBeTruthy();
+    expect(screen.getByTestId("app-banner-dock").textContent).toContain("git.status");
+
+    act(() => {
+      screen.getByRole("button", { name: /^Dismiss/ }).click();
+    });
+
+    expect(screen.queryByText(/git\.status/)).toBeNull();
+    expect(window.localStorage.getItem(RECOVERY_ACK_STORAGE_KEY)).toBe("2026-07-23T11:00:00Z");
   });
 });
 

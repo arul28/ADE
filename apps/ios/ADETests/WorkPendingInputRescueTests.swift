@@ -168,7 +168,9 @@ final class WorkPendingInputRescueTests: XCTestCase {
           itemId: "call_abc",
           parentItemId: nil,
           turnId: "t-1",
-          status: .completed
+          status: .completed,
+          sources: nil,
+          sourceRefsOmittedForMobile: nil
         )
       ),
     ]

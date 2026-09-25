@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   ADE_ACTION_ALLOWLIST,
+  createAutomationAdeActionLookup,
   getAdeActionInputContract,
   getAdeActionDomainServices,
   getTurnFileDiffFromGit,
@@ -44,6 +45,9 @@ describe("work_tools runtime action domain", () => {
     expect(isAllowedAdeAction("work_tools", "getLaneState")).toBe(true);
     expect(isAllowedAdeAction("work_tools", "setActiveTool")).toBe(true);
     expect(isAllowedAdeAction("work_tools", "readObservationPreview")).toBe(true);
+    // `ade ui show` and the desktop's answer to it.
+    expect(isAllowedAdeAction("work_tools", "show")).toBe(true);
+    expect(isAllowedAdeAction("work_tools", "acknowledgeShow")).toBe(true);
     // The pane itself is never driven through this domain — the browser and
     // App Control keep their own allowlists for that.
     expect(isAllowedAdeAction("work_tools", "click")).toBe(false);
@@ -69,6 +73,23 @@ describe("work_tools runtime action domain", () => {
   });
 });
 
+
+describe("the automation action lookup", () => {
+  it("an automation's action list hides every verb it would refuse", () => {
+    const lookup = createAutomationAdeActionLookup(() => ({}));
+    const apple = lookup.listActions("ios_simulator");
+    // The user-only verb is in the domain allowlist, but an automation is not a
+    // desktop client, so listing it would offer an action that always fails.
+    expect(ADE_ACTION_ALLOWLIST.ios_simulator).toContain("deviceDeleteInstalled");
+    expect(apple).not.toContain("deviceDeleteInstalled");
+    expect(apple).toContain("deviceDelete");
+    for (const domain of lookup.listDomains()) {
+      for (const action of lookup.listActions(domain)) {
+        expect(lookup.isAllowed(domain, action), `${domain}.${action}`).toBe(true);
+      }
+    }
+  });
+});
 
 describe("machine-scoped API keys on the ai domain", () => {
   it("exposes the machine key trio, so the renderer can write the store the RUNTIME reads", () => {
@@ -3200,7 +3221,7 @@ describe("getTurnFileDiffFromGit", () => {
   // The bug: an uncommitted turn reports the same sha on both sides, so both
   // sides were read from the same commit and every listed file opened as a
   // diff of a file against itself.
-  it("regression: reads the modified side from the working tree when the turn never committed", async () => {
+  it("reads the modified side from the working tree when the turn never committed", async () => {
     const repo = await makeRepo();
     const head = await headSha(repo);
     fs.writeFileSync(path.join(repo, "app.ts"), "uncommitted edit\n", "utf8");

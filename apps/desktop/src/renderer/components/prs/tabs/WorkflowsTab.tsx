@@ -25,6 +25,7 @@ import { IntegrationTab } from "./IntegrationTab";
 import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { filterRebaseAttentionStatuses } from "../shared/rebaseAttentionUtils";
 import { usePrs } from "../state/PrsContext";
+import { PRS_LIST_ROOT_CLASS, PrsListHostProvider, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import {
   getActiveRebaseNeeds,
   getRebaseHistoryOperations,
@@ -197,6 +198,7 @@ function IntegrationWorkflowsTab({
   onRefresh: () => Promise<void>;
   onOpenGitHubTab: (prId: string) => void;
 }) {
+  const listHost = usePrsListHost();
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane])), [lanes]);
   const prById = React.useMemo(() => new Map(prs.map((pr) => [pr.id, pr] as const)), [prs]);
 
@@ -269,6 +271,14 @@ function IntegrationWorkflowsTab({
     }
   }, [archiveIntegrationLane, archiveSourceLaneIds, onRefresh, selectedWorkflow]);
 
+  if (!workflows.length && listHost !== undefined) {
+    return (
+      <PrsListPortal>
+        <PrsQuietLine>{view === "active" ? "No active integration workflows" : "No integration history"}</PrsQuietLine>
+      </PrsListPortal>
+    );
+  }
+
   if (!workflows.length) {
     return (
       <EmptyState
@@ -293,9 +303,8 @@ function IntegrationWorkflowsTab({
     return 1;
   };
 
-  return (
-    <div style={{ display: "flex", minHeight: 0, height: "100%" }}>
-      <div style={{ width: 340, borderRight: `1px solid ${theme.border}`, overflow: "auto", flexShrink: 0 }}>
+  const workflowList = (
+        <>
         {workflows.map((workflow) => {
           const selected = workflow.proposalId === selectedWorkflowId;
           const oc = outcomeColor(workflow.overallOutcome);
@@ -343,11 +352,15 @@ function IntegrationWorkflowsTab({
             </button>
           );
         })}
-      </div>
+        </>
+  );
 
-      <div style={{ flex: 1, minWidth: 0, overflow: "auto", padding: 20 }}>
+  const workflowDetail = (
+      <div style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: "auto", padding: 20 }}>
         {!selectedWorkflow ? (
-          <EmptyState title="No workflow selected" description="Choose an integration workflow to inspect its stages." />
+          listHost !== undefined
+            ? <PrsQuietLine>Select a workflow</PrsQuietLine>
+            : <EmptyState title="No workflow selected" description="Choose an integration workflow to inspect its stages." />
         ) : (
           <div style={{ display: "grid", gap: 16 }}>
             {actionError ? (
@@ -520,6 +533,27 @@ function IntegrationWorkflowsTab({
           </div>
         )}
       </div>
+  );
+
+  if (listHost !== undefined) {
+    return (
+      <>
+        <PrsListPortal>
+          <div className={PRS_LIST_ROOT_CLASS}>
+            <div className="min-h-0 flex-1 overflow-auto">{workflowList}</div>
+          </div>
+        </PrsListPortal>
+        {workflowDetail}
+      </>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", minHeight: 0, height: "100%" }}>
+      <div style={{ width: 340, borderRight: `1px solid ${theme.border}`, overflow: "auto", flexShrink: 0 }}>
+        {workflowList}
+      </div>
+      {workflowDetail}
     </div>
   );
 }
@@ -551,6 +585,8 @@ export function WorkflowsTab({
   } = usePrs();
 
   const navigate = useNavigate();
+  const listHost = usePrsListHost();
+  const [subListHost, setSubListHost] = React.useState<HTMLElement | null>(null);
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const cacheKey = workflowsCacheKey(projectRoot);
   const warmCache = !WORKFLOWS_CACHE_DISABLED ? workflowsWarmCacheByProject.get(cacheKey) ?? null : null;
@@ -688,122 +724,124 @@ export function WorkflowsTab({
       : rebaseByView.active.length + rebaseAttentionByView.active.length,
   };
 
-  const activeTheme = CATEGORY_THEMES[activeCategory];
   const error = workflowError ?? rebaseHistoryError;
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 16px", borderBottom: `1px solid ${activeTheme.border}` }}>
-        {/* Active / History toggle - pill style */}
-        <div style={{ display: "flex", alignItems: "center", borderRadius: 10, background: "rgba(255,255,255,0.04)", padding: 2, border: "1px solid rgba(255,255,255,0.06)" }}>
+  // List controls: Active/History and refresh, then the two workflow kinds.
+  const toolbar = (
+    <div style={{ flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "0 10px 6px" }}>
+        <div style={{ display: "flex", flex: 1, minWidth: 0, alignItems: "center", gap: 2, borderRadius: 8, background: "rgba(255,255,255,0.03)", padding: 2, border: "1px solid rgba(255,255,255,0.05)" }}>
           {(["active", "history"] as WorkflowView[]).map((mode) => {
             const selected = view === mode;
+            const Icon = mode === "active" ? CheckCircle : Clock;
             return (
               <button
                 key={mode}
                 type="button"
+                aria-pressed={selected}
                 onClick={() => setView(mode)}
                 style={{
                   display: "inline-flex",
+                  flex: 1,
+                  minWidth: 0,
                   alignItems: "center",
                   justifyContent: "center",
-                  height: 28,
-                  padding: "0 14px",
-                  fontSize: 12,
+                  gap: 5,
+                  height: 22,
+                  padding: "0 8px",
+                  fontSize: 11.5,
                   fontWeight: selected ? 600 : 500,
                   fontFamily: SANS_FONT,
                   color: selected ? COLORS.textPrimary : COLORS.textMuted,
-                  background: selected ? "rgba(255,255,255,0.10)" : "transparent",
+                  background: selected ? "rgba(255,255,255,0.08)" : "transparent",
                   border: "none",
-                  borderRadius: 8,
+                  borderRadius: 6,
                   cursor: "pointer",
                   transition: "all 150ms ease",
-                  textTransform: "capitalize" as const,
+                  textTransform: "capitalize",
                 }}
               >
-                {mode === "active" ? <><CheckCircle size={13} weight={selected ? "fill" : "regular"} style={{ marginRight: 5 }} />{mode}</> : <><Clock size={13} weight={selected ? "fill" : "regular"} style={{ marginRight: 5 }} />{mode}</>}
+                <Icon size={12} weight={selected ? "fill" : "regular"} />
+                {mode}
               </button>
             );
           })}
         </div>
-
-        {/* Divider */}
-        <div style={{ width: 1, height: 20, background: "rgba(255,255,255,0.08)" }} />
-
-        {/* Category buttons with individual color themes */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {([
-            { id: "integration" as WorkflowCategory, label: "Integration", icon: GitBranch },
-            { id: "rebase" as WorkflowCategory, label: "Rebase/Merge", icon: Sparkle },
-          ]).map((category) => {
-            const selected = activeCategory === category.id;
-            const catTheme = CATEGORY_THEMES[category.id];
-            const Icon = category.icon;
-            const count = counts[category.id];
-            return (
-              <button
-                key={category.id}
-                type="button"
-                onClick={() => onChangeCategory(category.id)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  height: 30,
-                  padding: "0 12px",
-                  fontSize: 12,
-                  fontWeight: selected ? 600 : 500,
-                  fontFamily: SANS_FONT,
-                  color: selected ? catTheme.color : COLORS.textMuted,
-                  background: selected ? catTheme.bg : "transparent",
-                  border: `1px solid ${selected ? catTheme.border : "rgba(255,255,255,0.06)"}`,
-                  borderRadius: 8,
-                  cursor: "pointer",
-                  transition: "all 150ms ease",
-                }}
-              >
-                <Icon size={14} weight={selected ? "fill" : "regular"} /> {category.label}
-                {count > 0 ? (
-                  <span style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    minWidth: 18,
-                    height: 18,
-                    padding: "0 5px",
-                    fontSize: 10,
-                    fontWeight: 700,
-                    fontFamily: MONO_FONT,
-                    color: selected ? "#fff" : COLORS.textMuted,
-                    background: selected ? catTheme.color : "rgba(255,255,255,0.08)",
-                    borderRadius: 9,
-                  }}>
-                    {count}
-                  </span>
-                ) : null}
-              </button>
-            );
-          })}
-        </div>
-
-        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: loading ? activeTheme.color : COLORS.textMuted }}>
-            {loading ? "Refreshing..." : "Workflows"}
-          </div>
-          <button type="button" onClick={() => void refreshWorkflows()} style={outlineButton({ height: 28, padding: "0 10px", borderColor: activeTheme.border, color: activeTheme.color })}>
-            <ArrowsClockwise size={14} /> Refresh
-          </button>
-        </div>
+        <button
+          type="button"
+          aria-label="Refresh workflows"
+          title="Refresh"
+          onClick={() => void refreshWorkflows()}
+          className="hover:bg-white/[0.06]"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 28,
+            height: 28,
+            flexShrink: 0,
+            borderRadius: 8,
+            border: "none",
+            background: "transparent",
+            color: loading ? COLORS.accent : COLORS.textMuted,
+            cursor: "pointer",
+          }}
+        >
+          <ArrowsClockwise size={13} className={loading ? "animate-spin" : ""} />
+        </button>
       </div>
-
+      <div style={{ display: "flex", alignItems: "center", padding: "0 6px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
+        {([
+          { id: "integration" as WorkflowCategory, label: "Integration", icon: GitBranch },
+          { id: "rebase" as WorkflowCategory, label: "Rebase/Merge", icon: Sparkle },
+        ]).map((category) => {
+          const selected = activeCategory === category.id;
+          const catTheme = CATEGORY_THEMES[category.id];
+          const Icon = category.icon;
+          const count = counts[category.id];
+          return (
+            <button
+              key={category.id}
+              type="button"
+              aria-pressed={selected}
+              onClick={() => onChangeCategory(category.id)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                height: 32,
+                padding: "0 8px",
+                fontSize: 12,
+                fontWeight: selected ? 600 : 400,
+                fontFamily: SANS_FONT,
+                color: selected ? catTheme.color : COLORS.textMuted,
+                background: "transparent",
+                border: "none",
+                borderBottom: `2px solid ${selected ? catTheme.color : "transparent"}`,
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+                transition: "all 150ms ease",
+              }}
+            >
+              <Icon size={12} weight={selected ? "fill" : "regular"} />
+              {category.label}
+              <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, opacity: selected ? 0.8 : 0.6, color: selected ? catTheme.color : COLORS.textDim }}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
       {error ? (
-        <div style={{ padding: "10px 16px", borderBottom: "1px solid rgba(239,68,68,0.2)", background: "rgba(239,68,68,0.06)", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12 }}>
+        <div style={{ padding: "8px 12px", borderBottom: "1px solid rgba(255,255,255,0.06)", color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.4, overflowWrap: "anywhere" }}>
           {error}
         </div>
       ) : null}
+    </div>
+  );
 
-      <div style={{ flex: 1, minHeight: 0 }}>
+  const content = (
+      <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
         {activeCategory === "integration" ? (
           view === "active" ? (
             <IntegrationTab
@@ -848,10 +886,42 @@ export function WorkflowsTab({
               onRefresh={refreshWorkflows}
             />
           ) : (
-            <RebaseHistoryPanel operations={rebaseHistoryOperations} loading={rebaseHistoryLoading} />
+            listHost !== undefined && !rebaseHistoryLoading && rebaseHistoryOperations.length === 0 ? (
+              // History has no selection, so it stays in the main area. The
+              // list column only says when there is none.
+              <PrsListPortal>
+                <PrsQuietLine>No rebase history</PrsQuietLine>
+              </PrsListPortal>
+            ) : (
+              <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+                <RebaseHistoryPanel operations={rebaseHistoryOperations} loading={rebaseHistoryLoading} />
+              </div>
+            )
           )
         ) : null}
       </div>
+  );
+
+  // Inside the PRs page the controls and the sub-tab's list go to the list
+  // column; the sub-tab portals its list into `subListHost` below the controls.
+  if (listHost !== undefined) {
+    return (
+      <>
+        <PrsListPortal>
+          <div className={PRS_LIST_ROOT_CLASS}>
+            {toolbar}
+            <div ref={setSubListHost} className={PRS_LIST_ROOT_CLASS} />
+          </div>
+        </PrsListPortal>
+        <PrsListHostProvider host={subListHost}>{content}</PrsListHostProvider>
+      </>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+      {toolbar}
+      {content}
     </div>
   );
 }

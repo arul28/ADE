@@ -15,6 +15,9 @@ filtering before exposing the final list.
 | `apps/ade-cli/src/bootstrap.ts` | Builds per-project `AdeRuntime` scopes for the machine runtime, SSH stdio runtime, and explicit headless CLI execution. |
 | `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, runtime-socket client wiring, and explicit headless fallback. |
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
+| `apps/ade-cli/src/services/runtime/adeCliShim.ts` | Body and directory name of the `ADE_CLI_PATH` shim a brain writes for the agents it launches. |
+| `apps/ade-cli/src/lib/cliDelegation.ts`, `cliDelegationEntry.ts`, `cliGlobalArgs.ts` | Hands an `ade` run to `ADE_CLI_PATH` when that path runs a different CLI entry. `cliGlobalArgs.ts` lists the global flags that take a value, so the check skips the same tokens as the CLI. |
+| `apps/desktop/src/shared/runtimeClientNames.ts` | The names the desktop connects to a brain with. The RPC server allows user-only actions only to these names. |
 | `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` | Desktop-side client for the local machine runtime at `~/.ade/sock/ade.sock`; registers projects and dispatches runtime-backed actions. |
 | `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, and Linear tools). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Shared provider-runtime prompt assembly. Injects the same timezone-safe scheduled-work guidance into Claude, Codex, Cursor, Droid, and OpenCode sessions. |
@@ -291,6 +294,30 @@ gives it an ordered fallback chain when `command -v ade` fails:
    known),
 3. and as a last resort, in an ADE source checkout, `node
    apps/ade-cli/dist/cli.cjs ...` after confirming the file exists.
+
+For agents a brain launches, `ADE_CLI_PATH` is a shim written by
+`createHeadlessAdeCliAgentEnv` (`apps/ade-cli/src/bootstrap.ts`, body from
+`apps/ade-cli/src/services/runtime/adeCliShim.ts`) under
+`<tmpdir>/ade-cli-shims/<hash>/`. It names the brain that wrote it: when
+the caller's env sets neither `ADE_HOME` nor `ADE_RUNTIME_SOCKET_PATH`, it
+defaults both to that brain's (`ade serve` records the socket it serves in
+`ADE_RUNTIME_SOCKET_PATH`, including a launchd brain started with only
+`ADE_HOME`). This matters for the Cursor SDK worker, which strips both from
+its env. Without the defaults, its `ade` falls back to `~/.ade` and can reach
+the stable brain from an Alpha chat. The hash covers the entry, runtime, socket
+and home, so two brains sharing one CLI entry never share a shim. An explicit
+`--socket <path>` still wins. The brain also sets `ADE_CLI_ENTRY_PATH` next to
+the shim, to name the CLI entry that the shim runs.
+
+A shell rc file that rebuilds `PATH` can drop the shim directory, so a plain
+`ade` can resolve to an older install. For that case, every `ade` run first
+checks `ADE_CLI_PATH` (`apps/ade-cli/src/lib/cliDelegation.ts`, loaded before
+the rest of the CLI by `cliDelegationEntry.ts`). When `ADE_CLI_PATH` runs a
+different CLI entry, the CLI re-runs the same argv through it. The check only
+reads a few files. It never delegates from a source-checkout build, so a lane
+can test its own `apps/ade-cli/dist/cli.cjs`. The child gets
+`ADE_CLI_DELEGATED=1`, which stops a loop. `ADE_CLI_NO_DELEGATE=1` turns
+delegation off.
 
 The wording explicitly tells agents to use the relevant ADE skill
 instead of long prompt guidance, to try `ade doctor`, typed

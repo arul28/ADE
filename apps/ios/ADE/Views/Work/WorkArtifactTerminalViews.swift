@@ -38,6 +38,41 @@ struct WorkArtifactVideoPlayerView: View {
   }
 }
 
+/// A stored video that is not on the phone yet: a play button and its size.
+/// Tapping starts the download; the caller swaps in the player when it lands.
+struct WorkArtifactPlayPlaceholder: View {
+  let sizeBytes: Int
+  let tint: Color
+  let onPlay: () -> Void
+  @State private var started = false
+
+  var body: some View {
+    Button {
+      guard !started else { return }
+      started = true
+      onPlay()
+    } label: {
+      VStack(spacing: 8) {
+        if started {
+          ProgressView()
+            .tint(tint)
+        } else {
+          Image(systemName: "play.circle.fill")
+            .font(.system(size: 34, weight: .semibold))
+        }
+        Text(started ? "Downloading \(workArtifactSizeLabel(sizeBytes))…" : "Play · \(workArtifactSizeLabel(sizeBytes))")
+          .font(.subheadline)
+      }
+      .foregroundStyle(tint)
+      .frame(minWidth: 44, minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(started)
+    .accessibilityLabel(started ? "Downloading video" : "Play video, \(workArtifactSizeLabel(sizeBytes))")
+  }
+}
+
 extension View {
   /// Inline-card chrome for a video in the chat transcript: the same fixed
   /// height and corner radius the image branch beside it uses.
@@ -53,6 +88,7 @@ struct WorkArtifactView: View {
   let isExpanded: Bool
   let onToggle: () -> Void
   let onAppear: () -> Void
+  let onPlay: () -> Void
   let onOpenImage: (UIImage) -> Void
 
   var body: some View {
@@ -108,6 +144,11 @@ struct WorkArtifactView: View {
           case .video(let url):
             WorkArtifactVideoPlayerView(url: url)
               .workArtifactInlineVideoChrome()
+          case .videoOnDemand(let sizeBytes):
+            WorkArtifactPlayPlaceholder(sizeBytes: sizeBytes, tint: ADEColor.accent, onPlay: onPlay)
+              .frame(maxWidth: .infinity)
+              .frame(height: 120)
+              .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
           case .remoteURL(let url):
             if artifact.artifactKind == "video_recording" {
               WorkArtifactVideoPlayerView(url: url)
@@ -168,7 +209,7 @@ struct WorkArtifactView: View {
       }
       .frame(width: 40, height: 30)
       .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    case .video, .remoteURL:
+    case .video, .remoteURL, .videoOnDemand:
       Image(systemName: "play.rectangle.fill")
         .foregroundStyle(ADEColor.accent)
         .frame(width: 40, height: 30)

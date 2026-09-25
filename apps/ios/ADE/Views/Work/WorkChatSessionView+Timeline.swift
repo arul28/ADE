@@ -151,6 +151,13 @@ extension WorkChatSessionView {
           { snapshot in await stop(snapshot.taskId) }
         }
       )
+    case .subagentGrid(let model):
+      WorkSubagentTimelineGridView(
+        model: model,
+        onStop: onStopSubagentTask.map { stop in
+          { snapshot in await stop(snapshot.taskId) }
+        }
+      )
     case .subagentStoppedGroup(let model):
       WorkSubagentStoppedGroupCardView(
         model: model,
@@ -201,8 +208,22 @@ extension WorkChatSessionView {
               Task { @MainActor in
                 _ = await onSend("/compact", [], .queue)
               }
-            }
+        }
       )
+    case .turnFold(let model):
+      WorkTurnFoldRow(model: model) {
+        toggleCard(model.id, entryId: entry.id)
+      }
+    case .backgroundJob(let job):
+      WorkBackgroundJobLineView(job: job)
+    case .backgroundJobRun(let run):
+      WorkBackgroundJobRunView(
+        model: run,
+        isExpanded: cardIsExpanded(run.id, entryId: entry.id),
+        onToggle: { toggleCard(run.id, entryId: entry.id) }
+      )
+    case .scheduledWork(let snapshot):
+      WorkScheduledWorkLineView(snapshot: snapshot)
     case .pendingQuestion(let question):
       // When offline, still render the card in a disabled (busy) state so the
       // transcript keeps its full context; the top-right gear icon already
@@ -344,6 +365,12 @@ extension WorkChatSessionView {
         isExpanded: cardIsExpanded(card.id, entryId: entryId, keepsOpenWhileLive: true),
         onToggle: { toggleCard(card.id, entryId: entryId, keepsOpenWhileLive: true) }
       )
+    } else if card.kind == "taskList" {
+      WorkTaskListCard(
+        card: card,
+        isExpanded: cardIsExpanded(card.id, entryId: entryId),
+        onToggle: { toggleCard(card.id, entryId: entryId) }
+      )
     } else if card.kind == "question" {
       WorkResolvedQuestionCard(card: card, fallbackProvider: chatSummaryContext.provider)
     } else if card.kind == "planApproval" {
@@ -396,7 +423,8 @@ extension WorkChatSessionView {
       content: artifactContent[artifact.id],
       isExpanded: cardIsExpanded(artifact.id, entryId: entryId),
       onToggle: { toggleCard(artifact.id, entryId: entryId) },
-      onAppear: { Task { await onLoadArtifact(artifact) } },
+      onAppear: { Task { await onLoadArtifact(artifact, .preview) } },
+      onPlay: { Task { await onLoadArtifact(artifact, .play) } },
       onOpenImage: { image in
         fullscreenImage = WorkFullscreenImage(title: artifact.title, image: image)
       }

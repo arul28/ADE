@@ -3,7 +3,7 @@ import {
   BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS,
 } from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { CTO_VOICE_ACTIONS, type CtoVoiceAction } from "../../../shared/types/ctoVoice";
-import { APPLE_AGENT_ACTIONS } from "../../../shared/types/iosSimulator";
+import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -197,6 +197,27 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Proof lifecycle and ingestion operate on project-scoped persisted bytes.
   // Session-bound agents use the dedicated RPC tools, which derive an owner
   // and filesystem jail from their authenticated chat context.
+  // The stream token and the human takeover. `startStream` is the only call
+  // that hands out the loopback token, and `takeControl`/`returnControl`/
+  // `renewLease` model a person taking the lane's screen — both are viewing
+  // clients' business (the desktop renderer, the phone, the hosted web client,
+  // all of which connect at cto role), not a session-bound agent's. An agent
+  // reads `getStreamStatus`, which is redacted.
+  mac_desktop: {
+    only: [
+      "startStream",
+      "stopStream",
+      "takeControl",
+      "returnControl",
+      "renewLease",
+      // A person's permission remediation. Restarting the helper and prompting
+      // for a grant are the desktop renderer's business, never a session-bound
+      // agent's: the agent cannot see the dialog and the prompt is a system
+      // modal fired at whoever is at the Mac.
+      "recheckPermissions",
+      "requestPermission",
+    ],
+  },
   computer_use_artifacts: {
     only: [
       "deleteArtifacts",
@@ -208,6 +229,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "listArtifacts",
       "listBrokenArtifacts",
       "pruneBrokenArtifacts",
+      // A paired desktop streaming a proof video. Only the user's own desktop
+      // needs it; agents keep the bounded preview read.
+      "readArtifactRange",
       "recoverArtifact",
       "updateArtifactReview",
     ],
@@ -220,6 +244,18 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
   agent: 2,
   cto: 3,
 };
+
+/**
+ * Actions only the person may take. Allowed on the bus so a user client can
+ * call them; refused to agent callers by the RPC server and to automations.
+ */
+export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
+  ios_simulator: APPLE_USER_ONLY_ACTIONS,
+};
+
+export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
+  return ADE_ACTION_USER_ONLY[domain]?.includes(action) ?? false;
+}
 
 export function isCtoOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
   const rule = ADE_ACTION_CTO_ONLY[domain];
@@ -584,6 +620,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listCodexPlugins",
     "listClaudeSessions",
     "listSessions",
+    // Tracked `--mode cli` children with their parent lineage: `ade chat list`
+    // merges them so an agent can find and poll its CLI children.
+    "listCliChildSessions",
     "listSubagents",
     "listPromptStashes",
     "createPromptStash",
@@ -604,6 +643,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "respondToInput",
     "dismissPendingInput",
     "resolveSmartLinkPreview",
+    // Sources favicons: a first-party fetch of the icon of a site the chat
+    // already visited, bounded and SSRF-guarded (chat/sourceFaviconService.ts).
+    "resolveSourceFavicons",
     "reloadClaudePlugins",
     "rewindFiles",
     "saveTempAttachment",
@@ -849,8 +891,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   tiling_tree: ["get", "set"],
   // Read-only for everyone except the desktop that owns the pane:
   // `setActiveTool` is how a desktop renderer publishes which tool it has open
-  // so phones and the hosted web client can mirror it.
-  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview"],
+  // so phones and the hosted web client can mirror it. `show` is an agent
+  // asking that desktop to put a surface of its own chat on screen, and
+  // `acknowledgeShow` is the desktop's answer (user clients only).
+  work_tools: ["getLaneState", "setActiveTool", "readObservationPreview", "show", "acknowledgeShow"],
   // `ingest` is intentionally absent. Proof-drawer entries are created only by
   // the `ingest_computer_use_artifacts` RPC tool and the `ade proof` commands
   // that wrap it, which validate owner claims and the caller's import root.
@@ -867,6 +911,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listBrokenArtifacts",
     "pruneBrokenArtifacts",
     "readArtifactPreview",
+    "readArtifactRange",
     "recoverArtifact",
     "updateArtifactReview",
   ],
@@ -874,7 +919,60 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // retyped: `getStatus().capabilities` reports it to agents and `apple.invoke`
   // gates the phone/web client on it, and three hand-kept copies is how an
   // action ships reachable on one surface and unnamed on the other two.
-  ios_simulator: [...APPLE_AGENT_ACTIONS],
+  ios_simulator: [...APPLE_AGENT_ACTIONS, ...APPLE_USER_ONLY_ACTIONS],
+  /*
+   * Mac Desktop: one private macOS screen per lane.
+   *
+   * Reads (no state change): `getStatus`, `listWindows`, `observe`,
+   * `getStreamStatus`. `getStatus` and `getStreamStatus` are deliberately the
+   * redacted halves of their service reads — this list is what lands in a
+   * durable agent transcript, so an unredacted stream token would be printed
+   * into one.
+   *
+   * Writes: `start`, `stop`, `open`, `claimWindow`, `releaseWindow`, `click`,
+   * `type`, `press`, `scroll`, `drag`, `wait`, `screenshot`, `startRecording`,
+   * `stopRecording`, `requestInputLease`, `present`.
+   *
+   * `startStream`, `stopStream`, `takeControl`, `returnControl` and
+   * `renewLease` are allowlisted but CTO-only below: `startStream` is the one
+   * call that mints the loopback stream token, and the takeover/heartbeat
+   * trio belongs to a viewing client, not to a session-bound agent.
+   *
+   * There is no `proof` action on purpose. Proof is filed through the one
+   * `ingest_computer_use_artifacts` path, which `ade desktop proof` composes
+   * from `screenshot` + `observe`; a `macDesktop.proof` action would be a
+   * second ingestion path with no owner validation behind it.
+   */
+  mac_desktop: [
+    "getStatus",
+    "recheckPermissions",
+    "requestPermission",
+    "start",
+    "stop",
+    "listWindows",
+    "open",
+    "claimWindow",
+    "releaseWindow",
+    "observe",
+    "click",
+    "type",
+    "press",
+    "scroll",
+    "drag",
+    "move",
+    "wait",
+    "screenshot",
+    "startRecording",
+    "stopRecording",
+    "getStreamStatus",
+    "requestInputLease",
+    "present",
+    "startStream",
+    "stopStream",
+    "takeControl",
+    "returnControl",
+    "renewLease",
+  ],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow"],
   // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
   // served by the runtime daemon itself, so a desktop that took a forwarded
@@ -1018,7 +1116,8 @@ export function isAllowedAdeAction(domain: AdeActionDomain, action: string): boo
 }
 
 /**
- * What an `ade-action` automation step may call: allowlisted AND not CTO-only.
+ * What an `ade-action` automation step may call: allowlisted, not CTO-only,
+ * and not user-only.
  *
  * An automation runs unattended with no human role behind it, so it is held to
  * the agent tier — the CTO gate exists precisely to keep unattended callers out
@@ -1028,5 +1127,7 @@ export function isAutomationAllowedAdeAction(
   domain: AdeActionDomain,
   action: string,
 ): boolean {
-  return isAllowedAdeAction(domain, action) && !isCtoOnlyAdeAction(domain, action);
+  return isAllowedAdeAction(domain, action)
+    && !isCtoOnlyAdeAction(domain, action)
+    && !isUserOnlyAdeAction(domain, action);
 }

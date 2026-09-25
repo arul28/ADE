@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseAgentChatTranscript } from "./chatTranscript";
+import { canonicalSteerRows, parseAgentChatTranscript } from "./chatTranscript";
+import type { AgentChatEventEnvelope, AgentChatUserMessageDeliveryState } from "./types";
 
 function line(payload: Record<string, unknown>): string {
   return JSON.stringify(payload);
@@ -261,5 +262,76 @@ describe("parseAgentChatTranscript", () => {
         envelope.event.type === "text" ? envelope.event.text : null,
       ),
     ).toEqual(["first", "second", "third"]);
+  });
+});
+
+describe("canonicalSteerRows", () => {
+  type Row = [steerId: string, state: AgentChatUserMessageDeliveryState, turnId?: string];
+  const envelopesOf = (rows: Row[]): AgentChatEventEnvelope[] => rows.map(([steerId, deliveryState, turnId], index) => ({
+    sessionId: "s1",
+    sequence: index + 1,
+    timestamp: `2026-09-24T10:00:0${index}.000Z`,
+    event: {
+      type: "user_message",
+      text: `${steerId} (${deliveryState})`,
+      steerId,
+      deliveryState,
+      ...(turnId ? { turnId } : {}),
+    },
+  }));
+
+  it.each<{ label: string; rows: Row[]; at: number; state: AgentChatUserMessageDeliveryState; turnId?: string }>([
+    {
+      label: "an inline steer sits where it was offered, as inline",
+      rows: [["a", "accepted", "t1"], ["a", "inline", "t1"]],
+      at: 0, state: "inline", turnId: "t1",
+    },
+    {
+      label: "a steer refused on t1 and sent as t2 sits at t2",
+      rows: [["a", "accepted", "t1"], ["a", "queued", "t1"], ["a", "delivered", "t2"]],
+      at: 2, state: "delivered", turnId: "t2",
+    },
+    {
+      label: "a staged steer that went inline skips its queued row",
+      rows: [["a", "queued", "t1"], ["a", "inline", "t1"]],
+      at: 1, state: "inline", turnId: "t1",
+    },
+    {
+      label: "a failed steer with no turn id sits at its own row",
+      rows: [["a", "accepted", "t1"], ["a", "failed"]],
+      at: 1, state: "failed",
+    },
+    {
+      label: "a still-queued steer keeps its first queued row",
+      rows: [["a", "queued", "t1"], ["a", "accepted", "t1"], ["a", "queued", "t1"]],
+      at: 0, state: "queued", turnId: "t1",
+    },
+  ])("$label", ({ rows, at, state, turnId }) => {
+    const envelopes = envelopesOf(rows);
+    const plan = canonicalSteerRows(envelopes);
+
+    expect([...plan.keys()].sort()).toEqual(rows.map((_, index) => index));
+    const placed = [...plan.entries()].filter(([, row]) => row !== null);
+    expect(placed.map(([index]) => index)).toEqual([at]);
+    const row = plan.get(at)!;
+    expect(row.event.deliveryState).toBe(state);
+    expect(row.event.turnId).toBe(turnId);
+    // Emitted at the placement row's time, so entry times stay in order.
+    expect(row.timestamp).toBe(envelopes[at]!.timestamp);
+  });
+
+  it("keeps other steers, plain messages, and other sessions out of a steer's plan", () => {
+    const envelopes = [
+      ...envelopesOf([["a", "accepted", "t1"], ["b", "inline", "t1"], ["a", "inline", "t1"]]),
+      { sessionId: "s1", timestamp: "2026-09-24T10:00:09.000Z", event: { type: "user_message", text: "plain" } },
+      { sessionId: "s2", timestamp: "2026-09-24T10:00:10.000Z", event: { type: "user_message", text: "x", steerId: "a", deliveryState: "failed" } },
+    ] as AgentChatEventEnvelope[];
+    const plan = canonicalSteerRows(envelopes, { sessionId: "s1" });
+
+    expect(plan.get(0)?.event.deliveryState).toBe("inline");
+    expect(plan.get(1)?.event.steerId).toBe("b");
+    expect(plan.get(2)).toBeNull();
+    expect(plan.has(3)).toBe(false);
+    expect(plan.has(4)).toBe(false);
   });
 });

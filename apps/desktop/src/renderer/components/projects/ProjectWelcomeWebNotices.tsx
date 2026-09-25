@@ -1,7 +1,9 @@
 import React from "react";
 
-import { COLORS, MONO_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { CloudSlash, Desktop, UserCircle } from "@phosphor-icons/react";
+
 import type { BrowserAccountSnapshot } from "../../webclient/account/client";
+import { Banner, type NoticeTone } from "../ui/notice";
 
 // ---------------------------------------------------------------------------
 // What the hosted welcome surface says when it has no machines to list, and
@@ -123,90 +125,63 @@ export function WebAddProjectNotice({
   onDismiss: () => void;
 }) {
   return (
-    <div
-      role="status"
-      data-ade-web-add-project-notice="true"
-      style={{
-        marginTop: -4,
-        maxWidth: 460,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 8,
-        padding: "12px 16px",
-        borderRadius: 12,
-        border: `1px solid ${COLORS.border}`,
-        background: "rgba(255,255,255,0.03)",
-        textAlign: "center",
-        fontFamily: MONO_FONT,
-        fontSize: 11,
-        lineHeight: 1.6,
-        color: COLORS.textSecondary,
-      }}
-    >
-      <span>Projects are added on the machine that hosts them.</span>
-      <span style={{ color: COLORS.textDim }}>
-        {machineName
+    <Banner
+      testId="ade-web-add-project-notice"
+      layout="inline"
+      style={{ marginTop: -4, maxWidth: 460, width: "100%" }}
+      model={{
+        id: "web-add-project",
+        tone: "info",
+        title: "Projects are added on the machine that hosts them.",
+        detail: machineName
           ? `Open ADE on ${machineName} to add, create, or clone one — it shows up here as soon as it does. ADE Web opens the projects that machine already has.`
-          : "Open ADE on the host machine to add, create, or clone one. ADE Web opens the projects that machine already has."}
-      </span>
-      <button
-        type="button"
-        onClick={onDismiss}
-        style={{
-          ...outlineButton({ height: 28, padding: "0 14px", fontSize: 10 }),
-          color: COLORS.textPrimary,
-          border: `1px solid ${COLORS.border}`,
-        }}
-      >
-        Got it
-      </button>
-    </div>
+          : "Open ADE on the host machine to add, create, or clone one. ADE Web opens the projects that machine already has.",
+        actions: [{ label: "Got it", onClick: onDismiss }],
+      }}
+    />
   );
 }
 
+const ZERO_MACHINES_LOOK: Record<
+  WebZeroMachinesNotice["kind"],
+  { tone: NoticeTone; icon?: React.ReactNode }
+> = {
+  loading: { tone: "neutral" },
+  no_machines: { tone: "info", icon: <Desktop size={13} weight="fill" /> },
+  signed_out: { tone: "warning", icon: <UserCircle size={13} weight="fill" /> },
+  unconfigured: { tone: "neutral" },
+  unavailable: { tone: "error", icon: <CloudSlash size={13} weight="fill" /> },
+};
+
 export function WebZeroMachines({ notice }: { notice: WebZeroMachinesNotice }) {
-  const failed = notice.kind === "unavailable";
+  const look = ZERO_MACHINES_LOOK[notice.kind];
+  const lines = [notice.detail, notice.reassurance].filter((line): line is string => Boolean(line));
   return (
-    <div
-      role={failed ? "alert" : undefined}
-      data-ade-web-machines-empty={notice.kind}
-      style={{
-        marginTop: -4,
-        maxWidth: 420,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 8,
-        textAlign: "center",
-        fontFamily: MONO_FONT,
-        fontSize: 11,
-        lineHeight: 1.6,
-        color: failed ? COLORS.textSecondary : COLORS.textMuted,
+    <Banner
+      testId="ade-web-machines-empty"
+      layout="inline"
+      style={{ marginTop: -4, maxWidth: 420, width: "100%" }}
+      model={{
+        id: `web-zero-machines-${notice.kind}`,
+        tone: look.tone,
+        icon: look.icon,
+        busy: notice.kind === "loading",
+        title: notice.headline,
+        detail: lines.length > 0
+          ? (
+              <span style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                {lines.map((line) => <span key={line}>{line}</span>)}
+              </span>
+            )
+          : undefined,
+        actions: notice.action
+          ? [{
+              label: notice.action.label,
+              onClick: notice.action.onSelect,
+              busy: notice.action.busy,
+            }]
+          : undefined,
       }}
-    >
-      <span>{notice.headline}</span>
-      {notice.detail ? (
-        <span style={{ color: COLORS.textDim }}>{notice.detail}</span>
-      ) : null}
-      {notice.reassurance ? (
-        <span style={{ color: COLORS.textDim }}>{notice.reassurance}</span>
-      ) : null}
-      {notice.action ? (
-        <button
-          type="button"
-          onClick={notice.action.onSelect}
-          disabled={notice.action.busy}
-          style={{
-            ...outlineButton({ height: 28, padding: "0 14px", fontSize: 10 }),
-            color: COLORS.textPrimary,
-            border: `1px solid ${COLORS.border}`,
-            opacity: notice.action.busy ? 0.6 : 1,
-          }}
-        >
-          {notice.action.label}
-        </button>
-      ) : null}
-    </div>
+    />
   );
 }

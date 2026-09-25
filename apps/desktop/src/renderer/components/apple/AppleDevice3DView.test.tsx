@@ -1,14 +1,10 @@
 /* @vitest-environment jsdom */
 
 import { describe, expect, it } from "vitest";
-import {
-  appleCanvasHasDecoded,
-  appleDeviceInputSize,
-  appleDragIntent,
-  appleWheelIntent,
-  orientedToPortrait,
-  type AppleDeviceOrientation,
-} from "./AppleDevice3DView";
+import type { AppleDeviceOrientation } from "../../../shared/types";
+import { appleDragIntent, appleWheelIntent } from "./AppleDevice3DView";
+import { appleCanvasHasDecoded, appleDeviceInputSize, orientedToPortrait } from "./appleDeviceScene";
+import { createDeviceModelLoader } from "./appleDeviceModelLoader";
 
 describe("appleDragIntent (round 4 §A3)", () => {
   it("drives the device when the drag starts on the glass", () => {
@@ -137,3 +133,25 @@ describe("appleCanvasHasDecoded", () => {
     expect(appleCanvasHasDecoded(canvas(300, 650))).toBe(true);
   });
 });
+
+describe("createDeviceModelLoader", () => {
+  it("loads embedded textures through an <img>, which the CSP allows", async () => {
+    // GLTFLoader picks ImageBitmapLoader in Chromium, which fetch()es each
+    // embedded image's blob: URL. The renderer CSP refuses blob: in
+    // connect-src, so all 17 textures of every model failed and the body
+    // rendered with bare materials. TextureLoader goes through img-src.
+    const THREE = await import("three");
+    const { GLTFLoader } = await import("three/examples/jsm/loaders/GLTFLoader.js");
+    const loader = createDeviceModelLoader(THREE, GLTFLoader);
+    const manager = new THREE.LoadingManager();
+    const parser = { textureLoader: new THREE.ImageBitmapLoader(), options: { manager } };
+
+    // Registered plugins run against the parser when it is created.
+    const plugins = (loader as unknown as { pluginCallbacks: Array<(p: unknown) => unknown> }).pluginCallbacks;
+    for (const callback of plugins) callback(parser);
+
+    expect(parser.textureLoader).toBeInstanceOf(THREE.TextureLoader);
+    expect((parser.textureLoader as unknown as InstanceType<typeof THREE.TextureLoader>).manager).toBe(manager);
+  });
+});
+

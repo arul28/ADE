@@ -22,8 +22,11 @@ proof you did not file.
 ade proof attach "$TMPDIR/checkout.png" --caption "Checkout completes" --text
 ade proof list --text          # confirm the row is there
 ade proof status --text
-ade proof capture --caption "Checkout confirmation visible" --text
-ade proof record --seconds 20 --caption "Retry flow recovers" --text
+ade proof capture --caption "Checkout confirmation visible" --text     # the user's WHOLE real screen
+ade proof record --seconds 20 --caption "Retry flow recovers" --text  # the user's WHOLE real screen
+ade mac-desktop record start --caption "Note saved in TextEdit" --text # the lane's own screen
+ade mac-desktop record stop --text
+ade mac-desktop proof --caption "Preferences shows the new key" --text
 ade --socket browser proof --tab <tab-id> --caption "Verified" --text
 ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
 ade help proof
@@ -67,7 +70,8 @@ so you can see whether you are looking at your own lane and chat.
 
 Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
 
-- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, and `ade browser proof` **do** file.
+- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade browser proof`, `ade mac-desktop proof --caption "…"` and a captioned `ade mac-desktop record` **do** file.
+- `ade proof capture` and `ade proof record` capture the user's whole real screen, with whatever else they have open. For desktop app work on a Mac host, work on the lane's own screen (see the **ade-desktop** skill) and record there instead.
 - A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 
 Artifacts worth filing:
@@ -75,6 +79,22 @@ Artifacts worth filing:
 - Screenshot or video of the UI state.
 - App Control, iOS Simulator, or ADE browser capture.
 - Test output or log bundle when visual proof is not the right artifact.
+
+## Proof must be new
+
+Proof shows what you did for this request. ADE checks:
+
+- An attach whose bytes are already proof (an earlier recording copied to a
+  new name, say) fails with `PROOF_DUPLICATE` and names the earlier proof.
+  Do not work around it. Record a new one, or tell the user the recording
+  failed.
+- An attached MP4/MOV whose own creation time is before this request still
+  files, but prints `warning: This video was recorded at …, before this
+  request.` and the drawer marks it older. Repeat that warning to the user.
+- The drawer says where each proof came from: recorded by ADE, captured by
+  ADE, or attached by the agent. `ade proof attach` of a fresh, unchanged ADE
+  capture keeps ADE's label; any other file is "attached by the agent",
+  whatever label you pass.
 
 ## Gotchas
 

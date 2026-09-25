@@ -604,7 +604,7 @@ ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-
 ade new chat --mode cli --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"
 ade new chat --mode chat --lane auto --lane-name fix-checkout-flow --no-parent --prompt "fix failing tests"
 ade new chat --mode chat --lane lane-id --type subagent --prompt "repro the flake"   # required for parented spawns; use subagent for any result the parent will join/read/review, peer only for fire-and-forget work
-ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals; shell sessions do not record lineage
+ade new chat --mode cli --lane lane-id --provider codex --type peer --parent chat-session-id --prompt "review the diff"   # agent-provider CLI sessions record spawn lineage without becoming attached terminals and show in the parent as a subagent card that closes when the CLI exits (use --mode chat for per-turn reports); shell sessions do not record lineage
 ade chat list --lane lane-id --include-automation --no-archived --text
 ade chat create --lane lane-id --provider codex --model openai/gpt-5.6-sol --no-parent --permissions full-auto --print-config --json
 ade chat create --lane lane-id --provider codex --no-parent   # tracked agent shells inherit $ADE_CHAT_SESSION_ID; parented launches must add --type subagent|peer, while --no-parent deliberately opts out
@@ -688,6 +688,17 @@ ade --socket ios-sim status-bar --time 9:41 --wifi-bars 3 --text   # --clear dro
 # Live view: the vendored Swift helper encodes H.264 next to the simulator, so a remote client still sees it.
 ade --socket apple stream-start --fps 60 --text                    # live-start and --backend are gone: one encoder
 ade --socket ios-sim stream-status --text                          # live view plus input state; stream-stop ends it
+# Per-lane device: one simulator per lane. `start` attaches or clones, boots, and streams.
+ade --socket apple start --text                                    # --udid <id> attaches, --create <sourceUdid> clones
+ade --socket apple stop --text                                     # power the lane's device off; `shutdown` only ends the chat's session
+ade --socket apple device-list --installed --text                  # also: device-create --from <id>, device-attach --simulator <id>
+ade --socket apple device-detach --text                            # give up the lane's device; the simulator stays installed
+ade --socket apple device-delete --text                            # delete a clone; --force detaches an attached device instead
+                                                                   # all three refuse another chat's device; --ignore-ownership passes (stop and device-detach also take --force)
+ade --socket apple type "reddit" --submit --text                   # --submit presses Return after the text
+ade --socket apple key return --text                               # named keys: return (alias enter), tab
+ade --socket apple record-start --text                             # record-stop --keep|--discard, record-list, record-delete --id <id>
+ade apple show --text                                              # put the device on the user's screen; --floating for the floating player
 # Device event log: the app's own log rows interleaved with what ADE did.
 ade --socket ios-sim log-start --bundle-id com.example.app --text   # --bundle-id is required; only the chat that started the log can stop it
 ade --socket ios-sim log --since 412 --limit 100 --text            # log-stop ends the capture; --force takes a log another chat started
@@ -699,6 +710,20 @@ ade --socket ios-sim fill-element --identifier email-field --value ada@example.c
 ade --socket ios-sim wait-for-element --label Welcome --timeout-ms 8000 --text   # --gone waits for it to leave
 ade --socket ios-sim assert-visible --label "Order confirmed" --text
 ade --socket ios-sim proof-bundle --caption "Signup succeeds" --text  # screenshot, elements, and log rows as proof
+ade mac-desktop status --text                         # host support, this lane's display, windows, and lease
+ade mac-desktop start --text                          # create the lane's virtual display (macOS runtime host only)
+ade mac-desktop stop --text                           # quit the apps it opened; prints which quit and which stayed on your screen
+ade mac-desktop show --text                           # reveal it in the tools pane; --floating for the card over the chat
+ade mac-desktop release --window <id> --text          # give a window back; omit --window to release the lane's windows
+ade mac-desktop open <app|path|url> --text            # launch onto the display; args after -- belong to the app
+ade mac-desktop observe --text                        # screenshot + numbered elements
+ade mac-desktop click <handle> --text                 # also: type, press, scroll, drag, wait
+ade mac-desktop type "reddit" --submit --text         # --submit presses Return after the text
+ade mac-desktop press return --cmd --text             # modifiers: --cmd --shift --alt --control
+ade mac-desktop record start --caption "flow" --keep-idle --max-seconds 1200 --text
+ade mac-desktop record stop --text                    # duration, real time, and idle cut
+ade mac-desktop proof --caption "Login works" --text  # capture, re-observe, and file proof
+ade mac-desktop actions --text                        # full mac_desktop action inventory
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text
@@ -782,8 +807,9 @@ ade --role cto actions list --domain attention --text # discover account-wide Ac
 ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id
-ade actions run external-sessions.list --input-json '{"scope":"project","limit":20}' --text   # claude/codex/cursor/droid/opencode/pi sessions on this machine; discovery that cannot run — `opencode` is not installed, say — fails the call when that provider is the only one asked for, rather than reporting an empty list; in a multi-provider scan it is skipped and logged
+ade actions run external-sessions.list --input-json '{"scope":"project","limit":20}' --text   # claude/codex/cursor/droid/opencode/pi/qwen/kimi/grok/copilot sessions on this machine; discovery that cannot run — `opencode` is not installed, say — fails the call when that provider is the only one asked for, rather than reporting an empty list; in a multi-provider scan it is skipped and logged
 ade actions run external-sessions.import --input-json '{"provider":"codex","sessionId":"thread-id","laneId":"lane-1","target":"cli","mode":"resume"}' --text
+ade actions run external-sessions.getDetail --input-json '{"provider":"claude","sessionId":"session-id"}' --text   # one session's preview page; pass olderCursor back as before for the previous page
 ade actions run ai.piLoginProviders --text                 # Pi providers that can be signed into, with the auth methods each accepts and whether it is already configured
 ade --role cto actions run ai.piLoginStart --input-json '{"providerId":"anthropic"}' --json   # blocks until the human finishes Pi's own OAuth/device-code flow
 ade actions call stream_events --arg category=runtime --json                                 # drain piAuthStatus prompts/notices raised by an in-flight sign-in

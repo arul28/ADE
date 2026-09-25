@@ -7,7 +7,6 @@ import {
   CURSOR_CLOUD_METADATA_PROJECT_ID,
   CURSOR_CLOUD_METADATA_SESSION_ID,
   CURSOR_CLOUD_WEBHOOK_SECRET_KEY,
-  buildCursorCloudCreateCloudExtras,
   buildCursorCloudEnvVars,
   buildCursorCloudMetadata,
   buildCursorCloudWebhookUrl,
@@ -55,19 +54,16 @@ describe("cursorCloudCreateOptions", () => {
       [CURSOR_CLOUD_METADATA_LANE_ID]: "lane-1",
       [CURSOR_CLOUD_METADATA_PROJECT_ID]: "proj-1",
     });
+    // A linear issue is stamped when given, and a missing project id is never invented.
     expect(buildCursorCloudMetadata({
       sessionId: "sess-1",
       laneId: "lane-1",
-      projectId: "proj-1",
       linearIssueId: "ADE-12",
-    })[CURSOR_CLOUD_METADATA_LINEAR_ISSUE_ID]).toBe("ADE-12");
-  });
-
-  it("never invents a project id", () => {
-    expect(buildCursorCloudMetadata({
-      sessionId: "sess-1",
-      laneId: "lane-1",
-    })[CURSOR_CLOUD_METADATA_PROJECT_ID]).toBeUndefined();
+    })).toEqual({
+      [CURSOR_CLOUD_METADATA_SESSION_ID]: "sess-1",
+      [CURSOR_CLOUD_METADATA_LANE_ID]: "lane-1",
+      [CURSOR_CLOUD_METADATA_LINEAR_ISSUE_ID]: "ADE-12",
+    });
   });
 
   it("rejects CURSOR_ secret names and empty values", () => {
@@ -89,15 +85,6 @@ describe("cursorCloudCreateOptions", () => {
     const body = "{\"ok\":true}";
     const expected = `sha256=${createHmac("sha256", secret).update(body).digest("hex")}`;
     expect(signCursorCloudWebhookBody(secret, body)).toBe(expected);
-  });
-
-  it("omits metadata and webhook from create extras even when ADE ids are present", () => {
-    const extras = buildCursorCloudCreateCloudExtras({
-      envVars: { NPM_TOKEN: "abc" },
-    });
-    expect(extras).toEqual({ envVars: { NPM_TOKEN: "abc" } });
-    expect(extras).not.toHaveProperty("metadata");
-    expect(extras).not.toHaveProperty("webhook");
   });
 
   it("resolves selected secrets and canonical project id without stamping create metadata or webhook", () => {
@@ -125,8 +112,6 @@ describe("cursorCloudCreateOptions", () => {
 
     expect(result.projectId).toBe("canonical-project");
     expect(result.extras).toEqual({ envVars: { NPM_TOKEN: "npm-secret" } });
-    expect(result.extras).not.toHaveProperty("metadata");
-    expect(result.extras).not.toHaveProperty("webhook");
     expect(store.getSync(CURSOR_CLOUD_WEBHOOK_SECRET_KEY)).toBeNull();
     expect(readCursorCloudLaneSecretNames(store, "lane-1")).toEqual(["NPM_TOKEN", "MISSING"]);
   });
@@ -140,9 +125,7 @@ describe("cursorCloudCreateOptions", () => {
       credentialStore: new MemoryCredentialStore(),
       getSecretValue: (name) => secrets.get(name) ?? null,
     });
-    expect(result.extras.envVars).toBeUndefined();
-    expect(result.extras).not.toHaveProperty("metadata");
-    expect(result.extras).not.toHaveProperty("webhook");
+    expect(result.extras).toEqual({});
   });
 
   it("round-trips remembered lane secret names", () => {

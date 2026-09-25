@@ -3,7 +3,9 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatImportProvider,
+  AgentChatTextPhase,
   CodexWebSearchResult,
+  ExternalSessionProvider,
 } from "../../../shared/types";
 import { cleanExternalSessionUserText } from "../externalSessions/discoveryUtils";
 
@@ -12,7 +14,8 @@ export const MAX_IMPORT_TRANSCRIPT_BYTES = 32 * 1024 * 1024;
 
 export type ExternalChatHistoryImportOptions = {
   sessionId: string;
-  provider: AgentChatImportProvider;
+  /** Named in the "Session imported from {provider} CLI" notice. */
+  provider: AgentChatImportProvider | ExternalSessionProvider;
   externalSessionId: string;
   importedAt?: number;
   maxEvents?: number;
@@ -174,7 +177,8 @@ function importedRoleForEvent(event: AgentChatEvent): NonNullable<AgentChatEvent
   return null;
 }
 
-function makeEnvelope(
+/** One imported-history envelope, stamped with the import provenance. */
+export function externalImportEnvelope(
   event: AgentChatEvent,
   options: ExternalChatHistoryImportOptions,
   timestamp: string,
@@ -199,7 +203,7 @@ function systemNoticeEnvelope(
   options: ExternalChatHistoryImportOptions,
   timestamp: string,
 ): AgentChatEventEnvelope {
-  return makeEnvelope({
+  return externalImportEnvelope({
     type: "system_notice",
     noticeKind: "info",
     severity: "info",
@@ -212,16 +216,25 @@ function byteLimitLabel(bytes: number): string {
   return `${bytes} bytes`;
 }
 
-function finalizeImportEvents(
+/**
+ * Content events plus the import notices ("Session imported from …", byte and
+ * event truncation), keeping only the newest `maxEvents` content events.
+ */
+export function finalizeExternalImportEvents(
   envelopes: AgentChatEventEnvelope[],
   options: ExternalChatHistoryImportOptions,
 ): AgentChatEventEnvelope[] {
   const importedAt = options.importedAt ?? Date.now();
-  let noticeOffset = 0;
-  const noticeTimestamp = () => new Date(importedAt + noticeOffset++).toISOString();
   const maxContentEvents = Math.max(1, Math.floor(options.maxEvents ?? DEFAULT_MAX_IMPORTED_EVENTS));
   const omitted = Math.max(0, envelopes.length - maxContentEvents);
   const contentEvents = omitted > 0 ? envelopes.slice(-maxContentEvents) : envelopes;
+  // The notices head the imported history, so they are timed just before its
+  // first event: a transcript ordered by time put an import-time notice below
+  // the whole conversation.
+  const firstContentMs = Date.parse(contentEvents[0]?.timestamp ?? "");
+  const noticeBaseMs = Number.isFinite(firstContentMs) ? firstContentMs - 10 : importedAt;
+  let noticeOffset = 0;
+  const noticeTimestamp = () => new Date(noticeBaseMs + noticeOffset++).toISOString();
   const notices = [
     systemNoticeEnvelope(
       `Session imported from ${options.provider} CLI (${shortExternalSessionId(options.externalSessionId)})`,
@@ -292,11 +305,12 @@ function claudeRecordToEvents(
   record: JsonRecord,
   options: ExternalChatHistoryImportOptions,
   index: number,
+  fallbackMs?: number,
 ): AgentChatEventEnvelope[] {
   const message = isRecord(record.message) ? record.message : record;
   const role = stringOrNull(message.role) ?? stringOrNull(record.type) ?? "";
   const sourceId = sourceRecordId(record, `claude-import:${index}`);
-  const timestamp = sourceRecordTimestamp(record, (options.importedAt ?? Date.now()) + index);
+  const timestamp = sourceRecordTimestamp(record, fallbackMs ?? (options.importedAt ?? Date.now()) + index);
   const content = message.content ?? record.content;
   const blocks = Array.isArray(content) ? content : [content];
   const out: AgentChatEventEnvelope[] = [];
@@ -307,7 +321,7 @@ function claudeRecordToEvents(
     blocks.forEach((block, blockIndex) => {
       if (isRecord(block) && stringOrNull(block.type) === "tool_result") {
         const itemId = `${sourceId}:tool-result:${blockIndex}`;
-        out.push(makeEnvelope(claudeToolResultEvent(block, itemId), options, timestamp, itemId));
+        out.push(externalImportEnvelope(claudeToolResultEvent(block, itemId), options, timestamp, itemId));
         return;
       }
       const text = contentBlockText(block);
@@ -315,7 +329,7 @@ function claudeRecordToEvents(
     });
     const text = cleanExternalSessionUserText(textParts.join("\n")) ?? "";
     if (text.length) {
-      out.unshift(makeEnvelope({ type: "user_message", text, messageId: sourceId }, options, timestamp, sourceId));
+      out.unshift(externalImportEnvelope({ type: "user_message", text, messageId: sourceId }, options, timestamp, sourceId));
     }
     return out;
   }
@@ -327,22 +341,40 @@ function claudeRecordToEvents(
         if (type === "thinking" || type === "redacted_thinking") return;
         const itemId = stringOrNull(block.id) ?? `${sourceId}:block:${blockIndex}`;
         if (type === "tool_use" || type === "server_tool_use") {
-          out.push(makeEnvelope(claudeToolCallEvent(block, itemId), options, timestamp, itemId));
+          out.push(externalImportEnvelope(claudeToolCallEvent(block, itemId), options, timestamp, itemId));
           return;
         }
         if (type === "tool_result") {
-          out.push(makeEnvelope(claudeToolResultEvent(block, itemId), options, timestamp, itemId));
+          out.push(externalImportEnvelope(claudeToolResultEvent(block, itemId), options, timestamp, itemId));
           return;
         }
       }
       const text = contentBlockText(block);
       if (text.trim().length) {
-        out.push(makeEnvelope({ type: "text", text, itemId: `${sourceId}:text:${blockIndex}` }, options, timestamp, sourceId));
+        out.push(externalImportEnvelope({ type: "text", text, itemId: `${sourceId}:text:${blockIndex}` }, options, timestamp, sourceId));
       }
     });
   }
 
   return out;
+}
+
+/**
+ * Claude-shaped JSONL records (Claude Code, Factory Droid) as content events,
+ * without the import notices. `records[i]` is line `i`; non-objects are skipped.
+ * `fallbackMs(i)` dates a record that carries no timestamp of its own.
+ */
+export function claudeRecordsToContentEvents(
+  records: readonly unknown[],
+  options: ExternalChatHistoryImportOptions,
+  fallbackMs?: (index: number) => number,
+): AgentChatEventEnvelope[] {
+  const envelopes: AgentChatEventEnvelope[] = [];
+  records.forEach((record, index) => {
+    if (!isRecord(record)) return;
+    envelopes.push(...claudeRecordToEvents(record, options, index, fallbackMs?.(index)));
+  });
+  return envelopes;
 }
 
 export function claudeJsonlToChatEvents(
@@ -355,7 +387,7 @@ export function claudeJsonlToChatEvents(
     if (!record) return;
     envelopes.push(...claudeRecordToEvents(record, options, index));
   });
-  return finalizeImportEvents(envelopes, options);
+  return finalizeExternalImportEvents(envelopes, options);
 }
 
 function mapStatus(value: unknown): "running" | "completed" | "failed" {
@@ -398,6 +430,16 @@ function codexMessageText(item: JsonRecord): string {
   return contentToText(item.text ?? item.content ?? item.message ?? item.output ?? item.delta);
 }
 
+/**
+ * Codex's commentary/final-answer label on an assistant message item. Codex
+ * sends it on `agentMessage` items (and `phase` on rollout messages) only for
+ * some models; anything else means the phase is unknown.
+ */
+export function codexMessagePhase(item: Record<string, unknown> | null | undefined): AgentChatTextPhase | undefined {
+  const phase = item?.phase;
+  return phase === "commentary" || phase === "final_answer" ? phase : undefined;
+}
+
 function codexThreadItemToEvents(
   item: JsonRecord,
   turn: JsonRecord,
@@ -413,13 +455,14 @@ function codexThreadItemToEvents(
     (options.importedAt ?? Date.now()) + turnIndex + itemIndex,
   );
   const base = (event: AgentChatEvent, messageId: string = itemId): AgentChatEventEnvelope =>
-    makeEnvelope(event, options, timestamp, messageId);
+    externalImportEnvelope(event, options, timestamp, messageId);
 
   switch (itemType) {
     case "agentMessage":
     case "agent_message": {
       const text = codexMessageText(item);
-      return text.trim().length ? [base({ type: "text", text, itemId, turnId })] : [];
+      const phase = codexMessagePhase(item);
+      return text.trim().length ? [base({ type: "text", text, itemId, turnId, ...(phase ? { phase } : {}) })] : [];
     }
     case "userMessage":
     case "user_message": {
@@ -432,7 +475,10 @@ function codexThreadItemToEvents(
       const text = role === "user" ? cleanExternalSessionUserText(rawText) ?? "" : rawText;
       if (!text.trim().length) return [];
       if (role === "user") return [base({ type: "user_message", text, messageId: itemId, turnId })];
-      if (role === "assistant") return [base({ type: "text", text, itemId, turnId })];
+      if (role === "assistant") {
+        const phase = codexMessagePhase(item);
+        return [base({ type: "text", text, itemId, turnId, ...(phase ? { phase } : {}) })];
+      }
       return [];
     }
     case "reasoning":
@@ -569,16 +615,24 @@ function codexTurnFallbackEvents(
   const out: AgentChatEventEnvelope[] = [];
   const userText = contentToText(turn.input ?? turn.userInput ?? turn.prompt);
   if (userText.trim().length) {
-    out.push(makeEnvelope({ type: "user_message", text: userText, messageId: `${turnId}:user`, turnId }, options, timestamp, `${turnId}:user`));
+    out.push(externalImportEnvelope({ type: "user_message", text: userText, messageId: `${turnId}:user`, turnId }, options, timestamp, `${turnId}:user`));
   }
   const assistantText = contentToText(turn.output ?? turn.response ?? turn.assistantMessage ?? turn.assistant_message);
   if (assistantText.trim().length) {
-    out.push(makeEnvelope({ type: "text", text: assistantText, itemId: `${turnId}:assistant`, turnId }, options, timestamp, `${turnId}:assistant`));
+    out.push(externalImportEnvelope({ type: "text", text: assistantText, itemId: `${turnId}:assistant`, turnId }, options, timestamp, `${turnId}:assistant`));
   }
   return out;
 }
 
 export function codexTurnsToChatEvents(
+  turns: readonly unknown[],
+  options: ExternalChatHistoryImportOptions,
+): AgentChatEventEnvelope[] {
+  return finalizeExternalImportEvents(codexTurnsToContentEvents(turns, options), options);
+}
+
+/** Codex thread turns (`{ items: [...] }`) as content events, without the import notices. */
+export function codexTurnsToContentEvents(
   turns: readonly unknown[],
   options: ExternalChatHistoryImportOptions,
 ): AgentChatEventEnvelope[] {
@@ -601,7 +655,7 @@ export function codexTurnsToChatEvents(
     }
     envelopes.push(...codexTurnFallbackEvents(turn, options, turnIndex));
   });
-  return finalizeImportEvents(envelopes, options);
+  return envelopes;
 }
 
 export function deriveImportedChatTitle(

@@ -9,6 +9,17 @@ import type { BuiltInBrowserRuntimeStatus } from "../../../../desktop/src/shared
 import { BUILT_IN_BROWSER_PRESENCE_EXPIRY_MS } from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "../builtInBrowser/desktopBridgeClient";
 import {
+  MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS,
+  macDesktopVisibleNotParked,
+  reduceMacDesktopNotParked,
+} from "../../../../desktop/src/shared/types/macDesktop";
+import type {
+  MacDesktopEventPayload,
+  MacDesktopNotParked,
+  MacDesktopServiceApi,
+  MacDesktopStatus,
+} from "../../../../desktop/src/shared/types/macDesktop";
+import {
   isWorkToolId,
   type WorkToolId,
   type WorkToolsAgentBrowserPresence,
@@ -18,9 +29,12 @@ import {
   type WorkToolsSetActiveToolArgs,
   type WorkToolsBrowserState,
   type WorkToolsLaneState,
+  type WorkToolsMacDesktopState,
   type WorkToolsObservation,
   type WorkToolsObservationPreview,
 } from "../../../../desktop/src/shared/types/workTools";
+import type { WorkToolShowResult } from "../../../../desktop/src/shared/types/workToolShow";
+import type { AgentDeviceActivity, WorkToolShowRequests } from "./workToolShowRequests";
 
 /**
  * Aggregates the Work tools pane's state for one lane so read-only clients
@@ -47,6 +61,13 @@ import {
  *   but has never used its Browser pane is `"browser_pane_not_opened"`: both
  *   ordinary, both deliberately not answered out of another project's window
  *   collection, and worded apart because only the first means "open something".
+ * - `macDesktop` is **read in-process** from the runtime's own Mac Desktop
+ *   service, when it has one. It is never polled: the service pushes a
+ *   `MacDesktopEventPayload` on every edge that changes the lane's screen, and
+ *   each one schedules the same debounced `work_tools_state_changed` a tab
+ *   switch does, so a phone re-reads exactly when there is something new. A
+ *   runtime with no such service (any non-macOS host, and any host built before
+ *   it) reports `macDesktop: null`, which every client hides the tool on.
  * - `appControl` is **read in-process** from the daemon's own App Control
  *   service, which is why it survives a desktop that has quit.
  *
@@ -59,6 +80,15 @@ import {
 /** Roots the desktop writes observations into, relative to the project root. */
 const BROWSER_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
 const APP_CONTROL_OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "app-control-observations");
+/**
+ * Where the Mac Desktop service writes its observation screenshots. Listed
+ * here so `readObservationPreview` serves a lane-desktop frame through the
+ * exact same path-checked route the browser's frames use — a second route
+ * would be a second place to get the containment check wrong. The segments come
+ * from the shared contract the writer joins too: a reader that disagrees with
+ * the writer serves nothing, silently.
+ */
+const MAC_DESKTOP_OBSERVATION_CACHE_DIR = path.join(...MAC_DESKTOP_OBSERVATION_CACHE_SEGMENTS);
 
 /**
  * How deep to walk an observation root. The browser nests
@@ -89,8 +119,34 @@ const OBSERVATION_PREVIEW_MIME_BY_EXTENSION: Record<string, string> = {
  */
 export const WORK_TOOLS_STATE_EVENT_DEBOUNCE_MS = 250;
 
+/**
+ * How long a lane state read waits for the Mac Desktop status before it
+ * answers with the last status it has for the lane.
+ *
+ * `getStatus` waits for the driver's health (up to 5 s) and then for the
+ * lane's windows (up to 4 s). The driver serves every request on one thread,
+ * so while an agent drives the screen or a stream starts, both waits can run
+ * to their limits. The phone waits 8 s for the whole lane state and then
+ * drops every lane tool chip, so a display that was up the whole time went
+ * missing on the phone. The last status stays right about the display because
+ * `display-created` and `display-destroyed` update it.
+ */
+export const WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS = 2_000;
+
 export type WorkToolsBrowserStatusReader = () => Promise<BuiltInBrowserRuntimeStatus>;
 export type WorkToolsAppControlStatusReader = () => AppControlStatus | Promise<AppControlStatus>;
+
+/**
+ * The slice of the Mac Desktop service this aggregator is allowed to hold.
+ *
+ * Deliberately `Pick<…, "getStatus">` plus the subscription rather than the
+ * whole `MacDesktopServiceApi`: a read-only mirror must not be able to start a
+ * display, take a lease, or move a pointer, and the narrow type is what makes
+ * that a compile error rather than a code-review note.
+ */
+export type WorkToolsMacDesktopReader = Pick<MacDesktopServiceApi, "getStatus"> & {
+  subscribe(listener: (event: MacDesktopEventPayload) => void): () => void;
+};
 
 export type WorkToolsStateServiceArgs = {
   projectRoot: string;
@@ -102,10 +158,21 @@ export type WorkToolsStateServiceArgs = {
   getBrowserStatus?: WorkToolsBrowserStatusReader | null;
   /** The daemon's own App Control service, when it has one. */
   getAppControlStatus?: WorkToolsAppControlStatusReader | null;
+  /**
+   * The runtime's Mac Desktop service. Absent on every non-macOS host and on
+   * any build without it; absence reads as "the tool does not exist here", not
+   * as an error, exactly as `getBrowserStatus` does.
+   */
+  macDesktopService?: WorkToolsMacDesktopReader | null;
   /** Emits `work_tools_state_changed`. Already debounced when it fires. */
   onStateChanged?: (laneId: string) => void;
   debounceMs?: number;
   logger?: Logger | null;
+  /**
+   * `ade ui show`: asks the desktop renderers to put a surface of a chat on
+   * screen. Absent on a runtime that publishes no runtime events.
+   */
+  showRequests?: WorkToolShowRequests | null;
 };
 
 /**
@@ -159,6 +226,17 @@ export type WorkToolsStateService = {
   readObservationPreview(
     args: WorkToolsReadObservationPreviewArgs,
   ): Promise<WorkToolsObservationPreview | null>;
+  /**
+   * Ask the desktop showing this chat to open a surface, and report what it
+   * did: shown, held until the user opens the chat, or no desktop at all.
+   */
+  show(args: unknown): Promise<WorkToolShowResult>;
+  /** A desktop renderer answering {@link show}. User clients only. */
+  acknowledgeShow(args: unknown): { ok: boolean };
+  /** An agent drove this chat's Apple device; see `WorkToolShowRequests`. */
+  noteAgentAppleActivity(args: AgentDeviceActivity): boolean;
+  /** An agent drove this chat's lane Mac Desktop; see `WorkToolShowRequests`. */
+  noteAgentMacDesktopActivity(args: AgentDeviceActivity): boolean;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -371,6 +449,104 @@ function summarizeAgentPresence(
     });
 }
 
+/**
+ * The lane's macOS seat, cut down to what a client that cannot drive it needs.
+ *
+ * `lastObservation` deliberately does NOT come from `getStatus` — the status
+ * carries no observation, because an element tree is not status. It is kept
+ * from the `observation` event instead, which is the only place the newest
+ * frame is announced, and it is passed in rather than read here so this stays
+ * a pure function of two inputs.
+ */
+function summarizeMacDesktop(
+  status: MacDesktopStatus,
+  lastObservation: WorkToolsMacDesktopState["lastObservation"],
+  notParked: readonly MacDesktopNotParked[],
+): WorkToolsMacDesktopState {
+  return {
+    supported: status.supported,
+    display: status.display,
+    windows: status.windows,
+    lease: status.lease,
+    stream: status.stream,
+    permissions: status.permissions,
+    // A frame captured before the display went away describes a screen that no
+    // longer exists, so it leaves with the display rather than lingering.
+    lastObservation: status.display ? lastObservation : null,
+    hostIsLocal: status.hostIsLocal,
+    // Same rule the desktop panel folds with, from the same event, and the
+    // same "is this worth saying" filter: a mirrored client shows whatever it
+    // is handed, so a retry the driver is still working through must not cross
+    // the wire at all. Copied out of the tracking list so a later mutation of
+    // it cannot reach a published state object.
+    notParked: macDesktopVisibleNotParked(notParked, Date.now()),
+    // Running and start time only; the file path is host-absolute and the
+    // caption is proof metadata, neither of which a viewer needs.
+    recording: status.recording
+      ? { running: status.recording.running, startedAt: status.recording.startedAt }
+      : null,
+  };
+}
+
+/**
+ * The lane an event is about, or null when it is about the whole host.
+ *
+ * `permission-changed` and `driver-health` are host-wide: a revoked Screen
+ * Recording grant changes every lane's answer at once, so they fan out to every
+ * lane this service has been asked about rather than naming one.
+ */
+function macDesktopEventLaneId(event: MacDesktopEventPayload): string | null {
+  switch (event.type) {
+    case "display-created":
+      return event.display.laneId;
+    case "display-destroyed":
+    case "windows-changed":
+    case "observation":
+    case "lease-changed":
+    case "lease-requested":
+      return event.laneId;
+    case "stream-started":
+    case "stream-status":
+    case "stream-stopped":
+    case "stream-error":
+    case "recording-changed":
+      return event.status.laneId;
+    case "window-not-parked":
+      return event.laneId;
+    case "time-lapse":
+      return event.timeLapse.laneId;
+    case "permission-changed":
+    case "driver-health":
+      return null;
+    default: {
+      // A new event type is a compile error here until someone decides whether
+      // it names a lane or fans out to every lane.
+      const unhandled: never = event;
+      return unhandled;
+    }
+  }
+}
+
+/** The promise's value, or `settled: false` when `ms` runs out first. */
+async function settleWithin<T>(
+  promise: Promise<T>,
+  ms: number,
+): Promise<{ settled: true; value: T } | { settled: false }> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const deadline = new Promise<{ settled: false }>((resolve) => {
+    timer = setTimeout(() => resolve({ settled: false }), ms);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ settled: true as const, value })),
+      deadline,
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function summarizeAppControl(status: AppControlStatus): WorkToolsAppControlState | null {
   const session = status.activeSession;
   if (!session) return null;
@@ -402,6 +578,48 @@ export function createWorkToolsStateService(
 
   const browserObservationRoot = path.join(projectRoot, BROWSER_OBSERVATION_CACHE_DIR);
   const appControlObservationRoot = path.join(projectRoot, APP_CONTROL_OBSERVATION_CACHE_DIR);
+  const macDesktopObservationRoot = path.join(projectRoot, MAC_DESKTOP_OBSERVATION_CACHE_DIR);
+  // Newest frame per lane, kept from the `observation` event. `getStatus` does
+  // not carry one, and re-scanning the cache directory on every state read
+  // would turn a poll into a filesystem crawl for a fact the service just told
+  // us. Cleared when the lane's display goes away.
+  const macDesktopObservationByLane = new Map<
+    string,
+    NonNullable<WorkToolsMacDesktopState["lastObservation"]>
+  >();
+  /**
+   * Windows `window-not-parked` reported, per lane, newest first.
+   *
+   * Tracked here rather than read back off `getStatus`: the status has no such
+   * field, because a window that would not park is not on the display the status
+   * describes — it is on the human's own screen, which is exactly why it is
+   * worth saying. Entries leave on the `windows-changed` that shows the window
+   * landed after all, and with the display.
+   */
+  const macDesktopNotParkedByLane = new Map<string, readonly MacDesktopNotParked[]>();
+  // Lanes this service has been asked about or told about, so a host-wide
+  // event (a revoked permission, a lost driver) can reach every client that
+  // has a view open rather than none.
+  const knownMacDesktopLanes = new Set<string>();
+  /**
+   * The newest status `getStatus` returned per lane, kept current for the
+   * display and the lease by the service's events. A read that runs past
+   * `WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS` answers with this.
+   */
+  const lastMacDesktopStatusByLane = new Map<string, MacDesktopStatus>();
+  /**
+   * Bumped per lane when its display is created or destroyed. A read that
+   * started before the change must not put the old display back in
+   * `lastMacDesktopStatusByLane` when it finally returns.
+   */
+  const macDesktopDisplayEpochByLane = new Map<string, number>();
+  const patchLastMacDesktopStatus = (laneId: string, patch: Partial<MacDesktopStatus>): void => {
+    const last = lastMacDesktopStatusByLane.get(laneId);
+    if (last) lastMacDesktopStatusByLane.set(laneId, { ...last, ...patch });
+  };
+  const bumpMacDesktopDisplayEpoch = (laneId: string): void => {
+    macDesktopDisplayEpochByLane.set(laneId, (macDesktopDisplayEpochByLane.get(laneId) ?? 0) + 1);
+  };
 
   const emitStateChanged = (laneId: string): void => {
     if (disposed) return;
@@ -475,6 +693,127 @@ export function createWorkToolsStateService(
     return appControl;
   };
 
+  const readMacDesktop = async (laneId: string): Promise<WorkToolsMacDesktopState | null> => {
+    const service = args.macDesktopService;
+    // No service at all: this host cannot host a lane screen, and the tool is
+    // hidden rather than drawn empty. Same shape of answer as a non-Mac host.
+    if (!service) return null;
+    knownMacDesktopLanes.add(laneId);
+    const epoch = macDesktopDisplayEpochByLane.get(laneId) ?? 0;
+    // Deferred one tick so a reader that throws instead of rejecting is
+    // caught below like any other failed read.
+    const read = Promise.resolve().then(() => service.getStatus({ laneId })).then((next) => {
+      if (!disposed && (macDesktopDisplayEpochByLane.get(laneId) ?? 0) === epoch) {
+        lastMacDesktopStatusByLane.set(laneId, next);
+      }
+      return next;
+    });
+    const last = lastMacDesktopStatusByLane.get(laneId) ?? null;
+    let status: MacDesktopStatus;
+    try {
+      if (!last) {
+        // Nothing to answer with yet, but the first read gets the same deadline
+        // as every later one: a helper that is starting up must not hold the
+        // whole lane state past the phone's own timeout. Unknown is answered
+        // as absent, and the late answer tells the clients to read again.
+        const result = await settleWithin(read, WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+        if (!result.settled) {
+          args.logger?.debug("work_tools.mac_desktop_first_status_slow", {
+            laneId,
+            deadlineMs: WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS,
+          });
+          void read.then(() => {
+            if (!disposed && (macDesktopDisplayEpochByLane.get(laneId) ?? 0) === epoch) emitStateChanged(laneId);
+          }, () => undefined);
+          return null;
+        }
+        status = result.value;
+      } else {
+        const result = await settleWithin(read, WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS);
+        if (result.settled) {
+          status = result.value;
+        } else {
+          args.logger?.debug("work_tools.mac_desktop_status_slow", {
+            laneId,
+            deadlineMs: WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS,
+          });
+          // Read again rather than `last`: a display event during the wait
+          // has updated it.
+          status = lastMacDesktopStatusByLane.get(laneId) ?? last;
+          const answered = status;
+          // The late answer only matters to a client when the display came
+          // or went. `display-*` events already cover that case, so this is
+          // a backstop, and it cannot loop: an unchanged answer emits nothing.
+          void read.then((late) => {
+            const sameDisplay = (macDesktopDisplayEpochByLane.get(laneId) ?? 0) === epoch;
+            if (sameDisplay && Boolean(late.display) !== Boolean(answered.display)) emitStateChanged(laneId);
+          }, () => undefined);
+        }
+      }
+    } catch (error) {
+      // `getStatus` answers on every platform by contract, so a rejection here
+      // is a real fault rather than "not a Mac" — but it still renders as the
+      // tool being absent, so it is logged loudly enough to be findable.
+      args.logger?.warn("work_tools.mac_desktop_status_failed", {
+        err: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    return summarizeMacDesktop(
+      status,
+      macDesktopObservationByLane.get(laneId) ?? null,
+      macDesktopNotParkedByLane.get(laneId) ?? [],
+    );
+  };
+
+  // Push, never poll. Every edge the service announces is one a mirrored client
+  // would otherwise learn only on its next 3-4 second tick.
+  const unsubscribeMacDesktop = args.macDesktopService?.subscribe((event) => {
+    if (disposed) return;
+    if (event.type === "observation") {
+      const observation = event.observation;
+      macDesktopObservationByLane.set(event.laneId, {
+        id: observation.id,
+        capturedAt: observation.capturedAt,
+        caption: observation.caption,
+        screenshotPath: observation.screenshotPath,
+      });
+    } else if (event.type === "display-destroyed") {
+      macDesktopObservationByLane.delete(event.laneId);
+      bumpMacDesktopDisplayEpoch(event.laneId);
+      patchLastMacDesktopStatus(event.laneId, {
+        display: null,
+        windows: [],
+        lease: null,
+        stream: null,
+        recording: null,
+      });
+    } else if (event.type === "display-created") {
+      bumpMacDesktopDisplayEpoch(event.display.laneId);
+      patchLastMacDesktopStatus(event.display.laneId, { display: event.display });
+    } else if (event.type === "lease-changed") {
+      patchLastMacDesktopStatus(event.laneId, { lease: event.lease });
+    }
+    const notParkedLaneId = event.type === "window-not-parked"
+      || event.type === "windows-changed"
+      || event.type === "display-destroyed"
+      ? event.laneId
+      : null;
+    if (notParkedLaneId) {
+      const current = macDesktopNotParkedByLane.get(notParkedLaneId) ?? [];
+      const next = reduceMacDesktopNotParked(current, event, notParkedLaneId, Date.now());
+      if (next.length) macDesktopNotParkedByLane.set(notParkedLaneId, next);
+      else macDesktopNotParkedByLane.delete(notParkedLaneId);
+    }
+    const laneId = macDesktopEventLaneId(event);
+    if (laneId) {
+      knownMacDesktopLanes.add(laneId);
+      emitStateChanged(laneId);
+      return;
+    }
+    for (const known of knownMacDesktopLanes) emitStateChanged(known);
+  }) ?? null;
+
   return {
     noteAgentBrowserActivity(input) {
       const laneId = trimmedOrNull(input?.laneId);
@@ -544,9 +883,10 @@ export function createWorkToolsStateService(
     async getLaneState(input) {
       const laneId = requireLaneId(input?.laneId, "work_tools.getLaneState");
       const active = activeToolByLane.get(laneId) ?? null;
-      const [{ browser, unavailable, presence }, appControl] = await Promise.all([
+      const [{ browser, unavailable, presence }, appControl, macDesktop] = await Promise.all([
         readBrowser(laneId),
         readAppControl(laneId),
+        readMacDesktop(laneId),
       ]);
       return {
         laneId,
@@ -557,6 +897,7 @@ export function createWorkToolsStateService(
         browserUnavailable: unavailable,
         agentBrowserPresence: presence,
         appControl,
+        macDesktop,
         capturedAt: new Date().toISOString(),
       };
     },
@@ -568,7 +909,7 @@ export function createWorkToolsStateService(
       // crosses a trust boundary — a paired viewer could send any string. Both
       // observation roots are checked so neither becomes an arbitrary file read.
       let canonical: string | null = null;
-      for (const root of [browserObservationRoot, appControlObservationRoot]) {
+      for (const root of [browserObservationRoot, appControlObservationRoot, macDesktopObservationRoot]) {
         try {
           canonical = resolvePathWithinRoot(root, path.resolve(requested));
           break;
@@ -607,6 +948,25 @@ export function createWorkToolsStateService(
       }
     },
 
+    async show(input) {
+      if (!args.showRequests) {
+        throw new Error("work_tools.show is not available on this runtime.");
+      }
+      return await args.showRequests.show(input);
+    },
+
+    acknowledgeShow(input) {
+      return args.showRequests?.acknowledgeShow(input) ?? { ok: false };
+    },
+
+    noteAgentAppleActivity(input) {
+      return args.showRequests?.noteAgentAppleActivity(input) ?? false;
+    },
+
+    noteAgentMacDesktopActivity(input) {
+      return args.showRequests?.noteAgentMacDesktopActivity(input) ?? false;
+    },
+
     flushPendingEvents() {
       for (const [laneId, timer] of [...pendingEventTimers]) {
         clearTimeout(timer);
@@ -617,6 +977,12 @@ export function createWorkToolsStateService(
 
     dispose() {
       disposed = true;
+      unsubscribeMacDesktop?.();
+      macDesktopObservationByLane.clear();
+      knownMacDesktopLanes.clear();
+      lastMacDesktopStatusByLane.clear();
+      macDesktopDisplayEpochByLane.clear();
+      args.showRequests?.dispose();
       for (const timer of pendingEventTimers.values()) clearTimeout(timer);
       pendingEventTimers.clear();
       for (const entry of presenceWindowTimers.values()) clearTimeout(entry.timer);

@@ -1,6 +1,7 @@
 import { annotateSubagentTree } from "./chatSubagentTree";
 import { resourceLinkCopyPaths } from "./claudeAgentSdkFields";
 import type { AgentChatResourceLink } from "./types/chat";
+import type { CliSessionFacts } from "./cliChildSession";
 
 export type ChatTurnStatusPhase = "running" | "blocked" | "idle";
 
@@ -39,6 +40,8 @@ export type ChatTurnStatusSnapshot = {
   queuedMessageCount: number;
   ask?: ChatTurnStatusAsk | null;
   subagents: ChatTurnStatusSubagent[];
+  /** Present when the id names a tracked CLI terminal rather than a chat. */
+  cliSession?: CliSessionFacts;
 };
 
 export type DeriveChatTurnStatusInput = {
@@ -158,6 +161,18 @@ export function formatChatTurnStatus(
   if (status.ask) {
     const askDetail = status.ask.description?.trim() || status.ask.title;
     lines.push(chatTurnStatusRow("ask", askDetail));
+  }
+
+  if (status.cliSession) {
+    const cli = status.cliSession;
+    const exit = cli.status === "running"
+      ? "running"
+      : `${cli.status}${cli.exitCode != null ? ` · exit ${cli.exitCode}` : ""}`;
+    lines.push(chatTurnStatusRow("cli", `${cli.provider ?? cli.toolType ?? "terminal"} · ${exit}`));
+    if (cli.parentSessionId) {
+      lines.push(chatTurnStatusRow("parent", `${cli.parentSessionId}${cli.spawnKind ? ` (${cli.spawnKind})` : ""}`));
+    }
+    lines.push(chatTurnStatusRow("output", cli.readHint));
   }
 
   for (const row of options?.extraRows ?? []) lines.push(row);

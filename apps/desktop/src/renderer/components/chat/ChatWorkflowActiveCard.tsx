@@ -381,7 +381,7 @@ export function ChatWorkflowActiveCard({
               <span className="relative mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-white/[0.07] pt-2 text-[10px] tabular-nums text-fg/42">
                 <span className="inline-flex items-center gap-1"><UsersThree aria-hidden size={11} />{counts.completed}/{total || "–"} agents</span>
                 {totals.tokens !== null ? <span>{totals.tokens.toLocaleString()} tok</span> : null}
-                {totals.tools !== null ? <span>{totals.tools} tools</span> : null}
+                {totals.tools !== null ? <span>{totals.tools} {totals.tools === 1 ? "tool" : "tools"}</span> : null}
                 {counts.running > 0 ? <span className="inline-flex items-center gap-1 text-violet-200/70"><CircleHalf aria-hidden size={10} weight="fill" />{counts.running} running</span> : null}
                 {progress.queuedCount > 0 ? <span>{progress.queuedCount} queued</span> : null}
               </span>
@@ -564,7 +564,7 @@ function ChatWorkflowDetailsModal({
                         <span className="mt-0.5 block break-words text-[10px] leading-4 text-fg/42">{summary}</span>
                         <span className="mt-1 flex flex-wrap gap-x-2.5 gap-y-0.5 text-[9.5px] tabular-nums text-fg/28">
                           {typeof agent.tokens === "number" ? <span>{agent.tokens.toLocaleString()} tok</span> : null}
-                          {typeof agent.toolCalls === "number" ? <span>{agent.toolCalls} tools</span> : null}
+                          {typeof agent.toolCalls === "number" ? <span>{agent.toolCalls} {agent.toolCalls === 1 ? "tool" : "tools"}</span> : null}
                           {agent.durationMs ? <span>{formatSubagentDurationMs(agent.durationMs)}</span> : null}
                           {agent.lastToolName ? <span className="inline-flex items-center gap-1"><Wrench aria-hidden size={9} />{agent.lastToolName}</span> : null}
                         </span>

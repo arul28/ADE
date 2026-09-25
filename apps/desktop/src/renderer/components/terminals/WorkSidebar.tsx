@@ -25,6 +25,8 @@ import { isChatToolType, isPtyContextInsertableToolType } from "../../lib/sessio
 import { revealTransition } from "../../lib/motion";
 import { showToast } from "../app/toast/toastStore";
 import { WorkToolHeader, workToolPanelId } from "./WorkToolHeader";
+import { WorkToolsMaximizeContext } from "./workToolsMaximize";
+import { cn } from "../ui/cn";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
@@ -131,6 +133,8 @@ export function WorkSidebar({
   contextTarget,
   contextDisabledReason: targetDisabledReason,
   runtimePin = null,
+  maximized = false,
+  onMaximizedChange,
 }: {
   active?: boolean;
   laneId: string | null;
@@ -152,6 +156,9 @@ export function WorkSidebar({
    * another machine gets THAT machine's git, terminals, and files.
    */
   runtimePin?: OpenProjectBinding | null;
+  /** The pane fills the Work page, tabs and all. Owned by the page. */
+  maximized?: boolean;
+  onMaximizedChange?: (next: boolean) => void;
 }) {
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [selectedMode, setSelectedMode] = useState<"staged" | "unstaged" | null>(null);
@@ -265,7 +272,6 @@ export function WorkSidebar({
   const {
     statuses,
     loading: statusesLoading,
-    iosSession,
     appControlSession,
   } = useWorkToolStatuses({
     enabled: active,
@@ -284,9 +290,7 @@ export function WorkSidebar({
     if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage(workToolLabel("app-control"), appControlSession.laneId, laneId, scopedLanes);
     }
-    if (effectiveTool === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
-      return laneMismatchMessage(workToolLabel("ios"), iosSession.laneId, laneId, scopedLanes);
-    }
+    // Apple has no pane-level claim: per-device ownership lives in the picker.
     return null;
   }
   // Lane attribution only. "This session cannot receive inserted context" is
@@ -297,6 +301,19 @@ export function WorkSidebar({
   const contextDisabledReason = targetDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
+
+  /**
+   * The pane at window size, tabs included. The page owns the state so it can
+   * hide the columns beside the pane without this subtree remounting (a portal
+   * did remount it, which restarted the Mac Desktop stream on every toggle).
+   * See `workToolsMaximize`.
+   */
+  const setMaximized = useCallback((next: boolean) => onMaximizedChange?.(next), [onMaximizedChange]);
+  const maximizeContext = useMemo(() => ({ maximized, setMaximized }), [maximized, setMaximized]);
+  // Losing every tool always restores the window.
+  useEffect(() => {
+    if (!effectiveTool && maximized) setMaximized(false);
+  }, [effectiveTool, maximized, setMaximized]);
 
   const {
     addAttachment,
@@ -511,8 +528,18 @@ export function WorkSidebar({
     // for keys pressed inside this pane, and never while a modal layer is up.
     if (!target || !sidebarRef.current?.contains(target)) return;
     const targetElement = target instanceof Element ? target : target.parentElement;
+    // A maximised pane gives Escape back first: it restores the window and
+    // leaves the tool where it was, instead of also walking back to the
+    // picker. A menu, a dialog or a claimed field still owns its own Escape.
+    if (maximized && event.key === "Escape" && !aModalLayerIsOpen()
+      && !(targetElement && escapeIsClaimedInside(targetElement))) {
+      event.preventDefault();
+      event.stopPropagation();
+      setMaximized(false);
+      return;
+    }
     applyPickerBinding(event.nativeEvent, targetElement);
-  }, [active, applyPickerBinding]);
+  }, [active, applyPickerBinding, maximized, setMaximized]);
 
   /**
    * Which surface the pointer last committed to.
@@ -603,9 +630,11 @@ export function WorkSidebar({
       : revealTransition;
 
   return (
+    <WorkToolsMaximizeContext.Provider value={maximizeContext}>
     <aside
       ref={sidebarRef}
       onKeyDownCapture={handleKeyDownCapture}
+      data-maximized={maximized ? "true" : undefined}
       // Focusable only programmatically (`selectTool`), and never ringed for
       // it: this is a focus fallback, not a stop on the tab order.
       tabIndex={-1}
@@ -614,7 +643,12 @@ export function WorkSidebar({
       // overflow is then clipped by the window — which is how the ✕ and the
       // browser's ⋮ ended up unreachable. The drag is what enforces 280px
       // (`clampWorkSidebarWidthPct`); the pane itself just never escapes.
-      className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden border-l border-white/[0.08] bg-surface/85 outline-none"
+      className={cn(
+        "flex h-full min-h-0 min-w-0 flex-col overflow-hidden outline-none",
+        // Opaque when it is the whole page: the columns it covers are hidden,
+        // and a translucent pane over nothing reads as a broken overlay.
+        maximized ? "bg-bg" : "border-l border-white/[0.08] bg-surface/85",
+      )}
     >
       {/* One bar for both states. The strip does not disappear when the picker
           comes up — the tabs are still open, and a picker page that hid them
@@ -680,5 +714,6 @@ export function WorkSidebar({
         </AnimatePresence>
       </div>
     </aside>
+    </WorkToolsMaximizeContext.Provider>
   );
 }

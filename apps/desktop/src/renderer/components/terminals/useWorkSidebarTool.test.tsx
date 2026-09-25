@@ -18,6 +18,11 @@ import {
   resetAppleShutdownConfirmForTests,
 } from "../apple/AppleShutdownConfirm";
 import {
+  getMacDesktopStopConfirmRequest,
+  resetMacDesktopStopConfirmForTests,
+} from "../chat/MacDesktopStopConfirm";
+import { resetMacDesktopStatusStoreForTests } from "../chat/macDesktopStatusStore";
+import {
   clearPendingWorkToolRequest,
   requestWorkTool,
   resetWorkToolRequestsForTests,
@@ -307,6 +312,87 @@ describe("useWorkSidebarTool", () => {
       // Refused rather than queued, and the tab stays.
       expect(getAppleShutdownConfirmRequest()?.deviceName).toBe("Someone else");
       expect(view.result.current.openTools).toEqual(["ios"]);
+    });
+  });
+
+  /*
+   * Closing the Mac Desktop tab stops the lane's display, so it asks first
+   * while one runs. "Keep running" closes the tab and leaves the display up;
+   * Cancel keeps both.
+   */
+  describe("closing the Mac Desktop tab", () => {
+    const LIVE = { display: { laneId: "lane-1", displayId: 31 }, windows: [] };
+
+    function installMacDesktop(status: unknown) {
+      const stop = vi.fn(async () => ({ stopped: true, releasedWindows: 0 }));
+      const getStatus = vi.fn(async () => status);
+      (window as unknown as { ade: unknown }).ade = { macDesktop: { getStatus, stop } };
+      return { stop, getStatus };
+    }
+
+    afterEach(() => {
+      resetMacDesktopStopConfirmForTests();
+      resetMacDesktopStatusStoreForTests();
+      (window as unknown as { ade?: unknown }).ade = undefined;
+    });
+
+    async function openMacDesktopTab() {
+      const view = renderHook(() => useWorkSidebarTool("lane-1", null, "chat-1"));
+      await act(async () => { view.result.current.setTool("mac-desktop"); });
+      view.rerender();
+      expect(view.result.current.openTools).toEqual(["mac-desktop"]);
+      return view;
+    }
+
+    it("asks while a display runs, and Cancel keeps the tab and the display", async () => {
+      const { stop } = installMacDesktop(LIVE);
+      const view = await openMacDesktopTab();
+
+      await act(async () => { view.result.current.closeTool("mac-desktop"); });
+      view.rerender();
+      expect(getMacDesktopStopConfirmRequest()).not.toBeNull();
+      expect(view.result.current.openTools).toEqual(["mac-desktop"]);
+
+      await act(async () => { getMacDesktopStopConfirmRequest()?.resolve("cancel"); });
+      view.rerender();
+      expect(view.result.current.openTools).toEqual(["mac-desktop"]);
+      expect(stop).not.toHaveBeenCalled();
+    });
+
+    it("Stop closes the tab and stops the display", async () => {
+      const { stop } = installMacDesktop(LIVE);
+      const view = await openMacDesktopTab();
+
+      await act(async () => { view.result.current.closeTool("mac-desktop"); });
+      await act(async () => { getMacDesktopStopConfirmRequest()?.resolve("stop"); });
+      view.rerender();
+      expect(view.result.current.openTools).toEqual([]);
+      await vi.waitFor(() => expect(stop).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1" },
+        undefined,
+      ));
+    });
+
+    it("Keep running closes the tab and leaves the display up", async () => {
+      const { stop } = installMacDesktop(LIVE);
+      const view = await openMacDesktopTab();
+
+      await act(async () => { view.result.current.closeTool("mac-desktop"); });
+      await act(async () => { getMacDesktopStopConfirmRequest()?.resolve("keep"); });
+      view.rerender();
+      expect(view.result.current.openTools).toEqual([]);
+      expect(stop).not.toHaveBeenCalled();
+    });
+
+    it("asks nothing when the lane has no display", async () => {
+      const { stop } = installMacDesktop({ display: null, windows: [] });
+      const view = await openMacDesktopTab();
+
+      await act(async () => { view.result.current.closeTool("mac-desktop"); });
+      view.rerender();
+      expect(getMacDesktopStopConfirmRequest()).toBeNull();
+      expect(view.result.current.openTools).toEqual([]);
+      await vi.waitFor(() => expect(stop).toHaveBeenCalled());
     });
   });
 

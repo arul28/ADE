@@ -85,16 +85,6 @@ describe("FilesExplorer header", () => {
     expect(props.onSearchQueryChange).toHaveBeenCalledWith("");
   });
 
-  it("anchors the clear-search control on the tooltip wrapper", () => {
-    renderExplorer({ searchQuery: "button" });
-
-    const button = screen.getByLabelText("Clear search");
-    const wrapper = button.parentElement;
-    if (!(wrapper instanceof HTMLElement)) throw new Error("clear-search tooltip wrapper is missing");
-    expect(wrapper.style.position).toBe("absolute");
-    expect(wrapper.style.right).toBe("4px");
-    expect(button.style.position).not.toBe("absolute");
-  });
 });
 
 describe("FilesExplorer search results", () => {

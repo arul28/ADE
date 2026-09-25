@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { openExternalUrl } from "./openExternal";
+import { openExternalUrl, tryOpenExternalUrl } from "./openExternal";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "./account";
 import type {
   AdeAccountDeviceLoginPoll,
@@ -144,6 +144,12 @@ export type AccountDeviceLoginPrompt = {
   userCode: string;
   verificationUri: string;
   verificationUriComplete: string | null;
+  /**
+   * True when the sign-in page actually opened in the browser. The in-app
+   * prompt is a confirmation in that case; when the handoff failed the prompt
+   * has to carry the URL itself.
+   */
+  browserOpened: boolean;
 };
 
 export type AccountDeviceLoginOutcome =
@@ -171,6 +177,12 @@ export async function runAccountDeviceLogin(options: {
   onPrompt?: (prompt: AccountDeviceLoginPrompt) => void;
   /** Polled between attempts so the caller can abandon the flow. */
   isCancelled?: () => boolean;
+  /**
+   * Opens the sign-in page. Returns false when the handoff failed, which flips
+   * the prompt from a confirmation to instructions with the URL. Injected so
+   * tests can drive both branches; defaults to the real external opener.
+   */
+  openUrl?: (url: string) => Promise<boolean> | boolean;
 } = {}): Promise<AccountDeviceLoginOutcome> {
   const api = accountApi();
   if (!api?.startDeviceLogin || !api.pollDeviceLogin) {
@@ -200,12 +212,15 @@ export async function runAccountDeviceLogin(options: {
     return { status: "cancelled" };
   }
 
+  const openUrl = options.openUrl ?? tryOpenExternalUrl;
+  const signInUrl = start.verificationUriComplete ?? start.verificationUri;
+  const browserOpened = (await openUrl(signInUrl)) !== false;
   options.onPrompt?.({
     userCode: start.userCode,
     verificationUri: start.verificationUri,
     verificationUriComplete: start.verificationUriComplete,
+    browserOpened,
   });
-  openExternalUrl(start.verificationUriComplete ?? start.verificationUri);
 
   const expiresAtMs = Date.parse(start.expiresAt);
   const deadlineMs = Number.isFinite(expiresAtMs) ? expiresAtMs : Date.now() + 15 * 60_000;

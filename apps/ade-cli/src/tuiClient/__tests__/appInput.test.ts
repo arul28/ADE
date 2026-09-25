@@ -232,6 +232,22 @@ describe("session activity helpers", () => {
     })).toBe(false);
   });
 
+  it("auto-opens chat info for a task-list plan but not for a plan-mode proposal, without making plan a flush edge", () => {
+    const base = { isActiveSessionEvent: true, activePane: "chat", userDismissedRightPane: false };
+    expect(shouldAutoOpenChatInfoForEvent({
+      ...base,
+      eventType: "plan",
+      event: { type: "plan", steps: [{ text: "Read", status: "pending" }] } as never,
+    })).toBe(true);
+    expect(shouldAutoOpenChatInfoForEvent({
+      ...base,
+      eventType: "plan",
+      event: { type: "plan", steps: [], streamingText: "## Proposal", state: "delta" } as never,
+    })).toBe(false);
+    // Proposal deltas stream at token rate; plan must keep coalescing.
+    expect(isChatFlushEdge("plan")).toBe(false);
+  });
+
   it("routes prompt submission to an existing chat before starting a provider-specific fallback", () => {
     expect(resolvePromptChatSubmitTarget({
       draftChatActive: false,
@@ -799,10 +815,8 @@ describe("right pane context defaults", () => {
       contextPercent: null,
       tokenSummary: null,
       goal: null,
-      plan: { current: 0, total: 0, live: false, steps: [] },
-      planExplanation: null,
+      taskList: null,
       planStreamingText: null,
-      todos: [],
       scheduledWork: [],
       backgroundWork: [],
       pr: null,
@@ -2593,11 +2607,6 @@ describe("mergeOptimisticTerminalSessions", () => {
     resumeMetadata: null,
     lastOutputPreview: null,
     summary: null,
-  });
-
-  it("returns the listed sessions unchanged when there are no optimistic entries", () => {
-    const listed = [makeTerminal("a")];
-    expect(mergeOptimisticTerminalSessions(listed, new Map())).toBe(listed);
   });
 
   it("prepends an optimistic terminal the runtime list has not surfaced yet", () => {

@@ -5,9 +5,9 @@ import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../share
 import {
   derivePendingInputRequests,
   getPendingInputQuestionCount,
-  readPendingInputRequest,
   resolvePendingInputs,
 } from "./pendingInput";
+import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
 
 // ---------------------------------------------------------------------------
 // Helpers for building test envelopes
@@ -166,7 +166,7 @@ describe("derivePendingInputRequests", () => {
   // An explicit `allowsFreeform: false` has to survive the parser: collapsing it
   // to undefined makes "the provider declined freeform" indistinguishable from
   // "unspecified", and the composer renders a note row for unspecified.
-  it("regression: preserves allowsFreeform in both directions", () => {
+  it("preserves allowsFreeform in both directions", () => {
     const build = (allowsFreeform: boolean) => readPendingInputRequest({
       requestId: "req-freeform",
       source: "ade",
@@ -386,53 +386,6 @@ describe("derivePendingInputRequests", () => {
         tool: "exec",
         result: { stdout: "ok" },
         itemId: "item-1",
-        turnId: "turn-1",
-        status: "completed",
-      }),
-    ];
-    expect(visiblePendingInputs(events)).toEqual([]);
-  });
-
-  it("command removes the matching pending input", () => {
-    const events: AgentChatEventEnvelope[] = [
-      envelope({
-        type: "approval_request",
-        itemId: "cmd-1",
-        kind: "command",
-        description: "Run npm build",
-        turnId: "turn-1",
-        detail: { tool: "exec_command" },
-      }),
-      envelope({
-        type: "command",
-        command: "npm build",
-        cwd: "/project",
-        output: "ok",
-        itemId: "cmd-1",
-        turnId: "turn-1",
-        status: "completed",
-        exitCode: 0,
-      }),
-    ];
-    expect(visiblePendingInputs(events)).toEqual([]);
-  });
-
-  it("file_change removes the matching pending input", () => {
-    const events: AgentChatEventEnvelope[] = [
-      envelope({
-        type: "approval_request",
-        itemId: "fc-1",
-        kind: "file_change",
-        description: "Edit foo.ts",
-        turnId: "turn-1",
-        detail: { tool: "write_file" },
-      }),
-      envelope({
-        type: "file_change",
-        path: "foo.ts",
-        diff: "+line",
-        kind: "modify",
-        itemId: "fc-1",
         turnId: "turn-1",
         status: "completed",
       }),

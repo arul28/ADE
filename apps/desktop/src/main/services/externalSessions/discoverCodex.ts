@@ -528,6 +528,68 @@ export function findCodexRolloutPathBySessionId(
   return candidates[0]?.filePath ?? null;
 }
 
+/**
+ * Asynchronous, bounded counterpart for hot brain paths. Codex's normal
+ * sessions layout is sessions/YYYY/MM/DD/<rollout>-<thread-id>.jsonl; scan
+ * only that hierarchy and stop after 10,000 directory entries so a damaged or
+ * unexpected tree cannot turn a child-exit callback into an unbounded walk.
+ */
+export async function findCodexRolloutPathBySessionIdAsync(
+  sessionId: string,
+  args: ExternalSessionDiscoveryArgs = {},
+): Promise<string | null> {
+  const lookupId = sessionId.trim();
+  if (!lookupId) return null;
+  const sessionsDir = path.join(codexHomeDir(args), "sessions");
+  const readDir = async (directory: string): Promise<import("node:fs").Dirent[]> => {
+    try {
+      return await fs.promises.readdir(directory, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+  };
+  const sortedDirs = async (directory: string, pattern: RegExp): Promise<string[]> => {
+    const entries = await readDir(directory);
+    return entries
+      .filter((entry) => entry.isDirectory() && pattern.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a));
+  };
+
+  const matches: Array<{ filePath: string; mtimeMs: number }> = [];
+  let scannedEntries = 0;
+  for (const year of await sortedDirs(sessionsDir, /^\d{4}$/u)) {
+    const yearDir = path.join(sessionsDir, year);
+    for (const month of await sortedDirs(yearDir, /^\d{2}$/u)) {
+      const monthDir = path.join(yearDir, month);
+      for (const day of await sortedDirs(monthDir, /^\d{2}$/u)) {
+        const dayDir = path.join(monthDir, day);
+        for (const entry of await readDir(dayDir)) {
+          scannedEntries += 1;
+          if (scannedEntries > 10_000) break;
+          if (
+            !entry.isFile()
+            || (!entry.name.endsWith(".jsonl") && !entry.name.endsWith(".jsonl.zst"))
+            || !matchesCodexLookup(entry.name, lookupId)
+          ) continue;
+          const filePath = path.join(dayDir, entry.name);
+          try {
+            const stat = await fs.promises.stat(filePath);
+            matches.push({ filePath, mtimeMs: stat.mtimeMs });
+          } catch {
+            // A rollout can be pruned while its directory is being scanned.
+          }
+        }
+        if (scannedEntries > 10_000) break;
+      }
+      if (scannedEntries > 10_000) break;
+    }
+    if (scannedEntries > 10_000) break;
+  }
+  matches.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return matches[0]?.filePath ?? null;
+}
+
 function asDbEpochMs(value: unknown): number | null {
   if (typeof value === "bigint") return Number(value);
   return asEpochMs(value);
@@ -808,7 +870,8 @@ async function codexRecordFromSeed(
   exactLookup: boolean,
   logger: ExternalSessionDiscoveryArgs["logger"],
 ): Promise<ExternalSessionDiscoveryRecord> {
-  const exists = safeStat(seed.rolloutPath)?.isFile() === true;
+  const stat = safeStat(seed.rolloutPath);
+  const exists = stat?.isFile() === true;
   const readable = exists && !seed.rolloutPath.endsWith(".jsonl.zst");
   const jsonl = readable ? readJsonlRecords(seed.rolloutPath) : [];
   const first = asRecord(jsonl[0]);
@@ -830,6 +893,7 @@ async function codexRecordFromSeed(
     sourceMtimeMs: seed.mtimeMs,
   });
   if (seed.lineageIds?.length) record.lineageIds = seed.lineageIds;
+  record.sizeBytes = exists && stat ? stat.size : null;
   return record;
 }
 

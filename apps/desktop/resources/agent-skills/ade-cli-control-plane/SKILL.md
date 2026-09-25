@@ -50,6 +50,10 @@ Use `--socket` when the CLI and ADE desktop drawer must share live state. This m
 
 ADE injects `ADE_LANE_ID` and `ADE_CHAT_SESSION_ID` into every agent it launches, and the drawer services (App Control, Apple device, browser) carry them so the Work tools pane attributes what you drive to your lane rather than to the visible chat. When you *attach to something already running* instead of starting it yourself, run that surface's `claim` subcommand first — `ade --socket app-control claim`, `ade --socket apple claim`, `ade --socket browser claim` — or Work will keep showing the previous owner.
 
+### Showing a surface to the user
+
+`ade ui show apple | floating-apple | browser | proof` asks the desktop window that has your chat in front to open that surface (`ade apple show` is the Apple alias). It prints `shown`, `held` (a window has the project but the user cannot see your chat yet — another chat is in front or the window is hidden; it opens when the user goes there) or `no_desktop` (exit 1, nothing was shown — tell the user rather than claiming it opened). A shell with no `ADE_CHAT_SESSION_ID` (an OpenCode agent shell, for one) cannot use it; ask the user to open the surface.
+
 ## Runtime daemon vs. desktop bridge
 
 Most domains (`lane`, `git`, `chat`, `app_control`, `ios_simulator`, etc.) run **inside the runtime daemon** at `~/.ade/sock/ade.sock` and work whether or not the desktop is open.
@@ -119,9 +123,15 @@ child receives `ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance while
 that parent is reachable.
 
 Tracked provider CLI sessions also require `subagent` or `peer` when parented
-and receive the same lineage environment. Their process boundary is still
-checked with `ade chat wait`; use `--mode chat` when you need automatic
-turn-completion wakeups and summaries.
+and receive the same lineage environment. The parent thread shows a CLI child
+as a subagent card, but the card closes (and a `subagent` wakes the parent with
+the CLI's last message) only when the CLI process exits. An interactive CLI
+that finishes its task and stays open reports nothing until it is closed.
+Poll CLI children with `ade chat status <id>` (running / blocked / idle), find
+them with `ade chat list`, and read their last message plus terminal tail with
+`ade chat read <id>` (`ade terminal read <id>` for the full output). **Default
+to `--mode chat` for a subagent that must report back**: a chat child reports
+after every turn it finishes.
 
 When the new work must carry the current lane's unmerged commits, follow the
 child-lane rule in the `ade-lanes-git` skill and use

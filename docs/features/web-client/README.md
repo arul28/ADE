@@ -201,6 +201,33 @@ Browser `window.ade` adapter:
   returns an empty list because dev-server discovery reads this machine's PTY
   output and a web tab has none. Everything else in the namespace is
   deliberately absent so a caller feature-detects instead of getting a fake.
+- `apps/desktop/src/renderer/webclient/adapter/macDesktop.ts` - the lane's
+  macOS screen as this surface can use it. `getStatus`/`start`/`stop` are the
+  same `macDesktop.*` commands the desktop panel calls, and
+  `streamSubscribe`/`streamUnsubscribe` own at most one live subscription per
+  view, keyed by a per-mount `subscriptionId`. The pushed
+  `macDesktop.streamRecord`/`macDesktop.streamEnded` envelopes are surfaced
+  through `onStreamRecord`/`onStreamEnded`; `onConnectionChange` lets the view
+  drop its subscription on a socket close and re-subscribe after the reconnect
+  handshake. `supportsLiveStream()` requires both the
+  `hello.features.macDesktopStream` bit and the advertised subscribe command,
+  because either half missing would mount a view whose first RPC the host
+  rejects. The same shape governs takeover: `supportsMacDesktopControl()`
+  requires `hello.features.macDesktopControl` **and** the advertised
+  `macDesktop.takeControl`, and only then do `takeControl`/`returnControl`/
+  `renewLease`/`input` exist on this namespace. The web call sends a per-tab
+  token, never a lease identity — the host derives `web:<connectionId>:<token>`
+  — and a host without the bit keeps the watch-only pane and its
+  `WORK_TOOLS_CONTROL_HINT` line. The `macDesktop` Work tool renders live in
+  `WorkToolReadOnlyView` by feeding `H264VideoCanvas` a pushed-record source
+  (the same decoder the Electron panel drives from a loopback URL), keeps the
+  display's aspect ratio with `object-fit: contain`, shows the last still frame
+  until the first keyframe arrives, and falls back to that still with a
+  one-line notice on a browser without WebCodecs. When control is advertised
+  the pane adds the Take control affordance, forwards pointer/keyboard through
+  the shared `useMacDesktopRealInput` with a sync sender, draws the same
+  takeover cursor over the letterboxed picture with the shared geometry, and
+  heartbeats the lease until it hands control back.
 - `apps/desktop/src/renderer/webclient/adapter/account.ts` - maps the browser
   OAuth session and account directory onto the reused `window.ade.account`
   contract for status, sign-in/out, machine listing, and machine removal.
@@ -400,7 +427,9 @@ Browser `window.ade` adapter:
   transcript's Retry path does not become a no-op during a rolling upgrade. It routes
   smart-link metadata through viewer-allowed `chat.resolveSmartLinkPreview`
   and falls back to the shared deterministic provider label when an older host
-  does not advertise the action. The adapter also implements the shared
+  does not advertise the action. Sources favicons go through
+  `chat.resolveSourceFavicons`; an older host without it leaves every row on
+  its domain initial. The adapter also implements the shared
   `agentChat.promptStashes` object through
   `chat.listPromptStashes` / `chat.createPromptStash` /
   `chat.deletePromptStash`. The cross-machine handoff trio is genuinely
@@ -589,7 +618,7 @@ Reused desktop renderer (web-mode adaptation):
   `isCssZoomedBrowserSurface()` is true for the hosted client and the Vite
   `browserMock` preview so `AppShell` fills the inverse-sized body with
   `h-full` instead of `100vh`. Desktop-only chrome
-  (`AppShell.tsx`, `TopBar.tsx`, `TabNav.tsx`, `OnboardingBootstrap.tsx`,
+  (`AppShell.tsx`, `TopBar.tsx`, `projectSidebar/`, `OnboardingBootstrap.tsx`,
   `WelcomeVideoGate.tsx`) reads the web-client flag to hide native window
   controls, the updater, the onboarding tour, and tabs with no sync-protocol
   backing instead of rendering broken affordances.
@@ -656,7 +685,7 @@ Reused desktop renderer (web-mode adaptation):
   only the list failed to load — set only where it is both true and not
   obvious: a failure that costs nothing should say so, and one that costs
   something must not be dressed up as harmless.
-- `apps/desktop/src/renderer/components/settings/WebScopeBanner.tsx` - the
+- `apps/desktop/src/renderer/components/settings/WebScopePill.tsx` - the
   per-section scope line in Settings. On the desktop "where does this setting
   go" has one answer; in the browser it has three - the connected machine, the
   ADE account, or this browser's local storage alone - and which one is not

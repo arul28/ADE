@@ -31,6 +31,8 @@ docs/
 ├── ARCHITECTURE.md                        # system architecture
 ├── logging.md                             # logging + PostHog ground truth
 ├── OPTIMIZATION_OPPORTUNITIES.md          # codebase-wide optimization backlog
+├── design/
+│   └── notices.md                         # banners, toasts, dialogs, Z_LAYERS + ade-ui lint ratchet
 ├── playbooks/
 │   ├── ship-lane.md                       # autonomous PR-to-merge driver
 │   └── windows-signed-release.md          # signed Windows publication
@@ -54,6 +56,7 @@ docs/
     ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
+    ├── mac-desktop/                       # per-lane macOS virtual display driven by `ade mac-desktop`
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── personal-chats/                    # machine-owned projectless AI conversations
     ├── sdk/                               # embeddable @ade-dev/sdk + @ade-dev/chat-ui sidecar

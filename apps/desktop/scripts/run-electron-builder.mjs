@@ -126,11 +126,20 @@ const electronBuilderBin = path.join(
   ".bin",
   process.platform === "win32" ? "electron-builder.cmd" : "electron-builder",
 );
+// Local channel packages (scripts/package-channel.mjs) stamp a per-build
+// version so a fresh channel app never treats a brain left by an earlier build
+// as compatible. Setting it here rather than writing package.json keeps the
+// tree clean and reuses this maintained packaging path on Windows. Release
+// builds leave the variable unset and keep their package.json version.
+const desktopVersionOverride = process.env.ADE_DESKTOP_VERSION?.trim();
 const args = [
   ...builderArgs,
   `--config.publish.owner=${owner}`,
   `--config.publish.repo=${repo}`,
   `--config.extraMetadata.adeReleaseRepository=${configuredRepository}`,
+  ...(desktopVersionOverride
+    ? [`--config.extraMetadata.version=${desktopVersionOverride}`]
+    : []),
   // The packaged app has to be able to tell which channel it is at RUNTIME, and
   // on Windows this is the only mechanism that survives packaging. macOS gets
   // the same value twice - here and through LSEnvironment in the plist - so the

@@ -312,7 +312,8 @@ private func workIncrementalApplyEnvelope(
       id: "message-\(message.id)",
       timestamp: envelope.timestamp,
       rank: workIncrementalNextMessageRank(in: timeline),
-      payload: .message(message)
+      payload: .message(message),
+      turnId: message.turnId
     )
     timeline.append(entry)
     newTimelineEntryIDs.insert(entry.id)
@@ -337,7 +338,8 @@ private func workIncrementalApplyEnvelope(
       id: timeline[targetIndex].id,
       timestamp: timeline[targetIndex].timestamp,
       rank: timeline[targetIndex].rank,
-      payload: .message(message)
+      payload: .message(message),
+      turnId: timeline[targetIndex].turnId ?? message.turnId
     )
     return true
   }
@@ -354,7 +356,8 @@ private func workIncrementalApplyEnvelope(
     id: "message-\(message.id)",
     timestamp: envelope.timestamp,
     rank: workIncrementalNextMessageRank(in: timeline),
-    payload: .message(message)
+    payload: .message(message),
+    turnId: message.turnId
   )
   timeline.append(entry)
   newTimelineEntryIDs.insert(entry.id)
@@ -460,7 +463,8 @@ private func workIncrementalApplyLiveMetadataInternal(
       id: entryId,
       timestamp: mergedCard.timestamp,
       rank: timeline[existingIndex].rank,
-      payload: .eventCard(mergedCard)
+      payload: .eventCard(mergedCard),
+      turnId: timeline[existingIndex].turnId ?? mergedCard.turnId
     )
     if let existingEventCardIndex,
        let mergedEventCard = workIncrementalMergedEventCard(
@@ -489,7 +493,8 @@ private func workIncrementalApplyLiveMetadataInternal(
       id: entryId,
       timestamp: cardToRender.timestamp,
       rank: eventRank,
-      payload: .eventCard(cardToRender)
+      payload: .eventCard(cardToRender),
+      turnId: cardToRender.turnId
     )
     timeline.append(entry)
     newTimelineEntryIDs.insert(entry.id)

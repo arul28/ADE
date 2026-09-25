@@ -172,6 +172,12 @@ vi.mock("./AppShell", async () => {
   };
 });
 
+// The project sidebar reads attention state that this store mock leaves out;
+// these tests cover which surfaces stay mounted, not the sidebar.
+vi.mock("./projectSidebar/ProjectSidebar", () => ({
+  ProjectSidebar: () => null,
+}));
+
 vi.mock("./ProjectRecoveryScreen", () => ({
   ProjectRecoveryScreen: () => <div data-testid="project-recovery-screen" />,
 }));
@@ -313,6 +319,7 @@ describe("App Work route keep-alive", () => {
       configurable: true,
       writable: true,
       value: {
+        workTools: { onShowRequest: vi.fn(() => () => {}), acknowledgeShow: vi.fn() },
         builtInBrowser: {
           stopInspect: vi.fn().mockResolvedValue({}),
           setBounds: vi.fn().mockResolvedValue({}),
@@ -853,6 +860,19 @@ describe("App Work route keep-alive", () => {
       ).toBeNull();
     });
     expect(appStoreModule.retainProjectAppStoreState).not.toHaveBeenCalled();
+  });
+
+  it("opens /account inside a project on the Settings account tab and keeps returnTo", async () => {
+    window.history.replaceState({ usr: { returnTo: "/files" }, key: "acct", idx: 0 }, "", "/account");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/settings");
+      expect(window.location.search).toBe("?tab=account");
+    });
+    expect(window.history.state?.usr?.returnTo).toBe("/files");
   });
 
   it("converts legacy hash app routes into BrowserRouter paths", async () => {

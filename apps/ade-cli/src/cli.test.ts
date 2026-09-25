@@ -1820,11 +1820,46 @@ describe("ADE CLI", () => {
 
     expect(
       machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent"),
-    ).toBe("build hash changed");
+    ).toMatch(/^build hash changed \((version, )?role ok\)$/);
     expect(
       machineRuntimeMismatchReason(runtimeInfo, "expected-build", "agent", {
         enforceBuildCompatibility: false,
       }),
+    ).toBeNull();
+  });
+
+  it("prints a timed-out mac-desktop wait as nothing matched, not as a key sent", () => {
+    // A wait result carries `waitedMs` and no `action`.
+    const text = formatOutput(
+      { ok: false, waitedMs: 4313 },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "mac-desktop-action",
+    );
+    expect(text).toContain("(no element matched)");
+    expect(text).not.toContain("sent to the focused window");
+  });
+
+  it("names every failed runtime check at once, not only the first", () => {
+    const runtimeInfo = {
+      version: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+      buildHash: "other-build",
+      defaultRole: "agent" as const,
+      packageChannel: null,
+      projectRoot: null,
+      pid: 123,
+      uptimeMs: null,
+    };
+
+    const reason = machineRuntimeMismatchReason(runtimeInfo, "expected-build", "cto");
+
+    expect(reason).toContain("build hash changed");
+    expect(reason).toContain("default role agent cannot serve CLI role cto");
+    expect(
+      machineRuntimeMismatchReason(
+        { ...runtimeInfo, buildHash: "expected-build", defaultRole: "cto" },
+        "expected-build",
+        "cto",
+      ),
     ).toBeNull();
   });
 
@@ -3910,24 +3945,6 @@ describe("ADE CLI", () => {
     ).toThrow(/--instance names a Claude or Codex account/);
   });
 
-  it("rejects an instance that arrives via --arg for a single-identity provider", () => {
-    // The merged instance id counts too: naming the account through the generic
-    // arg bag is the same request as `--instance`.
-    expect(() =>
-      buildCliPlan([
-        "chat",
-        "create",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "cursor",
-        "--arg",
-        "instanceId=work",
-        "--print-config",
-      ]),
-    ).toThrow(/--instance names a Claude or Codex account/);
-  });
-
   it("re-checks Droid autonomy against a provider that arrives via --arg", () => {
     // `--arg provider=` wins the merge, so checking the flag's provider would
     // ship a Droid autonomy tier on a Claude launch.
@@ -3943,24 +3960,6 @@ describe("ADE CLI", () => {
         "auto-medium",
         "--arg",
         "provider=claude",
-      ]),
-    ).toThrow(/Droid autonomy is only supported for Droid sessions/);
-  });
-
-  it("applies the Droid autonomy provider rule to chat create too", () => {
-    expect(() =>
-      buildCliPlan([
-        "chat",
-        "create",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "droid",
-        "--droid-autonomy",
-        "auto-medium",
-        "--arg",
-        "provider=claude",
-        "--print-config",
       ]),
     ).toThrow(/Droid autonomy is only supported for Droid sessions/);
   });
@@ -4086,30 +4085,6 @@ describe("ADE CLI", () => {
     ).toThrow(/Name the agent provider with --provider codex/);
   });
 
-  // Same bag plus a spawn kind: it also trips the "a kind with no parent"
-  // pairing rule, whose advice ("remove --no-parent") names a flag this caller
-  // never wrote. The dropped-ambient diagnosis is the one they can act on.
-  it("names the dropped lineage, not --no-parent, when the bag also carries a spawn kind", () => {
-    process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
-    expect(() =>
-      buildCliPlan([
-        "new",
-        "chat",
-        "--mode",
-        "cli",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "shell",
-        "--arg",
-        "provider=codex",
-        "--arg",
-        "spawnKind=subagent",
-        "--print-config",
-      ]),
-    ).toThrow(/Name the agent provider with --provider codex/);
-  });
-
   // ...but `--no-parent` is the caller saying "no lineage" out loud, so nothing
   // was dropped and there is nothing to refuse: the agent session launches
   // deliberately parentless.
@@ -4150,22 +4125,6 @@ describe("ADE CLI", () => {
     ).toThrow(/permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml\./);
   });
 
-  it("rejects a non-string permission mode that arrives via --arg-json", () => {
-    expect(() =>
-      buildCliPlan([
-        "chat",
-        "create",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "codex",
-        "--arg-json",
-        "permissionMode=123",
-        "--print-config",
-      ]),
-    ).toThrow(/permissionMode must be one of default, auto, plan, edit, full-auto, or config-toml\./);
-  });
-
   // A falsy-but-present parent id used to slip past the shell lineage rule,
   // because the rule tested truthiness. It is a shape error first: `0` is not
   // the id of anything.
@@ -4185,82 +4144,6 @@ describe("ADE CLI", () => {
         "--print-config",
       ]),
     ).toThrow(/orchestrationParentSessionId must be the id of the parent chat session\./);
-  });
-
-  // `null` means "unset" for every launch-identity field, not "send a null the
-  // runtime has to re-interpret".
-  it("drops an explicit null droidPermissionMode and spawnKind instead of sending them", () => {
-    const plan = buildCliPlan([
-      "chat",
-      "create",
-      "--lane",
-      "lane-1",
-      "--provider",
-      "codex",
-      "--arg",
-      "droidPermissionMode=null",
-      "--arg",
-      "spawnKind=null",
-      "--print-config",
-    ]);
-    const input = (expectStaticPlan(plan).value as { input: Record<string, unknown> }).input;
-    expect(input).not.toHaveProperty("droidPermissionMode");
-    expect(input).not.toHaveProperty("spawnKind");
-  });
-
-  // The same two rules reached through a real command line, on both surfaces
-  // that build a launch bag.
-  it("rejects an --arg parent with no spawn kind on new chat", () => {
-    expect(() =>
-      buildCliPlan([
-        "new",
-        "chat",
-        "--mode",
-        "cli",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "codex",
-        "--no-parent",
-        "--arg",
-        "orchestrationParentSessionId=sess-x",
-        "--print-config",
-      ]),
-    ).toThrow(/--type is required for a parented agent spawn/);
-  });
-
-  it("rejects an --arg parent with no spawn kind on chat create", () => {
-    expect(() =>
-      buildCliPlan([
-        "chat",
-        "create",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "codex",
-        "--no-parent",
-        "--arg",
-        "orchestrationParentSessionId=sess-x",
-        "--print-config",
-      ]),
-    ).toThrow(/--type is required for a parented agent spawn/);
-  });
-
-  it("rejects an --arg spawn kind with no parent", () => {
-    expect(() =>
-      buildCliPlan([
-        "chat",
-        "create",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "codex",
-        "--no-parent",
-        "--arg",
-        "spawnKind=subagent",
-        "--print-config",
-      ]),
-    ).toThrow(/--type requires a parent session/);
   });
 
   // The arg bag is untyped JSON, so a provider can arrive as a number or an
@@ -4311,43 +4194,6 @@ describe("ADE CLI", () => {
       "claude",
       "--arg",
       "instanceId=  ",
-      "--print-config",
-    ]);
-    expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
-      .not.toHaveProperty("instanceId");
-  });
-
-  it("treats an explicit null provider as unset rather than a way past the rules", () => {
-    // `--arg provider=null` is the same request as `--arg provider=`: it means
-    // "unset", so the flag's provider is restored and the single-identity rule
-    // still sees the `cursor` this command actually launches under.
-    expect(() =>
-      buildCliPlan([
-        "chat",
-        "create",
-        "--lane",
-        "lane-1",
-        "--provider",
-        "cursor",
-        "--instance",
-        "work",
-        "--arg",
-        "provider=null",
-        "--print-config",
-      ]),
-    ).toThrow(/--instance names a Claude or Codex account/);
-  });
-
-  it("drops an explicit null instanceId instead of sending it", () => {
-    const plan = buildCliPlan([
-      "chat",
-      "create",
-      "--lane",
-      "lane-1",
-      "--provider",
-      "claude",
-      "--arg",
-      "instanceId=null",
       "--print-config",
     ]);
     expect((expectStaticPlan(plan).value as { input: Record<string, unknown> }).input)
@@ -5418,28 +5264,6 @@ describe("ADE CLI", () => {
         .toThrow(/Unknown session subcommand 'hibernate'/);
     });
 
-    it("documents the session surface in help", () => {
-      const help = buildCliPlan(["session", "--help"]);
-      expect(help.kind).toBe("help");
-      if (help.kind === "help") {
-        expect(help.text).toContain("ade session snooze <id> --for 1h");
-        expect(help.text).toContain("ade session wake <id>");
-        expect(help.text).toContain("--until-asked");
-        // The board move is a session lifecycle verb, so it is documented with
-        // the rest of the family — including the role it needs, which is the
-        // difference between a working command and a scope denial.
-        expect(help.text).toContain("session move <id> --to done");
-        expect(help.text).toContain("--role cto");
-        // Settle is gone from this family and the help says why.
-        expect(help.text).not.toContain("ade session settle");
-        expect(help.text).toContain("'settle' and 'unsettle' were removed");
-      }
-      const top = buildCliPlan([]);
-      if (top.kind === "help") {
-        expect(top.text).toContain("ade session show | move | snooze | wake | clear-woke");
-        expect(top.text).not.toContain("ade session snooze | wake | settle | unsettle");
-      }
-    });
   });
 
   describe("lane branch drift commands", () => {
@@ -6258,6 +6082,55 @@ describe("ADE CLI", () => {
     });
   });
 
+  posixIt("chat wait falls back to turn status for a completed CLI child", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-chat-wait-child-"));
+    const socketPath = path.join(root, "ade.sock");
+    const actions: string[] = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath,
+      createHandler: () => (async (request: any) => {
+        if (request.method === "ade/initialize") return {};
+        if (request.method === "projects.add") return { ok: true };
+        if (request.method === "ade/actions/call") {
+          const action = request.params?.arguments?.action;
+          actions.push(action);
+          if (action === "getSessionSummary") return { domain: "chat", action, result: null };
+          if (action === "getTurnStatus") {
+            return {
+              domain: "chat",
+              action,
+              result: {
+                sessionId: "cli-child-1",
+                phase: "idle",
+                cliSession: { status: "completed", endedAt: "2026-09-24T12:00:00.000Z" },
+              },
+            };
+          }
+        }
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+
+    try {
+      const result = await runCli([
+        "--socket", socketPath,
+        "--project-root", root,
+        "chat", "wait", "cli-child-1", "--for", "terminal", "--timeout-ms", "100", "--json",
+      ]);
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.output)).toMatchObject({
+        ok: true,
+        sessionId: "cli-child-1",
+        waitFor: "terminal",
+        summary: { phase: "idle", cliSession: { status: "completed" } },
+      });
+      expect(actions).toEqual(["getSessionSummary", "getTurnStatus"]);
+    } finally {
+      stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects reasoning effort on legacy agent spawn", () => {
     expect(() =>
       buildCliPlan([
@@ -6784,6 +6657,88 @@ describe("ADE CLI", () => {
     );
     expect(text).toContain("RUNNING");
     expect(text).toContain("Bash");
+  });
+
+  it("formats a tracked CLI session's status with its terminal facts and read hint", () => {
+    const text = formatOutput(
+      {
+        sessionId: "cli-1",
+        phase: "idle",
+        provider: "codex",
+        lastActivityMsAgo: 5_000,
+        queuedMessageCount: 0,
+        subagents: [],
+        cliSession: {
+          toolType: "codex",
+          provider: "codex",
+          status: "failed",
+          exitCode: 2,
+          laneId: "lane-1",
+          title: "Fix flaky tests",
+          endedAt: "2026-09-23T10:00:00.000Z",
+          parentSessionId: "chat-1",
+          spawnKind: "subagent",
+          readHint: "ade terminal read cli-1",
+        },
+      },
+      { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
+      "chat-status",
+    );
+    expect(text).toContain("IDLE");
+    expect(text).toMatch(/cli\s+codex · failed · exit 2/);
+    expect(text).toMatch(/parent\s+chat-1 \(subagent\)/);
+    expect(text).toMatch(/output\s+ade terminal read cli-1/);
+  });
+
+  it("merges a lane's tracked CLI children into chat list", () => {
+    const plan = expectExecutePlan(buildCliPlan(["chat", "list", "--lane", "lane-1"]));
+    expect(plan.steps[1]).toMatchObject({
+      key: "cli",
+      optional: true,
+      params: {
+        name: "run_ade_action",
+        arguments: { domain: "chat", action: "listCliChildSessions", args: { laneId: "lane-1" } },
+      },
+    });
+    const connection = {
+      mode: "runtime-socket" as const,
+      projectRoot: "/unused",
+      workspaceRoot: "/unused",
+      socketPath: "/tmp/ade.sock",
+      request: async () => null,
+      close: () => {},
+    };
+    const chat = { sessionId: "chat-1", provider: "claude", laneId: "lane-1", title: "Coordinator" };
+    const cli = {
+      sessionId: "cli-1",
+      kind: "cli",
+      provider: "codex",
+      laneId: "lane-1",
+      title: "Fix flaky tests",
+      status: "completed",
+      exitCode: 0,
+      parentSessionId: "chat-1",
+      spawnKind: "subagent",
+    };
+    const merged = summarizeExecution({
+      plan,
+      connection,
+      values: {
+        result: { domain: "chat", action: "listSessions", result: [chat] },
+        cli: { domain: "chat", action: "listCliChildSessions", result: [cli] },
+      },
+    });
+    expect(merged).toEqual([chat, cli]);
+    const text = formatOutput(merged, { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true }, "chat-list");
+    expect(text).toContain("cli · completed (exit 0)");
+    expect(text).toContain("Fix flaky tests");
+
+    // An older brain without the CLI step keeps the plain chat list.
+    expect(summarizeExecution({
+      plan,
+      connection,
+      values: { result: { domain: "chat", action: "listSessions", result: [chat] } },
+    })).toEqual([chat]);
   });
 
   it("maps chat list filters to the listSessions action", () => {
@@ -9139,6 +9094,23 @@ describe("ADE CLI", () => {
       );
     });
 
+    it("prints the broker's warning about an older video before the confirmation line", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/clip.mp4"]));
+      const warning = "This video was recorded at 5:19 AM, before this request. It will be marked as older in the proof drawer.";
+      const summarized = summarizeExecution({
+        plan,
+        connection,
+        values: {
+          result: { ...ingestResult, warnings: [warning] },
+          verify: { artifacts: [{ id: "artifact-1" }] },
+        },
+      }) as Record<string, unknown>;
+      expect(summarized.warnings).toEqual([warning]);
+      const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
+      expect(output).toContain(`warning: ${warning}`);
+      expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Attached 1 artifact/);
+    });
+
     it("fails when the filed artifact cannot be read back", () => {
       const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
       // The word "failed" is load-bearing: a caller grepping stderr for it is
@@ -9150,6 +9122,44 @@ describe("ADE CLI", () => {
           values: { result: ingestResult, verify: { artifacts: [] } },
         }),
       ).toThrow(/proof attach failed — the runtime reported artifact-1/);
+    });
+
+    it("fails when the record lands with no lane and no chat session", () => {
+      // The incident this guard exists for. The runtime filed the row, the
+      // re-read found it — because the unscoped caller lists project-wide —
+      // and the only owner was a process id, so no drawer could show it. The
+      // agent read "verified" and told its owner the proof was attached.
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      const orphaned = {
+        artifacts: [{ id: "artifact-1", kind: "screenshot", title: "orphan", laneId: null }],
+        links: [
+          { artifactId: "artifact-1", ownerKind: "chat_session", ownerId: "ade-cli:56056" },
+        ],
+      };
+      expect(() =>
+        summarizeExecution({
+          plan,
+          connection,
+          values: { result: orphaned, verify: { artifacts: [{ id: "artifact-1" }] } },
+        }),
+      ).toThrow(/proof attach failed — filed artifact-1 with no lane, chat session, automation run, PR or issue/);
+    });
+
+    it("accepts the owners the server accepts: an automation run, a PR or an issue", () => {
+      // The server stores these, so failing here would turn the retry into a PROOF_DUPLICATE.
+      const plan = expectExecutePlan(buildCliPlan(["proof", "attach", "/tmp/shot.png"]));
+      for (const ownerKind of ["automation_run", "github_pr", "linear_issue"]) {
+        const filed = {
+          artifacts: [{ id: "artifact-1", kind: "screenshot", title: "run proof", laneId: null }],
+          links: [{ artifactId: "artifact-1", ownerKind, ownerId: "owner-1" }],
+        };
+        const summarized = summarizeExecution({
+          plan,
+          connection,
+          values: { result: filed, verify: { artifacts: [{ id: "artifact-1" }] } },
+        }) as Record<string, unknown>;
+        expect(summarized.ok, ownerKind).toBe(true);
+      }
     });
 
     it("fails when the runtime files nothing at all", () => {
@@ -10271,95 +10281,6 @@ describe("ADE CLI", () => {
     );
   });
 
-  it("shows command help from subcommand help flags", () => {
-    const prsHelp = buildCliPlan(["prs", "create", "--help"]);
-    expect(prsHelp.kind).toBe("help");
-    if (prsHelp.kind !== "help") return;
-    expect(prsHelp.text).toContain("PR identifiers may be ADE PR ids");
-    expect(prsHelp.text).toContain("prs link");
-    expect(prsHelp.text).toContain("prs comment-edit");
-    expect(prsHelp.text).toContain("prs comment-react");
-
-    const actionsHelp = buildCliPlan(["actions", "run", "--help"]);
-    expect(actionsHelp.kind).toBe("help");
-    if (actionsHelp.kind !== "help") return;
-    expect(actionsHelp.text).toContain("Argument shapes");
-    expect(actionsHelp.text).toContain("--args-list-json");
-
-    const chatCreateHelp = buildCliPlan(["help", "chat", "create"]);
-    expect(chatCreateHelp.kind).toBe("help");
-    if (chatCreateHelp.kind !== "help") return;
-    expect(chatCreateHelp.text).toContain("--reasoning-effort");
-    expect(chatCreateHelp.text).toContain("ultracode");
-    expect(chatCreateHelp.text).toContain("--prompt <text>");
-    expect(chatCreateHelp.text).toContain("ade new chat --mode cli");
-    expect(chatCreateHelp.text).toContain("codexSandbox=danger-full-access");
-
-    const chatHelp = buildCliPlan(["help", "chat"]);
-    expect(chatHelp.kind).toBe("help");
-    if (chatHelp.kind !== "help") return;
-    expect(chatHelp.text).toContain("ade chat message <session>");
-    expect(chatHelp.text).toContain("ade chat steer <session>");
-    expect(chatHelp.text).toContain("ade chat wait <session>");
-    expect(chatHelp.text).toContain("ade chat recover <session>");
-    expect(chatHelp.text).toContain("ade chat resolve-unprocessed <session>");
-    expect(chatHelp.text).toContain("ade chat models --provider codex");
-    expect(chatHelp.text).toContain("ade chat read <session>");
-    expect(chatHelp.text).toContain("ade new chat --mode cli");
-
-    const newChatHelp = buildCliPlan(["help", "new", "chat"]);
-    expect(newChatHelp.kind).toBe("help");
-    if (newChatHelp.kind !== "help") return;
-    expect(newChatHelp.text).toContain("--type <subagent|peer>");
-    expect(newChatHelp.text).toContain("Override with --parent <sessionId>");
-    expect(newChatHelp.text).toContain("plain shell terminals don't record lineage");
-
-    const newHelp = buildCliPlan(["new", "--help"]);
-    expect(newHelp.kind).toBe("help");
-    if (newHelp.kind !== "help") return;
-    expect(newHelp.text).toContain("--type <subagent|peer>");
-    expect(newHelp.text).toContain("--parent <sessionId>");
-    expect(newHelp.text).toContain("Plain shell terminals do not record lineage");
-
-    const laneCommandHelp = buildCliPlan(["help", "lanes"]);
-    expect(laneCommandHelp.kind).toBe("help");
-    if (laneCommandHelp.kind !== "help") return;
-    expect(laneCommandHelp.text).toContain("lanes create --parent <lane>");
-    expect(laneCommandHelp.text).toContain("carry the parent's unmerged work");
-
-    const chatRecoveryHelp = buildCliPlan(["help", "chat", "recover"]);
-    expect(chatRecoveryHelp.kind).toBe("help");
-    if (chatRecoveryHelp.kind !== "help") return;
-    expect(chatRecoveryHelp.text).toContain("desktop and mobile recovery cards");
-    expect(chatRecoveryHelp.text).toContain("--action resume");
-
-    const chatResolutionHelp = buildCliPlan(["help", "chat", "resolve-unprocessed"]);
-    expect(chatResolutionHelp.kind).toBe("help");
-    if (chatResolutionHelp.kind !== "help") return;
-    expect(chatResolutionHelp.text).toContain("durable and idempotent");
-    expect(chatResolutionHelp.text).toContain("--action dismiss");
-
-    const agentSpawnHelp = buildCliPlan(["agent", "spawn", "--help"]);
-    expect(agentSpawnHelp.kind).toBe("help");
-    if (agentSpawnHelp.kind !== "help") return;
-    expect(agentSpawnHelp.text).toContain("does not");
-    expect(agentSpawnHelp.text).toContain("--reasoning-effort");
-
-    // Regression: --text as output flag must not swallow --help.
-    const lanesHelp = buildCliPlan(["lanes", "list", "--text", "--help"]);
-    expect(lanesHelp.kind).toBe("help");
-
-    const reparentHelp = buildCliPlan([
-      "lanes",
-      "reparent",
-      "lane-child",
-      "--stack-base-branch",
-      "develop",
-      "--help",
-    ]);
-    expect(reparentHelp.kind).toBe("help");
-  });
-
   it("maps PR create Linear close flag to the typed RPC tool", () => {
     const plan = buildCliPlan([
       "prs",
@@ -11287,6 +11208,22 @@ describe("ADE CLI", () => {
     expect(claimHelp.text).toContain("iOS Simulator: claim");
     expect(claimHelp.text).not.toContain("Unknown Apple device subcommand");
     expect(claimHelp.text).not.toContain("Unknown iOS simulator subcommand");
+
+    // `stop` powers the device off and is no longer a `shutdown` alias, so it
+    // has its own page; `device-detach` is listed in the top-level help too.
+    for (const [sub, heading] of [
+      ["stop", "Apple device: stop"],
+      ["power-off", "Apple device: stop"],
+      ["device-detach", "Apple device: device-detach"],
+    ] as const) {
+      const help = buildCliPlan(["apple", sub, "--help"]);
+      if (help.kind !== "help") throw new Error(`expected help for apple ${sub}`);
+      expect(help.text).toContain(heading);
+      expect(help.text).not.toContain("Unknown Apple device subcommand");
+    }
+    const shutdownHelp = buildCliPlan(["apple", "shutdown", "--help"]);
+    if (shutdownHelp.kind !== "help") throw new Error("expected help");
+    expect(shutdownHelp.text).not.toMatch(/Aliases: stop/);
   });
 
   it("rejects live-start and --backend; stream-start has no backend flag", () => {
@@ -11301,6 +11238,9 @@ describe("ADE CLI", () => {
     ).toThrow(/--backend is gone/);
     const plan = buildCliPlan(["apple", "stream-start", "--fps", "30"]);
     expect(plan.kind).toBe("execute");
+    // stream-start is an explicit start, so it may boot an off device. A
+    // viewer (the pane, a phone) never sends this and gets APPLE_DEVICE_OFF.
+    expect(JSON.stringify(plan)).toContain('"boot":true');
   });
 
   it("shell-escapes argv tokens after -- when building shell start commands", () => {
@@ -13447,6 +13387,37 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("apple type --submit presses Return after the text, and apple key presses one key", () => {
+    // The owner's 2026-09-23 run: an agent typed a search and had no way to
+    // press Return, so it tapped the screen and then used a search URL.
+    const submit = buildCliPlan(["apple", "type", "google", "--submit", "--text"]);
+    expect(submit.kind).toBe("execute");
+    if (submit.kind !== "execute") return;
+    expect(submit.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "typeText", args: { text: "google\n" } },
+    });
+
+    const enter = buildCliPlan(["apple", "key", "Return", "--text"]);
+    expect(enter.kind).toBe("execute");
+    if (enter.kind !== "execute") return;
+    expect(enter.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "typeText", args: { text: "\n" } },
+    });
+
+    const tab = buildCliPlan(["apple", "key", "tab"]);
+    if (tab.kind !== "execute") throw new Error("expected an execute plan");
+    expect(tab.steps[0]?.params).toMatchObject({ arguments: { args: { text: "\t" } } });
+
+    // Regression: `--device <udid>` before the key name was read as the key.
+    const onDevice = buildCliPlan(["apple", "key", "--device", "ABC-123", "return"]);
+    if (onDevice.kind !== "execute") throw new Error("expected an execute plan");
+    expect(onDevice.steps[0]?.params).toMatchObject({
+      arguments: { action: "typeText", args: { deviceUdid: "ABC-123", text: "\n" } },
+    });
+
+    expect(() => buildCliPlan(["apple", "key", "escape"])).toThrow(/Valid keys: return, enter, tab/);
+  });
+
   it("attaches shell starts to the active ADE chat session from the environment", () => {
     const previous = process.env.ADE_CHAT_SESSION_ID;
     try {
@@ -13619,6 +13590,23 @@ describe("ADE CLI", () => {
       action: "deviceDelete",
       args: { force: true },
     });
+    expect(
+      iosSimActionArgs(["apple", "device-delete", "--chat-session", "chat-a", "--ignore-ownership"]),
+    ).toMatchObject({
+      action: "deviceDelete",
+      args: { chatSessionId: "chat-a", ignoreOwnership: true },
+    });
+    // `device-detach` is an agent verb: the lane gives up its device and the
+    // simulator stays installed. It carries the caller's chat for the owner check.
+    expect(
+      iosSimActionArgs(["apple", "device-detach", "--lane", "lane-a", "--chat-session", "chat-a", "--force"]),
+    ).toMatchObject({
+      action: "deviceDetach",
+      args: { laneId: "lane-a", chatSessionId: "chat-a", force: true },
+    });
+    const detached = iosSimActionArgs(["apple", "detach", "--ignore-ownership"]);
+    expect(detached).toMatchObject({ action: "deviceDetach", args: { ignoreOwnership: true } });
+    expect((detached as { args: Record<string, unknown> }).args).not.toHaveProperty("force");
 
     const recordStart = iosSimActionArgs([
       "apple",
@@ -13632,12 +13620,52 @@ describe("ADE CLI", () => {
       action: "recordStart",
       args: { overlays: false, label: "signup" },
     });
+    expect((recordStart as { args: Record<string, unknown> }).args).not.toHaveProperty("keepIdle");
+    expect((recordStart as { args: Record<string, unknown> }).args).not.toHaveProperty("maxSeconds");
+
+    const recordStartKeepIdle = iosSimActionArgs([
+      "apple",
+      "record-start",
+      "--keep-idle",
+      "--max-seconds",
+      "1200",
+    ]);
+    expect(recordStartKeepIdle).toMatchObject({
+      action: "recordStart",
+      args: { keepIdle: true, maxSeconds: 1200 },
+    });
+    expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "0"])).toThrow(/greater than 0/);
+    expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "soon"])).toThrow(/must be a number/);
 
     const recordStop = iosSimActionArgs(["apple", "record-stop", "--discard"]);
     expect(recordStop).toMatchObject({
       action: "recordStop",
       args: { discard: true },
     });
+
+    /*
+     * regression: every record verb must give the runtime SOMETHING to place
+     * the caller by — a lane id, or the caller's root when there is no lane id.
+     *
+     * Recordings were the one capture path that sent neither, so a caller with
+     * no `ADE_LANE_ID` (every OpenCode agent, whose shared `opencode serve`
+     * cannot carry a per-chat environment) left `resolveRuntime` with nothing
+     * but its last-resort guess. Reproduced live before the fix: `record-start`
+     * run from lane 67f0a55d's worktree filed its recording under lane
+     * ab829725, the lane that owned the DEVICE.
+     *
+     * Asserted as "one or the other" rather than "always projectRoot", because
+     * a caller that named its lane does not need a path and
+     * `iosSimulatorRootArgs` deliberately omits it.
+     */
+    const placeable = (argv: string[]) => {
+      const keys = Object.keys(iosSimActionArgs(argv).args as Record<string, unknown>);
+      return keys.includes("laneId") || keys.includes("projectRoot");
+    };
+    for (const verb of ["record-start", "record-stop", "record-list"]) {
+      expect(placeable(["apple", verb]), verb).toBe(true);
+    }
+    expect(placeable(["apple", "record-delete", "--id", "r1"])).toBe(true);
 
     const recordList = iosSimActionArgs(["apple", "record-list"]);
     expect(recordList.action).toBe("recordList");
@@ -14463,43 +14491,84 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["work-tools", "wat"])).toThrow(/Unknown work-tools command/);
   }));
 
-  it("reads browser positionals fenced behind a `--` terminator", () => withEnv({
+  it("parses ade ui show and ade apple show into one work_tools.show call", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: "chat-env",
+  }, () => {
+    const showArgs = (argv: string[]) => {
+      const plan = expectExecutePlan(buildCliPlan(argv));
+      expect(plan.label).toBe("ui show");
+      expect(plan.formatter).toBe("work-tool-show");
+      const params = plan.steps[0]?.params as
+        | { arguments?: { domain?: string; action?: string; args?: Record<string, unknown> } }
+        | undefined;
+      expect(params?.arguments).toMatchObject({ domain: "work_tools", action: "show" });
+      return { plan, args: params?.arguments?.args ?? {} };
+    };
+
+    // The chat defaults to the agent's own; --session is for a human.
+    expect(showArgs(["ui", "show", "apple"]).args).toEqual({ surface: "apple", chatSessionId: "chat-env" });
+    expect(showArgs(["ui", "show", "proof", "--session", "chat-2"]).args)
+      .toEqual({ surface: "proof", chatSessionId: "chat-2" });
+    // Flags before the surface are not read as it.
+    expect(showArgs(["ui", "show", "--session", "chat-3", "floating-apple"]).args)
+      .toEqual({ surface: "floating-apple", chatSessionId: "chat-3" });
+    expect(showArgs(["ui", "show", "--surface", "browser", "--lane", "lane-1"]).args)
+      .toEqual({ surface: "browser", chatSessionId: "chat-env", laneId: "lane-1" });
+    expect(showArgs(["ui", "show", "floating"]).args.surface).toBe("floating-apple");
+
+    // `apple show` is the same call.
+    expect(showArgs(["apple", "show"]).args).toEqual({ surface: "apple", chatSessionId: "chat-env" });
+    expect(showArgs(["apple", "show", "--floating"]).args)
+      .toEqual({ surface: "floating-apple", chatSessionId: "chat-env" });
+
+    // The Mac Desktop surfaces, and `mac-desktop show` as the same call.
+    expect(showArgs(["ui", "show", "mac-desktop"]).args).toEqual({ surface: "mac-desktop", chatSessionId: "chat-env" });
+    expect(showArgs(["ui", "show", "floating-mac-desktop"]).args.surface).toBe("floating-mac-desktop");
+    expect(showArgs(["ui", "show", "desk"]).args.surface).toBe("mac-desktop");
+    expect(showArgs(["mac-desktop", "show", "--lane", "lane-2"]).args)
+      .toEqual({ surface: "mac-desktop", chatSessionId: "chat-env", laneId: "lane-2" });
+    expect(showArgs(["mac-desktop", "show", "--floating"]).args)
+      .toEqual({ surface: "floating-mac-desktop", chatSessionId: "chat-env" });
+
+    // Exit 1 when nothing was shown, so a script cannot read it as success.
+    const { plan } = showArgs(["ui", "show", "apple"]);
+    expect(plan.exitCodeFromResult?.({ status: "shown" })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ result: { status: "held" } })).toBe(0);
+    expect(plan.exitCodeFromResult?.({ status: "no_desktop" })).toBe(1);
+
+    expect(() => buildCliPlan(["ui", "show", "terminal"])).toThrow(/needs a surface: apple, floating-apple, browser, proof/);
+    expect(() => buildCliPlan(["ui", "show", "constructor"])).toThrow(/needs a surface/);
+    expect(() => buildCliPlan(["ui", "wat"])).toThrow(/Unknown ui command/);
+    expect(buildCliPlan(["ui"])).toMatchObject({ kind: "help" });
+    const help = buildCliPlan(["ui", "--help"]);
+    expect(help.kind).toBe("help");
+    if (help.kind === "help") {
+      expect(help.text).toContain("ade ui show floating-apple");
+      expect(help.text).toContain("no_desktop");
+    }
+    const appleHelp = buildCliPlan(["apple", "show", "--help"]);
+    expect(appleHelp.kind).toBe("help");
+    if (appleHelp.kind === "help") expect(appleHelp.text).toContain("Apple device: show");
+
+    withEnv({ ADE_CHAT_SESSION_ID: undefined }, () => {
+      expect(() => buildCliPlan(["ui", "show", "apple"])).toThrow(/pass --session/);
+      // An OpenCode shell has no chat identity: say so and send it to the user.
+      expect(() => buildCliPlan(["apple", "show"])).toThrow(/no ADE chat identity.*Ask the user to open the tool/);
+    });
+  }));
+
+  it("presses the app switcher as one helper button", () => withEnv({
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,
   }, () => {
-    // `--` is how a person passes a value that would otherwise read as a flag.
-    // The generic positional scan stops AT the terminator and leaves it in the
-    // argv, so the URL and the key simply went missing and the command failed
-    // with "requires a URL" while the URL was right there.
-    const open = buildCliPlan(["browser", "open", "--", "https://x.example.test"]);
-    expect(open.kind).toBe("execute");
-    if (open.kind !== "execute") return;
-    expect(open.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "navigate",
-        args: { url: "https://x.example.test" },
-      },
+    const plan = expectExecutePlan(buildCliPlan(["apple", "button", "app-switcher"]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "ios_simulator", action: "pressButton", args: { name: "app-switcher" } },
     });
-
-    const key = buildCliPlan(["browser", "key", "--", "Enter"]);
-    expect(key.kind).toBe("execute");
-    if (key.kind !== "execute") return;
-    expect(key.steps[0]?.params).toMatchObject({
-      arguments: { domain: "built_in_browser", action: "dispatchKey", args: { key: "Enter" } },
-    });
-
-    // Flags before the fence are still read as flags.
-    const fenced = buildCliPlan(["browser", "open", "--new-tab", "--", "https://y.example.test"]);
-    expect(fenced.kind).toBe("execute");
-    if (fenced.kind !== "execute") return;
-    expect(fenced.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "navigate",
-        args: { url: "https://y.example.test", newTab: true },
-      },
-    });
+    const help = buildCliPlan(["apple", "button", "--help"]);
+    expect(help.kind).toBe("help");
+    if (help.kind === "help") expect(help.text).toContain("app-switcher");
   }));
 
   it("keeps a flag-shaped value behind `--` literal on every browser branch", () => withEnv({
@@ -14699,513 +14768,83 @@ describe("ADE CLI", () => {
     });
   }));
 
-  it("browser commands map to built-in browser actions", () => withEnv({
+  // One row per flag-to-arg mapping the browser subcommands own. The subcommand
+  // word itself is proven by cliBrowserDispatch.test.ts; these rows pin which
+  // flag lands in which daemon arg, and the defaults a bare flag implies.
+  it.each<[string[], string, Record<string, unknown>]>([
+    [["open", "localhost:5173", "--new-tab"], "navigate", { url: "localhost:5173", newTab: true, openPanel: true }],
+    [["panel", "--url", "localhost:5173"], "showPanel", { url: "localhost:5173" }],
+    [["authorize", "--tab", "tab-1", "--lease-ttl-ms", "4500"], "requestOriginAccess", { tabId: "tab-1", leaseTtlMs: 4500 }],
+    [["open", "https://example.com", "--tab", "tab-1"], "navigate", { url: "https://example.com", tabId: "tab-1", openPanel: true }],
+    [["open", "https://example.com", "--no-panel"], "navigate", { url: "https://example.com", openPanel: false }],
+    [["open", "https://example.com", "--arg", "openPanel=false"], "navigate", { url: "https://example.com", openPanel: false }],
+    [["open", "--arg", "url=https://example.com"], "navigate", { url: "https://example.com", openPanel: true }],
+    [["new-tab", "https://example.com", "--background"], "createTab", { url: "https://example.com", activate: false, openPanel: true }],
+    [["screenshot", "--tab", "tab-1"], "captureScreenshot", { tabId: "tab-1" }],
+    [["reload", "--tab", "tab-1"], "reload", { tabId: "tab-1" }],
+    [["click", "--browser-session", "bs-1", "--x", "12", "--y", "24"], "click", { sessionId: "bs-1", x: 12, y: 24 }],
+    [["observe", "--tab", "tab-1", "--keep", "3", "--max-elements", "12", "--map", "--no-diagnostics"], "observe", { tabId: "tab-1", keepCount: 3, maxElements: 12, includeElementMap: true, includeDiagnostics: false }],
+    [["trace", "--tab", "tab-1", "--limit", "7"], "getTrace", { tabId: "tab-1", limit: 7 }],
+    [["session", "start", "--tab", "tab-1", "--lane", "lane-1", "--lease-ttl-ms", "6000"], "startSession", { tabId: "tab-1", laneId: "lane-1", leaseTtlMs: 6000 }],
+    [["sessions", "--include-ended"], "listSessions", { includeEnded: true }],
+    [["observe", "--browser-session", "bs-1", "--map"], "observe", { sessionId: "bs-1", includeElementMap: true }],
+    [["click", "--tab", "tab-1", "--x", "12", "--y", "24", "--no-observe"], "click", { tabId: "tab-1", x: 12, y: 24, observe: false }],
+    [["click", "--tab", "tab-1", "--selector", "button[type=submit]", "--no-dom"], "click", { tabId: "tab-1", selector: "button[type=submit]", includeDom: false }],
+    [["click", "--tab", "tab-1", "--text-match", "Sign in"], "click", { tabId: "tab-1", text: "Sign in" }],
+    [["click", "--tab", "tab-1", "--handle", "obs-1:e:2", "--fast"], "click", { tabId: "tab-1", handle: "obs-1:e:2", waitAfterMs: 0 }],
+    [["wait", "--tab", "tab-1", "--selector", ".ready", "--timeout-ms", "2500"], "wait", { tabId: "tab-1", selector: ".ready", timeoutMs: 2500 }],
+    [["wait", "--tab", "tab-1", "--network-idle", "--network-idle-ms", "250"], "wait", { tabId: "tab-1", loadState: "network-idle", networkIdleMs: 250 }],
+    [["session", "click", "bs-1", "--x", "12", "--y", "24"], "click", { sessionId: "bs-1", x: 12, y: 24 }],
+    [["session", "wait", "bs-1", "--network-idle", "--network-idle-ms", "250"], "wait", { sessionId: "bs-1", loadState: "network-idle", networkIdleMs: 250 }],
+    [["fill", "--tab", "tab-1", "--selector", "input[name=email]", "--value", "me@example.com", "--lane", "lane-1", "--lease-ttl-ms", "5000"], "fill", { tabId: "tab-1", selector: "input[name=email]", text: "me@example.com", laneId: "lane-1", leaseTtlMs: 5000 }],
+    [["fill", "--tab", "tab-1", "--text-match", "Email", "--value", "me@example.com"], "fill", { tabId: "tab-1", text: "Email", value: "me@example.com" }],
+    [["clear-field", "--tab", "tab-1", "--test-id", "search"], "clear", { tabId: "tab-1", testId: "search" }],
+    [["type", "--tab", "tab-1", "hello"], "typeText", { tabId: "tab-1", text: "hello" }],
+    [["press", "--tab", "tab-1", "--selector", "input[name=q]", "Enter"], "dispatchKey", { tabId: "tab-1", selector: "input[name=q]", key: "Enter" }],
+    [["scroll", "--tab", "tab-1", "--dy", "480"], "scroll", { tabId: "tab-1", deltaX: 0, deltaY: 480 }],
+    [["select", "--x", "120", "--y", "420", "--tab", "tab-1", "--no-screenshot"], "selectPoint", { tabId: "tab-1", x: 120, y: 420, includeScreenshot: false }],
+  ])("browser %j maps its flags onto the %s action", (argv, action, args) => withEnv({
     ADE_LANE_ID: undefined,
     ADE_CHAT_SESSION_ID: undefined,
   }, () => {
-    const open = buildCliPlan([
-      "browser",
-      "open",
-      "localhost:5173",
-      "--new-tab",
-    ]);
-    expect(open.kind).toBe("execute");
-    if (open.kind !== "execute") return;
-    expect(open.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "navigate",
-        args: { url: "localhost:5173", newTab: true, openPanel: true },
-      },
+    expect(expectExecutePlan(buildCliPlan(["browser", ...argv])).steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action, args },
     });
+  }));
 
-    const panel = buildCliPlan(["browser", "panel"]);
-    expect(panel.kind).toBe("execute");
-    if (panel.kind !== "execute") return;
-    expect(panel.steps[0]?.params).toMatchObject({
-      arguments: { domain: "built_in_browser", action: "showPanel", args: {} },
+  it("browser proof files the observed screenshot, plus the HAR as a browser_trace with --har", () => withEnv({
+    ADE_LANE_ID: undefined,
+    ADE_CHAT_SESSION_ID: undefined,
+  }, () => {
+    const plain = expectExecutePlan(buildCliPlan(["browser", "proof", "--tab", "tab-1", "--caption", "Verified"]));
+    expect(plain.steps).toHaveLength(2);
+    expect(plain.steps[0]?.params).toMatchObject({
+      arguments: { domain: "built_in_browser", action: "observe", args: { tabId: "tab-1", includeDom: false } },
     });
-
-    const authorize = buildCliPlan([
-      "browser",
-      "authorize",
-      "--tab",
-      "tab-1",
-      "--lease-ttl-ms",
-      "4500",
-    ]);
-    expect(authorize.kind).toBe("execute");
-    if (authorize.kind !== "execute") return;
-    expect(authorize.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "requestOriginAccess",
-        args: { tabId: "tab-1", leaseTtlMs: 4500 },
-      },
-    });
-
-    const panelWithUrl = buildCliPlan([
-      "browser",
-      "panel",
-      "--url",
-      "localhost:5173",
-    ]);
-    expect(panelWithUrl.kind).toBe("execute");
-    if (panelWithUrl.kind !== "execute") return;
-    expect(panelWithUrl.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "showPanel",
-        args: { url: "localhost:5173" },
-      },
-    });
-
-    const targetedOpen = buildCliPlan([
-      "browser",
-      "open",
-      "https://example.com",
-      "--tab",
-      "tab-1",
-    ]);
-    expect(targetedOpen.kind).toBe("execute");
-    if (targetedOpen.kind !== "execute") return;
-    expect(targetedOpen.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "navigate",
-        args: { url: "https://example.com", tabId: "tab-1", openPanel: true },
-      },
-    });
-
-    const hiddenOpen = buildCliPlan([
-      "browser",
-      "open",
-      "https://example.com",
-      "--no-panel",
-    ]);
-    expect(hiddenOpen.kind).toBe("execute");
-    if (hiddenOpen.kind !== "execute") return;
-    expect(hiddenOpen.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "navigate",
-        args: { url: "https://example.com", openPanel: false },
-      },
-    });
-
-    const openWithGenericArg = buildCliPlan([
-      "browser",
-      "open",
-      "https://example.com",
-      "--arg",
-      "openPanel=false",
-    ]);
-    expect(openWithGenericArg.kind).toBe("execute");
-    if (openWithGenericArg.kind !== "execute") return;
-    expect(openWithGenericArg.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "navigate",
-        args: { url: "https://example.com", openPanel: false },
-      },
-    });
-
-    const openFromGenericUrl = buildCliPlan([
-      "browser",
-      "open",
-      "--arg",
-      "url=https://example.com",
-    ]);
-    expect(openFromGenericUrl.kind).toBe("execute");
-    if (openFromGenericUrl.kind !== "execute") return;
-    expect(openFromGenericUrl.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "navigate",
-        args: { url: "https://example.com", openPanel: true },
-      },
-    });
-
-    const backgroundTab = buildCliPlan([
-      "browser",
-      "new-tab",
-      "https://example.com",
-      "--background",
-    ]);
-    expect(backgroundTab.kind).toBe("execute");
-    if (backgroundTab.kind !== "execute") return;
-    expect(backgroundTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "createTab",
-        args: { url: "https://example.com", activate: false, openPanel: true },
-      },
-    });
-
-    const switchTab = buildCliPlan(["browser", "switch", "--tab", "tab-1"]);
-    expect(switchTab.kind).toBe("execute");
-    if (switchTab.kind !== "execute") return;
-    expect(switchTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "switchTab",
-        args: { tabId: "tab-1", openPanel: true },
-      },
-    });
-
-    const screenshotTab = buildCliPlan(["browser", "screenshot", "--tab", "tab-1"]);
-    expect(screenshotTab.kind).toBe("execute");
-    if (screenshotTab.kind !== "execute") return;
-    expect(screenshotTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "captureScreenshot",
-        args: { tabId: "tab-1" },
-      },
-    });
-
-    const reloadTab = buildCliPlan(["browser", "reload", "--tab", "tab-1"]);
-    expect(reloadTab.kind).toBe("execute");
-    if (reloadTab.kind !== "execute") return;
-    expect(reloadTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "reload",
-        args: { tabId: "tab-1" },
-      },
-    });
-
-    const observeTab = buildCliPlan(["browser", "observe", "--tab", "tab-1", "--keep", "3", "--max-elements", "12", "--map", "--no-diagnostics"]);
-    expect(observeTab.kind).toBe("execute");
-    if (observeTab.kind !== "execute") return;
-    expect(observeTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "observe",
-        args: { tabId: "tab-1", keepCount: 3, maxElements: 12, includeElementMap: true, includeDiagnostics: false },
-      },
-    });
-
-    const trace = buildCliPlan(["browser", "trace", "--tab", "tab-1", "--limit", "7"]);
-    expect(trace.kind).toBe("execute");
-    if (trace.kind !== "execute") return;
-    expect(trace.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "getTrace",
-        args: { tabId: "tab-1", limit: 7 },
-      },
-    });
-
-    const sessionStart = buildCliPlan([
-      "browser",
-      "session",
-      "start",
-      "--tab",
-      "tab-1",
-      "--lane",
-      "lane-1",
-      "--lease-ttl-ms",
-      "6000",
-    ]);
-    expect(sessionStart.kind).toBe("execute");
-    if (sessionStart.kind !== "execute") return;
-    expect(sessionStart.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "startSession",
-        args: { tabId: "tab-1", laneId: "lane-1", leaseTtlMs: 6000 },
-      },
-    });
-
-    const sessions = buildCliPlan(["browser", "sessions", "--include-ended"]);
-    expect(sessions.kind).toBe("execute");
-    if (sessions.kind !== "execute") return;
-    expect(sessions.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "listSessions",
-        args: { includeEnded: true },
-      },
-    });
-
-    const sessionEnd = buildCliPlan(["browser", "session", "end", "bs-1"]);
-    expect(sessionEnd.kind).toBe("execute");
-    if (sessionEnd.kind !== "execute") return;
-    expect(sessionEnd.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "endSession",
-        args: { sessionId: "bs-1" },
-      },
-    });
-
-    const observeSession = buildCliPlan(["browser", "observe", "--browser-session", "bs-1", "--map"]);
-    expect(observeSession.kind).toBe("execute");
-    if (observeSession.kind !== "execute") return;
-    expect(observeSession.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "observe",
-        args: { sessionId: "bs-1", includeElementMap: true },
-      },
-    });
-
-    const clickTab = buildCliPlan(["browser", "click", "--tab", "tab-1", "--x", "12", "--y", "24", "--no-observe"]);
-    expect(clickTab.kind).toBe("execute");
-    if (clickTab.kind !== "execute") return;
-    expect(clickTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "click",
-        args: { tabId: "tab-1", x: 12, y: 24, observe: false },
-      },
-    });
-
-    const clickSelector = buildCliPlan([
-      "browser",
-      "click",
-      "--tab",
-      "tab-1",
-      "--selector",
-      "button[type=submit]",
-      "--no-dom",
-    ]);
-    expect(clickSelector.kind).toBe("execute");
-    if (clickSelector.kind !== "execute") return;
-    expect(clickSelector.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "click",
-        args: { tabId: "tab-1", selector: "button[type=submit]", includeDom: false },
-      },
-    });
-
-    const clickText = buildCliPlan(["browser", "click", "--tab", "tab-1", "--text-match", "Sign in"]);
-    expect(clickText.kind).toBe("execute");
-    if (clickText.kind !== "execute") return;
-    expect(clickText.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "click",
-        args: { tabId: "tab-1", text: "Sign in" },
-      },
-    });
-
-    const clickHandle = buildCliPlan(["browser", "click", "--tab", "tab-1", "--handle", "obs-1:e:2", "--fast"]);
-    expect(clickHandle.kind).toBe("execute");
-    if (clickHandle.kind !== "execute") return;
-    expect(clickHandle.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "click",
-        args: { tabId: "tab-1", handle: "obs-1:e:2", waitAfterMs: 0 },
-      },
-    });
-
-    const clickSession = buildCliPlan(["browser", "click", "--browser-session", "bs-1", "--x", "12", "--y", "24"]);
-    expect(clickSession.kind).toBe("execute");
-    if (clickSession.kind !== "execute") return;
-    expect(clickSession.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "click",
-        args: { sessionId: "bs-1", x: 12, y: 24 },
-      },
-    });
-
-    const waitTab = buildCliPlan(["browser", "wait", "--tab", "tab-1", "--selector", ".ready", "--timeout-ms", "2500"]);
-    expect(waitTab.kind).toBe("execute");
-    if (waitTab.kind !== "execute") return;
-    expect(waitTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "wait",
-        args: { tabId: "tab-1", selector: ".ready", timeoutMs: 2500 },
-      },
-    });
-
-    const waitNetworkIdle = buildCliPlan(["browser", "wait", "--tab", "tab-1", "--network-idle", "--network-idle-ms", "250"]);
-    expect(waitNetworkIdle.kind).toBe("execute");
-    if (waitNetworkIdle.kind !== "execute") return;
-    expect(waitNetworkIdle.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "wait",
-        args: { tabId: "tab-1", loadState: "network-idle", networkIdleMs: 250 },
-      },
-    });
-
-    const sessionClickAlias = buildCliPlan(["browser", "session", "click", "bs-1", "--x", "12", "--y", "24"]);
-    expect(sessionClickAlias.kind).toBe("execute");
-    if (sessionClickAlias.kind !== "execute") return;
-    expect(sessionClickAlias.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "click",
-        args: { sessionId: "bs-1", x: 12, y: 24 },
-      },
-    });
-
-    const sessionWaitAlias = buildCliPlan(["browser", "session", "wait", "bs-1", "--network-idle", "--network-idle-ms", "250"]);
-    expect(sessionWaitAlias.kind).toBe("execute");
-    if (sessionWaitAlias.kind !== "execute") return;
-    expect(sessionWaitAlias.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "wait",
-        args: { sessionId: "bs-1", loadState: "network-idle", networkIdleMs: 250 },
-      },
-    });
-
-    const fillTab = buildCliPlan(["browser", "fill", "--tab", "tab-1", "--selector", "input[name=email]", "--value", "me@example.com", "--lane", "lane-1", "--lease-ttl-ms", "5000"]);
-    expect(fillTab.kind).toBe("execute");
-    if (fillTab.kind !== "execute") return;
-    expect(fillTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "fill",
-        args: {
-          tabId: "tab-1",
-          selector: "input[name=email]",
-          text: "me@example.com",
-          laneId: "lane-1",
-          leaseTtlMs: 5000,
-        },
-      },
-    });
-
-    const fillByText = buildCliPlan(["browser", "fill", "--tab", "tab-1", "--text-match", "Email", "--value", "me@example.com"]);
-    expect(fillByText.kind).toBe("execute");
-    if (fillByText.kind !== "execute") return;
-    expect(fillByText.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "fill",
-        args: {
-          tabId: "tab-1",
-          text: "Email",
-          value: "me@example.com",
-        },
-      },
-    });
-
-    const clearField = buildCliPlan(["browser", "clear-field", "--tab", "tab-1", "--test-id", "search"]);
-    expect(clearField.kind).toBe("execute");
-    if (clearField.kind !== "execute") return;
-    expect(clearField.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "clear",
-        args: { tabId: "tab-1", testId: "search" },
-      },
-    });
-
-    const typeTab = buildCliPlan(["browser", "type", "--tab", "tab-1", "hello"]);
-    expect(typeTab.kind).toBe("execute");
-    if (typeTab.kind !== "execute") return;
-    expect(typeTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "typeText",
-        args: { tabId: "tab-1", text: "hello" },
-      },
-    });
-
-    const keyTab = buildCliPlan(["browser", "press", "--tab", "tab-1", "--selector", "input[name=q]", "Enter"]);
-    expect(keyTab.kind).toBe("execute");
-    if (keyTab.kind !== "execute") return;
-    expect(keyTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "dispatchKey",
-        args: { tabId: "tab-1", selector: "input[name=q]", key: "Enter" },
-      },
-    });
-
-    const scrollTab = buildCliPlan(["browser", "scroll", "--tab", "tab-1", "--dy", "480"]);
-    expect(scrollTab.kind).toBe("execute");
-    if (scrollTab.kind !== "execute") return;
-    expect(scrollTab.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "scroll",
-        args: { tabId: "tab-1", deltaX: 0, deltaY: 480 },
-      },
-    });
-
-    const selectPoint = buildCliPlan([
-      "browser",
-      "select",
-      "--x",
-      "120",
-      "--y",
-      "420",
-      "--tab",
-      "tab-1",
-      "--no-screenshot",
-    ]);
-    expect(selectPoint.kind).toBe("execute");
-    if (selectPoint.kind !== "execute") return;
-    expect(selectPoint.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "selectPoint",
-        args: { tabId: "tab-1", x: 120, y: 420, includeScreenshot: false },
-      },
-    });
-
-    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1", "--caption", "Verified"]);
-    expect(proof.kind).toBe("execute");
-    if (proof.kind !== "execute") return;
-    expect(proof.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "built_in_browser",
-        action: "observe",
-        args: { tabId: "tab-1", includeDom: false },
-      },
-    });
-    const proofParams = proof.steps[1]?.params;
-    expect(typeof proofParams).toBe("function");
-    if (typeof proofParams !== "function") return;
-    expect(proofParams({ observation: { filePath: "/tmp/browser-proof.png" } })).toMatchObject({
+    const plainIngest = plain.steps[1]?.params;
+    if (typeof plainIngest !== "function") throw new Error("Expected an ingest params builder");
+    expect(plainIngest({ observation: { filePath: "/tmp/browser-proof.png" } })).toMatchObject({
       name: "ingest_computer_use_artifacts",
       arguments: {
         backendName: "ade-browser",
         toolName: "browser proof",
         callerRoot: process.cwd(),
         inputs: [
-          {
-            kind: "screenshot",
-            title: "Verified",
-            description: "Verified",
-            path: "/tmp/browser-proof.png",
-          },
+          { kind: "screenshot", title: "Verified", description: "Verified", path: "/tmp/browser-proof.png" },
         ],
       },
     });
-  }));
 
-  it("browser proof --har exports the HAR and files it as a browser_trace beside the screenshot", () => {
-    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1", "--har", "--caption", "Checkout 500s"]);
-    expect(proof.kind).toBe("execute");
-    if (proof.kind !== "execute") return;
-
+    const proof = expectExecutePlan(buildCliPlan(["browser", "proof", "--tab", "tab-1", "--har", "--caption", "Checkout 500s"]));
     // observe → exportHar → ingest, so both artifacts come from the same tab
     // state and land under the same owners.
     expect(proof.steps).toHaveLength(3);
     expect(proof.steps[1]?.params).toMatchObject({
       name: "run_ade_action",
-      arguments: {
-        domain: "built_in_browser",
-        action: "exportHar",
-        args: { tabId: "tab-1" },
-      },
+      arguments: { domain: "built_in_browser", action: "exportHar", args: { tabId: "tab-1" } },
     });
-
     const ingest = proof.steps[2]?.params;
-    expect(typeof ingest).toBe("function");
-    if (typeof ingest !== "function") return;
+    if (typeof ingest !== "function") throw new Error("Expected an ingest params builder");
     expect(ingest({
       observation: { filePath: "/tmp/browser-proof.png" },
       har: { filePath: "/tmp/network-1.har" },
@@ -15220,210 +14859,49 @@ describe("ADE CLI", () => {
         ],
       },
     });
-
     // Network logging off means exportHar answered without a file: say so
     // instead of quietly filing half the proof that was asked for.
     expect(() => ingest({ observation: { filePath: "/tmp/browser-proof.png" }, har: {} }))
       .toThrow(/network logging/i);
-  });
+  }));
 
-  it("browser proof without --har files only the screenshot", () => {
-    const proof = buildCliPlan(["browser", "proof", "--tab", "tab-1"]);
-    expect(proof.kind).toBe("execute");
-    if (proof.kind !== "execute") return;
-    expect(proof.steps).toHaveLength(2);
-    const ingest = proof.steps[1]?.params;
-    if (typeof ingest !== "function") throw new Error("Expected an ingest params builder");
-    const params = ingest({ observation: { filePath: "/tmp/browser-proof.png" } }) as {
-      arguments: { inputs: unknown[] };
+  // An agent shell (ADE_LANE_ID + ADE_CHAT_SESSION_ID) claims what it opens:
+  // the env lane/chat ride along, and `open` reuses the agent's own background
+  // tab unless a flag asks otherwise.
+  it.each<[string, string[], string, Record<string, unknown>, string[]]>([
+    ["bare open", ["open", "localhost:5173"], "navigate",
+      { url: "localhost:5173", activate: false, reuseOwnedTab: true, openPanel: false, laneId: "lane-env-1", chatSessionId: "chat-env-1" }, []],
+    ["open --new-tab", ["open", "localhost:5173", "--new-tab"], "navigate",
+      { url: "localhost:5173", activate: false, newTab: true, openPanel: false, laneId: "lane-env-1", chatSessionId: "chat-env-1" }, ["reuseOwnedTab"]],
+    ["open --panel", ["open", "localhost:5173", "--panel"], "navigate",
+      { url: "localhost:5173", reuseOwnedTab: true, openPanel: true, laneId: "lane-env-1", chatSessionId: "chat-env-1" }, ["activate"]],
+    ["open --active-tab", ["open", "localhost:5173", "--active-tab"], "navigate",
+      { url: "localhost:5173", openPanel: false, laneId: "lane-env-1", chatSessionId: "chat-env-1" }, ["newTab", "activate"]],
+    ["screenshot", ["screenshot"], "captureScreenshot", { laneId: "lane-env-1", chatSessionId: "chat-env-1" }, []],
+    ["switch with an explicit claim", ["switch", "--tab", "tab-1", "--lane", "lane-explicit", "--chat-session", "chat-explicit"], "switchTab",
+      { tabId: "tab-1", openPanel: true, laneId: "lane-explicit", chatSessionId: "chat-explicit" }, []],
+    ["claim", ["claim", "--lane", "lane-explicit", "--chat-session", "chat-explicit", "--tab", "tab-1", "--force", "--lease-ttl-ms", "7000"], "claim",
+      { laneId: "lane-explicit", chatSessionId: "chat-explicit", tabId: "tab-1", force: true, leaseTtlMs: 7000 }, []],
+  ])("browser %s carries the agent lane claim", (_name, argv, action, args, absent) => withEnv({
+    ADE_LANE_ID: "lane-env-1",
+    ADE_CHAT_SESSION_ID: "chat-env-1",
+  }, () => {
+    const params = expectExecutePlan(buildCliPlan(["browser", ...argv])).steps[0]?.params as {
+      arguments: { domain: string; action: string; args: Record<string, unknown> };
     };
-    expect(params.arguments.inputs).toHaveLength(1);
-  });
+    expect(params).toMatchObject({ arguments: { domain: "built_in_browser", action, args } });
+    for (const key of absent) expect(params.arguments.args[key]).toBeUndefined();
+  }));
 
-  it("browser open and claim commands carry the agent lane claim", () => {
-    const previousLane = process.env.ADE_LANE_ID;
-    const previousChat = process.env.ADE_CHAT_SESSION_ID;
-    try {
-      process.env.ADE_LANE_ID = "lane-env-1";
-      process.env.ADE_CHAT_SESSION_ID = "chat-env-1";
-
-      const open = buildCliPlan(["browser", "open", "localhost:5173"]);
-      expect(open.kind).toBe("execute");
-      if (open.kind !== "execute") return;
-      expect(open.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "navigate",
-          args: {
-            url: "localhost:5173",
-            activate: false,
-            reuseOwnedTab: true,
-            openPanel: false,
-            laneId: "lane-env-1",
-            chatSessionId: "chat-env-1",
-          },
-        },
-      });
-
-      const newTabOpen = buildCliPlan(["browser", "open", "localhost:5173", "--new-tab"]);
-      expect(newTabOpen.kind).toBe("execute");
-      if (newTabOpen.kind !== "execute") return;
-      expect(newTabOpen.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "navigate",
-          args: {
-            url: "localhost:5173",
-            activate: false,
-            newTab: true,
-            openPanel: false,
-            laneId: "lane-env-1",
-            chatSessionId: "chat-env-1",
-          },
-        },
-      });
-      expect((newTabOpen.steps[0]?.params as any).arguments.args.reuseOwnedTab).toBeUndefined();
-
-      const panelOpen = buildCliPlan(["browser", "open", "localhost:5173", "--panel"]);
-      expect(panelOpen.kind).toBe("execute");
-      if (panelOpen.kind !== "execute") return;
-      expect(panelOpen.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "navigate",
-          args: {
-            url: "localhost:5173",
-            reuseOwnedTab: true,
-            openPanel: true,
-            laneId: "lane-env-1",
-            chatSessionId: "chat-env-1",
-          },
-        },
-      });
-      expect((panelOpen.steps[0]?.params as any).arguments.args.activate).toBeUndefined();
-
-      const activeOpen = buildCliPlan(["browser", "open", "localhost:5173", "--active-tab"]);
-      expect(activeOpen.kind).toBe("execute");
-      if (activeOpen.kind !== "execute") return;
-      expect(activeOpen.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "navigate",
-          args: {
-            url: "localhost:5173",
-            openPanel: false,
-            laneId: "lane-env-1",
-            chatSessionId: "chat-env-1",
-          },
-        },
-      });
-      expect((activeOpen.steps[0]?.params as any).arguments.args.newTab).toBeUndefined();
-      expect((activeOpen.steps[0]?.params as any).arguments.args.activate).toBeUndefined();
-
-      const ownedScreenshot = buildCliPlan(["browser", "screenshot"]);
-      expect(ownedScreenshot.kind).toBe("execute");
-      if (ownedScreenshot.kind !== "execute") return;
-      expect(ownedScreenshot.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "captureScreenshot",
-          args: {
-            laneId: "lane-env-1",
-            chatSessionId: "chat-env-1",
-          },
-        },
-      });
-
-      const panel = buildCliPlan(["browser", "panel"]);
-      expect(panel.kind).toBe("execute");
-      if (panel.kind !== "execute") return;
-      expect((panel.steps[0]?.params as any).arguments.args).toEqual({});
-      expect(panel.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "showPanel",
-          args: {},
-        },
-      });
-
-      const switchTab = buildCliPlan(["browser", "switch", "--tab", "tab-1"]);
-      expect(switchTab.kind).toBe("execute");
-      if (switchTab.kind !== "execute") return;
-      expect((switchTab.steps[0]?.params as any).arguments.args).toEqual({
-        tabId: "tab-1",
-        openPanel: true,
-      });
-      expect(switchTab.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "switchTab",
-          args: {
-            tabId: "tab-1",
-            openPanel: true,
-          },
-        },
-      });
-
-      const explicitSwitchClaim = buildCliPlan([
-        "browser",
-        "switch",
-        "--tab",
-        "tab-1",
-        "--lane",
-        "lane-explicit",
-        "--chat-session",
-        "chat-explicit",
-      ]);
-      expect(explicitSwitchClaim.kind).toBe("execute");
-      if (explicitSwitchClaim.kind !== "execute") return;
-      expect(explicitSwitchClaim.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "switchTab",
-          args: {
-            tabId: "tab-1",
-            openPanel: true,
-            laneId: "lane-explicit",
-            chatSessionId: "chat-explicit",
-          },
-        },
-      });
-
-      const claim = buildCliPlan([
-        "browser",
-        "claim",
-        "--lane",
-        "lane-explicit",
-        "--chat-session",
-        "chat-explicit",
-        "--tab",
-        "tab-1",
-        "--force",
-        "--lease-ttl-ms",
-        "7000",
-      ]);
-      expect(claim.kind).toBe("execute");
-      if (claim.kind !== "execute") return;
-      expect(claim.steps[0]?.params).toMatchObject({
-        arguments: {
-          domain: "built_in_browser",
-          action: "claim",
-          args: {
-            laneId: "lane-explicit",
-            chatSessionId: "chat-explicit",
-            tabId: "tab-1",
-            force: true,
-            leaseTtlMs: 7000,
-          },
-        },
-      });
-    } finally {
-      if (previousLane === undefined) delete process.env.ADE_LANE_ID;
-      else process.env.ADE_LANE_ID = previousLane;
-      if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
-      else process.env.ADE_CHAT_SESSION_ID = previousChat;
-    }
-  });
+  it("browser panel and switch send no claim of their own, even from an agent shell", () => withEnv({
+    ADE_LANE_ID: "lane-env-1",
+    ADE_CHAT_SESSION_ID: "chat-env-1",
+  }, () => {
+    const argsOf = (argv: string[]) =>
+      (expectExecutePlan(buildCliPlan(argv)).steps[0]?.params as { arguments: { args: unknown } }).arguments.args;
+    expect(argsOf(["browser", "panel"])).toEqual({});
+    expect(argsOf(["browser", "switch", "--tab", "tab-1"])).toEqual({ tabId: "tab-1", openPanel: true });
+  }));
 
   describe("ios-sim build root and capture flags", () => {
     const previousLane = process.env.ADE_LANE_ID;

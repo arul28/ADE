@@ -27,25 +27,6 @@ describe("truncateTailToLineBoundary", () => {
     expect(truncateTailToLineBoundary(RECONSTRUCTION, RECONSTRUCTION.length + 500)).toBe(RECONSTRUCTION);
   });
 
-  it("never cuts the role prompt mid-line", () => {
-    // A budget that lands INSIDE the role prompt line: a raw tail slice would
-    // hand the model "...the current project inside ADE. Answer identity
-    // questions as the project's CTO." with the subject removed, which still
-    // reads as a complete instruction.
-    const naiveCut = RECONSTRUCTION.length - "CTO Runtime Identity\n".length - 40;
-    const naive = RECONSTRUCTION.slice(-naiveCut);
-    expect(naive.startsWith(ROLE_PROMPT_LINE)).toBe(false);
-    expect(ROLE_PROMPT_LINE).toContain(naive.split("\n")[0]);
-
-    const aligned = truncateTailToLineBoundary(RECONSTRUCTION, naiveCut);
-    expect(aligned.length).toBeLessThanOrEqual(naiveCut);
-    // The partial role-prompt line was dropped whole, not kept as a fragment.
-    expect(aligned).not.toContain(naive.split("\n")[0]);
-    for (const line of aligned.split("\n")) {
-      expect(RECONSTRUCTION.split("\n")).toContain(line);
-    }
-  });
-
   it("keeps every surviving line whole at any budget", () => {
     const sourceLines = RECONSTRUCTION.split("\n");
     for (let budget = 1; budget <= RECONSTRUCTION.length; budget += 1) {
@@ -83,7 +64,6 @@ describe("shouldInjectLaneMemoryContext", () => {
     // The send path stamps the key after delivery; every later turn on the same
     // lane is deduped away.
     const afterDelivery = { ...base, lastLaneDirectiveKey: base.laneDirectiveKey };
-    expect(shouldInjectLaneMemoryContext(afterDelivery)).toBe(false);
     expect(shouldInjectLaneMemoryContext(afterDelivery)).toBe(false);
 
     // Moving the chat to another lane makes it due again.

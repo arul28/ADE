@@ -109,15 +109,40 @@ function claudeScanRecords(filePath: string): {
   return { prefix, suffix, combined: [...prefix, ...suffix] };
 }
 
-function latestClaudeCwd(records: unknown[]): string | null {
+function latestClaudeModel(records: unknown[]): string | null {
+  for (const item of records.slice().reverse()) {
+    const message = asRecord(asRecord(item)?.message);
+    if (asString(message?.role) !== "assistant") continue;
+    const model = asString(message?.model);
+    // `<synthetic>` marks a message Claude Code wrote itself (errors, limits).
+    if (model && !model.startsWith("<")) return model;
+  }
+  return null;
+}
+
+/**
+ * The folder Claude files this session under.
+ *
+ * Every record carries the shell's cwd *at that moment*, so a session that
+ * started at a lane root and later ran `cd apps/desktop` records the subfolder
+ * last. Claude keys the session by its project folder
+ * (`projects/<slug(cwd)>/`), and `claude --resume` finds it only from that
+ * folder — so the newest recorded cwd whose slug names the file's project
+ * folder wins. The newest cwd of any kind is the fallback (a hand-moved file).
+ */
+function claudeSessionCwd(records: unknown[], projectDirName: string | null): string | null {
+  let latest: string | null = null;
   for (const item of records.slice().reverse()) {
     // Normalized here rather than at the call site: this is where a transcript's
     // own recorded cwd first becomes an ADE value, and a CLI that opened the
     // workspace through a long-path handle writes the `\\?\` spelling.
     const cwd = normalizeProviderCwd(asString(asRecord(item)?.cwd));
-    if (cwd) return cwd;
+    if (!cwd) continue;
+    if (!projectDirName) return cwd;
+    if (claudeProjectSlugForCwd(cwd) === projectDirName) return cwd;
+    latest ??= cwd;
   }
-  return null;
+  return latest;
 }
 
 /**
@@ -309,7 +334,7 @@ export async function discoverClaudeSessions(
     const scan = claudeScanRecords(candidate.filePath);
     const jsonl = scan.combined;
     if (isClaudeSdkOriginTranscript(scan.prefix)) continue;
-    const cwd = latestClaudeCwd(jsonl);
+    const cwd = claudeSessionCwd(jsonl, path.basename(path.dirname(candidate.filePath)));
     let createdAt: number | null = null;
     for (const item of jsonl) {
       const record = asRecord(item);
@@ -331,6 +356,11 @@ export async function discoverClaudeSessions(
       filePath: candidate.filePath,
       sourceMtimeMs: candidate.mtimeMs,
     });
+    record.sizeBytes = candidate.size;
+    // The model of the newest assistant turn, so a continue keeps it instead
+    // of switching the session to ADE's default Claude model.
+    const lastModel = latestClaudeModel(scan.suffix) ?? latestClaudeModel(scan.prefix);
+    if (lastModel) record.launch = { model: lastModel };
 
     // An exact lookup already names the session the caller wants; it must resolve
     // even when that session is an ancestor of a newer continuation.

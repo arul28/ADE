@@ -4541,13 +4541,14 @@ describe("ptyService", () => {
     });
 
     it.each([
-      ["qwen", "qwen -m qwen3-coder-plus --approval-mode auto-edit", "qwen", "qwen3-coder-plus", "edit"],
-      ["kimi", "kimi -m kimi-code/k3 --plan", "kimi", "kimi-code/k3", "plan"],
-      ["grok", "grok -m grok-4.6 --permission-mode bypassPermissions", "grok", "grok-4.6", "full-auto"],
-      ["copilot", "copilot --model gpt-5.4 --deny-tool=write --deny-tool=shell", "copilot", "gpt-5.4", "plan"],
+      // Kimi has no assign-at-launch flag; the other three get the fresh id.
+      ["qwen", "qwen -m qwen3-coder-plus --approval-mode auto-edit", "qwen", "qwen3-coder-plus", "edit", "uuid-3"],
+      ["kimi", "kimi -m kimi-code/k3 --plan", "kimi", "kimi-code/k3", "plan", null],
+      ["grok", "grok -m grok-4.6 --permission-mode bypassPermissions", "grok", "grok-4.6", "full-auto", "uuid-3"],
+      ["copilot", "copilot --model gpt-5.4 --deny-tool=write --deny-tool=shell", "copilot", "gpt-5.4", "plan", "uuid-3"],
     ] as const)(
       "stores provider-specific resume metadata for %s launches",
-      async (toolType, startupCommand, provider, model, permissionMode) => {
+      async (toolType, startupCommand, provider, model, permissionMode, targetId) => {
         const { service, sessionService } = createHarness();
         await service.create({
           laneId: "lane-1",
@@ -4564,13 +4565,142 @@ describe("ptyService", () => {
             resumeMetadata: expect.objectContaining({
               provider,
               targetKind: "session",
-              targetId: null,
+              targetId,
               launch: expect.objectContaining({ model, permissionMode }),
             }),
           }),
         );
       },
     );
+
+    it.each([
+      ["qwen", ["--approval-mode", "default"], ["--session-id", "uuid-3"]],
+      ["grok", ["--no-alt-screen", "--permission-mode", "default"], ["-s", "uuid-3"]],
+      ["copilot", ["--no-alt-screen"], ["--session-id=uuid-3"]],
+    ] as const)(
+      "pre-assigns a %s session id in argv and the startup line of a fresh launch",
+      async (toolType, launchArgs, assignedFlag) => {
+        const { service, sessionService, loadPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: `${toolType} CLI`,
+          cols: 80,
+          rows: 24,
+          toolType,
+          command: toolType,
+          args: [...launchArgs],
+          startupCommand: [toolType, ...launchArgs].join(" "),
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const spawnedArgs = ptyLib.spawn.mock.calls.at(-1)?.[1] as string[];
+        expect(spawnedArgs.join(" ")).toContain(assignedFlag.join(" "));
+        const createArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+        expect(createArgs?.resumeMetadata).toEqual(expect.objectContaining({ provider: toolType, targetId: "uuid-3" }));
+      },
+    );
+
+    it.each([
+      ["qwen", "qwen --resume 11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111"],
+      ["qwen", "qwen --continue", null],
+      ["grok", "grok --no-alt-screen -r 22222222-2222-4222-8222-222222222222", "22222222-2222-4222-8222-222222222222"],
+      ["grok", "grok -c", null],
+      ["copilot", "copilot --no-alt-screen --resume=33333333-3333-4333-8333-333333333333", "33333333-3333-4333-8333-333333333333"],
+      ["copilot", "copilot --continue", null],
+    ] as const)(
+      "never pre-assigns an id on a %s continuation launch (%s)",
+      async (toolType, startupCommand, targetId) => {
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: `${toolType} CLI`,
+          cols: 80,
+          rows: 24,
+          toolType,
+          startupCommand,
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const launchText = [
+          ...((ptyLib.spawn.mock.calls.at(-1)?.[1] as string[] | undefined) ?? []),
+          ...(mockPty.write as ReturnType<typeof vi.fn>).mock.calls.map((call) => String(call[0])),
+        ].join(" ");
+        expect(launchText).toContain(startupCommand.split(" ").slice(-1)[0]);
+        expect(launchText).not.toMatch(/--session-id|\s-s\s/);
+        const createArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+        expect(createArgs?.resumeMetadata?.targetId ?? null).toBe(targetId);
+      },
+    );
+
+    it("pre-assigns the copy's id on a Claude --fork-session launch but never on a plain resume", async () => {
+      const source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+      let uuidCounter = 0;
+      mocks.randomUUID.mockImplementation(() => {
+        uuidCounter += 1;
+        return `00000000-0000-4000-8000-${String(uuidCounter).padStart(12, "0")}`;
+      });
+      const { service, sessionService, loadPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude copy",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "claude",
+        args: ["--resume", source, "--fork-session"],
+        startupCommand: `claude --resume ${source} --fork-session`,
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: null,
+          launch: { permissionMode: "default" },
+        },
+      });
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const spawnedArgs = ptyLib.spawn.mock.calls.at(-1)?.[1] as string[];
+      const assignedId = spawnedArgs[spawnedArgs.indexOf("--session-id") + 1];
+      expect(assignedId).toMatch(/^00000000-0000-4000-8000-/);
+      expect(spawnedArgs).toEqual(expect.arrayContaining(["--resume", source, "--fork-session"]));
+      const forkArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(forkArgs?.resumeMetadata?.targetId).toBe(assignedId);
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude resume",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "claude",
+        args: ["--resume", source],
+        startupCommand: `claude --resume ${source}`,
+      });
+      const resumeLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const resumeArgs = resumeLib.spawn.mock.calls.at(-1)?.[1] as string[];
+      expect(resumeArgs).toEqual(["--resume", source]);
+    });
+
+    it("records the pre-assigned id on caller-supplied resume metadata that has no target yet", async () => {
+      // A chat -> CLI handoff describes the launch before the PTY picks the id.
+      const { service, sessionService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Qwen CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "qwen",
+        command: "qwen",
+        args: ["--approval-mode", "default"],
+        startupCommand: "qwen --approval-mode default",
+        resumeMetadata: {
+          provider: "qwen",
+          targetKind: "session",
+          targetId: null,
+          launch: { permissionMode: "default" },
+        },
+      });
+      const createArgs = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+      expect(createArgs?.resumeMetadata).toEqual(expect.objectContaining({ provider: "qwen", targetId: "uuid-3" }));
+    });
 
     it("reattaches a resumed tracked session instead of creating a duplicate terminal row", async () => {
       const { service, sessionService } = createHarness();
@@ -5167,6 +5297,13 @@ describe("ptyService", () => {
         title: "Droid CLI",
         resumeCommand: "droid --resume",
         expectedName: "Droid",
+      },
+      {
+        provider: "cursor",
+        toolType: "cursor-cli",
+        title: "Cursor CLI",
+        resumeCommand: "cursor-agent --model auto --continue",
+        expectedName: "Cursor",
       },
       {
         provider: "opencode",
@@ -5919,72 +6056,9 @@ describe("ptyService", () => {
       }
     });
 
-    it("sendToSession can continue Cursor without a captured chat id and never adds --trust", async () => {
-      vi.useFakeTimers();
-      try {
-        const { service, sessionService, mockPty, loadPty } = createHarness();
-        sessionService.create({
-          sessionId: "session-cursor-continue",
-          laneId: "lane-1",
-          ptyId: null,
-          tracked: true,
-          title: "Cursor CLI",
-          startedAt: "2026-04-09T12:00:00.000Z",
-          transcriptPath: "/tmp/transcripts/session-cursor-continue.log",
-          toolType: "cursor-cli",
-          resumeCommand: "cursor-agent --force --trust --model composer-2.5-fast --continue",
-          resumeMetadata: {
-            provider: "cursor",
-            targetKind: "session",
-            targetId: null,
-            launch: { permissionMode: "full-auto", model: "composer-2.5-fast" },
-          },
-        });
-        sessionService.end({
-          sessionId: "session-cursor-continue",
-          endedAt: "2026-04-09T12:30:00.000Z",
-          exitCode: 1,
-          status: "failed",
-        });
-
-        const pending = service.sendToSession({
-          sessionId: "session-cursor-continue",
-          text: "Print EXACT_CURSOR_CONTINUE and stop",
-          cols: 120,
-          rows: 40,
-        });
-        await Promise.resolve();
-        await vi.waitFor(() => {
-          expect(loadPty).toHaveBeenCalled();
-        });
-        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
-        expect(spawn).toHaveBeenCalledWith(
-          "/bin/bash",
-          ["--noprofile", "--norc", "-lc", "cursor-agent --force --model composer-2.5-fast --continue"],
-          expect.any(Object),
-        );
-        await Promise.resolve();
-        mockPty._emitter.emit("data", "Cursor Agent\nv2026.05.24\nUse /skills to give Cursor specialized knowledge for tasks.\n");
-        await Promise.resolve();
-        await vi.advanceTimersByTimeAsync(1000);
-        expect(mockPty.write).toHaveBeenNthCalledWith(1, "\x05");
-        await vi.advanceTimersByTimeAsync(25);
-        expect(mockPty.write).toHaveBeenNthCalledWith(2, "\x15");
-        await vi.advanceTimersByTimeAsync(25);
-        expect(mockPty.write).toHaveBeenNthCalledWith(3, "Print EXACT_CURSOR_CONTINUE and stop");
-        await vi.advanceTimersByTimeAsync(500);
-        await expect(pending).resolves.toEqual(expect.objectContaining({
-          sessionId: "session-cursor-continue",
-          resumed: true,
-          reusedExistingRuntime: false,
-        }));
-        expect(mockPty.write).toHaveBeenLastCalledWith("\r");
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-
-    it("resumeSession can continue Cursor without a captured chat id and never adds --trust", async () => {
+    it("refuses to resume Cursor without a captured chat id instead of opening the latest chat", async () => {
+      // `cursor-agent --continue` reopens the most recent chat, which need not be
+      // this terminal's. No captured id means not resumable, like every other CLI.
       const { service, sessionService, loadPty } = createHarness();
       sessionService.create({
         sessionId: "session-cursor-resume-continue",
@@ -6010,22 +6084,14 @@ describe("ptyService", () => {
         status: "failed",
       });
 
-      await expect(service.resumeSession({
+      const error = await service.resumeSession({
         sessionId: "session-cursor-resume-continue",
         cols: 120,
         rows: 40,
-      })).resolves.toEqual(expect.objectContaining({
-        sessionId: "session-cursor-resume-continue",
-        resumed: true,
-        reusedExistingRuntime: false,
-      }));
-
-      const spawn = (loadPty.mock.results[0]?.value as any).spawn;
-      expect(spawn).toHaveBeenCalledWith(
-        "/bin/bash",
-        ["--noprofile", "--norc", "-lc", "cursor-agent --force --model composer-2.5-fast --continue"],
-        expect.any(Object),
-      );
+      }).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(Error);
+      expect((error as Error).message).toMatch(/Cursor exited before ADE could capture a concrete resume target/);
+      expect(loadPty).not.toHaveBeenCalled();
     });
 
     // The Windows Droid resume runs `powershell.exe -Command <line>`, whose
@@ -6582,6 +6648,44 @@ describe("ptyService", () => {
             model: expectedModel,
           }),
         );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each([
+      ["a fresh launch", null, true],
+      ["an imported conversation", "57b78fec-325e-44cf-93f8-2be5234510a1", false],
+    ] as const)("titles %s of an output-titled CLI from its startup output only when it is new", async (_label, targetId, expectTitle) => {
+      vi.useFakeTimers();
+      try {
+        const aiIntegrationService = {
+          getMode: vi.fn(() => "subscription"),
+          summarizeTerminal: vi.fn(async () => ({ text: "Output title" })),
+        };
+        const { service, mockPty, sessionService } = createHarness({ aiIntegrationService });
+        await service.create({
+          laneId: "lane-1",
+          title: "Read AGENTS.md First Line",
+          cols: 80,
+          rows: 24,
+          toolType: "copilot",
+          resumeMetadata: {
+            provider: "copilot",
+            targetKind: "session",
+            targetId,
+            launch: { model: "openai/gpt-5.4" },
+          },
+        });
+        const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+        if (createdSessionId) mocks.existsSyncResults.set(`/tmp/chat-sessions/${createdSessionId}.json`, false);
+
+        mockPty._emitter.emit("data", "Confirm folder trust. Do you trust the files in this folder?");
+        await vi.advanceTimersByTimeAsync(PTY_AI_TITLE_DEBOUNCE_MS + 100);
+        await Promise.resolve();
+
+        if (expectTitle) expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+        else expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
       } finally {
         vi.useRealTimers();
       }
@@ -7907,6 +8011,15 @@ describe("ptyService", () => {
       mockPty._emitter.emit("exit", { exitCode: 143 });
       expect(sessionService.end).toHaveBeenCalledWith(
         expect.objectContaining({ sessionId, exitCode: 143, status: "disposed" }),
+      );
+    });
+
+    it("treats Windows STATUS_CONTROL_C_EXIT as a disposed session", async () => {
+      const { service, mockPty, sessionService } = createHarness();
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+      mockPty._emitter.emit("exit", { exitCode: -1073741510 });
+      expect(sessionService.end).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId, exitCode: -1073741510, status: "disposed" }),
       );
     });
 

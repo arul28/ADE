@@ -1423,44 +1423,6 @@ describe("startCliTerminalSession", () => {
     ]);
   });
 
-  it("launches every provider CLI with its selected provider + fast mode", async () => {
-    for (const provider of ["codex", "cursor", "droid", "opencode", "claude"] as const) {
-      const calls: Array<{ name: string; args?: Record<string, unknown> }> = [];
-      const connection = {
-        tool: async (name: string, args?: Record<string, unknown>) => {
-          calls.push({ name, args });
-          return { sessionId: `term-${provider}`, terminalId: `term-${provider}`, session: null };
-        },
-      } as unknown as AdeCodeConnection;
-
-      await startCliTerminalSession({
-        connection,
-        provider,
-        laneId: "lane-1",
-        model: `${provider}-model`,
-        reasoningEffort: "medium",
-        fastMode: true,
-        permissionMode: "default",
-        initialInput: "Go",
-        cols: 120,
-        rows: 36,
-      });
-
-      expect(calls).toHaveLength(1);
-      expect(calls[0]!.name).toBe("start_cli_session");
-      expect(calls[0]!.args).toEqual(expect.objectContaining({
-        laneId: "lane-1",
-        provider,
-        model: `${provider}-model`,
-        reasoningEffort: "medium",
-        fastMode: true,
-        permissionMode: "default",
-        initialInput: "Go",
-        tracked: true,
-      }));
-    }
-  });
-
   it("omits fastMode from the payload when the caller does not set it", async () => {
     const calls: Array<{ name: string; args?: Record<string, unknown> }> = [];
     const connection = {

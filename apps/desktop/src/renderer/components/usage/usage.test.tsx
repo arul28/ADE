@@ -3,6 +3,7 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Z_LAYERS } from "../ui/zLayers";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -21,7 +22,7 @@ import {
 import { computeHeatmapLayout, fillMissingDays, weekAlignment } from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageLimitsBand } from "./UsageLimitsBand";
-import { providerColor } from "./providerColors";
+import { USAGE_HEADROOM_COLOR, usageHeadroomColor, usageHeadroomTone } from "./usageDesign";
 import { useAppStore } from "../../state/appStore";
 import { useUsageSnapshot } from "./useUsageSnapshot";
 import {
@@ -488,10 +489,10 @@ describe("usage components", () => {
      * The panel used to be `position: absolute` inside the row. The header
      * usage popup is a ~400px scroll container, and a 320px panel hanging off
      * a meter near its top was simply cut off — "Open limits" was unreachable
-     * by mouse. It is portalled to the body and placed in viewport
-     * coordinates now, so no ancestor's clipping can eat it.
+     * by mouse. Its fixed viewport host is portalled to the body, so no
+     * scrolling ancestor's clipping can eat it.
      */
-    it("escapes any scrolling ancestor by portalling the details panel to the body", async () => {
+    it("escapes scrolling ancestors through a fixed viewport host on the body", async () => {
       const snapshot = makeQuotaPanelSnapshot();
       snapshot.accounts = [
         {
@@ -514,10 +515,13 @@ describe("usage components", () => {
       fireEvent.focus(meter);
 
       const popover = screen.getByRole("dialog", { name: "Weekly details" });
+      const overlayHost = popover.parentElement;
       expect(container.contains(popover)).toBe(false);
       expect(document.body.contains(popover)).toBe(true);
-      expect(popover.style.position).toBe("fixed");
-      expect(popover.className).not.toContain("absolute");
+      expect(overlayHost?.style.position).toBe("fixed");
+      expect(overlayHost?.style.inset).toBe("0");
+      expect(Number(overlayHost?.style.zIndex)).toBe(Z_LAYERS.tooltip);
+      expect(popover.style.position).toBe("absolute");
     });
 
     /**
@@ -591,23 +595,20 @@ describe("usage components", () => {
     });
 
     /**
-     * The bars were coloured by `accountAccentColor`, which hashed the CARD key
-     * ("claude:5-hour") into a six-entry palette — so Claude's own window was
-     * drawn in a generic blue or purple, and two windows of one provider
-     * disagreed with each other. Colour comes from the provider now.
+     * The bars were once coloured by hashing the card key into a palette, then
+     * by provider brand. They now follow headroom alone, the same rule as the
+     * header rings, so every provider reads green / yellow / red alike.
      */
-    it("draws a provider's bars in that provider's brand colour", async () => {
+    it("colours each window bar by its headroom, not by provider", async () => {
       render(<MountedBand />);
 
       const claude = await screen.findByRole("button", {
         name: /Weekly · this machine: 80% left/,
       });
-      // 20% used is calm, so the meter is the brand colour itself — not a hash
-      // of the card key into a palette that happens to hold Gemini's blue.
-      expect(claude.style.getPropertyValue("--usage-fill")).toBe(providerColor("claude", "dark"));
+      expect(claude.style.getPropertyValue("--usage-fill")).toBe(USAGE_HEADROOM_COLOR.ok);
 
       const codex = screen.getByRole("button", { name: /Weekly · this machine: 37% left/ });
-      expect(codex.style.getPropertyValue("--usage-fill")).toBe(providerColor("codex", "dark"));
+      expect(codex.style.getPropertyValue("--usage-fill")).toBe(USAGE_HEADROOM_COLOR.warn);
     });
 
     /**
@@ -754,7 +755,8 @@ describe("usage components", () => {
       const meter = await screen.findByRole("button", { name: /Weekly · dev@example.com: 37% left/ });
       fireEvent.mouseEnter(meter.parentElement!);
       const popover = screen.getByRole("dialog", { name: "Weekly details" });
-      expect(popover.className).toContain("z-[90]");
+      // Above the header usage sheet it opens from (Z_LAYERS.sheet).
+      expect(Number(popover.parentElement?.style.zIndex)).toBeGreaterThan(Z_LAYERS.sheet);
 
       fireEvent.mouseLeave(meter.parentElement!, { relatedTarget: document.body });
       expect(screen.getByRole("dialog", { name: "Weekly details" })).toBeTruthy();
@@ -1232,6 +1234,8 @@ describe("usage components", () => {
       const ring = document.querySelector('[data-usage-provider="codex"]');
       expect(ring?.getAttribute("data-usage-left")).toBe("81");
       expect(ring?.getAttribute("data-usage-unshaded")).toBe("19");
+      expect(ring?.getAttribute("data-usage-tone")).toBe("ok");
+      expect(ring?.querySelector("circle")?.getAttribute("stroke")).toBe(USAGE_HEADROOM_COLOR.ok);
       expect(ring?.querySelector("[data-ring-unshaded]")?.getAttribute("transform")).toContain("rotate(-90");
       const darkStroke = ring?.querySelector("[data-ring-unshaded]")?.getAttribute("stroke") ?? "";
       expect(darkStroke).toContain("8%, white");
@@ -2478,6 +2482,21 @@ describe("usage components", () => {
       // A machine that could not report says so in the merge's own words.
       expect(screen.getByText(/Couldn't reach this computer/)).toBeTruthy();
     });
+  });
+});
+
+describe("usage headroom colour", () => {
+  it("is green from 50% left, yellow from 25% to under 50%, red under 25%", () => {
+    expect(usageHeadroomTone(100)).toBe("ok");
+    expect(usageHeadroomTone(50)).toBe("ok");
+    expect(usageHeadroomTone(49.9)).toBe("warn");
+    expect(usageHeadroomTone(35)).toBe("warn");
+    expect(usageHeadroomTone(25)).toBe("warn");
+    expect(usageHeadroomTone(24.9)).toBe("critical");
+    expect(usageHeadroomTone(0)).toBe("critical");
+    expect(usageHeadroomColor(80)).toBe("var(--color-success)");
+    expect(usageHeadroomColor(30)).toBe("var(--color-warning)");
+    expect(usageHeadroomColor(10)).toBe("var(--color-error)");
   });
 });
 

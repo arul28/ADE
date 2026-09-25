@@ -24,7 +24,7 @@ See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof cap
 The artifact broker is owned by the ADE runtime that owns the project. Ingest, link, list, delete, broken-record audit/prune/recovery, review compatibility updates, backend status, and event emission all happen inside `ade serve` for that project. Artifacts live under that runtime's `.ade/artifacts/computer-use/` directory:
 
 - **Local runtime:** artifacts on the user's machine, under the local project root.
-- **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface; raw artifact bytes are not synced back to the desktop machine.
+- **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads image previews through `computerUse.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface. Videos stream instead, from main's loopback media server (see Renderer below): the renderer plays `<base>/remote/<targetId>/<projectId>/<path>`, and main answers each Range request with bounded `computer_use_artifacts.readArtifactRange` reads (at most 2 MiB each, CTO role only) from that machine's broker, which resolves the path inside its own `.ade/artifacts`. A host too old to answer falls back to the 10 MiB data URL. Raw artifact bytes are not synced back to the desktop machine.
 
 The desktop renderer is a viewer: it lists collected proof and displays
 runtime-fetched previews inline in the chat and in the drawer. It does not own
@@ -40,6 +40,18 @@ the remote host.
 - `computerUseArtifactBrokerService.ts` — the broker. Canonical storage for `computer_use_artifacts` + `computer_use_artifact_links`. Ingestion (`ingest`), listing (`listArtifacts`), deletion (`deleteArtifacts`, `deleteArtifactsForLane`, `pruneBrokenArtifacts`, `purgeArtifactRecordsUnder`), recovery (`recoverArtifact`), broken-record reporting (`listBrokenArtifacts`), compatibility review-state management (`updateArtifactReview`), backend status (`getBackendStatus`), and bounded preview reads (`readArtifactPreview`, 10 MiB maximum). Image previews cover BMP/GIF/JPEG/PNG/SVG/WebP; video previews cover M4V/MOV/MP4/OGV/WebM. Uses `secureCopyFromDescriptor` (O_NOFOLLOW + atomic rename) for on-disk ingests and materializes inline text/JSON content via `createComputerUseArtifactPath` + `writeTextAtomic`.
 - `controlPlane.ts` — builds `ComputerUseOwnerSnapshot` (owner-scoped artifacts, latest active backend, summary, and artifact-derived activity) over the broker. It does not synthesize timestamped readiness activity.
 - `localComputerUse.ts` — macOS-only capability descriptor (`LocalComputerUseCapabilities`). Reports whether `screencapture`, app launch, and GUI-interaction commands are available. `createComputerUseArtifactPath` + `toProjectArtifactUri` round out the storage helpers.
+- `proofFingerprint.ts` — the attach judge the broker calls on each input. It hashes files (SHA-256 plus byte size), finds earlier proof with the same bytes (`ProofDuplicateError`, code `PROOF_DUPLICATE`), and flags a video made before the owning chat's turn. It downgrades an ADE capture to an attach when the bytes no longer match the captured hash.
+- `mediaCreationTime.ts` — reads `creation_time` from an MP4 or QuickTime `moov/mvhd` box. It walks box headers only, so it never loads the whole file.
+- `artifactMediaServer.ts` — the token-guarded `127.0.0.1` HTTP server that plays proof videos with Range support. See Renderer below.
+- `artifactStreamProtocol.ts` — shared by every path that serves proof bytes: the `ade-artifact://` handler, the media server, and the broker's preview and range reads. It holds the MIME table, the Range parse, and the one containment check for local files.
+- `artifactByteRange.ts` — one bounded slice of a proof file (at most 2 MiB), for `readArtifactRange`.
+
+Shared modules:
+
+- `apps/desktop/src/shared/proofProvenance.ts` — `proofSource` values, the metadata keys only the broker may write, `PROOF_DUPLICATE_CODE`, and the one-line provenance text each proof surface prints.
+- `apps/desktop/src/shared/artifactStreamUrl.ts` — builds and parses the `ade-artifact://project/…` image URLs and the media server's `/project/…` and `/remote/…` video URLs.
+- `apps/desktop/src/shared/pathCase.ts` — node-free path case rule (`foldsCase`), shared by the proof URLs and `pathContainment.ts`.
+- `apps/ade-cli/src/services/proof/adeCaptureRegistry.ts` — the RPC server's registry of files that its capture actions wrote, by path and hash. An ingest is filed as ADE's capture only when each input matches an entry. Each match is one-shot.
 
 ### Direct Codex Computer Use
 
@@ -54,19 +66,20 @@ Computer-use services that used to exist and are deliberately gone (do not re-ad
 
 ### IPC and runtime RPC
 
-Channel constants live under `ade.proof.*` (renamed from the old `ade.computerUse.*`):
+Channel constants live under `ade.computerUse.*` in `shared/ipc.ts`. The preload namespace is `window.ade.computerUse`:
 
-- `ade.proof.listArtifacts`
-- `ade.proof.getOwnerSnapshot`
-- `ade.proof.deleteArtifacts`
-- `ade.proof.listBrokenArtifacts`
-- `ade.proof.pruneBrokenArtifacts`
-- `ade.proof.recoverArtifact`
-- `ade.proof.updateArtifactReview`
-- `ade.proof.readArtifactPreview`
-- `ade.proof.event` (push)
+- `ade.computerUse.listArtifacts`
+- `ade.computerUse.getOwnerSnapshot`
+- `ade.computerUse.deleteArtifacts`
+- `ade.computerUse.listBrokenArtifacts`
+- `ade.computerUse.pruneBrokenArtifacts`
+- `ade.computerUse.recoverArtifact`
+- `ade.computerUse.updateArtifactReview`
+- `ade.computerUse.readArtifactPreview`
+- `ade.computerUse.mediaBaseUrl` — main only. It returns the loopback media server's base URL, or null. It does not go to the runtime.
+- `ade.computerUse.event` (push)
 
-Each channel routes renderer → preload → ADE runtime → broker. For local projects the preload bridge talks to the local `ade serve`; for remote projects it tunnels the same JSON-RPC payload over the SSH connection in `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts`. The broker on the receiving runtime executes the action and emits `ade.proof.event` back along the same channel.
+Each channel except `mediaBaseUrl` routes renderer → preload → ADE runtime → broker. For local projects the preload bridge talks to the local `ade serve`; for remote projects it tunnels the same JSON-RPC payload over the SSH connection in `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts`. The broker on the receiving runtime executes the action and emits `ade.computerUse.event` back along the same channel.
 
 The `ade-cli` headless surface registers the same broker and exposes the equivalent JSON-RPC tools (`screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `list_computer_use_artifacts`, `delete_computer_use_artifacts`, `list_broken_computer_use_artifacts`, `prune_broken_computer_use_artifacts`, `recover_computer_use_artifact`) via `apps/ade-cli/src/adeRpcServer.ts`, so a chat agent's `ade proof capture` and the desktop renderer's transcript/drawer collections go through the same broker instance.
 
@@ -96,6 +109,13 @@ for a reviewer. Only an explicit proof call writes a record:
   scratch file path. It reaches the proof drawer as a `video_recording` artifact
   **only** when `record start` was given a `--caption`, mirroring
   `ade browser proof`; without one, nothing is ingested.
+- **Proof must be new bytes.** The broker hashes every stored proof file and
+  refuses an attach whose bytes are already proof (`PROOF_DUPLICATE`), reads an
+  attached MP4/MOV's `mvhd` creation time to flag a video recorded before the
+  chat's turn, and stamps `metadata.proofSource` on every record. ADE's
+  in-process recorders and captures pass `provenance` on the ingest request and
+  skip both checks. A CLI capture counts as ADE's only when the RPC server's
+  capture registry still holds the file with the same hash. See [Already-filed bytes and older videos](../proof.md#already-filed-bytes-and-older-videos).
 - **Browser use is visible to the human, automatically.** Every
   capability-validated `ade browser …` command marks the calling chat as using
   the browser, so a globe appears on its session card and chat header, the
@@ -120,13 +140,37 @@ any of them later.
 
 - `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` — shared
   proof card, in-app lightbox, full drawer, availability/error states, and
-  irreversible delete action for the active chat session. Local files use ADE's
-  range-capable artifact protocol; remote files use
-  `ade.proof.readArtifactPreview`. Neither path falls back to Finder.
+  irreversible delete action for the active chat session. Local images,
+  including project-relative and in-project absolute uris, use the
+  `ade-artifact://project/` protocol. Every video, local or remote, plays from
+  main's loopback media server
+  (`apps/desktop/src/main/services/computerUse/artifactMediaServer.ts`):
+  Electron's `protocol.handle` cannot answer the second Range read a `<video>`
+  makes when an MP4 keeps its index at the end, so a long recording cannot
+  load through it. The server listens on `127.0.0.1` on an OS-picked port, starts
+  on the first `computerUse.mediaBaseUrl` call, and every path begins with a
+  random per-launch token: `http://127.0.0.1:<port>/<token>/project/<path>` for
+  this computer and `…/<token>/remote/<targetId>/<projectId>/<path>` for a
+  paired one (`shared/artifactStreamUrl.ts` builds and parses both). An
+  absolute uri maps only when it sits under the project root; a drive-letter
+  or UNC root compares without case, a POSIX root exactly. A local
+  path must resolve inside the project's `.ade/artifacts`, the same check the
+  `ade-artifact://` handler makes; a remote one is read chunk by chunk from
+  that machine's broker, which applies the check on its side. Remote images
+  use `computerUse.readArtifactPreview`.
+  A failed preview names its cause when known (the machine is offline, it sent
+  nothing, or the bytes did not play). Neither path falls back to Finder.
+- `apps/desktop/src/renderer/components/chat/useArtifactPreview.ts` — resolves
+  one artifact's preview source (protocol URL, media server URL, or bounded
+  runtime read) and the failure cause (`offline`, `unsent`, `unplayable`).
+- `apps/desktop/src/renderer/lib/playableMedia.ts` — relabels a
+  `video/quicktime` source as `video/mp4` where a video plays, because Chromium
+  refuses the QuickTime type for the same bytes. Stored metadata keeps the true
+  type.
 - `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`,
   `chatCardPrimitives.tsx` — bucket artifacts by capture time into the completed
   turn that produced them and render the collapsed inline filmstrip.
-- `apps/desktop/src/renderer/lib/computerUse.ts`, `renderer/lib/proof.ts` — renderer helpers that call `window.ade.proof.*`.
+- `apps/desktop/src/renderer/lib/computerUse.ts` — renderer helpers that call `window.ade.computerUse.*`.
 
 `ComputerUseSection.tsx` (Settings > Computer Use) was removed in this rebuild; its readiness display was folded into `IntegrationsSettingsSection`.
 
@@ -170,7 +214,7 @@ Canonical `ComputerUseArtifactKind` values:
    `secureCopyFromDescriptor` (`O_NOFOLLOW` + atomic rename).
 5. Resolve optional `lane_id` from a lane owner or owning chat.
 6. Insert the canonical record + all owner links.
-7. Emit `artifact-ingested` / `artifact-linked` payloads on `ade.proof.event`.
+7. Emit `artifact-ingested` / `artifact-linked` payloads on `ade.computerUse.event`.
 
 Allowed import roots (the trust boundary for external file paths):
 
@@ -213,9 +257,38 @@ App Control also carries the same agent action model as the built-in browser: `a
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
+## Mac Desktop
+
+A third, newer surface sits beside these: **Mac Desktop** gives each lane its
+own macOS virtual display, parks that lane's windows on it, and drives them
+through the Accessibility API — window-scoped, so the user's real screen and
+real pointer are untouched. It is macOS-only on the runtime host and is driven
+by `ade mac-desktop` (aliases `desk` / `mac-desk`; `ade desktop` is the app
+launcher) plus the `mac_desktop` action domain.
+
+It changes nothing about the two responsibilities above:
+
+- **Codex Computer Use is unchanged.** The signed OpenAI helper stays the
+  canonical `computer_use` MCP server, app- and window-scoped, and keeps working
+  on a parked window. ADE cannot embed a signed OpenAI binary, so it ships its
+  own driver instead. Ghost OS remains optional and user-installed.
+- **Proof goes through this broker.** `ade mac-desktop proof --caption "…"` is
+  the only Mac Desktop call that files a record; a bare
+  `ade mac-desktop screenshot` writes scratch and returns a path, the same
+  capture-is-not-proof rule as `ade browser` and `ade ios-sim`. Records are
+  ingested through `ingest_computer_use_artifacts` with
+  `backendName: "ade-mac-desktop"` and `backendStyle: "manual"`, and owners
+  resolve the usual way (lane, calling chat, and the lane's primary PR as a
+  `github_pr` owner). There is no second ingestion path, and `mac_desktop` is
+  not on the ingest surface.
+
+See [`../mac-desktop/README.md`](../mac-desktop/README.md) for the display,
+ownership, lease, and streaming model.
+
 ## Cross-links
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.
+- [`../mac-desktop/README.md`](../mac-desktop/README.md) — the per-lane macOS virtual display and its `ade mac-desktop` surface.
 - [`../automations/README.md`](../automations/README.md) — automations that dispatch agent work rely on the agent's own `ade proof` calls; no automation-level proof policy exists.
 
 ## Detail docs

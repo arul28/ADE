@@ -55,10 +55,8 @@ import type {
   AttentionPresence,
 } from "../../../shared/types/attention";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
-import {
-  loadExternalSessionDetail,
-  normalizeExternalSessionDetailArgs,
-} from "../externalSessions/externalSessionDetail";
+import { buildMacDesktopDomainService } from "../macDesktop/macDesktopActionDomain";
+import { normalizeExternalSessionDetailArgs } from "../externalSessions/externalSessionDetail";
 import type {
   ChatMentionSuggestArgs,
   ChatMentionSuggestResult,
@@ -164,6 +162,7 @@ import { getErrorMessage, isPathEscapeError, isRecord, nowIso, resolvePathWithin
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
+import { getSourceFaviconService, type ResolveSourceFaviconsArgs } from "../chat/sourceFaviconService";
 import { assertCursorCloudRenameAllowed } from "../../../shared/cursorCloudNaming";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { settleTerminalSession } from "../sessions/settleTerminalSession";
@@ -184,6 +183,8 @@ import { providerAccountAnalyticsCapture } from "../analytics/featureProductAnal
 // module's whole service graph to get it. Re-exported here because this is
 // where every existing caller looks for them.
 import type { AdeActionDomain } from "./domains";
+import { ADE_ACTION_ALLOWLIST, isAutomationAllowedAdeAction } from "./actionPolicy";
+import type { AutomationAdeActionRegistry } from "../automations/automationService";
 import {
   asActionRecord,
   optionalNonEmptyString,
@@ -217,6 +218,7 @@ export {
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "./actionPolicy";
@@ -580,6 +582,10 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
   const launches = () => requireService(runtime.chatLaunchService, "Chat launch service not available.");
   const service: OpaqueService = {
     ...base,
+    // Machine-level and stateless per chat: the Sources list asks for the
+    // icons of domains it already shows. Same resolver as the sync command.
+    resolveSourceFavicons: (args?: unknown) =>
+      getSourceFaviconService().resolve(asActionRecord(args) as ResolveSourceFaviconsArgs),
     ensureCtoSession: async (args?: { modelId?: string | null; reasoningEffort?: string | null }) => {
       const laneId = await resolvePrimaryLaneId(runtime);
       return agentChatService.ensureIdentitySession({
@@ -1187,6 +1193,8 @@ function buildComputerUseArtifactsDomainService(runtime: AdeRuntime): OpaqueServ
       broker.updateArtifactReview(args),
     readArtifactPreview: (args: Parameters<typeof broker.readArtifactPreview>[0]) =>
       broker.readArtifactPreview(args),
+    readArtifactRange: (args: Parameters<typeof broker.readArtifactRange>[0]) =>
+      broker.readArtifactRange(args),
     getBackendStatus: () => broker.getBackendStatus(),
     getOwnerSnapshot: (args?: ComputerUseOwnerSnapshotArgs) => {
       if (!args?.owner) throw new Error("owner is required.");
@@ -3255,7 +3263,7 @@ function buildExternalSessionsDomainService(runtime: AdeRuntime): OpaqueService 
       );
     },
     getDetail(args: unknown) {
-      return loadExternalSessionDetail(normalizeExternalSessionDetailArgs(args ?? {}));
+      return externalSessionsService.getDetail(normalizeExternalSessionDetailArgs(args ?? {}));
     },
     // `watchDetail`/`unwatchDetail` are deliberately absent: the watch pushes
     // updates on a per-sender Electron IPC channel this action domain cannot
@@ -3380,6 +3388,7 @@ function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   };
 }
 
+
 export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
@@ -3432,6 +3441,9 @@ export function getAdeActionDomainServices(
     work_tools: toService(runtime.workToolsStateService),
     computer_use_artifacts: toService(buildComputerUseArtifactsDomainService(runtime)),
     ios_simulator: toService(runtime.iosSimulatorService),
+    // One private macOS screen per lane. The domain's own readers and its
+    // platform gate live beside the service in `macDesktopActionDomain.ts`.
+    mac_desktop: toService(buildMacDesktopDomainService(runtime)),
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
@@ -3439,5 +3451,31 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
+  };
+}
+
+/**
+ * The action lookup `ade-action` automation steps run through. Same allowlist
+ * and rule as `run_ade_action`; `getServices` is read on every call, so
+ * late-bound services are seen.
+ */
+export function createAutomationAdeActionLookup(
+  getServices: () => Partial<Record<AdeActionDomain, unknown>>,
+): AutomationAdeActionRegistry {
+  return {
+    isAllowed(domain, action) {
+      return isAutomationAllowedAdeAction(domain as AdeActionDomain, action);
+    },
+    getService(domain) {
+      return (getServices()[domain as AdeActionDomain] ?? null) as Record<string, unknown> | null;
+    },
+    listDomains() {
+      return Object.keys(ADE_ACTION_ALLOWLIST);
+    },
+    listActions(domain) {
+      return [...(ADE_ACTION_ALLOWLIST[domain as AdeActionDomain] ?? [])]
+        // Same rule as `isAllowed`, so nothing listed is refused when run.
+        .filter((action) => isAutomationAllowedAdeAction(domain as AdeActionDomain, action));
+    },
   };
 }

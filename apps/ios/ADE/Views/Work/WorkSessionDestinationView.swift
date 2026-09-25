@@ -406,6 +406,8 @@ struct WorkSessionDestinationView: View {
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State var artifactContentRenderSignature = 0
   @State var artifactContentLoadsInFlight = Set<String>()
+  /// Ended and replaced when the chat goes away, which stops its downloads.
+  @State var artifactLoadScope = WorkArtifactLoadScope()
   @State var artifactRefreshInFlight = false
   @State var artifactRefreshError: String?
   @State var fullscreenImage: WorkFullscreenImage?
@@ -831,6 +833,8 @@ struct WorkSessionDestinationView: View {
         WorkFullscreenImageView(image: image)
       }
       .sheet(isPresented: $chatInfoPresented) {
+        // Folded off the main actor by the thread engine, like the timeline.
+        let threadSnapshot = threadModel?.frame?.snapshot ?? .empty
         WorkChatInfoDetailsSheet(
           sessionId: sessionId,
           subagentSnapshots: subagentSnapshots,
@@ -840,6 +844,10 @@ struct WorkSessionDestinationView: View {
           provider: subagentProvider,
           expandedTaskIds: $expandedSubagentDetailIds,
           sessionModel: composerChatSummary?.model,
+          sourceRefs: threadSnapshot.sourceRefs,
+          omittedSourceRefCount: threadSnapshot.omittedSourceRefCount,
+          taskList: threadSnapshot.taskList,
+          onResolveSourceFavicons: { domains in try await syncService.resolveSourceFavicons(domains: domains) },
           onSelect: handleSubagentSelection,
           onCancelScheduledWork: scheduledWorkCancelAction,
           onSetScheduledWorkPaused: scheduledWorkPauseAction,
@@ -1676,6 +1684,8 @@ struct WorkSessionDestinationView: View {
 
   @MainActor
   func cleanupLoadedArtifactContent() {
+    artifactLoadScope.end()
+    artifactLoadScope = WorkArtifactLoadScope()
     artifactContent.values.forEach { workRemoveLoadedArtifactTempFile($0) }
     artifactContent.removeAll()
     refreshArtifactContentRenderSignature()
@@ -2119,6 +2129,7 @@ struct WorkChatThreadOverlayInputs: Equatable {
   var optimisticPendingSteers: [WorkPendingSteerModel]
   var artifacts: [ComputerUseArtifactSummary]
   var cardExpansionSignature: Int
+  var expandedTurnIds: Set<String>
   var summary: ChatThreadSummaryContext
   var sessionStatus: String
 }
@@ -2136,6 +2147,7 @@ extension WorkSessionDestinationView {
       // Proof artifacts render in the thread; a quick look has none.
       artifacts: artifacts,
       cardExpansionSignature: workCardExpansionRenderSignature(cardExpansion),
+      expandedTurnIds: workExpandedTurnFoldIds(cardExpansion),
       summary: ChatThreadSummaryContext(
         provider: summary?.provider ?? "",
         providerFallback: workChatProviderFamilyFromToolType(currentSession?.toolType),
@@ -2170,6 +2182,7 @@ extension WorkSessionDestinationView {
       overlays.optimisticPendingSteers = inputs.optimisticPendingSteers
       overlays.artifacts = inputs.artifacts
       overlays.cardExpansionSignature = inputs.cardExpansionSignature
+      overlays.expandedTurnIds = inputs.expandedTurnIds
       overlays.summary = inputs.summary
       overlays.sessionStatus = inputs.sessionStatus
     }

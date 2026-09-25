@@ -4,6 +4,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { WorkChatSessionCreatedDetail } from "../../lib/chatSessionEvents";
 import { createDefaultWorkProjectViewState } from "../../state/appStore";
+import {
+  chatCompanionUiStorageKey,
+  closeWorkLiveCardForChat,
+  floatWorkLiveCardForChat,
+  readChatCompanionUiState,
+  resetChatCompanionUiStateCacheForTests,
+} from "../chat/chatCompanionUiState";
 
 // ---------------------------------------------------------------------------
 // Spies used across all tests
@@ -420,7 +427,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -642,7 +648,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -849,7 +854,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -1069,7 +1073,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedLaneIds: [],
       workCollapsedSectionIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
       workSidebarOpen: false,
       // From the real default rather than by hand: the by-hand copies drifted
       // when `workSidebarTab` was renamed and kept a key the type no longer has.
@@ -1159,7 +1162,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedLaneIds: [],
       workCollapsedSectionIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
       workSidebarOpen: false,
       // From the real default rather than by hand: the by-hand copies drifted
       // when `workSidebarTab` was renamed and kept a key the type no longer has.
@@ -2249,7 +2251,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2316,7 +2317,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-time",
       workCollapsedLaneIds: ["lane-1"],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: true,
       workSidebarOpen: true,
     };
     let nextState: typeof previousState | null = null;
@@ -2382,7 +2382,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2420,7 +2419,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2532,7 +2530,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2578,7 +2575,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2649,7 +2645,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
       workCollapsedSectionIds: ["status:running", "status:settled"],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2707,7 +2702,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2795,7 +2789,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2875,7 +2868,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -2972,7 +2964,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           sessionListOrganization: "by-lane",
           workCollapsedLaneIds: [],
           workCollapsedTabGroupIds: [],
-          workFocusSessionsHidden: false,
         },
       },
     };
@@ -3096,7 +3087,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           sessionListOrganization: "by-lane",
           workCollapsedLaneIds: [],
           workCollapsedTabGroupIds: [],
-          workFocusSessionsHidden: false,
         },
       },
     };
@@ -3147,7 +3137,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [] as string[],
       workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
     };
     fakeAppStoreState = {
       ...fakeAppStoreState,
@@ -3227,7 +3216,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
     };
 
     listSessionsCachedMock
@@ -3312,7 +3300,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       sessionListOrganization: "by-lane" as const,
       workCollapsedLaneIds: [],
       workCollapsedTabGroupIds: [],
-      workFocusSessionsHidden: false,
     };
 
     listSessionsCachedMock
@@ -3937,7 +3924,6 @@ describe("useWorkSessions — chip filters and lane ordering", () => {
           workCollapsedLaneIds: [] as string[],
           workCollapsedTabGroupIds: [] as string[],
           workCollapsedSectionIds: [] as string[],
-          workFocusSessionsHidden: false,
           ...patch,
         },
       },
@@ -4253,5 +4239,38 @@ describe("lanePrWaitingReason", () => {
 
   it("reads a draft PR's pending CI as a wait", () => {
     expect(lanePrWaitingReason([pr({ state: "draft", checksStatus: "pending" })])).toBe("ci");
+  });
+});
+
+describe("useWorkSessions — companion state cleanup (L3)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetFakeAppStoreState();
+    installWindowAde();
+    listSessionsCachedMock.mockResolvedValue([]);
+    useSearchParamsMock.mockReturnValue([new URLSearchParams(), vi.fn()]);
+    setDocumentVisibility("visible");
+    window.localStorage.clear();
+    resetChatCompanionUiStateCacheForTests();
+  });
+
+  afterEach(() => {
+    cleanup();
+    delete (window as any).ade;
+  });
+
+  it("clears a deleted session's companion UI record", () => {
+    closeWorkLiveCardForChat("chat-9", "browser", "tab-1");
+    floatWorkLiveCardForChat("chat-9", "mac-desktop");
+    expect(readChatCompanionUiState("chat-9").workLiveCardFloating).toEqual(["mac-desktop"]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    act(() => {
+      result.current.removeSessionFromList("chat-9");
+    });
+
+    expect(window.localStorage.getItem(chatCompanionUiStorageKey("chat-9"))).toBeNull();
+    expect(readChatCompanionUiState("chat-9").workLiveCardFloating).toEqual([]);
+    expect(readChatCompanionUiState("chat-9").workLiveCardClosedByTool).toEqual({});
   });
 });

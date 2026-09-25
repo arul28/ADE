@@ -419,8 +419,13 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { sessionId: string }",
       example: "ade actions run chat.continueUsageLimitOnAlternate --input-json '{\"sessionId\":\"chat-123\"}' --text",
     },
+    listCliChildSessions: {
+      description: "List tracked CLI sessions spawned with a parent chat (`ade new chat --mode cli --parent …`), with status, exit code, lane, and parent. `chat.getTurnStatus` and `chat.readTranscript` also answer for these ids.",
+      input: "object { laneId?: string, parentSessionId?: string }",
+      example: "ade actions run chat.listCliChildSessions --input-json '{\"parentSessionId\":\"chat-123\"}' --json",
+    },
     readTranscript: {
-      description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
+      description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine. For a tracked CLI session id it returns the CLI's last message and terminal tail instead.",
       input: "object { sessionId: string, limit?: number, maxChars?: number, since?: ISO timestamp }",
       example: "ade actions run chat.readTranscript --input-json '{\"sessionId\":\"chat-123\",\"limit\":20,\"maxChars\":8000}'",
     },
@@ -458,6 +463,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Resolve a safe, bounded title and favicon preview for a pasted chat URL.",
       input: "object { url: string }",
       example: "ade actions run chat.resolveSmartLinkPreview --input-json '{\"url\":\"https://github.com/owner/repo/pull/123\"}' --json",
+    },
+    resolveSourceFavicons: {
+      description: "Fetch the favicons of Sources domains from the sites themselves (HTTPS, public hosts only, cached 7 days) as data URLs; null when a site has none.",
+      input: "object { domains?: string[] (max 48), domain?: string, url?: string }",
+      example: "ade actions run chat.resolveSourceFavicons --input-json '{\"domains\":[\"github.com\",\"zed.dev\"]}' --json",
     },
     recoverCodexTurn: {
       description: "Recover a stalled Codex turn by waiting, nudging it, retrying on the same thread, or restarting and resuming the thread.",
@@ -648,6 +658,30 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run ios_simulator.getScreenSnapshot --input-json '{}' --json",
     },
   },
+  mac_desktop: {
+    getStatus: {
+      description:
+        "Read the lane's Mac Desktop: whether this host can run one, the display, its parked windows, the input lease, and every lane holding a display. Stream fields are redacted.",
+      input: "object { laneId?: string }",
+      example: "ade actions run mac_desktop.getStatus --input-json '{\"laneId\":\"lane-1\"}' --json",
+    },
+    listWindows: {
+      description: "List the windows parked on a lane's Mac Desktop display (omit laneId for every window this host can see).",
+      input: "object { laneId?: string }",
+      example: "ade actions run mac_desktop.listWindows --input-json '{\"laneId\":\"lane-1\"}' --json",
+    },
+    observe: {
+      description:
+        "Capture the lane's desktop as a screenshot plus a numbered accessibility element list. Act on the handles it returns; they are valid only for this observation.",
+      input: "object { laneId: string, windowId?: number, map?: boolean, limit?: number }",
+      example: "ade actions run mac_desktop.observe --input-json '{\"laneId\":\"lane-1\",\"map\":true}' --json",
+    },
+    getStreamStatus: {
+      description: "Read the lane's live-view stream shape: running, frame rate, and client count. The URL and token are always null here.",
+      input: "object { laneId: string }",
+      example: "ade actions run mac_desktop.getStreamStatus --input-json '{\"laneId\":\"lane-1\"}' --json",
+    },
+  },
   app_control: {
     getStatus: {
       description: "Read the desktop app-control session status: what is attached and which chat owns it.",
@@ -706,6 +740,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Read one artifact's bytes as a bounded preview, for artifacts small enough to inline.",
       input: "object { artifactId: string, maxBytes?: number }",
       example: "ade actions run computer_use_artifacts.readArtifactPreview --input-json '{\"artifactId\":\"artifact-1\"}' --json",
+    },
+    readArtifactRange: {
+      description: "Read one bounded slice of a stored proof inside .ade/artifacts, base64-encoded, so a paired desktop can stream a video.",
+      input: "object { uri: string, offset?: number, length?: number }",
+      example: "ade --role cto actions run computer_use_artifacts.readArtifactRange --input-json '{\"uri\":\".ade/artifacts/apple-recordings/lane-1/rec.mp4\",\"offset\":0,\"length\":1048576}' --json",
     },
     updateArtifactReview: {
       description: "Mark a proof artifact approved, rejected, or needing more evidence, with an optional note.",

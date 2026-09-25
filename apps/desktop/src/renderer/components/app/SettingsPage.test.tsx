@@ -2,6 +2,7 @@
 
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isInaccessible } from "@testing-library/dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { SettingsPage } from "./SettingsPage";
@@ -58,6 +59,10 @@ vi.mock("../settings/StorageSection", () => ({ StorageSection: stubSection(["sto
 vi.mock("../settings/SessionLifecycleSection", () => ({ SessionLifecycleSection: stubSection(["session-lifecycle"]) }));
 vi.mock("../settings/AdeUsageSection", () => ({ AdeUsageSection: stubSection(["ade-usage"]) }));
 vi.mock("../settings/RemoteContextBadge", () => ({ RemoteSettingsBanner: () => null }));
+vi.mock("../account/AccountPage", () => ({
+  AccountPage: ({ embedded }: { embedded?: boolean }) => <div>{embedded ? "account embedded" : "account page"}</div>,
+}));
+vi.mock("./FeedbackReporterModal", () => ({ FeedbackReporterModal: () => null }));
 
 function LocationProbe() {
   const location = useLocation();
@@ -78,7 +83,7 @@ function renderSettings(initialEntry: string) {
 const searchBox = () => screen.getByPlaceholderText("Search all settings");
 const visibleAnchors = (container: HTMLElement) =>
   [...container.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
-    .filter((node) => node.style.display !== "none")
+    .filter((node) => !isInaccessible(node))
     .map((node) => node.dataset.settingsAnchor);
 
 afterEach(() => cleanup());
@@ -166,6 +171,33 @@ describe("SettingsPage", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("?tab=appearance#theme");
     });
+  });
+
+  it("lists Account first in the Account group and renders the account page in place", async () => {
+    renderSettings("/settings?tab=account");
+
+    expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
+    expect(screen.getByText("account embedded")).toBeTruthy();
+    const nav = screen.getByRole("navigation", { name: "Settings sections" });
+    const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
+    expect(rows.slice(0, 3)).toEqual(["Account", "Secrets", "Usage"]);
+  });
+
+  it("carries feedback, help, zoom, and the identity row above the sections", async () => {
+    renderSettings("/settings?tab=appearance");
+    await screen.findByRole("heading", { name: "Appearance" });
+
+    expect(screen.getByRole("button", { name: "Send feedback" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Help menu" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Zoom in" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Zoom out" })).toBeTruthy();
+
+    // Signed out, the identity row names the session state and still opens Account.
+    fireEvent.click(screen.getByRole("button", { name: /^Account, / }));
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("?tab=account");
+    });
+    expect(await screen.findByText("account embedded")).toBeTruthy();
   });
 
   it("says so when nothing on the current tab matches", async () => {

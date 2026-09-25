@@ -14,10 +14,14 @@ const { DatabaseSync } = require("node:sqlite") as {
  * The search index is a machine-local, disposable cache. It lives in its own
  * SQLite file (never inside ade.db): FTS5 virtual tables cannot be cr-sqlite
  * CRRs, the index must never sync to other devices, and a rebuild must be as
- * cheap as deleting the file. Bump the schema version for any DDL change —
- * mismatches drop and recreate the database instead of migrating.
+ * cheap as deleting the file. Bump the schema version for any DDL change, or
+ * when doc ids change shape — mismatches drop and recreate the database
+ * instead of migrating, and the delayed background backfill refills it.
+ *
+ * 5: a steer's lifecycle rows fold onto one `chat:<session>:steer:<steerId>`
+ * doc; indexes built before that still hold them as per-row docs.
  */
-export const SEARCH_INDEX_SCHEMA_VERSION = 4;
+export const SEARCH_INDEX_SCHEMA_VERSION = 5;
 
 export const SEARCH_INDEX_DB_FILENAME = "search-index.db";
 
@@ -98,15 +102,68 @@ function readSchemaVersion(db: DatabaseSyncType): number | null {
 }
 
 /**
+ * This SQLite build cannot make an FTS5 table, so there can be no index.
+ *
+ * Distinguished from every other open failure because the answer is the
+ * opposite: a corrupt file is worth deleting and recreating, a missing module
+ * is not. Treating the two the same is what made a runtime without FTS5 delete
+ * and recreate the index file on every indexing attempt, failing each time and
+ * logging `search.index_source_failed` several times a second — measured on a
+ * dev brain, hundreds of lines and a `no such module: fts5` per chat event.
+ */
+export class SearchIndexFts5UnavailableError extends Error {
+  readonly code = "SEARCH_INDEX_FTS5_UNAVAILABLE" as const;
+
+  constructor(readonly cause: unknown) {
+    super(
+      "SEARCH_INDEX_FTS5_UNAVAILABLE: this SQLite build has no FTS5 module, so the search index cannot be created. Search stands down; nothing else is affected.",
+    );
+    this.name = "SearchIndexFts5UnavailableError";
+  }
+}
+
+/**
+ * Can this SQLite build make an FTS5 table?
+ *
+ * Probed on a TEMP table so the answer costs nothing and leaves nothing
+ * behind, and probed BEFORE the DDL so the failure is named rather than
+ * arriving as a bare "no such module" from whichever statement hit it first.
+ */
+export function assertFts5Available(db: Pick<DatabaseSyncType, "exec">): void {
+  try {
+    db.exec("CREATE VIRTUAL TABLE IF NOT EXISTS temp.ade_fts5_probe USING fts5(probe)");
+    db.exec("DROP TABLE IF EXISTS temp.ade_fts5_probe");
+  } catch (cause) {
+    throw new SearchIndexFts5UnavailableError(cause);
+  }
+}
+
+/**
  * Open (or create) the search index database. On schema mismatch or any
  * corruption the file is dropped and recreated — the index is a cache and the
  * ingestion cursors it loses are rebuilt by the backfill pass.
+ *
+ * Throws {@link SearchIndexFts5UnavailableError} when the runtime has no FTS5.
+ * That is not recoverable by deleting anything, so it is never retried here.
  */
 export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
   const dbPath = path.join(cacheDir, SEARCH_INDEX_DB_FILENAME);
 
-  const create = (): DatabaseSyncType => {
+  // A failed probe closes the handle it opened. On Windows an open handle
+  // would also keep the index file from being deleted until exit.
+  const openWithFts5 = (): DatabaseSyncType => {
     const db = openAt(dbPath);
+    try {
+      assertFts5Available(db);
+    } catch (error) {
+      db.close();
+      throw error;
+    }
+    return db;
+  };
+
+  const create = (): DatabaseSyncType => {
+    const db = openWithFts5();
     db.exec(DDL);
     db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('schemaVersion', ?)").run(
       String(SEARCH_INDEX_SCHEMA_VERSION)
@@ -116,7 +173,9 @@ export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
 
   let db: DatabaseSyncType;
   try {
-    db = openAt(dbPath);
+    // Before anything that needs the module, so the caller gets the named
+    // error instead of a file deletion it cannot benefit from.
+    db = openWithFts5();
     const version = readSchemaVersion(db);
     if (version !== SEARCH_INDEX_SCHEMA_VERSION) {
       db.close();
@@ -126,7 +185,8 @@ export function openSearchIndexDb(cacheDir: string): SearchIndexDb {
       // Ensure tables exist even if the meta row survived a partial write.
       db.exec(DDL);
     }
-  } catch {
+  } catch (error) {
+    if (error instanceof SearchIndexFts5UnavailableError) throw error;
     try {
       tryRemoveDbFiles(dbPath);
     } catch {

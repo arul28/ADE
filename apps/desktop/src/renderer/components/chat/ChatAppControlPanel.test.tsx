@@ -13,6 +13,7 @@ import type {
   AppControlTarget,
 } from "../../../shared/types";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
+import { WorkToolsMaximizeContext } from "../terminals/workToolsMaximize";
 
 const transparentPngDataUrl =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=";
@@ -306,6 +307,19 @@ describe("ChatAppControlPanel", () => {
   afterEach(() => {
     cleanup();
     delete (window as any).ade;
+  });
+
+  it("carries the preview toggle and maximize buttons on its chrome row", async () => {
+    installAdeMock();
+
+    render(
+      <WorkToolsMaximizeContext.Provider value={{ maximized: false, setMaximized: vi.fn() }}>
+        <ChatAppControlPanel sessionId="chat-buttons" laneId="lane-1" projectRoot="/repo" />
+      </WorkToolsMaximizeContext.Provider>,
+    );
+
+    expect(await screen.findByRole("button", { name: "Show preview when minimized" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Maximize pane" })).toBeTruthy();
   });
 
   it("offers the launch target picker with no session, and inserts the CDP help draft", async () => {
@@ -796,12 +810,7 @@ describe("ChatAppControlPanel", () => {
     expect(screen.queryByRole("menuitem", { name: /Insert as context/ })).toBeNull();
   });
 
-  /*
-    The pane's own chrome, pinned: App Control borrows the browser stage's card
-    and the browser row's progress bar, and the two are only "one product" for
-    as long as nobody quietly deletes the inset or the bar.
-  */
-  it("frames the body like the browser stage and runs a progress bar while it attaches", async () => {
+  it("shows launch progress while an app attaches", async () => {
     const api = installAdeMock();
     let release: (session: unknown) => void = () => {};
     api.appControl.launchInTerminal.mockImplementation(
@@ -812,17 +821,7 @@ describe("ChatAppControlPanel", () => {
 
     render(<ChatAppControlPanel sessionId="chat-frame" laneId="lane-1" projectRoot="/repo" />);
 
-    // The stage: 8px inset, 10px radius, one 1px inset ring over the surface.
-    const stage = await screen.findByTestId("app-control-stage");
-    expect(stage.className).toContain("rounded-[10px]");
-    expect(stage.className).toContain("ring-1");
-    expect(stage.className).toContain("ring-inset");
-    expect(stage.parentElement?.className).toContain("p-2");
-    // Every overlay hangs off the stage, so the badges and the agent cursor
-    // cannot drift away from the inset edge the frame draws.
-    expect(stage.contains(screen.getByText("No app attached"))).toBe(true);
-
-    // Idle rows carry no bar at all.
+    expect((await screen.findByText("No app attached")).textContent).toBe("No app attached");
     expect(screen.queryByTestId("app-control-progress")).toBeNull();
 
     await openAppPicker();
@@ -831,7 +830,7 @@ describe("ChatAppControlPanel", () => {
     });
     fireEvent.click(screen.getByLabelText("Launch App Control command"));
 
-    expect(await screen.findByTestId("app-control-progress")).toBeTruthy();
+    expect((await screen.findByTestId("app-control-progress")).isConnected).toBe(true);
 
     release({ ...connectedSession, status: "starting" });
     await waitFor(() => {

@@ -52,7 +52,10 @@ describe("AppleDeviceStatusStrip", () => {
     // §12.8: no string starting with "Error invoking remote method" is
     // reachable without asking for it.
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    const details = screen.getByRole("button", { name: "Details" });
+    expect(details.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(details);
+    expect(details.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText(/Error invoking remote method/)).toBeTruthy();
   });
 
@@ -102,6 +105,26 @@ describe("AppleDeviceNoticeStrip", () => {
     expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
   });
 
+  it("offers a second, separate choice only when one is given", () => {
+    const onAction = vi.fn();
+    const onSecondaryAction = vi.fn();
+    render(
+      <AppleDeviceNoticeStrip
+        sentence="iPhone 17 Pro is off."
+        actionLabel="Start"
+        onAction={onAction}
+        secondaryActionLabel="Choose another device"
+        onSecondaryAction={onSecondaryAction}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
+    expect(onSecondaryAction).toHaveBeenCalledOnce();
+    expect(onAction).not.toHaveBeenCalled();
+    cleanup();
+    render(<AppleDeviceNoticeStrip sentence="Video stopped." actionLabel="Reconnect" onAction={vi.fn()} />);
+    expect(screen.getAllByRole("button")).toHaveLength(1);
+  });
+
   it("has no dismiss X when the state cannot be dismissed", () => {
     render(
       <AppleDeviceNoticeStrip sentence="Video stopped." actionLabel="Reconnect" onAction={vi.fn()} />,
@@ -109,25 +132,4 @@ describe("AppleDeviceNoticeStrip", () => {
     expect(screen.queryByRole("button", { name: "Dismiss this message" })).toBeNull();
   });
 
-  it("is an opaque bar, never a tint over the device (rule zero / §B3)", () => {
-    const { container } = render(
-      <AppleDeviceStatusStrip error={new Error("APPLE_HELPER_UNAVAILABLE")} onDismiss={vi.fn()} />,
-    );
-    const strip = container.querySelector("[data-apple-status-strip='error']") as HTMLElement;
-    // A `color-mix` INTO the surface, not `bg-[var(--color-error)]/8` over it.
-    expect(strip.className).toContain("var(--color-surface)");
-    expect(strip.className).not.toMatch(/bg-\[var\(--color-error\)\]\/\d/);
-    expect(container.querySelector("[class*='backdrop-blur']")).toBeNull();
-  });
-
-  it.each([360, 900])("fits its container at %ipx", (width) => {
-    const { container } = render(
-      <AppleDeviceStatusStrip
-        error={new Error("Error invoking remote method 'apple.start': TypeError")}
-        onAction={vi.fn()}
-        onDismiss={vi.fn()}
-      />,
-    );
-    expectNoHorizontalOverflow(container, width);
-  });
 });

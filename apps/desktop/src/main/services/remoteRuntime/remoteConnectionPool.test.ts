@@ -290,6 +290,68 @@ describe("RemoteConnectionPool", () => {
     expect(dispose).toHaveBeenCalledWith(false);
   });
 
+  it("forwards a loopback stream port through a paired relay connection", async () => {
+    // Mac Desktop's live view hands back an `http://127.0.0.1:<port>` URL on
+    // the machine that owns the display. A paired target reached over the
+    // account relay must still turn that port into a local listener — the
+    // forward client is created from the authenticated sync channel regardless
+    // of which route carried it.
+    const client = createClient();
+    const streamPort = 62_114;
+    const ensureForward = vi.fn(async () => ({
+      remoteHost: "127.0.0.1",
+      remotePort: streamPort,
+      localHost: "127.0.0.1" as const,
+      localPort: 43112,
+      localUrl: "http://127.0.0.1:43112",
+      createdAt: 20,
+      lastUsedAt: 21,
+    }));
+    const dispose = vi.fn();
+    bootstrapPairedRuntimeMock.mockResolvedValueOnce({
+      client,
+      transport: { connection: { endpoint: "wss://relay.example/connect/machine-1" } },
+      portForwardClient: { ensureForward, dispose },
+      relayAccountOwnerUserId: "account-a",
+      result: {
+        ...connectResult("1.0.0"),
+        target: pairedTarget,
+        route: {
+          kind: "relay",
+          endpoint: "wss://relay.example/connect/machine-1",
+          latencyMs: 3,
+        },
+      },
+    });
+
+    const pool = new RemoteConnectionPool(
+      {} as RemoteTargetRegistry,
+      "1.0.0",
+      undefined,
+      {
+        getAccountRelayProof: async () => ({ userId: "account-a", token: "account-token" }),
+      },
+    );
+    const connection = await pool.connect(pairedTarget);
+    expect(connection.route?.kind).toBe("relay");
+
+    await expect(pool.ensureLocalPortForward(pairedTarget.id, {
+      remoteHost: "127.0.0.1",
+      remotePort: streamPort,
+      label: "Mac Studio:mac-desktop:62114",
+    })).resolves.toMatchObject({
+      targetId: pairedTarget.id,
+      remoteHost: "127.0.0.1",
+      remotePort: streamPort,
+      localUrl: "http://127.0.0.1:43112",
+      label: "Mac Studio:mac-desktop:62114",
+    });
+    expect(ensureForward).toHaveBeenCalledWith("127.0.0.1", streamPort);
+
+    await pool.disconnect(pairedTarget.id);
+    expect(dispose).toHaveBeenCalledWith(false);
+  });
+
   it("closes a manual Relay connection on sign-out and keeps direct reconnect eligible", async () => {
     const relayClient = createClient();
     const relayDispose = vi.fn();

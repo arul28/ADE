@@ -4,11 +4,9 @@ import { Clock } from "@phosphor-icons/react";
 import { LaneIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
 import { EmptyState } from "../ui/EmptyState";
-import {
-  PaneTilingLayout,
-  type PaneConfig,
-  type PaneSplit,
-} from "../ui/PaneTilingLayout";
+import { Group, Panel } from "react-resizable-panels";
+import { ResizeGutter } from "../ui/ResizeGutter";
+import { useDockLayout } from "../ui/DockLayoutState";
 import { TimelineToolbar } from "./TimelineToolbar";
 import { TimelineListView } from "./TimelineListView";
 import { TimelineCompactView } from "./TimelineCompactView";
@@ -38,14 +36,8 @@ const CommitDetailPanel = React.lazy(async () => {
   return { default: mod.CommitDetailPanel };
 });
 
-const HISTORY_TILING_TREE: PaneSplit = {
-  type: "split",
-  direction: "horizontal",
-  children: [
-    { node: { type: "pane", id: "timeline" }, defaultSize: 60, minSize: 30 },
-    { node: { type: "pane", id: "detail" }, defaultSize: 40, minSize: 20 },
-  ],
-};
+/** Saved split sizes of the timeline and detail panes, in percent. */
+const HISTORY_SPLIT_LAYOUT_ID = "history:split:v1";
 
 export function HistoryPage({ active = true }: { active?: boolean } = {}) {
   const storeRef = useRef<TimelineStoreApi | null>(null);
@@ -436,6 +428,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     [lanes],
   );
 
+  const { layout: splitLayout, loaded: splitLoaded, saveLayout: saveSplitLayout } = useDockLayout(HISTORY_SPLIT_LAYOUT_ID, {});
+
   const panelFallback = (
     <div className="flex flex-1 items-center justify-center font-mono text-[11px] text-muted-fg/40">
       Loading view…
@@ -520,7 +514,6 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
   }
 
-  const detailTitle = surface === "commits" ? "Commit" : "Event Detail";
   const detailBody =
     surface === "commits" ? (
       <Suspense fallback={panelFallback}>
@@ -546,18 +539,30 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       </Suspense>
     );
 
-  const paneConfigs: Record<string, PaneConfig> = {
-    timeline: {
-      title: surface === "commits" ? "Commit graph" : "Timeline",
-      icon: Clock,
-      bodyClassName: "flex flex-col",
-      children: (
-        <div className="flex min-h-0 flex-1 flex-col">
-          <TimelineToolbar
-            onCommitGitActionComplete={() => setCommitRefreshToken((value) => value + 1)}
-          />
+  // A plain page: the toolbar is the top rail, then the timeline and the
+  // detail side by side, split by a hairline.
+  return (
+    <div className="flex h-full min-w-0 flex-col bg-bg">
+      <TimelineToolbar
+        onCommitGitActionComplete={() => setCommitRefreshToken((value) => value + 1)}
+      />
+      <Group
+        // Remount once the saved sizes arrive so they apply.
+        key={splitLoaded ? "loaded" : "pending"}
+        orientation="horizontal"
+        className="min-h-0 flex-1"
+        onLayoutChanged={(next) => {
+          if (next && Object.keys(next).length > 1) saveSplitLayout(next);
+        }}
+      >
+        <Panel
+          id="history-timeline"
+          defaultSize={`${splitLayout["history-timeline"] ?? 60}%`}
+          minSize="30%"
+          className="flex min-h-0 min-w-0 flex-col"
+        >
           {surface === "commits" ? (
-            <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] bg-white/[0.02] px-3 py-1.5">
+            <div className="flex shrink-0 items-center gap-2 border-b border-white/[0.06] px-3 py-1.5">
               <LaneIcon size={14} className="shrink-0 text-accent" weight="bold" />
               <span className="font-sans text-[11px] font-bold uppercase tracking-[1px] text-muted-fg">
                 Lane
@@ -568,25 +573,17 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
             </div>
           ) : null}
           {timelineBody}
-        </div>
-      ),
-    },
-    detail: {
-      title: detailTitle,
-      icon: Clock,
-      bodyClassName: "flex flex-col",
-      children: detailBody,
-    },
-  };
-
-  return (
-    <div className="flex h-full min-w-0 flex-col bg-bg">
-      <PaneTilingLayout
-        layoutId="history:tiling:v3"
-        tree={HISTORY_TILING_TREE}
-        panes={paneConfigs}
-        className="min-h-0 flex-1"
-      />
+        </Panel>
+        <ResizeGutter orientation="vertical" thin />
+        <Panel
+          id="history-detail"
+          defaultSize={`${splitLayout["history-detail"] ?? 40}%`}
+          minSize="20%"
+          className="flex min-h-0 min-w-0 flex-col border-l border-white/[0.06]"
+        >
+          {detailBody}
+        </Panel>
+      </Group>
     </div>
   );
 }

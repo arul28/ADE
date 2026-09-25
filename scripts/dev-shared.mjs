@@ -220,6 +220,22 @@ export function resolveDevSpawnInvocation(
   };
 }
 
+/**
+ * The spawn for `dev-detached.mjs`. On Windows a bare `npm` is `npm.cmd`,
+ * which `spawn` cannot find without a shell, so `npm` goes through
+ * `resolveNpmInvocation` and any other `.cmd`/`.bat` through
+ * `resolveDevSpawnInvocation`. `windowsHide` stops the detached child from
+ * opening a console window of its own.
+ */
+export function resolveDetachedDevInvocation(command, args, options = {}) {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  const resolved = command === "npm"
+    ? { windowsVerbatimArguments: false, ...resolveNpmInvocation(args, { ...options, platform, env }) }
+    : resolveDevSpawnInvocation(command, args, env, platform);
+  return { ...resolved, windowsHide: true };
+}
+
 export function run(command, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     // Every dev child — the brain AND the desktop — starts from the sanitized
@@ -581,13 +597,41 @@ export function devRuntimeLogPath() {
 /** Appending forever is fine for a dev log; ~20 MB is where it stops being useful. */
 const DEV_RUNTIME_LOG_MAX_BYTES = 20 * 1024 * 1024;
 
+/** Where the installed brain keeps its state, and the only root a dev app shares. */
+function defaultAdeHome() {
+  return path.join(os.homedir(), ".ade");
+}
+
+/** A path as this platform compares it: case-folded on Windows and macOS. */
+function pathCompareKey(value) {
+  const resolved = path.resolve(value);
+  return process.platform === "win32" || process.platform === "darwin" ? resolved.toLowerCase() : resolved;
+}
+
+/** The state root this launch will actually use, and whether it is the default. */
+function resolveDevAdeHome() {
+  const fallback = defaultAdeHome();
+  const home = process.env.ADE_HOME?.trim() || fallback;
+  return { home, isDefault: pathCompareKey(home) === pathCompareKey(fallback) };
+}
+
 /**
  * One glance at what this dev launch touches and what it leaves alone. Printed
  * before the window opens so a reader (or an agent) never has to guess whether
  * the installed brain is at risk.
+ *
+ * The state-root line used to say "(shared with the installed brain)"
+ * unconditionally. On 2026-09-22 a relaunch inherited
+ * `ADE_HOME=~/.ade-alpha` from the shell that ran it, and the report said the
+ * alpha root was shared with the installed brain — which is the opposite of
+ * true. The PROJECT database follows the project root, so the data is the
+ * same; what moves is the machine state — account and credentials, the runtime
+ * directory, the machine heartbeat, the socket directory. A dev app on the
+ * wrong home therefore looks completely normal, which is why the line now
+ * states which of the two roots it is rather than asserting a sharing.
  */
 export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime = false } = {}) {
-  const adeHome = process.env.ADE_HOME?.trim() || path.join(os.homedir(), ".ade");
+  const { home, isDefault } = resolveDevAdeHome();
   const requested = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? "ON (ADE_DEV_RUNTIME_SYNC=1)" : "off (--no-sync)";
   // Reusing or attaching to a brain does not change the flags it was started
   // with. Saying "sync off" in that case is how a still-syncing process gets
@@ -595,9 +639,12 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
   const sync = ownsRuntime
     ? requested
     : `${requested} requested; this launch left the process already on the socket alone`;
+  const homeNote = isDefault
+    ? "(shared with the installed brain)"
+    : "(ADE_HOME override — NOT the installed brain's machine state: different account, runtime dir and heartbeat)";
   process.stdout.write([
     "[ade] dev isolation report",
-    `[ade]   state root : ${adeHome} (shared with the installed brain)`,
+    `[ade]   state root : ${home} ${homeNote}`,
     `[ade]   dev socket : ${socketPath}`,
     `[ade]   sync       : ${sync}`,
     `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
@@ -628,6 +675,35 @@ function openDevRuntimeLogFd(logPath) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Stop a dev launch that inherited somebody else's state root.
+ *
+ * `ADE_HOME` is almost never set on purpose for a dev app: the point of the
+ * dev app is to drive the machine state the installed brain already has. An
+ * inherited one — an alpha shell, a packaged-build shell — produces an app on
+ * a different account and runtime directory, which is how one dev brain came
+ * to publish the machine heartbeat under the wrong pid. It starts cleanly and
+ * says nothing, so it is a refusal rather than a warning.
+ *
+ * `ADE_DEV_ALLOW_ALT_HOME=1` opts in for the case where a different root IS
+ * the point.
+ */
+export function assertDevAdeHome() {
+  const { home, isDefault } = resolveDevAdeHome();
+  if (isDefault || process.env.ADE_DEV_ALLOW_ALT_HOME === "1") return;
+  throw new Error(
+    [
+      `ADE_HOME is set to ${home}, which is not the installed brain's state root (${defaultAdeHome()}).`,
+      "A dev app on a different root starts cleanly and then carries a different account,",
+      "runtime directory and machine heartbeat, so this is refused rather than warned about.",
+      "",
+      "  unset ADE_HOME && npm run dev:desktop -- --socket <path>",
+      "",
+      "Set ADE_DEV_ALLOW_ALT_HOME=1 if the other root really is what you want.",
+    ].join("\n"),
+  );
 }
 
 export async function ensureRuntime(socketPath, projectRoot = null) {
@@ -820,6 +896,23 @@ export function sanitizeParentEnvForDevRuntime(parentEnv = process.env) {
   return inherited;
 }
 
+/**
+ * How long a detached dev brain may sit with no client before it exits.
+ *
+ * This brain is spawned `detached` on purpose, so it survives the Electron
+ * restarts a dev loop is made of. What it must NOT survive is the dev app
+ * going away for good: on 2026-09-22 one outlived its window by five hours,
+ * still attached to the shared `~/.ade` database, with no owner and nothing
+ * anywhere saying it was there. `--no-sync` does not help — that guards the
+ * sync lease, not a second writer on the database.
+ *
+ * Twenty minutes is far longer than any restart and far shorter than a night.
+ * The brain already knows how to do this: `ADE_RUNTIME_IDLE_EXIT_MS` drives
+ * `monitorRuntimeIdleExit`, which watches live connections and is what a
+ * throwaway ephemeral brain uses. Only the launcher path never set it.
+ */
+const DEV_RUNTIME_IDLE_EXIT_MS = 20 * 60 * 1000;
+
 export function detachedDevRuntimeEnv(
   socketPath,
   projectRoot,
@@ -831,5 +924,10 @@ export function detachedDevRuntimeEnv(
     // Computed from the sanitized env: the role must not be read back out of
     // the agent shell we just stripped.
     ...devRuntimeEnv(socketPath, projectRoot, inherited),
+    // An explicit value wins: a developer debugging a quiet brain can raise or
+    // disable the budget without editing this file.
+    ADE_RUNTIME_IDLE_EXIT_MS:
+      inherited.ADE_RUNTIME_IDLE_EXIT_MS?.trim()
+      || String(DEV_RUNTIME_IDLE_EXIT_MS),
   };
 }

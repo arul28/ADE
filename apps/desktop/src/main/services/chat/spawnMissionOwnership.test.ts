@@ -8,6 +8,7 @@ import {
   isHumanChildMessage,
   HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS,
   messageClearsAttentionMarkers,
+  resolveSpawnEndedTurnId,
   stripHostAuthoredMessageProvenance,
 } from "./spawnMissionOwnership";
 
@@ -86,6 +87,140 @@ describe("countHumanChildMessagesForTurn", () => {
     ];
     expect(countHumanChildMessagesForTurn(history, "t1")).toBe(2);
     expect(countHumanChildMessagesForTurn(history, "t2")).toBe(1);
+  });
+
+  it("counts a steer once, on the turn where the model got it", () => {
+    // A steer writes one row per lifecycle state on the same steerId.
+    const history = [
+      userMessage({ turnId: "t1", steerId: "folded", deliveryState: "accepted" }),
+      userMessage({ turnId: "t1", steerId: "folded", deliveryState: "inline" }),
+      // Refused on t1, then sent as its own turn t2.
+      userMessage({ turnId: "t1", steerId: "refused", deliveryState: "accepted" }),
+      userMessage({ turnId: "t1", steerId: "refused", deliveryState: "queued" }),
+      userMessage({ turnId: "t2", steerId: "refused", deliveryState: "delivered" }),
+      // Went nowhere.
+      userMessage({ turnId: "t1", steerId: "dropped", deliveryState: "accepted" }),
+      userMessage({ turnId: "t1", steerId: "dropped", deliveryState: "failed" }),
+    ];
+    expect(countHumanChildMessagesForTurn(history, "t1")).toBe(1);
+    expect(countHumanChildMessagesForTurn(history, "t2")).toBe(1);
+    expect(countHumanChildMessagesForTurn(history, "t3")).toBe(0);
+  });
+});
+
+describe("resolveSpawnEndedTurnId", () => {
+  const lifecycle = (
+    type: "status" | "done",
+    turnId: string,
+    provenance?: AgentChatEventEnvelope["provenance"],
+  ): AgentChatEventEnvelope => {
+    sequence += 1;
+    return {
+      sessionId: CHILD,
+      sequence,
+      timestamp: new Date(Date.UTC(2026, 7, 11, 1, sequence)).toISOString(),
+      event: (type === "done"
+        ? { type: "done", turnId, status: "completed" }
+        : { type: "status", turnId, turnStatus: "started" }) as AgentChatEvent,
+      ...(provenance ? { provenance } : {}),
+    };
+  };
+  const deliveryFailed = (childTurnId: string): AgentChatEventEnvelope => {
+    sequence += 1;
+    return {
+      sessionId: CHILD,
+      sequence,
+      timestamp: new Date(Date.UTC(2026, 7, 11, 2, sequence)).toISOString(),
+      event: {
+        type: "system_notice",
+        noticeKind: "warning",
+        message: "Could not tell the parent.",
+        status: "spawn_completion_delivery_failed",
+        detail: { spawnCompletionDeliveryFailure: { childTurnId: ` ${childTurnId} ` } },
+      } as AgentChatEvent,
+    };
+  };
+
+  it.each([
+    {
+      label: "skips an idle child whose latest turn already reported",
+      history: () => [lifecycle("status", "t1"), lifecycle("done", "t1")],
+      expected: null,
+    },
+    {
+      label: "reports a done turn whose delivery failed",
+      history: () => [lifecycle("done", "t1"), deliveryFailed("t1")],
+      expected: "t1",
+    },
+    {
+      label: "does not let another turn's failure notice re-report the latest turn",
+      history: () => [lifecycle("done", "t0"), deliveryFailed("t0"), lifecycle("done", "t1")],
+      expected: null,
+    },
+    {
+      label: "takes the live turn id mid-turn after a reported turn",
+      history: () => [lifecycle("done", "t1")],
+      childMidTurn: true,
+      liveTurnId: "t2",
+      expected: "t2",
+    },
+    {
+      label: "falls back mid-turn when the live turn has no id yet",
+      history: () => [lifecycle("done", "t1")],
+      childMidTurn: true,
+      expected: "fallback",
+    },
+    {
+      label: "reports a latest turn that never finished",
+      history: () => [lifecycle("done", "t1"), lifecycle("status", "t2")],
+      expected: "t2",
+    },
+    {
+      label: "uses the recent entry turn when no turn ever got a lifecycle id",
+      history: () => [],
+      recentEntryTurnId: " r1 ",
+      expected: "r1",
+    },
+    {
+      label: "falls back when no turn ever got any id",
+      history: () => [],
+      expected: "fallback",
+    },
+    {
+      label: "ignores a Codex subagent thread's lifecycle",
+      history: () => [
+        lifecycle("status", "t1"),
+        lifecycle("done", "sub-1", { targetKind: "codex_subagent" } as AgentChatEventEnvelope["provenance"]),
+      ],
+      expected: "t1",
+    },
+    {
+      label: "reports an idless done after a reported turn under this done's own id",
+      history: () => [lifecycle("status", "t1"), lifecycle("done", "t1")],
+      source: "done" as const,
+      expected: "fallback",
+    },
+    {
+      label: "files an idless done under the open turn it ends",
+      history: () => [lifecycle("status", "t1"), lifecycle("done", "t1"), lifecycle("status", "t2")],
+      source: "done" as const,
+      expected: "t2",
+    },
+    {
+      label: "does not file an idless done under an older turn that still looks open",
+      history: () => [lifecycle("status", "t1"), lifecycle("status", "t2"), lifecycle("done", "t2")],
+      source: "done" as const,
+      expected: "fallback",
+    },
+  ])("$label", ({ history, childMidTurn, liveTurnId, recentEntryTurnId, source, expected }) => {
+    expect(resolveSpawnEndedTurnId({
+      history: history(),
+      childMidTurn: childMidTurn ?? false,
+      liveTurnId: liveTurnId ?? null,
+      recentEntryTurnId: recentEntryTurnId ?? null,
+      fallbackId: "fallback",
+      source: source ?? "delete",
+    })).toBe(expected);
   });
 });
 

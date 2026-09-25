@@ -2,6 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
+import {
+  createSessionHomeResolver,
+  type SessionHomeLane,
+} from "../../desktop/src/main/services/externalSessions/sessionHome";
 import { REMOTE_RUNTIME_EVENT_CATEGORIES } from "../../desktop/src/shared/types/remoteRuntime";
 import {
   refusesVoiceCategory,
@@ -16,6 +21,7 @@ import {
   toProjectArtifactUri,
 } from "../../desktop/src/main/services/computerUse/localComputerUse";
 import {
+  ADE_ACTION_ALLOWLIST,
   ADE_ACTION_DOMAIN_NAMES,
   type AdeActionDomain,
   callerHasRoleAtLeast,
@@ -23,6 +29,7 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
 } from "../../desktop/src/main/services/adeActions/registry";
@@ -32,7 +39,10 @@ import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/ut
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
-import { PROOF_LISTING_ARTIFACT_FILTER } from "../../desktop/src/shared/types/computerUseArtifacts";
+import {
+  PROOF_LISTING_ARTIFACT_FILTER,
+  type ComputerUseProofProvenanceInput,
+} from "../../desktop/src/shared/types/computerUseArtifacts";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
@@ -57,6 +67,7 @@ import {
   type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
 import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
+import { isTrackedAgentCliToolType } from "../../desktop/src/shared/types/sessions";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -91,6 +102,14 @@ import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
 } from "./services/builtInBrowser/desktopBridgeMethods";
 import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
+import { DESKTOP_CLIENT_NAMES, isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
+import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
+import {
+  ADE_CAPTURE_ACTIONS,
+  createAdeCaptureRegistry,
+  type AdeCaptureRegistry,
+} from "./services/proof/adeCaptureRegistry";
 import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/codexComputerUse";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
@@ -207,6 +226,18 @@ type SessionState = {
 
 function isUserClientSession(session: SessionState): boolean {
   return !callerIdentityIsAgent(session.identity);
+}
+
+/**
+ * Whether a caller may use a user-only action (`isUserOnlyAdeAction`).
+ *
+ * Only the desktop, by the names it connects with. An agent's shell with no
+ * chat identity (an OpenCode shell, say) runs `ade` as `ade-cli:<pid>` and
+ * would otherwise pass as the user; so would a client that never names itself.
+ * The web and phone clients reach these verbs through `apple.invoke` instead.
+ */
+function mayUseUserOnlyActions(session: SessionState): boolean {
+  return isUserClientSession(session) && isDesktopClientName(session.clientName);
 }
 
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
@@ -1780,6 +1811,19 @@ function isCliProvider(provider: LaunchProfile): provider is CliProvider {
   return provider !== "shell";
 }
 
+/**
+ * The brain's environment identity, unless the client disclaimed an identity
+ * with a synthetic `<client>:<pid>` caller id. A dev brain started from an
+ * agent shell carries that shell's ADE_CHAT_SESSION_ID, and lending it to an
+ * unbound caller filed that caller's proof in the wrong chat and disabled its
+ * lane inference.
+ */
+function inheritableEnvContext(envContext: CallerContext, callerId: string | null): CallerContext {
+  return isSyntheticCallerId(callerId)
+    ? { ...envContext, chatSessionId: null, runId: null, stepId: null, attemptId: null, ownerId: null }
+    : envContext;
+}
+
 export function resolveComputerUseOwners(session: SessionState, toolArgs: Record<string, unknown>): ComputerUseArtifactOwner[] {
   const owners: ComputerUseArtifactOwner[] = [];
   const add = (
@@ -1837,7 +1881,18 @@ export function resolveComputerUseOwners(session: SessionState, toolArgs: Record
     if (looksLikeStandaloneChat) {
       const implicitChatSessionId =
         asOptionalTrimmedString(session.identity.callerId) ?? asOptionalTrimmedString(session.identity.attemptId);
-      if (implicitChatSessionId && implicitChatSessionId !== "unknown") {
+      // A synthetic id is NOT a chat. `buildInitializeParams` mints
+      // `<client>:<pid>` when the caller has no session in its environment, and
+      // filing proof under it produced a record owned by a process id: no lane
+      // resolved from it, no drawer could ever scope to it, and the artifact
+      // belonged to nobody. That is how an agent's before/after screenshots
+      // became unreachable while every command reported success. A caller with
+      // no chat is served by the lane owner instead, which `laneId` carries.
+      if (
+        implicitChatSessionId
+        && implicitChatSessionId !== "unknown"
+        && !isSyntheticCallerId(implicitChatSessionId)
+      ) {
         add("chat_session", implicitChatSessionId);
       }
     }
@@ -2153,6 +2208,53 @@ function describeCallerRootSource(raw: unknown): string {
   return value.replace(/[\r\n]+/g, " ").slice(0, 80);
 }
 
+/**
+ * The lane whose worktree CONTAINS the caller's root, for a caller that has no
+ * chat session to be placed by.
+ *
+ * Shared by the two proof-filing doors — `ingest_computer_use_artifacts` and
+ * the `screenshot_environment` / `record_environment` proof path — because
+ * they were not sharing it, and the second one therefore filed every capture
+ * from an unbound caller with no owner at all.
+ */
+async function inferUnboundCallerLaneId(
+  runtime: AdeRuntime,
+  session: SessionState,
+  callerRoot: string | null,
+): Promise<{ laneId: string; root: string } | null> {
+  if (!callerRoot || !isUnboundAdeCliCaller(session)) return null;
+  const lanes = await runtime.laneService
+    .list({ includeArchived: false, includeStatus: false })
+    .catch((error: unknown) => {
+      runtime.logger.warn("computer_use.ingest_lane_list_failed", {
+        callerRoot,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    });
+  const match = lanes
+    .flatMap((lane) => {
+      const roots = [lane.worktreePath, lane.attachedRootPath]
+        .map((root) => asOptionalTrimmedString(root))
+        .filter((root): root is string => Boolean(root))
+        .map((root) => canonicalAuthorizationPath(root));
+      return roots
+        .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
+        .map((root) => ({ laneId: lane.id, root }));
+    })
+    .sort((left, right) => right.root.length - left.root.length)[0] ?? null;
+  if (!match) {
+    // The one line that was missing while an agent's proof went nowhere: the
+    // ingest refused, nothing was logged, and the CLI reported a generic
+    // "requires an authorized lane worktree".
+    runtime.logger.warn("computer_use.ingest_lane_not_inferred", {
+      callerRoot,
+      lanesConsidered: lanes.length,
+    });
+  }
+  return match;
+}
+
 async function resolveAuthorizedComputerUseIngestRoot(
   runtime: AdeRuntime,
   session: SessionState,
@@ -2165,28 +2267,37 @@ async function resolveAuthorizedComputerUseIngestRoot(
   if (callerRoot && !path.isAbsolute(callerRoot)) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
   }
-  if (!projectWideAuthorized && requestedLaneId && requestedLaneId !== sessionLaneId) {
+  /*
+   * Place the caller by the worktree it is standing in, BEFORE judging any lane
+   * it named.
+   *
+   * This used to run only when no lane was requested, and the guard below
+   * compared a requested lane against the caller's chat-session lane. An agent
+   * whose shell carries no chat session — every OpenCode agent, because one
+   * `opencode serve` is shared across chats and so cannot carry a per-chat
+   * environment — therefore had two ways to fail and no way to succeed: name
+   * its lane and be told the lane does not match a session it has not got, or
+   * name nothing and depend entirely on this inference.
+   *
+   * Containment is the stronger check anyway. An environment variable is a
+   * claim; standing inside the lane's worktree is a fact.
+   */
+  const inferredLane = sessionLaneId
+    ? null
+    : await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null);
+  if (
+    !projectWideAuthorized
+    && requestedLaneId
+    && requestedLaneId !== sessionLaneId
+    && requestedLaneId !== inferredLane?.laneId
+  ) {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "laneId must match the caller's authorized chat-session lane",
+      "laneId must be the caller's chat-session lane, or the lane whose worktree contains its callerRoot: "
+      + `asked for ${requestedLaneId}, session lane is ${sessionLaneId ?? "none"}`
+      + `, callerRoot resolves to ${inferredLane?.laneId ?? "no lane"}`,
     );
   }
-  const inferredLane = !requestedLaneId
-    && !sessionLaneId
-    && callerRoot
-    && isUnboundAdeCliCaller(session)
-    ? (await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []))
-        .flatMap((lane) => {
-          const roots = [lane.worktreePath, lane.attachedRootPath]
-            .map((root) => asOptionalTrimmedString(root))
-            .filter((root): root is string => Boolean(root))
-            .map((root) => canonicalAuthorizationPath(root));
-          return roots
-            .filter((root) => isPathWithinAuthorizedRoot(root, callerRoot))
-            .map((root) => ({ laneId: lane.id, root }));
-        })
-        .sort((left, right) => right.root.length - left.root.length)[0] ?? null
-    : null;
   const authorizedLaneId = requestedLaneId ?? sessionLaneId ?? inferredLane?.laneId ?? null;
   const authorizedRoot = authorizedLaneId
     ? inferredLane?.root ?? resolveLaneWorktreePath(runtime, authorizedLaneId)
@@ -2260,6 +2371,84 @@ function resolveAuthorizedProofOwners(
  */
 export function isExplicitProofCall(toolArgs: Record<string, unknown>): boolean {
   return toolArgs?.proof === true;
+}
+
+/** One capture registry per runtime, shared by every connection to it. */
+const captureRegistries = new WeakMap<AdeRuntime, AdeCaptureRegistry>();
+
+function captureRegistryFor(runtime: AdeRuntime): AdeCaptureRegistry {
+  let registry = captureRegistries.get(runtime);
+  if (!registry) {
+    registry = createAdeCaptureRegistry();
+    captureRegistries.set(runtime, registry);
+  }
+  return registry;
+}
+
+/**
+ * Where the bytes of an `ingest_computer_use_artifacts` call came from.
+ *
+ * Every input must be a file an ADE capture action wrote through this server,
+ * with its bytes unchanged, for the call to be filed as ADE's own capture.
+ * Anything else is an attach: the broker refuses bytes already filed as proof
+ * and flags a video older than the request. Backend and tool names in the
+ * arguments are never trusted. A still is exempt from the duplicate check
+ * because a real capture of an unchanged screen can repeat bytes, and
+ * `ade apple proof` files the still twice (once from `screenshot`). A video is
+ * never exempt. The age flag stays on for every call. A capture is filed as
+ * ADE's once: the call claims it, and `release` hands it back when the ingest
+ * fails. A call filed as an attach hands its claims back at once. The broker
+ * re-checks each captured hash against the bytes it files.
+ */
+export async function resolveIngestProvenance(
+  registry: AdeCaptureRegistry,
+  inputs: Array<Record<string, unknown>>,
+  callerRoot: string,
+): Promise<{ provenance: ComputerUseProofProvenanceInput; release: () => void }> {
+  const matches = await Promise.all(inputs.map((input) => {
+    const inputPath = asOptionalTrimmedString(input.path);
+    return inputPath ? registry.match(path.resolve(callerRoot, inputPath)) : Promise.resolve(null);
+  }));
+  const captured = matches.filter((entry) => entry !== null);
+  const release = () => {
+    for (const entry of captured) entry.release();
+  };
+  const source = captured[0]?.source;
+  if (!source || captured.length !== matches.length || captured.some((entry) => entry.source !== source)) {
+    release();
+    return { provenance: { source: "attached" }, release: () => {} };
+  }
+  const allStills = inputs.every((input) => {
+    const kind = asOptionalTrimmedString(input.kind);
+    return kind === "screenshot" || kind === "browser_trace";
+  });
+  return {
+    provenance: {
+      source,
+      refuseDuplicates: !allStills,
+      flagOlderMedia: true,
+      capturedSha256: captured.map((entry) => entry.sha256),
+    },
+    release,
+  };
+}
+
+/** Remember the file a capture action just wrote. Never fails the action. */
+async function rememberCaptureActionResult(
+  runtime: AdeRuntime,
+  domain: string,
+  action: string,
+  result: unknown,
+): Promise<void> {
+  const capture = ADE_CAPTURE_ACTIONS.get(`${domain}.${action}`);
+  if (!capture || !isRecord(result)) return;
+  const filePath = asOptionalTrimmedString(result[capture.field]);
+  if (!filePath) return;
+  try {
+    await captureRegistryFor(runtime).remember(filePath, capture.source);
+  } catch {
+    // A missed entry only means a later ingest files the bytes as an attach.
+  }
 }
 
 function validateComputerUseOwnerClaims(
@@ -2556,6 +2745,22 @@ function ensurePtyTargetAuthorized(
   if (!target || !isPtySessionAuthorized(runtime, session, target)) {
     ptyAccessDenied(method);
   }
+}
+
+function ensureTrackedCliTargetAuthorized(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  targetSessionId: string | null,
+): void {
+  if (
+    callerHasRoleAtLeast(session.identity.role, "cto")
+    || isUnboundAdeCliCaller(session)
+    || !targetSessionId
+  ) return;
+  const target = getPtySessionForAuthorization(runtime, targetSessionId);
+  if (!target || !isTrackedAgentCliToolType(target.toolType ?? null)) return;
+  ensurePtyTargetAuthorized(runtime, session, method, { sessionId: targetSessionId });
 }
 
 function listAuthorizedPtySessions(
@@ -2961,6 +3166,32 @@ function scopeWorkToolsAdeActionArgs(
   workToolsArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:work_tools.${action}`;
+  if (action === "acknowledgeShow") {
+    // The desktop answering `show`. An agent must not be able to forge the
+    // outcome its own CLI is about to print, same as `setActiveTool`.
+    if (!isUserClient) {
+      scopeAccessDenied("work_tools.acknowledgeShow is limited to user clients", method);
+    }
+    return workToolsArgs;
+  }
+  if (action === "show") {
+    // An agent shows surfaces of its OWN chat. A human at a terminal is a user
+    // client and names the chat with --session.
+    if (isUserClient) return workToolsArgs;
+    const ownChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!ownChatSessionId) {
+      scopeAccessDenied("work_tools.show needs the chat it runs in", method);
+    }
+    const askedFor = asOptionalTrimmedString(workToolsArgs.chatSessionId);
+    if (askedFor && askedFor !== ownChatSessionId) {
+      scopeAccessDenied("work_tools.show can only show this agent's own chat", method);
+    }
+    return {
+      ...workToolsArgs,
+      chatSessionId: ownChatSessionId,
+      laneId: resolveChatSessionLaneId(runtime, session) ?? null,
+    };
+  }
   if (action === "setActiveTool") {
     // Writing the pane's active tool is the human's move on their own desktop.
     // Same gate shape as `built_in_browser.acknowledgeRemoteRequest`.
@@ -2995,8 +3226,206 @@ function scopeWorkToolsAdeActionArgs(
   return workToolsArgs;
 }
 
-const EXTERNAL_SESSION_AUTH_FIND_LIMIT = 500;
-const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(["claude", "codex", "cursor", "droid", "opencode", "pi"]);
+/**
+ * The `mac_desktop` actions that only READ, and so answer without a lane.
+ *
+ * The one hand-written half of the derivation below, because "does this act on
+ * the display" is a judgement no table records. `getStatus` is the domain's
+ * capability probe and has to work on every host; `listWindows` and
+ * `getStreamStatus` are redacted reads.
+ */
+const MAC_DESKTOP_READ_ONLY_ACTIONS = new Set<string>(["getStatus", "listWindows", "getStreamStatus"]);
+
+/**
+ * Derived, not listed: every allowlisted `mac_desktop` action that is neither a
+ * read nor CTO-only is lane-bound. A hand-typed list fails OPEN — a new acting
+ * action added to the allowlist would be reachable by an unpinned caller until
+ * someone remembered to copy its name here. The allowlist table is the full
+ * policy surface (a runtime whose service omits a method rejects the call on
+ * its own), so deriving from it can only ever over-cover.
+ *
+ * CTO-only actions (`startStream`, `takeControl`, ...) are excluded because
+ * `scopeMacDesktopAdeActionArgs` refuses them outright for an agent-shaped
+ * caller, whatever its role; a lane check on top would answer with the wrong
+ * error.
+ */
+export const MAC_DESKTOP_LANE_BOUND_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.mac_desktop ?? []).filter(
+    (action) => !MAC_DESKTOP_READ_ONLY_ACTIONS.has(action) && !isCtoOnlyAdeAction("mac_desktop", action),
+  ),
+);
+
+/**
+ * `mac_desktop` carries a caller-asserted identity the same way `work_tools`
+ * carried a caller-asserted lane.
+ *
+ * Every acting command on the domain takes an optional `chatSessionId`, and the
+ * service treats it as WHO is holding the display's input lease: it is how a
+ * turn's clips, the lease itself and the release-on-chat-end hook are attributed.
+ * Nothing checked that the id belonged to the caller, so an agent in chat A
+ * could pass chat B's id and act as B — taking the lease B was holding, or
+ * having its own clicks charged to B's turn. An agent never has a reason to name
+ * a chat other than its own, so the field is simply overwritten with the
+ * caller's own session id (and dropped when the caller has none, e.g. a bare
+ * run/step identity, so no foreign id survives).
+ *
+ * `controllerId` and `holderId` are stripped for the same reason, and they are
+ * the sharper half of it. A human takeover holds the lease under a controller id
+ * the viewing client minted, and `getStatus().lease.holderId` prints that id to
+ * anyone who can read the lane's status — including an agent. `inputHolderId` in
+ * the service prefers `controllerId` over the chat id, so an agent that echoed
+ * back the holder id it just read would have posted real `CGEvent` input while
+ * wearing the human's takeover. The id stays in the status payload because the
+ * UI needs it to renew and return its own lease; stripping it on the way IN is
+ * what makes reading it useless.
+ *
+ * `laneId` is pinned the same way `work_tools.getLaneState` pins it: a bound
+ * agent's display is its own lane's display, whatever it asked for.
+ *
+ * An agent-shaped caller with NO resolvable lane — an orchestration step, an
+ * automation attempt, a chat whose session record is gone after a daemon
+ * restart — is DENIED every acting command rather than passed through unpinned.
+ * The accessibility-mode commands are the reason: only `real` mode is behind the
+ * lease in the service, so `click`/`type`/`press`/`scroll` in the default
+ * accessibility mode check no lease and no lane ownership at all, and an
+ * unpinned caller naming someone else's `laneId` would drive that lane's
+ * display. The reads in `MAC_DESKTOP_READ_ONLY_ACTIONS` — `getStatus`,
+ * `listWindows` and `getStreamStatus` — still answer: `getStatus` is the
+ * domain's capability probe and has to work on every host, and the other two
+ * observe without driving anything.
+ *
+ * User clients keep what they sent: the desktop renderer, the web client and a
+ * paired phone each drive whichever lane's display their UI is showing, and the
+ * human's takeover holds the lease under a `controllerId`, not a chat id.
+ *
+ * A bound caller that names a *different* lane is refused out loud. The pin is
+ * deliberate — an agent may only drive its own lane's display — but silently
+ * swapping the target meant `--lane <other>` produced an error that named the
+ * socket's lane, which reads as a bug in the wrong place. Refusing names both
+ * lanes and the reason. Nothing changes for a caller that names its own lane,
+ * which is what an agent that passes `--lane` at all normally does.
+ *
+ * Exported for the scope tests: the refusal is a contract, not an implementation
+ * detail, and the full RPC dispatch is the wrong size for proving one sentence.
+ */
+export function scopeMacDesktopAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  isUserClient: boolean,
+  action: string,
+  macDesktopArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  if (isUserClient) return macDesktopArgs;
+  // The role gate alone is not enough: a chat identity is clamped to `agent`,
+  // but a run/step/attempt identity keeps a `cto` role, and it is still an
+  // agent — the viewing actions are a person's. `startStream` hands back the
+  // unredacted loopback token, and with it the agent could post real input
+  // under the human's takeover controller id it read off `getStatus`. Refused
+  // by caller shape, not role.
+  if (isCtoOnlyAdeAction("mac_desktop", action)) {
+    scopeAccessDenied(
+      "mac_desktop viewing and permission actions belong to user clients",
+      `run_ade_action:mac_desktop.${action}`,
+    );
+  }
+  const {
+    chatSessionId: _callerSupplied,
+    controllerId: _callerController,
+    holderId: _callerHolder,
+    ...rest
+  } = macDesktopArgs;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const sessionLaneId = resolveChatSessionLaneId(runtime, session);
+  if (!sessionLaneId && MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)) {
+    scopeAccessDenied(
+      "mac_desktop actions need a resolvable lane for this caller",
+      `run_ade_action:mac_desktop.${action}`,
+    );
+  }
+  // Only `laneId` counts here: `parentLaneId` is a lane-domain argument, and
+  // this domain would drop it anyway.
+  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
+  if (sessionLaneId && requestedLaneId && requestedLaneId !== sessionLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `This chat is bound to lane ${sessionLaneId}; --lane ${requestedLaneId} was ignored.`,
+      {
+        kind: "lane_bound",
+        method: `run_ade_action:mac_desktop.${action}`,
+        callerLaneId: sessionLaneId,
+        requestedLaneId,
+      },
+    );
+  }
+  return {
+    ...rest,
+    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
+    ...(sessionLaneId ? { laneId: sessionLaneId } : {}),
+  };
+}
+
+/** `work_tools` actions scoped for every role, the CTO's included. */
+const WORK_TOOLS_ALWAYS_SCOPED_ACTIONS = new Set(["setActiveTool", "show", "acknowledgeShow"]);
+
+/**
+ * `ios_simulator` actions that mean an agent is driving the device, so the
+ * desktop may float the device over that agent's chat (see
+ * `work_tools.noteAgentAppleActivity`). Reads are not driving.
+ */
+const APPLE_AGENT_DRIVING_ACTIONS = new Set([
+  "deviceStart",
+  "openDevice",
+  "startStream",
+  "launch",
+  "relaunchApp",
+  "openUrl",
+  "tap",
+  "typeText",
+  "drag",
+  "swipe",
+  "scroll",
+  "pressButton",
+  "rotate",
+  "tapElement",
+  "fillElement",
+  "recordStart",
+]);
+
+/**
+ * `mac_desktop` actions an agent can call that do NOT drive the lane's display:
+ * the reads, stopping or releasing what it holds, observing and waiting, and
+ * asking for the input lease (the real input that follows it is what counts).
+ * The one hand-written half of the derivation below.
+ */
+const MAC_DESKTOP_NON_DRIVING_ACTIONS = new Set<string>([
+  ...MAC_DESKTOP_READ_ONLY_ACTIONS,
+  "stop",
+  "releaseWindow",
+  "observe",
+  "wait",
+  "screenshot",
+  "stopRecording",
+  "requestInputLease",
+]);
+
+/**
+ * `mac_desktop` actions that mean an agent is driving the lane's display, so
+ * the desktop may float the Mac Desktop card over that agent's chat (see
+ * `work_tools.noteAgentMacDesktopActivity`).
+ *
+ * Derived the same way as `MAC_DESKTOP_LANE_BOUND_ACTIONS`: every allowlisted
+ * action that is neither listed as non-driving nor CTO-only (which an agent
+ * cannot reach). A new acting action added to the allowlist floats the card
+ * without anyone remembering to copy its name here. `present` moves windows,
+ * so it counts.
+ */
+export const MAC_DESKTOP_AGENT_DRIVING_ACTIONS = new Set<string>(
+  (ADE_ACTION_ALLOWLIST.mac_desktop ?? []).filter(
+    (action) => !MAC_DESKTOP_NON_DRIVING_ACTIONS.has(action) && !isCtoOnlyAdeAction("mac_desktop", action),
+  ),
+);
+
+const EXTERNAL_SESSION_PROVIDER_NAMES = new Set<string>(EXTERNAL_SESSION_PROVIDERS);
 
 function isExternalSessionProviderName(value: string | null): value is ExternalSessionProvider {
   return Boolean(value && EXTERNAL_SESSION_PROVIDER_NAMES.has(value));
@@ -3023,11 +3452,6 @@ function realishPath(filePath: string): string {
   } catch {
     return path.resolve(filePath);
   }
-}
-
-function isPathInsideOrEqual(parent: string, candidate: string): boolean {
-  const relative = path.relative(realishPath(parent), realishPath(candidate));
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function authorizedExternalSessionsLaneId(
@@ -3064,20 +3488,37 @@ function isExternalSessionSummaryLike(value: unknown): value is ExternalSessionS
   return Boolean(isExternalSessionProviderName(provider) && asOptionalTrimmedString(value.id));
 }
 
-function filterExternalSessionSummariesForLane(result: unknown, laneCwd: string): unknown {
+/**
+ * Whether a session folder belongs to `laneId` itself. The primary lane's
+ * worktree is the project root and holds every other lane under
+ * `.ade/worktrees/`, so "inside the lane folder" is not enough: the deepest
+ * lane that contains the folder owns it, and a removed lane's folder belongs to
+ * nobody. A lane list that fails to load refuses everything.
+ */
+async function externalSessionLaneOwnership(
+  runtime: AdeRuntime,
+  laneId: string,
+): Promise<(cwd: unknown) => boolean> {
+  const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
+  const resolveHome = createSessionHomeResolver(lanes as SessionHomeLane[]);
+  return (cwd) => {
+    const folder = asOptionalTrimmedString(cwd);
+    if (!folder) return false;
+    const home = resolveHome(folder);
+    return home?.kind === "lane" && home.laneId === laneId;
+  };
+}
+
+function filterExternalSessionSummariesForLane(result: unknown, ownedByLane: (cwd: unknown) => boolean): unknown {
   if (!Array.isArray(result)) return result;
-  return result.filter((session) => {
-    if (!isExternalSessionSummaryLike(session)) return false;
-    const cwd = asOptionalTrimmedString(session.cwd);
-    return Boolean(cwd && isPathInsideOrEqual(laneCwd, cwd));
-  });
+  return result.filter((session) => isExternalSessionSummaryLike(session) && ownedByLane(session.cwd));
 }
 
 function scopeExternalSessionsListArgs(
   runtime: AdeRuntime,
   session: SessionState,
   listArgs: Record<string, unknown>,
-): { scopedArgs: Record<string, unknown>; laneCwd: string } {
+): { scopedArgs: Record<string, unknown>; laneId: string } {
   const method = "run_ade_action:external-sessions.list";
   const { laneId, laneCwd } = resolveAuthorizedExternalSessionsLane(runtime, session, method, listArgs);
   return {
@@ -3087,14 +3528,8 @@ function scopeExternalSessionsListArgs(
       cwd: laneCwd,
       scope: "project",
     },
-    laneCwd,
+    laneId,
   };
-}
-
-function externalSessionImportUsesSourceRunCwd(provider: ExternalSessionProvider, mode: string): boolean {
-  if (mode === "resume") return provider !== "codex";
-  if (mode === "fork") return provider === "opencode" || provider === "pi";
-  return false;
 }
 
 async function findExternalSessionSummaryForAuthorization(
@@ -3107,12 +3542,14 @@ async function findExternalSessionSummaryForAuthorization(
 ): Promise<ExternalSessionSummary | null> {
   const externalSessionsService = runtime.externalSessionsService;
   if (!externalSessionsService) externalSessionsAccessDenied(method);
+  // The exact-id lookup, not the browse list: browse hides sessions ADE is
+  // tracking or that have no prompt, and stops at a page size.
   const sessions = await externalSessionsService.list({
     providers: [provider],
     laneId,
     cwd: laneCwd,
     scope: "project",
-    limit: EXTERNAL_SESSION_AUTH_FIND_LIMIT,
+    sessionId,
   });
   return sessions.find((session) => session.id === sessionId) ?? null;
 }
@@ -3127,30 +3564,54 @@ async function scopeExternalSessionsImportArgs(
   const scopedArgs: Record<string, unknown> = { ...importArgs, laneId };
   delete scopedArgs.enforceLaneScopeCwd;
   const provider = asOptionalTrimmedString(scopedArgs.provider);
-  const mode = asOptionalTrimmedString(scopedArgs.mode);
-  const target = asOptionalTrimmedString(scopedArgs.target);
   const sessionId = asOptionalTrimmedString(scopedArgs.sessionId);
   scopedArgs.enforceLaneScopeCwd = laneCwd;
-  const targetChatUsesSourceCwd = target === "chat" && (provider === "claude" || provider === "codex");
-  if (
-    (targetChatUsesSourceCwd || target === "cli")
-    && isExternalSessionProviderName(provider)
-    && mode
-    && sessionId
-    && (targetChatUsesSourceCwd || externalSessionImportUsesSourceRunCwd(provider, mode))
-  ) {
-    const summary = await findExternalSessionSummaryForAuthorization(
-      runtime,
-      method,
-      provider,
-      sessionId,
-      laneId,
-      laneCwd,
-    );
-    const runCwd = asOptionalTrimmedString(summary?.cwd);
-    if (!runCwd || !isPathInsideOrEqual(laneCwd, runCwd)) externalSessionsAccessDenied(method);
-  }
+  // Every import, not only one that runs in the source folder: a copy or a
+  // Codex continue moves the transcript into this lane, so the session must
+  // belong to this lane first. The service's folder check alone admits child
+  // lanes for an agent bound to the primary lane.
+  if (!isExternalSessionProviderName(provider) || !sessionId) externalSessionsAccessDenied(method);
+  const summary = await findExternalSessionSummaryForAuthorization(
+    runtime,
+    method,
+    provider,
+    sessionId,
+    laneId,
+    laneCwd,
+  );
+  const ownedByLane = await externalSessionLaneOwnership(runtime, laneId);
+  if (!ownedByLane(summary?.cwd)) externalSessionsAccessDenied(method);
   return scopedArgs;
+}
+
+async function scopeExternalSessionsGetDetailArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  detailArgs: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const method = "run_ade_action:external-sessions.getDetail";
+  const { laneId, laneCwd } = resolveAuthorizedExternalSessionsLane(runtime, session, method, detailArgs);
+  const provider = asOptionalTrimmedString(detailArgs.provider);
+  const sessionId = asOptionalTrimmedString(detailArgs.sessionId);
+  if (!isExternalSessionProviderName(provider) || !sessionId) externalSessionsAccessDenied(method);
+  const summary = await findExternalSessionSummaryForAuthorization(
+    runtime,
+    method,
+    provider,
+    sessionId,
+    laneId,
+    laneCwd,
+  );
+  // Project scope lists every lane's sessions; a bound agent may read only a
+  // session its own lane owns, the same rule list and import apply.
+  const ownedByLane = await externalSessionLaneOwnership(runtime, laneId);
+  if (!ownedByLane(summary?.cwd)) externalSessionsAccessDenied(method);
+  const before = asOptionalTrimmedString(detailArgs.before);
+  return {
+    provider,
+    sessionId,
+    ...(before ? { before } : {}),
+  };
 }
 
 async function runCtoOperatorBridgeTool(
@@ -3438,15 +3899,17 @@ function resolveEnvCallerContext(): CallerContext {
 function resolveCallerContext(session?: SessionState): CallerContext {
   const envContext = resolveEnvCallerContext();
   if (!session) return envContext;
+  const callerId = asOptionalTrimmedString(session.identity.callerId);
+  const envIdentity = inheritableEnvContext(envContext, callerId);
   return {
-    callerId: asOptionalTrimmedString(session.identity.callerId),
+    callerId,
     role: session.identity.role ?? envContext.role,
-    chatSessionId: session.identity.chatSessionId ?? envContext.chatSessionId,
+    chatSessionId: session.identity.chatSessionId ?? envIdentity.chatSessionId,
     standaloneChatSession: session.identity.standaloneChatSession,
-    runId: session.identity.runId ?? envContext.runId,
-    stepId: session.identity.stepId ?? envContext.stepId,
-    attemptId: session.identity.attemptId ?? envContext.attemptId,
-    ownerId: session.identity.ownerId ?? envContext.ownerId,
+    runId: session.identity.runId ?? envIdentity.runId,
+    stepId: session.identity.stepId ?? envIdentity.stepId,
+    attemptId: session.identity.attemptId ?? envIdentity.attemptId,
+    ownerId: session.identity.ownerId ?? envIdentity.ownerId,
   };
 }
 
@@ -3507,15 +3970,17 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
   const envContext = resolveEnvCallerContext();
   const requestedRole = normalizeAdeRuntimeRole(identity.role);
   const requestedChatSessionId = asOptionalTrimmedString(identity.chatSessionId);
-  const resolvedChatSessionId = envContext.chatSessionId ?? requestedChatSessionId;
+  const callerIdClaim = asOptionalTrimmedString(identity.callerId);
+  const envIdentity = inheritableEnvContext(envContext, callerIdClaim);
+  const resolvedChatSessionId = envIdentity.chatSessionId ?? requestedChatSessionId;
   const validRole = resolveSessionBoundRole({
     defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
     requestedRole,
     chatSessionId: resolvedChatSessionId,
   });
-  const resolvedRunId = envContext.runId ?? asOptionalTrimmedString(identity.runId);
-  const resolvedStepId = envContext.stepId ?? asOptionalTrimmedString(identity.stepId);
-  const resolvedAttemptId = envContext.attemptId ?? asOptionalTrimmedString(identity.attemptId);
+  const resolvedRunId = envIdentity.runId ?? asOptionalTrimmedString(identity.runId);
+  const resolvedStepId = envIdentity.stepId ?? asOptionalTrimmedString(identity.stepId);
+  const resolvedAttemptId = envIdentity.attemptId ?? asOptionalTrimmedString(identity.attemptId);
   // Browser actor capabilities belong to the connecting CLI process. The
   // long-lived runtime daemon must never lend an inherited token to another
   // client, even if it was accidentally launched from an agent-owned shell.
@@ -3527,14 +3992,14 @@ function parseInitializeIdentity(_runtime: AdeRuntime, params: unknown): Session
     && !resolvedAttemptId;
 
   return {
-    callerId: asOptionalTrimmedString(identity.callerId) ?? resolvedChatSessionId ?? envContext.attemptId ?? "unknown",
+    callerId: callerIdClaim ?? resolvedChatSessionId ?? envIdentity.attemptId ?? "unknown",
     role: validRole,
     chatSessionId: resolvedChatSessionId,
     standaloneChatSession,
     runId: resolvedRunId,
     stepId: resolvedStepId,
     attemptId: resolvedAttemptId,
-    ownerId: asOptionalTrimmedString(identity.ownerId) ?? envContext.ownerId,
+    ownerId: asOptionalTrimmedString(identity.ownerId) ?? envIdentity.ownerId,
     browserActorToken,
   };
 }
@@ -3780,7 +4245,7 @@ async function runTool(args: {
     }
     return capabilities;
   };
-  const ingestLocalComputerUseArtifact = (args: {
+  const ingestLocalComputerUseArtifact = async (args: {
     sessionState: SessionState;
     toolName: string;
     title: string;
@@ -3791,6 +4256,9 @@ async function runTool(args: {
     toolArgs: Record<string, unknown>;
     /** True only for an explicit proof call — see `isExplicitProofCall`. */
     proof: boolean;
+    /** When `screencapture -v` ran, for a recording. */
+    recordedFrom?: string;
+    recordedTo?: string;
   }) => {
     if (!args.proof) {
       // Scratch capture: the caller gets the bytes, the proof drawer stays a
@@ -3814,12 +4282,33 @@ async function runTool(args: {
       };
     }
     validateComputerUseOwnerClaims(runtime, args.sessionState, args.toolArgs);
+    /*
+     * `ade proof capture` and `ade proof record` file through HERE, and this
+     * door had no lane inference of its own — so a caller with no chat session
+     * produced an artifact with an EMPTY owner list. Stored, listed by its own
+     * unscoped author, reachable by no drawer.
+     *
+     * Same rule as the ingest door: the lane whose worktree contains the
+     * caller's root. A lane the caller NAMES is not trusted here, because this
+     * path has no `resolveAuthorizedComputerUseIngestRoot` to validate it
+     * against — `validateComputerUseOwnerClaims` above is what governs a named
+     * owner, and it already refuses one the session cannot claim.
+     */
+    const inferredLaneId = (await inferUnboundCallerLaneId(
+      runtime,
+      args.sessionState,
+      asOptionalTrimmedString(args.toolArgs.callerRoot),
+    ))?.laneId ?? null;
     const result = runtime.computerUseArtifactBrokerService.ingest({
       backend: {
         name: "screencapture",
         style: "local_fallback",
         toolName: args.toolName,
       },
+      // ADE ran `screencapture` itself, into a new file.
+      provenance: args.kind === "video_recording"
+        ? { source: "ade-recorder", recordedFrom: args.recordedFrom ?? null, recordedTo: args.recordedTo ?? null }
+        : { source: "ade-capture" },
       inputs: [
         {
           kind: args.kind,
@@ -3829,7 +4318,10 @@ async function runTool(args: {
           metadata: args.metadata,
         },
       ],
-      owners: resolveComputerUseOwners(args.sessionState, args.toolArgs),
+      owners: resolveComputerUseOwners(args.sessionState, {
+        ...args.toolArgs,
+        ...(inferredLaneId ? { laneId: inferredLaneId } : {}),
+      }),
     });
     return {
       proof: true,
@@ -3949,6 +4441,7 @@ async function runTool(args: {
       if (!service) return [];
       return listAllowedAdeActionNames(entry, service)
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
+        .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
@@ -4021,12 +4514,20 @@ async function runTool(args: {
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     let scopedObjectArgs = rawObjectArgs;
     let scopedResultHandled = false;
+    let transformScopedResult: ((value: unknown) => unknown) | null = null;
     /** Set by the browser branch; fired again once the dispatch has returned. */
     let noteBrowserActivityOnSuccess: (() => void) | null = null;
     /** Set only when the pre-dispatch edge is what opened the presence window. */
     let undoBrowserActivityOnFailure: (() => void) | null = null;
     let result: unknown;
     const isUserClient = isUserClientSession(session);
+    if (isUserOnlyAdeAction(domain, action) && !mayUseUserOnlyActions(session)) {
+      // Deleting a simulator is the user's call, made from the device picker.
+      scopeAccessDenied(
+        `${domain}.${action} is limited to user clients`,
+        `run_ade_action:${domain}.${action}`,
+      );
+    }
     if (domain === "analytics" && action === "capture") {
       if (!isUserClient) {
         throw new JsonRpcError(
@@ -4052,6 +4553,30 @@ async function runTool(args: {
           : { dedupeKey }),
       };
     }
+    if (!callerIsCto && domain === "chat" && action === "listCliChildSessions") {
+      const childArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      const laneIds = authorizedPtyLaneIds(runtime, session);
+      const requestedLaneId = extractLaneId(childArgs);
+      const localCliUser = isUnboundAdeCliCaller(session);
+      if (!localCliUser && (!laneIds.size || (requestedLaneId && !laneIds.has(requestedLaneId)))) {
+        ptyAccessDenied(`run_ade_action:${domain}.${action}`);
+      }
+      scopedObjectArgs = {
+        ...childArgs,
+        ...(requestedLaneId ? { laneId: requestedLaneId } : !localCliUser && laneIds.size === 1 ? { laneId: [...laneIds][0] } : {}),
+      };
+      transformScopedResult = (value) => Array.isArray(value)
+        ? localCliUser
+          ? value
+          : value.filter((entry) => isRecord(entry) && typeof entry.laneId === "string" && laneIds.has(entry.laneId))
+        : [];
+    } else if (!callerIsCto && domain === "chat" && action === "getTurnStatus") {
+      const targetSessionId = typeof argsList?.[0] === "string"
+        ? argsList[0]
+        : asOptionalTrimmedString(rawObjectArgs.sessionId);
+      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
+    }
+
     if (domain === "chat" && (action === "readTranscript" || action === "readTranscriptPage")) {
       const chatArgs = requireObjectArgsForScopedAdeAction(
         domain,
@@ -4061,6 +4586,8 @@ async function runTool(args: {
         rawObjectArgs,
       );
       const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      const targetSessionId = asOptionalTrimmedString(chatArgs.sessionId) || callerSessionId;
+      ensureTrackedCliTargetAuthorized(runtime, session, `run_ade_action:${domain}.${action}`, targetSessionId);
       scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
         ? chatArgs
         : { ...chatArgs, sessionId: callerSessionId };
@@ -4183,11 +4710,30 @@ async function runTool(args: {
         hasScalarArg,
         rawObjectArgs,
       );
-    } else if (domain === "work_tools" && (!callerIsCto || action === "setActiveTool")) {
+    } else if (domain === "mac_desktop" && !isUserClient) {
+      // Every action on the domain, including `getStatus`: the status read is
+      // what tells a caller whether the lease is free and who holds it, and it
+      // takes the same `chatSessionId`. No CTO carve-out — an elevated run/step
+      // identity has no chat of its own to act as, so it acts as nobody. User
+      // clients are branched around entirely rather than returned early from the
+      // scoping function, so this adds no object-args requirement to a surface
+      // that was already free to call the domain however it liked.
+      scopedObjectArgs = scopeMacDesktopAdeActionArgs(
+        runtime,
+        session,
+        isUserClient,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (
+      domain === "work_tools"
+      && (!callerIsCto || WORK_TOOLS_ALWAYS_SCOPED_ACTIONS.has(action))
+    ) {
       // The CTO carve-out is a READ carve-out. `setActiveTool` is this domain's
       // one write, so it goes through the scoping function whatever the role and
       // is gated there on user clients — see that function's doc comment for
-      // which elevated caller this actually catches.
+      // which elevated caller this actually catches. `show` and
+      // `acknowledgeShow` are scoped for every role for the same reason.
       scopedObjectArgs = scopeWorkToolsAdeActionArgs(
         runtime,
         session,
@@ -4277,10 +4823,15 @@ async function runTool(args: {
           service,
           scoped.scopedArgs,
         );
-        result = filterExternalSessionSummariesForLane(rawResult, scoped.laneCwd);
+        result = filterExternalSessionSummariesForLane(
+          rawResult,
+          await externalSessionLaneOwnership(runtime, scoped.laneId),
+        );
         scopedResultHandled = true;
       } else if (action === "import") {
         scopedObjectArgs = await scopeExternalSessionsImportArgs(runtime, session, externalArgs);
+      } else if (action === "getDetail") {
+        scopedObjectArgs = await scopeExternalSessionsGetDetailArgs(runtime, session, externalArgs);
       } else {
         externalSessionsAccessDenied(`run_ade_action:${domain}.${action}`);
       }
@@ -4322,6 +4873,42 @@ async function runTool(args: {
       throw error;
     }
     noteBrowserActivityOnSuccess?.();
+    await rememberCaptureActionResult(runtime, domain, action, result);
+    if (transformScopedResult) result = transformScopedResult(result);
+    if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
+      const sessionId = typeof result.sessionId === "string"
+        ? result.sessionId
+        : typeof scopedObjectArgs.sessionId === "string"
+          ? scopedObjectArgs.sessionId
+          : null;
+      if (sessionId) {
+        try {
+          runtime.agentChatService?.notifyParentOfCliChildSpawn?.(sessionId, { resumed: true });
+        } catch (error) {
+          runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    }
+    const drivenDevice = isUserClient
+      ? null
+      : domain === "ios_simulator" && APPLE_AGENT_DRIVING_ACTIONS.has(action)
+        ? "apple"
+        : domain === "mac_desktop" && MAC_DESKTOP_AGENT_DRIVING_ACTIONS.has(action)
+          ? "mac-desktop"
+          : null;
+    if (drivenDevice) {
+      // An agent just drove its chat's device or lane display. The desktop
+      // showing that chat may float it if the user has not turned that off.
+      const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      if (chatSessionId) {
+        const activity = { chatSessionId, laneId: resolveChatSessionLaneId(runtime, session) ?? null };
+        if (drivenDevice === "apple") runtime.workToolsStateService?.noteAgentAppleActivity?.(activity);
+        else runtime.workToolsStateService?.noteAgentMacDesktopActivity?.(activity);
+      }
+    }
     if (domain === "account" && action === "status") {
       result = scopeAccountStatusForRole(result, callerCtx.role);
     }
@@ -4358,6 +4945,7 @@ async function runTool(args: {
 
   if (name === "start_cli_session") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
+    const requestedChatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
     const provider = parseCliSessionProvider(toolArgs.provider);
     const permissionMode = parseCliSessionPermissionMode(toolArgs.permissionMode);
     const droidPermissionMode = parseCliSessionDroidPermissionMode(toolArgs.droidPermissionMode);
@@ -4370,6 +4958,16 @@ async function runTool(args: {
     const orchestrationParentSessionId = toolArgs.orchestrationParentSessionId == null
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
+    if (!callerHasRoleAtLeast(session.identity.role, "cto") && !isUnboundAdeCliCaller(session)) {
+      ensurePtyCreateAuthorized(runtime, session, "start_cli_session", {
+        laneId,
+        ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
+      });
+      const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      if (orchestrationParentSessionId && orchestrationParentSessionId !== callerChatSessionId) {
+        ptyAccessDenied("start_cli_session");
+      }
+    }
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
     const instanceId = toolArgs.instanceId == null
       ? null
@@ -4509,7 +5107,7 @@ async function runTool(args: {
         ? { spawnLineage: { parentChatSessionId: orchestrationParentSessionId, spawnKind } }
         : {}),
       ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
-      ...(asOptionalTrimmedString(toolArgs.chatSessionId) ? { chatSessionId: asOptionalTrimmedString(toolArgs.chatSessionId) } : {}),
+      ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
       ...launchFields,
     });
 
@@ -4517,10 +5115,10 @@ async function runTool(args: {
 
     const autoTitleApplied = Boolean(initialInputMeta.promptTitle) && title === initialInputMeta.promptTitle;
     if (initialInputMeta.goal || autoTitleApplied) {
-      const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+      const createdSession = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
       const metaPatch: Parameters<typeof runtime.sessionService.updateMeta>[0] = {
         sessionId: created.sessionId,
-        ...(initialInputMeta.goal && !session?.goal?.trim().length ? { goal: initialInputMeta.goal } : {}),
+        ...(initialInputMeta.goal && !createdSession?.goal?.trim().length ? { goal: initialInputMeta.goal } : {}),
         ...(autoTitleApplied ? { title: initialInputMeta.promptTitle!, manuallyNamed: false } : {}),
       };
       if (metaPatch.goal !== undefined || metaPatch.title !== undefined || metaPatch.manuallyNamed !== undefined) {
@@ -4528,8 +5126,24 @@ async function runTool(args: {
       }
     }
 
-    const session = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
-    const enrichedSession = session ? ptyService.enrichSessions([session])[0] ?? session : session;
+    // A parented agent CLI is a PTY session, not a chat, so the chat create
+    // path never tells the parent. Land the same spawn chip + subagent card a
+    // chat child gets; the child's PTY exit closes that card later. After the
+    // title/goal patch above, so the card is named like the sidebar row.
+    if (isCliProvider(provider) && orchestrationParentSessionId) {
+      try {
+        runtime.agentChatService?.notifyParentOfCliChildSpawn?.(created.sessionId);
+      } catch (error) {
+        runtime.logger?.warn?.("start_cli_session.parent_notify_failed", {
+          sessionId: created.sessionId,
+          parentSessionId: orchestrationParentSessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    const createdSession = runtime.sessionService.get(created.sessionId) as TerminalSessionSummary | null;
+    const enrichedSession = createdSession ? ptyService.enrichSessions([createdSession])[0] ?? createdSession : createdSession;
     return {
       provider,
       laneId,
@@ -4548,12 +5162,23 @@ async function runTool(args: {
   if (name === "send_to_session") {
     const sessionId = assertNonEmptyString(toolArgs.sessionId, "sessionId");
     const text = assertNonEmptyString(toolArgs.text, "text");
-    return await runtime.ptyService.sendToSession({
+    const result = await runtime.ptyService.sendToSession({
       sessionId,
       text,
       cols: clampInteger(toolArgs.cols, DEFAULT_PTY_COLS, 20, 400),
       rows: clampInteger(toolArgs.rows, DEFAULT_PTY_ROWS, 4, 200),
     });
+    if (result.resumed) {
+      try {
+        runtime.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+      } catch (error) {
+        runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+          sessionId: result.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
   }
 
   if (name === "get_ade_action_status") {
@@ -5040,7 +5665,8 @@ async function runTool(args: {
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
     runLocalCommand("screencapture", commandArgs);
-    return ingestLocalComputerUseArtifact({
+    await captureRegistryFor(runtime).remember(artifactPath, "ade-capture");
+    return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,
@@ -5069,12 +5695,17 @@ async function runTool(args: {
     const commandArgs = ["-v", `-V${durationSec}`, "-x"];
     if (displayId) commandArgs.push(`-D${displayId}`);
     commandArgs.push(artifactPath);
+    const recordedFrom = new Date().toISOString();
     runLocalCommand("screencapture", commandArgs);
-    return ingestLocalComputerUseArtifact({
+    const recordedTo = new Date().toISOString();
+    await captureRegistryFor(runtime).remember(artifactPath, "ade-recorder");
+    return await ingestLocalComputerUseArtifact({
       sessionState: session,
       toolName: name,
       title,
       kind: "video_recording",
+      recordedFrom,
+      recordedTo,
       artifactPath,
       mimeType: "video/quicktime",
       metadata: {
@@ -5116,32 +5747,56 @@ async function runTool(args: {
         );
       }
     }
-    const result = runtime.computerUseArtifactBrokerService.ingest({
-      backend: {
-        name: backendName,
-        style: backendStyle,
-        toolName: asOptionalTrimmedString(toolArgs.toolName),
-        command: asOptionalTrimmedString(toolArgs.command),
-      },
-      callerRoot: authorized.callerRoot,
-      inputs: inputs.map((entry) => ({
-        kind: asOptionalTrimmedString(entry.kind),
-        title: asOptionalTrimmedString(entry.title),
-        description: asOptionalTrimmedString(entry.description),
-        path: asOptionalTrimmedString(entry.path),
-        uri: asOptionalTrimmedString(entry.uri),
-        text: typeof entry.text === "string" ? entry.text : null,
-        ...(entry.json !== undefined ? { json: entry.json } : {}),
-        mimeType: asOptionalTrimmedString(entry.mimeType),
-        rawType: asOptionalTrimmedString(entry.rawType),
-        ...(isRecord(entry.metadata) ? { metadata: entry.metadata } : {}),
-      })),
-      owners: resolveComputerUseOwners(session, {
-        ...toolArgs,
-        ...(authorized.laneId ? { laneId: authorized.laneId } : {}),
-      }),
+    const owners = resolveComputerUseOwners(session, {
+      ...toolArgs,
+      ...(authorized.laneId ? { laneId: authorized.laneId } : {}),
     });
-    return result;
+    // Refused before anything is stored: a row with no owner is shown by no
+    // drawer, and it would make the retry with an owner a duplicate.
+    if (!hasDrawerOwner(owners)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "This proof has no lane, chat session, automation run, PR or issue, so no proof drawer could show it. Nothing was filed."
+          + " Run ade from inside the lane worktree, or pass --owner lane --owner-id <lane>.",
+      );
+    }
+    const { provenance, release } = await resolveIngestProvenance(
+      captureRegistryFor(runtime),
+      inputs,
+      authorized.callerRoot,
+    );
+    // Async: an attached file's hash is streamed off the event loop.
+    try {
+      return await runtime.computerUseArtifactBrokerService.ingestAsync({
+        backend: {
+          name: backendName,
+          style: backendStyle,
+          toolName: asOptionalTrimmedString(toolArgs.toolName),
+          command: asOptionalTrimmedString(toolArgs.command),
+        },
+        // Decided here from the files, never read from the caller's arguments.
+        provenance,
+        callerRoot: authorized.callerRoot,
+        inputs: inputs.map((entry) => ({
+          kind: asOptionalTrimmedString(entry.kind),
+          title: asOptionalTrimmedString(entry.title),
+          description: asOptionalTrimmedString(entry.description),
+          path: asOptionalTrimmedString(entry.path),
+          uri: asOptionalTrimmedString(entry.uri),
+          text: typeof entry.text === "string" ? entry.text : null,
+          ...(entry.json !== undefined ? { json: entry.json } : {}),
+          mimeType: asOptionalTrimmedString(entry.mimeType),
+          rawType: asOptionalTrimmedString(entry.rawType),
+          ...(isRecord(entry.metadata) ? { metadata: entry.metadata } : {}),
+        })),
+        owners,
+      });
+    } catch (error) {
+      // The broker files a batch in one transaction, so nothing was filed and
+      // a retry is still ADE's own capture.
+      release();
+      throw error;
+    }
   }
 
   if (name === "list_computer_use_artifacts") {
@@ -5263,8 +5918,21 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Broken-proof pruning requires an authenticated owner scope.");
     }
     const authorizedArtifactIds = listAuthorizedProofArtifactIds(runtime, authorizedOwners);
+    /*
+     * Broken AND ownerless is garbage no scoped caller could otherwise reach.
+     *
+     * The filter below asks "is this artifact in one of MY owners' sets". An
+     * artifact with no owner links is in nobody's set, so every scoped caller
+     * skipped it and only a project-wide one could ever clean it up: records
+     * whose files were deleted, invisible in every drawer, and immune to the
+     * tool whose whole job is removing exactly that.
+     *
+     * Letting a scoped caller take them is safe because both halves must hold:
+     * ownerless means it is in no lane's and no chat's drawer, and broken
+     * means its file is already gone. Neither alone qualifies.
+     */
     const artifactIds = runtime.computerUseArtifactBrokerService.listBrokenArtifacts({ limit: 2000 })
-      .filter((entry) => authorizedArtifactIds.has(entry.artifactId))
+      .filter((entry) => authorizedArtifactIds.has(entry.artifactId) || entry.ownerCount === 0)
       .map((entry) => entry.artifactId);
     return artifactIds.length
       ? runtime.computerUseArtifactBrokerService.deleteArtifacts({ artifactIds })
@@ -6102,7 +6770,7 @@ export function createAdeRpcRequestHandler(args: {
       session.identity = parseInitializeIdentity(runtime, params);
       const desktopBridgeAuthToken = asOptionalTrimmedString(params.desktopBridgeAuthToken);
       if (
-        session.clientName === "ade-desktop-local"
+        session.clientName === DESKTOP_CLIENT_NAMES.local
         && desktopBridgeAuthToken
         && runtime.configureBuiltInBrowserDesktopBridgeAuth
       ) {
@@ -6259,11 +6927,33 @@ export function createAdeRpcRequestHandler(args: {
       }
       if (method === "pty.sendToSession") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
+        const result = await runtime.ptyService.sendToSession(ptyArgs as Parameters<typeof runtime.ptyService.sendToSession>[0]);
+        if (result.resumed) {
+          try {
+            runtime.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+          } catch (error) {
+            runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+              sessionId: result.sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return result;
       }
       if (method === "pty.resumeSession") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
-        return await runtime.ptyService.resumeSession(ptyArgs as Parameters<typeof runtime.ptyService.resumeSession>[0]);
+        const result = await runtime.ptyService.resumeSession(ptyArgs as Parameters<typeof runtime.ptyService.resumeSession>[0]);
+        if (result.resumed) {
+          try {
+            runtime.agentChatService?.notifyParentOfCliChildSpawn?.(result.sessionId, { resumed: true });
+          } catch (error) {
+            runtime.logger?.warn?.("pty.resume_parent_notify_failed", {
+              sessionId: result.sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return result;
       }
       if (method === "pty.write") {
         ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);

@@ -9,7 +9,7 @@ import { getHeadSha, parseGitCheckoutProgressLine, runGit, runGitOrThrow, type G
 import { detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
-import { pathsEqual } from "../shared/pathCompare";
+import { isPathInside, pathKey, pathsEqual } from "../shared/pathCompare";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -1356,6 +1356,14 @@ export type LaneDeleteTeardownDeps = {
   fileWatcherService?: {
     countActiveForWorkspace: (workspaceId: string) => number;
     stopAllForWorkspace: (workspaceId: string) => number;
+  };
+  /**
+   * The lane's Mac Desktop display. Called unconditionally: the service answers
+   * on every platform and destroys nothing off macOS, so the teardown step does
+   * not have to know which host it is running on.
+   */
+  macDesktopService?: {
+    destroyForLane: (laneId: string) => Promise<{ destroyed: boolean }>;
   };
 };
 
@@ -4469,6 +4477,9 @@ export function createLaneService({
     try {
       teardownDeps?.fileWatcherService?.stopAllForWorkspace(laneId);
     } catch (error) { warn("stop_watchers", error); }
+    try {
+      await teardownDeps?.macDesktopService?.destroyForLane(laneId);
+    } catch (error) { warn("destroy_mac_desktop", error); }
   };
 
   // Named so a few methods (branch-drift resolution) can delegate to sibling
@@ -7612,6 +7623,13 @@ export function createLaneService({
           return { detail: `stopped ${stopped} ${stopped === 1 ? "watcher" : "watchers"}` };
         });
 
+        await runStep("destroy_mac_desktop", async () => {
+          const svc = teardownDeps?.macDesktopService;
+          if (!svc) return { detail: "no service" };
+          const result = await svc.destroyForLane(laneId);
+          return { detail: result.destroyed ? "display destroyed" : "no display" };
+        }, { fatal: false });
+
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };
           try {
@@ -7937,6 +7955,41 @@ export function createLaneService({
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       return row.worktree_path;
+    },
+
+    /**
+     * Which lane's worktree contains this path — the reverse of
+     * `getLaneWorktreePath`, and synchronous because its callers are.
+     *
+     * A caller that names no lane is not necessarily anonymous: an agent
+     * standing inside a lane worktree has said which lane it means, and the
+     * longest containing worktree is the answer. Longest wins because a lane
+     * can be nested inside another lane's tree.
+     *
+     * This exists because guessing was worse. An `ade apple` call from a shell
+     * with no `ADE_LANE_ID` — every OpenCode agent has one, since a shared
+     * `opencode serve` cannot carry a per-chat environment — used to fall back
+     * to "whichever single lane is running something", and filed one agent's
+     * screenshot into an unrelated lane's proof drawer.
+     */
+    getLaneIdForPath(absolutePath: string): string | null {
+      if (!absolutePath) return null;
+      // Both sides go through realpath: a shell's cwd is the physical path,
+      // while a lane row may hold a symlinked spelling of the same folder.
+      const candidate = stablePathThroughExistingAncestor(absolutePath);
+      const rows = db.all<Pick<LaneRow, "id" | "worktree_path">>(
+        "select id, worktree_path from lanes where project_id = ? and archived_at is null",
+        [projectId],
+      );
+      let best: { id: string; length: number } | null = null;
+      for (const row of rows) {
+        if (!row.worktree_path) continue;
+        const root = stablePathThroughExistingAncestor(row.worktree_path);
+        if (!isPathInside(candidate, root)) continue;
+        const length = pathKey(root).length;
+        if (!best || length > best.length) best = { id: row.id, length };
+      }
+      return best?.id ?? null;
     },
 
     /**

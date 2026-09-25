@@ -40,7 +40,8 @@ func makeWorkTimelinePresentation(
   chatSummary: WorkChatSummaryRenderContext,
   transcript: [WorkChatEnvelope],
   assistantPreviewCache: WorkAssistantPreviewCache,
-  streamingAssistantMessageId: String?
+  streamingAssistantMessageId: String?,
+  expandedTurnIds: Set<String> = []
 ) -> WorkTimelinePresentation {
   makeWorkTimelinePresentation(
     timeline: timeline,
@@ -50,7 +51,8 @@ func makeWorkTimelinePresentation(
     modelId: chatSummary.modelId,
     transcript: transcript,
     assistantPreviewCache: assistantPreviewCache,
-    streamingAssistantMessageId: streamingAssistantMessageId
+    streamingAssistantMessageId: streamingAssistantMessageId,
+    expandedTurnIds: expandedTurnIds
   )
 }
 
@@ -64,8 +66,12 @@ func makeWorkTimelinePresentation(
   modelId: String?,
   transcript: [WorkChatEnvelope],
   assistantPreviewCache: WorkAssistantPreviewCache,
-  streamingAssistantMessageId: String?
+  streamingAssistantMessageId: String?,
+  /// Finished turns the reader opened (`turn-fold:<turnId>` card expansion).
+  /// Every other finished turn folds into one "Worked for …" row.
+  expandedTurnIds: Set<String> = []
 ) -> WorkTimelinePresentation {
+  let timeline = workApplyingTurnFolds(timeline, expandedTurnIds: expandedTurnIds)
   let rawVisibleEntries = visibleWorkTimelineEntries(from: timeline, visibleCount: visibleCount)
   let visibleEntriesWithSeparators = injectWorkTurnSeparators(
     into: rawVisibleEntries,
@@ -244,7 +250,8 @@ private func workTimelineEntriesWithAssistantPreviews(
       id: entry.id,
       timestamp: entry.timestamp,
       rank: entry.rank,
-      payload: .message(message)
+      payload: .message(message),
+      turnId: entry.turnId
     )
   }
   cache.prune(keeping: visibleAssistantMessageIds)

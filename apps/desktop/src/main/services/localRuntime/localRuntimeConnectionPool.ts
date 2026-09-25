@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
+import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { signalChildProcessTree } from "../shared/utils";
 import {
   isRuntimeProtocolCompatible,
@@ -707,6 +708,8 @@ export function readLocalRuntimeInfo(value: unknown): {
             state: parsedPublishHealth.state,
             failingSinceMs: parsedPublishHealth.failingSinceMs,
             lastLegDurations: parsedPublishHealth.lastLegDurations,
+            lastHttpStatus: parsedPublishHealth.lastHttpStatus ?? null,
+            lastHttpReason: parsedPublishHealth.lastHttpReason ?? null,
           }
         : null,
     lastWedge: parseRuntimeLastWedge(info.lastWedge),
@@ -2473,7 +2476,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const transport = await openSocketTransport(socketPath);
       client = new RuntimeRpcClient(transport);
-      const initializeResult = await client.initialize("ade-desktop-service-install-probe", this.appVersion);
+      const initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.serviceInstallProbe, this.appVersion);
       const runtimeInfo = readLocalRuntimeInfo(initializeResult);
       return {
         error: this.runtimeCompatibilityError(socketPath, runtimeInfo),
@@ -2682,7 +2685,17 @@ export class LocalRuntimeConnectionPool {
       pid: compatibilityError?.pid ?? null,
       message: compatibilityError?.message ?? null,
     });
-    await this.installServiceBestEffort();
+    // A compatibility failure means the service is RUNNING with the wrong
+    // identity — an older Alpha/Beta build, or one left behind by an update.
+    // The installer is idempotent: when the launchd plist/systemd unit is
+    // unchanged and the service answers, it returns "already installed and
+    // running" without restarting anything. A plain install here would
+    // therefore early-return and leave the wrong brain in place, and the
+    // connect loop below would time out into isolated no-sync mode. Only a
+    // forcing install (`ADE_FORCE_RUNTIME_SERVICE_RESTART=1`) replaces a live,
+    // responsive brain. A genuinely missing endpoint has nothing to replace, so
+    // it stays a plain install.
+    await this.installServiceBestEffort({ forceRestart: reason === "incompatible" });
     const installStatus = this.serviceInstallStatus;
     if (installStatus.state !== "installed") {
       this.logger.warn("local_runtime.service_repair_skipped", {
@@ -2885,7 +2898,12 @@ export class LocalRuntimeConnectionPool {
       serviceState: this.serviceInstallStatus.state,
       serviceMessage: this.serviceInstallStatus.message,
     });
-    await this.installServiceBestEffort();
+    // The probe above just failed, so whatever owns the primary endpoint is not
+    // usable — either absent or answering with the wrong identity. A plain
+    // install can early-return "already running" on the responsive-but-wrong
+    // case and leave the desktop isolated forever, so this recovery always
+    // asks the installer to restart.
+    await this.installServiceBestEffort({ forceRestart: true });
   }
 
   // Compatibility check with no side effects on pool state, safe to run while
@@ -2895,7 +2913,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const transport = await openSocketTransport(socketPath);
       client = new RuntimeRpcClient(transport);
-      const initializeResult = await client.initialize("ade-desktop-local-probe", this.appVersion);
+      const initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.localProbe, this.appVersion);
       const runtimeInfo = readLocalRuntimeInfo(initializeResult);
       return this.runtimeCompatibilityError(socketPath, runtimeInfo) == null;
     } catch {
@@ -2952,7 +2970,7 @@ export class LocalRuntimeConnectionPool {
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
     try {
-      initializeResult = await client.initialize("ade-desktop-local", this.appVersion, {
+      initializeResult = await client.initialize(DESKTOP_CLIENT_NAMES.local, this.appVersion, {
         desktopBridgeAuthToken: this.options.desktopBridgeAuthToken,
         timeoutMs: options.initializeTimeoutMs,
       });

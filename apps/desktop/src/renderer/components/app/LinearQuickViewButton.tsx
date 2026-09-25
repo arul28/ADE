@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { CircleNotch, Warning, X } from "@phosphor-icons/react";
 
 import type {
@@ -18,6 +17,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { cn } from "../ui/cn";
+import { Dialog } from "../ui/dialog";
 import { linearIssueLaneName } from "../../../shared/linearIssueBranch";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import {
@@ -131,7 +131,6 @@ export function LinearQuickViewButton({
   const [batchLaneOnly, setBatchLaneOnly] = useState(false);
   const [batchLaunchStates, setBatchLaunchStates] = useState<Map<string, BatchLaunchItemState>>(new Map());
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const popoverRef = useRef<HTMLDivElement | null>(null);
   const cachedQuickViewRef = useRef<CtoLinearQuickView | null>(null);
   const batchAgentReadinessRef = useRef(new BatchLaunchAgentReadinessTracker());
   const occludesNativeBrowser = open || batchModalOpen;
@@ -316,29 +315,6 @@ export function LinearQuickViewButton({
     setOpen(false);
   }, [activeProjectRoot]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onDown = (event: MouseEvent) => {
-      const target = event.target as Node | null;
-      if (!target) return;
-      if (popoverRef.current?.contains(target)) return;
-      if (buttonRef.current?.contains(target)) return;
-      close();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        close();
-      }
-    };
-    window.addEventListener("mousedown", onDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [close, open]);
-
   // The launch dock opens one unified launch-config modal for 1..N issues. The
   // modal closes on Launch and the bounded-parallel orchestrator runs below, so
   // the user lands on the Lanes tab immediately rather than watching a progress
@@ -516,6 +492,11 @@ export function LinearQuickViewButton({
     setBatchLaunchStates(new Map());
   }, []);
 
+  const handleOpenBatchLane = useCallback((laneId: string) => {
+    selectLane(laneId);
+    window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
+  }, [selectLane]);
+
   // Pre-launch duplicate guard: passed to the browser so the multi-select dock
   // and single-issue rows can show a "Has lane"/"Has agent" badge and confirm a
   // re-attach. We don't know the issues being browsed here, so compute against
@@ -546,85 +527,89 @@ export function LinearQuickViewButton({
     return { total: states.length, completed, failed, running };
   }, [batchLaunchStates]);
 
-  const connectionPromptModal = connectionPrompt ? createPortal(
-    <div
-      role="presentation"
-      className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/45 p-4 backdrop-blur-sm"
-      onClick={(event) => {
-        if (event.target === event.currentTarget) setConnectionPrompt(null);
+  // Raised from a Linear deeplink; it sits one layer above the quick view pane.
+  const connectionPromptModal = connectionPrompt ? (
+    <Dialog
+      open
+      onOpenChange={(next) => {
+        if (!next) setConnectionPrompt(null);
+      }}
+      title="Linear deeplink unavailable"
+      hideHeader
+      layer="nestedDialog"
+      width={440}
+      bodyPadding={false}
+      // As before, nothing is focused for the user; the panel holds focus.
+      preventAutoFocus
+      panelStyle={{
+        background: "var(--ade-shell-surface, #121019)",
+        borderRadius: 12,
+        borderColor: "rgba(255, 255, 255, 0.12)",
       }}
     >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="Linear deeplink unavailable"
-        className="w-[min(440px,100%)] overflow-hidden rounded-xl border border-white/12 bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
-      >
-        <div className="flex items-start gap-3 border-b border-white/10 px-4 py-3">
-          <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-yellow-500/12 text-yellow-200">
-            <Warning size={15} weight="fill" />
-          </span>
-          <div className="min-w-0">
-            <div className="text-[13px] font-semibold">
-              {project?.rootPath
-                ? `Connect Linear to open ${connectionPrompt.issueIdentifier}`
-                : `Open the ADE project for ${connectionPrompt.issueIdentifier}`}
-            </div>
-            <div className="mt-1 text-[12px] leading-5 text-muted-fg/75">
-              {project?.rootPath
-                ? "This link opens the Linear pane in ADE, but this project is not connected to Linear yet."
-                : "This link needs the ADE project that owns the issue open before ADE can check Linear."}
-            </div>
+      <div className="flex items-start gap-3 border-b border-white/10 px-4 py-3">
+        <span className="mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-lg bg-yellow-500/12 text-yellow-200">
+          <Warning size={15} weight="fill" />
+        </span>
+        <div className="min-w-0">
+          <div className="text-[13px] font-semibold">
+            {project?.rootPath
+              ? `Connect Linear to open ${connectionPrompt.issueIdentifier}`
+              : `Open the ADE project for ${connectionPrompt.issueIdentifier}`}
+          </div>
+          <div className="mt-1 text-[12px] leading-5 text-muted-fg/75">
+            {project?.rootPath
+              ? "This link opens the Linear pane in ADE, but this project is not connected to Linear yet."
+              : "This link needs the ADE project that owns the issue open before ADE can check Linear."}
           </div>
         </div>
-        <div className="grid gap-2 px-4 py-3 text-[12px]">
+      </div>
+      <div className="grid gap-2 px-4 py-3 text-[12px]">
+        <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
+          <span className="text-muted-fg/50">Issue</span>
+          <span className="min-w-0 truncate font-mono text-muted-fg/80">{connectionPrompt.issueIdentifier}</span>
+        </div>
+        {connectionPrompt.branch ? (
           <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-            <span className="text-muted-fg/50">Issue</span>
-            <span className="min-w-0 truncate font-mono text-muted-fg/80">{connectionPrompt.issueIdentifier}</span>
+            <span className="text-muted-fg/50">Branch</span>
+            <span className="min-w-0 break-all font-mono text-muted-fg/80">{connectionPrompt.branch}</span>
           </div>
-          {connectionPrompt.branch ? (
-            <div className="grid grid-cols-[86px_minmax(0,1fr)] gap-3">
-              <span className="text-muted-fg/50">Branch</span>
-              <span className="min-w-0 break-all font-mono text-muted-fg/80">{connectionPrompt.branch}</span>
-            </div>
-          ) : null}
-        </div>
-        <div className="flex justify-end gap-2 border-t border-white/10 px-4 py-3">
+        ) : null}
+      </div>
+      <div className="flex justify-end gap-2 border-t border-white/10 px-4 py-3">
+        <button
+          type="button"
+          className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
+          data-variant="ghost"
+          onClick={() => setConnectionPrompt(null)}
+        >
+          Dismiss
+        </button>
+        {project?.rootPath ? (
           <button
             type="button"
             className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-            data-variant="ghost"
-            onClick={() => setConnectionPrompt(null)}
+            data-variant="primary"
+            onClick={openLinearSettings}
           >
-            Dismiss
+            Open Linear settings
           </button>
-          {project?.rootPath ? (
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-              data-variant="primary"
-              onClick={openLinearSettings}
-            >
-              Open Linear settings
-            </button>
-          ) : (
-            <button
-              type="button"
-              className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
-              data-variant="primary"
-              onClick={() => {
-                setConnectionPrompt(null);
-                setShowWelcome(true);
-                window.location.hash = "#/work";
-              }}
-            >
-              Open project picker
-            </button>
-          )}
-        </div>
+        ) : (
+          <button
+            type="button"
+            className="ade-shell-control inline-flex h-8 items-center rounded-md px-3 text-[12px]"
+            data-variant="primary"
+            onClick={() => {
+              setConnectionPrompt(null);
+              setShowWelcome(true);
+              window.location.hash = "#/work";
+            }}
+          >
+            Open project picker
+          </button>
+        )}
       </div>
-    </div>,
-    document.body,
+    </Dialog>
   ) : null;
 
   if (!visible) return <>{connectionPromptModal}</>;
@@ -684,98 +669,96 @@ export function LinearQuickViewButton({
       {trigger}
       {connectionPromptModal}
 
-      {open ? createPortal(
-        <>
-          <button
-            type="button"
-            aria-label="Close Linear quick view backdrop"
-            data-linear-quick-view-backdrop="true"
-            className="fixed inset-0 z-[9998] cursor-default bg-black/55 backdrop-blur-md"
-            onClick={close}
-            tabIndex={-1}
-          />
-          <div
-            ref={popoverRef}
-            role="dialog"
-            aria-modal="true"
-            aria-label="Linear quick view"
-            className="fixed left-1/2 top-1/2 z-[9999] flex h-[min(940px,calc(100dvh-28px))] w-[min(1760px,calc(100vw-28px))] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl border bg-[color:var(--ade-shell-surface,#121019)] text-fg shadow-2xl shadow-black/50"
-            style={{
-              borderColor: "rgba(123, 138, 240, 0.55)",
-              boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
-            }}
-          >
-            <div
-              className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
-              style={{ background: LINEAR_BRAND.surface }}
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) close();
+        }}
+        title="Linear quick view"
+        hideHeader
+        width={1760}
+        height="min(940px, calc(100dvh - 28px))"
+        maxHeight="calc(100dvh - 28px)"
+        bodyPadding={false}
+        scrollBody={false}
+        bodyStyle={{ display: "flex", flexDirection: "column" }}
+        // Nothing in the pane grabs focus on open; the panel holds it.
+        preventAutoFocus
+        panelStyle={{
+          background: "var(--ade-shell-surface, #121019)",
+          borderRadius: 12,
+          borderColor: "rgba(123, 138, 240, 0.55)",
+          boxShadow: "0 24px 70px rgba(0, 0, 0, 0.58), 0 0 0 1px rgba(123, 138, 240, 0.18)",
+        }}
+      >
+        <div
+          className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-3 py-2"
+          style={{ background: LINEAR_BRAND.surface }}
+        >
+          <div className="flex min-w-0 items-center gap-2">
+            <span
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
+              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
             >
-              <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className="grid h-6 w-6 shrink-0 place-items-center rounded-md"
-                  style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-                >
-                  <LinearMark size={14} />
-                </span>
-                <div className="min-w-0 truncate text-[12px] text-fg/90">
-                  <span className="font-medium">{quickView?.organization?.name ?? "Linear"}</span>
-                  <span className="text-muted-fg/45"> · </span>
-                  <span className="text-muted-fg/65">
-                    {quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected"}
-                    {quickView?.organization?.urlKey ? ` · ${quickView.organization.urlKey}` : ""}
-                  </span>
-                </div>
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"
-                  data-variant="ghost"
-                  onClick={() => setRefreshKey((key) => key + 1)}
-                  disabled={browserLoading}
-                  title="Refresh Linear"
-                >
-                  {browserLoading ? <CircleNotch size={11} className="animate-spin" /> : null}
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-6 w-6 items-center justify-center rounded-md"
-                  data-variant="ghost"
-                  onClick={close}
-                  title="Close Linear"
-                >
-                  <X size={12} />
-                </button>
-              </div>
-            </div>
-
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <LinearIssueBrowser
-                projectRoot={project?.rootPath}
-                actionLabel="Create lane"
-                actionBusyLabel="Creating lane"
-                refreshKey={refreshKey}
-                onIssueAction={async () => undefined}
-                onConnectionVisibilityChange={setVisible}
-                onOpenLinearSettings={openLinearSettings}
-                requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
-                requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
-                onQuickViewChange={(data) => {
-                  cachedQuickViewRef.current = data;
-                  setQuickView(data);
-                }}
-                onLoadingChange={setBrowserLoading}
-                batchActions={{
-                  onBatchLaunch: handleBatchLaunchOpen,
-                  conflicts,
-                  batchProgress,
-                }}
-              />
+              <LinearMark size={14} />
+            </span>
+            <div className="min-w-0 truncate text-[12px] text-fg/90">
+              <span className="font-medium">{quickView?.organization?.name ?? "Linear"}</span>
+              <span className="text-muted-fg/45"> · </span>
+              <span className="text-muted-fg/65">
+                {quickView?.viewer?.displayName ?? quickView?.connection.viewerName ?? "Connected"}
+                {quickView?.organization?.urlKey ? ` · ${quickView.organization.urlKey}` : ""}
+              </span>
             </div>
           </div>
-        </>,
-        document.body,
-      ) : null}
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-[11px]"
+              data-variant="ghost"
+              onClick={() => setRefreshKey((key) => key + 1)}
+              disabled={browserLoading}
+              title="Refresh Linear"
+            >
+              {browserLoading ? <CircleNotch size={11} className="animate-spin" /> : null}
+              Refresh
+            </button>
+            <button
+              type="button"
+              className="ade-shell-control inline-flex h-6 w-6 items-center justify-center rounded-md"
+              data-variant="ghost"
+              onClick={close}
+              title="Close Linear"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <LinearIssueBrowser
+            projectRoot={project?.rootPath}
+            actionLabel="Create lane"
+            actionBusyLabel="Creating lane"
+            refreshKey={refreshKey}
+            onIssueAction={async () => undefined}
+            onConnectionVisibilityChange={setVisible}
+            onOpenLinearSettings={openLinearSettings}
+            requestedIssueIdentifier={quickViewRequest?.issueIdentifier ?? null}
+            requestedIssueRequestKey={quickViewRequest?.requestedAt ?? null}
+            onQuickViewChange={(data) => {
+              cachedQuickViewRef.current = data;
+              setQuickView(data);
+            }}
+            onLoadingChange={setBrowserLoading}
+            batchActions={{
+              onBatchLaunch: handleBatchLaunchOpen,
+              conflicts,
+              batchProgress,
+            }}
+          />
+        </div>
+      </Dialog>
 
       <BatchLaunchModal
         onOpenHarnessSettings={onOpenHarnessSettings}
@@ -791,10 +774,7 @@ export function LinearQuickViewButton({
         states={batchLaunchStates}
         onRetryFailed={handleRetryFailed}
         onDismiss={handleDismissBatchStatus}
-        onOpenLane={(laneId) => {
-          selectLane(laneId);
-          window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
-        }}
+        onOpenLane={handleOpenBatchLane}
       />
     </>
   );

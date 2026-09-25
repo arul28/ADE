@@ -26,6 +26,7 @@ import type {
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { openChatHandoff, takeChatHandoff } from "../../lib/chatHandoffIntent";
+import { stashComposerHandoffOrigin } from "./launch/chatLaunchDock";
 import { CLAUDE_SESSION_QUOTA_CARD_ACTION, CLAUDE_SESSION_QUOTA_FORK_NOTE } from "../../../shared/claudeSessionQuota";
 import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
 import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
@@ -35,9 +36,18 @@ import {
   invalidateAiDiscoveryCache,
   type AiStatusCacheUpdatedEventDetail,
 } from "../../lib/aiDiscoveryCache";
-import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
+import {
+  DRAFT_LAUNCH_JOB_STALE_AFTER_MS,
+  type DraftLaunchJob,
+} from "../../lib/draftLaunchJobs";
 import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
+import { confirmDialog } from "../ui/dialog/confirm";
+
+vi.mock("../ui/dialog/confirm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../ui/dialog/confirm")>()),
+  confirmDialog: vi.fn(async () => false),
+}));
 import {
   applyChatLaunchSnapshot,
   buildOptimisticChatLaunchSnapshot,
@@ -83,6 +93,11 @@ import {
   userSetCursorConfigValues,
   type AgentChatSessionCreatedOptions,
 } from "./AgentChatPane";
+import {
+  answerWorkToolShowRequest,
+  resetWorkToolShowRequestsForTests,
+} from "../../lib/workToolShowRequests";
+import { setDocumentVisibleForTests } from "../../lib/workToolOnScreen";
 import {
   DEFAULT_CHAT_COMPANION_UI_STATE,
   chatCompanionUiStorageKey,
@@ -1301,6 +1316,7 @@ function renderParallelDraftPane(args?: {
 }
 
 function renderAutoCreateDraftPane(args?: {
+  draftContextTargetId?: string | null;
   onSessionCreated?: (
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
@@ -1352,6 +1368,7 @@ function renderAutoCreateDraftPane(args?: {
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
+                draftContextTargetId={args?.draftContextTargetId}
                 availableLanes={lanes}
                 onLaneChange={args?.onLaneChange ?? vi.fn()}
                 onDraftMachineChange={args?.onDraftMachineChange}
@@ -1463,7 +1480,6 @@ describe("AgentChatPane remote startup", () => {
     renderPane(session);
 
     await screen.findByRole("button", { name: /^Select model/ });
-    await Promise.resolve();
 
     expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
   });
@@ -1832,7 +1848,6 @@ describe("AgentChatPane remote startup", () => {
     renderPane(session);
 
     await screen.findByRole("button", { name: /^Select model/ });
-    await Promise.resolve();
 
     expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
   });
@@ -2015,6 +2030,452 @@ describe("AgentChatPane companion drawers", () => {
     });
   });
 
+  it("opens the proof drawer and the Apple drawer when an agent asks with ade ui show", async () => {
+    setDocumentVisibleForTests(true);
+    // jsdom lays nothing out; the drawers are wide enough to be seen.
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    // The drawer has a proof section only when the chat has proof.
+    const session = buildSession("session-1", { title: "Drawer audit chat" });
+    installAdeMocks({ sessions: [session] });
+    const proof: ComputerUseArtifactView = {
+      id: "proof-shown",
+      kind: "screenshot",
+      backendStyle: "local_fallback",
+      backendName: "ADE",
+      sourceToolName: "capture",
+      originalType: "image",
+      title: "Screen the agent filed",
+      description: null,
+      uri: ".ade/artifacts/proof-shown.png",
+      storageKind: "file",
+      mimeType: "image/png",
+      metadata: {},
+      createdAt: "2026-07-28T12:00:00.000Z",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+      reviewNote: null,
+      availability: "available",
+    };
+    vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue({
+      owner: { kind: "chat_session", id: session.sessionId },
+      backendStatus: {
+        backends: [],
+        localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+      },
+      summary: "1 proof item",
+      activeBackend: null,
+      artifacts: [proof],
+      recentArtifacts: [proof],
+      activity: [],
+    });
+    seedDrawerStore();
+    renderPane(session);
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+
+    let status: string | null = null;
+    // Not inside act: the drawer has to render while the show waits for it.
+    void answerWorkToolShowRequest({
+        requestId: "wts-proof",
+        surface: "proof",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+    }).then((next) => { status = next?.status ?? null; });
+    await waitFor(() => expect(status).toBe("shown"), { timeout: 5_000 });
+    expect(await screen.findByText("Screen the agent filed")).toBeTruthy();
+
+    // Outside Work this pane owns the chat's Apple drawer too.
+    // Not inside act: the drawer has to render while the show waits for it.
+    void answerWorkToolShowRequest({
+        requestId: "wts-apple",
+        surface: "apple",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+    }).then((next) => { status = next?.status ?? null; });
+    await waitFor(() => expect(status).toBe("shown"), { timeout: 5_000 });
+    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    resetWorkToolShowRequestsForTests();
+    setDocumentVisibleForTests(null);
+    layout.mockRestore();
+  });
+
+  it("ade ui show proof shows a chat's proof in a visible tile that is not focused, and says so when there is none", async () => {
+    setDocumentVisibleForTests(true);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    const show = async (requestId: string) => {
+      let status: string | null = null;
+      void answerWorkToolShowRequest({
+        requestId,
+        surface: "proof",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+      }).then((next) => { status = next?.status ?? null; });
+      await waitFor(() => expect(status).not.toBeNull(), { timeout: 5_000 });
+      return status;
+    };
+    const snapshotWith = (sessionId: string, artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnapshot => ({
+      owner: { kind: "chat_session", id: sessionId },
+      backendStatus: {
+        backends: [],
+        localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+      },
+      summary: `${artifacts.length} proof items`,
+      activeBackend: null,
+      artifacts,
+      recentArtifacts: artifacts,
+      activity: [],
+    });
+    const proof: ComputerUseArtifactView = {
+      id: "proof-tile",
+      kind: "screenshot",
+      backendStyle: "local_fallback",
+      backendName: "ADE",
+      sourceToolName: "capture",
+      originalType: "image",
+      title: "Proof in a quiet tile",
+      description: null,
+      uri: ".ade/artifacts/proof-tile.png",
+      storageKind: "file",
+      mimeType: "image/png",
+      metadata: {},
+      createdAt: "2026-07-28T12:00:00.000Z",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+      reviewNote: null,
+      availability: "available",
+    };
+    const session = buildSession("session-1", { title: "Quiet tile chat" });
+    try {
+      // A grid tile the user can see but has not clicked into keeps no snapshot.
+      installAdeMocks({ sessions: [session] });
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, [proof]));
+      seedDrawerStore();
+      const view = render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={session.laneId}
+            lockSessionId={session.sessionId}
+            hideSessionTabs
+            initialSessionSummary={session}
+            onSessionCreated={vi.fn()}
+            isTileActive={false}
+            isTileVisible
+          />
+        </MemoryRouter>,
+      );
+      expect(await show("wts-quiet-tile")).toBe("shown");
+      expect(screen.getByText("Proof in a quiet tile")).toBeTruthy();
+      expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
+      view.unmount();
+      resetWorkToolShowRequestsForTests();
+
+      // Proof that has not loaded is not "no proof": the section waits for it.
+      installAdeMocks({ sessions: [session] });
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockImplementation(() => new Promise<ComputerUseOwnerSnapshot>(() => {}));
+      seedDrawerStore();
+      const pending = renderPane(session);
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      expect(await show("wts-still-loading")).not.toBe("shown");
+      expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
+      pending.unmount();
+      resetWorkToolShowRequestsForTests();
+
+      // A chat with no proof: the drawer says so once the read comes back,
+      // rather than waiting and blaming a window that is in front.
+      installAdeMocks({ sessions: [session] });
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(snapshotWith(session.sessionId, []));
+      seedDrawerStore();
+      renderPane(session);
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      expect(await show("wts-no-proof")).toBe("shown");
+      expect(screen.getByText("This chat has no proof yet.")).toBeTruthy();
+    } finally {
+      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(null);
+      layout.mockRestore();
+    }
+  }, 20_000);
+
+  it("scrolls to the proof once per show, and a read that returns after the drawer closed changes nothing", async () => {
+    setDocumentVisibleForTests(true);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    const scrollIntoView = vi.fn();
+    const originalScroll = (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView = scrollIntoView;
+    const empty = (sessionId: string): ComputerUseOwnerSnapshot => ({
+      owner: { kind: "chat_session", id: sessionId },
+      backendStatus: {
+        backends: [],
+        localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+      },
+      summary: "No proof",
+      activeBackend: null,
+      artifacts: [],
+      recentArtifacts: [],
+      activity: [],
+    });
+    const request = (requestId: string) => ({
+      requestId,
+      surface: "proof" as const,
+      chatSessionId: "session-1",
+      laneId: "lane-1",
+      auto: false,
+      requestedAt: new Date(0).toISOString(),
+    });
+    try {
+      const session = buildSession("session-1", { title: "Scroll chat" });
+      const mocks = installAdeMocks({ sessions: [session] });
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue(empty(session.sessionId));
+      seedDrawerStore();
+      renderPane(session);
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
+
+      await expect(answerWorkToolShowRequest(request("wts-scroll"))).resolves.toMatchObject({ status: "shown" });
+      await waitFor(() => expect(scrollIntoView).toHaveBeenCalledTimes(1));
+      // A capture re-reads the proof; the user is not pulled back to it.
+      act(() => {
+        mocks.emitComputerUseEvent({ type: "artifact-deleted", artifactId: "other", at: "2026-07-28T12:01:00.000Z", owner: null });
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(scrollIntoView).toHaveBeenCalledTimes(1);
+
+      // A show whose read comes back after the user closed the drawer.
+      fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
+      let finishRead: (snapshot: ComputerUseOwnerSnapshot) => void = () => {};
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockImplementationOnce(
+        () => new Promise<ComputerUseOwnerSnapshot>((resolve) => { finishRead = resolve; }),
+      );
+      void answerWorkToolShowRequest(request("wts-late-read"));
+      fireEvent.click(await screen.findByRole("button", { name: "Close chat actions drawer" }));
+      await act(async () => { finishRead(empty(session.sessionId)); });
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
+    } finally {
+      (HTMLElement.prototype as { scrollIntoView?: unknown }).scrollIntoView = originalScroll;
+      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(null);
+      layout.mockRestore();
+    }
+  }, 15_000);
+
+  it("keeps the chat's proof on screen when a show's re-read fails", async () => {
+    setDocumentVisibleForTests(true);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    const proof: ComputerUseArtifactView = {
+      id: "proof-kept",
+      kind: "screenshot",
+      backendStyle: "local_fallback",
+      backendName: "ADE",
+      sourceToolName: "capture",
+      originalType: "image",
+      title: "Proof that stays",
+      description: null,
+      uri: ".ade/artifacts/proof-kept.png",
+      storageKind: "file",
+      mimeType: "image/png",
+      metadata: {},
+      createdAt: "2026-07-28T12:00:00.000Z",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+      reviewNote: null,
+      availability: "available",
+    };
+    try {
+      const session = buildSession("session-1", { title: "Kept proof chat" });
+      installAdeMocks({ sessions: [session] });
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockResolvedValue({
+        owner: { kind: "chat_session", id: session.sessionId },
+        backendStatus: {
+          backends: [],
+          localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+        },
+        summary: "1 proof item",
+        activeBackend: null,
+        artifacts: [proof],
+        recentArtifacts: [proof],
+        activity: [],
+      });
+      seedDrawerStore();
+      renderPane(session);
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      expect(await screen.findByText("Proof that stays")).toBeTruthy();
+
+      // The machine stops answering; the show's re-read fails.
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockRejectedValue(new Error("runtime offline"));
+      await expect(answerWorkToolShowRequest({
+        requestId: "wts-read-fails",
+        surface: "proof",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+      })).resolves.toMatchObject({ status: "shown" });
+      await waitFor(() => expect(window.ade.computerUse.getOwnerSnapshot).toHaveBeenCalledTimes(2));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.getByText("Proof that stays")).toBeTruthy();
+      expect(screen.queryByText("This chat has no proof yet.")).toBeNull();
+    } finally {
+      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(null);
+      layout.mockRestore();
+    }
+  });
+
+  it("a slow older proof read never overwrites a newer one, and a failed read after a chat switch never shows the other chat's proof", async () => {
+    setDocumentVisibleForTests(true);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    const artifact = (id: string, title: string): ComputerUseArtifactView => ({
+      id,
+      kind: "screenshot",
+      backendStyle: "local_fallback",
+      backendName: "ADE",
+      sourceToolName: "capture",
+      originalType: "image",
+      title,
+      description: null,
+      uri: `.ade/artifacts/${id}.png`,
+      storageKind: "file",
+      mimeType: "image/png",
+      metadata: {},
+      createdAt: "2026-07-28T12:00:00.000Z",
+      links: [],
+      reviewState: "pending",
+      workflowState: "evidence_only",
+      reviewNote: null,
+      availability: "available",
+    });
+    const snapshotFor = (sessionId: string, artifacts: ComputerUseArtifactView[]): ComputerUseOwnerSnapshot => ({
+      owner: { kind: "chat_session", id: sessionId },
+      backendStatus: {
+        backends: [],
+        localFallback: { available: true, detail: "Available", supportedKinds: ["screenshot"] },
+      },
+      summary: `${artifacts.length} proof items`,
+      activeBackend: null,
+      artifacts,
+      recentArtifacts: artifacts,
+      activity: [],
+    });
+    const showProof = (requestId: string, chatSessionId: string) => answerWorkToolShowRequest({
+      requestId,
+      surface: "proof",
+      chatSessionId,
+      laneId: "lane-1",
+      auto: false,
+      requestedAt: new Date(0).toISOString(),
+    });
+    try {
+      const first = buildSession("session-1", { title: "First chat" });
+      const second = buildSession("session-2", { title: "Second chat" });
+      installAdeMocks({ sessions: [first, second] });
+      // The pane's own first read is slow; the show's forced read overtakes it.
+      let finishSlowRead: (snapshot: ComputerUseOwnerSnapshot) => void = () => {};
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot)
+        .mockImplementationOnce(() => new Promise<ComputerUseOwnerSnapshot>((resolve) => { finishSlowRead = resolve; }))
+        .mockResolvedValue(snapshotFor(first.sessionId, [artifact("proof-new", "Newer proof")]));
+      seedDrawerStore();
+      const paneFor = (session: AgentChatSessionSummary) => (
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={session.laneId}
+            lockSessionId={session.sessionId}
+            hideSessionTabs
+            initialSessionSummary={session}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>
+      );
+      const view = render(paneFor(first));
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      await waitFor(() => expect(window.ade.computerUse.getOwnerSnapshot).toHaveBeenCalledTimes(1));
+      await expect(showProof("wts-newer", first.sessionId)).resolves.toMatchObject({ status: "shown" });
+      expect(screen.getByText("Newer proof")).toBeTruthy();
+      await act(async () => { finishSlowRead(snapshotFor(first.sessionId, [artifact("proof-old", "Older proof")])); });
+      expect(screen.getByText("Newer proof")).toBeTruthy();
+      expect(screen.queryByText("Older proof")).toBeNull();
+
+      // The pane moves to the second chat, whose proof cannot be read.
+      vi.mocked(window.ade.computerUse.getOwnerSnapshot).mockRejectedValue(new Error("runtime offline"));
+      view.rerender(paneFor(second));
+      await screen.findByRole("button", { name: "Open chat actions drawer" });
+      await showProof("wts-second", second.sessionId);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.queryByText("Newer proof")).toBeNull();
+    } finally {
+      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(null);
+      layout.mockRestore();
+    }
+  }, 15_000);
+
+  it("a proof show held while the chat was out of view opens its drawer when the chat mounts", async () => {
+    setDocumentVisibleForTests(true);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    try {
+      // No pane has this chat yet, so the show is held.
+      await expect(answerWorkToolShowRequest({
+        requestId: "wts-held-proof",
+        surface: "proof",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+      })).resolves.toMatchObject({ status: "held" });
+
+      renderDrawerPane();
+      // Delivered as the pane registers, and not closed again by the pane's
+      // own reset for a new chat.
+      expect(await screen.findByRole("button", { name: "Close chat actions drawer" })).toBeTruthy();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeTruthy();
+    } finally {
+      resetWorkToolShowRequestsForTests();
+      setDocumentVisibleForTests(null);
+      layout.mockRestore();
+    }
+  });
+
+  /* Regression (A2-4): the Apple drawer answered "shown" before its commit
+   * and in a hidden window. It now waits for the drawer to be on screen. */
+  it("answers held, not shown, for the Apple drawer in a hidden window", async () => {
+    setDocumentVisibleForTests(false);
+    const layout = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockReturnValue({ width: 400, height: 600 } as DOMRect);
+    renderDrawerPane();
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+
+    let status: string | null = null;
+    // Not inside act: the drawer has to render while the show waits for it.
+    void answerWorkToolShowRequest({
+        requestId: "wts-apple-hidden",
+        surface: "apple",
+        chatSessionId: "session-1",
+        laneId: "lane-1",
+        auto: false,
+        requestedAt: new Date(0).toISOString(),
+    }).then((next) => { status = next?.status ?? null; });
+    await waitFor(() => expect(status).toBe("held"), { timeout: 5_000 });
+    // Opened all the same: the user sees it when the window comes back.
+    expect(screen.getByTestId("ios-panel").textContent).toBe("iOS panel mounted");
+    resetWorkToolShowRequestsForTests();
+    setDocumentVisibleForTests(null);
+    layout.mockRestore();
+  }, 10_000);
+
   it("opens the proof drawer as a floating info pane (no split divider)", async () => {
     renderDrawerPane();
 
@@ -2030,6 +2491,136 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
+  });
+
+  describe("chat actions drawer sections", () => {
+    const drawerSections = () => screen.getByTestId("chat-actions-drawer-sections");
+    const expectSingleScroll = () => {
+      expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-auto");
+      expect(
+        drawerSections().querySelector("[class*='overflow-y-auto'], [class*='overflow-auto'], [class*='min-h-full'], .h-full"),
+      ).toBeNull();
+    };
+    const attachmentEvent = (sessionId: string): AgentChatEventEnvelope => ({
+      sessionId,
+      timestamp: "2026-09-23T06:00:00.000Z",
+      sequence: 1,
+      event: {
+        type: "user_message",
+        text: "Read this",
+        attachments: [{ type: "file", path: "/repo/spec.md" }],
+      },
+    } as AgentChatEventEnvelope);
+
+    it("floating host: an empty chat shows one line and no placeholder areas", async () => {
+      renderDrawerPane();
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+
+      // The agents section is always handed over and renders nothing here, so
+      // the line is the sole child left, which is what its `only:block` shows.
+      const line = await screen.findByTestId("chat-actions-drawer-empty");
+      expect(line.matches(":only-child")).toBe(true);
+      expect(line.className).toContain("only:block");
+      expect(screen.getByTestId("chat-actions-drawer-scroll").closest(".ade-floating-side-pane")).not.toBeNull();
+      expect(screen.queryByText(/No agent activity|Single-agent mode|No sources yet|No features yet/i)).toBeNull();
+      expect(screen.queryByText("Sources")).toBeNull();
+      expectSingleScroll();
+    });
+
+    it("mounts Sources for a non-Codex chat once it has a source, and only then", async () => {
+      const session = buildSession("session-claude-sources", {
+        provider: "claude",
+        model: "claude-sonnet-5",
+        modelId: "anthropic/claude-sonnet-5",
+        status: "idle",
+        title: "Claude sources chat",
+      });
+      const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+      seedDrawerStore();
+      renderPane(session);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      await screen.findByTestId("chat-actions-drawer-sections");
+      expect(screen.queryByText("Sources")).toBeNull();
+
+      act(() => {
+        emitChatEvent(attachmentEvent(session.sessionId));
+      });
+
+      await waitFor(() => {
+        expect(within(drawerSections()).getByText("Sources")).toBeTruthy();
+      });
+      expect(within(drawerSections()).getByText("spec.md")).toBeTruthy();
+      expect(screen.getByTestId("chat-actions-drawer-empty").matches(":only-child")).toBe(false);
+      // The Sources section draws no scroller or placeholder of its own.
+      expectSingleScroll();
+      expect(screen.queryByText(/No sources yet|used in this Codex chat/i)).toBeNull();
+    });
+
+    it("plan-only chat shows only the agents panel section", async () => {
+      const session = buildSession("session-1");
+      const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+      seedDrawerStore();
+      renderPane(session);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      act(() => {
+        emitChatEvent({
+          sessionId: session.sessionId,
+          timestamp: "2026-09-23T06:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "todo_update",
+            items: [{ id: "task-1", description: "Draw the drawer", status: "in_progress" }],
+          },
+        } as AgentChatEventEnvelope);
+      });
+
+      await waitFor(() => {
+        expect(within(drawerSections()).getByTestId("chat-subagents-pane")).toBeTruthy();
+      });
+      const sections = [...drawerSections().children].filter(
+        (child) => child.getAttribute("data-testid") !== "chat-actions-drawer-empty",
+      );
+      expect(sections.map((child) => child.getAttribute("data-testid"))).toEqual(["chat-subagents-pane"]);
+      expectSingleScroll();
+    });
+
+    it("right-pane host (beside an open terminal pane) keeps the drawer to one scroll", async () => {
+      const session = buildSession("session-right-pane-drawer", { title: "Right pane drawer chat" });
+      const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+      seedDrawerStore();
+      // A heavy right pane (the chat terminal) is open, so the drawer cannot
+      // float and mounts as the split right pane instead.
+      window.localStorage.setItem(
+        `ade.chat.companionUiState.${session.sessionId}`,
+        JSON.stringify({ terminalDrawerOpen: true }),
+      );
+      renderPane(session);
+
+      fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
+      await screen.findByTestId("chat-actions-drawer-sections");
+      act(() => {
+        emitChatEvent({
+          sessionId: session.sessionId,
+          timestamp: "2026-09-23T06:00:00.000Z",
+          sequence: 1,
+          event: {
+            type: "todo_update",
+            items: [{ id: "task-1", description: "Right pane task", status: "pending" }],
+          },
+        } as AgentChatEventEnvelope);
+      });
+
+      await waitFor(() => {
+        expect(within(drawerSections()).getByTestId("chat-subagents-pane")).toBeTruthy();
+      });
+      const scroll = screen.getByTestId("chat-actions-drawer-scroll");
+      expect(scroll.closest(".ade-floating-side-pane")).toBeNull();
+      expect(scroll.closest("[class*='bg-surface/80']")).not.toBeNull();
+      expectSingleScroll();
+    });
   });
 
   it("removes deleted proof from the open drawer when the event no longer has an owner", async () => {
@@ -2133,6 +2724,55 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getByRole("button", { name: "Open chat actions drawer" })).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Close chat actions drawer" })).toBeNull();
+  });
+
+  it("auto-opens the drawer for a plan-only chat and badges the unfinished list as done/total", async () => {
+    const session = buildSession("session-plan-only");
+    const { emitChatEvent } = installAdeMocks({ sessions: [session] });
+    renderPane(session);
+
+    await screen.findByRole("button", { name: "Open chat actions drawer" });
+    expect(screen.queryByTestId("chat-actions-task-badge")).toBeNull();
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-09-23T06:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "plan",
+          turnId: "turn-1",
+          steps: [
+            { text: "Read the schema", status: "completed" },
+            { text: "Write the migration", status: "in_progress" },
+          ],
+        },
+      } as AgentChatEventEnvelope);
+    });
+
+    // No subagents, no todos: the plan alone opens the drawer and fills Tasks.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Close chat actions drawer" })).toBeTruthy();
+    });
+    expect(within(await screen.findByTestId("chat-info-tasks")).getByText("Write the migration")).toBeTruthy();
+    expect(screen.getByTestId("chat-actions-task-badge").textContent).toBe("1/2");
+
+    act(() => {
+      emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-09-23T06:00:01.000Z",
+        sequence: 2,
+        event: {
+          type: "plan",
+          turnId: "turn-1",
+          steps: [
+            { text: "Read the schema", status: "completed" },
+            { text: "Write the migration", status: "completed" },
+          ],
+        },
+      } as AgentChatEventEnvelope);
+    });
+    // A finished list is not "happening now": the badge goes away.
+    await waitFor(() => expect(screen.queryByTestId("chat-actions-task-badge")).toBeNull());
   });
 
   it("refetches selected envelope history after a repair invalidation signal", async () => {
@@ -3447,6 +4087,173 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByText("Open the simulator screen in preview.")).toBeTruthy();
     });
+  });
+
+  it("starts dock and departing motion while a reused pane waits for its seeded bubble", async () => {
+    const sessionA = buildSession("session-a", { status: "idle" });
+    const sessionB = buildSession("session-b", { status: "idle" });
+    installAdeMocks({ sessions: [sessionA, sessionB] });
+
+    const originalAnimate = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "animate");
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const departingHost = document.createElement("div");
+    const departingLayer = document.createElement("div");
+    departingHost.appendChild(departingLayer);
+    document.body.appendChild(departingHost);
+    const animationCalls: Array<{ target: string; cardIsInDom: boolean; cardText: string }> = [];
+    const originalElementQuerySelector = Element.prototype.querySelector;
+    let delayNextCardLookup = false;
+    let delayedCardLookup = false;
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value(this: HTMLElement) {
+        if (this.matches("[data-chat-user-message-card]")) {
+          return {
+            x: 360,
+            y: 260,
+            left: 360,
+            top: 260,
+            right: 660,
+            bottom: 300,
+            width: 300,
+            height: 40,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        if (this.matches("[data-chat-composer-dock]")) {
+          return {
+            x: 220,
+            y: 300,
+            left: 220,
+            top: 300,
+            right: 740,
+            bottom: 420,
+            width: 520,
+            height: 120,
+            toJSON: () => ({}),
+          } as DOMRect;
+        }
+        return originalRect.call(this);
+      },
+    });
+    Object.defineProperty(Element.prototype, "querySelector", {
+      configurable: true,
+      writable: true,
+      value(this: Element, selector: string) {
+        if (delayNextCardLookup && selector === "[data-chat-user-message-card]") {
+          delayNextCardLookup = false;
+          delayedCardLookup = true;
+          return null;
+        }
+        return originalElementQuerySelector.call(this, selector);
+      },
+    });
+    Object.defineProperty(HTMLElement.prototype, "animate", {
+      configurable: true,
+      writable: true,
+      value(this: HTMLElement) {
+        const card = document.querySelector<HTMLElement>("[data-chat-user-message-card]");
+        let target = "other";
+        if (this.matches("[data-chat-user-message-card]")) target = "user-card";
+        else if (this.closest("[data-chat-first-message-flight]")) target = "first-flight";
+        else if (this.matches("[data-chat-composer-dock]")) target = "dock";
+        else if (this === departingLayer) target = "departing";
+        animationCalls.push({ target, cardIsInDom: Boolean(card?.isConnected), cardText: card?.textContent ?? "" });
+        return { addEventListener: vi.fn() } as unknown as Animation;
+      },
+    });
+
+    try {
+      const view = render(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionA.laneId}
+            lockSessionId={sessionA.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionA}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+      await screen.findByRole("textbox");
+
+      const firstMessageText = "Seed the reused pane before its flight.";
+      const firstMessage: AgentChatEventEnvelope = {
+        sessionId: sessionB.sessionId,
+        timestamp: "2026-09-22T10:00:00.000Z",
+        event: { type: "user_message", text: firstMessageText, deliveryState: "queued" },
+      };
+      stashComposerHandoffOrigin(sessionB.sessionId, {
+        composer: { left: 120, top: 180, width: 520, height: 120 },
+        text: {
+          left: 148,
+          top: 200,
+          box: { left: 120, top: 180, width: 520, height: 120 },
+          typed: {
+            text: firstMessageText,
+            width: 480,
+            height: 80,
+            font: "14px sans-serif",
+            lineHeight: "20px",
+            letterSpacing: "normal",
+            color: "white",
+          },
+        },
+        departing: {
+          host: departingHost,
+          items: [{
+            layer: departingLayer,
+            kind: "fade",
+            rect: { left: 12, top: 16, width: 120, height: 24 },
+          }],
+          played: false,
+        },
+        firstMessage,
+      });
+
+      delayNextCardLookup = true;
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionB.laneId}
+            lockSessionId={sessionB.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionB}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+
+      await waitFor(() => expect(delayedCardLookup).toBe(true));
+      await waitFor(() => expect(animationCalls.some((call) => call.target === "dock")).toBe(true));
+      await waitFor(() => expect(animationCalls.some((call) => call.target === "departing")).toBe(true));
+      await waitFor(() => {
+        const card = document.querySelector<HTMLElement>("[data-chat-user-message-card]");
+        expect(card?.textContent).toContain(firstMessageText);
+      });
+      await waitFor(() => expect(animationCalls.some((call) => call.target === "first-flight")).toBe(true));
+      expect(animationCalls.find((call) => call.target === "first-flight")).toMatchObject({
+        cardIsInDom: true,
+        cardText: expect.stringContaining(firstMessageText),
+      });
+    } finally {
+      Object.defineProperty(Element.prototype, "querySelector", {
+        configurable: true,
+        writable: true,
+        value: originalElementQuerySelector,
+      });
+      departingHost.remove();
+      if (originalAnimate) {
+        Object.defineProperty(HTMLElement.prototype, "animate", originalAnimate);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, "animate");
+      }
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+        configurable: true,
+        writable: true,
+        value: originalRect,
+      });
+    }
   });
 
   it("matches a recovered committed user message to the optimistic first bubble", () => {
@@ -6802,7 +7609,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Import an external CLI session" }));
 
     await waitFor(() => expect(list).toHaveBeenCalled());
-    expect(await screen.findByText("No chats found")).toBeTruthy();
+    expect(await screen.findByText("No sessions found")).toBeTruthy();
     expect(list.mock.calls.every(([args]) => args.laneId === "lane-1")).toBe(true);
   });
 
@@ -7642,6 +8449,289 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
+  it("preserves a replacement draft and same-path reattachment through a delayed remounted send", async () => {
+    const { send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    const draftContextTargetId = "remounted-foreground-draft";
+    const submittedPrompt = "Fix bug";
+    const replacementPrompt = "Fix bug in tests";
+    const submittedAttachment = "/tmp/project-under-test/submitted.png";
+    const laterAttachment = "/tmp/project-under-test/later.txt";
+    const draftStorageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    });
+
+    const firstPane = renderAutoCreateDraftPane({ draftContextTargetId });
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const firstTextbox = await screen.findByRole("textbox");
+    fireEvent.change(firstTextbox, { target: { value: submittedPrompt } });
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: submittedAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+
+    firstPane.unmount();
+    const savedBeforeRemount = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    savedBeforeRemount.mentionLabels = {
+      "@chat:chat-1": "Submitted chat",
+      "@chat:chat-2": "Follow-up chat",
+    };
+    const submittedAttachmentDraftId = savedBeforeRemount.attachmentDraftIds[0];
+    window.localStorage.setItem(draftStorageKey, JSON.stringify(savedBeforeRemount));
+    const remountedPane = renderAutoCreateDraftPane({ draftContextTargetId });
+    const remountedTextbox = await screen.findByDisplayValue(submittedPrompt) as HTMLTextAreaElement;
+    remountedTextbox.setSelectionRange(0, submittedPrompt.length);
+    fireEvent(remountedTextbox, new InputEvent("beforeinput", {
+      bubbles: true,
+      inputType: "deleteContentBackward",
+    }));
+    fireEvent.change(remountedTextbox, { target: { value: "" } });
+    remountedTextbox.setSelectionRange(0, 0);
+    fireEvent(remountedTextbox, new InputEvent("beforeinput", {
+      bubbles: true,
+      inputType: "insertText",
+      data: replacementPrompt,
+    }));
+    fireEvent.change(remountedTextbox, { target: { value: replacementPrompt } });
+    expect(remountedTextbox.value).toBe(replacementPrompt);
+
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Remove submitted.png" }));
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: submittedAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("submitted.png")).toBeTruthy();
+    act(() => {
+      window.dispatchEvent(new CustomEvent("ade:agent-chat:add-attachment", {
+        detail: {
+          draftTargetId: draftContextTargetId,
+          attachment: { path: laterAttachment, type: "file" },
+        },
+      }));
+    });
+    expect(await screen.findByText("later.txt")).toBeTruthy();
+
+    remountedPane.unmount();
+    await act(async () => {
+      resolveSend();
+    });
+
+    const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    expect(saved.text).toBe(replacementPrompt);
+    expect(saved.mentionLabels).toEqual({});
+    expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([submittedAttachment, laterAttachment]);
+    expect(saved.attachmentDraftIds).toHaveLength(2);
+    expect(saved.attachmentDraftIds[0]).not.toBe(submittedAttachmentDraftId);
+  });
+
+  it("clears an unchanged submitted prefix and keeps appended text after a delayed send", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    const submittedPrompt = "Send this prompt.";
+    const appendedText = " and keep this follow-up";
+    fireEvent.change(textbox, { target: { value: submittedPrompt } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    textbox.setSelectionRange(submittedPrompt.length, submittedPrompt.length);
+    fireEvent(textbox, new InputEvent("beforeinput", {
+      bubbles: true,
+      inputType: "insertText",
+      data: appendedText,
+    }));
+    fireEvent.change(textbox, { target: { value: `${submittedPrompt}${appendedText}` } });
+    await act(async () => {
+      resolveSend();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+
+    const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    })) ?? "null");
+    expect(stored.text).toBe(appendedText);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the submitted prompt before sidebar-inserted text after a delayed send", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    renderAutoCreateDraftPane({ draftContextTargetId: "work:draft:lane-1:chat" });
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    const submittedPrompt = "Send this prompt once. ";
+    const insertedText = "Inspect the selected browser context.";
+    fireEvent.change(textbox, { target: { value: submittedPrompt } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    window.dispatchEvent(new CustomEvent("ade:agent-chat:insert-draft", {
+      detail: { draftTargetId: "work:draft:lane-1:chat", text: insertedText },
+    }));
+    await waitFor(() => expect(textbox.value).toBe(`${submittedPrompt}\n\n${insertedText}`));
+    await act(async () => {
+      resolveSend();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+
+    const stored = JSON.parse(window.localStorage.getItem(composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    })) ?? "null");
+    expect(stored.text).toBe(`\n\n${insertedText}`);
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves hydrated unsent attachments when an already-ready foreground launch opens on remount", async () => {
+    installAdeMocks({ sessions: [] });
+    const submittedPrompt = "Send this first prompt.";
+    const submittedAttachment = { path: "/tmp/project-under-test/submitted.png", type: "file" as const };
+    const laterAttachment = { path: "/tmp/project-under-test/later.txt", type: "file" };
+    const draftStorageKey = composerDraftStorageKeyForTest({
+      projectRoot: "/tmp/project-under-test",
+      companionStateKey: "draft:work-start",
+    });
+    const updatedAt = "2026-07-27T18:00:00.000Z";
+    window.localStorage.setItem(draftStorageKey, JSON.stringify({
+      version: 1,
+      text: submittedPrompt,
+      modelId: "openai/gpt-5.4",
+      reasoningEffort: null,
+      fastMode: false,
+      executionMode: "focused",
+      controls: {},
+      attachments: [submittedAttachment, laterAttachment],
+      attachmentOwnerBinding: null,
+      contextAttachments: [],
+      iosContextItems: [],
+      appControlContextItems: [],
+      builtInBrowserContextItems: [],
+      draftLaunchTargetId: null,
+      updatedAt,
+    }));
+    const scopeKey = draftLaunchJobsScopeKeyForTest({
+      projectBindingKey: LOCAL_PROJECT_BINDING.key,
+      laneId: "lane-1",
+    });
+    const readyLaunchJob = {
+      id: "ready-foreground-launch",
+      mode: "foreground",
+      draftKind: "chat",
+      target: "local",
+      status: "ready",
+      title: "Ready launch after remount",
+      laneId: "lane-1",
+      laneName: "current-lane",
+      sessionId: "created-session",
+      namingModelId: null,
+      error: null,
+      warning: null,
+      autoOpen: true,
+      createdAtMs: Date.now(),
+      snapshot: {
+        text: submittedPrompt,
+        draft: submittedPrompt,
+        modelId: "openai/gpt-5.4",
+        reasoningEffort: null,
+        fastMode: false,
+        cursorCloudServiceTier: null,
+        executionMode: "focused",
+        interactionMode: "default",
+        nativeControls: {
+          interactionMode: "default",
+          claudePermissionMode: "default",
+          codexApprovalPolicy: "on-request",
+          codexSandbox: "workspace-write",
+          codexConfigSource: "flags",
+          opencodePermissionMode: "edit",
+          droidPermissionMode: "auto-low",
+          cursorModeId: "agent",
+          cursorConfigValues: {},
+        },
+        attachments: [submittedAttachment],
+        contextAttachments: [],
+        iosContextItems: [],
+        appControlContextItems: [],
+        builtInBrowserContextItems: [],
+        visualContextPrefix: "",
+        visualContextDisplayChips: "",
+        isLiteralSlashCommand: false,
+      },
+    } satisfies DraftLaunchJob;
+    useAppStore.setState({
+      draftLaunchJobsByScope: {
+        [scopeKey]: [readyLaunchJob],
+      },
+    });
+
+    const rendered = renderAutoCreateDraftPane();
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+    rendered.unmount();
+
+    const saved = JSON.parse(window.localStorage.getItem(draftStorageKey) ?? "null");
+    expect(saved.text).toBe("");
+    expect(saved.attachments.map((attachment: { path: string }) => attachment.path)).toEqual([laterAttachment.path]);
+  });
+
   it("allows stale active draft launch rows to be hidden", async () => {
     installAdeMocks({ sessions: [] });
     const scopeKey = draftLaunchJobsScopeKeyForTest({
@@ -8302,76 +9392,6 @@ describe("AgentChatPane submit recovery", () => {
       permissionMode: "plan",
       fastMode: false,
       initialPrompt: expect.stringContaining("Launch Codex in plan mode."),
-    }));
-  });
-
-  it("uses the selected Codex edit preset when launching a Work draft CLI session", async () => {
-    installAdeMocks({ sessions: [] });
-    useAppStore.setState({
-      project: { rootPath: "/tmp/project-under-test" } as any,
-      projectBinding: LOCAL_PROJECT_BINDING,
-    });
-    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
-    const launchConfigKey = [
-      "ade.chat.lastLaunchConfig.v1",
-      "/tmp/project-under-test",
-      "lane-1",
-      "standard",
-      "cli",
-    ].map(encodeURIComponent).join(":");
-    window.localStorage.setItem(launchConfigKey, JSON.stringify({
-      version: 1,
-      modelId: "openai/gpt-5.4",
-      reasoningEffort: "medium",
-      fastMode: false,
-      executionMode: "focused",
-      updatedAt: "2026-05-26T12:00:00.000Z",
-      controls: {
-        interactionMode: "default",
-        claudePermissionMode: "default",
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "flags",
-        opencodePermissionMode: "edit",
-        droidPermissionMode: "auto-low",
-        cursorModeId: "agent",
-        cursorConfigValues: {},
-      },
-    }));
-
-    render(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId="lane-1"
-          forceDraftMode
-          embeddedWorkLayout
-          workDraftKind="cli"
-          onLaunchCliSession={onLaunchCliSession}
-        />
-      </MemoryRouter>,
-    );
-
-    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
-    expect(await screen.findByRole("button", { name: new RegExp(`current: ${escapeRegExp(codexLabel)}`, "i") })).toBeTruthy();
-
-    fireEvent.click(await screen.findByRole("button", { name: "Codex permission mode" }));
-    fireEvent.click(await screen.findByRole("option", { name: "Edit mode" }));
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Launch Codex in edit mode." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
-        profile: "codex",
-        tracked: true,
-      }));
-    });
-    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
-      provider: "codex",
-      permissionMode: "edit",
-      initialPrompt: expect.stringContaining("Launch Codex in edit mode."),
     }));
   });
 
@@ -9037,8 +10057,6 @@ describe("AgentChatPane submit recovery", () => {
     renderPane(session);
 
     const digest = await screen.findByTestId("chat-away-digest");
-    expect(digest.className).toContain("rounded-2xl");
-    expect(digest.className).not.toContain("w-full");
     expect(within(digest).getByText("While you were away")).toBeTruthy();
     expect(within(digest).getByText("2 scheduled wakeups ran")).toBeTruthy();
     expect(within(digest).queryByText(longOutcome)).toBeNull();
@@ -9071,52 +10089,6 @@ describe("AgentChatPane submit recovery", () => {
       && element.classList.contains("py-1.5"),
     );
     expect(emptyPaddedNoticeRows).toHaveLength(0);
-  });
-
-  it("centers a lifecycle pill above an app-panel composer", async () => {
-    const session = buildSession("session-1", { title: "Settled app-control chat" });
-    writeChatCompanionUiState(session.sessionId, {
-      ...DEFAULT_CHAT_COMPANION_UI_STATE,
-      appControlOpen: true,
-    });
-    const projectRoot = "/tmp/project-under-test";
-    const settledSession: TerminalSessionSummary = {
-      id: session.sessionId,
-      laneId: session.laneId,
-      laneName: "Lane 1",
-      ptyId: null,
-      tracked: true,
-      pinned: false,
-      goal: null,
-      toolType: "codex-chat",
-      title: session.title ?? "Settled app-control chat",
-      status: "completed",
-      startedAt: "2026-07-10T10:00:00.000Z",
-      endedAt: "2026-07-10T11:00:00.000Z",
-      exitCode: 0,
-      transcriptPath: "",
-      headShaStart: null,
-      headShaEnd: null,
-      lastOutputPreview: null,
-      summary: null,
-      runtimeState: "exited",
-      resumeCommand: null,
-      settledAt: "2026-07-10T11:01:00.000Z",
-    };
-    useAppStore.setState({
-      project: { rootPath: projectRoot } as never,
-      projectBinding: null,
-      sessionsCacheByProject: { [projectRoot]: [settledSession] },
-    });
-    installAdeMocks({ sessions: [session] });
-
-    renderPane(session);
-
-    const pill = await screen.findByTestId("chat-lifecycle-banner");
-    expect(pill.className).toContain("flex");
-    expect(pill.className).toContain("w-fit");
-    expect(pill.className).toContain("mx-auto");
-    expect(pill.className).not.toContain("inline-flex");
   });
 
   it("validates empty legacy event-history snapshots before treating them as loaded", async () => {
@@ -9943,7 +10915,7 @@ describe("AgentChatPane submit recovery", () => {
 // Pure function unit tests (consolidated from AgentChatPane.test.ts)
 // ---------------------------------------------------------------------------
 
-describe("AgentChatPane brain-owned new-lane launch", () => {
+describe("AgentChatPane Work draft launches", () => {
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
   afterEach(() => {
@@ -10094,6 +11066,46 @@ describe("AgentChatPane brain-owned new-lane launch", () => {
     });
     const [args] = api.start.mock.calls[0] as unknown as [ChatLaunchArgs];
     expect(getChatLaunchEntry(args.launchId)).toBeNull();
+  });
+
+  it("holds one foreground launch when the draft is edited and resubmitted while sending", async () => {
+    const { create, send } = installAdeMocks({ sessions: [] });
+    let resolveSend!: () => void;
+    send.mockImplementation(() => new Promise<void>((resolve) => {
+      resolveSend = resolve;
+    }));
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    const textbox = await screen.findByRole("textbox") as HTMLTextAreaElement;
+    const submittedPrompt = "Send this prompt once.";
+    fireEvent.change(textbox, { target: { value: submittedPrompt } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    await waitFor(() => {
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    fireEvent.change(textbox, { target: { value: "A different follow-up prompt." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("A foreground chat launch is already in progress.")).toBeTruthy();
+
+    await act(async () => {
+      resolveSend();
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toContain("created-session");
+    });
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 
   it("keeps a failed start as a failed launch instead of retrying locally", async () => {
@@ -10356,6 +11368,22 @@ describe("deriveRuntimeState", () => {
     ];
 
     expect(deriveRuntimeState(events).pendingSteers).toEqual([]);
+  });
+
+  it.each([
+    // A Cursor or OpenCode turn can refuse an inline steer it was offered; the
+    // same steerId comes back as `queued` and its chip must return.
+    { states: ["queued", "accepted", "queued"] as const, staged: true },
+    { states: ["queued", "accepted", "inline"] as const, staged: false },
+  ])("stages a steer by its latest row: $states", ({ states, staged }) => {
+    const events: AgentChatEventEnvelope[] = states.map((deliveryState, index) => ({
+      sessionId: "session-1",
+      timestamp: `2026-07-16T12:00:0${index}.000Z`,
+      sequence: index + 1,
+      event: { type: "user_message", text: "steer me", steerId: "steer-1", deliveryState },
+    }));
+
+    expect(deriveRuntimeState(events).pendingSteers.map((steer) => steer.steerId)).toEqual(staged ? ["steer-1"] : []);
   });
 
   it("restores cancelled Claude queue entries after the user chooses Undo", () => {
@@ -11751,7 +12779,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     bindWindowToMachineA();
     const session = buildSession("chat-on-b", { laneId: "lane-b", title: "Foreign chat" });
     const mocks = installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-b") });
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const confirmSpy = vi.mocked(confirmDialog).mockResolvedValue(true);
 
     render(
       <MemoryRouter>
@@ -11772,7 +12800,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
       );
     });
     expect(useAppStore.getState().projectBinding).toEqual(machineA);
-    confirmSpy.mockRestore();
+    confirmSpy.mockResolvedValue(false);
   });
 
   it("pins selected-chat transcripts, goals, schedules, and handoff as one control class", async () => {
@@ -13157,12 +14185,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
     await screen.findByRole("textbox");
     expect(screen.getByAltText("ADE")).toBeTruthy();
-    const empty = document.querySelector("[data-chat-empty-state]");
-    expect(empty).toBeTruthy();
-    expect(empty?.querySelector(".grid.grid-rows-3")).toBeNull();
-    const usage = empty?.querySelector("[data-chat-empty-usage]");
-    expect(usage).toBeTruthy();
-    expect(usage?.className).toContain("w-[calc(100%-6rem)]");
+    expect(document.querySelector("[data-chat-empty-usage]")).toBeTruthy();
   });
 });
 

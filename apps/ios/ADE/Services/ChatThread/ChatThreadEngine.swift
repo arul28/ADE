@@ -263,6 +263,7 @@ actor ChatThreadEngine {
       work = max(work, .presentationOnly)
     }
     if next.summary != previous.summary
+      || next.expandedTurnIds != previous.expandedTurnIds
       || next.sessionStatus != previous.sessionStatus
       || next.turnActiveHint != previous.turnActiveHint {
       work = max(work, .presentationOnly)
@@ -935,7 +936,8 @@ actor ChatThreadEngine {
       modelId: summary.modelId,
       transcript: transcript,
       assistantPreviewCache: assistantPreviewCache,
-      streamingAssistantMessageId: streamingAssistantMessageId
+      streamingAssistantMessageId: streamingAssistantMessageId,
+      expandedTurnIds: overlays.expandedTurnIds
     )
     // Older history landed above the window: grow the window by what was
     // prepended so the rows on screen stay the rows on screen.
@@ -959,7 +961,8 @@ actor ChatThreadEngine {
         modelId: summary.modelId,
         transcript: transcript,
         assistantPreviewCache: assistantPreviewCache,
-        streamingAssistantMessageId: streamingAssistantMessageId
+        streamingAssistantMessageId: streamingAssistantMessageId,
+        expandedTurnIds: overlays.expandedTurnIds
       )
     }
     presentation = next

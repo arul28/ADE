@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
@@ -121,6 +121,14 @@ import {
   claudeInvocationInCommandLine,
   isClaudeBinaryCommand,
   isLaunchProfile,
+  isPreassignedSessionIdProvider,
+  isProviderBinaryCommand,
+  preassignedSessionIdArgs,
+  preassignedSessionIdInArgs,
+  providerArgsResumeExistingSession,
+  providerInvocationInCommandLine,
+  withPreassignedSessionIdInCommandLine,
+  type PreassignedSessionIdProvider,
   sanitizeTrackedCliPromptSeed,
   shellCommandLineArgIndex,
   trackedCliResumeCredentialId,
@@ -205,8 +213,10 @@ export function materializeRuntimeCliLaunch(
   if (!isLaunchProfile(provider) || provider === "shell") {
     throw new Error(`Unsupported runtime CLI launch provider '${provider}'.`);
   }
+  // Every CLI that accepts a caller-chosen id for a new session gets one, so
+  // the resume target is known before the process starts.
   const sessionId = runtimeCliLaunch.sessionId?.trim()
-    || (provider === "claude" ? randomUUID() : undefined);
+    || (provider === "claude" || isPreassignedSessionIdProvider(provider) ? randomUUID() : undefined);
   const instance = resolveProviderInstanceForLaunch(provider, runtimeCliLaunch.instanceId);
   // The CLI gate is locked here as well as at the chat seam: this is the path a
   // remote runtime materializes, and a gated harness must launch natively there
@@ -1312,7 +1322,7 @@ function clampDims(cols: number, rows: number): { cols: number; rows: number } {
 function statusFromExit(exitCode: number | null): TerminalSessionStatus {
   if (exitCode == null) return "completed";
   if (exitCode === 0) return "completed";
-  if (exitCode === 130 || exitCode === 143) return "disposed";
+  if (exitCode === 130 || exitCode === 143 || exitCode === 0xC000013A || exitCode === -1073741510) return "disposed";
   return "failed";
 }
 
@@ -1504,6 +1514,68 @@ function assignClaudeLaunchSessionId(args: {
   } else if (commandArgs === args.commandArgs) {
     // Nothing carries the flag: no command, no startup line.
     return { startupCommand: args.startupCommand, commandArgs: args.commandArgs, assignedId: null };
+  }
+  return { startupCommand, commandArgs, assignedId };
+}
+
+/**
+ * Qwen/Grok/Copilot twin of {@link assignClaudeLaunchSessionId}: give a fresh
+ * tracked launch a pre-assigned session id (`--session-id` / Grok `-s`) so the
+ * resume target exists from the first byte, not only once a transcript file
+ * shows up. Same placement rules — direct argv for a direct spawn, the -lc
+ * command line for a shell-wrapped one, and the startup line kept in agreement
+ * — and the same refusal for continuation launches, where the flag would name
+ * a NEW session instead of the one being resumed.
+ */
+function assignProviderLaunchSessionId(args: {
+  provider: PreassignedSessionIdProvider;
+  command: string | null;
+  startupCommand: string;
+  commandArgs: string[];
+}): { startupCommand: string; commandArgs: string[]; assignedId: string | null } {
+  const { provider } = args;
+  const unchanged = (assignedId: string | null) => ({
+    startupCommand: args.startupCommand,
+    commandArgs: args.commandArgs,
+    assignedId,
+  });
+  const directSpawn = isProviderBinaryCommand(args.command, provider);
+  const shellIndex = directSpawn || !args.command?.trim() ? -1 : shellCommandLineArgIndex(args.commandArgs);
+  const shellCommandLine = shellIndex >= 0 ? args.commandArgs[shellIndex] ?? null : null;
+  const invocationArgs = [
+    ...(directSpawn ? [args.commandArgs] : []),
+    ...(shellCommandLine != null ? [providerInvocationInCommandLine(shellCommandLine, provider)?.providerArgs ?? []] : []),
+    providerInvocationInCommandLine(args.startupCommand, provider)?.providerArgs ?? [],
+  ];
+  for (const candidate of invocationArgs) {
+    const existing = preassignedSessionIdInArgs(provider, candidate);
+    if (existing) return unchanged(existing);
+  }
+  if (invocationArgs.some((candidate) => providerArgsResumeExistingSession(provider, candidate))) {
+    return unchanged(null);
+  }
+
+  const assignedId = randomUUID();
+  let commandArgs = args.commandArgs;
+  if (shellCommandLine != null) {
+    const rewritten = withPreassignedSessionIdInCommandLine(shellCommandLine, provider, assignedId);
+    if (rewritten === shellCommandLine) return unchanged(null);
+    commandArgs = args.commandArgs.slice();
+    commandArgs[shellIndex] = rewritten;
+  } else if (directSpawn) {
+    commandArgs = [...preassignedSessionIdArgs(provider, assignedId), ...args.commandArgs];
+  } else if (args.command?.trim()) {
+    // Some other wrapper (e.g. a PowerShell script line). Never smuggle the
+    // flag into another program's argv; the handle capture covers this launch.
+    return unchanged(null);
+  }
+
+  let startupCommand = args.startupCommand;
+  if (args.startupCommand.trim()) {
+    startupCommand = withPreassignedSessionIdInCommandLine(args.startupCommand, provider, assignedId);
+    if (startupCommand === args.startupCommand) return unchanged(null);
+  } else if (commandArgs === args.commandArgs) {
+    return unchanged(null);
   }
   return { startupCommand, commandArgs, assignedId };
 }
@@ -2073,6 +2145,176 @@ function resumeTargetIdForProvider(
     : null;
 }
 
+const KIMI_WORKDIR_SLUG_MAX = 40;
+const KIMI_BUCKET_ID_RE = /^wd_[a-z0-9._-]*_[0-9a-f]{12}$/;
+
+function isWindowsAbsoluteKimiPath(value: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(value) || /^[\\/]{2}[^\\/]+[\\/][^\\/]+/.test(value);
+}
+
+/**
+ * Kimi Code's session bucket name for a working directory, reproduced from
+ * `encodeWorkDirKey` in kimi 0.39.1 (`packages/agent-core/src/session/store/
+ * workdir-key.ts`): `wd_<slug>_<sha256(normalized)[:12]>`, where `normalized`
+ * is `path.resolve(workDir)` (Windows: `win32.resolve` with `/` separators)
+ * and `slug` is the lowercased basename with runs of `[^a-z0-9._-]` turned
+ * into `-`, trimmed of `-`, capped at 40 characters (`workspace` when empty).
+ * Checked against the real `~/.kimi-code/workspaces.json` entry
+ * `wd_admin_2151c536b962` for `/Users/admin`.
+ */
+export function kimiWorkDirKey(workDir: string): string {
+  const normalized = isWindowsAbsoluteKimiPath(workDir)
+    ? path.win32.resolve(workDir).replaceAll("\\", "/")
+    : path.posix.resolve(workDir);
+  const base = normalized.split("/").filter(Boolean).pop() ?? "";
+  let slug = base.toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  slug = slug.slice(0, KIMI_WORKDIR_SLUG_MAX).replace(/^-+|-+$/g, "");
+  if (slug === "" || slug === "." || slug === "..") slug = "workspace";
+  const hash = createHash("sha256").update(normalized).digest("hex").slice(0, 12);
+  return `wd_${slug}_${hash}`;
+}
+
+export type KimiSessionCandidate = {
+  id: string;
+  sessionDir: string;
+  /** When the session began: `state.json` createdAt, else the folder's birth time. */
+  createdAtMs: number;
+  /** `state.json` `workDir` (or legacy `custom.cwd`), when recorded. */
+  recordedCwd: string | null;
+};
+
+function kimiCwdSpellings(cwd: string): string[] {
+  const spellings = [path.resolve(cwd)];
+  try {
+    const real = fs.realpathSync.native(cwd);
+    if (!spellings.includes(real)) spellings.push(real);
+  } catch {
+    // A cwd that no longer exists still has its resolved spelling.
+  }
+  return spellings;
+}
+
+function kimiTimestampMs(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    // Seconds vs milliseconds: anything before 2001 in ms is a seconds value.
+    return value < 1e12 ? value * 1000 : value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+/**
+ * List the Kimi sessions stored for `cwd`, reading Kimi's real layout:
+ * `<kimiHome>/sessions/wd_<slug>_<hash12>/<sessionId>/` holding `state.json`,
+ * `agents/main/wire.jsonl` (legacy: `context.jsonl`). The bucket comes from
+ * {@link kimiWorkDirKey} for each spelling of the cwd, plus any
+ * `<kimiHome>/workspaces.json` entry whose `root` is the cwd — Kimi can alias
+ * a workspace to an id it minted earlier.
+ */
+export function listKimiSessionCandidates(args: { kimiHome: string; cwd: string }): KimiSessionCandidate[] {
+  const sessionsBase = path.join(args.kimiHome, "sessions");
+  const spellings = kimiCwdSpellings(args.cwd);
+  const bucketIds = new Set(spellings.map((spelling) => kimiWorkDirKey(spelling)));
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(args.kimiHome, "workspaces.json"), "utf8")) as {
+      workspaces?: Record<string, { root?: unknown }>;
+    };
+    for (const [id, workspace] of Object.entries(parsed.workspaces ?? {})) {
+      const root = typeof workspace?.root === "string" ? workspace.root : "";
+      // The id becomes a folder name: only Kimi's own `wd_<slug>_<hash>` shape,
+      // so a hand-edited entry cannot point the scan outside `sessions/`.
+      if (KIMI_BUCKET_ID_RE.test(id) && root && spellings.some((spelling) => pathsEqual(root, spelling))) bucketIds.add(id);
+    }
+  } catch {
+    // No or unreadable workspaces.json: the computed bucket still applies.
+  }
+
+  const candidates: KimiSessionCandidate[] = [];
+  for (const bucketId of bucketIds) {
+    const bucketDir = path.join(sessionsBase, bucketId);
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(bucketDir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const id = entry.name;
+      if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{2,127}$/.test(id) || !sanitizeResumeTargetId(id)) continue;
+      const sessionDir = path.join(bucketDir, id);
+      let state: Record<string, unknown> | null = null;
+      try {
+        const raw = JSON.parse(fs.readFileSync(path.join(sessionDir, "state.json"), "utf8")) as unknown;
+        state = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+      } catch {
+        state = null;
+      }
+      const hasHistory = [
+        path.join(sessionDir, "agents", "main", "wire.jsonl"),
+        path.join(sessionDir, "context.jsonl"),
+      ].some((file) => fs.existsSync(file));
+      // Neither a state file nor a history file: not a session (yet).
+      if (!state && !hasHistory) continue;
+      const custom = state?.custom && typeof state.custom === "object" ? state.custom as Record<string, unknown> : null;
+      const recordedCwdRaw = typeof state?.workDir === "string"
+        ? state.workDir
+        : typeof custom?.cwd === "string" ? custom.cwd : "";
+      let createdAtMs = kimiTimestampMs(state?.createdAt) ?? kimiTimestampMs(state?.created_at);
+      if (createdAtMs == null) {
+        try {
+          const stat = fs.statSync(sessionDir);
+          createdAtMs = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.mtimeMs;
+        } catch {
+          continue;
+        }
+      }
+      candidates.push({
+        id,
+        sessionDir,
+        createdAtMs,
+        recordedCwd: recordedCwdRaw.trim() ? recordedCwdRaw.trim() : null,
+      });
+    }
+  }
+  return candidates;
+}
+
+/**
+ * Pick the Kimi session a tracked launch created: born inside the launch
+ * window, recorded for this cwd (when it records one), and not already adopted
+ * by another terminal. A session that proved its cwd outranks one that did not.
+ */
+export function selectKimiLaunchSession(args: {
+  candidates: readonly KimiSessionCandidate[];
+  cwd: string;
+  startedAtMs: number | null;
+  excludedIds: ReadonlySet<string>;
+  maxStartDeltaMs: number;
+}): (KimiSessionCandidate & { cwdMatched: boolean }) | null {
+  const spellings = kimiCwdSpellings(args.cwd);
+  const eligible: Array<KimiSessionCandidate & { cwdMatched: boolean }> = [];
+  for (const candidate of args.candidates) {
+    if (args.excludedIds.has(candidate.id)) continue;
+    if (args.startedAtMs !== null) {
+      // A session born before this PTY started belongs to an earlier run.
+      if (candidate.createdAtMs < args.startedAtMs - 1_000) continue;
+      if (candidate.createdAtMs - args.startedAtMs > args.maxStartDeltaMs) continue;
+    }
+    if (candidate.recordedCwd && !spellings.some((spelling) => pathsEqual(candidate.recordedCwd!, spelling))) continue;
+    eligible.push({ ...candidate, cwdMatched: candidate.recordedCwd !== null });
+  }
+  eligible.sort((a, b) => {
+    if (a.cwdMatched !== b.cwdMatched) return a.cwdMatched ? -1 : 1;
+    if (args.startedAtMs === null) return b.createdAtMs - a.createdAtMs;
+    return Math.abs(a.createdAtMs - args.startedAtMs) - Math.abs(b.createdAtMs - args.startedAtMs);
+  });
+  return eligible[0] ?? null;
+}
+
 export type PiStorageSessionCandidate = {
   id: string;
   /** Native header cwd. A candidate without one can never be owned. */
@@ -2257,6 +2499,7 @@ export function createPtyService({
   const runtimeStates = new Map<string, RuntimeStateEntry>();
   const dataListeners = new Set<PtyDataListener>();
   const exitListeners = new Set<PtyExitListener>();
+  const transcriptDependentWorkBySession = new Map<string, Promise<void>>();
   const terminalChatSessions = new Map<string, string>();
   const activeTerminalByChatSession = new Map<string, string>();
   const activeAuxiliaryTerminalByChatSession = new Map<string, string>();
@@ -2990,22 +3233,39 @@ export function createPtyService({
     entry: Pick<PtyEntry, "sessionId" | "toolTypeHint" | "transcriptStream" | "transcriptRolloverPromise" | "laneWorktreePath" | "boundCwd" | "piLaunchEnv">,
     reason: "close" | "dispose" | "orphan-dispose",
   ): void => {
-    void Promise.resolve(entry.transcriptRolloverPromise)
+    const sessionId = entry.sessionId;
+    if (transcriptDependentWorkBySession.has(sessionId)) return;
+    const work = Promise.resolve(entry.transcriptRolloverPromise)
       .catch(() => {})
       .then(() => endTranscriptStream(entry.transcriptStream))
-      .finally(() => {
-        backfillResumeTargetFromTranscriptBestEffort(
-          entry.sessionId,
+      .then(async () => {
+        try {
+          await tryBackfillResumeTarget(
+          sessionId,
           entry.toolTypeHint,
           reason,
           entry.boundCwd,
           entry.piLaunchEnv,
-        );
+          );
+        } catch (err) {
+          logger.warn("pty.resume_target_backfill_failed", {
+            sessionId,
+            toolType: entry.toolTypeHint,
+            reason,
+            err: String(err),
+          });
+        }
         summarizeSessionBestEffort(entry.sessionId, {
           laneWorktreePath: entry.laneWorktreePath,
           boundCwd: entry.boundCwd,
         });
       });
+    transcriptDependentWorkBySession.set(sessionId, work);
+    void work.finally(() => {
+      if (transcriptDependentWorkBySession.get(sessionId) === work) {
+        transcriptDependentWorkBySession.delete(sessionId);
+      }
+    }).catch(() => {});
   };
 
   const disableTranscriptWrite = (entry: PtyEntry, err: unknown): void => {
@@ -3660,32 +3920,15 @@ export function createPtyService({
         const captured = await captureProviderSessionFromPidTree({ rootPid: pid }).catch(() => null);
         if (entry.disposed) return;
         if (captured) {
-          let resumeCmd: string;
-          switch (captured.provider) {
-            case "codex":
-              resumeCmd = `codex resume ${captured.sessionId}`;
-              break;
-            case "claude":
-              resumeCmd = `claude --resume ${captured.sessionId}`;
-              break;
-            case "droid":
-              resumeCmd = `droid --resume ${captured.sessionId}`;
-              break;
-            case "opencode":
-              resumeCmd = `opencode --session ${captured.sessionId}`;
-              break;
-            case "pi":
-              // Canonical POSIX form, matching the storage-backfill producer below.
-              resumeCmd = commandArrayToLine(["pi", "--session", captured.sessionId], { platform: "linux" });
-              break;
-            case "cursor":
-              resumeCmd = `cursor-agent --resume ${captured.sessionId}`;
-              break;
-            default: {
-              const exhaustive: never = captured.provider;
-              throw new Error(`Unhandled provider ${exhaustive}`);
-            }
-          }
+          // Canonical builder, target only: `setResumeCommand` parses the id
+          // back out and rebuilds the line from this session's own launch
+          // metadata, so the flags here only have to round-trip the target.
+          const resumeCmd = buildTrackedCliResumeCommand({
+            provider: captured.provider,
+            targetKind: captured.provider === "codex" ? "thread" : "session",
+            targetId: captured.sessionId,
+            launch: {},
+          });
           sessionService.setResumeCommand(entry.sessionId, resumeCmd);
           logger.info("pty.resume_target_captured_from_handles", {
             sessionId: entry.sessionId,
@@ -4174,47 +4417,20 @@ export function createPtyService({
   };
 
   /**
-   * Read a working directory out of a Kimi session file, when it names one.
-   *
-   * Kimi's on-disk layout is not a documented contract, so this looks for the
-   * keys a session record plausibly uses and returns null rather than guessing.
-   * A null means ownership falls back to the launch window and the exclusion
-   * set, exactly as it does for a Codex build that ignores the originator.
-   */
-  const readKimiSessionCwd = (filePath: string): string | null => {
-    const text = readFilePrefix(filePath, 64 * 1024);
-    if (!text) return null;
-    for (const line of text.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("{")) continue;
-      try {
-        const record = JSON.parse(trimmed) as Record<string, unknown>;
-        for (const key of ["cwd", "workingDirectory", "working_dir", "workdir", "root"]) {
-          const value = record[key];
-          if (typeof value === "string" && value.trim().length) return path.resolve(value.trim());
-        }
-      } catch {
-        // A partial or non-JSON line tells us nothing. Keep scanning.
-      }
-    }
-    return null;
-  };
-
-  /**
    * Adopt the session id Kimi minted for a tracked terminal launch.
    *
    * Kimi cannot be handed a session id at launch — unlike Claude's
    * `--session-id` or Grok's `-s` — so the only handle on the conversation is
-   * the file the CLI writes into its own sessions directory. Same shape as
-   * `scheduleCodexSessionIdCaptureBestEffort`, with the same ownership layers:
+   * the session folder the CLI creates under
+   * `~/.kimi-code/sessions/wd_<slug>_<hash12>/<sessionId>/`. Ownership layers:
    *
-   *  1. the session record's own cwd, when the file names one;
+   *  1. the bucket itself is keyed by this terminal's cwd, and `state.json`
+   *     `workDir` must agree when it is recorded;
    *  2. a narrow launch window around this PTY's start;
    *  3. exclusion of ids already adopted by any other terminal row.
    *
-   * Layer 1 is best effort because Kimi's file layout is not a published
-   * contract. A capture that cannot prove ownership is skipped, never guessed:
-   * resuming the wrong conversation is worse than offering no resume at all.
+   * A capture that cannot prove ownership is skipped, never guessed: resuming
+   * the wrong conversation is worse than offering no resume at all.
    */
   const scheduleKimiSessionIdCaptureBestEffort = (
     sessionId: string,
@@ -4223,8 +4439,7 @@ export function createPtyService({
   ): void => {
     const startedAtMs = Date.parse(startedAt);
     const startedAtFinite = Number.isFinite(startedAtMs) ? startedAtMs : null;
-    const sessionsBase = path.join(kimiCodeConfigHome({ homeDir: os.homedir() }), "sessions");
-    const resolvedCwd = path.resolve(cwd);
+    const kimiHome = kimiCodeConfigHome({ homeDir: os.homedir() });
     let captured = false;
     const timers = new Set<NodeJS.Timeout>();
 
@@ -4255,50 +4470,22 @@ export function createPtyService({
         return false;
       }
 
-      let entries: string[];
-      try {
-        entries = fs.readdirSync(sessionsBase);
-      } catch {
-        return false;
-      }
-
-      type KimiCandidate = { id: string; filePath: string; mtimeMs: number; cwdMatched: boolean };
-      const candidates: KimiCandidate[] = [];
-      for (const entry of entries) {
-        // Ids are ULID shaped. Anything else in the directory is not a session.
-        const id = entry.replace(/\.(jsonl?|ndjson)$/i, "");
-        if (!/^[0-9A-HJKMNP-TV-Z]{26}$/i.test(id)) continue;
-        if (excludedIds.has(id)) continue;
-        const entryPath = path.join(sessionsBase, entry);
-        let stat: fs.Stats;
-        try {
-          stat = fs.statSync(entryPath);
-        } catch {
-          continue;
-        }
-        if (startedAtFinite !== null) {
-          // A file written before this PTY started belongs to an earlier run.
-          if (stat.mtimeMs < startedAtFinite - 1_000) continue;
-          if (stat.mtimeMs - startedAtFinite > KIMI_LIVE_CAPTURE_MAX_START_DELTA_MS) continue;
-        }
-        const filePath = stat.isDirectory() ? path.join(entryPath, "session.jsonl") : entryPath;
-        const recordedCwd = readKimiSessionCwd(filePath);
-        if (recordedCwd && recordedCwd !== resolvedCwd) continue;
-        candidates.push({ id, filePath, mtimeMs: stat.mtimeMs, cwdMatched: recordedCwd !== null });
-      }
-      if (!candidates.length) return false;
-
-      // A candidate that proved its cwd always outranks one that could not.
-      candidates.sort((a, b) => {
-        if (a.cwdMatched !== b.cwdMatched) return a.cwdMatched ? -1 : 1;
-        if (startedAtFinite === null) return b.mtimeMs - a.mtimeMs;
-        return Math.abs(a.mtimeMs - startedAtFinite) - Math.abs(b.mtimeMs - startedAtFinite);
+      const best = selectKimiLaunchSession({
+        candidates: listKimiSessionCandidates({ kimiHome, cwd }),
+        cwd,
+        startedAtMs: startedAtFinite,
+        excludedIds,
+        maxStartDeltaMs: KIMI_LIVE_CAPTURE_MAX_START_DELTA_MS,
       });
-      const best = candidates[0];
       if (!best) return false;
 
       captured = true;
-      sessionService.setResumeCommand(sessionId, `kimi -S ${best.id}`);
+      sessionService.setResumeCommand(sessionId, buildTrackedCliResumeCommand({
+        provider: "kimi",
+        targetKind: "session",
+        targetId: best.id,
+        launch: {},
+      }));
       logger.info("pty.kimi_session_id_captured_live", {
         sessionId,
         kimiSessionId: best.id,
@@ -5306,7 +5493,7 @@ export function createPtyService({
     };
     let resolvedSession = session;
     let storedResumeTargetId = resumeTargetIdForProvider(resolvedSession, provider);
-    if (!storedResumeTargetId && provider !== "cursor" && isTrackedAgentCliToolType(resolvedSession.toolType)) {
+    if (!storedResumeTargetId && isTrackedAgentCliToolType(resolvedSession.toolType)) {
       const cwd = resolveSessionRunCwd(resolvedSession);
       let sessionEnv: NodeJS.ProcessEnv | undefined;
       if (provider === "pi") {
@@ -5346,7 +5533,10 @@ export function createPtyService({
       }
       return throwMissingResumeTarget();
     }
-    if (!storedResumeTargetId && provider !== "cursor") {
+    // Cursor included: without a captured chat id the only fallback is
+    // `cursor-agent --continue`, which reopens the most recent chat — not
+    // necessarily this terminal's.
+    if (!storedResumeTargetId) {
       throwMissingResumeTarget();
     }
 
@@ -5648,6 +5838,11 @@ export function createPtyService({
   };
 
   const service = {
+    async waitForResumeTargetBackfill(sessionId: string): Promise<void> {
+      const work = transcriptDependentWorkBySession.get(sessionId.trim());
+      if (work) await work;
+    },
+
     async ensureResumeTargets(sessionIds: string[]): Promise<void> {
       const uniqueSessionIds = Array.from(new Set(
         sessionIds
@@ -5813,18 +6008,24 @@ export function createPtyService({
       }
       const requestedStartupCommandRaw = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
       let requestedStartupCommand = requestedStartupCommandRaw;
-      if (
-        tracked
-        && isClaudeTrackedCliToolType(toolTypeHint)
-        && !existingSession
-      ) {
-        const assigned = assignClaudeLaunchSessionId({
+      const launchAssignProvider = tracked && !existingSession
+        ? (isClaudeTrackedCliToolType(toolTypeHint)
+          ? "claude" as const
+          : isPreassignedSessionIdProvider(toolTypeHint) ? toolTypeHint : null)
+        : null;
+      let launchAssignedSessionId: string | null = null;
+      if (launchAssignProvider) {
+        const assignArgs = {
           command: typeof effectiveArgs.command === "string" ? effectiveArgs.command : null,
           startupCommand: requestedStartupCommandRaw,
           commandArgs: Array.isArray(effectiveArgs.args)
             ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
             : [],
-        });
+        };
+        const assigned = launchAssignProvider === "claude"
+          ? assignClaudeLaunchSessionId(assignArgs)
+          : assignProviderLaunchSessionId({ ...assignArgs, provider: launchAssignProvider });
+        launchAssignedSessionId = sanitizeResumeTargetId(assigned.assignedId);
         requestedStartupCommand = assigned.startupCommand;
         effectiveArgs = {
           ...effectiveArgs,
@@ -5833,7 +6034,22 @@ export function createPtyService({
         };
       }
       const requestedInitialInput = typeof effectiveArgs.initialInput === "string" ? effectiveArgs.initialInput : "";
-      const requestedResumeMetadata = args.resumeMetadata ?? null;
+      let requestedResumeMetadata = args.resumeMetadata ?? null;
+      // A resumed or imported conversation already carries its own title; a title
+      // guessed from startup output (a banner, a trust prompt) would replace it.
+      const resumesKnownConversation = Boolean(existingSession)
+        || Boolean(sanitizeResumeTargetId(args.resumeMetadata?.targetId ?? null));
+      if (
+        launchAssignedSessionId
+        && requestedResumeMetadata
+        && requestedResumeMetadata.provider === launchAssignProvider
+        && !sanitizeResumeTargetId(requestedResumeMetadata.targetId ?? null)
+      ) {
+        // The caller described the launch before ADE chose its id (a chat →
+        // CLI handoff, an import copy). The id rides the launch argv now, so
+        // record it as the target immediately instead of waiting on capture.
+        requestedResumeMetadata = { ...requestedResumeMetadata, targetId: launchAssignedSessionId };
+      }
       let initialResumeMetadata = existingSession?.resumeMetadata
         ?? requestedResumeMetadata
         ?? buildInitialResumeMetadata({
@@ -7059,6 +7275,7 @@ export function createPtyService({
         aiIntegrationService
         && aiIntegrationService.getMode() !== "guest"
         && shouldScheduleOutputSnippetTitle(toolTypeHint)
+        && !resumesKnownConversation
       ) {
         const capturedAi = aiIntegrationService;
         entry.aiTitleTimer = setTimeout(() => {
@@ -7880,6 +8097,13 @@ export function createPtyService({
       return service.enrichSessions(sessionService.list(args));
     },
 
+    /**
+     * PTY ROOT pids of live tracked CLI terminals. The provider CLI that holds
+     * the session file is usually a descendant (shell → node → CLI), so pass
+     * these as `extraPids` to `inspectLiveProviderSessions` and decide
+     * ownership with `handleIsOwnedByTrackedPty` (it matches any descendant via
+     * `trackedRootPid`), never with `pids.has(handle.pid)`.
+     */
     listLiveTrackedCliPids(): number[] {
       const pids: number[] = [];
       for (const entry of ptys.values()) {

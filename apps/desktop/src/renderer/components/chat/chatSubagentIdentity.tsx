@@ -1,5 +1,6 @@
 import { Check, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { deriveSubagentCardName } from "../../../shared/chatSubagents";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 
 export type ChatSubagentIdentityInput = {
@@ -10,19 +11,14 @@ export type ChatSubagentIdentityInput = {
   taskId: string;
 };
 
-// Some runtimes stamp a placeholder agentType on the wire (e.g. legacy OpenCode
-// envelopes emitted before the description-first fix). Treat those as absent so
-// the more meaningful description or label takes the row label.
-const GENERIC_AGENT_TYPES = new Set(["opencode-subagent", "subagent"]);
-
+/**
+ * The Chat Info subagents row name: the same rule the inline transcript cards
+ * use (`deriveSubagentCardName` — task description, then label, then agent
+ * type, with Codex `/root/...` paths humanized and placeholders skipped), so
+ * one agent reads the same in both places.
+ */
 export function chatSubagentDisplayName(snapshot: ChatSubagentIdentityInput): string {
-  const type = snapshot.agentType?.trim() ?? "";
-  if (type.length && !GENERIC_AGENT_TYPES.has(type.toLowerCase())) return type;
-  const label = snapshot.label?.trim();
-  if (label) return label;
-  const description = snapshot.description?.trim();
-  if (description) return description;
-  return snapshot.agentId ?? snapshot.taskId;
+  return deriveSubagentCardName(snapshot);
 }
 
 const AGENT_IDENTITY_COLORS = [

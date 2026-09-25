@@ -1,6 +1,5 @@
 /* @vitest-environment jsdom */
 
-// Mirror of lane mac-desktop (b18dd67ec) minus the mac-desktop tool; on merge, take theirs.
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -49,10 +48,12 @@ describe("WorkToolPreviewControls per tool header", () => {
     expect(screen.getByRole("button", { name: WORK_TOOL_MAXIMIZE_PANE_LABEL })).toBeTruthy();
   });
 
-  it("suppresses maximize where the surface already owns one", () => {
-    renderControls("ios", false);
+  it("the mac-desktop header renders the toggle; maximize is its own row's full-screen button", () => {
+    renderControls("mac-desktop", false);
     const toggle = screen.getByRole("button", { name: WORK_TOOL_PREVIEW_TOGGLE_LABEL });
     expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    // `mac-desktop-expand` already maximizes this row; a second button for the
+    // same state is suppressed rather than duplicated.
     expect(screen.queryByRole("button", { name: WORK_TOOL_MAXIMIZE_PANE_LABEL })).toBeNull();
   });
 

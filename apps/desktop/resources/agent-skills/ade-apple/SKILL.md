@@ -5,8 +5,10 @@ description: Use this skill when you need to see an iOS or SwiftUI change actual
 
 # ADE Apple Development
 
-Drive the lane's Apple simulator through `ade apple`. Pass `--socket` so your
-CLI calls and the desktop's Apple Development tool share one session.
+Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
+`$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
+its brain, so your calls and the desktop's Apple Development tool share one
+session. A bare `ade` goes through PATH and can reach a different ADE.
 
 The pixels come from a vendored Swift helper (`ade-sim-helper`) reading the
 device framebuffer. There is no Screen Recording grant, no Simulator window to
@@ -14,10 +16,56 @@ keep open, and no backend to choose. If you find advice about `idb`, window
 capture, `live-start` or a `--backend` flag, it is describing a version of this
 feature that no longer exists.
 
+## Four rules before your first command
+
+- **Always call `"$ADE_CLI_PATH"`, never a bare `ade`.** A bare `ade` can be
+  an older install or another ADE's CLI. That shows up as "Unknown command
+  'apple'", "Domain 'apple' is unavailable", or a runtime version mismatch.
+  Do not add `--socket`: `"$ADE_CLI_PATH"` already names the right one.
+- **Never open or script the Simulator app.** No `open -a Simulator`, no
+  AppleScript or System Events. ADE drives the device directly; the Simulator
+  window is not needed and adds nothing.
+- **Never capture proof with `xcrun simctl io … screenshot` or
+  `recordVideo`.** `apple screenshot` and `apple record-start` /
+  `record-stop` file proof to the lane automatically. See below for why the
+  owner matters.
+- **Check each step before you report it.** A tap, swipe, button or type
+  that returns `ok` only means ADE sent the input. It does not mean the app
+  did what you wanted. After each step that matters, confirm it:
+  `apple foreground` (which app is in front), `apple assert-visible` or
+  `apple wait-for-element` (what is on screen), or `apple snapshot`. Report
+  only what you confirmed. If a step failed, say which step, and do not
+  describe the result you meant to get. Before `record-stop`, confirm the
+  final state, so the video ends on it.
+
+## Common tasks
+
+Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
+
+| Task | Command |
+|---|---|
+| Open an installed app | `"$A" apple relaunch --bundle-id com.apple.mobilesafari --text` |
+| Open a web page or deep link | `"$A" apple open-url "https://www.google.com" --text` |
+| Tap a control by its label | `"$A" apple tap-element --label "Address" --text` |
+| Type, then press Return | `"$A" apple type "reddit" --submit --text` |
+| Press one key | `"$A" apple key return --text` (also `tab`) |
+| Wait for something to appear | `"$A" apple wait-for-element --label "Cancel" --timeout-ms 8000 --text` |
+| Which app is in front | `"$A" apple foreground --text` |
+| What is on screen | `"$A" apple snapshot --text` |
+| Go home / app switcher | `"$A" apple button home --text` / `"$A" apple button app-switcher --text` |
+| Close an app (no gesture) | `"$A" apple terminate --bundle-id com.apple.mobilesafari --text` |
+| Show the device to the user | `"$A" apple show --text` (tools pane) or `--floating` |
+
+- Right after `relaunch`, `foreground` can still say `null` for a moment.
+  Wait for an element of that app instead of checking at once.
+- A simulator signed in to an Apple Account can show an "Apple Account
+  Verification" alert over every app. Dismiss it with
+  `tap-element --label "Not Now"`, then continue.
+
 ## Start here: ask what you can do
 
 ```bash
-ade --socket apple status --text
+"$ADE_CLI_PATH" apple status --text
 ```
 
 `status` is the gate and the map.
@@ -30,13 +78,33 @@ ade --socket apple status --text
 - `tools.helper` (`present`, `path`, `version`) is the check when every device
   call fails at once.
 
+## "Start the app on a simulator" is one command
+
+```bash
+"$ADE_CLI_PATH" apple launch --follow --open-drawer --text
+```
+
+`launch` does the whole chain: find or clone the lane's device, boot it,
+resolve the target, **build it with xcodebuild**, install it, start it, and
+claim the drawer session. Add `--open-drawer` when a human asked to watch.
+`--follow` announces the wait up front for a cold build.
+
+So you do **not** run `xcodebuild` by hand to put an app on a screen, and you
+do not need to know the scheme. Run `"$ADE_CLI_PATH" apple apps --text` first only
+when you must choose between several targets, then pass `--target <id>`.
+
+Use `--no-build` when the app is already installed and you only want it in
+front. Use `relaunch` or `terminate` for an app that is already there.
+
 ## A busy device is not a blocker
 
-**If the device you find is owned by another chat or lane, do not ask a human
-for it. Make your own.** One simulator runtime serves an unlimited number of
-devices, so creating one for your lane is cheap and takes seconds — it is a new
-folder of app data, not another copy of iOS. `start --create <sourceUdid>` does
-it in a single call.
+**Reuse before you create.** `start` with no arguments already does this: it
+binds a free installed device, boots it if it is off, and streams it. Reach for
+a new one only when every installed device is owned by another lane.
+
+**And when the device you find is owned by another chat or lane, do not ask a
+human for it. Make your own** with `start --create <sourceUdid>`. It takes
+seconds (see "The lane's device" for why).
 
 This is worth saying plainly because the failure looks reasonable from the
 inside: you find a booted simulator, the guard tells you another chat owns it,
@@ -63,16 +131,16 @@ Two facts that decide what you should do:
   so it is cheap. A device that is `Shutdown` is installed and ready — it needs
   a boot, which takes seconds, not an install.
 
-So "no device free" is almost never true. If every installed device is busy,
-clone one.
+So "no device free" is almost never true: one runtime serves any number of
+devices, and a new one is a folder of app data, not another copy of iOS.
 
 ```bash
-ade --socket apple device-list --installed --text   # what a picker shows
-ade --socket apple device-list --lane --text        # the one this lane owns
-ade --socket apple start --text                     # attach or clone, boot, stream
-ade --socket apple start --udid <udid> --text       # bind a specific installed one
-ade --socket apple start --create <sourceUdid> --text
-ade --socket apple stop --text                      # power the device OFF
+"$ADE_CLI_PATH" apple device-list --installed --text   # what a picker shows
+"$ADE_CLI_PATH" apple device-list --text               # the one this lane owns ($ADE_LANE_ID)
+"$ADE_CLI_PATH" apple start --text                     # attach or clone, boot, stream
+"$ADE_CLI_PATH" apple start --udid <udid> --text       # bind a specific installed one
+"$ADE_CLI_PATH" apple start --create <sourceUdid> --text
+"$ADE_CLI_PATH" apple stop --text                      # power the device OFF
 ```
 
 - `start` is the one-step bring-up: bind or clone when the lane has no device,
@@ -82,19 +150,22 @@ ade --socket apple stop --text                      # power the device OFF
   `stop` that left a booted device behind was a real bug.
 - `device-create` and `device-attach` never boot. `device-delete` removes a
   clone and refuses an attached device unless `--force`, which only detaches.
+  Like `stop`, it is refused while another chat is driving the device.
 - A clone is deleted when the lane is archived. ADE never deletes a simulator
   it did not create.
+- Deleting an installed simulator from the list is the user's call, made in
+  the desktop picker. ADE refuses it from an agent; do not try.
 
 ## Drive the app
 
 Name elements, not pixels.
 
 ```bash
-ade --socket apple snapshot --text
-ade --socket apple tap-element --label "Sign in" --text
-ade --socket apple fill-element --identifier email-field --value ada@example.com --text
-ade --socket apple wait-for-element --label Welcome --timeout-ms 8000 --text
-ade --socket apple assert-visible --label Welcome --text
+"$ADE_CLI_PATH" apple snapshot --text
+"$ADE_CLI_PATH" apple tap-element --label "Sign in" --text
+"$ADE_CLI_PATH" apple fill-element --identifier email-field --value ada@example.com --text
+"$ADE_CLI_PATH" apple wait-for-element --label Welcome --timeout-ms 8000 --text
+"$ADE_CLI_PATH" apple assert-visible --label Welcome --text
 ```
 
 - Run `snapshot` first. Query with `--ref`, `--identifier`, `--label`,
@@ -103,12 +174,15 @@ ade --socket apple assert-visible --label Welcome --text
   `pos:` survives nothing, so ask for an accessibility identifier instead.
 - `wait-for-element` replaces a sleep. Add `--gone` to wait for a disappearance.
 - Fall back to coordinates only when no query matches: `tap`, `drag`, `swipe`,
-  `scroll`, `type`, `select`.
+  `scroll`, `select`.
+- `type` and `key` act on the focused field, so tap the field first.
 - `foreground` reports which app the device has in front, read from the device
   rather than from what ADE last launched.
 - Hardware buttons: `button home` (also `lock`, `volume-up`, `volume-down`,
-  `siri`). `shake` is refused with `APPLE_BUTTON_UNSUPPORTED`, because neither
-  the helper nor `simctl` has it.
+  `siri`, `app-switcher`). `shake` is refused with `APPLE_BUTTON_UNSUPPORTED`,
+  because neither the helper nor `simctl` has it. `app-switcher` is
+  Simulator's own App Switcher command, two home presses 150 ms apart; do not
+  press `home` twice yourself, the gap between two calls is too long.
 - Orientation: `rotate landscape-left` (also `portrait`,
   `portrait-upside-down`, `landscape-right`). **Read the answer.** `rotate`
   turns the device and then reads the screen, so `applied: true` means the
@@ -122,10 +196,61 @@ ade --socket apple assert-visible --label Welcome --text
   screen was on that axis before you asked; turning within one axis leaves
   the pixel size unchanged, so the exact side is not confirmed.
 
-Agent launches stay in the background. Add `--open-drawer` when the user asked
-to watch. `launch --follow` waits out a cold build and prints the summary.
+Agent launches stay in the background; `apple show` brings the device up at
+any time.
 
-## Proof is automatic
+### Close an app the way a person does
+
+Bottom-edge swipes do not work: the helper sends them as ordinary touches, so
+iOS never sees the home-indicator gesture, and a swipe from the bottom edge
+opens nothing. Use the App Switcher instead.
+
+```bash
+"$ADE_CLI_PATH" apple button app-switcher --text
+"$ADE_CLI_PATH" apple screenshot --out switcher.png --text   # check it opened
+"$ADE_CLI_PATH" apple swipe 201 480 201 80 --duration-ms 150 --text
+"$ADE_CLI_PATH" apple button home --text
+```
+
+- Coordinates are points. Read the screen size from `apple stream-status`
+  (`pointWidth` × `pointHeight`); the example is an iPhone 16 Pro (402 × 874).
+- The front app's card sits in the middle of the switcher. Swipe it up from
+  about (W/2, 0.55 H) to (W/2, 0.09 H), fast: 150 ms. A slow drag only lifts
+  the card.
+- Take a screenshot after `app-switcher`. If the switcher is not showing, do
+  not keep swiping: say so, and use `apple terminate --bundle-id <id>` to stop
+  the app without showing it (Safari is `com.apple.mobilesafari`).
+- While a recording runs, every failed try is in the video. Check the screen
+  after each step instead of repeating a gesture.
+
+## Show the device to the user
+
+When the user asks to see the device ("open the sim drawer", "show me"):
+
+```bash
+"$ADE_CLI_PATH" apple show --text              # the Apple tool in the tools pane
+"$ADE_CLI_PATH" apple show --floating --text   # the floating player over the chat
+"$ADE_CLI_PATH" ui show proof --text           # this chat's proof drawer
+```
+
+It targets your own chat and reports what really happened. A shell with no
+ADE chat identity (`ADE_CHAT_SESSION_ID` unset, e.g. an OpenCode agent shell)
+cannot use `apple show` or `ui show`; ask the user to open the tool.
+
+- `shown` — it is on screen now.
+- `held` — a desktop window has this project open but the user cannot see
+  it yet (your chat is not in front, or the window is hidden). It opens when
+  the user goes to your chat. Say so.
+- `no_desktop` (exit 1) — no desktop window is open for this chat, so nothing
+  was shown. Tell the user; do not claim you opened it.
+
+A desktop on another machine that has your chat open answers too. You do not
+need `show` just to be seen working: while you drive the device and the Apple
+tool is not open, the desktop floats the device over your chat by itself,
+unless the user closed that player (then only `apple show` or the user brings
+it back).
+
+## Proof is automatic, and only on this path
 
 You do not pin anything. Both of these file themselves in the proof drawer and
 return a `proofArtifactId`:
@@ -134,24 +259,41 @@ return a `proofArtifactId`:
 - **every screenshot** you take.
 
 ```bash
-ade --socket apple screenshot --out shot.png --text
-ade --socket apple frame --out shot.png --text
-ade --socket apple proof-bundle --caption "Settings row renders" --text
+"$ADE_CLI_PATH" apple screenshot --out shot.png --text
+"$ADE_CLI_PATH" apple frame --out shot.png --text
+"$ADE_CLI_PATH" apple proof-bundle --caption "Settings row renders" --text
 ```
+
+**Capture through these commands, not through `xcrun simctl io screenshot`.**
+The difference is not the picture, it is the owner. An `ade apple` capture is
+filed against the lane and the asking chat, so it appears in the drawer the
+human is looking at. A picture you take with `simctl` and then hand to
+`ade proof attach` is filed against whatever ADE can work out about your shell,
+and a shell with no chat session — every OpenCode agent has one, because a
+single `opencode serve` is shared across chats — used to produce a record owned
+by nothing, invisible to everyone, while every command reported success. That
+now fails loudly instead of lying, which is better and still not proof.
+
+If you must attach a file from elsewhere, run `ade proof attach` from **inside
+the lane worktree** so ADE can place it, and read the last line: it names the
+lane and the chat the artifact landed on. `lane none / chat none` is a failure,
+not a detail.
 
 - `screenshot` round-trips `simctl` and works with no stream running.
 - `frame` grabs one decoded frame from the live stream and fails with
   `APPLE_STREAM_NOT_RUNNING` when there is none. Prefer it while streaming.
-- `proof-bundle` adds the machine, device, elements and log alongside the
-  picture when you want the whole context in one artifact.
+- `proof-bundle` files the same single drawer row as `screenshot`, and also
+  writes `elements.json`, the log and `metadata.json` next to `screen.png` in a
+  directory under the build root. Use it when a reviewer wants the whole
+  context; the row it returns is the picture.
 
 ## Recording, and what starts one
 
 ```bash
-ade --socket apple record-start --overlays on --label "signup" --text
-ade --socket apple record-stop --keep --text
-ade --socket apple record-list --text
-ade --socket apple record-delete --id <id> --text
+"$ADE_CLI_PATH" apple record-start --overlays on --label "signup" --text
+"$ADE_CLI_PATH" apple record-stop --keep --text
+"$ADE_CLI_PATH" apple record-list --text
+"$ADE_CLI_PATH" apple record-delete --id <id> --text
 ```
 
 1. **Your input starts a recording; the user's never does.** Any input from
@@ -159,14 +301,22 @@ ade --socket apple record-delete --id <id> --text
    one automatically, tagged `auto`. Input from the desktop pane is stamped as
    the user's and starts nothing.
 2. It stops at the end of your turn, or after ten minutes, whichever is first.
-   `record-start` during an auto recording converts it to manual with no gap
-   and clears the cap.
+   `record-start` during an auto recording converts it to manual with no gap.
+   A manual recording you own stops itself after ten minutes of real time
+   (`stopReason: "cap"`) and files as proof; `--max-seconds <n>` changes it.
+   Still call `record-stop` when you are done.
+
+   Still screens are cut: a still longer than 2 s keeps 0.75 s in the video.
+   `record-stop` reports `durationMs` (video), `wallDurationMs` (real time)
+   and `idleCutMs`. Pass `--keep-idle` when the waiting itself is the point.
 3. It files itself as proof on stop. There is **no auto-delete**; recordings
    accumulate until the user clears them.
 4. You may delete a recording you own. Anything else is
    `APPLE_RECORDING_PINNED`.
 5. A second chat gets `APPLE_OWNED_BY_OTHER_SESSION` with the owning chat,
    lane and age.
+6. If recording fails, say so. Never attach an older recording or a file you
+   did not just record.
 
 Overlays, meaning tap rings and typed-text badges, land in the saved file only
 and never on a live viewer. Secure text is never badged.
@@ -174,10 +324,10 @@ and never on a live viewer. Secure text is never badged.
 ## Live view
 
 ```bash
-ade --socket apple stream-start --fps 60 --text
-ade --socket apple stream-start --scale-factor 0.5 --bitrate-kbps 2500 --text
-ade --socket apple stream-status --text
-ade --socket apple stream-stop --text
+"$ADE_CLI_PATH" apple stream-start --fps 60 --text
+"$ADE_CLI_PATH" apple stream-start --scale-factor 0.5 --bitrate-kbps 2500 --text
+"$ADE_CLI_PATH" apple stream-status --text
+"$ADE_CLI_PATH" apple stream-stop --text
 ```
 
 `stream-status` reports the shape and never the address or the token. A status
@@ -186,13 +336,13 @@ of `running: true` means the capture is alive, not that a picture is arriving.
 ## Device settings, log, previews
 
 ```bash
-ade --socket apple appearance dark --text
-ade --socket apple accessibility reduce-motion on --text
-ade --socket apple location 37.7749 -122.4194 --text
-ade --socket apple permission grant photos --bundle-id <id> --text
-ade --socket apple push --bundle-id <id> --title Hi --body "You have mail" --text
-ade --socket apple log-start --bundle-id <id> --text
-ade --socket apple preview-current --text
+"$ADE_CLI_PATH" apple appearance dark --text
+"$ADE_CLI_PATH" apple accessibility reduce-motion on --text
+"$ADE_CLI_PATH" apple location 37.7749 -122.4194 --text
+"$ADE_CLI_PATH" apple permission grant photos --bundle-id <id> --text
+"$ADE_CLI_PATH" apple push --bundle-id <id> --title Hi --body "You have mail" --text
+"$ADE_CLI_PATH" apple log-start --bundle-id <id> --text
+"$ADE_CLI_PATH" apple preview-current --text
 ```
 
 Also `content-size`, `status-bar`, `open-url`, `relaunch`, `terminate`,
@@ -228,6 +378,8 @@ One chat owns a simulator session at a time. A second launch fails with
 - `APPLE_HELPER_UNAVAILABLE` — the helper binary is missing from this install.
   `status` → `tools.helper.present` is the check.
 - `APPLE_STREAM_NOT_RUNNING` — `frame` needs a live stream; use `screenshot`.
+- `APPLE_DEVICE_OFF` — the lane's device is powered off, and watching never
+  boots it. `apple start` (or `stream-start`) powers it on.
 - `APPLE_ROTATE_NOT_ADOPTED` — the device turned and the app on screen did
   not. Launch a landscape-capable app first; it is not a fault to report.
 - `APPLE_ROTATE_UNMEASURABLE` — the screen could not be read, so the rotation
@@ -238,7 +390,7 @@ One chat owns a simulator session at a time. A second launch fails with
   an attached simulator. `--force` detaches; it does not delete.
 - `APPLE_DEVICE_EXISTS` — this lane already owns a device. Use it, or remove it
   first.
-- `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` — re-run `ade --socket apple apps --text`.
+- `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` — re-run `"$ADE_CLI_PATH" apple apps --text`.
 - `IOS_SIMULATOR_NO_BUILDABLE_TARGET` — pass `--target-id` or `--bundle-id`
   only when you deliberately want the installed app.
 - `screenshot --out` and `frame --out` must land inside the build root.

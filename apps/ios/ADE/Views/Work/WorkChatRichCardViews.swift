@@ -38,6 +38,171 @@ struct WorkToolStatusGlyph: View {
   }
 }
 
+struct WorkTurnFoldRow: View {
+  let model: WorkTurnFoldModel
+  let onToggle: () -> Void
+
+  var body: some View {
+    Button(action: onToggle) {
+      HStack(spacing: 8) {
+        Image(systemName: "clock.arrow.circlepath")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(width: 16)
+        Text(model.label)
+          .font(.footnote.weight(.medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 6)
+        Image(systemName: model.isExpanded ? "chevron.down" : "chevron.right")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 12)
+      .frame(minHeight: 42)
+      .contentShape(Rectangle())
+      .background(ADEColor.cardBackground.opacity(0.32), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(model.label)
+    .accessibilityHint(model.isExpanded ? "Double tap to hide turn details." : "Double tap to show turn details.")
+  }
+}
+
+struct WorkBackgroundJobLineView: View {
+  let job: WorkBackgroundJobModel
+
+  private var statusText: String {
+    let status = job.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if status == "running" { return "running" }
+    let outcome = ["failed", "error"].contains(status) ? "failed" : "done"
+    return "\(outcome) · \(job.durationLabel)"
+  }
+
+  private var tint: Color {
+    switch job.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "running": ADEColor.purpleAccent
+    case "failed", "error": ADEColor.warning
+    default: ADEColor.textMuted
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "terminal")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: 16)
+      Text(job.title)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Spacer(minLength: 6)
+      Text(statusText)
+        .font(.caption2.weight(.medium).monospacedDigit())
+        .foregroundStyle(tint)
+        .lineLimit(1)
+    }
+    .padding(.horizontal, 10)
+    .frame(minHeight: 34)
+    .background(ADEColor.cardBackground.opacity(0.24), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("Background job \(job.title), \(statusText).")
+  }
+}
+
+struct WorkBackgroundJobRunView: View {
+  let model: WorkBackgroundJobRunModel
+  let isExpanded: Bool
+  let onToggle: () -> Void
+
+  private var doneCount: Int { max(0, model.jobs.count - model.runningCount - model.failedCount) }
+
+  private var chips: [WorkCollapsedStatusChip] {
+    var result: [WorkCollapsedStatusChip] = []
+    if model.runningCount > 0 {
+      result.append(WorkCollapsedStatusChip(id: "running", label: "\(model.runningCount) running", tone: .accent, accessibilityText: "\(model.runningCount) running"))
+    }
+    if doneCount > 0 {
+      result.append(WorkCollapsedStatusChip(id: "done", label: "\(doneCount) done", tone: .success, accessibilityText: "\(doneCount) done"))
+    }
+    if model.failedCount > 0 {
+      result.append(WorkCollapsedStatusChip(id: "failed", label: "\(model.failedCount) failed", tone: .warning, accessibilityText: "\(model.failedCount) failed"))
+    }
+    return result
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      WorkCollapsedCardRow(
+        systemImage: "terminal",
+        glyphTint: ADEColor.textSecondary,
+        summary: "\(model.jobs.count) background job\(model.jobs.count == 1 ? "" : "s")",
+        chips: chips,
+        accessibilityText: "\(model.jobs.count) background jobs. \(chips.map(\.accessibilityText).joined(separator: ", ")).",
+        onToggle: onToggle
+      )
+      if isExpanded {
+        VStack(spacing: 4) {
+          ForEach(model.jobs) { job in
+            WorkBackgroundJobLineView(job: job)
+          }
+        }
+        .padding(.leading, 12)
+        .padding(.bottom, 6)
+      }
+    }
+  }
+}
+
+struct WorkScheduledWorkLineView: View {
+  let snapshot: WorkScheduledWorkSnapshot
+
+  private var status: String { snapshot.status.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "_", with: " ").lowercased() }
+  private var kindLabel: String {
+    switch snapshot.kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "cron": "Cron"
+    case "loop": "Loop"
+    case "wakeup": "Wakeup"
+    default: "Scheduled work"
+    }
+  }
+  private var tint: Color {
+    switch status {
+    case "running", "fired": ADEColor.accent
+    case "failed", "cancelled", "error": ADEColor.warning
+    default: ADEColor.textMuted
+    }
+  }
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Image(systemName: snapshot.kind.lowercased() == "cron" ? "calendar.badge.clock" : "clock.arrow.circlepath")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(tint)
+        .frame(width: 16)
+      Text("\(kindLabel) · \(snapshot.title)")
+        .font(.caption.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Spacer(minLength: 6)
+      Text(status)
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(tint)
+        .lineLimit(1)
+    }
+    .padding(.horizontal, 10)
+    .frame(minHeight: 34)
+    .background(ADEColor.cardBackground.opacity(0.24), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(kindLabel), \(snapshot.title), \(status).")
+  }
+}
+
 /// Flat reference chip (file / PR link) used inside expanded tool and event
 /// cards. Replaces the former liquid-glass `.buttonStyle(.glass)` chips — a
 /// plain tinted fill + hairline border keeps the transcript de-glassed while
@@ -2848,6 +3013,10 @@ struct WorkChatInfoDetailsSheet: View {
   let nextWakeAt: String?
   let provider: String?
   let sessionModel: String?
+  let sourceRefs: [AgentChatSourceRef]
+  let omittedSourceRefCount: Int
+  let taskList: WorkChatTaskListSnapshot?
+  var onResolveSourceFavicons: (([String]) async throws -> [String: String])? = nil
   @Binding var expandedTaskIds: Set<String>
   let onSelect: @MainActor (WorkSubagentSnapshot) async -> Void
   let onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)?
@@ -2857,6 +3026,9 @@ struct WorkChatInfoDetailsSheet: View {
   @AppStorage private var paneClearedRaw: String
   @State private var showAllSections: Set<String> = []
   @State private var schedulePauseMutationInFlight = false
+  @State private var showAllSources = false
+  @State private var showAllTasks = false
+  @State private var sourceFavicons: [String: String] = [:]
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   // Mirrors SUBAGENTS_ACTIVE_CAP / BACKGROUND_ACTIVE_CAP / SCHEDULE_ACTIVE_CAP,
@@ -2876,6 +3048,10 @@ struct WorkChatInfoDetailsSheet: View {
     provider: String?,
     expandedTaskIds: Binding<Set<String>>,
     sessionModel: String? = nil,
+    sourceRefs: [AgentChatSourceRef] = [],
+    omittedSourceRefCount: Int = 0,
+    taskList: WorkChatTaskListSnapshot? = nil,
+    onResolveSourceFavicons: (([String]) async throws -> [String: String])? = nil,
     onSelect: @escaping @MainActor (WorkSubagentSnapshot) async -> Void,
     onCancelScheduledWork: (@MainActor (WorkScheduledWorkSnapshot) async -> Void)? = nil,
     onSetScheduledWorkPaused: (@MainActor (Bool) async -> Void)? = nil,
@@ -2888,6 +3064,10 @@ struct WorkChatInfoDetailsSheet: View {
     self.nextWakeAt = nextWakeAt
     self.provider = provider
     self.sessionModel = sessionModel
+    self.sourceRefs = sourceRefs
+    self.omittedSourceRefCount = max(0, omittedSourceRefCount)
+    self.taskList = taskList
+    self.onResolveSourceFavicons = onResolveSourceFavicons
     self._expandedTaskIds = expandedTaskIds
     self.onSelect = onSelect
     self.onCancelScheduledWork = onCancelScheduledWork
@@ -2921,6 +3101,8 @@ struct WorkChatInfoDetailsSheet: View {
 
   private var isEmpty: Bool {
     subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty
+      && sourceRefs.isEmpty && omittedSourceRefCount == 0
+      && taskList == nil
   }
 
   private var nextWakeLabel: String? {
@@ -3191,6 +3373,64 @@ struct WorkChatInfoDetailsSheet: View {
                 }
               }
             }
+            if let taskList {
+              VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                  Text("Tasks")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEColor.textMuted)
+                    .textCase(.uppercase)
+                  Spacer()
+                  Text("\(taskList.completedCount)/\(taskList.items.count)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(ADEColor.textMuted)
+                }
+                ForEach(visibleTaskItems) { item in
+                  WorkChatTaskListItemRow(item: item)
+                }
+                if !showAllTasks && taskList.items.count > taskPreviewCount {
+                  Button("Show \(taskList.items.count - taskPreviewCount) more") {
+                    showAllTasks = true
+                  }
+                  .font(.caption.weight(.medium))
+                  .foregroundStyle(ADEColor.textMuted)
+                  .frame(minHeight: 44, alignment: .leading)
+                }
+              }
+              .padding(.top, 4)
+            }
+            if !sourceRefs.isEmpty || omittedSourceRefCount > 0 {
+              VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                  Text("Sources")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(ADEColor.textMuted)
+                    .textCase(.uppercase)
+                  Spacer()
+                  Text("\(sourceRefs.count + omittedSourceRefCount)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(ADEColor.textMuted)
+                }
+                ForEach(Array(visibleSourceRefs), id: \.self) { source in
+                  WorkChatSourceRowView(source: source, faviconDataURL: sourceFavicon(for: source))
+                }
+                if !showAllSources && sourceRefs.count > sourcePreviewCount {
+                  Button("Show \(sourceRefs.count - sourcePreviewCount) more") {
+                    showAllSources = true
+                  }
+                  .font(.caption.weight(.medium))
+                  .foregroundStyle(ADEColor.textMuted)
+                  .frame(minHeight: 44, alignment: .leading)
+                }
+                if omittedSourceRefCount > 0 {
+                  Text("\(omittedSourceRefCount) additional source references were omitted from mobile sync.")
+                    .font(.caption2)
+                    .foregroundStyle(ADEColor.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+              }
+              .padding(.top, 4)
+            }
           }
         }
         .padding(16)
@@ -3199,7 +3439,50 @@ struct WorkChatInfoDetailsSheet: View {
       .background(workChatCanvasBackground.ignoresSafeArea())
       .navigationTitle("Chat Info")
       .navigationBarTitleDisplayMode(.inline)
+      .task(id: visibleSourceHosts.joined(separator: "|")) {
+        guard !visibleSourceHosts.isEmpty, let onResolveSourceFavicons else { return }
+        do {
+          let resolved = try await onResolveSourceFavicons(visibleSourceHosts)
+          guard !Task.isCancelled else { return }
+          sourceFavicons.merge(resolved) { _, latest in latest }
+        } catch {
+          // The domain initial remains as the icon if the host is offline or
+          // the paired runtime does not advertise this command yet.
+        }
+      }
     }
+  }
+
+  private let sourcePreviewCount = 3
+  private let taskPreviewCount = 12
+
+  private var visibleSourceRefs: [AgentChatSourceRef] {
+    showAllSources ? sourceRefs : Array(sourceRefs.prefix(sourcePreviewCount))
+  }
+
+  private var visibleSourceHosts: [String] {
+    Array(Set(visibleSourceRefs.compactMap { source in
+      guard let raw = source.url,
+            let components = URLComponents(string: raw),
+            let scheme = components.scheme?.lowercased(),
+            scheme == "http" || scheme == "https",
+            components.user == nil,
+            components.password == nil,
+            let host = components.host?.lowercased(),
+            !host.isEmpty else { return nil }
+      return host
+    })).sorted()
+  }
+
+  private func sourceFavicon(for source: AgentChatSourceRef) -> String? {
+    guard let raw = source.url,
+          let host = URLComponents(string: raw)?.host?.lowercased() else { return nil }
+    return sourceFavicons[host]
+  }
+
+  private var visibleTaskItems: [WorkChatTaskItem] {
+    guard let taskList else { return [] }
+    return showAllTasks ? taskList.items : Array(taskList.items.prefix(taskPreviewCount))
   }
 
   @ViewBuilder
@@ -3409,6 +3692,10 @@ private struct WorkChatInfoSubagentRow: View {
                 .foregroundStyle(ADEColor.textMuted)
             }
             WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+            if let provider = trimmedNonEmpty(snapshot.provider) {
+              WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 18)
+                .accessibilityLabel("\(workChatSurfaceProviderName(provider)) child")
+            }
             VStack(alignment: .leading, spacing: 2) {
               Text(workSubagentMeaningfulName(snapshot))
                 .font(.subheadline.weight(.semibold))
@@ -3978,6 +4265,150 @@ struct WorkSubagentTimelineRowView: View {
   }
 }
 
+/// Three-column mobile counterpart to the desktop card grid. Six tracks let an
+/// incomplete final row expand evenly (one card spans all six, two cards span
+/// three each) while keeping the grid lazy for long-running chats.
+struct WorkSubagentTimelineGridView: View {
+  let model: WorkSubagentTimelineGrid
+  var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+
+  @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+  private var columnsPerRow: Int {
+    workSubagentGridColumnsPerRow(isCompactWidth: horizontalSizeClass != .regular)
+  }
+
+  private var trackCount: Int { columnsPerRow * 2 }
+
+  private var columns: [GridItem] {
+    Array(repeating: GridItem(.flexible(minimum: 60), spacing: 8), count: trackCount)
+  }
+
+  var body: some View {
+    let columnsPerRow = self.columnsPerRow
+    let trackCount = self.trackCount
+    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
+      ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
+        WorkSubagentTimelineGridTile(row: row, onStop: onStop)
+          .gridCellColumns(workSubagentGridCellColumnSpan(
+            index: index,
+            rowCount: model.rows.count,
+            columnsPerRow: columnsPerRow,
+            trackCount: trackCount
+          ))
+      }
+    }
+  }
+}
+
+func workSubagentGridColumnsPerRow(isCompactWidth: Bool) -> Int {
+  isCompactWidth ? 2 : 3
+}
+
+func workSubagentGridCellColumnSpan(
+  index: Int,
+  rowCount: Int,
+  columnsPerRow: Int,
+  trackCount: Int
+) -> Int {
+  guard rowCount > 0, columnsPerRow > 0, trackCount > 0 else { return 1 }
+  let cellSpan = max(1, trackCount / columnsPerRow)
+  let remainder = rowCount % columnsPerRow
+  // A grid that is only a short row keeps one cell wide. A short final row
+  // after a full row stretches across the track.
+  guard remainder > 0, rowCount > columnsPerRow, index >= rowCount - remainder else { return cellSpan }
+  return max(1, trackCount / remainder)
+}
+
+private func workTrimmedSubagentProvider(_ value: String?) -> String? {
+  guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+  return trimmed
+}
+
+private struct WorkSubagentTimelineGridTile: View {
+  let row: WorkSubagentTimelineRow
+  var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
+
+  private var snapshot: WorkSubagentSnapshot { row.snapshot }
+
+  private var metadata: String {
+    let relationship = snapshot.spawnKind == .peer ? "Peer" : "Subagent"
+    let provider = workTrimmedSubagentProvider(snapshot.provider).map(workChatSurfaceProviderName)
+    let type = workHumanizedAgentType(snapshot.agentType)
+    let background = snapshot.background ? "Background" : nil
+    return ([relationship, provider, type, background].compactMap { $0 }).joined(separator: " · ")
+  }
+
+  private var status: String {
+    switch snapshot.status {
+    case .running: return "running"
+    case .succeeded: return "completed"
+    case .failed: return "failed"
+    case .stopped: return workSubagentStoppedStatusLine(snapshot)
+    }
+  }
+
+  private var tint: Color {
+    switch snapshot.status {
+    case .running: return ADEColor.accent
+    case .succeeded: return ADEColor.success
+    case .failed: return ADEColor.warning
+    case .stopped: return ADEColor.warning
+    }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 5) {
+      HStack(spacing: 6) {
+        WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+        if let provider = workTrimmedSubagentProvider(snapshot.provider) {
+          WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 16)
+        }
+        Spacer(minLength: 2)
+        if let onStop, workSubagentCanStopTask(snapshot) {
+          Button { Task { await onStop(snapshot) } } label: {
+            Image(systemName: "stop.fill")
+              .font(.system(size: 9, weight: .bold))
+              .foregroundStyle(ADEColor.warning)
+              .frame(width: 28, height: 28)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel(workSubagentStopLabel(snapshot))
+        }
+      }
+      Text(workSubagentMeaningfulName(snapshot))
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(2)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      Text(metadata)
+        .font(.system(size: 9, weight: .medium))
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+      HStack(spacing: 4) {
+        Text(status).foregroundStyle(tint)
+        if let duration = workSubagentDurationLabel(snapshot) {
+          Text("· \(duration)").foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      .font(.system(size: 9, weight: .semibold))
+      if let summary = workSubagentResultSummaryText(row) {
+        Text(summary)
+          .font(.system(size: 10))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(2)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .frame(maxWidth: .infinity, minHeight: 96, alignment: .topLeading)
+    .padding(9)
+    .adeGlassCard(cornerRadius: 12, padding: 0)
+    .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(tint.opacity(0.16), lineWidth: 0.8))
+    .accessibilityElement(children: .combine)
+  }
+}
+
 /// Folded card for a run of 2+ same-cause, same-source stopped subagents —
 /// desktop parity with `SubagentStoppedGroupCard`. A mass stop renders as one
 /// calm line whose attribution is honest about who stopped the work, then
@@ -4108,6 +4539,10 @@ private struct WorkSubagentSpawnRow: View {
   var body: some View {
     HStack(alignment: .center, spacing: 10) {
       WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+      if let provider = workTrimmedSubagentProvider(snapshot.provider) {
+        WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 18)
+          .accessibilityLabel("\(workChatSurfaceProviderName(provider)) child")
+      }
       Text(workSubagentMeaningfulName(snapshot))
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
@@ -4159,6 +4594,10 @@ private struct WorkSubagentResultRow: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 10) {
         WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
+        if let provider = workTrimmedSubagentProvider(snapshot.provider) {
+          WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 18)
+            .accessibilityLabel("\(workChatSurfaceProviderName(provider)) child")
+        }
         Text(workSubagentMeaningfulName(snapshot))
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)

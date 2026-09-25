@@ -13,8 +13,12 @@ export type ActivityRelayEnv = {
    * the Activity feed and the roster of machines allowed to publish into it.
    */
   PUSH_RELAY_URL?: string;
-  /** Optional service binding used in place of a public fetch to the relay. */
-  ACTIVITY_RELAY?: { fetch: typeof fetch };
+  /**
+   * Required service binding to the relay. A workers.dev fetch from one Worker
+   * to another in the same account is refused (error 1042), so there is no
+   * public-URL fallback.
+   */
+  ACTIVITY_RELAY: { fetch: typeof fetch };
   /**
    * REQUIRED. Shared secret proving to the relay that a machine membership
    * change came from this worker and not from a machine holding an account
@@ -25,6 +29,7 @@ export type ActivityRelayEnv = {
 
 /** Options a caller (or a test) can inject around the relay hand-off. */
 export type ActivityRelayOptions = {
+  /** Replaces the `ACTIVITY_RELAY` binding (tests). */
   fetchImpl?: typeof fetch;
   retryDelayMs?: number;
 };
@@ -59,9 +64,8 @@ function trustedActivityRelayBaseUrl(env: ActivityRelayEnv): string | null {
  * The secret is required for both operations rather than only the re-pair, so a
  * half-configured deployment fails loudly on the first machine removal instead
  * of silently leaving the security-critical route unauthenticated. It is sent
- * over whichever transport is configured — the `ACTIVITY_RELAY` service binding
- * or a public HTTPS fetch — because a service binding carries no attestable
- * provenance marker the relay could check on its own.
+ * over the `ACTIVITY_RELAY` service binding too, because a binding carries no
+ * attestable provenance marker the relay could check on its own.
  *
  * A failure here is never swallowed: it is logged, retried once, and returned
  * so the caller can report it.
@@ -86,8 +90,11 @@ export async function callActivityRelay(
   if (!authorization) return { ok: false, reason: "missing caller authorization" };
   const path = `/attention/account/machines/${encodeURIComponent(args.machineKey)}`;
   const url = args.operation === "purge" ? `${baseUrl}${path}` : `${baseUrl}${path}/pairing`;
+  // Typed required and checked by the deploy preflight, but a Worker without
+  // the binding must fail closed here, not throw.
   const fetchImpl = args.options.fetchImpl
-    ?? (env.ACTIVITY_RELAY ? env.ACTIVITY_RELAY.fetch.bind(env.ACTIVITY_RELAY) : fetch);
+    ?? ("ACTIVITY_RELAY" in env ? env.ACTIVITY_RELAY.fetch.bind(env.ACTIVITY_RELAY) : undefined);
+  if (!fetchImpl) return { ok: false, reason: "activity relay binding is not configured" };
   const retryDelayMs = Math.max(0, args.options.retryDelayMs ?? 250);
   let reason = "activity relay is unreachable";
   for (let attempt = 1; attempt <= 2; attempt += 1) {

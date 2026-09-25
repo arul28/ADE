@@ -219,6 +219,25 @@ final class ADETests: XCTestCase {
     XCTAssertNil(result.chatSummary)
   }
 
+  func testExternalSessionDetailDecodesDesktopContract() throws {
+    let json = #"{"provider":"copilot","id":"external-3","cwd":"/tmp/project","title":"Import task","model":"gpt-5","createdAt":1785142800000,"updatedAt":1785142860000,"messageCount":4,"messages":[{"role":"user","text":"Import this session","at":1785142800000}],"sourcePath":"/tmp/session.jsonl","watchable":true,"hasOlder":true,"olderCursor":"cursor-1"}"#
+    let detail = try JSONDecoder().decode(ExternalSessionDetail.self, from: Data(json.utf8))
+
+    XCTAssertEqual(detail.provider, "copilot")
+    XCTAssertEqual(detail.id, "external-3")
+    XCTAssertEqual(detail.cwd, "/tmp/project")
+    XCTAssertEqual(detail.title, "Import task")
+    XCTAssertEqual(detail.model, "gpt-5")
+    XCTAssertEqual(detail.createdAt, 1_785_142_800_000)
+    XCTAssertEqual(detail.updatedAt, 1_785_142_860_000)
+    XCTAssertEqual(detail.messageCount, 4)
+    XCTAssertEqual(detail.messages.map(\.text), ["Import this session"])
+    XCTAssertEqual(detail.sourcePath, "/tmp/session.jsonl")
+    XCTAssertEqual(detail.watchable, true)
+    XCTAssertTrue(detail.hasOlder)
+    XCTAssertEqual(detail.olderCursor, "cursor-1")
+  }
+
   func testExternalSessionSummaryDecodesFirstPromptAndMessages() throws {
     let json = """
     {
@@ -268,86 +287,366 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.messages?.map(\.text), ["Keep me", "Keep me too"])
   }
 
-  func testExternalSessionActionsHonorCrossFolderCapabilities() {
-    let summary = ExternalSessionSummary(
-      provider: "claude",
-      id: "external-1",
-      cwd: "/tmp/other-project",
-      cwdMatchesRequestedLane: false,
-      capabilities: ExternalSessionCapabilities(
-        resumeInPlace: true,
-        resumeInDifferentCwd: false,
-        fork: true,
-        forkIntoDifferentCwd: true,
-        importToChat: true
-      )
+  func testExternalSessionSummaryDecodesHomeAndSizeLeniently() throws {
+    let json = """
+    {
+      "provider": "grok",
+      "id": "external-home",
+      "sizeBytes": 20480,
+      "home": {
+        "kind": "lane",
+        "laneId": "apple",
+        "laneName": "Apple Sim Preview",
+        "branchRef": "refs/heads/ade/apple",
+        "color": "#a78bfa",
+        "laneType": "worktree",
+        "atLaneRoot": true
+      }
+    }
+    """
+    let summary = try JSONDecoder().decode(ExternalSessionSummary.self, from: Data(json.utf8))
+    XCTAssertEqual(summary.provider, "grok")
+    XCTAssertEqual(summary.sizeBytes, 20480)
+    XCTAssertEqual(summary.home?.kind, "lane")
+    XCTAssertEqual(summary.home?.laneId, "apple")
+    XCTAssertEqual(summary.home?.atLaneRoot, true)
+
+    // A malformed `home` or `sizeBytes` drops the field, never the row.
+    let malformed = #"{"provider":"copilot","id":"external-bad","home":"nope","sizeBytes":"big"}"#
+    let lenient = try JSONDecoder().decode(ExternalSessionSummary.self, from: Data(malformed.utf8))
+    XCTAssertEqual(lenient.id, "external-bad")
+    XCTAssertNil(lenient.home)
+    XCTAssertNil(lenient.sizeBytes)
+
+    let list = try JSONDecoder().decode(
+      ExternalSessionListResult.self,
+      from: Data(#"{"sessions":[{"provider":"kimi","id":"k1"},{"provider":"qwen","id":"q1","home":{"kind":"outside"}}]}"#.utf8)
     )
-
-    let actions = workExternalSessionActions(for: summary)
-
-    XCTAssertEqual(actions.map(\.id), ["fork-as-chat", "fork-into-lane", "resume-in-place"])
-    XCTAssertEqual(actions.filter(\.isPrimary).map(\.id), ["fork-as-chat"])
-    XCTAssertEqual(actions.first(where: { $0.id == "resume-in-place" })?.mode, "resume")
+    XCTAssertEqual(list.sessions.map(\.id), ["k1", "q1"])
+    XCTAssertEqual(list.sessions.last?.home?.kind, "outside")
+    XCTAssertEqual(list.sessions.last?.home?.atLaneRoot, false)
   }
 
-  func testExternalSessionActionsOpenExistingInsteadOfReimporting() {
-    let summary = ExternalSessionSummary(
-      provider: "codex",
-      id: "external-2",
-      alreadyImported: true,
-      importedSessionRef: ExternalSessionImportedRef(kind: " CHAT ", sessionId: " chat-1 "),
-      cwdMatchesRequestedLane: true,
-      capabilities: ExternalSessionCapabilities(
-        resumeInPlace: true,
-        resumeInDifferentCwd: true,
-        fork: true,
-        forkIntoDifferentCwd: true,
-        importToChat: true
-      )
+  // MARK: - Import policy (mirrors apps/desktop/src/shared/externalSessionPolicy.test.ts)
+
+  private let importFullCapabilities = ExternalSessionCapabilities(
+    resumeInPlace: true,
+    resumeInDifferentCwd: false,
+    fork: true,
+    forkIntoDifferentCwd: true,
+    importToChat: true
+  )
+
+  private let importAppleHome = ExternalSessionHome(
+    kind: "lane",
+    laneId: "apple",
+    laneName: "Apple Sim Preview",
+    branchRef: "refs/heads/ade/apple",
+    color: nil,
+    laneType: "worktree",
+    atLaneRoot: true
+  )
+
+  private func importSession(
+    _ provider: String,
+    capabilities: ExternalSessionCapabilities? = nil,
+    home: ExternalSessionHome? = nil,
+    possiblyActive: Bool = false
+  ) -> ExternalSessionSummary {
+    ExternalSessionSummary(
+      provider: provider,
+      id: "\(provider)-1",
+      messageCount: 12,
+      possiblyActive: possiblyActive,
+      capabilities: capabilities ?? importFullCapabilities,
+      home: home ?? importAppleHome
     )
-
-    let actions = workExternalSessionActions(for: summary)
-
-    XCTAssertEqual(actions.map(\.id), ["open-existing", "fork-as-chat", "fork-into-lane"])
-    XCTAssertEqual(actions.first?.importedSessionRef, ExternalSessionImportedRef(kind: "chat", sessionId: "chat-1"))
-    XCTAssertFalse(actions.contains(where: { $0.mode == "resume" }))
   }
 
-  func testExternalSessionActionsKeepProviderAndTakeoverSafetyContext() {
-    let sameFolder = ExternalSessionSummary(
+  func testImportPlanOffersClaudeContinuePlusCopyInItsOwnLane() {
+    let plan = workPlanImport(importSession("claude"), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(plan.surfaces, ["chat", "cli"])
+    XCTAssertFalse(plan.laneLocked)
+    XCTAssertEqual(plan.primary, WorkImportPlanAction(target: "chat", mode: "resume", label: "Continue", needsModel: false))
+    XCTAssertEqual(plan.secondary, WorkImportPlanAction(target: "chat", mode: "fork", label: "Copy", needsModel: true))
+    XCTAssertNil(plan.note)
+  }
+
+  func testImportPlanTurnsClaudeCliIntoAnotherLaneIntoExplicitCopy() {
+    let plan = workPlanImport(importSession("claude"), surface: "cli", targetLaneId: "chat-lane")
+    XCTAssertEqual(plan.primary?.mode, "fork")
+    XCTAssertEqual(plan.primary?.label, "Copy here")
+    XCTAssertNil(plan.secondary)
+    XCTAssertEqual(plan.note, "Original stays in Apple Sim Preview.")
+  }
+
+  func testImportPlanDoesNotContinueClaudeChatFromLaneSubfolder() {
+    var subfolder = importAppleHome
+    subfolder.atLaneRoot = false
+    let plan = workPlanImport(importSession("claude", home: subfolder), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(plan.primary?.mode, "fork")
+    XCTAssertEqual(plan.primary?.label, "Open as ADE chat")
+  }
+
+  func testImportPlanLocksCursorCliLaneAndSaysWhy() {
+    let cursor = importSession("cursor", capabilities: ExternalSessionCapabilities(resumeInPlace: true))
+    let plan = workPlanImport(cursor, surface: "cli", targetLaneId: "other")
+    XCTAssertTrue(plan.laneLocked)
+    XCTAssertEqual(plan.targetLaneId, "apple")
+    XCTAssertEqual(plan.lockReason, "Cursor sessions stay in their own lane.")
+    XCTAssertEqual(plan.primary?.mode, "resume")
+    XCTAssertEqual(plan.primary?.label, "Continue")
+    XCTAssertNil(plan.secondary)
+  }
+
+  func testImportPlanKeepsChatModeOpenToAnyLaneThroughReplayCopy() {
+    let plan = workPlanImport(importSession("grok"), surface: "chat", targetLaneId: "other")
+    XCTAssertFalse(plan.laneLocked)
+    XCTAssertEqual(plan.primary, WorkImportPlanAction(target: "chat", mode: "fork", label: "Open as ADE chat", needsModel: true))
+  }
+
+  func testImportPlanLetsCodexContinueAnywhere() {
+    var caps = importFullCapabilities
+    caps.resumeInDifferentCwd = true
+    let plan = workPlanImport(importSession("codex", capabilities: caps), surface: "cli", targetLaneId: "other")
+    XCTAssertFalse(plan.laneLocked)
+    XCTAssertEqual(plan.primary?.mode, "resume")
+    XCTAssertNil(plan.note)
+  }
+
+  func testImportPlanLetsOutsideSessionContinueInItsOwnFolder() {
+    let outside = ExternalSessionHome(kind: "outside", laneId: nil, laneName: nil, atLaneRoot: false)
+    let plan = workPlanImport(importSession("pi", home: outside), surface: "cli", targetLaneId: "main")
+    XCTAssertFalse(plan.laneLocked)
+    XCTAssertEqual(plan.primary?.mode, "resume")
+    XCTAssertEqual(plan.note, "Runs in its original folder.")
+  }
+
+  func testImportPlanNotesOriginalFolderForOlderHostWithoutHome() {
+    var away = importSession("pi")
+    away.home = nil
+    away.cwdMatchesRequestedLane = false
+    XCTAssertEqual(
+      workPlanImport(away, surface: "cli", targetLaneId: "main", originLaneId: "main").note,
+      "Runs in its original folder."
+    )
+    var here = away
+    here.cwdMatchesRequestedLane = true
+    XCTAssertNil(workPlanImport(here, surface: "cli", targetLaneId: "main", originLaneId: "main").note)
+    // The folder matched the scanned lane, not the lane picked since.
+    XCTAssertEqual(
+      workPlanImport(here, surface: "cli", targetLaneId: "apple", originLaneId: "main").note,
+      "Runs in its original folder."
+    )
+    var unknown = away
+    unknown.cwdMatchesRequestedLane = nil
+    XCTAssertEqual(
+      workPlanImport(unknown, surface: "cli", targetLaneId: "main", originLaneId: "main").note,
+      "Runs in its original folder."
+    )
+  }
+
+  func testExternalSessionSizeTextMatchesDesktop() {
+    XCTAssertNil(workExternalSessionSizeText(nil))
+    XCTAssertNil(workExternalSessionSizeText(0))
+    XCTAssertNil(workExternalSessionSizeText(Double.nan))
+    XCTAssertEqual(workExternalSessionSizeText(512), "512 B")
+    XCTAssertEqual(workExternalSessionSizeText(1536), "1.5 KB")
+    XCTAssertEqual(workExternalSessionSizeText(20480), "20 KB")
+    XCTAssertEqual(workExternalSessionSizeText(5 * 1024 * 1024), "5.0 MB")
+    XCTAssertEqual(workExternalSessionSizeText(3 * 1024 * 1024 * 1024), "3.0 GB")
+    XCTAssertNotNil(workExternalSessionSizeText(1e308))
+  }
+
+  func testImportPlanWarnsBeforeContinuingLiveSession() {
+    let plan = workPlanImport(importSession("claude", possiblyActive: true), surface: "cli", targetLaneId: "apple")
+    XCTAssertEqual(plan.note, "Open elsewhere — close it there first.")
+  }
+
+  func testImportPlanAsksForConfirmationOnlyBeforeContinuingLiveSession() {
+    let live = workPlanImport(importSession("claude", possiblyActive: true), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(live.primary?.mode, "resume")
+    XCTAssertEqual(live.primary?.confirmBeforeRun, true)
+    // A copy leaves the original untouched, so it never needs the second tap.
+    XCTAssertEqual(live.secondary?.mode, "fork")
+    XCTAssertEqual(live.secondary?.confirmBeforeRun, false)
+    let idle = workPlanImport(importSession("claude"), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(idle.primary?.confirmBeforeRun, false)
+  }
+
+  func testImportPlanFallsBackToFirstSurfaceWithActions() {
+    let noCli = importSession("kimi", capabilities: ExternalSessionCapabilities())
+    let plan = workPlanImport(noCli, surface: "cli", targetLaneId: "apple")
+    XCTAssertEqual(plan.surfaces, ["chat"])
+    XCTAssertEqual(plan.surface, "chat")
+  }
+
+  func testImportPlanOffersOnlyChatCopyWhenNoCliPathIsLeft() {
+    let noCli = importSession("cursor", capabilities: ExternalSessionCapabilities())
+    let plan = workPlanImport(noCli, surface: "cli", targetLaneId: "apple")
+    XCTAssertEqual(plan.surfaces, ["chat"])
+    XCTAssertEqual(plan.primary?.target, "chat")
+    XCTAssertEqual(plan.primary?.mode, "fork")
+  }
+
+  func testEffectiveImportRulesNarrowDroidCopyWithoutFork() {
+    let rules = workEffectiveImportRules(importSession("droid", capabilities: ExternalSessionCapabilities(resumeInPlace: true)))
+    XCTAssertEqual(rules.cliCopy, .none)
+    XCTAssertEqual(rules.chatCopy, .any)
+  }
+
+  func testImportLaneRuleAllowsMatchesDesktop() {
+    XCTAssertTrue(workLaneRuleAllows(.any, home: importAppleHome, targetLaneId: "other"))
+    XCTAssertFalse(workLaneRuleAllows(.none, home: importAppleHome, targetLaneId: "apple"))
+    XCTAssertTrue(workLaneRuleAllows(.home, home: importAppleHome, targetLaneId: "apple"))
+    XCTAssertFalse(workLaneRuleAllows(.home, home: importAppleHome, targetLaneId: "other"))
+    XCTAssertTrue(workLaneRuleAllows(.home, home: nil, targetLaneId: "other"))
+    XCTAssertTrue(workLaneRuleAllows(.root, home: importAppleHome, targetLaneId: "apple"))
+    XCTAssertFalse(workLaneRuleAllows(.root, home: nil, targetLaneId: "apple"))
+  }
+
+  func testImportProviderLabelsCoverEveryProvider() {
+    XCTAssertEqual(
+      ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot", "factory"]
+        .map(workExternalSessionProviderName),
+      ["Claude", "Codex", "Cursor", "Droid", "OpenCode", "Pi", "Qwen", "Kimi", "Grok", "Copilot", "Droid"]
+    )
+    XCTAssertEqual(Set(workProviderImportRules.keys).count, 10)
+  }
+
+  /// Hardcoded copy of `PROVIDER_IMPORT_RULES` in
+  /// apps/desktop/src/shared/externalSessionPolicy.ts. Change both together.
+  func testImportProviderTableMatchesDesktopPolicy() {
+    let expected: [String: WorkProviderImportRules] = [
+      "claude": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
+      "codex": WorkProviderImportRules(chatContinue: .any, chatCopy: .any, cliContinue: .any, cliCopy: .any),
+      "cursor": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+      "droid": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .any),
+      "opencode": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "pi": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "qwen": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "kimi": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+      "grok": WorkProviderImportRules(chatContinue: .none, chatCopy: .any, cliContinue: .home, cliCopy: .home),
+      "copilot": WorkProviderImportRules(chatContinue: .root, chatCopy: .any, cliContinue: .home, cliCopy: .none),
+    ]
+    XCTAssertEqual(Set(workProviderImportRules.keys), Set(expected.keys))
+    for (provider, rules) in expected {
+      XCTAssertEqual(workProviderImportRules[provider], rules, provider)
+    }
+    XCTAssertEqual(workImportSessionProviders, ["claude", "codex", "cursor", "droid", "opencode", "pi", "qwen", "kimi", "grok", "copilot"])
+  }
+
+  func testImportPlanContinuesNativeChatProvidersAtLaneRootOnly() {
+    for provider in ["copilot", "droid", "opencode", "pi"] {
+      let atRoot = workPlanImport(importSession(provider), surface: "chat", targetLaneId: "apple")
+      XCTAssertEqual(atRoot.primary, WorkImportPlanAction(target: "chat", mode: "resume", label: "Continue", needsModel: false), provider)
+      XCTAssertEqual(atRoot.secondary?.label, "Copy", provider)
+
+      var subfolder = importAppleHome
+      subfolder.atLaneRoot = false
+      let inSubfolder = workPlanImport(importSession(provider, home: subfolder), surface: "chat", targetLaneId: "apple")
+      XCTAssertEqual(inSubfolder.primary?.label, "Open as ADE chat", provider)
+
+      let elsewhere = workPlanImport(importSession(provider), surface: "chat", targetLaneId: "other")
+      XCTAssertEqual(elsewhere.primary?.mode, "fork", provider)
+      XCTAssertEqual(elsewhere.note, "Original stays in Apple Sim Preview.", provider)
+    }
+    var noChat = importFullCapabilities
+    noChat.importToChat = false
+    let narrowed = workPlanImport(importSession("copilot", capabilities: noChat), surface: "chat", targetLaneId: "apple")
+    XCTAssertEqual(narrowed.primary?.label, "Open as ADE chat")
+  }
+
+  func testImportRejectionReasonMatchesDesktop() {
+    let cursor = importSession("cursor", capabilities: ExternalSessionCapabilities(resumeInPlace: true))
+    XCTAssertEqual(
+      workImportRejectionReason(cursor, target: "cli", mode: "resume", laneId: "other"),
+      "This Cursor session can only do that in Apple Sim Preview."
+    )
+    XCTAssertEqual(
+      workImportRejectionReason(cursor, target: "cli", mode: "fork", laneId: "apple"),
+      "This Cursor session can't be copied in a terminal."
+    )
+    XCTAssertNil(workImportRejectionReason(cursor, target: "cli", mode: "resume", laneId: "apple"))
+    XCTAssertEqual(
+      workImportRejectionReason(cursor, target: "chat", mode: "resume", laneId: "apple"),
+      "This Cursor session can't be continued as an ADE chat."
+    )
+    let unnamedHome = ExternalSessionHome(kind: "lane", laneId: "apple", laneName: nil, atLaneRoot: true)
+    XCTAssertEqual(
+      workImportRejectionReason(importSession("claude", home: unnamedHome), target: "chat", mode: "resume", laneId: "other"),
+      "This Claude session can't do that in this lane."
+    )
+    XCTAssertNil(workImportRejectionReason(importSession("copilot"), target: "chat", mode: "resume", laneId: "apple"))
+  }
+
+  func testImportScanProvidersSkipAcpProvidersOnOlderHost() {
+    XCTAssertEqual(workImportScanProviders(hostKnowsAcpProviders: true).count, 10)
+    XCTAssertEqual(
+      workImportScanProviders(hostKnowsAcpProviders: false),
+      ["claude", "codex", "cursor", "droid", "opencode", "pi"]
+    )
+  }
+
+  func testImportListHidesSessionsWithNoPrompts() {
+    XCTAssertTrue(workImportHasPrompts(ExternalSessionSummary(provider: "claude", id: "a", messageCount: nil)))
+    XCTAssertTrue(workImportHasPrompts(ExternalSessionSummary(provider: "claude", id: "b", messageCount: 3)))
+    XCTAssertFalse(workImportHasPrompts(ExternalSessionSummary(provider: "claude", id: "c", messageCount: 0)))
+  }
+
+  func testImportDateGroupLabelsTodayYesterdayAndOlder() {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "UTC")!
+    let now = Date(timeIntervalSince1970: 1_790_000_000) // mid-day UTC
+    XCTAssertEqual(workImportDateGroup(now.timeIntervalSince1970 * 1000 - 60_000, now: now, calendar: calendar), "Today")
+    XCTAssertEqual(workImportDateGroup(now.timeIntervalSince1970 - 86_400, now: now, calendar: calendar), "Yesterday")
+    XCTAssertEqual(workImportDateGroup(nil, now: now, calendar: calendar), "Older")
+    XCTAssertNotEqual(workImportDateGroup(now.timeIntervalSince1970 - 40 * 86_400, now: now, calendar: calendar), "Older")
+  }
+
+  func testExternalSessionRowNamesWindowsFolderAndUntitledChat() {
+    let windows = ExternalSessionSummary(
       provider: "codex",
-      id: "external-same-folder",
-      cwdMatchesRequestedLane: true,
-      capabilities: ExternalSessionCapabilities(resumeInPlace: true)
+      id: "win",
+      cwd: #"C:\Users\arul\Projects\ade-app\"#,
+      home: ExternalSessionHome(kind: "outside")
     )
-    let continueAction = workExternalSessionActions(for: sameFolder)
-      .first(where: { $0.id == "resume-here" })
-    XCTAssertTrue(continueAction?.detail.contains("takes over the session") == true)
-    XCTAssertTrue(continueAction?.detail.contains("don't run it elsewhere") == true)
+    XCTAssertEqual(windows.cwdLastPathSegment, "ade-app")
+    XCTAssertEqual(windows.laneDisplayName, "ade-app")
+    XCTAssertEqual(windows.rowHeading, "Untitled Codex chat")
 
-    let crossFolder = ExternalSessionSummary(
+    let sampled = ExternalSessionSummary(
       provider: "claude",
-      id: "external-cross-folder",
-      cwd: "/Users/dev/Projects/client/feature/repository",
-      cwdMatchesRequestedLane: false,
-      capabilities: ExternalSessionCapabilities(resumeInPlace: true)
+      id: "sampled",
+      messages: [
+        ExternalSessionMessage(role: "assistant", text: "Hi"),
+        ExternalSessionMessage(role: "user", text: "  Fix   the import\nscreen "),
+      ]
     )
-    let crossFolderActions = workExternalSessionActions(for: crossFolder)
-    XCTAssertTrue(
-      crossFolderActions.first(where: { $0.id == "resume-in-place" })?.detail
-        .contains("…/client/feature/repository") == true
-    )
+    XCTAssertEqual(sampled.rowHeading, "Fix the import screen")
+  }
 
-    let disabled = ExternalSessionSummary(
-      provider: "claude",
-      id: "external-disabled",
-      cwd: "/tmp/elsewhere",
-      cwdMatchesRequestedLane: false
+  func testExternalSessionImportedBeforeAndImportResultDecodeLeniently() throws {
+    let summary = try JSONDecoder().decode(
+      ExternalSessionSummary.self,
+      from: Data(#"{"provider":"claude","id":"x","importedBefore":true}"#.utf8)
     )
-    XCTAssertTrue(
-      workExternalSessionActions(for: disabled).first?.detail
-        .contains("Claude can't resume across folders") == true
+    XCTAssertTrue(summary.importedBefore)
+    let malformed = try JSONDecoder().decode(
+      ExternalSessionSummary.self,
+      from: Data(#"{"provider":"claude","id":"y","importedBefore":"yes"}"#.utf8)
     )
+    XCTAssertFalse(malformed.importedBefore)
+
+    // The import already happened on the host; a chat summary this build
+    // cannot read must not turn it into an error.
+    let result = try JSONDecoder().decode(
+      ExternalSessionImportResult.self,
+      from: Data(#"{"kind":"chat","chatSessionId":"chat-1","laneId":"apple","chatSummary":{"sessionId":42}}"#.utf8)
+    )
+    XCTAssertEqual(result.kind, "chat")
+    XCTAssertEqual(result.chatSessionId, "chat-1")
+    XCTAssertNil(result.chatSummary)
   }
 
   func testSyncPreprocessRejectsCompressedPayloadAboveLimit() throws {
@@ -4899,7 +5198,7 @@ final class ADETests: XCTestCase {
     let snapshot = try JSONDecoder().decode(AgentChatEventHistorySnapshot.self, from: Data(json.utf8))
 
     XCTAssertEqual(snapshot.events.count, 3)
-    guard case .text(let text, _, _, _) = snapshot.events[0].event else {
+    guard case .text(let text, _, _, _, _) = snapshot.events[0].event else {
       return XCTFail("Expected the known text event before the unknown event to survive.")
     }
     XCTAssertEqual(text, "Before")
@@ -5063,7 +5362,7 @@ final class ADETests: XCTestCase {
 
     let toolItemIds = transcript.compactMap { envelope -> String? in
       if case .toolCall(_, _, let itemId, _, _) = envelope.event { return itemId }
-      if case .toolResult(_, _, let itemId, _, _, _) = envelope.event { return itemId }
+      if case .toolResult(_, _, let itemId, _, _, _, _, _) = envelope.event { return itemId }
       return nil
     }
     XCTAssertFalse(toolItemIds.contains("child-tool-1"))
@@ -6863,6 +7162,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(service.supportsRemoteAction("analytics.setClientEnabled"))
     XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
     XCTAssertFalse(service.supportsRemoteAction("work.updateSessionMeta"))
+    XCTAssertFalse(service.supportsExternalSessionDetail)
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.setScheduledWorkPaused", sessionId: "chat-legacy"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.dispatchSteer", sessionId: "chat-legacy"))
@@ -6906,6 +7206,38 @@ final class ADETests: XCTestCase {
     }
     let analyticsOptOutAcknowledged = await service.setProductAnalyticsClientEnabled(false)
     XCTAssertTrue(analyticsOptOutAcknowledged)
+  }
+
+  @MainActor
+  func testExternalSessionDetailRejectsHostWithoutAdvertisedAction() async throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "host-1", "deviceName": "Mac Studio"],
+      "features": [
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [[
+            "action": "work.listExternalSessions",
+            "scope": "project",
+            "policy": ["viewerAllowed": true],
+          ]],
+        ],
+      ],
+    ])
+
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertFalse(service.supportsExternalSessionDetail)
+    do {
+      _ = try await service.getExternalSessionDetail(provider: "claude", sessionId: "external-1")
+      XCTFail("A host that omits the detail action must reject the request locally")
+    } catch {
+      XCTAssertEqual((error as NSError).code, 15)
+      XCTAssertEqual(service.pendingOperationCount, 0)
+    }
   }
 
   @MainActor
@@ -14609,18 +14941,6 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(tokens.contains(where: { $0.role == .string && $0.text == "\"/users\"" }))
   }
 
-  func testSyntaxHighlighterRepeatedCallsReturnStableTokensAndHighlights() {
-    let source = "import Foundation\nstruct Demo {\n  let title = \"Hello\"\n  // Greets the workspace\n}"
-
-    let firstTokens = SyntaxHighlighter.tokenize(source, as: .swift)
-    let secondTokens = SyntaxHighlighter.tokenize(source, as: .swift)
-    XCTAssertEqual(secondTokens, firstTokens)
-
-    let firstHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
-    let secondHighlight = SyntaxHighlighter.highlightedAttributedString(source, as: .swift)
-    XCTAssertEqual(secondHighlight, firstHighlight)
-  }
-
   func testMatchedTransitionScopeReturnsNilIdsWithoutNamespace() {
     let scope = ADEMatchedTransitionScope(namespace: nil, stem: "work-session-1")
 
@@ -15282,9 +15602,9 @@ final class ADETests: XCTestCase {
   }
 
   func testWorkTimelineKeepsSubagentsOutOfMainActivityBundles() {
-    // The two activity updates are consecutive so they cluster into one bundle;
-    // the real subagent's spawn row is a hard timeline boundary that sits
-    // separately and is never folded into that bundle.
+    // A todo update is the chat's one task list, not an activity row. The cron
+    // stays its own activity card, and the subagent stays a spawn row — never
+    // folded into that activity.
     let raw = """
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:00.000Z","sequence":1,"event":{"type":"todo_update","turnId":"turn-1","items":[{"id":"task-1","description":"Review mobile activity rows","status":"in_progress"}]}}
     {"sessionId":"chat-1","timestamp":"2026-07-07T00:00:01.000Z","sequence":2,"event":{"type":"scheduled_work_update","id":"cron-1","kind":"cron","status":"scheduled","origin":"schedule_cron","title":"CI follow-up","turnId":"turn-1"}}
@@ -15297,30 +15617,23 @@ final class ADETests: XCTestCase {
       artifacts: [],
       localEchoMessages: []
     )
-    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
-      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+    let eventCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload else { return nil }
       return card
     }
+    let activityCards = eventCards.filter { $0.kind == "activity" || $0.kind == "activityBundle" }
     let subagentRows = snapshot.timeline.compactMap { entry -> WorkSubagentTimelineRow? in
       guard case .subagent(let row) = entry.payload else { return nil }
       return row
     }
 
-    XCTAssertEqual(activityBundles.count, 1)
     XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
     XCTAssertEqual(snapshot.subagentSnapshots.first?.description, "Inspect iOS transcript")
-    XCTAssertEqual(activityBundles.first?.title, "Activity")
-    XCTAssertTrue(activityBundles.first?.body?.contains("2 activity updates") == true)
-    XCTAssertTrue(activityBundles.first?.body?.contains("CI follow-up") == true)
-    // The subagent now lives in its own timeline row, NOT folded into the
-    // activity bundle body or its bullets.
-    XCTAssertFalse(activityBundles.first?.body?.contains("Inspect iOS transcript") == true)
-    XCTAssertEqual(Array(activityBundles.first?.bullets.prefix(2) ?? []), [
-      "Tasks · 0/1 complete",
-      "Cron scheduled",
-    ])
-    // A real subagent that started (but never sent progress/result) surfaces as
-    // exactly one dedicated spawn row — a hard timeline boundary, not swallowed.
+    XCTAssertEqual(snapshot.taskList?.items.map(\.label), ["Review mobile activity rows"])
+    XCTAssertEqual(eventCards.filter { $0.kind == "activityBundle" }.count, 0)
+    XCTAssertEqual(activityCards.count, 1)
+    XCTAssertTrue(activityCards.first?.body?.contains("CI follow-up") == true)
+    XCTAssertFalse(activityCards.contains { $0.body?.contains("Inspect iOS transcript") == true })
     XCTAssertEqual(subagentRows.count, 1)
     XCTAssertEqual(subagentRows.first?.kind, .spawn)
     XCTAssertEqual(subagentRows.first?.snapshot.description, "Inspect iOS transcript")
@@ -15341,16 +15654,18 @@ final class ADETests: XCTestCase {
       artifacts: [],
       localEchoMessages: []
     )
-    let activityBundles = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
-      guard case .eventCard(let card) = entry.payload, card.kind == "activityBundle" else { return nil }
+    let activityCards = snapshot.timeline.compactMap { entry -> WorkEventCardModel? in
+      guard case .eventCard(let card) = entry.payload, card.kind == "activity" || card.kind == "activityBundle" else { return nil }
       return card
     }
 
-    XCTAssertEqual(activityBundles.count, 2)
+    XCTAssertEqual(activityCards.count, 2)
     XCTAssertEqual(snapshot.subagentSnapshots.count, 1)
-    XCTAssertTrue(activityBundles[0].body?.contains("First turn cron") == true)
-    XCTAssertFalse(activityBundles[0].body?.contains("First turn agent") == true)
-    XCTAssertTrue(activityBundles[1].body?.contains("Second turn cron") == true)
+    XCTAssertEqual(snapshot.taskList?.items.map(\.label), ["Second turn task"])
+    XCTAssertTrue(activityCards[0].body?.contains("First turn cron") == true)
+    XCTAssertFalse(activityCards[0].body?.contains("First turn agent") == true)
+    XCTAssertTrue(activityCards[1].body?.contains("Second turn cron") == true)
+    XCTAssertEqual(activityCards.map(\.turnId), ["turn-1", "turn-2"])
   }
 
   func testWorkTimelineOmitsPromptSuggestionsForClaudeButPreservesOtherProviders() {
@@ -15374,7 +15689,7 @@ final class ADETests: XCTestCase {
     let claudePresented = workPresentedTimelineEntries(snapshot.timeline, provider: "claude")
     let codexPresented = workPresentedTimelineEntries(snapshot.timeline, provider: "codex")
 
-    XCTAssertTrue(rawCards.contains { $0.kind == "activityBundle" })
+    XCTAssertTrue(rawCards.contains { $0.kind == "activity" })
     XCTAssertTrue(rawCards.contains { $0.kind == "promptSuggestion" })
     XCTAssertTrue(claudePresented.contains { entry in
       guard case .message(let message) = entry.payload else { return false }
@@ -18969,7 +19284,7 @@ final class ADETests: XCTestCase {
       "result": "https://example.com/icon.png",
       "status": "completed",
     ])
-    guard case .toolResult(let tool, let result, let itemId, _, let turnId, let status) = makeWorkChatEvent(from: decoded) else {
+    guard case .toolResult(let tool, let result, let itemId, _, let turnId, let status, _, _) = makeWorkChatEvent(from: decoded) else {
       return XCTFail("Expected decoded image generation to map to a compact tool result.")
     }
     XCTAssertEqual(tool, "image_generation")
@@ -19382,11 +19697,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cards.first?.metadata, ["Automatic recovery"])
   }
 
-  func testCodexRecoveryFollowsTheHostCapability() {
-    XCTAssertTrue(workChatCodexRecoveryAvailable(hostSupportsRecovery: true))
-    XCTAssertFalse(workChatCodexRecoveryAvailable(hostSupportsRecovery: false))
-  }
-
   func testMcpConnectorIdentitySurvivesDecodedAndFallbackToolCards() throws {
     let eventObject: [String: Any] = [
       "type": "tool_call",
@@ -19428,7 +19738,7 @@ final class ADETests: XCTestCase {
 
     guard transcript.count == 2,
           case .toolCall(let callTool, _, let callItemId, _, _) = transcript[0].event,
-          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status) = transcript[1].event else {
+          case .toolResult(let resultTool, let resultText, let resultItemId, _, _, let status, _, _) = transcript[1].event else {
       return XCTFail("Expected malformed MCP metadata to preserve the raw tool call and result.")
     }
     XCTAssertEqual(callTool, "google_drive:search_files")
@@ -20393,25 +20703,6 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(preview.hasSuffix("..."))
   }
 
-  func testParseMarkdownBlocksUsesStableIdsAcrossRepeatedCalls() {
-    let markdown = """
-    # Heading
-
-    - one
-    - one
-
-    ```swift
-    let value = 1
-    ```
-    """
-
-    let first = parseMarkdownBlocks(markdown)
-    let second = parseMarkdownBlocks(markdown)
-
-    XCTAssertEqual(first, second)
-    XCTAssertEqual(first.map(\.id), second.map(\.id))
-  }
-
   func testParseMarkdownListBlocksStayBoundedAndPreserveOrder() {
     let itemCount = workMarkdownListItemsPerRenderBlock * 2 + 3
     let expectedItems = (1...itemCount).map { "Item \($0)" }
@@ -20527,8 +20818,8 @@ final class ADETests: XCTestCase {
 
     guard case .toolCall(_, _, let callId, _, _) = first[0].event,
           case .toolCall(_, _, let secondCallId, _, _) = second[0].event,
-          case .toolResult(_, _, let resultId, _, _, _) = first[1].event,
-          case .toolResult(_, _, let secondResultId, _, _, _) = second[1].event,
+          case .toolResult(_, _, let resultId, _, _, _, _, _) = first[1].event,
+          case .toolResult(_, _, let secondResultId, _, _, _, _, _) = second[1].event,
           case .structuredQuestion(_, _, let questionId, _) = first[2].event,
           case .structuredQuestion(_, _, let secondQuestionId, _) = second[2].event
     else {
@@ -22124,7 +22415,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(markers[0].turnId.hasPrefix("fallback-"))
     XCTAssertEqual(markers[0].workedDurationLabel, "2s")
     XCTAssertEqual(markers[1].turnId, "turn-without-start")
-    XCTAssertEqual(markers[1].workedDurationLabel, "0s")
+    XCTAssertEqual(markers[1].workedDurationLabel, "<1s")
   }
 
   func testWorkEventCardsHideLowSignalLifecycleNoise() {
@@ -22517,23 +22808,23 @@ final class ADETests: XCTestCase {
   func testWorkDeliveryBadgeDistinguishesAcceptedFromProcessed() {
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "accepted", processed: nil),
-      .accepted
+      .steering
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "delivered", processed: nil),
-      .accepted
+      nil
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "processed", processed: true),
-      .processed
+      .steered
     )
     XCTAssertEqual(
       workDeliveryBadgeState(deliveryState: "unprocessed", processed: false),
-      .unprocessed
+      .notSteered
     )
-    XCTAssertEqual(WorkDeliveryBadge.State.accepted.label, "Accepted")
-    XCTAssertEqual(WorkDeliveryBadge.State.processed.label, "Processed")
-    XCTAssertEqual(WorkDeliveryBadge.State.unprocessed.label, "Not processed")
+    XCTAssertEqual(WorkDeliveryBadge.State.steering.label, "Steering…")
+    XCTAssertEqual(WorkDeliveryBadge.State.steered.label, "Steered")
+    XCTAssertEqual(WorkDeliveryBadge.State.notSteered.label, "Not steered — turn ended first")
   }
 
   func testProviderNeutralRecoveryFeedbackDoesNotAssumeCodex() {
@@ -22690,6 +22981,53 @@ final class ADETests: XCTestCase {
     workRemoveLoadedArtifactTempFile(.video(url))
 
     XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+  }
+
+  /// A stale load deletes only its own file, never the one another load of
+  /// the same artifact published.
+  func testWorkArtifactVideoTempURLIsUniquePerLoad() throws {
+    let stale = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    let current = workArtifactVideoTempURL(artifactId: "art-1", fileExtension: "mp4")
+    XCTAssertNotEqual(stale, current)
+    XCTAssertTrue(current.lastPathComponent.hasPrefix("ade-work-artifact-art-1-"))
+    XCTAssertEqual(current.pathExtension, "mp4")
+    try Data([0x00]).write(to: stale)
+    try Data([0x00]).write(to: current)
+    defer { try? FileManager.default.removeItem(at: current) }
+
+    workRemoveLoadedArtifactTempFile(.video(stale))
+
+    XCTAssertFalse(FileManager.default.fileExists(atPath: stale.path))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: current.path))
+  }
+
+  /// A row that appears must not download a large proof video: it shows the
+  /// size, and only a tap on play downloads it.
+  func testALargeVideoIsOnlySizedOnPreviewAndDownloadsOnPlay() {
+    XCTAssertEqual(workArtifactEagerVideoMaxBytes, 8 * 1024 * 1024)
+    XCTAssertTrue(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes + 1))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .preview, sizeBytes: workArtifactEagerVideoMaxBytes))
+    XCTAssertFalse(workArtifactVideoWaitsForPlay(intent: .play, sizeBytes: 50_000_000))
+  }
+
+  /// A cancelled load (the row scrolled away) stays unloaded, so the next
+  /// appear retries. It is not shown as an error.
+  func testACancelledVideoLoadStaysUnloadedSoTheNextAppearRetries() {
+    XCTAssertEqual(workArtifactVideoLoadFailure(CancellationError()), .retryLater)
+    let legacy = NSError(
+      domain: "ADE",
+      code: 8,
+      userInfo: [NSLocalizedDescriptionKey: "Unsupported file action: readArtifactRange"]
+    )
+    XCTAssertEqual(workArtifactVideoLoadFailure(legacy), .useWholeFileRead)
+    let offline = NSError(
+      domain: "ADE",
+      code: 16,
+      userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."]
+    )
+    XCTAssertEqual(workArtifactVideoLoadFailure(offline), .show)
+    let other = NSError(domain: "ADE", code: 8, userInfo: [NSLocalizedDescriptionKey: "boom"])
+    XCTAssertEqual(workArtifactVideoLoadFailure(other), .show)
   }
 
   func testParseANSISegmentsTracksForegroundColors() {
@@ -24678,7 +25016,9 @@ final class ADETests: XCTestCase {
       logicalItemId: "tool-logical-1",
       parentItemId: nil,
       turnId: "turn-1",
-      status: "completed"
+      status: "completed",
+      sources: nil,
+      sourceRefsOmittedForMobile: nil
     ))
 
     let transcript = [
@@ -24770,7 +25110,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:02.000Z",
         sequence: 2,
-        event: .toolResult(tool: "functions.Read", resultText: "{\"content\":\"ADE\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: .completed)
+        event: .toolResult(tool: "functions.Read", resultText: "{\"content\":\"ADE\"}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1", status: .completed, sources: nil, sourceRefsOmittedForMobile: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",

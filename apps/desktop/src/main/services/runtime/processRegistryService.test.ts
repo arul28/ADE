@@ -164,7 +164,7 @@ describe("processRegistryService", () => {
     db.close();
   });
 
-  it("excludes fresh heartbeat rows whose process no longer exists", async () => {
+  it("excludes fresh heartbeats for dead processes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-17T00:00:20.000Z"));
     const db = await createDb();

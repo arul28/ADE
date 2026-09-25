@@ -2924,6 +2924,58 @@ describe("laneService symlinked project root path space", () => {
       fixture.cleanup();
     }
   });
+
+  it("finds the lane for a path through a symlinked root, preferring the nested lane", async () => {
+    const projectId = "proj-symlink-lane-for-path";
+    const fixture = await makeSymlinkedProject(projectId, "ade-lane-symlink-for-path-");
+    try {
+      // The row holds the symlinked spelling; the caller's cwd is the physical one.
+      const nestedLinkPath = path.join(fixture.linkWorktreesDir, "nested-1234abcd");
+      fs.mkdirSync(path.join(fixture.realWorktreesDir, "nested-1234abcd"), { recursive: true });
+      fixture.db.run(INSERT_LANE, ["lane-nested", projectId, "Nested", null, "worktree", "main", "ade/nested", nestedLinkPath, null, 0, null, null, null, null, "active", NOW, null]);
+      vi.mocked(runGit).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+
+      const service = createLaneService({
+        db: fixture.db,
+        projectRoot: fixture.linkRoot,
+        projectId,
+        defaultBaseRef: "main",
+        worktreesDir: fixture.linkWorktreesDir,
+      });
+
+      expect(service.getLaneIdForPath(path.join(fixture.realRoot, "src", "app.ts"))).toBe("lane-main");
+      expect(service.getLaneIdForPath(fixture.realRoot)).toBe("lane-main");
+      expect(service.getLaneIdForPath(path.join(fixture.realWorktreesDir, "nested-1234abcd", "deep"))).toBe("lane-nested");
+      expect(service.getLaneIdForPath(path.join(nestedLinkPath, "deep"))).toBe("lane-nested");
+      // A sibling that shares the root's name as a prefix is not inside it.
+      expect(service.getLaneIdForPath(`${fixture.realRoot}-old`)).toBeNull();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  // WINDOWS-GATE: needs a case-insensitive file system; the Windows fold itself is pinned by pathCase.test.ts and pathCompare.test.ts in windows-foundation.
+  it.runIf(process.platform === "darwin" || process.platform === "win32")(
+    "finds the lane for a path whose casing differs from the lane row",
+    async () => {
+      const projectId = "proj-case-lane-for-path";
+      const fixture = await makeSymlinkedProject(projectId, "ade-lane-case-for-path-");
+      try {
+        vi.mocked(runGit).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
+        const service = createLaneService({
+          db: fixture.db,
+          projectRoot: fixture.linkRoot,
+          projectId,
+          defaultBaseRef: "main",
+          worktreesDir: fixture.linkWorktreesDir,
+        });
+
+        expect(service.getLaneIdForPath(path.join(fixture.realRoot.toUpperCase(), "Src"))).toBe("lane-main");
+      } finally {
+        fixture.cleanup();
+      }
+    },
+  );
 });
 
 describe("laneService importBranch", () => {
@@ -7319,7 +7371,7 @@ describe("laneService branch drift", () => {
     });
   });
 
-  it("rejects a resolution whose expected HEAD no longer matches the worktree", async () => {
+  it("rejects branch resolution when expected HEAD differs from the worktree", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-drift-stale-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-stale", repoRoot });

@@ -13,14 +13,19 @@ import type {
   TestSuiteDefinition,
 } from "../../../shared/types";
 import { Button } from "../ui/Button";
+import { confirmDialog } from "../ui/dialog/confirm";
+import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice/Banner";
 import { cn } from "../ui/cn";
 import { extractError } from "./shared";
 import { inputCls } from "./designTokens";
 import { buildRuleSentence } from "./automationCopy";
 import { actionToDraftAction } from "./builder/draftBridge";
 import { RuleList } from "./list/RuleList";
+import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { RuleBuilder } from "./builder/RuleBuilder";
 import { RuleHistory } from "./history/RuleHistory";
+import { TemplateGallery } from "./templates/TemplateGallery";
 
 /** Read on use: the app-wide default can move with model-manifest.json. */
 const defaultModelId = (): string =>
@@ -111,11 +116,16 @@ export function AutomationsWorkspace({
   pendingDraft,
   onDraftConsumed,
   onOpenTemplates,
+  templatesOpen = false,
+  onCloseTemplates,
 }: {
   active?: boolean;
   pendingDraft: AutomationRuleDraft | null;
   onDraftConsumed: () => void;
   onOpenTemplates: () => void;
+  /** The template gallery fills the main area; the rule list stays put. */
+  templatesOpen?: boolean;
+  onCloseTemplates?: () => void;
 }) {
   const [detailView, setDetailView] = useState<DetailView>("builder");
   const [rules, setRules] = useState<AutomationRuleSummary[]>([]);
@@ -148,9 +158,14 @@ export function AutomationsWorkspace({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft]);
 
-  const confirmDiscardIfDirty = useCallback((): boolean => {
+  const confirmDiscardIfDirty = useCallback(async (): Promise<boolean> => {
     if (!isDirty) return true;
-    const ok = window.confirm("You have unsaved changes. Discard them and continue?");
+    const ok = await confirmDialog({
+      title: "You have unsaved changes.",
+      message: "Discard them and continue?",
+      confirmLabel: "Discard",
+      destructive: true,
+    });
     if (ok && savedSnapshotRef.current != null) {
       try {
         setDraft(JSON.parse(savedSnapshotRef.current) as AutomationRuleDraft);
@@ -304,8 +319,8 @@ export function AutomationsWorkspace({
     }
   }, [draft]);
 
-  const createRule = useCallback(() => {
-    if (!confirmDiscardIfDirty()) return;
+  const createRule = useCallback(async () => {
+    if (!(await confirmDiscardIfDirty())) return;
     setSelectedRuleId(null);
     const blank = createBlankDraft();
     setDraft(blank);
@@ -364,109 +379,138 @@ export function AutomationsWorkspace({
     }
   }, []);
 
+  const hasProjectSidebar = useHasProjectSidebar();
   const selectedRule = selectedRuleId ? rules.find((r) => r.id === selectedRuleId) ?? null : null;
   const delivery = ingressStatus?.delivery ?? null;
 
+  // The workspace stays mounted behind the template gallery, so an unsaved
+  // draft survives a visit there; only picking a template replaces it.
+  const applyTemplate = async (templateDraft: Omit<AutomationRuleDraft, "id">) => {
+    if (!(await confirmDiscardIfDirty())) return;
+    setSelectedRuleId(null);
+    const seeded = { ...templateDraft } as AutomationRuleDraft;
+    setDraft(seeded);
+    savedSnapshotRef.current = JSON.stringify(seeded);
+    setIssues([]);
+    setSimulationNotes([]);
+    setRequiredConfirmations([]);
+    setAcceptedConfirmations(new Set());
+    setDetailView("builder");
+    onCloseTemplates?.();
+  };
+
+  // The list lives in the project sidebar; without one (hosted web client,
+  // tests) it keeps its own column on the left.
+  const ruleList = (
+    <RuleList
+      rules={filteredRules}
+      selectedRuleId={selectedRuleId}
+      search={search}
+      loading={loading}
+      error={error}
+      ingressStatus={ingressStatus}
+      delivery={delivery}
+      onSearch={setSearch}
+      onSelect={async (id) => {
+        if (id !== selectedRuleId && !(await confirmDiscardIfDirty())) return;
+        setSelectedRuleId(id);
+        setDetailView("builder");
+        onCloseTemplates?.();
+      }}
+      onToggle={(id, enabled) => {
+        window.ade.automations
+          .toggle({ id, enabled })
+          .then(setRules)
+          .catch((err) => setError(extractError(err)));
+      }}
+      onRunNow={beginRunRule}
+      onOpenHistory={async (id) => {
+        if (!(await confirmDiscardIfDirty())) return;
+        setSelectedRuleId(id);
+        setDetailView("history");
+        onCloseTemplates?.();
+      }}
+      onDelete={(id) => void deleteRule(id)}
+      onNew={() => {
+        createRule();
+        onCloseTemplates?.();
+      }}
+      onOpenTemplates={async () => {
+        if (await confirmDiscardIfDirty()) onOpenTemplates();
+      }}
+      onUseTemplate={applyTemplate}
+      onRefresh={() => void refresh()}
+    />
+  );
+
   return (
     <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.15 }} className="flex h-full min-h-0">
-      <RuleList
-        rules={filteredRules}
-        selectedRuleId={selectedRuleId}
-        search={search}
-        loading={loading}
-        error={error}
-        ingressStatus={ingressStatus}
-        delivery={delivery}
-        onSearch={setSearch}
-        onSelect={(id) => {
-          if (id !== selectedRuleId && !confirmDiscardIfDirty()) return;
-          setSelectedRuleId(id);
-          setDetailView("builder");
-        }}
-        onToggle={(id, enabled) => {
-          window.ade.automations
-            .toggle({ id, enabled })
-            .then(setRules)
-            .catch((err) => setError(extractError(err)));
-        }}
-        onRunNow={beginRunRule}
-        onOpenHistory={(id) => {
-          if (!confirmDiscardIfDirty()) return;
-          setSelectedRuleId(id);
-          setDetailView("history");
-        }}
-        onDelete={(id) => void deleteRule(id)}
-        onNew={createRule}
-        onOpenTemplates={() => {
-          if (confirmDiscardIfDirty()) onOpenTemplates();
-        }}
-        onUseTemplate={(templateDraft) => {
-          if (!confirmDiscardIfDirty()) return;
-          setSelectedRuleId(null);
-          const seeded = { ...templateDraft } as AutomationRuleDraft;
-          setDraft(seeded);
-          savedSnapshotRef.current = JSON.stringify(seeded);
-          setIssues([]);
-          setSimulationNotes([]);
-          setRequiredConfirmations([]);
-          setAcceptedConfirmations(new Set());
-          setDetailView("builder");
-        }}
-        onRefresh={() => void refresh()}
-      />
-
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-        {selectedRule ? (
-          <div className="flex shrink-0 items-center gap-0 border-b border-white/[0.06] bg-white/[0.01] px-3" style={{ minHeight: 34 }}>
-            <DetailTab active={detailView === "builder"} label="Builder" icon={PencilSimple} onClick={() => setDetailView("builder")} />
-            <DetailTab
-              active={detailView === "history"}
-              label="History"
-              icon={ClockCounterClockwise}
-              onClick={() => {
-                if (confirmDiscardIfDirty()) setDetailView("history");
-              }}
-            />
-          </div>
-        ) : null}
-
-        <div className="min-h-0 flex-1 overflow-hidden">
-          {detailView === "history" && selectedRule ? (
-            <RuleHistory automationId={selectedRule.id} ruleName={selectedRule.name} />
-          ) : draft ? (
-            <RuleBuilder
-              draft={draft}
-              setDraft={setDraft}
-              lanes={lanes.map((l) => ({ id: l.id, name: l.name }))}
-              suites={suites}
-              ingressStatus={ingressStatus}
-              issues={issues}
-              simulationNotes={simulationNotes}
-              requiredConfirmations={requiredConfirmations}
-              acceptedConfirmations={acceptedConfirmations}
-              onToggleConfirmation={(key, checked) =>
-                setAcceptedConfirmations((current) => {
-                  const next = new Set(current);
-                  if (checked) next.add(key);
-                  else next.delete(key);
-                  return next;
-                })
-              }
-              onSave={() => void saveDraft()}
-              onSimulate={() => void simulateDraft()}
-              onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
-              onIngressChanged={() => void refresh()}
-              cursorCloudConnected={cursorCloudConnected}
-              saving={saving}
-              simulating={simulating}
-              running={running}
-              dirty={isDirty}
-            />
-          ) : (
-            <EmptyDetail onNew={createRule} onOpenTemplates={onOpenTemplates} />
-          )}
+      {hasProjectSidebar ? (
+        <ProjectSidebarSlot active={active}>{ruleList}</ProjectSidebarSlot>
+      ) : (
+        <div className="flex min-h-0 w-[340px] shrink-0 flex-col border-r border-white/[0.06] bg-white/[0.01]">
+          {ruleList}
         </div>
-      </div>
+      )}
+
+      {templatesOpen ? (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="automations-templates-page">
+          <TemplateGallery onUseTemplate={applyTemplate} onBack={onCloseTemplates} />
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {selectedRule ? (
+            <div className="flex shrink-0 items-center gap-0 border-b border-white/[0.06] bg-white/[0.01] px-3" style={{ minHeight: 34 }}>
+              <DetailTab active={detailView === "builder"} label="Builder" icon={PencilSimple} onClick={() => setDetailView("builder")} />
+              <DetailTab
+                active={detailView === "history"}
+                label="History"
+                icon={ClockCounterClockwise}
+                onClick={async () => {
+                  if (await confirmDiscardIfDirty()) setDetailView("history");
+                }}
+              />
+            </div>
+          ) : null}
+
+          <div className="min-h-0 flex-1 overflow-hidden">
+            {detailView === "history" && selectedRule ? (
+              <RuleHistory automationId={selectedRule.id} ruleName={selectedRule.name} />
+            ) : draft ? (
+              <RuleBuilder
+                draft={draft}
+                setDraft={setDraft}
+                lanes={lanes.map((l) => ({ id: l.id, name: l.name }))}
+                suites={suites}
+                ingressStatus={ingressStatus}
+                issues={issues}
+                simulationNotes={simulationNotes}
+                requiredConfirmations={requiredConfirmations}
+                acceptedConfirmations={acceptedConfirmations}
+                onToggleConfirmation={(key, checked) =>
+                  setAcceptedConfirmations((current) => {
+                    const next = new Set(current);
+                    if (checked) next.add(key);
+                    else next.delete(key);
+                    return next;
+                  })
+                }
+                onSave={() => void saveDraft()}
+                onSimulate={() => void simulateDraft()}
+                onRunNow={selectedRule ? () => beginRunRule(selectedRule) : undefined}
+                onIngressChanged={() => void refresh()}
+                cursorCloudConnected={cursorCloudConnected}
+                saving={saving}
+                simulating={simulating}
+                running={running}
+                dirty={isDirty}
+              />
+            ) : (
+              <EmptyDetail onNew={createRule} onOpenTemplates={onOpenTemplates} />
+            )}
+          </div>
+        </div>
+      )}
 
       {manualRunRule ? (
         <ManualRunModal
@@ -551,35 +595,46 @@ function ManualRunModal({
   onRun: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 px-4">
-      <div className="w-full max-w-md rounded-xl border border-white/[0.08] bg-surface-overlay p-4 shadow-float">
-        <div className="text-sm font-semibold text-fg">Choose a lane for this run</div>
-        <div className="mt-1 text-xs leading-relaxed text-muted-fg/70">{rule.name} requires a lane when triggered.</div>
-        <label className="mt-4 block space-y-1.5">
-          <span className="text-[10px] uppercase tracking-[0.1em] text-muted-fg/60">Lane</span>
-          <select className={inputCls} value={laneId} onChange={(e) => onLaneId(e.target.value)}>
-            {lanes.map((lane) => (
-              <option key={lane.id} value={lane.id}>
-                {lane.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        {!lanes.length ? (
-          <div className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-            No active lanes are available. Switch the rule to create a lane per run, or create a lane from the Work tab.
-          </div>
-        ) : null}
-        <div className="mt-4 flex justify-end gap-2">
-          <Button size="sm" variant="outline" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button size="sm" variant="primary" disabled={!laneId || pending} onClick={onRun}>
-            <Play size={12} weight="fill" />
-            Run
-          </Button>
-        </div>
-      </div>
-    </div>
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      title="Choose a lane for this run"
+      description={`${rule.name} requires a lane when triggered.`}
+      width={448}
+      actions={[
+        { label: "Cancel", variant: "secondary", onClick: onCancel },
+        {
+          label: "Run",
+          variant: "solid",
+          icon: <Play size={12} weight="fill" />,
+          disabled: !laneId || pending,
+          onClick: onRun,
+        },
+      ]}
+    >
+      <label className="block space-y-1.5">
+        <span className="text-[10px] uppercase tracking-[0.1em] text-muted-fg/60">Lane</span>
+        <select className={inputCls} value={laneId} onChange={(e) => onLaneId(e.target.value)}>
+          {lanes.map((lane) => (
+            <option key={lane.id} value={lane.id}>
+              {lane.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {!lanes.length ? (
+        <Banner
+          model={{
+            id: "automation-no-active-lanes",
+            tone: "warning",
+            title: "No active lanes are available. Switch the rule to create a lane per run, or create a lane from the Work tab.",
+          }}
+          layout="inline"
+          style={{ marginTop: 12 }}
+        />
+      ) : null}
+    </Dialog>
   );
 }

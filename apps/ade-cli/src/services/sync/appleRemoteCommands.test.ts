@@ -2,13 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   APPLE_OWNED_BY_OTHER_SESSION_CODE,
-  APPLE_REMOTE_COMMAND_ACTIONS,
   assertAppleInputAllowed,
   buildAppleStatusPayload,
   createAppleRemoteCommandHandlers,
   type AppleDeviceRemoteService,
 } from "./appleRemoteCommands";
-import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
 
 const RAW_STATUS = {
   supported: true,
@@ -60,6 +58,23 @@ function handlersFor(target = service()) {
 }
 
 describe("buildAppleStatusPayload", () => {
+  it("names the lane's own device, and nothing for the host's any-booted fallback", () => {
+    // The phone's simulator chip needs `laneDevice` to match `device`, so it
+    // never offers a device another lane holds (review finding A3-F4).
+    const owned = buildAppleStatusPayload("lane-a", {
+      activeDevice: { udid: "U1", name: "iPhone 16 Pro", state: "Booted" },
+      laneDevice: { udid: "U1", name: "iPhone 16 Pro", family: "iphone", origin: "clone" },
+    });
+    expect(owned.laneDevice).toEqual({ udid: "U1" });
+    expect(owned.device?.udid).toBe("U1");
+
+    const fallback = buildAppleStatusPayload("lane-b", {
+      activeDevice: { udid: "U2", name: "iPhone 17", state: "Booted" },
+    });
+    expect(fallback.device?.udid).toBe("U2");
+    expect(fallback.laneDevice).toBeNull();
+  });
+
   it("projects the service status into the wire shape without a secret", () => {
     const payload = buildAppleStatusPayload("lane-a", RAW_STATUS);
     expect(payload.device).toEqual({
@@ -104,12 +119,6 @@ describe("assertAppleInputAllowed", () => {
 });
 
 describe("apple.* remote command handlers", () => {
-  it("advertises every action as optional for mobile", () => {
-    for (const action of APPLE_REMOTE_COMMAND_ACTIONS) {
-      expect(MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS as readonly string[]).toContain(action);
-    }
-  });
-
   it("makes status and the ticket viewer-allowed, and input controller-only", () => {
     const { byAction } = handlersFor();
     expect(byAction.get("apple.status")?.policy.viewerAllowed).toBe(true);
@@ -173,6 +182,18 @@ describe("apple.* remote command handlers", () => {
     });
     expect(issue).toHaveBeenCalledWith({ laneId: "lane-a", codec: "avc1", width: 393, height: 852 });
     expect(ticket).toMatchObject({ path: "/apple/stream/abc", token: "tok" });
+  });
+
+  it("a viewer's ticket on a device that is off is refused with APPLE_DEVICE_OFF, and no ticket is issued", async () => {
+    const off = Object.assign(new Error("APPLE_DEVICE_OFF: iPhone 17 Pro is off. Watching a device never boots it."), {
+      code: "APPLE_DEVICE_OFF",
+    });
+    const { byAction, issue, target } = handlersFor(service({ startStream: vi.fn(async () => { throw off; }) }));
+    await expect(byAction.get("apple.streamTicket")!.handler({ laneId: "lane-a" }))
+      .rejects.toThrow(/^APPLE_DEVICE_OFF: iPhone 17 Pro is off\./);
+    // Watching never asks for a boot.
+    expect(target.startStream).toHaveBeenCalledWith(expect.not.objectContaining({ boot: true }));
+    expect(issue).not.toHaveBeenCalled();
   });
 
   it("drives the device for the owning chat", async () => {

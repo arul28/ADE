@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -84,7 +84,7 @@ import {
   removeChatContextAttachment,
 } from "../../../shared/chatContextAttachments";
 import { isChatMentionTokenBody } from "../../../shared/chatMentions";
-import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { isSettledSteerDeliveryState, parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import {
   captureAgentChatHistoryArrivalWatermark,
   mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot,
@@ -131,6 +131,7 @@ import {
   AgentChatComposer,
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
+  type ComposerDraftEditIntent,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
@@ -148,8 +149,9 @@ import {
 import { ChatAttachmentDropOverlay } from "./ChatAttachmentDropOverlay";
 import type { AgentChatAttachmentDropTarget } from "./chatAttachmentDropTarget";
 import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from "./chatPromptHistory";
-import { ChatLifecycleBanner, shouldRenderChatLifecycleBanner } from "./ChatLifecycleBanner";
+import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
+import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -197,6 +199,8 @@ export { mergeAgentChatHistorySnapshot as mergeChatHistorySnapshot } from "../..
 import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
+import { ProviderLogo } from "../shared/ProviderLogos";
+import { Banner, NoticeChip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
   compareChatSessionsByEffectiveRecency,
@@ -204,45 +208,49 @@ import {
   shouldRefreshSessionListForChatEvent,
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { confirmDialog } from "../ui/dialog/confirm";
 import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionBrowser";
 import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
   readImportedFrom,
-  providerDisplayName as externalProviderDisplayName,
   type ExternalSessionImportResult,
   type ExternalSessionSource,
   type ExternalSessionSummary,
 } from "../terminals/importSessions/contract";
+import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import { CHAT_SHELL_HEADER_CLASS, ChatSurfaceShell } from "./ChatSurfaceShell";
 import { chatAccentForRenderedChat, chatChipToneClass } from "./chatSurfaceTheme";
 import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
+import { useChatPaneShowRequests } from "./useChatPaneShowRequests";
+import { appleEventAddresses } from "../apple/appleDeviceState";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel } from "./ChatCursorCloudPanel";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
-import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
+import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
+import { chatTaskListProgress, deriveChatTaskList } from "../../../shared/chatTaskList";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
-import { deriveMissionSnapshot } from "./chatMission";
+import { deriveMissionSnapshot, missionHasContent } from "./chatMission";
 import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
 import { AskQuestionComposer } from "./AskQuestionComposer";
 import { findUserMessageForTurn, isParentUserMessage, resolveTurnActive } from "./chatTurnState";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { isCodexMemoryResetDraft } from "../../../shared/codexComposerCommands";
 import { ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
 import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
+import { deriveChatSources } from "../../../shared/chatSources";
 import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import { subscribeChatHandoff, takeChatHandoff, type ChatHandoffIntent } from "../../lib/chatHandoffIntent";
 import { useWorkSidebarTool } from "../terminals/useWorkSidebarTool";
@@ -333,12 +341,33 @@ import {
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
-import { playComposerDock, stashComposerDockOrigin, takeComposerDockOrigin } from "./launch/chatLaunchDock";
+import {
+  captureComposerHandoff,
+  CHAT_SHELL_HEADER_SELECTOR,
+  findDraftComposerHandoffElement,
+  peekComposerHandoffFirstMessage,
+  playComposerDock,
+  playDepartingDraftChrome,
+  playFirstMessageFlight,
+  refreshComposerHandoffDeparture,
+  stashComposerHandoffOrigin,
+  stashComposerDockOrigin,
+  takeComposerDockOrigin,
+  type ComposerHandoff,
+} from "./launch/chatLaunchDock";
 import { buildChatLaunchThreadEvents } from "./launch/chatLaunchSynthetic";
 import { buildNewLaneLaunchArgs } from "./launch/newLaneLaunchArgs";
 import {
+  clearSubmittedDraftText,
+  removeSubmittedDraftItems,
+  removeSubmittedDraftItemsById,
   runRendererOwnedLaunch as runRendererOwnedDraftLaunch,
+  sameStoredDraftItem,
+  discardRendererLaunchHandoff,
+  takeRendererLaunchHandoff,
   type DraftLaunchLaneTarget,
+  type OpenLaunchedDraftSessionInput,
+  type SubmittedDraftTextEdit,
   type StartedDraftLaunch,
 } from "./launch/rendererOwnedLaunch";
 import { useChatLaunchPaneLifecycle, useChatLaunchPaneState } from "./launch/useChatLaunchPaneState";
@@ -350,7 +379,6 @@ import {
   pruneDraftLaunchJobs,
   withDraftLaunchTimeout,
   LAUNCH_PROJECT_CHANGED_MESSAGE,
-  type BackgroundLaunchNotice,
   type DraftLaunchJob,
   type DraftLaunchJobStatus,
   type DraftLaunchKind,
@@ -390,6 +418,15 @@ import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound
  * Synthetic machine id for the launch shelf's Cursor Cloud row. It is never a real machine — it
  * only marks "run this off-machine", which the pane stores as cloud mode.
  */
+/**
+ * One width for everything that hangs under the new-chat composer: the launch
+ * shelf that pokes out beneath it and the activity card below that. Sharing the
+ * class (rather than matching two numbers) keeps their edges aligned at every
+ * window width. The activity card fills this slot instead of shrinking to its
+ * heatmap (`WorkActivityModule`).
+ */
+const DRAFT_SHELF_WIDTH_CLASS = "w-[calc(100%-6rem)]";
+
 const CURSOR_CLOUD_MACHINE_ID = "__ade_cursor_cloud__";
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
@@ -924,6 +961,14 @@ function prepareDraftLaunch(snapshot: DraftLaunchSnapshot): PreparedDraftLaunch 
 }
 
 /**
+ * Where a sent draft's departing chrome lives: the whole Work draft surface
+ * (its mode switcher sits outside this pane), or just this pane elsewhere.
+ */
+function draftDepartingScope(shell: HTMLElement | null): Element | null {
+  return shell?.closest("[data-work-draft-surface]") ?? shell;
+}
+
+/**
  * The opening `agentChat.send` for a drafted chat, minus the session id. Used
  * by the direct create-then-send path and by the brain-owned new-lane launch,
  * so both send the same message. `interactionMode` is only sent to Claude.
@@ -1044,41 +1089,71 @@ type LocalRuntimeNoticeShape = {
   message: string;
 };
 
-function LocalRuntimeNoticeBlock(props: {
+/** Runtime banners sit at the top of the chat pane, inset from its edges. */
+const RUNTIME_BANNER_STYLE = { margin: "6px 8px" } as const;
+
+function RuntimeEndpointChip({ endpoint }: { endpoint?: string | null }) {
+  return endpoint ? <NoticeChip title={endpoint}>{endpoint}</NoticeChip> : null;
+}
+
+function LocalRuntimeNoticeBanner(props: {
   notice: LocalRuntimeNoticeShape;
   endpoint?: string | null;
-  /** `inline` = text only (inside a parent runtime card). */
-  variant?: "card" | "inline";
 }) {
-  const { notice, endpoint, variant = "card" } = props;
-  const isCard = variant === "card";
+  const { notice, endpoint } = props;
   return (
-    <div
-      className={cn(
-        isCard && "border-b px-4 py-2.5",
-        isCard && (notice.tone === "success"
-          ? "border-emerald-500/10 bg-emerald-500/[0.04]"
-          : "border-amber-500/10 bg-amber-500/[0.04]"),
-      )}
-    >
-      <div className={cn(
-        "font-mono text-[10px] uppercase tracking-[0.16em]",
-        notice.tone === "success" ? "text-emerald-200/70" : "text-amber-200/70",
-      )}>
-        {notice.title}
-      </div>
-      <div className={cn(
-        "mt-1 text-[12px] leading-5",
-        notice.tone === "success" ? "text-emerald-100/80" : "text-amber-100/80",
-      )}>
-        {notice.message}
-      </div>
-      {endpoint ? (
-        <code className="mt-2 block rounded-md border border-white/[0.06] bg-black/10 px-2 py-1 font-mono text-[10px] text-fg/60">
-          {endpoint}
-        </code>
-      ) : null}
-    </div>
+    <Banner
+      layout="inline"
+      style={RUNTIME_BANNER_STYLE}
+      model={{
+        id: "local-runtime",
+        tone: notice.tone,
+        title: notice.title,
+        detail: notice.message,
+        extra: endpoint ? <RuntimeEndpointChip endpoint={endpoint} /> : undefined,
+      }}
+    />
+  );
+}
+
+/**
+ * The CLI runtime is blocked. With `localNotice` it becomes the combined
+ * "Runtime status" banner: the CLI line first, then the local runtime line.
+ */
+function CliRuntimeBanner(props: {
+  logoFamily: string;
+  title: string;
+  body: string;
+  localNotice?: LocalRuntimeNoticeShape;
+  localEndpoint?: string | null;
+}) {
+  const { logoFamily, title, body, localNotice, localEndpoint } = props;
+  return (
+    <Banner
+      layout="inline"
+      style={RUNTIME_BANNER_STYLE}
+      model={localNotice ? {
+        id: "runtime-status",
+        tone: "warning",
+        icon: <ProviderLogo family={logoFamily} size={13} />,
+        title: "Runtime status",
+        detail: (
+          <>
+            <span className="block font-medium text-fg">{title}</span>
+            <span className="block">{body}</span>
+            <span className="mt-1.5 block font-medium text-fg">{localNotice.title}</span>
+            <span className="block">{localNotice.message}</span>
+          </>
+        ),
+        extra: localEndpoint ? <RuntimeEndpointChip endpoint={localEndpoint} /> : undefined,
+      } : {
+        id: "cli-runtime",
+        tone: "warning",
+        icon: <ProviderLogo family={logoFamily} size={13} />,
+        title,
+        detail: body || undefined,
+      }}
+    />
   );
 }
 
@@ -1181,7 +1256,10 @@ export function deriveRuntimeState(events: AgentChatEventEnvelope[]): {
         // clear it from the display. Without this the chip stays staged after
         // the user clicks "Send Now" or after a queued steer is delivered.
         steerMap.delete(event.steerId);
-        resolvedSteerIds.add(event.steerId);
+        // "accepted" is not final: a Cursor or OpenCode turn can refuse an
+        // inline steer it was offered, and the same steerId comes back as
+        // "queued". Resolving it here would keep that chip hidden for good.
+        if (isSettledSteerDeliveryState(event.deliveryState)) resolvedSteerIds.add(event.steerId);
       }
     } else if (event.type === "system_notice" && event.steerId) {
       // "cancelled" or "Delivering" notices resolve the steer
@@ -1465,6 +1543,8 @@ type ComposerDraftStorageSnapshot = {
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   attachments: AgentChatFileRef[];
+  attachmentDraftIds: string[];
+  submittedDraftTextEdit: SubmittedDraftTextEdit | null;
   attachmentOwnerBinding: OpenProjectBinding | null;
   contextAttachments: AgentChatContextAttachment[];
   iosContextItems: IosElementContextItem[];
@@ -1473,6 +1553,58 @@ type ComposerDraftStorageSnapshot = {
   draftLaunchTargetId: string | null;
   updatedAt: string;
 };
+
+let draftAttachmentIdSequence = 0;
+
+function createDraftAttachmentId(): string {
+  try {
+    const id = globalThis.crypto?.randomUUID?.();
+    if (id) return id;
+  } catch {
+    // Fall through in contexts without secure random UUID support.
+  }
+  draftAttachmentIdSequence += 1;
+  return `draft-attachment-${Date.now()}-${draftAttachmentIdSequence}`;
+}
+
+function reconcileDraftAttachmentIds(
+  current: readonly AgentChatFileRef[],
+  currentIds: readonly string[],
+  next: readonly AgentChatFileRef[],
+): string[] {
+  const available = new Set(current.map((_, index) => index));
+  return next.map((attachment) => {
+    const exactIndex = current.findIndex((candidate, index) => (
+      available.has(index) && candidate === attachment
+    ));
+    const currentIndex = exactIndex >= 0
+      ? exactIndex
+      : current.findIndex((candidate, index) => available.has(index) && candidate.path === attachment.path);
+    if (currentIndex < 0) return createDraftAttachmentId();
+    available.delete(currentIndex);
+    return currentIds[currentIndex] ?? createDraftAttachmentId();
+  });
+}
+
+function normalizeStoredDraftAttachmentIds(
+  value: unknown,
+  attachments: readonly AgentChatFileRef[],
+  updatedAt: string,
+): string[] {
+  const stored = Array.isArray(value) ? value : [];
+  return attachments.map((attachment, index) => (
+    nonEmptyString(stored[index]) ?? `legacy:${updatedAt}:${index}:${attachment.path}`
+  ));
+}
+
+function normalizeSubmittedDraftTextEdit(value: unknown): SubmittedDraftTextEdit | null {
+  if (!isRecord(value)) return null;
+  const submittedText = typeof value.submittedText === "string" ? value.submittedText : null;
+  const kind = value.kind;
+  return submittedText !== null && (kind === "append" || kind === "replacement")
+    ? { submittedText, kind }
+    : null;
+}
 
 function normalizeComposerAttachmentOwnerBinding(value: unknown): OpenProjectBinding | null {
   if (!isRecord(value)) return null;
@@ -2788,6 +2920,8 @@ function normalizeStoredComposerDraft(
 ): ComposerDraftStorageSnapshot | null {
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
+  const attachments = normalizeComposerFileAttachments(value.attachments);
+  const updatedAt = nonEmptyString(value.updatedAt) ?? new Date(0).toISOString();
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
@@ -2801,7 +2935,9 @@ function normalizeStoredComposerDraft(
       isRecord(value.controls) ? value.controls : {},
       defaults,
     ),
-    attachments: normalizeComposerFileAttachments(value.attachments),
+    attachments,
+    attachmentDraftIds: normalizeStoredDraftAttachmentIds(value.attachmentDraftIds, attachments, updatedAt),
+    submittedDraftTextEdit: normalizeSubmittedDraftTextEdit(value.submittedDraftTextEdit),
     attachmentOwnerBinding: normalizeComposerAttachmentOwnerBinding(
       value.attachmentOwnerBinding,
     ),
@@ -2810,7 +2946,7 @@ function normalizeStoredComposerDraft(
     appControlContextItems: normalizeComposerAppControlContextItems(value.appControlContextItems),
     builtInBrowserContextItems: normalizeComposerBuiltInBrowserContextItems(value.builtInBrowserContextItems),
     draftLaunchTargetId: nonEmptyString(value.draftLaunchTargetId),
-    updatedAt: nonEmptyString(value.updatedAt) ?? new Date(0).toISOString(),
+    updatedAt,
   };
 }
 
@@ -3720,7 +3856,28 @@ export function AgentChatPane({
         }
       : null,
   );
-  const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const [attachments, setAttachmentsState] = useState<AgentChatFileRef[]>([]);
+  const attachmentsRef = useRef<AgentChatFileRef[]>([]);
+  const attachmentDraftIdsRef = useRef<string[]>([]);
+  const setAttachments = useCallback((
+    update: AgentChatFileRef[] | ((current: AgentChatFileRef[]) => AgentChatFileRef[]),
+  ) => {
+    const current = attachmentsRef.current;
+    const next = typeof update === "function" ? update(current) : update;
+    if (next === current) return;
+    attachmentDraftIdsRef.current = reconcileDraftAttachmentIds(
+      current,
+      attachmentDraftIdsRef.current,
+      next,
+    );
+    attachmentsRef.current = next;
+    setAttachmentsState(next);
+  }, []);
+  const setAttachmentsWithIds = useCallback((next: AgentChatFileRef[], ids: readonly string[]) => {
+    attachmentsRef.current = next;
+    attachmentDraftIdsRef.current = next.map((_, index) => ids[index] ?? createDraftAttachmentId());
+    setAttachmentsState(next);
+  }, []);
   const chatPaneDropTargetRef = useRef<AgentChatAttachmentDropTarget | null>(null);
   const [chatPaneDropActive, setChatPaneDropActive] = useState(false);
   const clearChatPaneDropActive = useCallback(() => setChatPaneDropActive(false), []);
@@ -3753,10 +3910,16 @@ export function AgentChatPane({
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
   const [draft, setDraft] = useState("");
+  const [submittedDraftTextEdit, setSubmittedDraftTextEdit] = useState<SubmittedDraftTextEdit | null>(null);
+  const submittedDraftTextEditRef = useRef<SubmittedDraftTextEdit | null>(null);
   const [mentionLabels, setMentionLabels] = useState<Record<string, string>>({});
   const draftsPerSessionRef = useRef<Map<string, string>>(new Map());
   const composerDraftWriteTimerRef = useRef<number | null>(null);
   const pendingComposerDraftWriteRef = useRef<{
+    storageKey: string;
+    snapshot: ComposerDraftStorageSnapshot;
+  } | null>(null);
+  const latestComposerDraftSnapshotRef = useRef<{
     storageKey: string;
     snapshot: ComposerDraftStorageSnapshot;
   } | null>(null);
@@ -3803,6 +3966,14 @@ export function AgentChatPane({
   const openProofDrawer = useCallback(() => {
     setChatActionsOpen(true);
   }, []);
+  // The thread's "N sources" chip opens the drawer with Sources narrowed to
+  // that turn; the section's "Show all" clears it.
+  const [sourcesTurnFilter, setSourcesTurnFilter] = useState<string | null>(null);
+  const openTurnSources = useCallback((turnId: string) => {
+    setSourcesTurnFilter(turnId);
+    setChatActionsOpen(true);
+  }, []);
+  const clearSourcesTurnFilter = useCallback(() => setSourcesTurnFilter(null), []);
   const [iosSimulatorOpen, setIosSimulatorOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).iosSimulatorOpen,
   );
@@ -3945,13 +4116,20 @@ export function AgentChatPane({
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);
   const composerDraftHydratingTextRef = useRef<string | null>(null);
+  const [hydratedComposerDraftStorageKey, setHydratedComposerDraftStorageKey] = useState<string | null>(null);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestionsBySession, setPromptSuggestionsBySession] = useState<Record<string, string>>({});
   const [optimisticOutgoingMessage, setOptimisticOutgoingMessage] = useState<{
     sessionId: string;
     envelope: AgentChatEventEnvelope;
-  } | null>(null);
+  } | null>(() => {
+    // A launch that opened this chat after creating it hands over its first
+    // message, so the bubble is on the first frame (see `chatLaunchDock`).
+    const firstMessage = lockSessionId ? peekComposerHandoffFirstMessage(lockSessionId) : null;
+    return firstMessage && lockSessionId ? { sessionId: lockSessionId, envelope: firstMessage } : null;
+  });
+  const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(optimisticOutgoingMessage);
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
@@ -4008,15 +4186,65 @@ export function AgentChatPane({
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
   const composerDockRef = useRef<HTMLDivElement | null>(null);
-  // Foreground new-lane launch: glide the docked composer down from where the
-  // draft composer sat (see `chatLaunchDock`). Layout effect so the first
-  // painted frame is already at the old position.
+  const pendingComposerHandoffAnimationRef = useRef<{ sessionId: string; handoff: ComposerHandoff } | null>(null);
+  // First message of a chat launched from a draft in another pane: glide the
+  // docked composer down from where the draft composer sat and fly the first
+  // bubble up from where the prompt text sat (see `chatLaunchDock`). Layout
+  // effect so the first painted frame is already at the old positions.
   useLayoutEffect(() => {
     if (!lockSessionId) return;
-    const origin = takeComposerDockOrigin(lockSessionId);
-    if (!origin) return;
-    playComposerDock(composerDockRef.current, origin);
+    const handoff = takeComposerDockOrigin(lockSessionId);
+    if (!handoff) return;
+    if (handoff.firstMessage) {
+      // Single-chat panes are reused when Work switches sessions. Seed the
+      // incoming launch bubble before the next layout pass plays its flight;
+      // the lazy state initializer only covers a newly mounted pane.
+      const optimistic = { sessionId: lockSessionId, envelope: handoff.firstMessage };
+      pendingComposerHandoffAnimationRef.current = { sessionId: lockSessionId, handoff };
+      optimisticOutgoingMessageRef.current = optimistic;
+      setOptimisticOutgoingMessage(optimistic);
+      return;
+    }
+    playComposerDock(composerDockRef.current, handoff.composer);
+    playFirstMessageFlight(shellRef.current, handoff.text);
+    // The draft's mode switcher morphs into this chat's header.
+    playDepartingDraftChrome(handoff.departing, shellRef.current?.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR));
   }, [lockSessionId]);
+  useLayoutEffect(() => {
+    const pending = pendingComposerHandoffAnimationRef.current;
+    if (!pending || pending.sessionId !== lockSessionId) return;
+    const optimistic = optimisticOutgoingMessage;
+    if (optimistic?.sessionId !== pending.sessionId || optimistic.envelope !== pending.handoff.firstMessage) return;
+    const shell = shellRef.current;
+    if (!shell) return;
+    pendingComposerHandoffAnimationRef.current = null;
+    playComposerDock(composerDockRef.current, pending.handoff.composer);
+    playFirstMessageFlight(shell, pending.handoff.text);
+    playDepartingDraftChrome(
+      pending.handoff.departing,
+      shell.querySelector<HTMLElement>(CHAT_SHELL_HEADER_SELECTOR),
+    );
+  }, [lockSessionId, optimisticOutgoingMessage]);
+  // The same handoff for a chat this pane creates in place (no draft launch):
+  // measured before the create round trip, played on the commit that swaps the
+  // empty state for the thread.
+  const inPlaceFirstSendHandoffRef = useRef<ComposerHandoff | null>(null);
+  useLayoutEffect(() => {
+    const handoff = inPlaceFirstSendHandoffRef.current;
+    if (!handoff || !selectedSessionId) return;
+    inPlaceFirstSendHandoffRef.current = null;
+    const shell = shellRef.current;
+    if (!shell) return;
+    // The empty state fades out around its own copy of the composer; hide
+    // that copy so only the docked one moves.
+    for (const ghost of shell.querySelectorAll<HTMLElement>("[data-chat-empty-state] [data-chat-composer-wrapper]")) {
+      ghost.style.visibility = "hidden";
+    }
+    const docked = Array.from(shell.querySelectorAll<HTMLDivElement>("[data-chat-composer-dock]"))
+      .find((element) => !element.closest("[data-chat-empty-state]")) ?? null;
+    playComposerDock(docked, handoff.composer);
+    playFirstMessageFlight(shell, handoff.text);
+  }, [selectedSessionId]);
   // Measure the chat surface width to drive the 3-quadrant pane reserve.
   const [chatAreaWidth, setChatAreaWidth] = useState(0);
   useEffect(() => {
@@ -4217,7 +4445,7 @@ export function AgentChatPane({
   // Resolve this after the machine pin so foreign chats never send a wake or
   // unsettle request to the tab-bound runtime.
   const composerLifecycleSession = useSessionLifecycleSnapshot(composerSessionId);
-  const hasComposerLifecycleBanner = shouldRenderChatLifecycleBanner(composerLifecycleSession);
+  const hasComposerLifecyclePill = shouldRenderChatLifecyclePill(composerLifecycleSession);
 
   turnActiveBySessionRef.current = turnActiveBySession;
   const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
@@ -4334,7 +4562,7 @@ export function AgentChatPane({
       linkedIosAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
-  }, []);
+  }, [setAttachments]);
   const removeAppControlContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
     setAppControlContextItems((current) => {
@@ -4346,7 +4574,7 @@ export function AgentChatPane({
       linkedAppControlAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
-  }, []);
+  }, [setAttachments]);
   const removeBuiltInBrowserContext = useCallback((id: string) => {
     let linkedAttachmentPath: string | null = null;
     setBuiltInBrowserContextItems((current) => {
@@ -4358,12 +4586,43 @@ export function AgentChatPane({
       linkedBuiltInBrowserAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
+  }, [setAttachments]);
+  const updateSubmittedDraftTextEdit = useCallback((value: SubmittedDraftTextEdit | null) => {
+    submittedDraftTextEditRef.current = value;
+    setSubmittedDraftTextEdit(value);
   }, []);
-  const updateComposerDraft = useCallback((value: string) => {
+  const updateComposerDraft = useCallback((value: string, editIntent?: ComposerDraftEditIntent) => {
+    const heldForegroundChat = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+      ?? EMPTY_DRAFT_LAUNCH_JOBS).find((job) => (
+      job.draftKind === "chat"
+      && job.mode === "foreground"
+      && !isDraftLaunchJobTerminal(job.status)
+    ));
+    if (heldForegroundChat) {
+      const submittedText = heldForegroundChat.snapshot.draft;
+      const previousEdit = submittedDraftTextEditRef.current;
+      const append = Boolean(
+        editIntent
+        && editIntent.previousText.startsWith(submittedText)
+        && editIntent.selectionStart >= submittedText.length
+        && editIntent.selectionEnd >= submittedText.length
+        && value.startsWith(submittedText),
+      );
+      let kind: SubmittedDraftTextEdit["kind"] = "replacement";
+      if (append && !(previousEdit?.submittedText === submittedText && previousEdit.kind === "replacement")) {
+        kind = "append";
+      }
+      updateSubmittedDraftTextEdit({
+        submittedText,
+        kind,
+      });
+    } else {
+      updateSubmittedDraftTextEdit(null);
+    }
     setDraft(value);
     draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
+  }, [clearPromptSuggestionForSession, companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
   const updateComposerMentionLabel = useCallback((token: string, title: string) => {
     const label = title.trim();
     if (!label) return;
@@ -4372,13 +4631,22 @@ export function AgentChatPane({
       : { ...current, [token]: label });
   }, []);
   const insertComposerDraft = useCallback((value: string) => {
-    setDraft((current) => {
-      const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
-      draftsPerSessionRef.current.set(companionStateKey, next);
-      return next;
+    const previousText = draft;
+    const foregroundChatLaunchPending = (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+      ?? EMPTY_DRAFT_LAUNCH_JOBS).some((job) => (
+      job.draftKind === "chat"
+      && job.mode === "foreground"
+      && !isDraftLaunchJobTerminal(job.status)
+    ));
+    const appendedTo = foregroundChatLaunchPending ? previousText : previousText.trimEnd();
+    const next = appendedTo.trim().length ? `${appendedTo}\n\n${value}` : value;
+    updateComposerDraft(next, {
+      previousText,
+      selectionStart: previousText.length,
+      selectionEnd: previousText.length,
     });
     clearPromptSuggestionForSession(selectedSessionId);
-  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
+  }, [clearPromptSuggestionForSession, draft, draftLaunchJobsScopeKey, selectedSessionId, updateComposerDraft]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId ?? chatScopeLaneId;
@@ -4417,7 +4685,6 @@ export function AgentChatPane({
     && !eventsBySession[renderedSessionId]
     && !peekAgentChatSessionViewCache(renderedSessionId),
   );
-  const optimisticOutgoingMessageRef = useRef<typeof optimisticOutgoingMessage>(null);
   const selectedEventsForDisplay = useMemo(() => {
     const shouldRenderOptimistic =
       optimisticOutgoingMessage
@@ -4665,6 +4932,13 @@ export function AgentChatPane({
   // AGI run that has surfaced mission events — non-AGI chats stay null
   // and the Missions tab never appears.
   const selectedMission = useMemo(() => deriveMissionSnapshot(selectedEvents), [selectedEvents]);
+  // Derived only while the drawer is open: a closed drawer never shows it, and
+  // the walk over every event is not free on a streaming transcript.
+  const selectedChatSources = useMemo(
+    () => deriveChatSources(selectedEventsForDisplay, { provider: selectedSession?.provider ?? null }),
+    [selectedEventsForDisplay, selectedSession?.provider],
+  );
+  const selectedChatHasSources = chatActionsOpen && selectedChatSources.total > 0;
   // Keep keyboard recall scoped to the transcript currently selected in Work.
   // The sidebar contains other sessions, but none of those prompts belong in
   // this composer's history.
@@ -4702,15 +4976,6 @@ export function AgentChatPane({
     },
     [selectedSessionId],
   );
-  // The pane is runtime-agnostic — Codex emits subagent_started/progress/result
-  // events for delegation and collabToolCall items (spawn_agent, etc.) just
-  // like Claude. Gate on whether we have anything to display: snapshots OR an
-  // active Codex chat goal (so the pane hosts the goal card even before any
-  // subagents are spawned).
-  const selectedSubagentPaneAvailable =
-    selectedSubagentSnapshots.length > 0
-    || selectedScheduledWorkSnapshots.length > 0
-    || (selectedSession?.provider === "codex" && Boolean(selectedCodexGoal?.objective));
   // Latest snapshot for the currently drilled-in subagent — keeps the
   // breadcrumb status in sync as the agent transitions running → completed.
   const subagentViewSnapshot = useMemo(() => {
@@ -5007,7 +5272,14 @@ export function AgentChatPane({
     [selectedSessionId],
   );
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
-  const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
+  // The chat's one task list (plan or todos, every provider). Feeds the Chat
+  // Info Tasks section, the drawer auto-open, and the toolbar badge.
+  const selectedTaskList = useMemo(() => deriveChatTaskList(selectedEvents), [selectedEvents]);
+  const selectedTaskCount = selectedTaskList?.items.length ?? 0;
+  const selectedTaskProgress = useMemo(
+    () => (selectedTaskList ? chatTaskListProgress(selectedTaskList.items) : null),
+    [selectedTaskList],
+  );
   /**
    * The one place the raw derivation is reconciled against the session summary.
    *
@@ -5127,7 +5399,7 @@ export function AgentChatPane({
       if (chatActionsOpen) setChatActionsOpen(false);
       return;
     }
-    const trackedActionCount = selectedSubagentSnapshots.length + selectedTodoItems.length + selectedScheduledWorkSnapshots.length;
+    const trackedActionCount = selectedSubagentSnapshots.length + selectedTaskCount + selectedScheduledWorkSnapshots.length;
     if (trackedActionCount === 0) {
       return;
     }
@@ -5165,7 +5437,7 @@ export function AgentChatPane({
     setAppControlOpen(false);
     setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
-  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTodoItems.length]);
+  }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTaskCount]);
 
   const persistParallelLaunchState = useCallback(async (
     state: AgentChatParallelLaunchState | null,
@@ -5480,6 +5752,12 @@ export function AgentChatPane({
       : activeProviderConnection?.provider === "droid"
         ? "Droid runtime"
       : "Codex runtime";
+  // The same provider split as the title, as a ProviderLogo family.
+  const cliRuntimeLogoFamily = activeProviderConnection?.provider === "claude"
+    || activeProviderConnection?.provider === "cursor"
+    || activeProviderConnection?.provider === "droid"
+    ? activeProviderConnection.provider
+    : "codex";
   const cliRuntimeBody = activeProviderConnection?.blocker
     ?? (activeProviderConnection?.provider === "droid"
       ? "Droid is not available. Install the Factory CLI, ensure `droid` is on PATH, and configure Factory authentication."
@@ -5871,7 +6149,7 @@ export function AgentChatPane({
     const chips = [...resolvedChips];
     if (selectedSessionImportedProvider) {
       chips.push({
-        label: `Imported · ${externalProviderDisplayName(selectedSessionImportedProvider)}`,
+        label: `Imported · ${importProviderLabel(selectedSessionImportedProvider)}`,
         tone: "muted",
       });
     }
@@ -6644,7 +6922,7 @@ export function AgentChatPane({
 
   const refreshComputerUseSnapshot = useCallback(async (
     sessionId: string | null,
-    options?: { force?: boolean },
+    options?: { force?: boolean; keepOnError?: boolean },
   ) => {
     if (!sessionId) {
       computerUseSnapshotInFlightRef.current = null;
@@ -6673,12 +6951,16 @@ export function AgentChatPane({
           sessionId,
           fetchedAt: Date.now(),
         };
-        if (selectedSessionIdRef.current === sessionId) {
+        // A read that a newer one replaced writes nothing: its data is older.
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
           setComputerUseSnapshot(snapshot);
         }
       } catch {
-        if (selectedSessionIdRef.current === sessionId) {
-          setComputerUseSnapshot(null);
+        if (selectedSessionIdRef.current === sessionId && computerUseSnapshotInFlightRef.current?.promise === request) {
+          // `keepOnError` keeps this chat's proof on screen, never another chat's.
+          setComputerUseSnapshot((current) => (
+            options?.keepOnError && current?.owner.kind === "chat_session" && current.owner.id === sessionId ? current : null
+          ));
         }
       } finally {
         if (request && computerUseSnapshotInFlightRef.current?.promise === request) {
@@ -7401,18 +7683,24 @@ export function AgentChatPane({
   const iosSimulatorAddressesThisPane = useCallback((
     chatSessionId?: string | null,
     eventLaneId?: string | null,
-  ) => {
-    const scopedChatSessionId = typeof chatSessionId === "string" && chatSessionId.trim().length
-      ? chatSessionId.trim()
-      : null;
-    const scopedLaneId = typeof eventLaneId === "string" && eventLaneId.trim().length
-      ? eventLaneId.trim()
-      : null;
-    if (scopedChatSessionId && scopedChatSessionId !== selectedSessionIdRef.current) return false;
-    if (scopedLaneId && laneId && scopedLaneId !== laneId) return false;
-    if (!scopedChatSessionId && !scopedLaneId && !isTileActive) return false;
-    return true;
-  }, [isTileActive, laneId]);
+  ) => appleEventAddresses(
+    { chatSessionId, laneId: eventLaneId },
+    { chatSessionId: selectedSessionIdRef.current, laneId: laneId ?? null, acceptUnscoped: isTileActive },
+  ), [isTileActive, laneId]);
+
+  /**
+   * Open the chat's Apple drawer. It yields the right pane only on the closed
+   * to open transition, and only to App Control and Cursor Cloud, which cannot
+   * share the split; the chat actions drawer stays as the user left it.
+   */
+  const openIosSimulatorDrawer = useCallback(() => {
+    setIosSimulatorAvailable(true);
+    if (!iosSimulatorOpenRef.current) {
+      setAppControlOpen(false);
+      setCursorCloudPaneOpen(false);
+    }
+    setIosSimulatorOpen(true);
+  }, []);
 
   useEffect(() => {
     const api = window.ade?.iosSimulator;
@@ -7440,26 +7728,82 @@ export function AgentChatPane({
       }
       if (event.type !== "drawer-open-requested") return;
       if (!addressesThisPane(event.chatSessionId, event.laneId)) return;
-      setIosSimulatorAvailable(true);
-      // This event now only arrives for surfaces the user drove (point selection
-      // and inspection, or a launch started from this drawer). Yield the right
-      // pane only on the closed → open transition, and only to App Control,
-      // which is the one panel that cannot share the split. Chat actions (proof)
-      // stays exactly as the user left it.
-      if (!iosSimulatorOpenRef.current) {
-        setAppControlOpen(false);
-        setCursorCloudPaneOpen(false);
-      }
-      setIosSimulatorOpen(true);
+      // Only for surfaces the user drove (point selection and inspection, or a
+      // launch started from this drawer).
+      openIosSimulatorDrawer();
       setIosSimulatorDrawerModeRequest({ mode: event.mode, nonce: Date.now() });
     }, chatRuntimePin);
-  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane]);
+  }, [chatRuntimePin, hideLaneToolDrawers, iosSimulatorAddressesThisPane, openIosSimulatorDrawer]);
 
   useEffect(() => {
     if (!iosSimulatorOpen && iosSimulatorDrawerModeRequest) {
       setIosSimulatorDrawerModeRequest(null);
     }
   }, [iosSimulatorOpen, iosSimulatorDrawerModeRequest]);
+
+  // `ade ui show proof` re-reads the chat's proof, then shows the proof
+  // section even when the chat has none (the drawer otherwise leaves it out).
+  // A visible grid tile that is not focused keeps no snapshot, and a proof
+  // filed just before the show may not be in this one yet. The section waits
+  // for that read, so "shown" and "no proof yet" both follow real data.
+  const [proofShowRequested, setProofShowRequested] = useState(false);
+  const [proofScrollNonce, setProofScrollNonce] = useState(0);
+  // One per show. Closing the drawer or changing chat bumps it too, so a read
+  // that comes back after either does not reopen a proof section nobody asked for.
+  const proofShowTokenRef = useRef(0);
+  const openProofDrawerForShow = useCallback(() => {
+    setChatActionsOpen(true);
+    const token = ++proofShowTokenRef.current;
+    // A failed read keeps the proof already on screen rather than blanking it.
+    void refreshComputerUseSnapshot(selectedSessionIdRef.current, { force: true, keepOnError: true }).finally(() => {
+      if (proofShowTokenRef.current !== token) return;
+      setProofShowRequested(true);
+      setProofScrollNonce((nonce) => nonce + 1);
+    });
+  }, [refreshComputerUseSnapshot]);
+  useEffect(() => {
+    if (chatActionsOpen) return;
+    proofShowTokenRef.current += 1;
+    setProofShowRequested(false);
+  }, [chatActionsOpen]);
+  // Before the show handler registers: a show held while this chat was out of
+  // view is delivered as the handler registers, and it must not be closed
+  // again by this reset in the same commit.
+  useEffect(() => {
+    setChatActionsOpen(false);
+    proofShowTokenRef.current += 1;
+    setProofShowRequested(false);
+    setHandoffBusy(false);
+    setModelPickerOpenRequest(undefined);
+    // Drop the pending bubble of the chat we left, but keep one that belongs to
+    // the chat just selected: a first send sets it in the same batch that
+    // selects the new chat, and a launched chat seeds it on mount.
+    if (optimisticOutgoingMessageRef.current?.sessionId !== selectedSessionId) {
+      optimisticOutgoingMessageRef.current = null;
+    }
+    setOptimisticOutgoingMessage((current) => (current?.sessionId === selectedSessionId ? current : null));
+    // The full composer bucket effect above owns draft/context hydration for
+    // session and lane switches; this effect resets transient chat UI only.
+  }, [selectedSessionId, laneId]);
+  const { proofDrawerRef: registerProofDrawer, appleDrawerRef } = useChatPaneShowRequests({
+    chatSessionId: selectedSessionId,
+    visible: isTileVisible,
+    laneToolDrawersHidden: hideLaneToolDrawers,
+    laneId: laneId ?? null,
+    openProofDrawer: openProofDrawerForShow,
+    openAppleDrawer: openIosSimulatorDrawer,
+  });
+  const proofSectionRef = useRef<HTMLDivElement | null>(null);
+  const proofDrawerRef = useCallback((element: HTMLDivElement | null) => {
+    proofSectionRef.current = element;
+    registerProofDrawer(element);
+  }, [registerProofDrawer]);
+  // The drawer is one scroll: a long agents list can put the proof below it,
+  // and "shown" has to mean the user can see it. Once per show, so a later
+  // capture does not pull the user back from wherever they scrolled.
+  useEffect(() => {
+    if (proofScrollNonce > 0) proofSectionRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [proofScrollNonce]);
 
   useEffect(() => {
     setIosSimulatorDrawerModeRequest(null);
@@ -7771,16 +8115,6 @@ export function AgentChatPane({
     readableSessionId,
     refreshComputerUseSnapshot,
   ]);
-
-  useEffect(() => {
-    setChatActionsOpen(false);
-    setHandoffBusy(false);
-    setModelPickerOpenRequest(undefined);
-    optimisticOutgoingMessageRef.current = null;
-    setOptimisticOutgoingMessage(null);
-    // The full composer bucket effect above owns draft/context hydration for
-    // session and lane switches; this effect resets transient chat UI only.
-  }, [selectedSessionId, laneId]);
 
   useEffect(() => {
     optimisticOutgoingMessageRef.current = optimisticOutgoingMessage;
@@ -8449,7 +8783,7 @@ export function AgentChatPane({
       if (prev.some((entry) => entry.path === attachment.path)) return prev;
       return [...prev, attachment];
     });
-  }, [claimDraftAttachmentOwner]);
+  }, [claimDraftAttachmentOwner, setAttachments]);
 
   const saveContextScreenshot = useCallback(async (args: {
     dataUrl: string;
@@ -8524,7 +8858,7 @@ export function AgentChatPane({
       },
       ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
     ]);
-  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot]);
+  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot, setAttachments]);
 
   const addAppControlContext = useCallback(async (item: AppControlContextItem) => {
     claimDraftAttachmentOwner();
@@ -8851,7 +9185,7 @@ export function AgentChatPane({
     setIosElementContextItems((prev) => prev.filter((entry) => getIosContextAttachmentPath(entry) !== attachmentPath));
     setAppControlContextItems((prev) => prev.filter((entry) => getAppControlContextAttachmentPath(entry) !== attachmentPath));
     setBuiltInBrowserContextItems((prev) => prev.filter((entry) => getBuiltInBrowserContextAttachmentPath(entry) !== attachmentPath));
-  }, []);
+  }, [setAttachments]);
 
   const addContextAttachment = useCallback((attachment: AgentChatContextAttachment) => {
     setContextAttachments((prev) => mergeChatContextAttachments(prev, [attachment]));
@@ -9071,8 +9405,9 @@ export function AgentChatPane({
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
       setMentionLabels(saved.mentionLabels);
       setDraft(saved.text);
+      updateSubmittedDraftTextEdit(saved.submittedDraftTextEdit);
       draftAttachmentOwnerBindingRef.current = saved.attachmentOwnerBinding;
-      setAttachments(saved.attachments);
+      setAttachmentsWithIds(saved.attachments, saved.attachmentDraftIds);
       setContextAttachments(saved.contextAttachments);
       setIosElementContextItems(saved.iosContextItems);
       setAppControlContextItems(saved.appControlContextItems);
@@ -9092,26 +9427,77 @@ export function AgentChatPane({
           updatedAt: saved.updatedAt,
         });
       }
+      setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
       return;
     }
     const savedText = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setMentionLabels({});
     setDraft(savedText);
+    updateSubmittedDraftTextEdit(null);
     draftAttachmentOwnerBindingRef.current = null;
-    setAttachments([]);
+    setAttachmentsWithIds([], []);
     setContextAttachments([]);
     setIosElementContextItems([]);
     setAppControlContextItems([]);
     setBuiltInBrowserContextItems([]);
     setDraftLaunchTargetId(null);
+    setHydratedComposerDraftStorageKey(composerDraftStorageKeyValue);
   }, [
     applyLaunchConfigToComposer,
     companionStateKey,
+    composerDraftStorageKeyValue,
     composerDraftStorageKeyValues,
     draftLaunchConfigScopeKey,
     initialNativeControls,
     selectedSessionId,
+    setAttachmentsWithIds,
+    updateSubmittedDraftTextEdit,
   ]);
+
+  const currentComposerDraftSnapshot = useMemo<ComposerDraftStorageSnapshot>(() => ({
+    version: 1,
+    text: draft,
+    mentionLabels,
+    modelId,
+    reasoningEffort,
+    fastMode,
+    cursorCloudServiceTier,
+    executionMode,
+    controls: {
+      ...currentNativeControls,
+      cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
+    },
+    attachments,
+    attachmentDraftIds: [...attachmentDraftIdsRef.current],
+    submittedDraftTextEdit,
+    attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
+    contextAttachments,
+    iosContextItems: iosElementContextItems,
+    appControlContextItems,
+    builtInBrowserContextItems,
+    draftLaunchTargetId,
+    updatedAt: new Date().toISOString(),
+  }), [
+    appControlContextItems,
+    attachments,
+    builtInBrowserContextItems,
+    contextAttachments,
+    cursorCloudServiceTier,
+    currentNativeControls,
+    draft,
+    draftLaunchTargetId,
+    executionMode,
+    fastMode,
+    iosElementContextItems,
+    mentionLabels,
+    modelId,
+    reasoningEffort,
+    submittedDraftTextEdit,
+  ]);
+  latestComposerDraftSnapshotRef.current = {
+    storageKey: composerDraftStorageKeyValue,
+    snapshot: currentComposerDraftSnapshot,
+  };
 
   useEffect(() => {
     if (composerDraftHydratingRef.current) {
@@ -9121,31 +9507,9 @@ export function AgentChatPane({
       if (draft === hydratedText) return;
     }
     draftsPerSessionRef.current.set(companionStateKey, draft);
-    const snapshot: ComposerDraftStorageSnapshot = {
-      version: 1,
-      text: draft,
-      mentionLabels,
-      modelId,
-      reasoningEffort,
-      fastMode,
-      cursorCloudServiceTier,
-      executionMode,
-      controls: {
-        ...currentNativeControls,
-        cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
-      },
-      attachments,
-      attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
-      contextAttachments,
-      iosContextItems: iosElementContextItems,
-      appControlContextItems,
-      builtInBrowserContextItems,
-      draftLaunchTargetId,
-      updatedAt: new Date().toISOString(),
-    };
     pendingComposerDraftWriteRef.current = {
       storageKey: composerDraftStorageKeyValue,
-      snapshot,
+      snapshot: currentComposerDraftSnapshot,
     };
     if (composerDraftWriteTimerRef.current != null) {
       window.clearTimeout(composerDraftWriteTimerRef.current);
@@ -9158,24 +9522,7 @@ export function AgentChatPane({
         writeComposerDraftSnapshot(pending.storageKey, pending.snapshot);
       }
     }, COMPOSER_DRAFT_WRITE_DEBOUNCE_MS);
-  }, [
-    appControlContextItems,
-    attachments,
-    builtInBrowserContextItems,
-    cursorCloudServiceTier,
-    fastMode,
-    companionStateKey,
-    composerDraftStorageKeyValue,
-    contextAttachments,
-    currentNativeControls,
-    draft,
-    draftLaunchTargetId,
-    executionMode,
-    iosElementContextItems,
-    modelId,
-    mentionLabels,
-    reasoningEffort,
-  ]);
+  }, [companionStateKey, composerDraftStorageKeyValue, currentComposerDraftSnapshot, draft]);
 
   useEffect(() => {
     if (!parallelChatMode) return;
@@ -9436,6 +9783,7 @@ export function AgentChatPane({
         cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
       },
       attachments: [...attachments],
+      attachmentDraftIds: [...attachmentDraftIdsRef.current],
       contextAttachments: contextAttachmentsSnapshot,
       iosContextItems: iosContextSnapshot,
       appControlContextItems: appControlContextSnapshot,
@@ -9447,6 +9795,7 @@ export function AgentChatPane({
   }, [
     appControlContextItems,
     attachments,
+    attachmentDraftIdsRef,
     builtInBrowserContextItems,
     cursorCloudServiceTier,
     fastMode,
@@ -9495,7 +9844,7 @@ export function AgentChatPane({
         updatedAt: new Date().toISOString(),
       });
     }
-  }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey]);
+  }, [applyLaunchConfigToComposer, companionStateKey, draftLaunchConfigScopeKey, setAttachments]);
 
   // A cancelled or deleted new-lane launch hands its prompt back here, merged
   // into whatever is already typed (see `chatLaunchDraftRestore`).
@@ -9520,7 +9869,7 @@ export function AgentChatPane({
     if (chatLaunchDraftRestore.prompt.attachments.length) {
       setAttachments((current) => mergeAttachments(current, chatLaunchDraftRestore.prompt.attachments));
     }
-  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot]);
+  }, [chatLaunchDraftRestore, companionStateKey, restoreDraftLaunchSnapshot, setAttachments]);
 
   const patchDraftLaunchJob = useCallback((jobId: string, patch: Partial<DraftLaunchJob>) => {
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs(current.map((job) => (
@@ -9535,6 +9884,7 @@ export function AgentChatPane({
   }, [draftLaunchJobsScopeKey]);
 
   const dismissDraftLaunchJob = useCallback((jobId: string) => {
+    discardRendererLaunchHandoff(jobId);
     setDraftLaunchJobs((current) => current.filter((job) => job.id !== jobId));
   }, [setDraftLaunchJobs]);
 
@@ -9544,9 +9894,38 @@ export function AgentChatPane({
     if (options?.clearError) setError(null);
   }, [dismissDraftLaunchJob, restoreDraftLaunchSnapshot]);
 
-  const openLaunchedDraftSession = useCallback((launch: BackgroundLaunchNotice & { jobId?: string }) => {
+  const openLaunchedDraftSession = useCallback((launch: OpenLaunchedDraftSessionInput) => {
     if (launch.jobId) {
       dismissDraftLaunchJob(launch.jobId);
+    }
+    if (launch.draftKind === "chat" && launch.firstMessage) {
+      // The chat exists and its prompt is sent, but the new pane has nothing
+      // to show until history loads: hand it the prompt as its first bubble,
+      // plus where the composer and text sat so both can animate into place.
+      const prepared = launch.firstMessage;
+      const firstMessage: AgentChatEventEnvelope = {
+        sessionId: launch.sessionId,
+        timestamp: new Date().toISOString(),
+        event: {
+          type: "user_message",
+          text: prepared.finalText,
+          displayText: prepared.finalDisplayText || "Selected visual app context",
+          ...(prepared.selectedAttachments.length ? { attachments: prepared.selectedAttachments } : {}),
+          ...(prepared.selectedContextAttachments.length ? { contextAttachments: prepared.selectedContextAttachments } : {}),
+        },
+      };
+      if (launch.composerHandoff) {
+        const handoff = refreshComposerHandoffDeparture(
+          launch.composerHandoff,
+          draftDepartingScope(shellRef.current),
+        );
+        stashComposerHandoffOrigin(launch.sessionId, { ...handoff, firstMessage });
+      } else {
+        stashComposerDockOrigin(launch.sessionId, findDraftComposerHandoffElement(shellRef.current), {
+          departingScope: draftDepartingScope(shellRef.current),
+          firstMessage,
+        });
+      }
     }
     if (projectRoot) {
       setWorkViewState(projectRoot, (prev) => ({
@@ -9592,8 +9971,118 @@ export function AgentChatPane({
   // directly with no status banner. If the inline open was skipped because this
   // pane remounted mid-launch, this effect opens the ready job from whichever
   // instance is mounted.
+  const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
+    const clearSubmittedContent = (saved: ComposerDraftStorageSnapshot): ComposerDraftStorageSnapshot => {
+      const text = clearSubmittedDraftText(saved.text, snapshot.draft, saved.submittedDraftTextEdit);
+      const clearText = text !== saved.text;
+      const attachmentResult = removeSubmittedDraftItemsById(
+        saved.attachments,
+        saved.attachmentDraftIds,
+        snapshot.attachments,
+        snapshot.attachmentDraftIds ?? [],
+        sameStoredDraftItem,
+      );
+      const consumesSubmittedTextEdit = saved.submittedDraftTextEdit?.submittedText === snapshot.draft;
+      const attachments = attachmentResult.items;
+      const contextAttachments = removeSubmittedDraftItems(
+        saved.contextAttachments,
+        snapshot.contextAttachments,
+        sameStoredDraftItem,
+      );
+      const iosContextItems = removeSubmittedDraftItems(saved.iosContextItems, snapshot.iosContextItems, sameStoredDraftItem);
+      const appControlContextItems = removeSubmittedDraftItems(
+        saved.appControlContextItems,
+        snapshot.appControlContextItems,
+        sameStoredDraftItem,
+      );
+      const builtInBrowserContextItems = removeSubmittedDraftItems(
+        saved.builtInBrowserContextItems,
+        snapshot.builtInBrowserContextItems,
+        sameStoredDraftItem,
+      );
+      if (
+        !clearText
+        && attachments.length === saved.attachments.length
+        && attachments.every((attachment, index) => attachment === saved.attachments[index])
+        && attachmentResult.ids.every((id, index) => id === saved.attachmentDraftIds[index])
+        && !consumesSubmittedTextEdit
+        && contextAttachments === saved.contextAttachments
+        && iosContextItems === saved.iosContextItems
+        && appControlContextItems === saved.appControlContextItems
+        && builtInBrowserContextItems === saved.builtInBrowserContextItems
+      ) return saved;
+      return {
+        ...saved,
+        text,
+        mentionLabels: text !== saved.text || consumesSubmittedTextEdit
+          ? Object.fromEntries(Object.entries(saved.mentionLabels).filter(([token]) => text.includes(token)))
+          : saved.mentionLabels,
+        attachments,
+        attachmentDraftIds: attachmentResult.ids,
+        submittedDraftTextEdit: consumesSubmittedTextEdit
+          ? null
+          : saved.submittedDraftTextEdit,
+        contextAttachments,
+        iosContextItems,
+        appControlContextItems,
+        builtInBrowserContextItems,
+        updatedAt: new Date().toISOString(),
+      };
+    };
+
+    const storageKeys = new Set(composerDraftStorageKeyValues);
+    // A detached renderer-owned launch callback may outlive a newer pane.
+    // That pane flushes its composer draft on unmount, so persisted storage is
+    // authoritative once this instance is gone.
+    const paneIsMounted = paneMountedRef.current;
+    const pending = paneIsMounted ? pendingComposerDraftWriteRef.current : null;
+    const latest = paneIsMounted ? latestComposerDraftSnapshotRef.current : null;
+    const latestDraft = latest && storageKeys.has(latest.storageKey) && !composerDraftHydratingRef.current
+      ? latest
+      : null;
+    for (const storageKey of storageKeys) {
+      const saved = readComposerDraftSnapshot(storageKey, initialNativeControls);
+      let current = saved;
+      if (pending?.storageKey === storageKey) current = pending.snapshot;
+      if (latestDraft?.storageKey === storageKey) current = latestDraft.snapshot;
+      const clearedSaved = saved ? clearSubmittedContent(saved) : null;
+      const clearedCurrent = current ? clearSubmittedContent(current) : null;
+      if (clearedSaved && clearedSaved !== saved) writeComposerDraftSnapshot(storageKey, clearedSaved);
+      if (clearedCurrent && clearedCurrent !== current) writeComposerDraftSnapshot(storageKey, clearedCurrent);
+      const reconciled = clearedCurrent ?? clearedSaved;
+      if (pending?.storageKey === storageKey && reconciled && pending.snapshot !== reconciled) {
+        pendingComposerDraftWriteRef.current = { ...pending, snapshot: reconciled };
+      }
+    }
+
+    const submittedTextEdit = submittedDraftTextEditRef.current;
+    setDraft((current) => {
+      const next = clearSubmittedDraftText(current, snapshot.draft, submittedTextEdit);
+      if (next === current) return current;
+      draftsPerSessionRef.current.set(companionStateKey, next);
+      return next;
+    });
+    updateSubmittedDraftTextEdit(null);
+    const liveAttachmentResult = removeSubmittedDraftItemsById(
+      attachmentsRef.current,
+      attachmentDraftIdsRef.current,
+      snapshot.attachments,
+      snapshot.attachmentDraftIds ?? [],
+      sameStoredDraftItem,
+    );
+    setAttachments(liveAttachmentResult.items);
+    setContextAttachments((current) => removeSubmittedDraftItems(current, snapshot.contextAttachments, sameStoredDraftItem));
+    setIosElementContextItems((current) => removeSubmittedDraftItems(current, snapshot.iosContextItems, sameStoredDraftItem));
+    setAppControlContextItems((current) => removeSubmittedDraftItems(current, snapshot.appControlContextItems, sameStoredDraftItem));
+    setBuiltInBrowserContextItems((current) => removeSubmittedDraftItems(current, snapshot.builtInBrowserContextItems, sameStoredDraftItem));
+  }, [companionStateKey, composerDraftStorageKeyValues, initialNativeControls, setAttachments, updateSubmittedDraftTextEdit]);
+
   useEffect(() => {
     if (!forceDraft) return;
+    // A ready launch can outlive the pane that started it. Wait for this
+    // mount's stored composer scope to commit before reconciling it; the first
+    // render still contains the empty pre-hydration state.
+    if (hydratedComposerDraftStorageKey !== composerDraftStorageKeyValue) return;
     const job = draftLaunchJobs.find(
       (entry) => entry.mode === "foreground"
         && entry.status === "ready"
@@ -9601,14 +10090,30 @@ export function AgentChatPane({
         && Boolean(entry.laneId && entry.laneName && entry.sessionId),
     );
     if (!job) return;
+    const composerHandoff = takeRendererLaunchHandoff(job.id);
+    if (job.mode === "foreground" && job.draftKind === "chat") {
+      // A remounted draft pane can collect more composer input while this
+      // launch is pending. Reconcile its persisted and debounced snapshots
+      // before changing composer scope so teardown cannot restore sent items.
+      clearDraftLaunchComposer(job.snapshot);
+    }
     openLaunchedDraftSession({
       laneId: job.laneId!,
       laneName: job.laneName!,
       sessionId: job.sessionId!,
       draftKind: job.draftKind,
       jobId: job.id,
+      ...(job.draftKind === "chat" ? { firstMessage: prepareDraftLaunch(job.snapshot) } : {}),
+      composerHandoff,
     });
-  }, [draftLaunchJobs, forceDraft, openLaunchedDraftSession]);
+  }, [
+    clearDraftLaunchComposer,
+    composerDraftStorageKeyValue,
+    draftLaunchJobs,
+    forceDraft,
+    hydratedComposerDraftStorageKey,
+    openLaunchedDraftSession,
+  ]);
 
   // Shared background-naming lifecycle: flag the affected lanes as "naming", ask
   // the backend for a name (it has its own timeout and returns the deterministic
@@ -9886,19 +10391,6 @@ export function AgentChatPane({
     startBackgroundLaneNaming,
   ]);
 
-  const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
-    setDraft((current) => {
-      if (current !== snapshot.draft) return current;
-      draftsPerSessionRef.current.set(companionStateKey, "");
-      return "";
-    });
-    setAttachments([]);
-    setContextAttachments([]);
-    setIosElementContextItems([]);
-    setAppControlContextItems([]);
-    setBuiltInBrowserContextItems([]);
-  }, [companionStateKey]);
-
   const cleanupDraftChatSession = useCallback(async (
     session: AgentChatSession,
     targetLane: DraftLaunchLaneTarget,
@@ -10141,7 +10633,9 @@ export function AgentChatPane({
     setError(null);
     const opensNow = kind === "chat" && mode === "foreground" && canRefreshPinnedProject(launchBinding);
     if (opensNow) {
-      stashComposerDockOrigin(launchId, shellRef.current?.querySelector("[data-chat-composer-wrapper]"));
+      stashComposerDockOrigin(launchId, findDraftComposerHandoffElement(shellRef.current), {
+        departingScope: draftDepartingScope(shellRef.current),
+      });
     }
     clearDraftLaunchComposer(snapshot);
     if (opensNow) {
@@ -10189,6 +10683,20 @@ export function AgentChatPane({
     }
     if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
     if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
+    if (kind === "chat" && mode === "foreground") {
+      const scopedJobs = rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey]
+        ?? EMPTY_DRAFT_LAUNCH_JOBS;
+      if (scopedJobs.some((job) => (
+        job.draftKind === "chat"
+        && job.mode === "foreground"
+        && !isDraftLaunchJobTerminal(job.status)
+      ))) {
+        // A changed composer snapshot has a different request key, but it is
+        // still the same held foreground launch until the first chat settles.
+        setError("A foreground chat launch is already in progress.");
+        return;
+      }
+    }
     if (!modelId) {
       setError("Select a model first");
       return;
@@ -10233,6 +10741,10 @@ export function AgentChatPane({
       latestForegroundJobIdRef: latestForegroundDraftLaunchJobIdRef,
       inFlightKeysRef: draftLaunchInFlightKeysRef,
       paneMountedRef,
+      captureHandoffOrigin: () => captureComposerHandoff(
+        findDraftComposerHandoffElement(shellRef.current),
+        { departingScope: draftDepartingScope(shellRef.current) },
+      ),
       prepare: prepareDraftLaunch,
       resolveLane: resolveDraftLaunchLane,
       startChat: startDraftChatLaunch,
@@ -10268,6 +10780,7 @@ export function AgentChatPane({
     clearPromptSuggestionForSession,
     clearDraftLaunchComposer,
     draftLaunchJobExists,
+    draftLaunchJobsScopeKey,
     draftLaunchTargetIsAutoCreate,
     isWorkCliLaunchDraft,
     laneId,
@@ -10277,7 +10790,6 @@ export function AgentChatPane({
     openLaunchedDraftSession,
     patchDraftLaunchJob,
     parallelLaunchBusy,
-    projectBinding,
     projectTransitionBlocksChat,
     copyPromptForLaunch,
     refreshLanesStore,
@@ -10789,12 +11301,15 @@ export function AgentChatPane({
     setHandoffLaunchJobs,
   ]);
 
-  const handleDeleteSelectedChat = useCallback(() => {
+  const handleDeleteSelectedChat = useCallback(async () => {
     if (!selectedSessionId || !selectedSession) return;
     const label = chatSessionTitle(selectedSession).trim() || "this chat";
-    const confirmed = window.confirm(
-      `Delete "${label}"?\n\nThis permanently removes the saved chat history from ADE.`,
-    );
+    const confirmed = await confirmDialog({
+      title: `Delete "${label}"?`,
+      message: "This permanently removes the saved chat history from ADE.",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
     if (!confirmed) return;
 
     setError(null);
@@ -10841,18 +11356,16 @@ export function AgentChatPane({
       });
   }, [invalidateCurrentChatSessionList, refreshSessions]);
 
-  const archiveConfirm = useConfirmDialog();
-  const memoryResetConfirm = useConfirmDialog();
   const requestArchiveChat = useCallback(
     async (sessionId: string, title: string) => {
-      const ok = await archiveConfirm.confirmAsync({
+      const ok = await confirmDialog({
         title: `Archive "${title}"?`,
         message: "Archived chats are hidden from the active chat tabs.",
         confirmLabel: "ARCHIVE",
       });
       if (ok) handleArchiveChat(sessionId);
     },
-    [archiveConfirm, handleArchiveChat],
+    [handleArchiveChat],
   );
 
   const handleUnarchiveChat = useCallback((sessionId: string) => {
@@ -11389,11 +11902,11 @@ export function AgentChatPane({
       && !contextAttachmentsSnapshot.length
       && !visualContextPrefix.length
     ) {
-      const ok = await memoryResetConfirm.confirmAsync({
+      const ok = await confirmDialog({
         title: "Reset Codex memory?",
         message: "Deletes every memory file under this Codex home, not just this chat.",
         confirmLabel: "Reset memory",
-        danger: true,
+        destructive: true,
       });
       if (!ok) return;
       setBusy(true);
@@ -11527,7 +12040,11 @@ export function AgentChatPane({
         deferredComposerSessionIdRef.current = null;
         void refreshSessions().catch(() => {});
       } else if (!sessionId) {
-        // No session yet — create one
+        // No session yet — create one. The empty-state composer holds the
+        // text until the chat exists; measure it now for the send handoff.
+        inPlaceFirstSendHandoffRef.current = suppressOptimisticOutgoing
+          ? null
+          : captureComposerHandoff(findDraftComposerHandoffElement(shellRef.current));
         sessionId = await createSession();
         if (!sessionId) {
           throw new Error("Unable to create chat session.");
@@ -11652,6 +12169,7 @@ export function AgentChatPane({
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
       setOptimisticOutgoingMessageSynced(null);
+      inPlaceFirstSendHandoffRef.current = null;
       setError(message);
       await refreshSessions({ force: true }).catch(() => {});
       if (
@@ -11701,6 +12219,7 @@ export function AgentChatPane({
     selectedSessionId,
     selectedSessionModelId,
     setOptimisticOutgoingMessageSynced,
+    setAttachments,
     sessionProvider,
     cursorRuntime,
     touchSession,
@@ -12655,14 +13174,18 @@ export function AgentChatPane({
     modelColor: composerModelDescribesRenderedChat ? selectedModelDesc?.color ?? null : null,
   });
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
-  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 || selectedScheduledWorkSnapshots.length > 0 ? (
+  // Always handed to the drawer: the panel is runtime-agnostic (Codex and
+  // Claude both emit subagent/plan/goal events) and renders nothing when it
+  // has nothing, so the drawer never shows an empty agents area. A host-side
+  // gate here used to miss plan-only and Claude-goal chats.
+  const agentsTabContent = (
     <ChatSubagentsPanel
       sessionId={selectedSessionId}
       snapshots={selectedSubagentSnapshots}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
       events={selectedEvents}
-      todoItems={selectedTodoItems}
+      taskList={selectedTaskList}
       scheduleItems={selectedScheduleItems}
       backgroundItems={selectedBackgroundItems}
       schedulesPaused={selectedSession?.scheduledWorkPaused === true}
@@ -12776,13 +13299,12 @@ export function AgentChatPane({
           : undefined
       }
     />
-  ) : (
-    <div className="flex flex-col items-center justify-center px-4 py-8 text-center">
-      <p className="font-sans text-[13px] text-fg/50">No agent activity detected</p>
-    </div>
   );
   const proofTabContent = (
-    <div className="border-t border-white/[0.06] px-4 py-3">
+    <div ref={proofDrawerRef} className="px-4 py-3">
+      {computerUseSnapshot && proofArtifactCount === 0 ? (
+        <p className="font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
+      ) : null}
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
@@ -12936,9 +13458,15 @@ export function AgentChatPane({
         </div>
       </div>
       {handoffTurnGate ? (
-        <div className="border-b border-amber-300/20 bg-amber-400/10 px-4 py-2 text-[11px] leading-4 text-amber-100/90">
-          A turn is running — wait for it to finish before handing off.
-        </div>
+        <Banner
+          model={{
+            id: "handoff-turn-running",
+            tone: "warning",
+            title: "A turn is running — wait for it to finish before handing off.",
+          }}
+          layout="inline"
+          style={{ margin: "0 16px" }}
+        />
       ) : null}
       <div className="min-h-0 flex-1 overflow-auto p-4">
         <div className="inline-flex w-full rounded-lg border border-white/[0.07] bg-white/[0.02] p-0.5">
@@ -13063,26 +13591,30 @@ export function AgentChatPane({
   );
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
-      agentsContent={agentsTabContent}
-      proofContent={proofArtifactCount > 0 ? proofTabContent : null}
-      extras={(
-        <>
-          {selectedMission ? (
-            <div className="border-t border-white/[0.06]">
-              <MissionControlPanel
-                mission={selectedMission}
-                onKillWorker={killDroidWorker}
-                killingWorkerIds={killingWorkerIds}
-              />
-            </div>
-          ) : null}
-          {selectedSession?.provider === "codex" ? (
-            <div className="border-t border-white/[0.06]">
-              <ChatSourcesPanel events={selectedEventsForDisplay} />
-            </div>
-          ) : null}
-        </>
-      )}
+      sections={[
+        { key: "agents", content: agentsTabContent },
+        (proofArtifactCount > 0 || (proofShowRequested && computerUseSnapshot)) && { key: "proof", content: proofTabContent },
+        selectedMission && missionHasContent(selectedMission) && {
+          key: "mission",
+          content: (
+            <MissionControlPanel
+              mission={selectedMission}
+              onKillWorker={killDroidWorker}
+              killingWorkerIds={killingWorkerIds}
+            />
+          ),
+        },
+        selectedChatHasSources && {
+          key: "sources",
+          content: (
+            <ChatSourcesPanel
+              sources={selectedChatSources}
+              turnId={sourcesTurnFilter}
+              onShowAll={clearSourcesTurnFilter}
+            />
+          ),
+        },
+      ]}
     />
   );
   const cursorCloudPanelContent = (
@@ -13127,11 +13659,12 @@ export function AgentChatPane({
           Close
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <div ref={appleDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
-          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
-            {auxiliaryToolDisabledReason}
-          </div>
+          <Banner
+            model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
+            layout="inline"
+          />
         ) : (
           <ChatIosSimulatorPanel
             key={activeComposerRuntimeBinding?.key ?? "bound"}
@@ -13163,9 +13696,10 @@ export function AgentChatPane({
       </div>
       <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
-          <div className="rounded-lg border border-amber-400/15 bg-amber-400/[0.05] px-3 py-2 text-[11px] leading-relaxed text-amber-100/70">
-            {auxiliaryToolDisabledReason}
-          </div>
+          <Banner
+            model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
+            layout="inline"
+          />
         ) : (
           <ChatAppControlPanel
             key={activeComposerRuntimeBinding?.key ?? "bound"}
@@ -13214,11 +13748,7 @@ export function AgentChatPane({
       {iosSimulatorSessionChip && !effectiveIosSimulatorOpen && laneToolsVisible && iosSimulatorAvailable ? (
         <IosSimulatorRunningPill
           deviceName={iosSimulatorSessionChip.deviceName}
-          onOpen={() => {
-            setAppControlOpen(false);
-            setCursorCloudPaneOpen(false);
-            setIosSimulatorOpen(true);
-          }}
+          onOpen={openIosSimulatorDrawer}
           onFloat={() => {
             // §7: Float opens the mini player, which owns native PiP in its
             // own hover bar. The auto-appearing corner card it used to ask is
@@ -13282,7 +13812,7 @@ export function AgentChatPane({
             <SmartTooltip
               content={{
                 label: appControlOpen ? "Close App Control" : "Open App Control",
-                description: "Launch or attach to an Electron app to inspect, click, and capture context.",
+                description: "Launch or attach to a local Electron app. ADE can click, type, read its logs, answer its prompts, and capture screenshots and DOM context for the chat.",
                 effect: appControlContextItems.length
                   ? `${appControlContextItems.length} element context attached`
                   : undefined,
@@ -13387,6 +13917,15 @@ export function AgentChatPane({
       ) : runningSubagentCount > 0 ? (
         <span className="absolute -right-1 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-amber-400/85 px-0.5 font-mono text-[8px] font-bold text-black">
           {runningSubagentCount}
+        </span>
+      ) : selectedTaskProgress && selectedTaskProgress.total > 0 && selectedTaskProgress.done < selectedTaskProgress.total ? (
+        // Proof, then running subagents, then an unfinished task list: the
+        // badge answers "how much is happening now". A finished list shows none.
+        <span
+          data-testid="chat-actions-task-badge"
+          className="absolute -right-1.5 -top-1 inline-flex h-[13px] min-w-[13px] items-center justify-center rounded-full border border-black/30 bg-sky-400/85 px-0.5 font-mono text-[8px] font-bold text-black"
+        >
+          {selectedTaskProgress.done}/{selectedTaskProgress.total}
         </span>
       ) : null}
     </button>
@@ -13567,8 +14106,8 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
-  const lifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
-    <ChatLifecycleBanner sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
+  const lifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
+    <ChatLifecyclePill sessionId={composerSessionId} runtimePin={renderedChatRuntimePin} />
   ) : null;
   // The whole usage-limit surface: one line, above the composer, in the same
   // capped column the prompt box uses so the two share an edge. It is an
@@ -13599,9 +14138,9 @@ export function AgentChatPane({
         // Matches ChatComposerShell's own width rule exactly so the banner and
         // the prompt box share an edge: capped column when standard, full
         // bleed inside a grid tile where the composer drops its max width.
-        className={cn(
-          layoutVariant === "grid-tile" ? "w-full" : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
-        )}
+        style={layoutVariant === "grid-tile"
+          ? { width: "100%" }
+          : { width: "100%", maxWidth: "var(--chat-column,52rem)", marginLeft: "auto", marginRight: "auto" }}
         onTakeOver={() => {
           const sessionId = composerSessionId;
           const previousShownAt = selectedSession.subagentTakeoverPromptShownAt ?? null;
@@ -13919,6 +14458,8 @@ export function AgentChatPane({
                   cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
                 },
                 attachments: [...attachments],
+                attachmentDraftIds: [...attachmentDraftIdsRef.current],
+                submittedDraftTextEdit: submittedDraftTextEditRef.current,
                 attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
                 contextAttachments: [...contextAttachments],
                 iosContextItems: [...iosElementContextItems],
@@ -14103,18 +14644,35 @@ export function AgentChatPane({
       onDismiss={() => setWakeAwayWindow((current) => current ? { ...current, dismissed: true } : current)}
     />
   ) : null;
-  const appPanelLifecyclePill = hasComposerLifecycleBanner && composerSessionId ? (
-    <ChatLifecycleBanner
+  const appPanelLifecyclePill = hasComposerLifecyclePill && composerSessionId ? (
+    <ChatLifecyclePill
       sessionId={composerSessionId}
       runtimePin={renderedChatRuntimePin}
       className={awayDigestCard ? undefined : "mx-auto my-1.5 flex w-fit"}
     />
   ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecyclePill ? (
+  /**
+   * The turn's time-lapse of the lane's macOS screen, when there was one.
+   *
+   * Rendered in the notice overlay rather than inline in the transcript because
+   * it is context about the turn that just ended, not a message in it — and it
+   * renders null (and subscribes to nothing that can produce one) for every
+   * chat whose lane never used the desktop.
+   */
+  const macDesktopTimeLapseCard = laneId ? (
+    <ChatMacDesktopTimeLapseCard
+      laneId={laneId}
+      sessionId={composerSessionId}
+      runtimePin={renderedChatRuntimePin}
+      workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
+    />
+  ) : null;
+  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (
     <div
       data-testid="chat-composer-notice-overlay"
       className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
     >
+      {macDesktopTimeLapseCard}
       {awayDigestCard}
       {lifecyclePill}
     </div>
@@ -14145,6 +14703,7 @@ export function AgentChatPane({
   const composerWithTypographyRoot = (
     <div
       ref={composerDockRef}
+      data-chat-composer-dock
       data-chat-appearance-root
       style={{ ...chatAppearanceRootStyle, paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
@@ -14373,88 +14932,69 @@ export function AgentChatPane({
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
         {error ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-500/[0.08] bg-red-500/[0.03] px-4 py-2.5 font-sans text-[11px] text-red-300/80">
-            <span className="min-w-0 flex-1 break-words">{error}</span>
-            {draftMachineRecoveryAvailable ? (
-              <button
-                type="button"
-                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
-                onClick={useThisComputerForDraft}
-              >
-                Use this computer
-              </button>
-            ) : null}
-            {restorableErrorDraftLaunchJob ? (
-              <button
-                type="button"
-                className="shrink-0 rounded-md border border-red-300/15 px-2 py-0.5 font-medium text-red-50/90 transition-colors hover:bg-red-300/[0.12]"
-                onClick={() => restoreDraftLaunchJob(restorableErrorDraftLaunchJob, { clearError: true })}
-              >
-                Restore
-              </button>
-            ) : null}
-          </div>
+          <Banner
+            layout="inline"
+            style={RUNTIME_BANNER_STYLE}
+            model={{
+              id: "chat-error",
+              tone: "error",
+              title: <span className="break-words">{error}</span>,
+              ariaLabel: error,
+              actions: [
+                ...(draftMachineRecoveryAvailable
+                  ? [{ label: "Use this computer", onClick: useThisComputerForDraft }]
+                  : []),
+                ...(restorableErrorDraftLaunchJob
+                  ? [{
+                      label: "Restore",
+                      onClick: () => restoreDraftLaunchJob(restorableErrorDraftLaunchJob, { clearError: true }),
+                    }]
+                  : []),
+              ],
+            }}
+          />
         ) : null}
         {replayForkDisclosure ? (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5 font-sans text-[11px] text-amber-100/80">
-            <span className="min-w-0 flex-1 break-words">
-              {`Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `}
-              {`The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`}
-            </span>
-            <button
-              type="button"
-              className="shrink-0 rounded-md border border-amber-300/15 px-2 py-0.5 font-medium text-amber-50/90 transition-colors hover:bg-amber-300/[0.12]"
-              onClick={() => setReplayForkDisclosure(null)}
-            >
-              Dismiss
-            </button>
-          </div>
+          <Banner
+            layout="inline"
+            style={RUNTIME_BANNER_STYLE}
+            model={{
+              id: "chat-replay-fork",
+              tone: "warning",
+              icon: <GitFork size={13} weight="bold" />,
+              title: `Forked chat replayed ${replayForkDisclosure.keptTurnCount} ${replayForkDisclosure.keptTurnCount === 1 ? "turn" : "turns"}. `
+                + `The ${replayForkDisclosure.truncatedTurnCount} oldest ${replayForkDisclosure.truncatedTurnCount === 1 ? "turn" : "turns"} didn't fit the new model's context window or provider input limit.`,
+              dismiss: { onDismiss: () => setReplayForkDisclosure(null), label: "Dismiss" },
+            }}
+          />
         ) : null}
         {mergedRuntimeBanner?.kind === "cli-only" && !cursorRuntimeBlocked ? (
-          <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
-            <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-              {mergedRuntimeBanner.cliTitle}
-            </div>
-            <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-              {mergedRuntimeBanner.cliBody}
-            </div>
-          </div>
+          <CliRuntimeBanner
+            logoFamily={cliRuntimeLogoFamily}
+            title={mergedRuntimeBanner.cliTitle}
+            body={mergedRuntimeBanner.cliBody}
+          />
         ) : null}
         {mergedRuntimeBanner?.kind === "local-only" ? (
-          <LocalRuntimeNoticeBlock
+          <LocalRuntimeNoticeBanner
             notice={mergedRuntimeBanner.localNotice}
             endpoint={mergedRuntimeBanner.localEndpoint}
           />
         ) : null}
         {mergedRuntimeBanner?.kind === "merged" ? (
           cursorRuntimeBlocked ? (
-            <LocalRuntimeNoticeBlock
+            <LocalRuntimeNoticeBanner
               notice={mergedRuntimeBanner.localNotice}
               endpoint={mergedRuntimeBanner.localEndpoint}
             />
           ) : (
-            <div className="border-b border-amber-500/10 bg-amber-500/[0.04] px-4 py-2.5">
-              <div className="font-mono text-[10px] uppercase tracking-[0.16em] text-amber-200/70">
-                Runtime status
-              </div>
-              <div className="mt-3 space-y-3">
-                <div>
-                  <div className="font-mono text-[9px] uppercase tracking-[0.14em] text-amber-200/55">
-                    {mergedRuntimeBanner.cliTitle}
-                  </div>
-                  <div className="mt-1 text-[12px] leading-5 text-amber-100/80">
-                    {mergedRuntimeBanner.cliBody}
-                  </div>
-                </div>
-                <div className="border-t border-white/[0.06] pt-3">
-                  <LocalRuntimeNoticeBlock
-                    variant="inline"
-                    notice={mergedRuntimeBanner.localNotice}
-                    endpoint={mergedRuntimeBanner.localEndpoint}
-                  />
-                </div>
-              </div>
-            </div>
+            <CliRuntimeBanner
+              logoFamily={cliRuntimeLogoFamily}
+              title={mergedRuntimeBanner.cliTitle}
+              body={mergedRuntimeBanner.cliBody}
+              localNotice={mergedRuntimeBanner.localNotice}
+              localEndpoint={mergedRuntimeBanner.localEndpoint}
+            />
           )
         ) : null}
 
@@ -14606,6 +15146,7 @@ export function AgentChatPane({
                       <AgentChatMessageList
                         key={renderedSessionId ?? "chat-draft"}
                         events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
+                        chatSources={subagentView ? null : selectedChatSources}
                         showStreamingIndicator={subagentView
                           ? subagentTranscriptLoading || subagentViewSnapshot?.status === "running"
                           : turnActive && selectedSession?.status !== "ended"}
@@ -14698,6 +15239,7 @@ export function AgentChatPane({
                         proofArtifacts={subagentView ? EMPTY_PROOF_ARTIFACTS : computerUseSnapshot?.artifacts ?? EMPTY_PROOF_ARTIFACTS}
                         allowLocalProofArtifactProtocol={!isRemoteChat}
                         onOpenProofDrawer={subagentView ? undefined : openProofDrawer}
+                        onOpenTurnSources={subagentView ? undefined : openTurnSources}
                       />
                     </ChatInfoHostContext.Provider>
                     ) : null}
@@ -14762,6 +15304,7 @@ export function AgentChatPane({
                         appPanelOpen ? null : "max-w-[680px]",
                       )}>
                         <motion.div
+                          data-draft-depart="fade"
                           className={cn(
                             // The logo is the only flexible row: in a short window it absorbs the
                             // overflow down to a legible floor, so the composer stays visible far
@@ -14804,8 +15347,9 @@ export function AgentChatPane({
                               // emerging from nothing.
                               appPanelOpen
                                 ? "w-full"
-                                : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
+                                : cn("ade-chat-launch-shelf", DRAFT_SHELF_WIDTH_CLASS),
                             )}
+                            data-draft-depart="fade"
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
                             <div className="flex min-w-0 items-center gap-2">
@@ -14902,7 +15446,7 @@ export function AgentChatPane({
                               "flex shrink-0 items-center gap-2",
                               appPanelOpen
                                 ? "rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-1.5"
-                                : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
+                                : cn("ade-chat-launch-shelf", DRAFT_SHELF_WIDTH_CLASS),
                             )}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
@@ -14928,7 +15472,7 @@ export function AgentChatPane({
                             exit={{ opacity: 0, y: 6 }}
                             transition={{ duration: 0.28, ease: "easeOut" }}
                           >
-                            <div className="w-[calc(100%-6rem)]" data-chat-empty-usage="">
+                            <div className={DRAFT_SHELF_WIDTH_CLASS} data-chat-empty-usage="" data-draft-depart="fade">
                               <WorkActivityModule />
                             </div>
                           </motion.div>
@@ -15008,8 +15552,6 @@ export function AgentChatPane({
           }}
         />
       ) : null}
-      <ConfirmDialog state={archiveConfirm.state} onClose={archiveConfirm.close} />
-      <ConfirmDialog state={memoryResetConfirm.state} onClose={memoryResetConfirm.close} />
       {onImportedSession && importTargetLane ? (
         <ImportSessionBrowser
           open={importBrowserOpen}

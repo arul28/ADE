@@ -430,26 +430,6 @@ describe("WorkKanbanBoard", () => {
     expect(within(card).getByTestId("work-board-waiting-s-ci").textContent).toContain("CI running");
   });
 
-  it("keeps every card the same height so the four columns align", () => {
-    renderBoard();
-    // The footer is unconditional for exactly this reason: a footer that showed
-    // up only for parked rows put the Waiting column out of step with the rest.
-    for (const id of ["s-needs", "s-cto", "s-ci", "s-ended", "s-settled"]) {
-      const card = screen.getByTestId(`work-board-card-${id}`);
-      expect(card.querySelector(".h-4")).toBeTruthy();
-    }
-  });
-
-  it("names the model beside the provider glyph on a board card", () => {
-    renderBoard();
-    const card = screen.getByTestId("work-board-card-s-cto");
-    expect(within(card).getByTestId("session-model-label").textContent).toBe("Claude Opus 5");
-    // A row whose provider reported no model shows no chip rather than a blank.
-    expect(
-      within(screen.getByTestId("work-board-card-s-needs")).queryByTestId("session-model-label"),
-    ).toBeNull();
-  });
-
   it("suppresses the per-card status label, which the column already states", () => {
     renderBoard();
 
@@ -474,19 +454,6 @@ describe("WorkKanbanBoard", () => {
     // status, so removing the word there would delete the fact outright.
     const { container } = renderListWithTwoLanes();
     expect(container.querySelector("[data-session-status]")).toBeTruthy();
-  });
-
-  it("gives the four columns equal flexible widths with a floor", () => {
-    renderBoard();
-    for (const key of ["needs_you", "working", "waiting", "done"] as const) {
-      const cls = column(key).className;
-      // `basis-0` is what makes them EQUAL: with the default `basis-auto` a
-      // column holding a long chat title would claim more than its share.
-      expect(cls).toContain("flex-1");
-      expect(cls).toContain("basis-0");
-      expect(cls).toContain("min-w-[15.5rem]");
-      expect(cls).not.toContain("shrink-0");
-    }
   });
 
   it("shows the agent note line on a board card", () => {

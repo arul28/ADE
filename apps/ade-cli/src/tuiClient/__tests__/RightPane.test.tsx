@@ -93,22 +93,20 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     title: "Fix send error",
     laneIcon: null,
     laneColor: null,
-    plan: {
-      current: 1,
-      total: 2,
-      live: true,
-      steps: [
-        { text: "Patch runtime bridge", status: "in_progress" },
-        { text: "Verify desktop smoke", status: "pending" },
+    taskList: {
+      source: "plan",
+      label: "Plan",
+      turnId: null,
+      items: [
+        { id: "step-0", label: "Patch runtime bridge", status: "running" },
+        { id: "step-1", label: "Verify desktop smoke", status: "pending" },
       ],
     },
     snapshots: [],
     inspectedSubagentId: null,
     capability: resolveSubagentCapability(provider),
     mission: null,
-    planExplanation: null,
     planStreamingText: null,
-    todos: [],
     scheduledWork: [],
     backgroundWork: [],
     pr: null,
@@ -278,7 +276,7 @@ describe("RightPane chat info", () => {
   it("hides empty plan, idle state, and the new-chat row", () => {
     const result = render(
       <RightPane
-        content={{ kind: "chat-info", info: chatInfo({ snapshots: [], plan: { current: 0, total: 0, live: false, steps: [] } }) }}
+        content={{ kind: "chat-info", info: chatInfo({ snapshots: [], taskList: null }) }}
         focused
         width={80}
       />,
@@ -418,16 +416,21 @@ describe("RightPane chat info", () => {
     expect(backgroundIndex).toBeLessThan(desktopIndex);
   });
 
-  it("renders tasks and PR sections below the roster (desktop chat-actions parity)", () => {
+  it("renders a todo list as the one TASKS section and the PR section (desktop chat-actions parity)", () => {
     const result = render(
       <RightPane
         content={{
           kind: "chat-info",
           info: chatInfo({
-            todos: [
-              { id: "t1", description: "Wire the adapter", status: "completed" },
-              { id: "t2", description: "Run smoke tests", status: "in_progress" },
-            ],
+            taskList: {
+              source: "todo",
+              label: "Tasks",
+              turnId: null,
+              items: [
+                { id: "t1", label: "Wire the adapter", status: "done" },
+                { id: "t2", label: "Run smoke tests", status: "running" },
+              ],
+            },
             pr: { number: 412, state: "open", checksPassed: 3, checksTotal: 5 },
           }),
         }}
@@ -439,6 +442,8 @@ describe("RightPane chat info", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("TASKS");
+    // One section: no separate PLAN block beside it.
+    expect(frame).not.toContain("PLAN");
     expect(frame).toContain("1/2");
     expect(frame).toContain("Wire the adapter");
     expect(frame).toContain("Run smoke tests");
@@ -719,13 +724,18 @@ describe("RightPane chat info", () => {
     expect(frame.indexOf("BACKGROUND")).toBeLessThan(frame.indexOf("SCHEDULE"));
   });
 
-  it("renders the plan explanation under the plan steps when present", () => {
+  it("renders a short plan explanation as the PLAN section's label", () => {
     const result = render(
       <RightPane
         content={{
           kind: "chat-info",
           info: chatInfo({
-            planExplanation: "Patching the bridge first keeps the smoke test honest.",
+            taskList: {
+              source: "plan",
+              label: "Bridge first",
+              turnId: null,
+              items: [{ id: "step-0", label: "Patch runtime bridge", status: "running" }],
+            },
           }),
         }}
         selectedIndex={0}
@@ -736,7 +746,8 @@ describe("RightPane chat info", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("PLAN");
-    expect(frame).toContain("Patching the bridge first");
+    expect(frame).toContain("Bridge first");
+    expect(frame).toContain("0/1");
   });
 
   it("renders the orange resume row above the header for closed-but-resumable claude terminals", () => {

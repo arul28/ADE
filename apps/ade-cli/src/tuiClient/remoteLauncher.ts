@@ -64,6 +64,7 @@ import {
   withTimeout,
   type RemoteLaunchBudget,
 } from "./remoteLaunchBudget";
+import { syntheticCallerId } from "../../../desktop/src/shared/syntheticCallerId";
 
 export {
   assertRelayAccountUnchanged,
@@ -604,7 +605,7 @@ async function initializeRemoteRpc(client: RemoteRpcClientLike): Promise<Initial
     clientInfo: { name: "ade-code-remote", version: localCliVersion() },
     identity: {
       role: "cto",
-      callerId: `ade-code-remote:${process.pid}`,
+      callerId: syntheticCallerId("ade-code-remote"),
     },
   });
   const remoteVersion = typeof initialize?.runtimeInfo?.version === "string"

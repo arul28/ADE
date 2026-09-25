@@ -1,7 +1,17 @@
 import path from "node:path";
 import { Lexer, type Token, type Tokens } from "marked";
-import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatPlanStep, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
-import { foldTodoItemsIntoPlanSteps, todoItemsCoveredByPlanSteps } from "../../../desktop/src/shared/todoPlanFold";
+import type { AgentChatEvent, AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
+import {
+  chatTaskItemDisplayLabel,
+  chatTaskListProgress,
+  deriveChatTaskList,
+  isChatTaskListEvent,
+  type ChatTaskItem,
+  type ChatTaskListSnapshot,
+} from "../../../desktop/src/shared/chatTaskList";
+import { deriveChatSources } from "../../../desktop/src/shared/chatSources";
+import { deriveSubagentCardName, subagentSummaryPlainText } from "../../../desktop/src/shared/chatSubagents";
+import { describeUserMessageStatus } from "../../../desktop/src/shared/chatUserMessageStatus";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { adeCardIsHiddenAfterDismiss, adeCardProgressTotal, type AdeCardPayload } from "../../../desktop/src/shared/adeCard";
 import {
@@ -637,49 +647,30 @@ export function latestExpandableFailureId(events: AgentChatEventEnvelope[]): str
   return null;
 }
 
+const TASK_GLYPH_STATUS: Record<ChatTaskItem["status"], string> = {
+  pending: "pending",
+  running: "in_progress",
+  done: "completed",
+  failed: "failed",
+};
+
+function taskItemGlyph(item: ChatTaskItem): string {
+  return item.skipped ? "–" : glyphFor(TASK_GLYPH_STATUS[item.status]);
+}
+
 /**
- * The same fold the desktop transcript does (`shared/todoPlanFold`). A later
- * todo_update writes onto the plan already emitted for that turn, and its row is
- * dropped. A plan that arrives later drops the earlier todo rows of its turn
- * that it fully names. Any other todo still renders on its own.
+ * The chat's one task list (`shared/chatTaskList`), as the desktop thread draws
+ * it: a single block at the position of the latest list event.
  */
-function foldTodoUpdatesIntoPlans(events: AgentChatEventEnvelope[]): {
-  stepsByPlanIndex: Map<number, AgentChatPlanStep[]>;
-  foldedTodoIndexes: Set<number>;
-} {
-  const stepsByPlanIndex = new Map<number, AgentChatPlanStep[]>();
-  const latestPlanIndexByTurn = new Map<string, number>();
-  const openTodoIndexesByTurn = new Map<string, number[]>();
-  const foldedTodoIndexes = new Set<number>();
-  events.forEach((envelope, index) => {
-    const event = envelope.event;
-    if (event.type === "plan" && event.turnId) {
-      const previousIndex = latestPlanIndexByTurn.get(event.turnId);
-      const previousSteps = previousIndex == null ? [] : (stepsByPlanIndex.get(previousIndex) ?? []);
-      const steps = event.steps.length > 0 ? event.steps : previousSteps;
-      latestPlanIndexByTurn.set(event.turnId, index);
-      stepsByPlanIndex.set(index, steps.map((step) => ({ ...step })));
-      for (const todoIndex of openTodoIndexesByTurn.get(event.turnId) ?? []) {
-        const todo = events[todoIndex]?.event;
-        if (todo?.type === "todo_update" && todoItemsCoveredByPlanSteps(todo.items, steps)) {
-          foldedTodoIndexes.add(todoIndex);
-        }
-      }
-      return;
-    }
-    if (event.type !== "todo_update" || !event.turnId) return;
-    const planIndex = latestPlanIndexByTurn.get(event.turnId);
-    const current = planIndex == null ? undefined : stepsByPlanIndex.get(planIndex);
-    if (planIndex == null || !current) {
-      const open = openTodoIndexesByTurn.get(event.turnId) ?? [];
-      open.push(index);
-      openTodoIndexesByTurn.set(event.turnId, open);
-      return;
-    }
-    stepsByPlanIndex.set(planIndex, foldTodoItemsIntoPlanSteps(current, event.items));
-    foldedTodoIndexes.add(index);
-  });
-  return { stepsByPlanIndex, foldedTodoIndexes };
+export function formatTaskListLines(list: ChatTaskListSnapshot, maxItems = 12): string {
+  const progress = chatTaskListProgress(list.items);
+  const keyword = list.source === "plan" ? "plan" : "tasks";
+  const named = list.label !== "Plan" && list.label !== "Tasks" ? `  ${singleLine(list.label, 80)}` : "";
+  const header = `${keyword}${named}  ${progress.done}/${progress.total}`;
+  const rows = list.items
+    .slice(0, maxItems)
+    .map((item) => `${taskItemGlyph(item)} ${chatTaskItemDisplayLabel(item)}${item.skipped ? "  skipped" : ""}`);
+  return [header, ...rows].join("\n");
 }
 
 export function renderChatLines(args: {
@@ -690,8 +681,23 @@ export function renderChatLines(args: {
   maxLines?: number;
 }): RenderedChatLine[] {
   const lines: RenderedChatLine[] = [];
+  const sourceCountByTurn = new Map(
+    [...deriveChatSources(args.events).byTurn].map(([turnId, sources]) => [turnId, sources.length] as const),
+  );
+  const subagentLineId = (key: string) => `subagent:${key}`;
+  const upsertSubagentLine = (line: RenderedChatLine): void => {
+    const existingIndex = lines.findIndex((candidate) => candidate.id === line.id);
+    if (existingIndex < 0) lines.push(line);
+    else lines[existingIndex] = line;
+  };
   const terminalReasonByTurnId = new Map<string, string>();
-  const foldedPlanSteps = foldTodoUpdatesIntoPlans(args.events);
+  // One task list per chat: it renders once, at its latest list event; every
+  // earlier plan/todo event draws nothing. Plan-mode proposals keep their line.
+  const taskList = deriveChatTaskList(args.events);
+  let taskListEventIndex = -1;
+  args.events.forEach((envelope, index) => {
+    if (isChatTaskListEvent(envelope.event)) taskListEventIndex = index;
+  });
   for (const envelope of args.events) {
     const event = envelope.event;
     if (event.type !== "done" || event.status === "completed") continue;
@@ -849,33 +855,36 @@ export function renderChatLines(args: {
       const resolution = event.steerId
         ? latestUserMessageResolutionBySteer.get(event.steerId)
         : undefined;
-      const deliveryHeader = resolution?.action === "run_next"
-        ? "not processed · started as the next turn"
-        : resolution?.action === "dismiss"
-          ? "not processed · dismissed"
-          : event.deliveryState === "processed" || event.processed
-        ? "processed"
-          : event.deliveryState === "unprocessed"
-          ? event.steerId
-            ? `not processed · /run-next ${event.steerId} · /edit-message ${event.steerId} · /dismiss-message ${event.steerId}`
-            : "not processed · send again when ready"
-          : event.deliveryState === "accepted" || event.deliveryState === "delivered"
-            ? "accepted · waiting to be processed"
-            : event.deliveryState === "inline"
-              ? "accepted during active turn"
-              : event.deliveryState === "failed"
-                ? "send failed"
-                : undefined;
       lines.push({
         id,
         tone: "user",
-        header: deliveryHeader,
         body: formatUserMessageTranscriptBody({
           text: event.text,
           displayText: event.displayText,
           attachments: event.attachments,
         }),
       });
+      // A completed resolution replaces the generic "turn ended first" line.
+      // Until then, an unprocessed steer keeps the TUI recovery commands,
+      // which are the keyboard equivalent of desktop's run / edit / dismiss.
+      const deliveryStatus = resolution ? null : describeUserMessageStatus(event);
+      const deliveryLabel = deliveryStatus?.label ?? (
+        resolution?.action === "run_next"
+          ? "Not processed · started as the next turn"
+          : resolution?.action === "dismiss"
+            ? "Not processed · dismissed"
+            : null
+      );
+      const recoveryHint = !resolution && deliveryStatus?.kind === "steer_unprocessed" && event.steerId
+        ? ` · /run-next ${event.steerId} · /edit-message ${event.steerId} · /dismiss-message ${event.steerId}`
+        : "";
+      if (deliveryLabel) {
+        lines.push({
+          id: `${id}:delivery`,
+          tone: deliveryStatus?.tone === "error" ? "error" : "notice",
+          body: `↳ ${deliveryLabel}${recoveryHint}`,
+        });
+      }
       continue;
     }
     if (event.type === "user_message_resolution") {
@@ -921,7 +930,8 @@ export function renderChatLines(args: {
       lines.push({
         id,
         tone: "reasoning",
-        body: `thinking ${singleLine(event.text, 120)}`,
+        header: "Thought",
+        body: singleLine(event.text, 120),
       });
       continue;
     }
@@ -964,24 +974,20 @@ export function renderChatLines(args: {
       });
       continue;
     }
+    if ((event.type === "plan" || event.type === "todo_update") && isChatTaskListEvent(event)) {
+      if (index === taskListEventIndex && taskList) {
+        lines.push({ id, tone: "notice", body: formatTaskListLines(taskList) });
+      }
+      continue;
+    }
     if (event.type === "plan") {
-      const stepsForTurn = foldedPlanSteps.stepsByPlanIndex.get(index);
-      const planSteps = stepsForTurn ?? event.steps;
-      const completed = planSteps.filter((step) => step.status === "completed").length;
-      const name = event.explanation?.trim();
-      const header = event.streamingText
-        ? `plan ${event.state ?? "updated"}  ${singleLine(event.streamingText, 110)}`
-        : name
-          ? `plan  ${singleLine(name, 80)}  ${completed}/${planSteps.length}`
-          : `plan  ${completed}/${planSteps.length}`;
-      const steps = planSteps
-        .slice(0, 8)
-        .map((step) => `${glyphFor(step.status)} ${step.text}`)
-        .join("\n");
+      // A Codex plan-mode proposal: streamed markdown, no steps.
+      const proposalText = event.streamingText?.trim() ?? "";
+      if (event.state === "delta" && !proposalText) continue;
       lines.push({
         id,
         tone: "notice",
-        body: steps ? `${header}\n${steps}` : header,
+        body: `plan ${event.state ?? "updated"}  ${singleLine(proposalText, 110)}`,
       });
       continue;
     }
@@ -1264,6 +1270,9 @@ export function renderChatLines(args: {
         inputTokens ? `in ${inputTokens}` : null,
         outputTokens ? `out ${outputTokens}` : null,
         typeof event.costUsd === "number" ? `$${event.costUsd.toFixed(2)}` : null,
+        sourceCountByTurn.get(event.turnId)
+          ? `${sourceCountByTurn.get(event.turnId)} source${sourceCountByTurn.get(event.turnId) === 1 ? "" : "s"}`
+          : null,
       ].filter(Boolean);
       lines.push({
         id,
@@ -1306,45 +1315,48 @@ export function renderChatLines(args: {
       lines.push({ id, tone: "notice", body: `── step ${event.stepNumber} ──` });
       continue;
     }
-    if (event.type === "todo_update") {
-      if (foldedPlanSteps.foldedTodoIndexes.has(index)) continue;
-      const allDone = event.items.length > 0 && event.items.every((todo) => todo.status === "completed");
-      if (allDone) {
-        lines.push({
-          id,
-          tone: "notice",
-          body: event.items.map((todo) => `● ${todo.description}  task complete`).join("\n"),
-        });
-        continue;
-      }
-      const completed = event.items.filter((todo) => todo.status === "completed").length;
-      const todoLines = event.items
-        .slice(0, 12)
-        .map((todo) => `${glyphFor(todo.status)} ${todo.description}`);
-      lines.push({
-        id,
+    if (event.type === "subagent_started") {
+      const key = event.agentId?.trim() || event.taskId?.trim() || id;
+      const isChildChat = event.taskId?.startsWith("chat:") === true;
+      const rawProvider = event.provider?.trim() || (isChildChat ? event.agentType?.trim() : args.activeSession?.provider) || "";
+      const provider = rawProvider ? providerDisplayLabel(rawProvider, rawProvider) : "agent";
+      const name = deriveSubagentCardName({ description: event.description, label: event.label, agentType: event.agentType });
+      upsertSubagentLine({
+        id: subagentLineId(key),
         tone: "notice",
-        body: [`plan  ${completed}/${event.items.length}`, ...todoLines].join("\n"),
+        body: `[${provider}${isChildChat ? " child" : ""}] ${singleLine(name, 88)} · running${event.background ? " · background" : ""}`,
       });
       continue;
     }
-    if (event.type === "subagent_started") {
-      lines.push({ id, tone: "notice", body: `[agent] ${singleLine(event.description, 96)} (started)` });
-      continue;
-    }
     if (event.type === "subagent_progress") {
-      lines.push({
-        id,
+      const key = event.agentId?.trim() || event.taskId?.trim() || id;
+      const existing = lines.find((candidate) => candidate.id === subagentLineId(key));
+      const isChildChat = event.taskId?.startsWith("chat:") === true;
+      const rawProvider = event.provider?.trim() || (isChildChat ? event.agentType?.trim() : args.activeSession?.provider) || "";
+      const provider = existing?.body.match(/^\[([^\]]+)\]/)?.[1]
+        ?? (rawProvider ? providerDisplayLabel(rawProvider, rawProvider) : "agent");
+      const name = existing?.body.match(/^\[[^\]]+\] (.*?) · /)?.[1]
+        ?? deriveSubagentCardName({ agentType: event.agentType });
+      upsertSubagentLine({
+        id: subagentLineId(key),
         tone: "notice",
-        body: `[agent] ${singleLine(event.description ?? event.summary, 80)} (working)`,
+        body: `[${provider}${isChildChat ? " child" : ""}] ${singleLine(name, 88)} · running · ${singleLine(event.summary, 72)}`,
       });
       continue;
     }
     if (event.type === "subagent_result") {
-      lines.push({
-        id,
+      const key = event.agentId?.trim() || event.taskId?.trim() || id;
+      const existing = lines.find((candidate) => candidate.id === subagentLineId(key));
+      const isChildChat = event.taskId?.startsWith("chat:") === true;
+      const rawProvider = event.provider?.trim() || (isChildChat ? event.agentType?.trim() : args.activeSession?.provider) || "";
+      const provider = existing?.body.match(/^\[([^\]]+)\]/)?.[1]
+        ?? (rawProvider ? providerDisplayLabel(rawProvider, rawProvider) : "agent");
+      const name = existing?.body.match(/^\[[^\]]+\] (.*?) · /)?.[1]
+        ?? deriveSubagentCardName({ agentType: event.agentType });
+      upsertSubagentLine({
+        id: subagentLineId(key),
         tone: event.status === "failed" ? "error" : "notice",
-        body: `[agent] ${singleLine(event.summary, 96)} (${event.status})`,
+        body: `[${provider}${isChildChat ? " child" : ""}] ${singleLine(name, 88)} · ${event.status} · ${singleLine(subagentSummaryPlainText(event.summary), 96)}`,
       });
       continue;
     }
