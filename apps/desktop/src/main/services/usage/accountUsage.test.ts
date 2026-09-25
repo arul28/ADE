@@ -214,6 +214,52 @@ describe("account usage merge", () => {
       .toEqual([["laptop", "rollup", 315], ["local", "live", 150]]);
   });
 
+  it("carries each machine's live quota as a per-environment side channel, including a failed one", () => {
+    const liveWindow = (accountId: string) => ({
+      provider: "claude" as const,
+      windowType: "weekly" as const,
+      accountId,
+      percentUsed: 40,
+      resetsAt: new Date(NOW_MS + 3_600_000).toISOString(),
+      resetsInMs: 3_600_000,
+    });
+    const localStats = makeStats();
+    const merged = mergeAccountUsageStats({
+      localStats,
+      contributions: [
+        contribution(makeRollup("local", []), {
+          label: "Mac",
+          isLocal: true,
+          origin: "live",
+          liveWindows: [liveWindow("claude:a@example.com")],
+          liveAccounts: [{
+            id: "claude:a@example.com", provider: "claude", email: "a@example.com",
+            machines: [{ label: "Mac" }],
+          }],
+        }),
+        contribution(null, {
+          machineKey: "dead",
+          label: "Dead laptop",
+          origin: "live",
+          message: "Couldn't reach this computer",
+        }),
+      ],
+      nowMs: NOW_MS,
+    });
+
+    // Raw per-machine readings travel; the pooling happens in the reader so the
+    // environment filter can recompute it. A failed machine is listed so the
+    // filter can select it and say it reported nothing.
+    expect(merged.liveQuota?.environments.map((environment) => environment.machineKey).sort())
+      .toEqual(["dead", "local"]);
+    const local = merged.liveQuota?.environments.find((environment) => environment.machineKey === "local");
+    expect(local?.windows).toHaveLength(1);
+    expect(local?.accounts).toHaveLength(1);
+    const dead = merged.liveQuota?.environments.find((environment) => environment.machineKey === "dead");
+    expect(dead?.state).toBe("failed");
+    expect(dead?.windows).toEqual([]);
+  });
+
   it("keeps byProvider intact, merging a shared provider and introducing a new one", () => {
     const localStats = makeStats();
     localStats.daily[1]!.byProvider = { claude: { totalTokens: 150, costUsd: 1 } };
@@ -858,6 +904,47 @@ describe("account scope through the usage service", () => {
       expect(laptop?.message).toBe("Couldn't reach this computer");
       expect(laptop?.totalTokens).toBe(0);
       expect(stats.sourceNotes).toContain("1 computer didn't report — not in these totals.");
+    } finally {
+      service.dispose();
+    }
+  });
+
+  it("carries a peer's live quota in memory and never stores it", async () => {
+    const store = createStubStore([
+      makeRollup("laptop", [row({ date: TODAY, provider: "claude", totalTokens: 5, costUsd: 1 })], {
+        source: { sourceId: "laptop-marker", roots: ["/x"] },
+      }),
+    ]);
+    const service = createService(store);
+    service.setAccountRollupFetcher(async () => ({
+      rollups: [makeRollup("laptop", [], {
+        label: "Laptop",
+        source: { sourceId: "laptop-marker", roots: ["/x"] },
+        windows: [{
+          provider: "claude" as const,
+          windowType: "weekly" as const,
+          accountId: "claude:a@example.com",
+          percentUsed: 40,
+          resetsAt: new Date(NOW_MS + 3_600_000).toISOString(),
+          resetsInMs: 3_600_000,
+        }],
+        accounts: [{
+          id: "claude:a@example.com", provider: "claude" as const, email: "a@example.com",
+          machines: [{ label: "Laptop" }],
+        }],
+      })],
+      failures: [],
+    }));
+    try {
+      await service.getAdeUsageStats({ preset: "7d", scope: "account" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const stats = await service.getAdeUsageStats({ preset: "7d", scope: "account" });
+
+      const laptop = stats.liveQuota?.environments.find((environment) => environment.machineKey === "laptop");
+      expect(laptop?.windows).toHaveLength(1);
+      expect(laptop?.accounts[0]?.email).toBe("a@example.com");
+      // The durable store holds rows, never the live side channel.
+      expect(store.stored.get("laptop")?.windows).toBeUndefined();
     } finally {
       service.dispose();
     }

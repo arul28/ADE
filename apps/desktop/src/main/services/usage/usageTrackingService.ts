@@ -130,6 +130,8 @@ import {
 import { listCursorBilledUsage } from "./cursorBilledUsageStore";
 import { isPathInside, pathComparisonKey, pathKey } from "../shared/pathCompare";
 import {
+  MAX_LIVE_QUOTA_ACCOUNTS,
+  MAX_LIVE_QUOTA_WINDOWS,
   buildRollupRows,
   mergeAccountUsageStats,
   type AccountUsageContribution,
@@ -3876,6 +3878,20 @@ export function createUsageTrackingService({
   >();
 
   /**
+   * Each reachable peer's live quota, keyed by machine key.
+   *
+   * Deliberately in memory and never stored: a quota window moves every poll, so
+   * a stored copy would churn the CRR clock and reopen the self-feeding refresh
+   * loop the rollup store's no-op detection exists to prevent. It only lives
+   * for the session in which the page actually refreshed that machine, which is
+   * exactly what "live" means.
+   */
+  const accountLiveQuota = new Map<
+    string,
+    { windows: UsageWindow[]; accounts: UsageAccount[] }
+  >();
+
+  /**
    * The transcript-source marker, resolved once per ledger scan.
    *
    * `buildTranscriptSource` reads — and on a fresh machine creates — a dot file
@@ -3934,6 +3950,10 @@ export function createUsageTrackingService({
       capturedAt: new Date(costCacheTimestamp || nowMs).toISOString(),
       source: resolveTranscriptSource(),
       rows,
+      // The live side channel a peer pools for its cross-machine limits view.
+      // Bounded here too, so an unbounded snapshot cannot ride the wire.
+      windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
+      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
     };
   }
 
@@ -4006,14 +4026,26 @@ export function createUsageTrackingService({
     // machine's own `prune` deletes those rows and the next fetch puts them
     // straight back — the CRR delete/insert churn, arriving over the wire.
     const oldestDay = rollupOldestDay(startedAtMs);
+    // Replace wholesale: only machines reached in this round have fresh live
+    // readings. A machine's durable rows stay; its live windows are "live" and
+    // a round that did not reach it has none to show.
+    accountLiveQuota.clear();
     for (const rollup of rollups) {
       try {
         // Unknown identity cannot match anything, and nothing was published
         // under this machine's name either, so there is no self-row to skip.
         if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
+        const liveWindows = Array.isArray(rollup.windows) ? rollup.windows : [];
+        const liveAccounts = Array.isArray(rollup.accounts) ? rollup.accounts : [];
+        if (liveWindows.length > 0 || liveAccounts.length > 0) {
+          accountLiveQuota.set(rollup.machineKey, { windows: liveWindows, accounts: liveAccounts });
+        }
+        // The live side channel is never stored: it changes every poll, and a
+        // stored copy would churn the CRR clock. Strip it before publish.
+        const { windows: _windows, accounts: _accounts, ...storedRollup } = rollup;
         const bounded = oldestDay
-          ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
-          : rollup;
+          ? { ...storedRollup, rows: storedRollup.rows.filter((row) => row.date >= oldestDay) }
+          : storedRollup;
         // Fetched from that machine, not scanned here: this side cannot know
         // which of the peer's providers failed, so it must not delete one
         // that simply did not appear. See `publish`'s `ownerAuthoritative`.
@@ -4136,11 +4168,14 @@ export function createUsageTrackingService({
       // usage. A null rollup lists it honestly as not yet reporting.
       rollup: costCacheTimestamp === 0 ? null : buildLocalRollup(nowMs),
       ...(identity ? {} : { message: "couldn't identify this computer" }),
+      liveWindows: lastSnapshot.windows,
+      liveAccounts: lastSnapshot.accounts ?? [],
     }];
     const seen = new Set<string>([localKey]);
     for (const rollup of accountRollupStore.readAll()) {
       if (rollup.machineKey === localKey) continue;
       seen.add(rollup.machineKey);
+      const live = accountLiveQuota.get(rollup.machineKey);
       contributions.push({
         machineKey: rollup.machineKey,
         label: rollup.label,
@@ -4148,6 +4183,7 @@ export function createUsageTrackingService({
         isLocal: false,
         origin: "rollup",
         rollup,
+        ...(live ? { liveWindows: live.windows, liveAccounts: live.accounts } : {}),
       });
     }
     for (const [machineKey, failure] of accountRollupFailures) {

@@ -10,11 +10,15 @@
  *    them, never enter the sync layer, and are never held in memory here — the
  *    rollup for a heavy year of use is a few thousand small rows.
  *
- * 2. **Historical only.** Cost, tokens, code and PR history merge. The live
- *    quota windows do not: provider rate limits are tied to the provider
- *    account, not the machine, so every machine already reports the same
- *    window and "merging" them would either double a shared limit or imply a
- *    per-machine difference that does not exist.
+ * 2. **Historical rows merge; live quota pools.** Cost, tokens, code and PR
+ *    history merge as durable rows. Live quota windows also travel, but only as
+ *    an in-memory side channel: provider rate limits are tied to the provider
+ *    account, not the machine, so the same login on two machines reports the
+ *    same window. The pooled view counts each account once (freshest reading
+ *    per account + window label) instead of double-counting a shared limit. The
+ *    windows never enter the CRR-replicated rollup store — they change every
+ *    poll, and storing them would churn the CRR clock. `poolLiveQuota` is the
+ *    one place the pooling rule lives.
  *
  * GitHub metrics are deliberately absent from the rollup. They are repo-scoped,
  * not machine-scoped: three machines with the same repo cloned each report the
@@ -24,6 +28,7 @@
  */
 
 import type {
+  AdeUsageLiveEnvironment,
   AdeUsageMachineContribution,
   AdeUsageModelSummary,
   AdeUsageProviderSummary,
@@ -31,12 +36,28 @@ import type {
   AdeUsageRollupRow,
   AdeUsageStats,
   CostSnapshot,
+  UsageAccount,
+  UsageWindow,
 } from "../../../shared/types";
+import { poolLiveQuota } from "../../../shared/usageLiveQuota";
 import { localDayKey, localDayOrdinal } from "./localDay";
 import { isSameTranscriptSource } from "./accountUsageSource";
 
+// The pooling rule is shared with the renderer's environment filter, so the
+// account-scope merge and the filtered view can never disagree about one number.
+export { poolLiveQuota };
+
 /** A rollup older than this is still counted, but flagged so the UI can say it lags. */
 export const ACCOUNT_ROLLUP_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Caps on the live-quota side channel, on both the producing and the receiving
+ * side. A snapshot holds a handful of windows and accounts; these are the
+ * honest maximum past which the payload is broken or hostile and is heading for
+ * a peer's memory.
+ */
+export const MAX_LIVE_QUOTA_WINDOWS = 200;
+export const MAX_LIVE_QUOTA_ACCOUNTS = 100;
 
 /** One machine's answer, before dedupe/staleness is decided. */
 export type AccountUsageContribution = {
@@ -50,6 +71,12 @@ export type AccountUsageContribution = {
   origin: "live" | "rollup";
   /** Log-free reason to show when `rollup` is null. */
   message?: string | null;
+  /**
+   * Live quota this machine reported, from the in-memory side channel. Absent
+   * for a machine whose ADE predates pooling, or one that has no live readings.
+   */
+  liveWindows?: UsageWindow[];
+  liveAccounts?: UsageAccount[];
 };
 
 type RangeBounds = { since: string | null; until: string };
@@ -516,6 +543,28 @@ export function mergeAccountUsageStats({
   const stats = foldRollupsIntoStats(localStats, accepted, nowMs);
   stats.scope = "account";
   stats.machines = machines;
+
+  // Live quota pools across the accepted machines (local first, then freshest).
+  // A deduped machine shares the winner's transcripts but reports its own live
+  // windows; excluding it keeps the shared login from counting twice. A failed
+  // machine is listed with no windows so the filter can select it and say so.
+  const liveByKey = new Map<string, AccountUsageContribution>();
+  for (const contribution of accepted) liveByKey.set(contribution.machineKey, contribution);
+  const environments: AdeUsageLiveEnvironment[] = machines
+    .filter((machine) => machine.state !== "deduped")
+    .map((machine) => {
+      const contribution = liveByKey.get(machine.machineKey);
+      return {
+        machineKey: machine.machineKey,
+        label: machine.label,
+        platform: machine.platform,
+        isLocal: machine.isLocal,
+        state: machine.state,
+        windows: contribution?.liveWindows ?? [],
+        accounts: contribution?.liveAccounts ?? [],
+      };
+    });
+  if (environments.length > 0) stats.liveQuota = { environments };
 
   const notes = new Set(stats.sourceNotes ?? []);
   const counted = machines.filter((machine) => machine.state !== "failed" && machine.state !== "deduped");
