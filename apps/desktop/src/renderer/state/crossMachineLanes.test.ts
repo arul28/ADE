@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { createElement, type ReactNode } from "react";
-import { renderHook } from "@testing-library/react";
+import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatSession,
@@ -599,6 +599,225 @@ describe("union memo stability", () => {
     rerender({ roster: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })] });
 
     expect(result.current.foreignRows[0]?.sessions ?? []).toHaveLength(0);
+  });
+});
+
+describe("This Mac's slice resolves from the live connection snapshot", () => {
+  const remoteBinding: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    runtimeName: "Mac Studio (12)",
+    transport: "ssh",
+    projectId: "project-a",
+    rootPath: "/repo-a",
+    displayName: "Repo A",
+  };
+
+  function snapshot(state: string, updatedAt: number, origin: string | null) {
+    return {
+      connections: [{
+        state,
+        target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+        projects: origin == null ? [] : [{
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+          gitOriginUrl: origin,
+        }],
+      }],
+      connectedCount: state === "connected" ? 1 : 0,
+      updatedAt,
+    };
+  }
+
+  /**
+   * Mounts the union over a remote-bound tab with local checkouts of repo A and
+   * repo B. The union's own sync engine and the hook's identity resolver both
+   * subscribe to the same feed, so the mock fans a snapshot out to every
+   * listener.
+   */
+  function mountUnion(getConnectionSnapshot: () => Promise<unknown>) {
+    const snapshotListeners = new Set<(value: unknown) => void>();
+    const emitSnapshot = (value: unknown) => {
+      for (const listener of [...snapshotListeners]) listener(value);
+    };
+    const listLanes = vi.fn(async () => [makeLane({ id: "lane-this-mac" })]);
+    const listSessions = vi.fn(async () => [
+      makeSession({ id: "session-this-mac", laneId: "lane-this-mac" }),
+    ]);
+    window.ade = {
+      project: {
+        listRecent: vi.fn(async () => [
+          {
+            rootPath: "/Users/me/repo-a",
+            displayName: "Repo A (local)",
+            lastOpenedAt: "2026-07-20T10:00:00.000Z",
+            exists: true,
+            kind: "local",
+            gitOriginUrl: "git@github.com:acme/repo-a.git",
+          },
+          {
+            rootPath: "/Users/me/repo-b",
+            displayName: "Repo B (local)",
+            lastOpenedAt: "2026-07-20T10:00:00.000Z",
+            exists: true,
+            kind: "local",
+            gitOriginUrl: "git@github.com:acme/repo-b.git",
+          },
+        ]),
+      },
+      lanes: { list: listLanes },
+      sessions: { list: listSessions },
+      prs: { listAll: vi.fn(async () => []) },
+      remoteRuntime: {
+        callAction: vi.fn(),
+        getConnectionSnapshot: vi.fn(getConnectionSnapshot),
+        onConnectionSnapshotChanged: vi.fn((listener: (value: unknown) => void) => {
+          snapshotListeners.add(listener);
+          return () => {
+            snapshotListeners.delete(listener);
+          };
+        }),
+      },
+    } as unknown as typeof window.ade;
+    useAppStore.setState({
+      project: { rootPath: "/repo-a", displayName: "Repo A", baseRef: "main" },
+      projectBinding: remoteBinding,
+      lanes: [makeLane({ id: "lane-studio" })],
+    });
+    return { emitSnapshot, listSessions, snapshotListeners };
+  }
+
+  /** Flush async identity resolution and effects before advancing the union timer. */
+  async function flush() {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1_000);
+    });
+  }
+
+  it("reads This Mac once the bound project arrives in a later snapshot", async () => {
+    vi.useFakeTimers();
+    const { emitSnapshot, listSessions, snapshotListeners } = mountUnion(
+      async () => snapshot("connecting", 1, null),
+    );
+    const { result, unmount } = renderHook(() => useCrossMachineLaneUnion(true, []));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(500);
+    });
+
+    // First pass owns no local counterpart, so This Mac is never read.
+    expect(listSessions).not.toHaveBeenCalled();
+    expect(result.current.foreignRows.some((row) => row.machineId === THIS_MACHINE_ID)).toBe(false);
+
+    expect(snapshotListeners.size).toBeGreaterThan(0);
+    act(() => {
+      emitSnapshot(snapshot("connected", 2, "git@github.com:acme/repo-a.git"));
+    });
+    await flush();
+
+    expect(listSessions).toHaveBeenCalledWith(
+      { limit: 60 },
+      expect.objectContaining({ key: "local:/Users/me/repo-a" }),
+    );
+    expect(result.current.foreignRows.some(
+      (row) => row.machineId === THIS_MACHINE_ID
+        && row.sessions.some((session) => session.id === "session-this-mac"),
+    )).toBe(true);
+
+    // This hook subscribes while active; without an explicit unmount its
+    // cleanup leaks into later tests in this file.
+    unmount();
+  });
+
+  it("ignores a slow initial snapshot that resolves after a newer live one", async () => {
+    vi.useFakeTimers();
+    let resolveInitial!: (value: unknown) => void;
+    const initialSnapshot = new Promise((resolve) => {
+      resolveInitial = resolve;
+    });
+    const { emitSnapshot, listSessions } = mountUnion(() => initialSnapshot);
+    const { unmount } = renderHook(() => useCrossMachineLaneUnion(true, []));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    // A live, newer snapshot resolves the repo A checkout.
+    act(() => {
+      emitSnapshot(snapshot("connected", 100, "git@github.com:acme/repo-a.git"));
+    });
+    await flush();
+    expect(listSessions).toHaveBeenCalledWith(
+      { limit: 60 },
+      expect.objectContaining({ key: "local:/Users/me/repo-a" }),
+    );
+
+    // The initial request finally resolves, older (updatedAt 50) and naming a
+    // different checkout. It must not replace the newer resolution.
+    act(() => {
+      resolveInitial(snapshot("connected", 50, "git@github.com:acme/repo-b.git"));
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    listSessions.mockClear();
+    act(() => {
+      requestCrossMachineLanesForMachine(THIS_MACHINE_ID);
+    });
+    await flush();
+
+    expect(listSessions).not.toHaveBeenCalledWith(
+      { limit: 60 },
+      expect.objectContaining({ key: "local:/Users/me/repo-b" }),
+    );
+    expect(listSessions).toHaveBeenCalledWith(
+      { limit: 60 },
+      expect.objectContaining({ key: "local:/Users/me/repo-a" }),
+    );
+
+    unmount();
+  });
+
+  it.each([
+    ["connected", false],
+    ["connecting", true],
+  ])("a %s snapshot that drops the bound project keeps the binding: %s", async (
+    state: string,
+    kept: boolean,
+  ) => {
+    vi.useFakeTimers();
+    const { emitSnapshot, listSessions } = mountUnion(
+      async () => snapshot("connected", 1, "git@github.com:acme/repo-a.git"),
+    );
+    const { unmount } = renderHook(() => useCrossMachineLaneUnion(true, []));
+    await flush();
+    expect(listSessions).toHaveBeenCalledTimes(1);
+
+    // The bound project disappears from the next snapshot.
+    act(() => {
+      emitSnapshot(snapshot(state, 2, null));
+    });
+    await flush();
+
+    listSessions.mockClear();
+    act(() => {
+      requestCrossMachineLanesForMachine(THIS_MACHINE_ID);
+    });
+    await flush();
+
+    if (kept) {
+      expect(listSessions).toHaveBeenCalledWith(
+        { limit: 60 },
+        expect.objectContaining({ key: "local:/Users/me/repo-a" }),
+      );
+    } else {
+      expect(listSessions).not.toHaveBeenCalled();
+    }
+
+    unmount();
   });
 });
 
