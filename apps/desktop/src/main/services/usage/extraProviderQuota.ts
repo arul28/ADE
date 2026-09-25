@@ -676,7 +676,10 @@ export async function pollOpenCodeQuota(
     const windows = parseOpenCodeConsoleGoStatus(response.body, resolved.nowMs, account.email);
     // A console account without a Go plan answers `access: null`: a signed-in
     // machine that simply has no subscription, so no row rather than an error.
-    if (windows.length === 0 && !asRecord(asRecord(response.body)?.access)) return notSignedIn();
+    // A 200 that is malformed instead — no `access` key at all — is a bad
+    // response, not a sign-out, so it falls through to `freshResult` and the
+    // coordinator keeps the last unexpired windows instead of clearing them.
+    if (windows.length === 0 && asRecord(response.body)?.access === null) return notSignedIn();
     return freshResult("opencode", windows, { email: account.email }, "usage response had no windows");
   }
   return notSignedIn();

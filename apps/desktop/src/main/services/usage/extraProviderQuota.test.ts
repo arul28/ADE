@@ -486,6 +486,25 @@ describe("extra provider quota polls", () => {
     expect(result).toEqual({ disposition: "not_signed_in", windows: [], errors: [] });
   });
 
+  it("keeps a malformed OpenCode console 200 from clearing existing limits", async () => {
+    const fetchImpl = fetchMock({ unexpected: true });
+    const result = await pollOpenCodeQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env,
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+      readText: async () => null,
+      readOpenCodeConsoleAccount: async () => ({
+        accessToken: "st_console-token",
+        orgId: "org_123",
+        email: "ada@example.com",
+      }),
+    });
+    expect(result.disposition).toBeUndefined();
+    expect(result.errorKind).toBe("invalid_response");
+  });
+
   it("fetches a Droid session's Factory credits, without treating a missing key as an error", async () => {
     const fetchImpl = vi.fn(async (_url: string) => new Response(JSON.stringify({ tokenUsage: { factoryCredits: 3.5 } })));
     const io = {
