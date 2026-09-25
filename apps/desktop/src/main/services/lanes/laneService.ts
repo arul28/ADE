@@ -4579,6 +4579,24 @@ export function createLaneService({
       await ensurePrimaryLane();
     },
 
+    /**
+     * The project's primary checkout, or null before it exists. Reads the live
+     * row so a branch switch on Primary is reflected immediately — the
+     * default-branch auto-pull keys off `branchRef`, which is the branch the
+     * checkout is actually on.
+     */
+    getPrimaryLane(): { laneId: string; worktreePath: string; branchRef: string } | null {
+      const primary = getActivePrimaryLane();
+      if (!primary?.id) return null;
+      const row = getLaneRow(primary.id);
+      if (!row?.worktree_path) return null;
+      return {
+        laneId: row.id,
+        worktreePath: row.worktree_path,
+        branchRef: row.branch_ref || primary.branch_ref,
+      };
+    },
+
     async list(args: ListLanesArgs = {}): Promise<LaneSummary[]> {
       return await listLanes(args);
     },
