@@ -1191,12 +1191,25 @@ enum WorkProofPreviewData {
   ```
   """
 
-  static let transcript: [WorkChatEnvelope] = [
-    WorkPreviewData.envelope(sequence: 1, event: .userMessage(text: "Record the sign-in flow on docs.example.com", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
-    WorkPreviewData.envelope(sequence: 2, event: .assistantText(text: "I recorded the sign-in flow.", turnId: "turn-1", itemId: "a1")),
-    WorkPreviewData.envelope(sequence: 3, event: .userMessage(text: "Check the dashboard and the empty inbox", attachments: nil, turnId: "turn-2", steerId: nil, deliveryState: nil, processed: true)),
-    WorkPreviewData.envelope(sequence: 4, event: .assistantText(text: answerMarkdown, turnId: "turn-2", itemId: "a2")),
-  ]
+  @MainActor static let transcript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    func at(_ minutesAgo: Int, _ sequence: Int, _ event: WorkChatEvent) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: sessionId,
+        timestamp: formatter.string(from: Date().addingTimeInterval(TimeInterval(-minutesAgo * 60))),
+        sequence: sequence,
+        event: event
+      )
+    }
+    return [
+      at(50, 1, .userMessage(text: "Record the sign-in flow on docs.example.com", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      at(46, 2, .assistantText(text: "I recorded the sign-in flow.", turnId: "turn-1", itemId: "a1")),
+      at(20, 3, .userMessage(text: "Check the dashboard and the empty inbox", attachments: nil, turnId: "turn-2", steerId: nil, deliveryState: nil, processed: true)),
+      at(1, 4, .assistantText(text: answerMarkdown, turnId: "turn-2", itemId: "a2")),
+    ]
+  }()
 
   static let toolsFrame = pageImage(
     host: "app.example.com/dashboard",

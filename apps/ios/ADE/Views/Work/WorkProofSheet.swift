@@ -158,16 +158,15 @@ struct WorkProofSheet: View {
   @Environment(\.dismiss) private var dismiss
   @State private var viewerRequest: WorkProofViewerRequest?
   @State private var query = ""
-  @State private var media: WorkProofMediaFilter = .all
-  @State private var inAnswerOnly = false
+  @State private var tab: WorkProofSheetTab = .all
 
   private var groups: [WorkProofDrawerGroup] {
     workProofDrawerGroups(
       artifacts: artifacts,
       transcript: transcript,
       query: query,
-      media: media,
-      inAnswerOnly: inAnswerOnly
+      media: tab.media,
+      inAnswerOnly: tab == .inAnswers
     )
   }
 
@@ -183,53 +182,53 @@ struct WorkProofSheet: View {
     }
   }
 
-  private var filtered: Bool { !query.isEmpty || media != .all || inAnswerOnly }
+  private var filtered: Bool { !query.isEmpty || tab != .all }
 
   var body: some View {
     let groups = self.groups
     let ordered = self.ordered(groups)
     NavigationStack {
-      List {
-        if groups.isEmpty {
-          if filtered && !artifacts.isEmpty {
-            Text("No proof matches.")
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textSecondary)
-              .listRowBackground(Color.clear)
-          } else {
-            emptyRow
+      ScrollView {
+        VStack(alignment: .leading, spacing: 18) {
+          Picker("Show", selection: $tab) {
+            ForEach(WorkProofSheetTab.allCases) { option in
+              Text(option.rawValue).tag(option)
+            }
           }
-        } else {
-          ForEach(groups) { group in
-            Section {
-              if !group.inAnswer.isEmpty && !group.other.isEmpty {
-                sectionLabel("In the answer")
-              }
-              ForEach(group.inAnswer) { item in itemRow(item) }
-              if !group.other.isEmpty {
-                sectionLabel(group.inAnswer.isEmpty ? "Not in an answer" : "Also filed")
-              }
-              ForEach(group.other) { item in itemRow(item) }
-            } header: {
-              HStack(alignment: .firstTextBaseline) {
-                Text(group.turnId == nil ? "Earlier in this chat" : (group.prompt ?? "A turn"))
-                  .font(.footnote.weight(.semibold))
-                  .foregroundStyle(ADEColor.textPrimary)
-                  .lineLimit(2)
-                  .textCase(nil)
-                Spacer(minLength: 8)
-                Text(workProofRelativeTime(group.at))
-                  .font(.caption2)
-                  .foregroundStyle(ADEColor.textMuted)
-                  .textCase(nil)
+          .pickerStyle(.segmented)
+
+          if groups.isEmpty {
+            if filtered && !artifacts.isEmpty {
+              Text("No proof matches.")
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 40)
+            } else {
+              emptyRow
+            }
+          } else {
+            ForEach(groups) { group in
+              VStack(alignment: .leading, spacing: 8) {
+                groupHeader(group)
+                VStack(alignment: .leading, spacing: 12) {
+                  ForEach(workProofGridRows(group.inAnswer + group.other)) { row in
+                    HStack(alignment: .top, spacing: 10) {
+                      ForEach(row.items) { item in gridItem(item) }
+                      if row.items.count == 1, case .single = row.items[0] {
+                        Color.clear.frame(maxWidth: .infinity)
+                      }
+                    }
+                  }
+                }
               }
             }
           }
         }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 24)
       }
       .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .automatic), prompt: "Search proof")
-      .listStyle(.plain)
-      .scrollContentBackground(.hidden)
       .refreshable {
         await onRefresh()
       }
@@ -240,19 +239,6 @@ struct WorkProofSheet: View {
         ToolbarItem(placement: .cancellationAction) {
           Button("Done") { dismiss() }
         }
-        ToolbarItem(placement: .primaryAction) {
-          Menu {
-            Picker("Show", selection: $media) {
-              ForEach(WorkProofMediaFilter.allCases) { option in
-                Text(option.rawValue).tag(option)
-              }
-            }
-            Toggle("Only proof in answers", isOn: $inAnswerOnly)
-          } label: {
-            Image(systemName: filtered && query.isEmpty ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-          }
-          .accessibilityLabel("Filter proof")
-        }
       }
       .fullScreenCover(item: $viewerRequest) { request in
         WorkProofViewer(
@@ -262,6 +248,21 @@ struct WorkProofSheet: View {
           onLoadArtifact: onLoadArtifact
         )
       }
+    }
+  }
+
+  /// One quiet line: the request that produced this proof, and when.
+  private func groupHeader(_ group: WorkProofDrawerGroup) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(group.turnId == nil ? "Earlier in this chat" : (group.prompt ?? "A turn"))
+        .font(.footnote.weight(.medium))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(1)
+        .truncationMode(.tail)
+      Spacer(minLength: 8)
+      Text(workProofRelativeTime(group.at))
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
     }
   }
 
@@ -298,73 +299,57 @@ struct WorkProofSheet: View {
     // than hugging the navigation bar, and still reachable by pull-to-refresh.
     .frame(maxWidth: .infinity, minHeight: 360)
     .padding(.vertical, 24)
-    .listRowBackground(Color.clear)
-    .listRowSeparator(.hidden)
-  }
-
-  private func sectionLabel(_ text: String) -> some View {
-    Text(text.uppercased())
-      .font(.caption2.weight(.semibold))
-      .foregroundStyle(ADEColor.textMuted)
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
   }
 
   @ViewBuilder
-  private func itemRow(_ item: WorkProofDrawerItem) -> some View {
+  private func gridItem(_ item: WorkProofDrawerItem) -> some View {
     switch item {
     case .single(let artifact):
-      Button {
-        open(artifact)
-      } label: {
-        WorkProofRow(
-          model: WorkProofRowModel(artifact: artifact),
-          content: artifactContent[artifact.id]
-        )
-      }
-      .buttonStyle(.plain)
-      .listRowBackground(Color.clear)
-      .listRowSeparatorTint(ADEColor.border.opacity(0.28))
-      .task(id: artifact.id) {
-        await onLoadArtifact(artifact, .preview)
-      }
+      tile(artifact, tag: nil)
     case .pair(let before, let after, let caption):
+      // A pair fills the row, so before and after sit side by side, close
+      // enough to compare at a glance.
       VStack(alignment: .leading, spacing: 6) {
-        HStack(alignment: .top, spacing: 10) {
-          pairSide("Before", before)
-          pairSide("After", after)
+        HStack(alignment: .top, spacing: 6) {
+          tile(before, tag: "Before")
+          tile(after, tag: "After")
         }
         if !caption.isEmpty {
           Text(caption)
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(2)
         }
       }
-      .padding(.vertical, 6)
-      .listRowBackground(Color.clear)
-      .listRowSeparatorTint(ADEColor.border.opacity(0.28))
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
-  private func pairSide(_ label: String, _ artifact: ComputerUseArtifactSummary) -> some View {
-    Button {
+  private func tile(_ artifact: ComputerUseArtifactSummary, tag: String?) -> some View {
+    let model = WorkProofRowModel(artifact: artifact)
+    return Button {
       open(artifact)
     } label: {
-      VStack(alignment: .leading, spacing: 4) {
-        Text(label.uppercased())
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        WorkProofThumbnail(content: artifactContent[artifact.id], isVideo: workArtifactIsVideo(artifact))
-        Text(WorkProofRowModel(artifact: artifact).title)
+      VStack(alignment: .leading, spacing: 5) {
+        WorkProofTileImage(content: artifactContent[artifact.id], isVideo: model.isVideo, tag: tag)
+        Text(model.title)
           .font(.caption)
           .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        if let older = model.olderLine {
+          Text(older)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.warning)
+            .lineLimit(1)
+        }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(label): \(WorkProofRowModel(artifact: artifact).accessibilityLabel)")
+    .accessibilityLabel([tag, model.accessibilityLabel].compactMap { $0 }.joined(separator: ": "))
+    .accessibilityAddTraits(.isButton)
     .task(id: artifact.id) {
       await onLoadArtifact(artifact, .preview)
     }
@@ -376,92 +361,102 @@ struct WorkProofSheet: View {
   }
 }
 
-private struct WorkProofViewerRequest: Identifiable {
-  let id: String
+/// One row of the Proof grid: a before/after pair alone, or up to two items.
+struct WorkProofGridRow: Identifiable {
+  let items: [WorkProofDrawerItem]
+  var id: String { items.map(\.id).joined(separator: "|") }
 }
 
-// MARK: - Row
-
-private struct WorkProofRow: View {
-  let model: WorkProofRowModel
-  let content: WorkLoadedArtifactContent?
-
-  var body: some View {
-    HStack(spacing: 12) {
-      WorkProofThumbnail(content: content, isVideo: model.isVideo)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(model.title)
-          .font(.body)
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        Text(model.subtitle)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-        if let olderLine = model.olderLine {
-          Text(olderLine)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.warning)
-            .lineLimit(1)
-        }
-      }
-
-      Spacer(minLength: 0)
+/// Packs a group's items into rows. A pair fills its row, so its two pictures
+/// sit side by side; single items go two to a row.
+func workProofGridRows(_ items: [WorkProofDrawerItem]) -> [WorkProofGridRow] {
+  var rows: [WorkProofGridRow] = []
+  var pending: [WorkProofDrawerItem] = []
+  for item in items {
+    if case .pair = item {
+      if !pending.isEmpty { rows.append(WorkProofGridRow(items: pending)); pending = [] }
+      rows.append(WorkProofGridRow(items: [item]))
+    } else {
+      pending.append(item)
+      if pending.count == 2 { rows.append(WorkProofGridRow(items: pending)); pending = [] }
     }
-    .padding(.vertical, 6)
-    .frame(minHeight: 44)
-    .contentShape(Rectangle())
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(model.accessibilityLabel)
-    .accessibilityAddTraits(.isButton)
+  }
+  if !pending.isEmpty { rows.append(WorkProofGridRow(items: pending)) }
+  return rows
+}
+
+/// The sheet's tabs, the same four the desktop drawer has.
+enum WorkProofSheetTab: String, CaseIterable, Identifiable {
+  case all = "All"
+  case pictures = "Pictures"
+  case videos = "Videos"
+  case inAnswers = "In answers"
+  var id: String { rawValue }
+
+  var media: WorkProofMediaFilter {
+    switch self {
+    case .pictures: return .pictures
+    case .videos: return .videos
+    case .all, .inAnswers: return .all
+    }
   }
 }
 
-private struct WorkProofThumbnail: View {
+/// A grid tile's picture: the capture at 3:2, cropped to fill, with a play
+/// glyph on a video and an optional Before/After tag.
+private struct WorkProofTileImage: View {
   let content: WorkLoadedArtifactContent?
   let isVideo: Bool
-
-  // Landscape, not square: proof is almost always a browser or desktop capture,
-  // and a 1:1 centre crop of one throws away the window chrome and the URL —
-  // the two things that tell two screenshots of the same app apart. At 3:2 the
-  // whole frame survives at thumbnail size.
-  private static let width: CGFloat = 72
-  private static let height: CGFloat = 52
+  let tag: String?
 
   var body: some View {
-    ZStack {
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(ADEColor.recessedBackground.opacity(0.7))
-
-      switch content {
-      case .image(let image):
-        Image(uiImage: image)
-          .resizable()
-          .scaledToFill()
-      case .video, .remoteURL, .videoOnDemand:
-        Image(systemName: "play.circle.fill")
-          .font(.system(size: 22, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
-      case .text:
-        Image(systemName: "doc.text")
-          .font(.system(size: 20, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-      case .error:
-        Image(systemName: "exclamationmark.triangle")
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      case .none:
-        Image(systemName: isVideo ? "video" : "photo")
-          .font(.system(size: 18, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
+    Color.clear
+      .aspectRatio(3.0 / 2.0, contentMode: .fit)
+      .overlay {
+        ZStack {
+          ADEColor.recessedBackground.opacity(0.7)
+          switch content {
+          case .image(let image):
+            Image(uiImage: image)
+              .resizable()
+              .scaledToFill()
+          case .video, .remoteURL, .videoOnDemand:
+            Image(systemName: "play.circle.fill")
+              .font(.system(size: 26, weight: .semibold))
+              .foregroundStyle(ADEColor.accent)
+          case .text:
+            Image(systemName: "doc.text")
+              .foregroundStyle(ADEColor.textSecondary)
+          case .error:
+            Image(systemName: "exclamationmark.triangle")
+              .foregroundStyle(ADEColor.textMuted)
+          case .none:
+            Image(systemName: isVideo ? "video" : "photo")
+              .foregroundStyle(ADEColor.textMuted)
+          }
+        }
       }
-    }
-    .frame(width: Self.width, height: Self.height)
-    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-    .accessibilityHidden(true)
+      .overlay(alignment: .topLeading) {
+        if let tag {
+          Text(tag)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.black.opacity(0.55), in: Capsule())
+            .padding(5)
+        }
+      }
+      .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 10, style: .continuous)
+          .strokeBorder(ADEColor.border.opacity(0.35))
+      )
   }
+}
+
+private struct WorkProofViewerRequest: Identifiable {
+  let id: String
 }
 
 // MARK: - Full-screen viewer

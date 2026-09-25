@@ -373,9 +373,11 @@ Proof surfaces across chat and linked workflow contexts:
   Tasks, Subagents, Proof and Sources share one collapsible, sticky header.
 - **iOS chat** — proof stays in the message timeline, and the Proof sheet
   (`WorkProofSheet.swift`) is the phone's drawer. It uses the same grouping as
-  the desktop (`workProofDrawerGroups`): a section per turn, "In the answer"
-  first, Before/After pairs, a search field and a filter menu. Each row is a
-  thumbnail plus "kind · when", pull-to-refresh only. Tapping
+  the desktop (`workProofDrawerGroups`) and the same four tabs (All, Pictures,
+  Videos, In answers) as a segmented control under the search field. Each turn
+  is one quiet line (the prompt and the time) over a two-column grid of
+  thumbnails; a Before/After pair fills its row so the two pictures sit side
+  by side. Pull-to-refresh. Tapping
   a row opens a full-screen viewer with **one page per artifact**, so the rest
   of the set is one swipe away; page dots show only when there is somewhere to
   swipe. Preview/share actions, no review-state chrome. See
