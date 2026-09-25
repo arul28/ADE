@@ -3,12 +3,19 @@ import { AnimatePresence, motion } from "motion/react";
 import {
   CaretDown,
   CaretRight,
+  CircleDashed,
+  Clock,
   CopySimple,
+  Images,
+  LinkSimple,
+  ListChecks,
   Pause,
   Play,
   Square,
+  TerminalWindow,
   TreeStructure,
   X,
+  type Icon,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatDurationMs, formatSubagentDurationMs } from "../../lib/format";
@@ -173,15 +180,21 @@ type GlyphCategory = "subagent" | "background";
 
 type SectionTone = "subagent" | "background" | "workflow" | "scheduled" | "proof" | "sources" | "neutral";
 
-const SECTION_DOT_CLASS: Record<SectionTone, string> = {
-  subagent: "bg-[color:var(--color-accent,#A78BFA)]/70",
-  background: "bg-cyan-300/65",
-  workflow: "bg-amber-300/65",
-  scheduled: "bg-sky-300/65",
-  proof: "bg-emerald-300/65",
-  sources: "bg-indigo-300/65",
-  neutral: "bg-fg/30",
+/** Each section's icon, drawn left of its label in the section's color. */
+const SECTION_ICON: Record<SectionTone, { Icon: Icon; className: string }> = {
+  subagent: { Icon: TreeStructure, className: "text-[color:var(--color-accent,#A78BFA)]/80" },
+  background: { Icon: TerminalWindow, className: "text-cyan-300/75" },
+  workflow: { Icon: ListChecks, className: "text-amber-300/75" },
+  scheduled: { Icon: Clock, className: "text-sky-300/75" },
+  proof: { Icon: Images, className: "text-emerald-300/75" },
+  sources: { Icon: LinkSimple, className: "text-indigo-300/80" },
+  neutral: { Icon: CircleDashed, className: "text-fg/40" },
 };
+
+function SectionIcon({ tone }: { tone: SectionTone }) {
+  const { Icon: Glyph, className } = SECTION_ICON[tone];
+  return <Glyph aria-hidden size={12} weight="bold" className={cn("shrink-0", className)} />;
+}
 
 /**
  * The chat-actions drawer's one section header: a dot, an uppercase label, an
@@ -232,7 +245,7 @@ export function SectionHeader({
             <span aria-hidden className="shrink-0 text-fg/35">
               {collapsed ? <CaretRight size={10} weight="bold" /> : <CaretDown size={10} weight="bold" />}
             </span>
-            <span aria-hidden className={cn("inline-block h-1 w-1 shrink-0 rounded-full", SECTION_DOT_CLASS[tone])} />
+            <SectionIcon tone={tone} />
             <span className="truncate">{label}</span>
           </span>
           {hint ? (
@@ -253,10 +266,7 @@ export function SectionHeader({
           emphasized ? "text-[10.5px] font-medium" : "text-[10px] font-medium",
         )}
       >
-        <span
-          aria-hidden
-          className={cn("inline-block h-1 w-1 rounded-full", SECTION_DOT_CLASS[tone])}
-        />
+        <SectionIcon tone={tone} />
         {label}
       </span>
       <span className="flex items-center gap-1.5">
@@ -1589,20 +1599,25 @@ export function ChatSubagentsPanel({
       {/* ── Tasks: the chat's one task list, always expanded ──────── */}
       {hasTasks && taskList && taskProgress ? (
         <section className={cn("pb-3", hasGoal && "border-t border-white/[0.04]")} data-testid="chat-info-tasks">
-          {/* A plan explanation or "Plan" reads as the list's own header
-              (with the count); a bare todo list needs only the section's. */}
+          {/* One line: the label, the count and the collapse arrow. The list's
+              own "Plan" title would only repeat it. Open by default. */}
           <SectionHeader
             label="Tasks"
-            hint={taskList.label === "Tasks" ? `${taskProgress.done}/${taskProgress.total}` : undefined}
+            hint={`${taskProgress.done}/${taskProgress.total}`}
             tone="workflow"
             emphasized
             sticky={stickyHeaders}
+            collapsible
+            collapsed={paneUi.collapsed.tasks === true}
+            onToggle={() => toggleSection("tasks")}
           />
-          <ChatTaskListView
-            list={taskList}
-            showHeader={taskList.label !== "Tasks"}
-            className="px-4 pt-1"
-          />
+          {paneUi.collapsed.tasks === true ? null : (
+            <ChatTaskListView
+              list={taskList}
+              showHeader={false}
+              className="px-4 pt-1"
+            />
+          )}
         </section>
       ) : null}
 

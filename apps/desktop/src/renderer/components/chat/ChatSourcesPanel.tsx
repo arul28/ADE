@@ -103,14 +103,6 @@ function SourceRow({ source }: { source: ChatSource }) {
           {inline && subtitle ? (
             <span className="max-w-[45%] shrink-0 truncate font-sans text-[10.5px] text-muted-fg/45">{subtitle}</span>
           ) : null}
-          {source.cited ? (
-            <span
-              className="shrink-0 rounded-[3px] border border-cyan-300/20 px-1 font-sans text-[9px] font-semibold uppercase leading-[14px] tracking-[0.06em] text-cyan-200/65"
-              data-testid="chat-source-cited"
-            >
-              cited
-            </span>
-          ) : null}
         </span>
         {!inline && subtitle ? (
           <span className="block truncate font-sans text-[10.5px] leading-4 text-muted-fg/45">{subtitle}</span>
