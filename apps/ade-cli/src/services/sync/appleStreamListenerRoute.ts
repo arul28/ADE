@@ -41,19 +41,27 @@ export type AppleStreamSocketRouter = {
  * every socket, so a ticket from another project's forwarder was unknown and
  * the viewer was closed with 4401 ("the stream pass expired") every time.
  */
-const routers: AppleStreamSocketRouter[] = [];
+const registrations: Array<{ router: AppleStreamSocketRouter }> = [];
 
-/** Registers a forwarder. Null clears them all. Returns a detach for this one only. */
+/**
+ * Registers a forwarder. Null clears them all. Returns a detach that removes
+ * this registration only, even when the same router was registered twice.
+ */
 export function setActiveAppleStreamRouter(router: AppleStreamSocketRouter | null): () => void {
   if (!router) {
-    routers.length = 0;
+    registrations.length = 0;
     return () => {};
   }
-  routers.push(router);
+  const registration = { router };
+  registrations.push(registration);
   return () => {
-    const index = routers.lastIndexOf(router);
-    if (index >= 0) routers.splice(index, 1);
+    const index = registrations.indexOf(registration);
+    if (index >= 0) registrations.splice(index, 1);
   };
+}
+
+function registeredRouters(): AppleStreamSocketRouter[] {
+  return registrations.map((registration) => registration.router);
 }
 
 /**
@@ -62,16 +70,17 @@ export function setActiveAppleStreamRouter(router: AppleStreamSocketRouter | nul
  */
 const combinedRouter: AppleStreamSocketRouter = {
   ticketFromUrl(url) {
-    for (const router of routers) {
+    for (const router of registeredRouters()) {
       const ticket = router.ticketFromUrl(url);
       if (ticket) return ticket;
     }
     return null;
   },
   hasTicket(ticket) {
-    return routers.some((router) => router.hasTicket?.(ticket) === true);
+    return registeredRouters().some((router) => router.hasTicket?.(ticket) === true);
   },
   attach(socket, args) {
+    const routers = registeredRouters();
     const owner = routers.find((router) => router.hasTicket?.(args.ticket) === true)
       ?? routers[routers.length - 1];
     return owner!.attach(socket, args);
@@ -79,7 +88,7 @@ const combinedRouter: AppleStreamSocketRouter = {
 };
 
 export function getActiveAppleStreamRouter(): AppleStreamSocketRouter | null {
-  return routers.length > 0 ? combinedRouter : null;
+  return registrations.length > 0 ? combinedRouter : null;
 }
 
 /** The `?token=` a browser must use, because it cannot set an Authorization header. */

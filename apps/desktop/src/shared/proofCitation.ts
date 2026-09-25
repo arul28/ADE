@@ -107,8 +107,22 @@ export function proofCompareBlocks(markdown: string): ProofCompareBlock[] {
   return blocks;
 }
 
+/**
+ * The answer with code removed: fenced blocks other than ```proof-compare and
+ * inline code spans. A citation written as an example inside code is shown as
+ * code, not as proof, so it must not count as cited.
+ */
+function withoutCode(markdown: string): string {
+  return markdown
+    .replace(/(^|\n)(```|~~~)([^\n]*)\n[\s\S]*?(?:\n\2[^\n]*(?=\n|$)|$)/g, (block, lead: string, _fence: string, info: string) =>
+      info.trim().toLowerCase().startsWith(PROOF_COMPARE_FENCE_LANGUAGE) ? block : lead)
+    // A single-backtick span with content; never the backticks of a fence line.
+    .replace(/(?<!`)`[^`\n]+`(?!`)/g, "");
+}
+
 /** Every artifact id an answer cites, without repeats: citations first, then compare blocks. */
-export function citedProofArtifactIds(markdown: string): string[] {
+export function citedProofArtifactIds(answer: string): string[] {
+  const markdown = withoutCode(answer);
   const ids: string[] = [];
   const add = (id: string | null) => {
     if (id && !ids.includes(id)) ids.push(id);
