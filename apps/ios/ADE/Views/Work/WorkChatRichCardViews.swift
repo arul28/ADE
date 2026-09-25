@@ -4265,9 +4265,14 @@ struct WorkSubagentTimelineRowView: View {
   }
 }
 
-/// Three-column mobile counterpart to the desktop card grid. Six tracks let an
-/// incomplete final row expand evenly (one card spans all six, two cards span
-/// three each) while keeping the grid lazy for long-running chats.
+/// Mobile counterpart to the desktop card grid: two tiles per line on a
+/// phone, three on a regular-width screen. A short final line after a full
+/// one spreads its tiles across the full width, like the desktop grid. Lines are laid out
+/// lazily so long-running chats stay cheap.
+///
+/// Built from lines of equal-width tiles rather than `LazyVGrid` +
+/// `gridCellColumns`: `LazyVGrid` ignores `gridCellColumns` (it only applies
+/// inside `Grid`), which gave every tile a single narrow track.
 struct WorkSubagentTimelineGridView: View {
   let model: WorkSubagentTimelineGrid
   var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
@@ -4278,24 +4283,23 @@ struct WorkSubagentTimelineGridView: View {
     workSubagentGridColumnsPerRow(isCompactWidth: horizontalSizeClass != .regular)
   }
 
-  private var trackCount: Int { columnsPerRow * 2 }
-
-  private var columns: [GridItem] {
-    Array(repeating: GridItem(.flexible(minimum: 60), spacing: 8), count: trackCount)
-  }
-
   var body: some View {
-    let columnsPerRow = self.columnsPerRow
-    let trackCount = self.trackCount
-    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-      ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-        WorkSubagentTimelineGridTile(row: row, onStop: onStop)
-          .gridCellColumns(workSubagentGridCellColumnSpan(
-            index: index,
-            rowCount: model.rows.count,
-            columnsPerRow: columnsPerRow,
-            trackCount: trackCount
-          ))
+    let lines = workSubagentGridLines(count: model.rows.count, columnsPerRow: columnsPerRow)
+    LazyVStack(alignment: .leading, spacing: 8) {
+      ForEach(lines, id: \.lowerBound) { line in
+        HStack(alignment: .top, spacing: 8) {
+          ForEach(model.rows[line], id: \.id) { row in
+            WorkSubagentTimelineGridTile(row: row, onStop: onStop)
+              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          }
+          // A grid that is one short line keeps normal tile widths; only a short
+          // line after a full one stretches (desktop parity).
+          if lines.count == 1 {
+            ForEach(0..<(columnsPerRow - line.count), id: \.self) { _ in
+              Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
+            }
+          }
+        }
       }
     }
   }
@@ -4305,19 +4309,12 @@ func workSubagentGridColumnsPerRow(isCompactWidth: Bool) -> Int {
   isCompactWidth ? 2 : 3
 }
 
-func workSubagentGridCellColumnSpan(
-  index: Int,
-  rowCount: Int,
-  columnsPerRow: Int,
-  trackCount: Int
-) -> Int {
-  guard rowCount > 0, columnsPerRow > 0, trackCount > 0 else { return 1 }
-  let cellSpan = max(1, trackCount / columnsPerRow)
-  let remainder = rowCount % columnsPerRow
-  // A grid that is only a short row keeps one cell wide. A short final row
-  // after a full row stretches across the track.
-  guard remainder > 0, rowCount > columnsPerRow, index >= rowCount - remainder else { return cellSpan }
-  return max(1, trackCount / remainder)
+/// Index ranges of the grid's lines: `columnsPerRow` tiles each, the last
+/// line holding the remainder.
+func workSubagentGridLines(count: Int, columnsPerRow: Int) -> [Range<Int>] {
+  guard count > 0 else { return [] }
+  let perLine = max(1, columnsPerRow)
+  return stride(from: 0, to: count, by: perLine).map { $0..<min(count, $0 + perLine) }
 }
 
 private func workTrimmedSubagentProvider(_ value: String?) -> String? {
@@ -4393,6 +4390,7 @@ private struct WorkSubagentTimelineGridTile: View {
         }
       }
       .font(.system(size: 9, weight: .semibold))
+      .lineLimit(1)
       if let summary = workSubagentResultSummaryText(row) {
         Text(summary)
           .font(.system(size: 10))
