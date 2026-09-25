@@ -608,6 +608,7 @@ export function createAutoUpdateService({
     writeGlobalState(globalStatePath, {
       ...currentState,
       pendingInstallUpdate: undefined,
+      restoreUpdateWorkspaceOnLaunch: undefined,
     });
   }
 
