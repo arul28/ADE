@@ -238,6 +238,32 @@ databases, private keys, and certificates are rejected even when they are under
 the project root. The broker resolves symlinks for both its allow- and deny-root
 checks and opens the source with `O_NOFOLLOW` before copying.
 
+### `ade proof publish`
+
+Post chosen proof to a GitHub pull request as one comment.
+
+```
+ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading "<text>"] [--note "<text>"]
+```
+
+- The CLI reads the items through `list_computer_use_artifacts`, so a caller
+  can post only its own chat's or lane's proof.
+- It runs `gh pr comment <pr> --body-file … --attach …` on the machine that
+  holds the files (`apps/ade-cli/src/proofPublish.ts`). Each item becomes
+  `![caption](./proof-N.ext)` plus its caption; `gh` uploads the files as
+  GitHub attachments and rewrites the references. A video renders as a player.
+- It needs `gh` 2.99.0 or later and refuses an older one with the upgrade
+  command. A PR number needs a GitHub remote in the current repository;
+  otherwise pass the PR URL.
+- Limits: 10 MB per picture; 10 MB per video on GitHub Free, 100 MB on paid
+  plans. A larger item, a trace, or an item with no stored file is skipped
+  with the reason; a video over 10 MB posts with a warning.
+- After the post, `link_computer_use_artifacts_to_pr` adds a `github_pr`
+  owner link (`published_to`, keyed by the PR URL, `metadata.commentUrl`) to
+  each posted item. The drawer shows it as a "PR #N" chip. If the link fails,
+  the command still reports the comment and prints a warning.
+- Exit codes: `0` when the comment posted; `1` when nothing posted.
+
 ### `ade proof list`
 
 Print the proof set for the current session as JSON, or as a table with `--text`.

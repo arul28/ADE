@@ -534,6 +534,13 @@ binding. It skips PR creation and skips revalidation when the binding matches
 HEAD, the remote head, and the PR head. Held commits are fix work for Phase 2,
 so the first ship push carries them together with any new fixes.
 
+### Visual proof on the PR
+
+When the lane changes something a person can see, the PR carries the proof
+before it merges: `ade proof publish --pr <n> <artifact-id>...` with the items
+the final answer cites (see the **ade-pr-workflows** skill). Post it once, near
+the end; a later push does not need a new post unless the UI changed again.
+
 ---
 
 ## Phase 0 — Setup (first invocation only)

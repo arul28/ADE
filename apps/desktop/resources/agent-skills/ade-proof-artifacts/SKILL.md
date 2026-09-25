@@ -56,6 +56,12 @@ How to write it:
 A citation of an id ADE does not have shows "ADE has no proof with the id …".
 Copy the id from the `cite:` line; do not type it.
 
+## Put proof on the PR
+
+`ade proof publish --pr <number or URL> <id> <id>` posts the items you pick
+as one PR comment, with each picture and video under its caption, and marks
+them in the drawer. See the **ade-pr-workflows** skill for the limits.
+
 ## Commands
 
 ```bash

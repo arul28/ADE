@@ -68,6 +68,7 @@ import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { isUuid } from "../../desktop/src/shared/uuid";
 import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
+import { publishProofToPullRequest, type ProofPublishResult } from "./proofPublish";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
@@ -482,6 +483,7 @@ export type FormatterId =
   | "tests-runs"
   | "proof-list"
   | "proof-filed"
+  | "proof-published"
   | "ios-sim-status"
   | "ios-sim-devices"
   | "ios-sim-apps"
@@ -2202,6 +2204,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof capture --caption "Done"            Capture the lane's Mac Desktop display
     $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
+    $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -10478,6 +10481,87 @@ function buildProofPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "publish") {
+    // `ade proof publish --pr <number|url> <artifact-id>...`: the agent picks
+    // the items. They go up as one PR comment through `gh --attach`, then
+    // each gets a github_pr owner link so the drawer shows the PR.
+    const pr = readValue(args, ["--pr", "--pull-request"]);
+    const heading = readValue(args, ["--heading", "--title"]);
+    const note = readValue(args, ["--note", "--body"]);
+    // `firstPositional` and `readValue` removed "publish" and the flags with
+    // their values, so every argument left is an artifact id.
+    const ids = args
+      .filter((value) => !value.startsWith("-"))
+      .flatMap((value) => value.split(","))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!pr) throw new CliUsageError("proof publish needs --pr <number or URL>.");
+    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or `ade proof list --text`.");
+    return {
+      kind: "execute",
+      label: "proof publish",
+      formatter: "proof-published",
+      steps: [
+        {
+          key: "list",
+          method: "ade/actions/call",
+          params: { name: "list_computer_use_artifacts", arguments: { limit: 200 } },
+          unwrapToolResult: true,
+        },
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          // The comment is already on the PR when this runs. A failed link must
+          // not hide that; the summary reports it as a warning instead.
+          optional: true,
+          params: (values) => {
+            const listed = firstArray(unwrapActionEnvelope(values.list) as JsonObject, ["artifacts"]);
+            const byId = new Map(listed.map((artifact) => [asString(artifact.id) ?? "", artifact]));
+            const missing = ids.filter((id) => !byId.has(id));
+            if (missing.length) {
+              throw new CliToolError(`proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}`, { missing });
+            }
+            const roots = findProjectRoots(process.cwd());
+            const projectRoot = process.env.ADE_PROJECT_ROOT?.trim() || roots.projectRoot;
+            let published: ProofPublishResult;
+            try {
+              published = publishProofToPullRequest({
+                pr,
+                projectRoot,
+                heading,
+                note,
+                cwd: roots.workspaceRoot,
+                artifacts: ids.map((id) => {
+                  const artifact = byId.get(id)!;
+                  return {
+                    id,
+                    kind: asString(artifact.kind) ?? "",
+                    title: asString(artifact.title) ?? "",
+                    description: asString(artifact.description),
+                    uri: asString(artifact.uri) ?? "",
+                    mimeType: asString(artifact.mimeType),
+                  };
+                }),
+              });
+            } catch (error) {
+              throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
+            }
+            values.publish = published as unknown as JsonObject;
+            return {
+              name: "link_computer_use_artifacts_to_pr",
+              arguments: {
+                artifactIds: published.posted.map((entry) => entry.id),
+                prUrl: published.prUrl,
+                ...(published.commentUrl ? { commentUrl: published.commentUrl } : {}),
+              },
+            };
+          },
+        },
+      ],
+    };
+  }
+
   if (sub === "attach") {
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
@@ -25064,6 +25148,21 @@ function proofArtifactCitation(artifact: JsonObject): string | null {
   return proofCitationMarkdown(id, asString(artifact.description) ?? asString(artifact.title));
 }
 
+function formatProofPublished(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const posted = firstArray(record, ["posted"]);
+  const skipped = firstArray(record, ["skipped"]);
+  const warnings = Array.isArray(record.warnings) ? record.warnings.filter((entry): entry is string => typeof entry === "string") : [];
+  return [
+    `Posted ${posted.length} proof item${posted.length === 1 ? "" : "s"} to ${asString(record.prUrl) ?? "the PR"}`,
+    ...(asString(record.commentUrl) ? [`comment: ${asString(record.commentUrl)}`] : []),
+    ...posted.map((entry) => `  posted  ${asString(entry.id)}  ${asString(entry.caption)}`),
+    ...skipped.map((entry) => `  skipped ${asString(entry.id)}  ${asString(entry.reason)}`),
+    ...warnings.map((warning) => `warning: ${warning}`),
+    `linked: ${typeof record.linked === "number" ? record.linked : 0} item(s) now show this PR in the proof drawer`,
+  ].join("\n");
+}
+
 function formatProofFiled(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const artifacts = firstArray(record, ["artifacts"]);
@@ -26928,6 +27027,8 @@ function formatTextOutput(
       return formatProofList(value);
     case "proof-filed":
       return formatProofFiled(value);
+    case "proof-published":
+      return formatProofPublished(value);
     case "ios-sim-status":
       return formatIosSimStatus(value);
     case "ios-sim-devices":
@@ -27439,6 +27540,25 @@ function summarizeExecution(args: {
 
   if (plan.proofFiling) {
     return summarizeProofFiling(plan.proofFiling, values);
+  }
+
+  if (plan.label === "proof publish") {
+    // No `publish` value means nothing reached the PR: the ids, gh or the
+    // upload failed. That is a failed command, never a warning.
+    if (!isRecord(values.publish)) {
+      const cause = isRecord(values.result) ? asString(values.result.error) : null;
+      throw new CliToolError(cause ?? "proof publish failed — nothing was posted", {});
+    }
+    const published = values.publish;
+    const linkFailure = isRecord(values.result) && values.result.ok === false
+      ? asString(values.result.error) ?? "the runtime refused the link"
+      : null;
+    const linked = linkFailure ? [] : firstArray(unwrapActionEnvelope(values.result) as JsonObject, ["artifacts"]);
+    const warnings = [
+      ...(Array.isArray(published.warnings) ? published.warnings : []),
+      ...(linkFailure ? [`posted, but ADE could not record the PR on the items: ${linkFailure}`] : []),
+    ];
+    return { ok: true, ...published, warnings, linked: linked.length };
   }
 
   if (plan.label === "PR create") {
