@@ -6,6 +6,7 @@ import {
   type EditorTarget,
 } from "../../../shared/editorTargets";
 import { editorProcessEnv } from "./editorProcessEnv";
+import { resolveWindowsEditorExecutableCached } from "./editorWindowsInstall";
 
 function commandSucceeds(
   command: string,
@@ -40,18 +41,67 @@ function commandSucceeds(
   });
 }
 
-export async function detectInstalledEditorTargets(): Promise<EditorTarget[]> {
-  const env = editorProcessEnv();
-  const probeCommand = process.platform === "win32" ? "where.exe" : "which";
-  const installed = await Promise.all(EDITOR_TARGETS.map(async (target) => {
-    if (process.platform === "darwin" && target.macAppName) {
-      const appInstalled = await commandSucceeds("open", ["-Ra", target.macAppName], env);
-      if (appInstalled) return target.id;
+/**
+ * Where each detected editor was actually found, so opening it does not need
+ * PATH. Populated by {@link detectInstalledEditorTargets}; an editor found on
+ * PATH keeps its bare `command`, an editor found off PATH (Windows install
+ * dirs, registry, Toolbox) stores the verified absolute executable.
+ */
+const resolvedEditorCommands = new Map<EditorTarget, string>();
+
+/** The absolute command discovered for `target`, or null when none was found. */
+export function resolveDetectedEditorCommand(target: EditorTarget): string | null {
+  return resolvedEditorCommands.get(target) ?? null;
+}
+
+export type EditorDetectionDeps = {
+  platform: NodeJS.Platform;
+  env: NodeJS.ProcessEnv;
+  commandSucceeds: (command: string, args: string[], env: NodeJS.ProcessEnv) => Promise<boolean>;
+  resolveWindowsExecutable: (target: EditorTarget) => Promise<string | null>;
+};
+
+function defaultDeps(): EditorDetectionDeps {
+  return {
+    platform: process.platform,
+    env: editorProcessEnv(),
+    commandSucceeds,
+    resolveWindowsExecutable: (target) => resolveWindowsEditorExecutableCached(target),
+  };
+}
+
+export async function detectInstalledEditorTargets(
+  overrides: Partial<EditorDetectionDeps> = {},
+): Promise<EditorTarget[]> {
+  const deps = { ...defaultDeps(), ...overrides };
+  const probeCommand = deps.platform === "win32" ? "where.exe" : "which";
+  resolvedEditorCommands.clear();
+  const found: EditorTarget[] = [];
+  for (const target of EDITOR_TARGETS) {
+    if (deps.platform === "darwin" && target.macAppName) {
+      const appInstalled = await deps.commandSucceeds("open", ["-Ra", target.macAppName], deps.env);
+      if (appInstalled) {
+        found.push(target.id);
+        continue;
+      }
     }
-    return await commandSucceeds(probeCommand, [target.command], env) ? target.id : null;
-  }));
-  const found = installed.filter((target): target is EditorTarget => target !== null);
-  if (process.platform !== "darwin") return found;
+    if (await deps.commandSucceeds(probeCommand, [target.command], deps.env)) {
+      resolvedEditorCommands.set(target.id, target.command);
+      found.push(target.id);
+      continue;
+    }
+    if (deps.platform === "win32") {
+      // Not on PATH: look in the default install locations and the uninstall
+      // registry. The returned path is recorded so the open action can use it.
+      const executable = await deps.resolveWindowsExecutable(target.id);
+      if (executable) {
+        resolvedEditorCommands.set(target.id, executable);
+        found.push(target.id);
+        continue;
+      }
+    }
+  }
+  if (deps.platform !== "darwin") return found;
   const seenMacApps = new Set<string>();
   return found.filter((id) => {
     const appName = editorTargetDefinition(id)?.macAppName;
@@ -61,3 +111,8 @@ export async function detectInstalledEditorTargets(): Promise<EditorTarget[]> {
     return true;
   });
 }
+
+export const _testing = {
+  detectInstalledEditorTargets,
+  resolveDetectedEditorCommand,
+};
