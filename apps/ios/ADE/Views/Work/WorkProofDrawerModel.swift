@@ -43,10 +43,37 @@ private let workProofCompareFencePattern = try! NSRegularExpression(
   options: [.caseInsensitive]
 )
 
+private let workProofCodeFencePattern = try! NSRegularExpression(
+  pattern: #"(^|\n)(```|~~~)([^\n]*)\n[\s\S]*?(?:\n\2[^\n]*(?=\n|$)|$)"#
+)
+private let workProofInlineCodePattern = try! NSRegularExpression(pattern: #"(?<!`)`[^`\n]+`(?!`)"#)
+
+/// The text with code removed: fenced blocks other than ```proof-compare and
+/// inline code spans. A citation shown as an example inside code is not proof.
+/// Mirrors `withoutCode` in proofCitation.ts.
+private func workProofTextWithoutCode(_ text: String) -> String {
+  let ns = text as NSString
+  var result = ""
+  var cursor = 0
+  for match in workProofCodeFencePattern.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+    result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+    let info = ns.substring(with: match.range(at: 3)).trimmingCharacters(in: .whitespaces).lowercased()
+    result += info.hasPrefix("proof-compare") ? ns.substring(with: match.range) : ns.substring(with: match.range(at: 1))
+    cursor = match.range.location + match.range.length
+  }
+  result += ns.substring(from: cursor)
+  return workProofInlineCodePattern.stringByReplacingMatches(
+    in: result,
+    range: NSRange(location: 0, length: (result as NSString).length),
+    withTemplate: ""
+  )
+}
+
 /// Every artifact id a text cites, without repeats. Mirrors
 /// `citedProofArtifactIds`.
-func workCitedProofArtifactIds(_ text: String) -> [String] {
-  guard text.localizedCaseInsensitiveContains("ade-proof") || text.localizedCaseInsensitiveContains("proof-compare") else { return [] }
+func workCitedProofArtifactIds(_ answer: String) -> [String] {
+  guard answer.localizedCaseInsensitiveContains("ade-proof") || answer.localizedCaseInsensitiveContains("proof-compare") else { return [] }
+  let text = workProofTextWithoutCode(answer)
   var ids: [String] = []
   func add(_ id: String?) {
     if let id, !ids.contains(id) { ids.append(id) }

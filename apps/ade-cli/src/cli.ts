@@ -10397,7 +10397,7 @@ function proofVerifyStep(): InvocationStep {
   };
 }
 
-function buildProofPlan(args: string[]): CliPlan {
+function buildProofPlan(args: string[], explicitProjectRoot: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "status";
   const proofOwnerBase = () => readProofOwnerBase(args);
   const inferAttachedProofKind = (filePath: string): string => {
@@ -10525,8 +10525,10 @@ function buildProofPlan(args: string[]): CliPlan {
                 { missing },
               );
             }
+            // The same precedence the connection uses: --project-root, then
+            // ADE_PROJECT_ROOT, then the checkout the shell stands in.
             const roots = findProjectRoots(process.cwd());
-            const projectRoot = process.env.ADE_PROJECT_ROOT?.trim() || roots.projectRoot;
+            const projectRoot = explicitProjectRoot ?? (process.env.ADE_PROJECT_ROOT?.trim() || roots.projectRoot);
             let published: ProofPublishResult;
             try {
               published = publishProofToPullRequest({
@@ -10534,7 +10536,7 @@ function buildProofPlan(args: string[]): CliPlan {
                 projectRoot,
                 heading,
                 note,
-                cwd: roots.workspaceRoot,
+                cwd: explicitProjectRoot ?? roots.workspaceRoot,
                 artifacts: ids.map((id) => {
                   const artifact = byId.get(id)!;
                   return {
@@ -16646,7 +16648,7 @@ function buildCliPlan(
     primary === "computer" ||
     primary === "artifact"
   ) {
-    return buildProofPlan(args);
+    return buildProofPlan(args, options.projectRoot ?? null);
   }
   if (
     primary === "apple"
