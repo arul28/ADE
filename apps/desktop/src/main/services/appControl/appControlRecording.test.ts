@@ -46,15 +46,15 @@ const session: AppControlSession = {
   lastTraceEntryId: null,
 };
 
-function deferred<T = void>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((inner) => {
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((inner) => {
     resolve = inner;
   });
   return { promise, resolve };
 }
 
-function windowRecorder(startGate: ReturnType<typeof deferred>): AppControlWindowRecorder {
+function windowRecorder(startGate: { promise: Promise<void> }): AppControlWindowRecorder {
   return {
     readPermissions: vi.fn(async () => null),
     listWindowsForPid: vi.fn(async () => [{
@@ -64,9 +64,17 @@ function windowRecorder(startGate: ReturnType<typeof deferred>): AppControlWindo
       height: 600,
       minimized: false,
     }]),
-    start: vi.fn(() => startGate.promise),
-    stop: vi.fn(async () => ({
-      filePath: null,
+    start: vi.fn(async (_args: {
+      key: string;
+      windowId: number;
+      fps: number;
+      filePath: string;
+      keepIdle: boolean;
+    }) => {
+      await startGate.promise;
+    }),
+    stop: vi.fn(async (_key: string) => ({
+      filePath: "",
       durationMs: 0,
       wallDurationMs: 0,
       idleCutMs: 0,
@@ -160,7 +168,7 @@ describe("createAppControlRecording", () => {
 const screencastWindows = vi.hoisted(() => ({
   list: [] as Array<{
     loadGate: { promise: Promise<void>; resolve: () => void };
-    destroy: ReturnType<typeof vi.fn>;
+    destroy: () => void;
   }>,
 }));
 
@@ -186,7 +194,7 @@ vi.mock("electron", () => ({
     };
     this.loadURL = () => loadGate.promise;
     this.isDestroyed = () => false;
-    this.destroy = vi.fn();
+    this.destroy = () => undefined;
     screencastWindows.list.push(this);
   }),
 }));
@@ -204,8 +212,11 @@ describe("createAppControlScreencastRecorderHost", () => {
       .rejects.toThrow(/already running/);
     expect(screencastWindows.list).toHaveLength(1);
 
+    if (!host.cancel) throw new Error("recorder cancel missing");
     host.cancel("app-control:lane-1");
-    screencastWindows.list[0]?.loadGate.resolve();
+    const started = screencastWindows.list[0];
+    if (!started) throw new Error("recorder window missing");
+    started.loadGate.resolve();
     await expect(first).rejects.toThrow(/cancelled while it was starting/);
     expect(fs.existsSync(filePath)).toBe(false);
   });
