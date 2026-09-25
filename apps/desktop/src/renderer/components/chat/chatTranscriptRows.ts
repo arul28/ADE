@@ -1048,8 +1048,44 @@ function stampSceneScopeKey<T extends ChatTranscriptRenderEnvelope>(row: T): T {
   return { ...row, sceneScopeKey: sceneRowIdentity(event, row.key) };
 }
 
+const MARKDOWN_INLINE_CHARS = /[*_`[\]~#>+-]/;
+
+/**
+ * Strip inline Markdown for a collapsed one-line preview. A small scanner, not
+ * a parser: it removes the punctuation a preview would otherwise show as
+ * literal (`**bold**`, `_italic_`, `` `code` ``, `[label](url)`, `~~gone~~`)
+ * plus line-leading headings, blockquotes, and list markers.
+ *
+ * Deliberately conservative so it does not corrupt text that only looks like
+ * Markdown: emphasis markers are removed only in pairs, `_`/`*` only at word
+ * boundaries, so `snake_case`, a shell glob, and a lone `*` survive.
+ */
+export function stripInlineMarkdown(value: string): string {
+  if (!MARKDOWN_INLINE_CHARS.test(value) && !/^[ \t]{0,3}\d+[.)]\s/m.test(value)) return value;
+  const withoutLinks = value.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
+  const withoutCode = withoutLinks.replace(/`+([^`]+)`+/g, "$1");
+  const withoutBold = withoutCode
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1");
+  const withoutStrike = withoutBold.replace(/~~([^~]+)~~/g, "$1");
+  const withoutEmphasis = withoutStrike
+    .replace(/(^|[^\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?=[^\w*]|$)/g, "$1$2")
+    .replace(/(^|[^\w_])_([^_\s](?:[^_\n]*[^_\s])?)_(?=[^\w_]|$)/g, "$1$2");
+  return withoutEmphasis
+    .split("\n")
+    .map((line) => line
+      .replace(/^\s{0,3}(?:#{1,6}\s+|>\s+)/, "")
+      .replace(/^\s{0,3}(?:[-+*]|\d+[.)])\s+/, ""))
+    .join("\n");
+}
+
+/** Whitespace-collapse without touching Markdown, for internal comparisons. */
+function normalizeInlineText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 export function summarizeInlineText(value: string, maxChars = 120): string {
-  const text = value.replace(/\s+/g, " ").trim();
+  const text = normalizeInlineText(stripInlineMarkdown(value));
   if (!text.length) return "";
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }
@@ -2737,7 +2773,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "status") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 120).toLowerCase();
+    const normalizedMessage = normalizeInlineText(event.message ?? "").toLowerCase();
     const keepStatus =
       event.turnStatus === "failed"
       || event.turnStatus === "interrupted"
@@ -2794,7 +2830,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "delegation_state") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 140);
+    const normalizedMessage = normalizeInlineText(event.message ?? "");
     const keepDelegation =
       normalizedMessage.length > 0
       || event.contract.status === "blocked"
