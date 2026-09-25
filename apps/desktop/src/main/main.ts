@@ -2148,12 +2148,12 @@ app.whenReady().then(async () => {
     let activeLocalRoot: string | null = null;
     for (const [windowId, tabRoots] of windowProjectTabRoots) {
       for (const root of tabRoots) {
-        if (!localRoots.includes(root)) localRoots.push(root);
+        if (!localRoots.some((existing) => pathsEqual(existing, root))) localRoots.push(root);
       }
       const bound = windowProjectRoots.get(windowId) ?? null;
       if (bound) activeLocalRoot = bound;
     }
-    if (!activeLocalRoot && activeProjectRoot && localRoots.includes(activeProjectRoot)) {
+    if (!activeLocalRoot && activeProjectRoot && localRoots.some((root) => pathsEqual(root, activeProjectRoot))) {
       activeLocalRoot = activeProjectRoot;
     }
     const current = readGlobalState(globalStatePath);
@@ -8930,7 +8930,7 @@ app.whenReady().then(async () => {
   });
   if (updateWorkspaceRestore.localRoots.length > 0) {
     const warmOrder = [
-      ...updateWorkspaceRestore.localRoots.filter((root) => root !== updateWorkspaceRestore.activeLocalRoot),
+      ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),
       ...(updateWorkspaceRestore.activeLocalRoot ? [updateWorkspaceRestore.activeLocalRoot] : []),
     ];
     for (const root of warmOrder) {
@@ -8942,9 +8942,9 @@ app.whenReady().then(async () => {
     }
   }
   const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
-  const restoredActiveRoot = restoredLocalRoots.includes(updateWorkspaceRestore.activeLocalRoot ?? "")
-    ? updateWorkspaceRestore.activeLocalRoot
-    : (restoredLocalRoots[0] ?? null);
+  const restoredActiveRoot = restoredLocalRoots.find((root) => pathsEqual(root, updateWorkspaceRestore.activeLocalRoot))
+    ?? restoredLocalRoots[0]
+    ?? null;
   const restoringUpdateWorkspace = restoredLocalRoots.length > 0;
 
   const initialRemoteProjectBinding =
