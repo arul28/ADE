@@ -692,10 +692,13 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(
       MacDesktopZoom.clampOffset(CGSize(width: 40, height: 80), scale: 1, in: picture, viewport: viewport),
       CGSize(width: 0, height: 25))
-    let past = MacDesktopZoom.rubberBand(30, limit: 10)
-    XCTAssertGreaterThan(past, 10)
-    XCTAssertLessThan(past, 30)
-    let stretched = MacDesktopZoom(scale: 1, offset: CGSize(width: past, height: past))
+    let pastWidth = MacDesktopZoom.rubberBand(80, limit: 0)
+    let pastHeight = MacDesktopZoom.rubberBand(80, limit: 25)
+    XCTAssertGreaterThan(pastWidth, 0)
+    XCTAssertLessThan(pastWidth, 80)
+    XCTAssertGreaterThan(pastHeight, 25)
+    XCTAssertLessThan(pastHeight, 80)
+    let stretched = MacDesktopZoom(scale: 1, offset: CGSize(width: pastWidth, height: pastHeight))
     XCTAssertEqual(stretched.settled(in: picture, viewport: viewport).offset, CGSize(width: 0, height: 25))
   }
 
