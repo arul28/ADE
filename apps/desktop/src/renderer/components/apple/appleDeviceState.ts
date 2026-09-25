@@ -197,8 +197,14 @@ export function appleSimulatorDescription(simulator: AppleInstalledSimulator): s
 
 /**
  * §9's subtitle: `No device` | `{name} · Starting` | `{name} · Running` |
- * `{name} · Off`. One function so the picker card, the tab tooltip and the
- * palette cannot drift apart.
+ * `{name} · Shut down`. One function so the picker card, the tab tooltip and
+ * the palette cannot drift apart.
+ *
+ * The stopped word is "Shut down", never "Off". "Off" sat on a card beside the
+ * tool's own name, where it read as the TOOL being switched off rather than the
+ * device being powered down — the owner's report that opened the claim-UX
+ * round. "Shut down" names the device's power, which is the fact the line is
+ * for; the lane still OWNS the device, and the card's menu is where you say so.
  */
 export function appleToolCardSubtitle(device: {
   name: string | null | undefined;
@@ -210,7 +216,7 @@ export function appleToolCardSubtitle(device: {
     ? "Starting"
     : device.state === "running"
       ? "Running"
-      : "Off";
+      : "Shut down";
   return `${name} · ${suffix}`;
 }
 
