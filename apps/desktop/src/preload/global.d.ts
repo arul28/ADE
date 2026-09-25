@@ -3913,6 +3913,8 @@ declare global {
         }) => Promise<PrWithConflicts[]>;
         listSnapshots: (args?: {
           prId?: string;
+          /** Only these PRs; an empty list returns none. */
+          prIds?: string[];
         }) => Promise<PrSnapshotHydration[]>;
         getGitHubSnapshot: (args?: {
           force?: boolean;

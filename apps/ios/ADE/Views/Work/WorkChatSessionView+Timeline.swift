@@ -9,8 +9,7 @@ extension WorkChatSessionView {
   /// markdown through the bounded streaming parser; every completed message
   /// keeps the whole-text block cache path.
   var streamingAssistantMessageId: String? {
-    guard shouldShowInterruptControl else { return nil }
-    return timelineSnapshot.latestMessageAssistantId
+    frame?.streamingAssistantMessageId
   }
 
   @ViewBuilder
@@ -125,12 +124,6 @@ extension WorkChatSessionView {
         )
         .equatable()
       }
-    case .usageSummary(let summary):
-      WorkTurnUsageSummaryBanner(
-        summary: summary,
-        provider: chatSummaryContext.provider,
-        modelLabel: chatSummaryContext.modelLabel
-      )
     case .commandCard(let commandCard):
       WorkCommandCardView(
         card: commandCard,
@@ -171,8 +164,6 @@ extension WorkChatSessionView {
       timelineChangedFiles(group, entryId: entry.id)
     case .artifact(let artifact):
       timelineArtifact(artifact, entryId: entry.id)
-    case .turnSeparator(let separator):
-      WorkTurnSeparatorView(separator: separator)
     case .turnEndMarker(let marker):
       let activity = turnToolActivity.completedByTurnId[marker.turnId]
       let files = turnToolActivity.completedFilesByTurnId[marker.turnId]
@@ -181,7 +172,7 @@ extension WorkChatSessionView {
         ? contextUsageViewModelCache.value(
             sessionId: session.id,
             transcript: transcript,
-            transcriptRenderSignature: transcriptRenderSignature,
+            transcriptRenderSignature: frame?.revision ?? 0,
             provider: chatSummaryContext.provider,
             fallbackContextWindow: chatSummaryContext.contextWindowFallback
           )
@@ -196,7 +187,7 @@ extension WorkChatSessionView {
       WorkTurnEndMarkerView(
         marker: marker,
         toolCount: activity?.count ?? 0,
-        fileCount: files?.files.count ?? 0,
+        fileStat: workTurnFileStat(files),
         onOpenActivity: (activity != nil || files != nil)
           ? { toolActivitySheet = .completed(marker.turnId) }
           : nil,
@@ -212,7 +203,14 @@ extension WorkChatSessionView {
         }
       )
     case .turnFold(let model):
-      WorkTurnFoldRow(model: model) {
+      let activityKey = model.turnEndTurnId ?? model.turnId
+      let hasActivity = turnToolActivity.completedByTurnId[activityKey] != nil
+        || turnToolActivity.completedFilesByTurnId[activityKey] != nil
+      WorkTurnFoldRow(
+        model: model,
+        fileStat: workTurnFileStat(turnToolActivity.completedFilesByTurnId[activityKey]),
+        onOpenActivity: hasActivity ? { toolActivitySheet = .completed(activityKey) } : nil
+      ) {
         toggleCard(model.id, entryId: entry.id)
       }
     case .backgroundJob(let job):
@@ -272,7 +270,7 @@ extension WorkChatSessionView {
         },
         fallbackProvider: chatSummaryContext.provider,
         maxCardHeight: workInlinePendingInputMaxHeight(
-          transcriptViewportHeight: scrollViewportHeight
+          transcriptViewportHeight: transcriptVisibleHeight
         )
       )
       .id("pending-question-\(question.id)")
@@ -413,9 +411,8 @@ extension WorkChatSessionView {
   /// Reasoning is "live" when the session is streaming AND this is the most
   /// recent reasoning entry in the transcript. Everything older collapses.
   func isReasoningLive(_ card: WorkEventCardModel) -> Bool {
-    guard isStreamingTurn else { return false }
-    let latestReasoningId = eventCards.last(where: { $0.kind == "reasoning" })?.id
-    return card.id == latestReasoningId
+    guard frame?.isReasoningLive == true else { return false }
+    return card.id == frame?.latestReasoningCardId
   }
 
   @ViewBuilder
@@ -434,14 +431,34 @@ extension WorkChatSessionView {
   }
 }
 
-struct WorkTurnToolActivityIndex {
+/// `3 files changed +12 −4` for a turn's files row.
+func workTurnFileStat(_ files: WorkChangedFilesGroupModel?) -> (count: Int, additions: Int, deletions: Int)? {
+  guard let files, !files.files.isEmpty else { return nil }
+  return (
+    files.files.count,
+    files.files.reduce(0) { $0 + $1.additions },
+    files.files.reduce(0) { $0 + $1.deletions }
+  )
+}
+
+struct WorkTurnToolActivityIndex: Equatable {
   let completedByTurnId: [String: WorkToolGroupModel]
   let completedFilesByTurnId: [String: WorkChangedFilesGroupModel]
   /// Timeline row ids (`.toolGroup` / `.changedFiles`) flushed into a
   /// turn-end sheet. Presentation hides those exact rows, never a global
   /// member-id or path set that would also swallow an orphan cluster.
   let claimedInlineGroupIds: Set<String>
+  /// Row ids of the tool rows after the last turn end: the running turn's,
+  /// hidden while the chat streams (the working indicator lists them).
+  var activeInlineGroupIds: Set<String> = []
   let active: WorkToolGroupModel?
+
+  static let empty = WorkTurnToolActivityIndex(
+    completedByTurnId: [:],
+    completedFilesByTurnId: [:],
+    claimedInlineGroupIds: [],
+    active: nil
+  )
 }
 
 enum WorkToolActivitySheetSelection: Identifiable, Equatable {
@@ -535,9 +552,6 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
       claimedInlineGroupIds.formUnion(pendingGroupIds)
       clearPending()
       currentUserTurnId = nil
-    case .turnSeparator:
-      clearPending()
-      currentUserTurnId = nil
     default:
       continue
     }
@@ -547,6 +561,7 @@ func workTurnToolActivityIndex(from entries: [WorkTimelineEntry]) -> WorkTurnToo
     completedByTurnId: completed,
     completedFilesByTurnId: completedFiles,
     claimedInlineGroupIds: claimedInlineGroupIds,
+    activeInlineGroupIds: Set(pendingGroupIds),
     active: mergedGroup(id: "turn-activity:active", members: pendingMembers)
   )
 }
@@ -738,6 +753,7 @@ extension WorkChatSessionView {
       .padding(.vertical, 9)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
       .overlay(
         RoundedRectangle(cornerRadius: 14, style: .continuous)
           .stroke(accent.opacity(0.35), lineWidth: 1)

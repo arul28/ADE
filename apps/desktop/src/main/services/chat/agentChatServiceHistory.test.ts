@@ -1637,6 +1637,120 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("chatLogV2 history", () => {
+    const paddedTextEnvelope = (sessionId: string, sequence: number, exactBytes: number): AgentChatEventEnvelope => {
+      const base: AgentChatEventEnvelope = {
+        sessionId,
+        timestamp: new Date(Date.UTC(2026, 8, 23, 10, 0, sequence)).toISOString(),
+        sequence,
+        event: { type: "text", text: `t${sequence}-`, turnId: "turn-2" },
+      };
+      const padding = exactBytes - Buffer.byteLength(JSON.stringify(base), "utf8");
+      if (padding < 0) throw new Error("fixture too small");
+      return { ...base, event: { type: "text", text: `t${sequence}-${"x".repeat(padding)}`, turnId: "turn-2" } };
+    };
+
+    const seedTurnFixture = (sessionId: string): AgentChatEventEnvelope[] => {
+      const approval = {
+        sessionId,
+        timestamp: "2026-09-23T09:59:00.000Z",
+        sequence: 1,
+        event: {
+          type: "approval_request",
+          itemId: "approval-old",
+          kind: "command",
+          description: "Run the migration",
+          turnId: "turn-1",
+        },
+      } as AgentChatEventEnvelope;
+      const user: AgentChatEventEnvelope = {
+        sessionId,
+        timestamp: "2026-09-23T10:00:00.000Z",
+        sequence: 2,
+        event: { type: "user_message", text: "Keep going", turnId: "turn-2" },
+      };
+      const texts = [3, 4, 5, 6, 7, 8].map((sequence) => paddedTextEnvelope(sessionId, sequence, 250));
+      const envelopes = [approval, user, ...texts];
+      fs.writeFileSync(path.join(tmpRoot, "transcripts", `${sessionId}.chat.jsonl`), "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+      return envelopes;
+    };
+
+    it("cuts a byte-capped snapshot at the turn boundary and reports old approvals separately", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      seedTurnFixture(session.id);
+
+      // Legacy shape: natural cut mid-turn, old approval spliced back in.
+      const legacy = await service.getChatEventHistory(session.id, { maxBytes: 1_024 });
+      expect(legacy.events.map((entry) => entry.sequence)).toEqual([1, 5, 6, 7, 8]);
+      expect(legacy.pinnedEvents).toBeUndefined();
+
+      const aligned = await service.getChatEventHistory(session.id, {
+        maxBytes: 1_024,
+        turnBoundaryAligned: true,
+        separatePinnedEvents: true,
+      });
+      // Back to the user message that started the turn (650 extra bytes ≤ 1× budget).
+      expect(aligned.events.map((entry) => entry.sequence)).toEqual([2, 3, 4, 5, 6, 7, 8]);
+      expect(aligned.pinnedEvents?.map((entry) => entry.event.type)).toEqual(["approval_request"]);
+      expect(aligned.hasOlderHistory).toBe(true);
+    });
+
+    it("keeps the natural cut when the turn boundary is more than one budget away", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const user: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-09-23T10:00:00.000Z",
+        sequence: 1,
+        event: { type: "user_message", text: "Long turn", turnId: "turn-1" },
+      };
+      const texts = Array.from({ length: 12 }, (_, index) => paddedTextEnvelope(session.id, index + 2, 250));
+      fs.writeFileSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([user, ...texts]);
+
+      const aligned = await service.getChatEventHistory(session.id, {
+        maxBytes: 1_024,
+        turnBoundaryAligned: true,
+        separatePinnedEvents: true,
+      });
+      expect(aligned.events.map((entry) => entry.sequence)).toEqual([10, 11, 12, 13]);
+      expect(aligned.pinnedEvents).toEqual([]);
+    });
+
+    it("reports the chat log state: generation 1 and the live sequence high-water", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const state = service.getChatLogState(session.id);
+      expect(state?.historyGeneration).toBe(1);
+      expect(typeof state?.maxSequence).toBe("number");
+      expect(service.getChatLogState("not-a-chat")).toBeNull();
+      await service.dispose({ sessionId: session.id });
+      // Disposed: answered from persisted state.
+      expect(service.getChatLogState(session.id)?.historyGeneration).toBe(1);
+    });
+
+    it("pages older history by sequence cursor", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const envelopes = Array.from({ length: 6 }, (_, index) => paddedTextEnvelope(session.id, index + 1, 300));
+      const raw = envelopes.map((envelope) => `${JSON.stringify(envelope)}\n`).join("");
+      fs.writeFileSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), raw, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation((text) => String(text)
+        .split("\n")
+        .filter((line) => line.trim().length > 0)
+        .map((line) => JSON.parse(line) as AgentChatEventEnvelope));
+
+      const page = await service.getChatEventHistoryPage(session.id, { beforeOffset: 0, beforeSequence: 4 });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events.map((entry) => entry.sequence)).toEqual([1, 2, 3]);
+      expect(page.hasMore).toBe(false);
+      const head = await service.getChatEventHistoryPage(session.id, { beforeOffset: 0, beforeSequence: 1 });
+      expect(head.events).toEqual([]);
+    });
+  });
+
   describe("getChatEventHistoryPage", () => {
     // Byte-window edge cases (line-boundary cursors, oversized lines,
     // multi-byte UTF-8, concurrent appends) are covered with the REAL parser
@@ -2100,10 +2214,14 @@ describe("createAgentChatService", () => {
         "agent_chat.envelope_splice_repaired",
         expect.objectContaining({ sessionId: session.id, repairedTurns: 1 }),
       );
+      // The rewrite renumbered sequences, so the history moves to a new
+      // generation — persisted, reported live, and on the invalidation event.
       expect(repairEvents).toContainEqual(expect.objectContaining({
         sessionId: session.id,
-        event: { type: "session_meta_updated", historyInvalidated: true },
+        event: { type: "session_meta_updated", historyInvalidated: true, historyGeneration: 2 },
       }));
+      expect(resumed.service.getChatLogState(session.id)?.historyGeneration).toBe(2);
+      expect(readPersistedChatState(session.id).historyGeneration).toBe(2);
     });
 
     it("resolves an ADE chat id to persisted and pointer-backed Claude main transcripts", async () => {

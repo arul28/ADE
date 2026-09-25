@@ -21,7 +21,9 @@ struct WorkRemoteToolResultAffordance: View {
   /// part of what makes this result this result.
   let sourceOffset: Int?
 
-  @EnvironmentObject private var syncService: SyncService
+  /// Not `@EnvironmentObject`: this view renders inside a transcript cell, and
+  /// an observed SyncService re-rendered it on every unrelated publish.
+  @Environment(\.workSyncService) private var syncReference
   @State private var resultExpanded = false
   @State private var fetchedFullResult: String?
   @State private var fetchingFullResult = false
@@ -168,6 +170,11 @@ struct WorkRemoteToolResultAffordance: View {
     let requestGeneration = fetchGeneration
     fetchingFullResult = true
     fullResultError = nil
+    guard let syncService = syncReference.service else {
+      fetchingFullResult = false
+      fullResultError = "Not connected to a machine."
+      return
+    }
     Task { @MainActor in
       defer {
         if fetchGeneration == requestGeneration {
@@ -195,7 +202,7 @@ struct WorkRemoteToolResultAffordance: View {
   }
 
   private func hydrateCachedResult() {
-    guard fetchedFullResult == nil else { return }
+    guard fetchedFullResult == nil, let syncService = syncReference.service else { return }
     fetchedFullResult = syncService.cachedFullToolResult(
       sessionId: sessionId,
       itemId: itemId,

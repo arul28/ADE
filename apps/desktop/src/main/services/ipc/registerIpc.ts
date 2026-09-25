@@ -11728,9 +11728,15 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) => {
+  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string; prIds?: unknown }) => {
     const ctx = ensurePrReadContext();
-    return ctx.prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined });
+    const prIds = Array.isArray(arg?.prIds)
+      ? arg.prIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      : undefined;
+    return ctx.prService.listSnapshots({
+      prId: typeof arg?.prId === "string" ? arg.prId : undefined,
+      ...(prIds ? { prIds } : {}),
+    });
   });
 
   ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number; automaticRefresh?: boolean }): Promise<GitHubPrSnapshot> => {

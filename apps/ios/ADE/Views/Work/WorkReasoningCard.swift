@@ -103,25 +103,35 @@ struct WorkReasoningCard: View {
 /// Floating pill that appears when new messages arrive while the user has
 /// scrolled up. Tap to jump back to the latest message and clear the unread
 /// count. Hides itself when the count is zero.
+/// Round glass "jump to latest" button: a down arrow and nothing else. It sits
+/// at the right end of the badge-chip line, just above the composer. New
+/// messages below the reader add a small accent dot, and the count goes to
+/// VoiceOver.
 struct WorkJumpToLatestPill: View {
   let count: Int
   let action: () -> Void
 
+  static let diameter: CGFloat = workChatComposerChipRowHeight
+
   var body: some View {
     Button(action: action) {
-      HStack(spacing: 6) {
-        Image(systemName: "arrow.down")
-          .font(.caption.weight(.bold))
-        Text(count > 0 ? "\(count) new" : "Latest")
-          .font(.caption.weight(.semibold))
+      WorkChatGlassCircleLabel(
+        systemName: "arrow.down",
+        size: Self.diameter,
+        glyphSize: 13,
+        tint: ADEColor.textPrimary
+      )
+      .overlay(alignment: .topTrailing) {
+        if count > 0 {
+          Circle()
+            .fill(ADEColor.accent)
+            .frame(width: 8, height: 8)
+            .offset(x: -1, y: 1)
+        }
       }
-      .foregroundStyle(Color.white)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.accent, in: Capsule())
-      .shadow(color: ADEColor.purpleGlow, radius: 10, y: 2)
     }
     .buttonStyle(.plain)
+    .accessibilityIdentifier("Work.Chat.JumpToLatest")
     .accessibilityLabel(count > 0
       ? "\(count) new message\(count == 1 ? "" : "s"). Tap to scroll to latest."
       : "Jump to latest message.")

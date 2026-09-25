@@ -66,6 +66,9 @@ extension WorkSessionDestinationView {
     )
     let echoId = echo.id
     localEchoMessages.append(echo)
+    // Before the first await: the echo rides this turn's overlays, so the
+    // bubble is in the frame that follows the tap.
+    syncThreadOverlays()
     sending = true
 
     let attachmentRefs: [AgentChatFileRef]

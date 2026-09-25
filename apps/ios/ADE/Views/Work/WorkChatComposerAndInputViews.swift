@@ -99,59 +99,66 @@ func workComposerFoldTransition(
   }
 }
 
-struct WorkTurnUsageSummaryBanner: View {
-  let summary: WorkUsageSummary
-  /// Retained for call-site compatibility. Model is shown in usage and composer, not the turn line.
-  /// Kept as optional params in case future rows need provider context.
-  var provider: String? = nil
-  var modelLabel: String? = nil
+// MARK: - Thread chrome glass
+
+/// The one surface every control floating over the chat thread uses: the
+/// header buttons, the title, the composer, the badge chips and the
+/// jump-to-latest button. Liquid Glass, so the transcript scrolling underneath
+/// stays visible (blurred) through it.
+///
+/// Reduce Transparency swaps the glass for an opaque fill — a see-through
+/// control over moving prose is exactly what that setting asks us not to draw.
+struct WorkChatGlassSurface<S: Shape>: ViewModifier {
+  let shape: S
+  var interactive: Bool = false
+  var tint: Color? = nil
+
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  func body(content: Content) -> some View {
+    if reduceTransparency {
+      content
+        .background(ADEColor.cardBackground, in: shape)
+        .overlay(shape.stroke(ADEColor.glassBorder, lineWidth: 0.75))
+    } else {
+      content
+        .glassEffect(glass, in: shape)
+    }
+  }
+
+  private var glass: Glass {
+    var glass = Glass.regular
+    if let tint { glass = glass.tint(tint) }
+    if interactive { glass = glass.interactive() }
+    return glass
+  }
+}
+
+extension View {
+  func workChatGlass<S: Shape>(
+    in shape: S,
+    interactive: Bool = false,
+    tint: Color? = nil
+  ) -> some View {
+    modifier(WorkChatGlassSurface(shape: shape, interactive: interactive, tint: tint))
+  }
+}
+
+/// Round glass button used by the thread header (back, actions) and the
+/// jump-to-latest control. The glyph is the only content.
+struct WorkChatGlassCircleLabel: View {
+  let systemName: String
+  var size: CGFloat = 44
+  var glyphSize: CGFloat = 17
+  var tint: Color = ADEColor.textPrimary
 
   var body: some View {
-    HStack(spacing: 8) {
-      Text("USAGE")
-        .font(.caption2.weight(.bold))
-        .tracking(0.6)
-        .foregroundStyle(ADEColor.textMuted)
-
-      Spacer(minLength: 4)
-
-      usagePill("In", workAbbreviateCount(summary.inputTokens))
-      usagePill("Out", workAbbreviateCount(summary.outputTokens))
-
-      if summary.cacheReadTokens > 0 {
-        usagePill("Cache", workAbbreviateCount(summary.cacheReadTokens))
-      }
-      if summary.cacheCreationTokens > 0 {
-        usagePill("New cache", workAbbreviateCount(summary.cacheCreationTokens))
-      }
-
-      if summary.costUsd > 0 {
-        Text(formatUsageCost(summary.costUsd))
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
-    )
-  }
-
-  private func usagePill(_ label: String, _ value: String) -> some View {
-    Text("\(label) \(value)")
-      .font(.caption2.monospacedDigit())
-      .foregroundStyle(ADEColor.textMuted)
-      .lineLimit(1)
-  }
-
-  private func formatUsageCost(_ cost: Double) -> String {
-    // Mirror desktop: two decimals when above one cent so "$0.06" reads
-    // cleanly; fall back to four decimals for sub-cent costs.
-    if cost >= 0.01 { return String(format: "$%.2f", cost) }
-    return String(format: "$%.4f", cost)
+    Image(systemName: systemName)
+      .font(.system(size: glyphSize, weight: .semibold))
+      .foregroundStyle(tint)
+      .frame(width: size, height: size)
+      .contentShape(Circle())
+      .workChatGlass(in: Circle(), interactive: true)
   }
 }
 
@@ -748,6 +755,9 @@ struct WorkQueuedSteerStrip: View {
     }
     .padding(6)
     .background(ADEColor.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    // Floats over the thread (no band behind the composer stack), so it
+    // carries its own glass to stay legible over prose.
+    .workChatGlass(in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
         .stroke(ADEColor.accent.opacity(0.22), lineWidth: 0.8)
@@ -1920,7 +1930,9 @@ private struct WorkStructuredQuestionMetaRow: View {
 }
 
 struct WorkModelSelectionPendingCard: View {
-  @EnvironmentObject private var syncService: SyncService
+  /// Not `@EnvironmentObject`: renders inside a transcript cell (see
+  /// `WorkSyncServiceReference`); only the picker sheet needs the object.
+  @Environment(\.workSyncService) private var syncReference
 
   let request: WorkPendingModelSelectionModel
   let busy: Bool
@@ -1980,27 +1992,29 @@ struct WorkModelSelectionPendingCard: View {
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
     .sheet(isPresented: $pickerPresented) {
-      WorkModelPickerSheet(
-        currentModelId: selectedModelId,
-        currentProvider: selectedProvider,
-        currentReasoningEffort: selectedReasoningEffort,
-        currentCodexFastMode: selectedCodexFastMode,
-        availableModelIds: request.availableModelIds,
-        isBusy: busy,
-        onSelect: { option, pickedReasoning, provider, pickedFastMode in
-          selectedModel = option
-          selectedModelId = option.id
-          selectedProvider = provider
-          let nextReasoning = pickedReasoning ?? ""
-          if nextReasoning != selectedReasoningEffort {
-            selectedReasoningEffort = nextReasoning
+      if let syncService = syncReference.service {
+        WorkModelPickerSheet(
+          currentModelId: selectedModelId,
+          currentProvider: selectedProvider,
+          currentReasoningEffort: selectedReasoningEffort,
+          currentCodexFastMode: selectedCodexFastMode,
+          availableModelIds: request.availableModelIds,
+          isBusy: busy,
+          onSelect: { option, pickedReasoning, provider, pickedFastMode in
+            selectedModel = option
+            selectedModelId = option.id
+            selectedProvider = provider
+            let nextReasoning = pickedReasoning ?? ""
+            if nextReasoning != selectedReasoningEffort {
+              selectedReasoningEffort = nextReasoning
+            }
+            if pickedFastMode != selectedCodexFastMode {
+              selectedCodexFastMode = pickedFastMode
+            }
           }
-          if pickedFastMode != selectedCodexFastMode {
-            selectedCodexFastMode = pickedFastMode
-          }
-        }
-      )
-      .environmentObject(syncService)
+        )
+        .environmentObject(syncService)
+      }
     }
     .onChange(of: requestResetKey) { _, _ in
       resetSelectionState()

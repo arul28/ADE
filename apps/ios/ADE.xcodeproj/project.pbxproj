@@ -94,6 +94,17 @@
 		1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9411193AF56B236BA32EFF5 /* ADEApp.swift */; };
 		1A0D93D06509796A389A4CAA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
+		E20000000000000000000C10 /* ChatLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C10 /* ChatLogStore.swift */; };
+		E2000000000000000000C9F1 /* ScrollDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000C9F1 /* ScrollDiagnostics.swift */; };
+		E20000000000000000000C20 /* ChatThreadTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C20 /* ChatThreadTypes.swift */; };
+		E20000000000000000000C21 /* ChatThreadEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C21 /* ChatThreadEngine.swift */; };
+		E20000000000000000000C22 /* ChatThreadModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C22 /* ChatThreadModel.swift */; };
+		E20000000000000000000C23 /* ChatThreadRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C23 /* ChatThreadRegistry.swift */; };
+		E20000000000000000000C27 /* ChatThreadLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C27 /* ChatThreadLog.swift */; };
+		E1000000000000000000BB13 /* WorkChatTranscriptViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB13 /* WorkChatTranscriptViewport.swift */; };
+		E20000000000000000000C25 /* ChatThreadPresentationBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C25 /* ChatThreadPresentationBuilder.swift */; };
+		E20000000000000000000C26 /* ChatThreadTimelineFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C26 /* ChatThreadTimelineFold.swift */; };
+		D30000000000000000000F72 /* ChatThreadEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F62 /* ChatThreadEngineTests.swift */; };
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
 		F10000000000000000000101 /* ChatToolResultCache.swift in Sources */ = {isa = PBXBuildFile; fileRef = F10000000000000000000102 /* ChatToolResultCache.swift */; };
 		B70000000000000000000002 /* SyncRecoveryPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = B70000000000000000000001 /* SyncRecoveryPolicy.swift */; };
@@ -135,7 +146,6 @@
 		E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */; };
 		E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB01 /* AppleDeviceStream.swift */; };
 		E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB02 /* AppleDeviceViewer.swift */; };
-		E1000000000000000000AB03 /* AppleDeviceCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB03 /* AppleDeviceCard.swift */; };
 		E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */; };
 		E10000000000000000000052 /* LaneDeeplinkHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000052 /* LaneDeeplinkHelpers.swift */; };
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
@@ -232,6 +242,7 @@
 		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
 		D30000000000000000000F51 /* PrDetailRedesignTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F41 /* PrDetailRedesignTests.swift */; };
 		D30000000000000000000F52 /* WorkPlanTodoFoldTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F42 /* WorkPlanTodoFoldTests.swift */; };
+		D30000000000000000000F71 /* ChatLogStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F61 /* ChatLogStoreTests.swift */; };
 		D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */; };
 		D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F31 /* WorkChipDetectorTests.swift */; };
 		D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000000A /* WorkPromptStashTests.swift */; };
@@ -280,6 +291,7 @@
 		F10000000000000000000006 /* SettingsDiagnosticsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000006 /* SettingsDiagnosticsSection.swift */; };
 		F1000000000000000000000A /* ADEUsageDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2000000000000000000000A /* ADEUsageDesign.swift */; };
 		F10000000000000000000A01 /* ADEResetCreditRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000A01 /* ADEResetCreditRows.swift */; };
+		F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000B51 /* ADEGlassComposer.swift */; };
 		F10000000000000000000008 /* SettingsUsagePage.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000008 /* SettingsUsagePage.swift */; };
 		F10000000000000000000009 /* SettingsUsageChart.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000009 /* SettingsUsageChart.swift */; };
 		F10000000000000000000007 /* SettingsMachineRenameSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = F20000000000000000000007 /* SettingsMachineRenameSheet.swift */; };
@@ -505,7 +517,6 @@
 		D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentPreviewSheets.swift; path = ADE/Views/Work/WorkChatAttachmentPreviewSheets.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB01 /* AppleDeviceStream.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceStream.swift; path = ADE/Views/Work/AppleDeviceStream.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB02 /* AppleDeviceViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewer.swift; path = ADE/Views/Work/AppleDeviceViewer.swift; sourceTree = "<group>"; };
-		D1000000000000000000AB03 /* AppleDeviceCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceCard.swift; path = ADE/Views/Work/AppleDeviceCard.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkQueuedSteerDetailSheet.swift; path = ADE/Views/Work/WorkQueuedSteerDetailSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000052 /* LaneDeeplinkHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDeeplinkHelpers.swift; path = ADE/Views/Lanes/LaneDeeplinkHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
@@ -616,6 +627,7 @@
 		D30000000000000000000008 /* PrMergeMergeStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeMergeStateTests.swift; path = ADETests/PrMergeMergeStateTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F41 /* PrDetailRedesignTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailRedesignTests.swift; path = ADETests/PrDetailRedesignTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F42 /* WorkPlanTodoFoldTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPlanTodoFoldTests.swift; path = ADETests/WorkPlanTodoFoldTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000F61 /* ChatLogStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLogStoreTests.swift; path = ADETests/ChatLogStoreTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkComposerTriggerDetectorTests.swift; path = ADETests/WorkComposerTriggerDetectorTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000F31 /* WorkChipDetectorTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChipDetectorTests.swift; path = ADETests/WorkChipDetectorTests.swift; sourceTree = "<group>"; };
 		D3000000000000000000000A /* WorkPromptStashTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkPromptStashTests.swift; path = ADETests/WorkPromptStashTests.swift; sourceTree = "<group>"; };
@@ -639,6 +651,17 @@
 		4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEDesignSystem.swift; path = ADE/Views/Components/ADEDesignSystem.swift; sourceTree = "<group>"; };
 		4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesTabView.swift; path = ADE/Views/FilesTabView.swift; sourceTree = "<group>"; };
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
+		D20000000000000000000C10 /* ChatLogStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLogStore.swift; path = ADE/Services/ChatLogStore.swift; sourceTree = "<group>"; };
+		D2000000000000000000C9F1 /* ScrollDiagnostics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ScrollDiagnostics.swift; path = ADE/Services/ScrollDiagnostics.swift; sourceTree = "<group>"; };
+		D20000000000000000000C20 /* ChatThreadTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadTypes.swift; path = ADE/Services/ChatThread/ChatThreadTypes.swift; sourceTree = "<group>"; };
+		D20000000000000000000C21 /* ChatThreadEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadEngine.swift; path = ADE/Services/ChatThread/ChatThreadEngine.swift; sourceTree = "<group>"; };
+		D20000000000000000000C22 /* ChatThreadModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadModel.swift; path = ADE/Services/ChatThread/ChatThreadModel.swift; sourceTree = "<group>"; };
+		D20000000000000000000C23 /* ChatThreadRegistry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadRegistry.swift; path = ADE/Services/ChatThread/ChatThreadRegistry.swift; sourceTree = "<group>"; };
+		D20000000000000000000C27 /* ChatThreadLog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadLog.swift; path = ADE/Services/ChatThread/ChatThreadLog.swift; sourceTree = "<group>"; };
+		D1000000000000000000BB13 /* WorkChatTranscriptViewport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTranscriptViewport.swift; path = ADE/Views/Work/WorkChatTranscriptViewport.swift; sourceTree = "<group>"; };
+		D20000000000000000000C25 /* ChatThreadPresentationBuilder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadPresentationBuilder.swift; path = ADE/Services/ChatThread/ChatThreadPresentationBuilder.swift; sourceTree = "<group>"; };
+		D20000000000000000000C26 /* ChatThreadTimelineFold.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadTimelineFold.swift; path = ADE/Services/ChatThread/ChatThreadTimelineFold.swift; sourceTree = "<group>"; };
+		D30000000000000000000F62 /* ChatThreadEngineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadEngineTests.swift; path = ADETests/ChatThreadEngineTests.swift; sourceTree = "<group>"; };
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
 		F10000000000000000000102 /* ChatToolResultCache.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatToolResultCache.swift; path = ADE/Services/ChatToolResultCache.swift; sourceTree = "<group>"; };
@@ -693,6 +716,7 @@
 		F20000000000000000000006 /* SettingsDiagnosticsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsDiagnosticsSection.swift; path = ADE/Views/Settings/SettingsDiagnosticsSection.swift; sourceTree = "<group>"; };
 		F2000000000000000000000A /* ADEUsageDesign.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEUsageDesign.swift; path = ADE/Views/Components/ADEUsageDesign.swift; sourceTree = "<group>"; };
 		F20000000000000000000A01 /* ADEResetCreditRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEResetCreditRows.swift; path = ADE/Views/Components/ADEResetCreditRows.swift; sourceTree = "<group>"; };
+		F20000000000000000000B51 /* ADEGlassComposer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEGlassComposer.swift; path = ADE/Views/Components/ADEGlassComposer.swift; sourceTree = "<group>"; };
 		F20000000000000000000008 /* SettingsUsagePage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsagePage.swift; path = ADE/Views/Settings/SettingsUsagePage.swift; sourceTree = "<group>"; };
 		F20000000000000000000009 /* SettingsUsageChart.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsUsageChart.swift; path = ADE/Views/Settings/SettingsUsageChart.swift; sourceTree = "<group>"; };
 		F20000000000000000000007 /* SettingsMachineRenameSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsMachineRenameSheet.swift; path = ADE/Views/Settings/SettingsMachineRenameSheet.swift; sourceTree = "<group>"; };
@@ -851,6 +875,7 @@
 				4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */,
 				F2000000000000000000000A /* ADEUsageDesign.swift */,
 				F20000000000000000000A01 /* ADEResetCreditRows.swift */,
+				F20000000000000000000B51 /* ADEGlassComposer.swift */,
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
 				C1000000000000000000A001 /* MachineRowView.swift */,
@@ -1072,6 +1097,7 @@
 				D10000000000000000000042 /* WorkPreviews.swift */,
 				D1000000000000000000BB01 /* WorkChatScrollBench.swift */,
 				D1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift */,
+				D1000000000000000000BB13 /* WorkChatTranscriptViewport.swift */,
 				D1000000000000000000BB02 /* WorkChatFollowLatch.swift */,
 				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
@@ -1093,7 +1119,6 @@
 				D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */,
 				D1000000000000000000AB01 /* AppleDeviceStream.swift */,
 				D1000000000000000000AB02 /* AppleDeviceViewer.swift */,
-				D1000000000000000000AB03 /* AppleDeviceCard.swift */,
 				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
 				D10000000000000000000F03 /* WorkPromptStash.swift */,
@@ -1165,6 +1190,9 @@
 			isa = PBXGroup;
 			children = (
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
+				D20000000000000000000C10 /* ChatLogStore.swift */,
+				D2000000000000000000C9F1 /* ScrollDiagnostics.swift */,
+				D20000000000000000000C2F /* ChatThread */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
@@ -1199,6 +1227,20 @@
 				B34C6C526E3BBB1E720C8D7C /* Dictation */,
 			);
 			name = Services;
+			sourceTree = "<group>";
+		};
+		D20000000000000000000C2F /* ChatThread */ = {
+			isa = PBXGroup;
+			children = (
+				D20000000000000000000C20 /* ChatThreadTypes.swift */,
+				D20000000000000000000C21 /* ChatThreadEngine.swift */,
+				D20000000000000000000C22 /* ChatThreadModel.swift */,
+				D20000000000000000000C23 /* ChatThreadRegistry.swift */,
+				D20000000000000000000C27 /* ChatThreadLog.swift */,
+				D20000000000000000000C25 /* ChatThreadPresentationBuilder.swift */,
+				D20000000000000000000C26 /* ChatThreadTimelineFold.swift */,
+			);
+			name = ChatThread;
 			sourceTree = "<group>";
 		};
 		B34C6C526E3BBB1E720C8D7C /* Dictation */ = {
@@ -1381,6 +1423,8 @@
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 				D30000000000000000000F41 /* PrDetailRedesignTests.swift */,
 				D30000000000000000000F42 /* WorkPlanTodoFoldTests.swift */,
+				D30000000000000000000F61 /* ChatLogStoreTests.swift */,
+				D30000000000000000000F62 /* ChatThreadEngineTests.swift */,
 				D30000000000000000000009 /* WorkComposerTriggerDetectorTests.swift */,
 				D30000000000000000000F31 /* WorkChipDetectorTests.swift */,
 				D3000000000000000000000A /* WorkPromptStashTests.swift */,
@@ -1738,6 +1782,15 @@
 				B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */,
 				FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */,
 				26C8992F8D661707E9360503 /* Database.swift in Sources */,
+				E20000000000000000000C10 /* ChatLogStore.swift in Sources */,
+				E2000000000000000000C9F1 /* ScrollDiagnostics.swift in Sources */,
+				E20000000000000000000C20 /* ChatThreadTypes.swift in Sources */,
+				E20000000000000000000C21 /* ChatThreadEngine.swift in Sources */,
+				E20000000000000000000C22 /* ChatThreadModel.swift in Sources */,
+				E20000000000000000000C23 /* ChatThreadRegistry.swift in Sources */,
+				E20000000000000000000C27 /* ChatThreadLog.swift in Sources */,
+				E20000000000000000000C25 /* ChatThreadPresentationBuilder.swift in Sources */,
+				E20000000000000000000C26 /* ChatThreadTimelineFold.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
 				F10000000000000000000101 /* ChatToolResultCache.swift in Sources */,
@@ -1831,6 +1884,7 @@
 				F10000000000000000000007 /* SettingsMachineRenameSheet.swift in Sources */,
 				F1000000000000000000000A /* ADEUsageDesign.swift in Sources */,
 				F10000000000000000000A01 /* ADEResetCreditRows.swift in Sources */,
+				F10000000000000000000B51 /* ADEGlassComposer.swift in Sources */,
 				F10000000000000000000008 /* SettingsUsagePage.swift in Sources */,
 				F10000000000000000000009 /* SettingsUsageChart.swift in Sources */,
 				G10000000000000000000001 /* PrModels.swift in Sources */,
@@ -1907,6 +1961,7 @@
 				E10000000000000000000042 /* WorkPreviews.swift in Sources */,
 				E1000000000000000000BB01 /* WorkChatScrollBench.swift in Sources */,
 				E1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift in Sources */,
+				E1000000000000000000BB13 /* WorkChatTranscriptViewport.swift in Sources */,
 				E1000000000000000000BB02 /* WorkChatFollowLatch.swift in Sources */,
 				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
@@ -1927,7 +1982,6 @@
 				E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */,
 				E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */,
 				E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */,
-				E1000000000000000000AB03 /* AppleDeviceCard.swift in Sources */,
 				E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,
@@ -2015,6 +2069,8 @@
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 				D30000000000000000000F51 /* PrDetailRedesignTests.swift in Sources */,
 				D30000000000000000000F52 /* WorkPlanTodoFoldTests.swift in Sources */,
+				D30000000000000000000F71 /* ChatLogStoreTests.swift in Sources */,
+				D30000000000000000000F72 /* ChatThreadEngineTests.swift in Sources */,
 				D30000000000000000000019 /* WorkComposerTriggerDetectorTests.swift in Sources */,
 				D30000000000000000000F32 /* WorkChipDetectorTests.swift in Sources */,
 				D31000000000000000000019 /* WorkPromptStashTests.swift in Sources */,

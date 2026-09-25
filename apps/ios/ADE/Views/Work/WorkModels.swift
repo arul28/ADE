@@ -1104,7 +1104,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
   }
 }
 
-enum WorkTimelinePayload: Equatable {
+/// `indirect`: each payload lives in one heap box, so copying an entry (the
+/// timeline sort, dedupe, collapse passes and presentation all copy every
+/// entry) is one retain instead of one per field of the model inside.
+indirect enum WorkTimelinePayload: Equatable {
   case message(WorkChatMessage)
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)
@@ -1133,16 +1136,14 @@ enum WorkTimelinePayload: Equatable {
   /// Generic host/agent-emitted `ade_card`. One row per `cardId`, merged in
   /// place as the card progresses.
   case adeCard(WorkAdeCardModel)
-  case usageSummary(WorkUsageSummary)
   case artifact(ComputerUseArtifactSummary)
-  /// Centered time + model pill rendered between turns, matching the desktop
-  /// transcript's turn separators.
-  case turnSeparator(WorkTurnSeparator)
-  /// Centered end-of-turn completion row rendered after a terminal `done`
-  /// event. Completed turns say "Ran for"; interrupted/failed turns say
-  /// "Elapsed" so wall time is never presented as continuous agent work.
+  /// The turn-end line after a terminal `done` event (desktop
+  /// `DoneTurnDivider`): `ran 4m 30s · 2:15 AM · ↑in/↓out/~cache · tools ›
+  /// files ›` on one line. The turn's usage rides on it; there is no separate
+  /// usage row and no divider before the next user message.
   case turnEndMarker(WorkTurnEndMarker)
-  /// Completed turn history folded to a single mobile-sized disclosure row.
+  /// A finished turn's intermediate work folded into one
+  /// `Worked for 4m 12s · 18 tools · 3 files` caption (desktop `TurnFoldRow`).
   case turnFold(WorkTurnFoldModel)
   /// One background shell job, anchored at its first lifecycle update.
   case backgroundJob(WorkBackgroundJobModel)
@@ -1210,14 +1211,8 @@ extension WorkTimelinePayload: Hashable {
     case .adeCard(let model):
       hasher.combine(9)
       hasher.combine(model)
-    case .usageSummary(let model):
-      hasher.combine(10)
-      hasher.combine(model)
     case .artifact(let model):
       hasher.combine(11)
-      hasher.combine(model)
-    case .turnSeparator(let model):
-      hasher.combine(12)
       hasher.combine(model)
     case .turnEndMarker(let model):
       hasher.combine(13)
@@ -1368,17 +1363,13 @@ struct WorkChangedFilesGroupModel: Identifiable, Hashable {
   var count: Int { files.count }
 }
 
-struct WorkTurnSeparator: Hashable {
-  let time: String
-  let provider: String
-  let modelLabel: String
-  let modelId: String?
-}
-
 struct WorkTurnEndMarker: Hashable {
   let turnId: String
   let time: String
-  let workedDurationLabel: String
+  /// Desktop `formatTurnDuration` of the turn's measured run: from its user
+  /// message, else its `status: started`. Nil when the turn has neither, so
+  /// the line and the fold omit it rather than measure from an arbitrary row.
+  let workedDurationLabel: String?
   let status: String
   let terminalReasonLabel: String?
   let provider: String
@@ -1394,9 +1385,14 @@ struct WorkTurnEndMarker: Hashable {
   /// Later completion updates never change this snapshot, so a fold cannot
   /// hide work that was still running at the turn boundary.
   var liveEntryIds: Set<String> = []
-  /// Usage for a usage-limit turn, folded in from the standalone USAGE row so it
-  /// moves behind the footer's details toggle instead of shouting beside it.
+  /// The turn's token usage from its `done`. Drawn on the turn-end line; a
+  /// usage-limit turn moves it behind the footer's details toggle instead.
   var usage: WorkUsageSummary? = nil
+  /// Proof artifacts captured while the turn ran (the `N proof` chip).
+  var proofCount: Int = 0
+  /// The turn folded: its tool and file counts moved up to the fold row, so
+  /// the line keeps only time, usage, proof and sources. Set by presentation.
+  var workSummaryInFold: Bool = false
 }
 
 struct WorkBackgroundJobModel: Identifiable, Hashable {
@@ -1428,9 +1424,48 @@ struct WorkBackgroundJobRunModel: Identifiable, Hashable {
 struct WorkTurnFoldModel: Identifiable, Hashable {
   let id: String
   let turnId: String
-  let label: String
+  /// The turn-end marker's key: the per-turn tool and file lists are filed
+  /// under it (it differs from `turnId` only for a `done` with no turn id).
+  var turnEndTurnId: String? = nil
   let isExpanded: Bool
+  /// `completed`, `interrupted` or `failed` (desktop `TurnEndStatus`).
   let status: String
+  let durationLabel: String?
+  var toolCount: Int = 0
+  var fileCount: Int = 0
+  var subagentCount: Int = 0
+  var jobCount: Int = 0
+  var failedJobCount: Int = 0
+  var sourceCount: Int = 0
+
+  /// `Worked for 4m 12s`, or `Stopped after …` for an interrupted turn
+  /// (desktop `formatTurnFoldHead`).
+  var head: String {
+    if status == "interrupted" { return durationLabel.map { "Stopped after \($0)" } ?? "Stopped" }
+    return durationLabel.map { "Worked for \($0)" } ?? "Worked"
+  }
+
+  /// `5 jobs`, or `5 jobs (1 failed)` (desktop `formatTurnFoldJobCount`).
+  var jobLabel: String {
+    let base = workPluralCount(jobCount, "job")
+    return failedJobCount > 0 ? "\(base) (\(failedJobCount) failed)" : base
+  }
+
+  /// Desktop `formatTurnFoldLabel`: zero counts are omitted.
+  var label: String {
+    var parts = [head]
+    if toolCount > 0 { parts.append(workPluralCount(toolCount, "tool")) }
+    if fileCount > 0 { parts.append(workPluralCount(fileCount, "file")) }
+    if subagentCount > 0 { parts.append(workPluralCount(subagentCount, "subagent")) }
+    if jobCount > 0 { parts.append(jobLabel) }
+    if sourceCount > 0 { parts.append(workPluralCount(sourceCount, "source")) }
+    return parts.joined(separator: " · ")
+  }
+}
+
+/// `1 tool`, `3 tools` (desktop `pluralCount`).
+func workPluralCount(_ count: Int, _ noun: String) -> String {
+  "\(count) \(noun)\(count == 1 ? "" : "s")"
 }
 
 func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
@@ -1524,8 +1559,12 @@ struct WorkSubagentTimelineRow: Identifiable, Hashable {
   let commandLabel: String?
   let exitLabel: String?
 
+  /// One id for the running card and the result that replaces it (desktop
+  /// keeps the card's row key), so the card's row and height stay put.
   var id: String {
-    "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+    kind == .backgroundCommand
+      ? "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+      : "subagent-\(snapshot.agentId ?? snapshot.taskId)"
   }
 }
 
@@ -1534,19 +1573,7 @@ struct WorkSubagentTimelineGrid: Identifiable, Hashable {
   let rows: [WorkSubagentTimelineRow]
 }
 
-enum WorkSubagentTimelineItem: Identifiable, Hashable {
-  case row(WorkSubagentTimelineRow)
-  case grid(WorkSubagentTimelineGrid)
-
-  var id: String {
-    switch self {
-    case .row(let row): return row.id
-    case .grid(let grid): return grid.id
-    }
-  }
-}
-
-/// Folded run of 2+ same-cause, same-source subagent result rows (desktop
+/// Folded run of more than three same-cause, same-source subagent result rows (desktop
 /// parity: `SubagentStoppedGroupEvent`). Carries the original result rows so
 /// the card can list each agent's title, last activity, and outcome.
 struct WorkSubagentStoppedGroupModel: Identifiable, Hashable {

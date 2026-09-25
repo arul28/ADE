@@ -300,25 +300,9 @@ struct HubScreen: View {
       }
       .safeAreaInset(edge: .bottom, spacing: 0) {
         if canShowProjects {
-          VStack(spacing: 0) {
-            LinearGradient(
-              colors: [
-                ADEColor.pageBackground.opacity(0),
-                ADEColor.pageBackground.opacity(0.96)
-              ],
-              startPoint: .top,
-              endPoint: .bottom
-            )
-            .frame(height: 14)
-            .allowsHitTesting(false)
-
-            HubInlineComposer(expanded: $composerExpanded, onCreated: handleCreated)
-          }
-          .background(
-            ADEColor.pageBackground
-              .opacity(0.96)
-              .ignoresSafeArea(edges: .bottom)
-          )
+          // No band behind it: the glass composer floats over the list, which
+          // scrolls under it edge to edge.
+          HubInlineComposer(expanded: $composerExpanded, onCreated: handleCreated)
         }
       }
     }

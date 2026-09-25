@@ -343,7 +343,6 @@ final class WorkCardExpansionTests: XCTestCase {
     let grouped = collapseConsecutiveWorkToolEntries([
       userMessage("msg-1", turnId: "turn-orphan"),
       toolCard(id: "read-orphan", toolName: "Read", argsText: #"{"file_path":"README.md"}"#),
-      turnSeparator(),
       userMessage("msg-2", turnId: "turn-2"),
       toolCard(id: "read-2", toolName: "Read", argsText: #"{"file_path":"main.swift"}"#),
       turnEnd("turn-2", id: "end-2"),
@@ -368,7 +367,6 @@ final class WorkCardExpansionTests: XCTestCase {
     let grouped = collapseConsecutiveWorkToolEntries([
       userMessage("msg-1", turnId: "turn-orphan"),
       fileChange(id: "orphan", path: "src/app.ts", diff: "+one"),
-      turnSeparator(),
       userMessage("msg-2", turnId: "turn-2"),
       fileChange(id: "later", path: "src/app.ts", diff: "+two\n+three"),
       turnEnd("turn-2", id: "end-2"),
@@ -477,15 +475,8 @@ final class WorkCardExpansionTests: XCTestCase {
       id: id,
       timestamp: "2026-01-01T00:00:00.000Z",
       rank: 0,
-      payload: .usageSummary(
-        WorkUsageSummary(
-          turnCount: 1,
-          inputTokens: 0,
-          outputTokens: 0,
-          cacheReadTokens: 0,
-          cacheCreationTokens: 0,
-          costUsd: 0
-        )
+      payload: .turnFold(
+        WorkTurnFoldModel(id: id, turnId: id, isExpanded: false, status: "completed", durationLabel: nil)
       )
     )
   }
@@ -544,22 +535,6 @@ final class WorkCardExpansionTests: XCTestCase {
           timestamp: "2026-01-01T00:00:00.000Z",
           exitCode: 0,
           durationMs: 1200
-        )
-      )
-    )
-  }
-
-  private func turnSeparator(id: String = "sep-1") -> WorkTimelineEntry {
-    WorkTimelineEntry(
-      id: id,
-      timestamp: "2026-01-01T00:00:00.000Z",
-      rank: 0,
-      payload: .turnSeparator(
-        WorkTurnSeparator(
-          time: "12:00",
-          provider: "claude",
-          modelLabel: "Opus",
-          modelId: nil
         )
       )
     )

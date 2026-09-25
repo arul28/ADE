@@ -38,36 +38,122 @@ struct WorkToolStatusGlyph: View {
   }
 }
 
+/// The one row a finished turn's intermediate work folds into (desktop
+/// `TurnFoldRow`): a plain inline caption, no box —
+/// `Worked for 4m 12s · 🔧 18 tools · ± 3 files · 🤖 2 subagents · $ 5 jobs (1 failed) · 🌐 4 sources ›`.
+/// Opening it reveals the folded rows below in their original order and a
+/// `🔧 18 tools ›  ± 3 files ›` line that opens the turn's activity sheet.
 struct WorkTurnFoldRow: View {
   let model: WorkTurnFoldModel
+  var fileStat: (count: Int, additions: Int, deletions: Int)? = nil
+  var onOpenActivity: (() -> Void)? = nil
   let onToggle: () -> Void
 
+  private struct Count: Identifiable {
+    let id: String
+    let icon: String
+    let iconTint: Color
+    let text: String
+    var tone: Color? = nil
+  }
+
+  private var counts: [Count] {
+    var result: [Count] = []
+    if model.toolCount > 0 {
+      result.append(Count(id: "tools", icon: "wrench.fill", iconTint: Color(red: 0.49, green: 0.83, blue: 0.99).opacity(0.7), text: workPluralCount(model.toolCount, "tool")))
+    }
+    if model.fileCount > 0 {
+      result.append(Count(id: "files", icon: "plusminus", iconTint: ADEColor.success.opacity(0.75), text: workPluralCount(model.fileCount, "file")))
+    }
+    if model.subagentCount > 0 {
+      result.append(Count(id: "subagents", icon: "cpu", iconTint: ADEColor.purpleAccent.opacity(0.7), text: workPluralCount(model.subagentCount, "subagent")))
+    }
+    if model.jobCount > 0 {
+      let failed = model.failedJobCount > 0
+      result.append(Count(
+        id: "jobs",
+        icon: "terminal",
+        iconTint: failed ? ADEColor.danger.opacity(0.85) : ADEColor.warning.opacity(0.7),
+        text: model.jobLabel,
+        tone: failed ? ADEColor.danger.opacity(0.85) : nil
+      ))
+    }
+    if model.sourceCount > 0 {
+      result.append(Count(id: "sources", icon: "globe", iconTint: Color(red: 0.4, green: 0.91, blue: 0.98).opacity(0.7), text: workPluralCount(model.sourceCount, "source")))
+    }
+    return result
+  }
+
+  private var showsWorkLine: Bool {
+    model.isExpanded && onOpenActivity != nil && (model.toolCount > 0 || (fileStat?.count ?? 0) > 0)
+  }
+
   var body: some View {
-    Button(action: onToggle) {
-      HStack(spacing: 8) {
-        Image(systemName: "clock.arrow.circlepath")
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(width: 16)
-        Text(model.label)
-          .font(.footnote.weight(.medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        Spacer(minLength: 6)
-        Image(systemName: model.isExpanded ? "chevron.down" : "chevron.right")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
+    VStack(alignment: .leading, spacing: 0) {
+      Button(action: onToggle) {
+        HStack(spacing: 5) {
+          Text(model.head).layoutPriority(1)
+          ForEach(counts) { count in
+            HStack(spacing: 3) {
+              Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
+              Image(systemName: count.icon)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(count.iconTint)
+              Text(count.text)
+                .foregroundStyle(count.tone ?? ADEColor.textMuted)
+            }
+          }
+          Image(systemName: model.isExpanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 7, weight: .bold))
+          Spacer(minLength: 0)
+        }
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
       }
-      .padding(.horizontal, 12)
-      .frame(minHeight: 42)
+      .buttonStyle(.plain)
+      .accessibilityLabel(model.label)
+      .accessibilityHint(model.isExpanded ? "Hides the work from this turn." : "Shows the work from this turn.")
+      if showsWorkLine, let onOpenActivity {
+        HStack(spacing: 12) {
+          if model.toolCount > 0 {
+            workToggle(onOpenActivity) {
+              Image(systemName: "wrench.fill").font(.system(size: 9, weight: .bold))
+              Text("\(model.toolCount)").monospacedDigit()
+              Text(model.toolCount == 1 ? "tool" : "tools")
+            }
+          }
+          if let fileStat, fileStat.count > 0 {
+            workToggle(onOpenActivity) {
+              Image(systemName: "plusminus").font(.system(size: 9, weight: .bold))
+              Text("\(fileStat.count) \(fileStat.count == 1 ? "file" : "files") changed")
+              if fileStat.additions > 0 { Text("+\(fileStat.additions)").monospacedDigit().foregroundStyle(ADEColor.success.opacity(0.85)) }
+              if fileStat.deletions > 0 { Text("−\(fileStat.deletions)").monospacedDigit().foregroundStyle(ADEColor.danger.opacity(0.85)) }
+            }
+          }
+        }
+        .padding(.leading, 4)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func workToggle<Label: View>(_ action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
+    Button(action: action) {
+      HStack(spacing: 3) {
+        label()
+        Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold)).opacity(0.7)
+      }
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textSecondary)
+      .lineLimit(1)
+      .frame(minHeight: 44)
       .contentShape(Rectangle())
-      .background(ADEColor.cardBackground.opacity(0.32), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(model.label)
-    .accessibilityHint(model.isExpanded ? "Double tap to hide turn details." : "Double tap to show turn details.")
   }
 }
 
@@ -2944,17 +3030,17 @@ struct WorkComposerBadgeCapsule<Content: View>: View {
       HStack(spacing: spacing) {
         content()
         Image(systemName: "chevron.up")
-          .font(.system(size: 10, weight: .bold))
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
       }
       .foregroundStyle(tint)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(ADEColor.cardBackground.opacity(0.76), in: Capsule(style: .continuous))
+      .padding(.horizontal, 10)
+      .frame(minHeight: workChatComposerChipRowHeight)
+      .workChatGlass(in: Capsule(style: .continuous), interactive: true)
       .overlay(
         Capsule(style: .continuous)
-          .stroke(tint.opacity(strokeOpacity), lineWidth: 1)
+          .stroke(tint.opacity(strokeOpacity), lineWidth: 0.75)
       )
-      .frame(minHeight: 44)
       .contentShape(Capsule(style: .continuous))
     }
     .buttonStyle(.plain)
@@ -2984,9 +3070,7 @@ struct WorkChatInfoActivePopup: View {
         .font(.system(size: 13, weight: .semibold))
       Text("\(count)")
         .font(.caption2.weight(.bold).monospacedDigit())
-        .padding(.horizontal, 6)
-        .padding(.vertical, 2)
-        .background(ADEColor.accent.opacity(0.14), in: Capsule(style: .continuous))
+        .foregroundStyle(ADEColor.textPrimary)
     }
   }
 }
@@ -3281,161 +3365,146 @@ struct WorkChatInfoDetailsSheet: View {
     }
     NavigationStack {
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: 16) {
+        LazyVStack(alignment: .leading, spacing: 0) {
           if isEmpty {
-            ADEEmptyStateView(
-              symbol: "info.circle",
-              title: "No chat info",
-              message: "Subagents, background commands, and scheduled work will appear here."
-            )
-            .padding(.top, 24)
+            Text("Nothing here yet. Agents, tasks and sources show up as the chat runs.")
+              .font(.footnote)
+              .foregroundStyle(ADEColor.textMuted)
+              .padding(.vertical, 16)
           } else {
+            // Desktop order (ChatActionsDrawerPanel): tasks, subagents,
+            // background, schedule, sources. A hairline separates sections;
+            // rows sit on the sheet itself.
+            if let taskList {
+              infoSection(first: true) {
+                VStack(alignment: .leading, spacing: 6) {
+                  plainHeader(title: "Tasks", tone: ADEColor.accent, hint: "\(taskList.completedCount)/\(taskList.items.count)")
+                  ForEach(visibleTaskItems) { item in
+                    WorkChatTaskListItemRow(item: item)
+                  }
+                  if !showAllTasks && taskList.items.count > taskPreviewCount {
+                    quietButton("Show \(taskList.items.count - taskPreviewCount) more") { showAllTasks = true }
+                  }
+                }
+              }
+            }
             if !subagents.isEmpty {
-              section(
-                title: "Subagents",
-                hint: sectionHint(
-                  active: subagentPartition.active.count,
-                  earlier: subagentPartition.earlier.count,
-                  hidden: subagentPartition.clearedCount,
-                  running: subagentPartition.active.count { $0.status == .running },
-                  failed: subagentPartition.active.count { $0.status == .failed }
-                ),
-                key: "subagents",
-                collapsible: !subagentPartition.earlier.isEmpty || subagentPartition.active.count > subagentsCap,
-                clearIds: subagentPartition.earlier.map(\.taskId),
-                clearedCount: subagentPartition.clearedCount,
-                allClear: subagentPartition.active.isEmpty && subagentPartition.earlier.isEmpty && subagentPartition.clearedCount > 0
-              ) {
-                scalableSectionBody(title: "Subagents", sectionKey: "subagents", spacing: 6, partition: subagentPartition, visible: visibleSubagents) { snapshot, _ in subagentRow(snapshot) }
+              infoSection(first: taskList == nil) {
+                section(
+                  title: "Subagents",
+                  tone: ADEColor.accent,
+                  hint: sectionHint(
+                    active: subagentPartition.active.count,
+                    earlier: subagentPartition.earlier.count,
+                    hidden: subagentPartition.clearedCount,
+                    running: subagentPartition.active.count { $0.status == .running },
+                    failed: subagentPartition.active.count { $0.status == .failed }
+                  ),
+                  key: "subagents",
+                  collapsible: !subagentPartition.earlier.isEmpty || subagentPartition.active.count > subagentsCap,
+                  clearIds: subagentPartition.earlier.map(\.taskId),
+                  clearedCount: subagentPartition.clearedCount,
+                  allClear: subagentPartition.active.isEmpty && subagentPartition.earlier.isEmpty && subagentPartition.clearedCount > 0
+                ) {
+                  scalableSectionBody(title: "Subagents", sectionKey: "subagents", spacing: 2, partition: subagentPartition, visible: visibleSubagents) { snapshot, _ in subagentRow(snapshot) }
+                }
               }
             }
             if !backgroundItems.isEmpty {
-              section(
-                title: "Background",
-                hint: sectionHint(
-                  active: backgroundPartition.active.count,
-                  earlier: backgroundPartition.earlier.count,
-                  hidden: backgroundPartition.clearedCount,
-                  running: backgroundPartition.active.count { $0.status.lowercased() == "running" },
-                  failed: backgroundPartition.active.count { $0.status.lowercased() == "failed" }
-                ),
-                key: "background",
-                collapsible: !backgroundPartition.earlier.isEmpty || backgroundPartition.active.count > backgroundCap,
-                clearIds: backgroundPartition.earlier.map(\.id),
-                clearedCount: backgroundPartition.clearedCount,
-                allClear: backgroundPartition.active.isEmpty && backgroundPartition.earlier.isEmpty && backgroundPartition.clearedCount > 0
-              ) {
-                scalableSectionBody(title: "Background", sectionKey: "background", spacing: 8, partition: backgroundPartition, visible: visibleBackground) { item, _ in
-                  WorkBackgroundWorkRow(
-                    item: item,
-                    onStop: onStopTask.flatMap { stop in
-                      guard workBackgroundCanStopTask(item), let taskId = item.sourceTaskId else { return nil }
-                      return { Task { await stop(taskId) } }
-                    }
-                  )
+              infoSection(first: taskList == nil && subagents.isEmpty) {
+                section(
+                  title: "Background",
+                  tone: ADEColor.warning,
+                  hint: sectionHint(
+                    active: backgroundPartition.active.count,
+                    earlier: backgroundPartition.earlier.count,
+                    hidden: backgroundPartition.clearedCount,
+                    running: backgroundPartition.active.count { $0.status.lowercased() == "running" },
+                    failed: backgroundPartition.active.count { $0.status.lowercased() == "failed" }
+                  ),
+                  key: "background",
+                  collapsible: !backgroundPartition.earlier.isEmpty || backgroundPartition.active.count > backgroundCap,
+                  clearIds: backgroundPartition.earlier.map(\.id),
+                  clearedCount: backgroundPartition.clearedCount,
+                  allClear: backgroundPartition.active.isEmpty && backgroundPartition.earlier.isEmpty && backgroundPartition.clearedCount > 0
+                ) {
+                  scalableSectionBody(title: "Background", sectionKey: "background", spacing: 2, partition: backgroundPartition, visible: visibleBackground) { item, _ in
+                    WorkBackgroundWorkRow(
+                      item: item,
+                      onStop: onStopTask.flatMap { stop in
+                        guard workBackgroundCanStopTask(item), let taskId = item.sourceTaskId else { return nil }
+                        return { Task { await stop(taskId) } }
+                      }
+                    )
+                  }
                 }
               }
             }
             if !scheduleItems.isEmpty {
-              section(
-                title: "Schedule",
-                hint: sectionHint(
-                  active: schedulePartition.active.count,
-                  earlier: schedulePartition.earlier.count,
-                  hidden: schedulePartition.clearedCount,
-                  running: schedulePartition.active.count { $0.status.lowercased() == "running" },
-                  failed: schedulePartition.active.count { $0.status.lowercased() == "failed" }
-                ),
-                key: "schedule",
-                collapsible: !schedulePartition.earlier.isEmpty || schedulePartition.active.count > scheduleCap,
-                clearIds: schedulePartition.earlier.map(\.id),
-                clearedCount: schedulePartition.clearedCount,
-                allClear: schedulePartition.active.isEmpty && schedulePartition.earlier.isEmpty && schedulePartition.clearedCount > 0,
-                headerAccessory: scheduleHeaderAccessory
-              ) {
-                VStack(alignment: .leading, spacing: 8) {
-                  if let nextWakeLabel {
-                    Label(nextWakeLabel, systemImage: "alarm")
-                      .font(.caption2)
-                      .foregroundStyle(ADEColor.textMuted)
-                  }
-                  scalableSectionBody(title: "Schedule", sectionKey: "schedule", spacing: 8, partition: schedulePartition, visible: visibleSchedule) { item, isEarlier in
-                    if isEarlier && workScheduleItemIsFiredOneShotWakeup(item) {
-                      WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
-                    } else {
-                      WorkScheduledWorkRow(
-                        item: item,
-                        schedulesPaused: scheduledWorkPaused && !isEarlier,
-                        onCancel: onCancelScheduledWork.map { cancel in
-                          { await cancel(item) }
-                        }
-                      )
+              infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty) {
+                section(
+                  title: "Schedule",
+                  tone: ADEColor.success,
+                  hint: sectionHint(
+                    active: schedulePartition.active.count,
+                    earlier: schedulePartition.earlier.count,
+                    hidden: schedulePartition.clearedCount,
+                    running: schedulePartition.active.count { $0.status.lowercased() == "running" },
+                    failed: schedulePartition.active.count { $0.status.lowercased() == "failed" }
+                  ),
+                  key: "schedule",
+                  collapsible: !schedulePartition.earlier.isEmpty || schedulePartition.active.count > scheduleCap,
+                  clearIds: schedulePartition.earlier.map(\.id),
+                  clearedCount: schedulePartition.clearedCount,
+                  allClear: schedulePartition.active.isEmpty && schedulePartition.earlier.isEmpty && schedulePartition.clearedCount > 0,
+                  headerAccessory: scheduleHeaderAccessory
+                ) {
+                  VStack(alignment: .leading, spacing: 4) {
+                    if let nextWakeLabel {
+                      Label(nextWakeLabel, systemImage: "alarm")
+                        .font(.caption2)
+                        .foregroundStyle(ADEColor.textMuted)
+                    }
+                    scalableSectionBody(title: "Schedule", sectionKey: "schedule", spacing: 2, partition: schedulePartition, visible: visibleSchedule) { item, isEarlier in
+                      if isEarlier && workScheduleItemIsFiredOneShotWakeup(item) {
+                        WorkScheduledWorkRow(item: item).opacity(0.55).allowsHitTesting(false)
+                      } else {
+                        WorkScheduledWorkRow(
+                          item: item,
+                          schedulesPaused: scheduledWorkPaused && !isEarlier,
+                          onCancel: onCancelScheduledWork.map { cancel in
+                            { await cancel(item) }
+                          }
+                        )
+                      }
                     }
                   }
                 }
               }
             }
-            if let taskList {
-              VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                  Text("Tasks")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ADEColor.textMuted)
-                    .textCase(.uppercase)
-                  Spacer()
-                  Text("\(taskList.completedCount)/\(taskList.items.count)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(ADEColor.textMuted)
-                }
-                ForEach(visibleTaskItems) { item in
-                  WorkChatTaskListItemRow(item: item)
-                }
-                if !showAllTasks && taskList.items.count > taskPreviewCount {
-                  Button("Show \(taskList.items.count - taskPreviewCount) more") {
-                    showAllTasks = true
-                  }
-                  .font(.caption.weight(.medium))
-                  .foregroundStyle(ADEColor.textMuted)
-                  .frame(minHeight: 44, alignment: .leading)
-                }
-              }
-              .padding(.top, 4)
-            }
             if !sourceRefs.isEmpty || omittedSourceRefCount > 0 {
-              VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                  Text("Sources")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(ADEColor.textMuted)
-                    .textCase(.uppercase)
-                  Spacer()
-                  Text("\(sourceRefs.count + omittedSourceRefCount)")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(ADEColor.textMuted)
-                }
-                ForEach(Array(visibleSourceRefs), id: \.self) { source in
-                  WorkChatSourceRowView(source: source, faviconDataURL: sourceFavicon(for: source))
-                }
-                if !showAllSources && sourceRefs.count > sourcePreviewCount {
-                  Button("Show \(sourceRefs.count - sourcePreviewCount) more") {
-                    showAllSources = true
+              infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty) {
+                VStack(alignment: .leading, spacing: 6) {
+                  plainHeader(title: "Sources", tone: ADEColor.textMuted, hint: "\(sourceRefs.count + omittedSourceRefCount)")
+                  ForEach(Array(visibleSourceRefs), id: \.self) { source in
+                    WorkChatSourceRowView(source: source, faviconDataURL: sourceFavicon(for: source))
                   }
-                  .font(.caption.weight(.medium))
-                  .foregroundStyle(ADEColor.textMuted)
-                  .frame(minHeight: 44, alignment: .leading)
-                }
-                if omittedSourceRefCount > 0 {
-                  Text("\(omittedSourceRefCount) additional source references were omitted from mobile sync.")
-                    .font(.caption2)
-                    .foregroundStyle(ADEColor.textMuted)
-                    .fixedSize(horizontal: false, vertical: true)
+                  if !showAllSources && sourceRefs.count > sourcePreviewCount {
+                    quietButton("Show \(sourceRefs.count - sourcePreviewCount) more") { showAllSources = true }
+                  }
+                  if omittedSourceRefCount > 0 {
+                    Text("\(omittedSourceRefCount) additional source references were omitted from mobile sync.")
+                      .font(.caption2)
+                      .foregroundStyle(ADEColor.textMuted)
+                      .fixedSize(horizontal: false, vertical: true)
+                  }
                 }
               }
-              .padding(.top, 4)
             }
           }
         }
-        .padding(16)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 16)
       }
       .scrollIndicators(.hidden)
       .background(workChatCanvasBackground.ignoresSafeArea())
@@ -3509,7 +3578,7 @@ struct WorkChatInfoDetailsSheet: View {
     visible: (visible: [Item], hiddenCount: Int),
     @ViewBuilder row: @escaping (Item, _ isEarlier: Bool) -> Row
   ) -> some View {
-    VStack(spacing: spacing) {
+    VStack(alignment: .leading, spacing: spacing) {
       if partition.active.isEmpty && partition.earlier.isEmpty && partition.clearedCount > 0 { allClearRow(title) }
       ForEach(visible.visible) { item in row(item, false) }
       showAllButton(section: sectionKey, hiddenCount: visible.hiddenCount)
@@ -3521,9 +3590,56 @@ struct WorkChatInfoDetailsSheet: View {
     }
   }
 
+  /// One sheet section: a hairline above it (none for the first) and even
+  /// vertical rhythm. Rows inside sit on the sheet background, no cards.
+  @ViewBuilder
+  private func infoSection<Content: View>(first: Bool, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      if !first {
+        Rectangle()
+          .fill(ADEColor.border.opacity(0.35))
+          .frame(height: 0.5)
+      }
+      content()
+        .padding(.vertical, 10)
+    }
+  }
+
+  /// Desktop's section label: small uppercase text after a tone dot, count on
+  /// the right.
+  private func headerLabel(title: String, tone: Color) -> some View {
+    HStack(spacing: 6) {
+      Circle().fill(tone).frame(width: 5, height: 5)
+      Text(title)
+        .font(.caption2.weight(.semibold))
+        .tracking(0.6)
+        .textCase(.uppercase)
+    }
+    .foregroundStyle(ADEColor.textMuted)
+  }
+
+  private func plainHeader(title: String, tone: Color, hint: String) -> some View {
+    HStack {
+      headerLabel(title: title, tone: tone)
+      Spacer(minLength: 0)
+      Text(hint)
+        .font(.caption2.weight(.semibold).monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .frame(minHeight: 32)
+  }
+
+  private func quietButton(_ title: String, action: @escaping () -> Void) -> some View {
+    Button(title, action: action)
+      .font(.caption.weight(.medium))
+      .foregroundStyle(ADEColor.textMuted)
+      .frame(minHeight: 36, alignment: .leading)
+  }
+
   @ViewBuilder
   private func section<Content: View>(
     title: String,
+    tone: Color,
     hint: String,
     key: String,
     collapsible: Bool,
@@ -3534,7 +3650,7 @@ struct WorkChatInfoDetailsSheet: View {
     @ViewBuilder content: () -> Content
   ) -> some View {
     let collapsed = collapsible && paneFlag("collapsed", section: key)
-    VStack(alignment: .leading, spacing: 8) {
+    VStack(alignment: .leading, spacing: 4) {
       HStack(spacing: 8) {
         if collapsible {
           Button {
@@ -3542,26 +3658,23 @@ struct WorkChatInfoDetailsSheet: View {
           } label: {
             HStack(spacing: 6) {
               Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                .font(.caption2.bold())
-              Text(title)
-                .font(.caption.weight(.semibold))
-                .textCase(.uppercase)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(ADEColor.textMuted)
+              headerLabel(title: title, tone: tone)
               Spacer(minLength: 0)
-              Text(hint).font(.caption2.weight(.semibold))
+              Text(hint)
+                .font(.caption2.weight(.semibold).monospacedDigit())
+                .foregroundStyle(ADEColor.textMuted)
             }
-            .foregroundStyle(ADEColor.textMuted)
             .contentShape(.rect)
           }
           .buttonStyle(.plain)
-          .frame(maxWidth: .infinity, minHeight: 44)
+          .frame(maxWidth: .infinity, minHeight: 36)
         } else {
-          Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-            .textCase(.uppercase)
+          headerLabel(title: title, tone: tone)
           Spacer(minLength: 0)
           Text(allClear ? "all clear" : hint)
-            .font(.caption2.weight(.semibold))
+            .font(.caption2.weight(.semibold).monospacedDigit())
             .foregroundStyle(ADEColor.textMuted)
         }
         if allClear {
@@ -3577,6 +3690,7 @@ struct WorkChatInfoDetailsSheet: View {
           headerAccessory
         }
       }
+      .frame(minHeight: 36)
       if !collapsed { content() }
     }
   }
@@ -3606,7 +3720,7 @@ struct WorkChatInfoDetailsSheet: View {
       .buttonStyle(.plain)
       .font(.caption)
       .foregroundStyle(ADEColor.textMuted)
-      .frame(minHeight: 44)
+      .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
     }
   }
 
@@ -3662,6 +3776,27 @@ private struct WorkSquareStopButton: View {
   }
 }
 
+/// Chat Info status for a subagent: a small spinner while running, else one
+/// short word in the status tint (desktop's row tail).
+private struct WorkChatInfoStatusMark: View {
+  let status: WorkSubagentSnapshot.Status
+
+  var body: some View {
+    switch status {
+    case .running:
+      ProgressView()
+        .controlSize(.mini)
+        .accessibilityLabel("Running")
+    case .succeeded:
+      Text("done").font(.caption2.weight(.semibold)).foregroundStyle(ADEColor.success)
+    case .failed:
+      Text("failed").font(.caption2.weight(.semibold)).foregroundStyle(ADEColor.danger)
+    case .stopped:
+      Text("stopped").font(.caption2.weight(.semibold)).foregroundStyle(ADEColor.textMuted)
+    }
+  }
+}
+
 private struct WorkChatInfoSubagentRow: View {
   let snapshot: WorkSubagentSnapshot
   let expanded: Bool
@@ -3679,9 +3814,6 @@ private struct WorkChatInfoSubagentRow: View {
   }
   private var lastToolName: String? { trimmedNonEmpty(snapshot.lastToolName) }
   private var filePaths: [String] { workSubagentResourcePaths(snapshot) }
-  private var showsDisclosure: Bool {
-    snapshot.status == .running || detailText != nil || lastToolName != nil
-  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -3711,21 +3843,21 @@ private struct WorkChatInfoSubagentRow: View {
                   .lineLimit(1)
               }
             }
-            if snapshot.background {
-              WorkSubagentTinyChip(text: "background", tint: ADEColor.textMuted)
-            }
-            if snapshot.spawnKind == .peer {
-              WorkSubagentTinyChip(text: "peer", tint: ADEColor.textMuted)
-            }
             Spacer(minLength: 0)
-            HStack(spacing: 8) {
-              WorkSubagentStatusChip(status: snapshot.status)
-              if showsDisclosure {
-                Image(systemName: "chevron.right")
-                  .font(.system(size: 12, weight: .bold))
+            HStack(spacing: 6) {
+              if snapshot.background {
+                Text("bg")
+                  .font(.caption2.weight(.medium))
                   .foregroundStyle(ADEColor.textMuted)
               }
+              if snapshot.spawnKind == .peer {
+                Text("peer")
+                  .font(.caption2.weight(.medium))
+                  .foregroundStyle(ADEColor.textMuted)
+              }
+              WorkChatInfoStatusMark(status: snapshot.status)
             }
+            .fixedSize()
           }
 
           if expanded, detailText != nil || lastToolName != nil {
@@ -3745,23 +3877,16 @@ private struct WorkChatInfoSubagentRow: View {
             .padding(.leading, 34)
           }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
-        .background(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(ADEColor.cardBackground.opacity(0.52))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 1)
-        )
+        .padding(.vertical, 7)
+        .contentShape(.rect)
       }
       .buttonStyle(.plain)
-      .overlay(alignment: .topTrailing) {
+      // The stop button is the row's last element, beside the status, never on
+      // top of it; its reserved width keeps the status column aligned.
+      .padding(.trailing, onStop == nil ? 0 : 40)
+      .overlay(alignment: .trailing) {
         if let onStop {
           WorkSquareStopButton(label: workSubagentStopLabel(snapshot), action: onStop)
-            .padding(.top, 8)
-            .padding(.trailing, 8)
         }
       }
 
@@ -3888,12 +4013,10 @@ private struct WorkBackgroundWorkRow: View {
             .lineLimit(expanded ? nil : 1)
             .truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
-          Text(workScheduledWorkStatusLabel(status))
+          Text(workScheduledWorkStatusLabel(status).lowercased())
             .font(.caption2.weight(.semibold))
             .foregroundStyle(tint)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+            .fixedSize()
         }
         if expanded {
           VStack(alignment: .leading, spacing: 6) {
@@ -3915,19 +4038,14 @@ private struct WorkBackgroundWorkRow: View {
           }
         }
       }
-      .padding(12)
-      .background(ADEColor.cardBackground.opacity(0.76), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(tint.opacity(0.18), lineWidth: 0.8)
-      )
+      .padding(.vertical, 8)
+      .contentShape(.rect)
     }
     .buttonStyle(.plain)
-    .overlay(alignment: .topTrailing) {
+    .padding(.trailing, onStop == nil ? 0 : 40)
+    .overlay(alignment: .trailing) {
       if let onStop {
         WorkSquareStopButton(label: "Stop \(item.title)", action: onStop)
-          .padding(.top, 8)
-          .padding(.trailing, 8)
       }
     }
   }
@@ -3987,12 +4105,10 @@ private struct WorkScheduledWorkRow: View {
           }
         }
         Spacer(minLength: 0)
-        Text(workScheduledWorkStatusLabel(status))
+        Text(workScheduledWorkStatusLabel(status).lowercased())
           .font(.caption2.weight(.semibold))
           .foregroundStyle(tint)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 3)
-          .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+          .fixedSize()
         if let onCancel, item.cancellable == true, workScheduledWorkIsActive(item) {
           Button {
             guard !cancellationInFlight else { return }
@@ -4027,12 +4143,7 @@ private struct WorkScheduledWorkRow: View {
           .lineLimit(3)
       }
     }
-    .padding(12)
-    .background(ADEColor.cardBackground.opacity(0.76), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(tint.opacity(0.18), lineWidth: 0.8)
-    )
+    .padding(.vertical, 8)
     // Paused schedules read as inactive (matches desktop's dimmed row).
     .opacity(schedulesPaused || workScheduledWorkIsPaused(status) ? 0.55 : 1)
   }
@@ -4117,30 +4228,6 @@ func workScheduledWorkIsPaused(_ status: String) -> Bool {
   status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "paused"
 }
 
-private struct WorkSubagentStatusChip: View {
-  let status: WorkSubagentSnapshot.Status
-
-  var body: some View {
-    Text(workSubagentStatusLabel(status))
-      .font(.caption2.weight(.semibold))
-      .foregroundStyle(tint)
-      .lineLimit(1)
-      .fixedSize(horizontal: true, vertical: false)
-      .padding(.horizontal, 7)
-      .padding(.vertical, 3)
-      .background(tint.opacity(0.13), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(tint.opacity(0.28), lineWidth: 0.75)
-      )
-      .accessibilityLabel(workSubagentStatusLabel(status))
-  }
-
-  private var tint: Color {
-    workSubagentStatusTint(status)
-  }
-}
-
 private struct WorkSubagentGlyph: View {
   let id: String
   let status: WorkSubagentSnapshot.Status
@@ -4186,15 +4273,6 @@ private func workStableSubagentHash(_ value: String) -> Int {
 private func workSubagentGlyphBit(id: String, index: Int) -> Bool {
   let hash = UInt(bitPattern: workStableSubagentHash("\(id):\(index)"))
   return hash % 3 != 0
-}
-
-private func workSubagentStatusLabel(_ status: WorkSubagentSnapshot.Status) -> String {
-  switch status {
-  case .running: return "Running"
-  case .succeeded: return "Done"
-  case .failed: return "Failed"
-  case .stopped: return "Stopped"
-  }
 }
 
 private func workSubagentStatusTint(_ status: WorkSubagentSnapshot.Status) -> Color {
@@ -4251,25 +4329,23 @@ struct WorkSubagentTimelineRowView: View {
     switch row.kind {
     case .backgroundCommand:
       WorkSubagentBackgroundChipRow(row: row)
-    case .spawn:
-      // The stop button is a layout sibling inside the row's own HStack, not a
-      // trailing overlay: an overlay takes no space and landed on top of the
-      // status capsule the row already put at the trailing edge.
-      WorkSubagentSpawnRow(row: row, stopAction: spawnStopAction)
-    case .result:
-      WorkSubagentResultRow(row: row)
+    case .spawn, .result:
+      // A lone card is a grid of one (desktop `SubagentCardGrid`), so a card
+      // joining it keeps the first one where it was.
+      WorkSubagentTimelineGridView(model: WorkSubagentTimelineGrid(id: row.id, rows: [row]), onStop: onStop)
     }
-  }
-
-  private var spawnStopAction: (() -> Void)? {
-    guard let onStop, workSubagentCanStopTask(row.snapshot) else { return nil }
-    return { Task { await onStop(row.snapshot) } }
   }
 }
 
-/// Three-column mobile counterpart to the desktop card grid. Six tracks let an
-/// incomplete final row expand evenly (one card spans all six, two cards span
-/// three each) while keeping the grid lazy for long-running chats.
+/// Mobile counterpart to the desktop card grid (`SubagentCardGrid`): up to
+/// three tiles per line, at desktop's width breakpoints — one column on a
+/// phone (desktop goes to two only from 472px), three on a regular-width
+/// screen. A short last line stretches its tiles across the full width. Lines
+/// are laid out lazily so long-running chats stay cheap.
+///
+/// Built from lines of equal-width tiles rather than `LazyVGrid` +
+/// `gridCellColumns`: `LazyVGrid` ignores `gridCellColumns` (it only applies
+/// inside `Grid`), which gave every tile a single narrow track.
 struct WorkSubagentTimelineGridView: View {
   let model: WorkSubagentTimelineGrid
   var onStop: (@MainActor (WorkSubagentSnapshot) async -> Void)? = nil
@@ -4280,46 +4356,31 @@ struct WorkSubagentTimelineGridView: View {
     workSubagentGridColumnsPerRow(isCompactWidth: horizontalSizeClass != .regular)
   }
 
-  private var trackCount: Int { columnsPerRow * 2 }
-
-  private var columns: [GridItem] {
-    Array(repeating: GridItem(.flexible(minimum: 60), spacing: 8), count: trackCount)
-  }
-
   var body: some View {
-    let columnsPerRow = self.columnsPerRow
-    let trackCount = self.trackCount
-    LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
-      ForEach(Array(model.rows.enumerated()), id: \.element.id) { index, row in
-        WorkSubagentTimelineGridTile(row: row, onStop: onStop)
-          .gridCellColumns(workSubagentGridCellColumnSpan(
-            index: index,
-            rowCount: model.rows.count,
-            columnsPerRow: columnsPerRow,
-            trackCount: trackCount
-          ))
+    let lines = workSubagentGridLines(count: model.rows.count, columnsPerRow: columnsPerRow)
+    LazyVStack(alignment: .leading, spacing: 8) {
+      ForEach(lines, id: \.lowerBound) { line in
+        HStack(alignment: .top, spacing: 8) {
+          ForEach(model.rows[line], id: \.id) { row in
+            WorkSubagentTimelineGridTile(row: row, onStop: onStop)
+              .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          }
+        }
       }
     }
   }
 }
 
 func workSubagentGridColumnsPerRow(isCompactWidth: Bool) -> Int {
-  isCompactWidth ? 2 : 3
+  isCompactWidth ? 1 : 3
 }
 
-func workSubagentGridCellColumnSpan(
-  index: Int,
-  rowCount: Int,
-  columnsPerRow: Int,
-  trackCount: Int
-) -> Int {
-  guard rowCount > 0, columnsPerRow > 0, trackCount > 0 else { return 1 }
-  let cellSpan = max(1, trackCount / columnsPerRow)
-  let remainder = rowCount % columnsPerRow
-  // A grid that is only a short row keeps one cell wide. A short final row
-  // after a full row stretches across the track.
-  guard remainder > 0, rowCount > columnsPerRow, index >= rowCount - remainder else { return cellSpan }
-  return max(1, trackCount / remainder)
+/// Index ranges of the grid's lines: `columnsPerRow` tiles each, the last
+/// line holding the remainder.
+func workSubagentGridLines(count: Int, columnsPerRow: Int) -> [Range<Int>] {
+  guard count > 0 else { return [] }
+  let perLine = max(1, columnsPerRow)
+  return stride(from: 0, to: count, by: perLine).map { $0..<min(count, $0 + perLine) }
 }
 
 private func workTrimmedSubagentProvider(_ value: String?) -> String? {
@@ -4395,6 +4456,7 @@ private struct WorkSubagentTimelineGridTile: View {
         }
       }
       .font(.system(size: 9, weight: .semibold))
+      .lineLimit(1)
       if let summary = workSubagentResultSummaryText(row) {
         Text(summary)
           .font(.system(size: 10))
@@ -4524,133 +4586,6 @@ struct WorkSubagentStoppedGroupCardView: View {
   }
 }
 
-/// Glyph · name · status, and nothing else. A phone row has roughly 60pt left
-/// after the fixed-width chips desktop can afford, which collapsed the name to a
-/// bare "…". The agent-type and `background` chips live in the Chat Info roster
-/// row instead, which has a second line and no width pressure; background-ness
-/// is already carried here by the glyph tint.
-private struct WorkSubagentSpawnRow: View {
-  let row: WorkSubagentTimelineRow
-  /// Non-nil only while the task is running and stoppable. It replaces the
-  /// status capsule rather than sitting on top of it — desktop's
-  /// open / stop / jump-to-result ladder (SubagentActivityCards.tsx).
-  var stopAction: (() -> Void)? = nil
-
-  private var snapshot: WorkSubagentSnapshot { row.snapshot }
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
-      if let provider = workTrimmedSubagentProvider(snapshot.provider) {
-        WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 18)
-          .accessibilityLabel("\(workChatSurfaceProviderName(provider)) child")
-      }
-      Text(workSubagentMeaningfulName(snapshot))
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      if let stopAction {
-        WorkSquareStopButton(label: workSubagentStopLabel(snapshot), action: stopAction)
-      } else {
-        WorkSubagentStatusChip(status: snapshot.status)
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .adeGlassCard(cornerRadius: 12, padding: 0)
-    .contentShape(Rectangle())
-  }
-}
-
-private struct WorkSubagentResultRow: View {
-  let row: WorkSubagentTimelineRow
-
-  private var snapshot: WorkSubagentSnapshot { row.snapshot }
-
-  private var tint: Color {
-    switch snapshot.status {
-    case .running: return ADEColor.accent
-    case .succeeded: return ADEColor.success
-    case .failed: return ADEColor.danger
-    // Stopped is an interruption, not a hard failure — amber, never a red block.
-    case .stopped: return ADEColor.warning
-    }
-  }
-
-  private var statusLine: String {
-    switch snapshot.status {
-    case .stopped: return workSubagentStoppedStatusLine(snapshot)
-    case .failed: return "failed"
-    case .succeeded: return "completed"
-    case .running: return "running"
-    }
-  }
-
-  private var durationLabel: String? {
-    workSubagentDurationLabel(snapshot)
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 10) {
-        WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
-        if let provider = workTrimmedSubagentProvider(snapshot.provider) {
-          WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 18)
-            .accessibilityLabel("\(workChatSurfaceProviderName(provider)) child")
-        }
-        Text(workSubagentMeaningfulName(snapshot))
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        Spacer(minLength: 6)
-        WorkSubagentStatusChip(status: snapshot.status)
-      }
-      HStack(spacing: 6) {
-        Text(statusLine)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(tint)
-        if let durationLabel {
-          Text("· \(durationLabel)")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
-      if let summary = workSubagentResultSummaryText(row) {
-        Text(summary)
-          .font(.caption)
-          .foregroundStyle(snapshot.status == .failed ? ADEColor.danger : ADEColor.textSecondary)
-          .lineLimit(2)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      if snapshot.status == .stopped {
-        VStack(alignment: .leading, spacing: 2) {
-          if let lastActivity = snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines), !lastActivity.isEmpty {
-            Text(lastActivity)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-              .truncationMode(.tail)
-          }
-          Text(workSubagentStoppedOutcomeLabel(snapshot))
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
-        }
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .adeGlassCard(cornerRadius: 12, padding: 0)
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(tint.opacity(0.16), lineWidth: 0.8)
-    )
-    .contentShape(Rectangle())
-  }
-}
-
 private struct WorkSubagentBackgroundChipRow: View {
   let row: WorkSubagentTimelineRow
 
@@ -4691,22 +4626,6 @@ private struct WorkSubagentBackgroundChipRow: View {
     .padding(.horizontal, 10)
     .padding(.vertical, 6)
     .adeGlassCard(cornerRadius: 10, padding: 0)
-  }
-}
-
-private struct WorkSubagentTinyChip: View {
-  let text: String
-  let tint: Color
-
-  var body: some View {
-    Text(text)
-      .font(.caption2.weight(.semibold))
-      .foregroundStyle(tint)
-      .lineLimit(1)
-      .fixedSize(horizontal: true, vertical: false)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 2)
-      .background(tint.opacity(0.12), in: Capsule(style: .continuous))
   }
 }
 

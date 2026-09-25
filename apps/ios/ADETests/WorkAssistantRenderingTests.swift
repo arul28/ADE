@@ -6,14 +6,15 @@ final class WorkAssistantRenderingTests: XCTestCase {
     let compactColumns = workSubagentGridColumnsPerRow(isCompactWidth: true)
     let regularColumns = workSubagentGridColumnsPerRow(isCompactWidth: false)
 
-    XCTAssertEqual(compactColumns, 2)
+    XCTAssertEqual(compactColumns, 1)
     XCTAssertEqual(regularColumns, 3)
-    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 0, rowCount: 1, columnsPerRow: compactColumns, trackCount: 4), 2)
-    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 2, rowCount: 3, columnsPerRow: compactColumns, trackCount: 4), 4)
-    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 3, rowCount: 4, columnsPerRow: compactColumns, trackCount: 4), 2)
-    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 3, rowCount: 4, columnsPerRow: regularColumns, trackCount: 6), 6)
-    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 3, rowCount: 5, columnsPerRow: regularColumns, trackCount: 6), 3)
-    XCTAssertEqual(workSubagentGridCellColumnSpan(index: 4, rowCount: 5, columnsPerRow: regularColumns, trackCount: 6), 3)
+    // Lines of `columnsPerRow` tiles; a short last line keeps the remainder and
+    // its tiles share the full width. A phone is one column.
+    XCTAssertEqual(workSubagentGridLines(count: 0, columnsPerRow: compactColumns), [])
+    XCTAssertEqual(workSubagentGridLines(count: 1, columnsPerRow: compactColumns), [0..<1])
+    XCTAssertEqual(workSubagentGridLines(count: 3, columnsPerRow: compactColumns), [0..<1, 1..<2, 2..<3])
+    XCTAssertEqual(workSubagentGridLines(count: 4, columnsPerRow: compactColumns), [0..<1, 1..<2, 2..<3, 3..<4])
+    XCTAssertEqual(workSubagentGridLines(count: 5, columnsPerRow: regularColumns), [0..<3, 3..<5])
   }
 
   func testSourcesDecodeMapAndAppearInChatInfoSnapshot() throws {

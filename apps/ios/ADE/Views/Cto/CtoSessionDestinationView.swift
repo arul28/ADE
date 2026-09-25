@@ -46,7 +46,6 @@ struct CtoSessionDestinationView: View {
         initialOpeningPrompt: nil,
         initialSession: makeCtoSession(from: summary),
         initialChatSummary: summary,
-        initialTranscript: nil,
         transitionNamespace: nil,
         isLive: isLive,
         navigationChrome: navigationChrome,

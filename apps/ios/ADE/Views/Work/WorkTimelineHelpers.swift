@@ -65,17 +65,52 @@ func buildWorkChatTimelineSnapshot(
     scheduledWorkSnapshots: scheduledWorkSnapshots,
     sourceCountsByTurn: sourceList.countsByTurn
   )
-  let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
-
-  return WorkChatTimelineSnapshot(
+  return makeWorkChatTimelineSnapshot(
     signature: signature,
-    pendingInputs: pendingInputs,
     pendingInputQueue: pendingInputQueue,
     pendingSteers: pendingSteers,
     toolCards: toolCards,
     eventCards: eventCards,
-    commandCards: commandCards,
-    fileChangeCards: fileChangeCards,
+    subagentSnapshots: subagentSnapshots,
+    scheduledWorkSnapshots: scheduledWorkSnapshots,
+    transcriptIndicatesActiveTurn: transcriptIndicatesActiveTurn,
+    transcriptLatestTurnEnded: transcriptLatestTurnEnded,
+    transcriptHasInterruptibleActivity: transcriptHasInterruptibleActivity,
+    latestTranscriptTimestamp: latestTranscriptTimestamp,
+    sourceList: sourceList,
+    taskList: taskList,
+    timeline: timeline
+  )
+}
+
+/// The snapshot from its parts. Shared by `buildWorkChatTimelineSnapshot` and
+/// the thread engine's resumed fold.
+func makeWorkChatTimelineSnapshot(
+  signature: Int,
+  pendingInputQueue: WorkPendingInputQueue,
+  pendingSteers: [WorkPendingSteerModel],
+  toolCards: [WorkToolCardModel],
+  eventCards: [WorkEventCardModel],
+  subagentSnapshots: [WorkSubagentSnapshot],
+  scheduledWorkSnapshots: [WorkScheduledWorkSnapshot],
+  transcriptIndicatesActiveTurn: Bool,
+  transcriptLatestTurnEnded: Bool,
+  transcriptHasInterruptibleActivity: Bool,
+  latestTranscriptTimestamp: String?,
+  sourceList: WorkChatSourceList,
+  taskList: WorkChatTaskListSnapshot?,
+  timeline: [WorkTimelineEntry]
+) -> WorkChatTimelineSnapshot {
+  let latestAssistantTail = latestWorkTimelineAssistantTail(timeline)
+  return WorkChatTimelineSnapshot(
+    signature: signature,
+    pendingInputs: pendingInputQueue.liveItems,
+    pendingInputQueue: pendingInputQueue,
+    pendingSteers: pendingSteers,
+    toolCards: toolCards,
+    eventCards: eventCards,
+    commandCards: [],
+    fileChangeCards: [],
     subagentSnapshots: subagentSnapshots,
     scheduledWorkSnapshots: scheduledWorkSnapshots,
     sourceRefs: sourceList.refs,
@@ -104,10 +139,28 @@ private func workChatTimelineSnapshotSignature(
   /// would never flip between "Failed" and the quiet pause.
   usageLimitTurnId: String?
 ) -> Int {
-  var hasher = Hasher()
-  combineOptional(usageLimitTurnId, into: &hasher)
-  hasher.combine(transcript.count)
+  var fold = WorkTimelineSignatureFold()
   for envelope in transcript {
+    fold.combine(envelope)
+  }
+  return fold.finalize(
+    fallbackEntries: fallbackEntries,
+    artifacts: artifacts,
+    localEchoMessages: localEchoMessages,
+    usageLimitTurnId: usageLimitTurnId
+  )
+}
+
+/// The snapshot signature as a left fold over the transcript, so the thread
+/// engine can keep the hasher state after a prefix and combine only what came
+/// after. Per-envelope content first; the count and every non-transcript input
+/// are combined at `finalize`.
+struct WorkTimelineSignatureFold {
+  private var hasher = Hasher()
+  private(set) var count = 0
+
+  mutating func combine(_ envelope: WorkChatEnvelope) {
+    count += 1
     hasher.combine(envelope.sessionId)
     hasher.combine(envelope.timestamp)
     hasher.combine(envelope.sequence ?? Int.min)
@@ -124,58 +177,69 @@ private func workChatTimelineSnapshotSignature(
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 
-  if transcript.isEmpty {
-    hasher.combine(fallbackEntries.count)
-    for entry in fallbackEntries {
-      hasher.combine(entry.role)
-      combineLongTextSignature(entry.text, into: &hasher)
-      hasher.combine(entry.timestamp)
-      combineOptional(entry.turnId, into: &hasher)
-      combineOptional(entry.messageId, into: &hasher)
-      combineOptional(entry.itemId, into: &hasher)
+  func finalize(
+    fallbackEntries: [AgentChatTranscriptEntry],
+    artifacts: [ComputerUseArtifactSummary],
+    localEchoMessages: [WorkLocalEchoMessage],
+    usageLimitTurnId: String?
+  ) -> Int {
+    var hasher = self.hasher
+    hasher.combine(count)
+    combineOptional(usageLimitTurnId, into: &hasher)
+
+    if count == 0 {
+      hasher.combine(fallbackEntries.count)
+      for entry in fallbackEntries {
+        hasher.combine(entry.role)
+        combineLongTextSignature(entry.text, into: &hasher)
+        hasher.combine(entry.timestamp)
+        combineOptional(entry.turnId, into: &hasher)
+        combineOptional(entry.messageId, into: &hasher)
+        combineOptional(entry.itemId, into: &hasher)
+      }
+    } else {
+      hasher.combine(0)
     }
-  } else {
-    hasher.combine(0)
-  }
 
-  hasher.combine(artifacts.count)
-  for artifact in artifacts {
-    hasher.combine(artifact.id)
-    hasher.combine(artifact.artifactKind)
-    hasher.combine(artifact.backendStyle)
-    hasher.combine(artifact.backendName)
-    combineOptional(artifact.sourceToolName, into: &hasher)
-    combineOptional(artifact.originalType, into: &hasher)
-    hasher.combine(artifact.title)
-    combineOptional(artifact.description, into: &hasher)
-    hasher.combine(artifact.uri)
-    hasher.combine(artifact.storageKind)
-    combineOptional(artifact.mimeType, into: &hasher)
-    combineOptional(artifact.metadataJson, into: &hasher)
-    hasher.combine(artifact.createdAt)
-    hasher.combine(artifact.ownerKind)
-    hasher.combine(artifact.ownerId)
-    hasher.combine(artifact.relation)
-    combineOptional(artifact.reviewState, into: &hasher)
-    combineOptional(artifact.workflowState, into: &hasher)
-    combineOptional(artifact.reviewNote, into: &hasher)
-  }
-
-  hasher.combine(localEchoMessages.count)
-  for echo in localEchoMessages {
-    hasher.combine(echo.id)
-    combineLongTextSignature(echo.text, into: &hasher)
-    hasher.combine(echo.timestamp)
-    combineOptional(echo.deliveryState, into: &hasher)
-    hasher.combine(echo.attachments?.count ?? 0)
-    for attachment in echo.attachments ?? [] {
-      hasher.combine(attachment.path)
-      hasher.combine(attachment.type)
-      combineOptional(attachment.url, into: &hasher)
+    hasher.combine(artifacts.count)
+    for artifact in artifacts {
+      hasher.combine(artifact.id)
+      hasher.combine(artifact.artifactKind)
+      hasher.combine(artifact.backendStyle)
+      hasher.combine(artifact.backendName)
+      combineOptional(artifact.sourceToolName, into: &hasher)
+      combineOptional(artifact.originalType, into: &hasher)
+      hasher.combine(artifact.title)
+      combineOptional(artifact.description, into: &hasher)
+      hasher.combine(artifact.uri)
+      hasher.combine(artifact.storageKind)
+      combineOptional(artifact.mimeType, into: &hasher)
+      combineOptional(artifact.metadataJson, into: &hasher)
+      hasher.combine(artifact.createdAt)
+      hasher.combine(artifact.ownerKind)
+      hasher.combine(artifact.ownerId)
+      hasher.combine(artifact.relation)
+      combineOptional(artifact.reviewState, into: &hasher)
+      combineOptional(artifact.workflowState, into: &hasher)
+      combineOptional(artifact.reviewNote, into: &hasher)
     }
-  }
 
-  return hasher.finalize()
+    hasher.combine(localEchoMessages.count)
+    for echo in localEchoMessages {
+      hasher.combine(echo.id)
+      combineLongTextSignature(echo.text, into: &hasher)
+      hasher.combine(echo.timestamp)
+      combineOptional(echo.deliveryState, into: &hasher)
+      hasher.combine(echo.attachments?.count ?? 0)
+      for attachment in echo.attachments ?? [] {
+        hasher.combine(attachment.path)
+        hasher.combine(attachment.type)
+        combineOptional(attachment.url, into: &hasher)
+      }
+    }
+
+    return hasher.finalize()
+  }
 }
 
 private func combineWorkChatEventSignature(_ event: WorkChatEvent, into hasher: inout Hasher) {
@@ -546,12 +610,15 @@ private func combineCompletionArtifacts(_ artifacts: [WorkCompletionArtifactMode
 private func latestWorkTranscriptTimestamp(_ transcript: [WorkChatEnvelope]) -> String? {
   var latest: String?
   for envelope in sortedWorkChatEnvelopes(transcript) {
-    guard !envelope.timestamp.isEmpty else { continue }
-    if latest.map({ envelope.timestamp > $0 }) ?? true {
-      latest = envelope.timestamp
-    }
+    latest = workLatestTranscriptTimestamp(latest, envelope.timestamp)
   }
   return latest
+}
+
+/// One step of `latestWorkTranscriptTimestamp`: the later non-empty timestamp.
+func workLatestTranscriptTimestamp(_ latest: String?, _ timestamp: String) -> String? {
+  guard !timestamp.isEmpty else { return latest }
+  return latest.map({ timestamp > $0 }) ?? true ? timestamp : latest
 }
 
 private struct WorkTimelineAssistantTail {
@@ -673,7 +740,18 @@ func isRealSubagentTimelineRow(taskType: String?, agentType: String?) -> Bool {
 /// low-signal lifecycle tick never replaces a real result description.
 func isWorkSubagentPlaceholderSummary(_ value: String?) -> Bool {
   guard let value = nonEmptyWorkTimelineText(value) else { return false }
-  return value.range(
+  // The pattern reads at most the first ~8 characters (`status:` + one
+  // whitespace), and its `task updated$` branch only matches a string of at
+  // most 13 characters, so a 32-character prefix answers exactly what the
+  // whole string would, and keeps memo keys short.
+  let key = value.utf8.count <= 32 ? value : String(value.prefix(32))
+  return workSubagentPlaceholderSummaryMemo(key)
+}
+
+/// Called for every subagent progress/result row on every timeline rebuild;
+/// the regex compile was most of `buildWorkSubagentSnapshots`.
+private let workSubagentPlaceholderSummaryMemo = WorkPureStringMemo<Bool>(capacity: 4_096) { value in
+  value.range(
     of: #"^(status:\s|task updated$)"#,
     options: [.regularExpression, .caseInsensitive]
   ) != nil
@@ -1156,12 +1234,16 @@ func buildWorkSubagentTimelineRows(
     }
     if let firstResult {
       let visibleSummary = isWorkSubagentPlaceholderSummary(resultSummary) ? nil : resultSummary
+      // The result replaces the running card where the agent started (desktop
+      // keeps the card's row), so a card never jumps down to its completion.
+      // Only a result whose spawn is not loaded sits at the result itself.
+      let anchor = firstStarted ?? firstResult
       positionedRows.append((
-        firstResult.index,
+        anchor.index,
         WorkSubagentTimelineRow(
           kind: .result,
           snapshot: snapshot,
-          timestamp: firstResult.timestamp,
+          timestamp: anchor.timestamp,
           summary: visibleSummary,
           commandLabel: nil,
           exitLabel: nil
@@ -1682,68 +1764,6 @@ private func latestWorkSubagentTimestamp(_ lhs: String?, _ rhs: String?) -> Stri
   return rhsDate >= lhsDate ? rhs : lhs
 }
 
-func foldWorkSubagentTimelineRows(_ rows: [WorkSubagentTimelineRow]) -> [WorkSubagentTimelineItem] {
-  var result: [WorkSubagentTimelineItem] = []
-  var run: [WorkSubagentTimelineRow] = []
-  func flush() {
-    guard !run.isEmpty else { return }
-    if run.count > 1 {
-      result.append(.grid(WorkSubagentTimelineGrid(id: "subagent-grid:\(run[0].id)", rows: run)))
-    } else if let row = run.first {
-      result.append(.row(row))
-    }
-    run.removeAll(keepingCapacity: true)
-  }
-  for row in rows {
-    if row.kind == .backgroundCommand || run.first?.snapshot.turnId != row.snapshot.turnId {
-      flush()
-    }
-    if row.kind == .backgroundCommand {
-      result.append(.row(row))
-    } else {
-      run.append(row)
-    }
-  }
-  flush()
-  return result
-}
-
-func collapseConsecutiveWorkBackgroundJobs(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
-  var result: [WorkTimelineEntry] = []
-  result.reserveCapacity(entries.count)
-  var index = 0
-  while index < entries.count {
-    guard case .backgroundJob(let firstJob) = entries[index].payload else {
-      result.append(entries[index])
-      index += 1
-      continue
-    }
-    var jobs = [firstJob]
-    var end = index + 1
-    while end < entries.count,
-          entries[end].turnId == entries[index].turnId,
-          case .backgroundJob(let nextJob) = entries[end].payload {
-      jobs.append(nextJob)
-      end += 1
-    }
-    if jobs.count > 1 {
-      let anchor = entries[index]
-      let group = WorkBackgroundJobRunModel(id: anchor.id, jobs: jobs)
-      result.append(WorkTimelineEntry(
-        id: anchor.id,
-        timestamp: anchor.timestamp,
-        rank: anchor.rank,
-        payload: .backgroundJobRun(group),
-        turnId: anchor.turnId
-      ))
-    } else {
-      result.append(entries[index])
-    }
-    index = end
-  }
-  return result
-}
-
 func buildWorkTimeline(
   transcript: [WorkChatEnvelope],
   fallbackEntries: [AgentChatTranscriptEntry],
@@ -1763,12 +1783,6 @@ func buildWorkTimeline(
   sourceCountsByTurn: [String: Int]? = nil
 ) -> [WorkTimelineEntry] {
   let scheduledSnapshots = scheduledWorkSnapshots ?? buildWorkScheduledWorkSnapshots(from: transcript)
-  let backgroundJobs = buildWorkBackgroundJobs(from: scheduledSnapshots)
-  let backgroundTaskIds = Set(backgroundJobs.compactMap { $0.taskId?.trimmingCharacters(in: .whitespacesAndNewlines) })
-  let visibleSubagentRows = subagentRows.filter { row in
-    guard row.kind == .backgroundCommand else { return true }
-    return !backgroundTaskIds.contains(row.snapshot.taskId)
-  }
   let messages = transcript.isEmpty && !fallbackEntries.isEmpty
     ? fallbackEntries.map {
         WorkChatMessage(
@@ -1781,44 +1795,99 @@ func buildWorkTimeline(
         )
       }
     : buildWorkChatMessages(from: transcript)
+  let turnEndMarkers = workTurnEndMarkers(
+    from: transcript,
+    usageLimitTurnId: usageLimitTurnId,
+    sourceCountsByTurn: sourceCountsByTurn
+  )
+  return assembleWorkTimeline(
+    stampedMessages: messages.map(workTimelineStampedMessage),
+    pendingSteers: localEchoMessages.isEmpty ? [] : derivePendingWorkSteers(from: transcript),
+    toolCards: toolCards,
+    commandCards: commandCards,
+    fileChangeCards: fileChangeCards,
+    subagentRows: subagentRows,
+    scheduledWorkSnapshots: scheduledSnapshots,
+    eventCards: eventCards,
+    adeCards: buildWorkAdeCards(from: transcript),
+    turnEndMarkers: turnEndMarkers,
+    artifacts: artifacts,
+    localEchoMessages: localEchoMessages
+  )
+}
 
+/// A folded message with its derived markdown metadata stamped. Stamped at the
+/// end of the fold rather than at construction: the builders merge streaming
+/// fragments by mutating `markdown` in place, so this is the first point where
+/// a message's text is final. A pure function of the message.
+func workTimelineStampedMessage(_ message: WorkChatMessage) -> WorkChatMessage {
+  var message = message
+  message.markdownDigest = workStableDigest(message.markdown)
+  message.markdownUTF8Count = message.markdown.utf8.count
+  let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
+  let normalizedMarkdown = hasCarriageReturn
+    ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
+    : message.markdown
+  message.markdownCharacterCount = normalizedMarkdown.count
+  message.markdownLineCount = workAssistantMessageLineCount(normalizedMarkdown)
+  message.markdownHasCarriageReturn = hasCarriageReturn
+  message.markdownContainsFence = normalizedMarkdown.contains("```")
+  message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalizedMarkdown)
+  let classifier = WorkStreamingMonospacedClassifierState(text: normalizedMarkdown)
+  message.markdownMonospacedClassifier = classifier
+  message.markdownOpenFenceMarker = classifier.openFenceMarker
+  return message
+}
+
+/// Everything `buildWorkTimeline` does after the per-source builders: ranks,
+/// echo suppression, turn-end rows and their proof counts, the sort, the id
+/// dedupe and the collapse passes. Shared by the full build and the thread
+/// engine's resumed fold so the two cannot drift.
+///
+/// - `pendingSteers` is only read when `localEchoMessages` is non-empty.
+func assembleWorkTimeline(
+  stampedMessages messages: [WorkChatMessage],
+  pendingSteers: [WorkPendingSteerModel],
+  toolCards: [WorkToolCardModel],
+  commandCards: [WorkCommandCardModel],
+  fileChangeCards: [WorkFileChangeCardModel],
+  subagentRows: [WorkSubagentTimelineRow],
+  scheduledWorkSnapshots scheduledSnapshots: [WorkScheduledWorkSnapshot],
+  eventCards: [WorkEventCardModel],
+  adeCards: [WorkAdeCardModel],
+  turnEndMarkers: [WorkTurnEndMarker],
+  artifacts: [ComputerUseArtifactSummary],
+  localEchoMessages: [WorkLocalEchoMessage]
+) -> [WorkTimelineEntry] {
+  let backgroundJobs = buildWorkBackgroundJobs(from: scheduledSnapshots)
+  let backgroundTaskIds = Set(backgroundJobs.compactMap { $0.taskId?.trimmingCharacters(in: .whitespacesAndNewlines) })
+  let visibleSubagentRows = subagentRows.filter { row in
+    guard row.kind == .backgroundCommand else { return true }
+    return !backgroundTaskIds.contains(row.snapshot.taskId)
+  }
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
-    // Stamped here, at the end of the fold, rather than at construction: the
-    // builders above merge streaming fragments by mutating `markdown` in place,
-    // so this is the first point where a message's text is final.
-    var message = message
-    message.markdownDigest = workStableDigest(message.markdown)
-    message.markdownUTF8Count = message.markdown.utf8.count
-    let hasCarriageReturn = message.markdown.utf8.contains(0x0D)
-    let normalizedMarkdown = hasCarriageReturn
-      ? message.markdown.replacingOccurrences(of: "\r\n", with: "\n")
-      : message.markdown
-    message.markdownCharacterCount = normalizedMarkdown.count
-    message.markdownLineCount = workAssistantMessageLineCount(normalizedMarkdown)
-    message.markdownHasCarriageReturn = hasCarriageReturn
-    message.markdownContainsFence = normalizedMarkdown.contains("```")
-    message.markdownTrailingBacktickRun = workMarkdownTrailingBacktickRun(normalizedMarkdown)
-    let classifier = WorkStreamingMonospacedClassifierState(text: normalizedMarkdown)
-    message.markdownMonospacedClassifier = classifier
-    message.markdownOpenFenceMarker = classifier.openFenceMarker
-    return WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message), turnId: message.turnId)
+    WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message), turnId: message.turnId)
   }
   // Counted, not set-membership: two identical echoes must not both vanish on
   // one matching row. Built from `messages` rather than the transcript so the
-  // fallback-entry path (empty transcript) still suppresses correctly.
-  var representedEchoKeyCounts: [String: Int] = [:]
-  for steer in derivePendingWorkSteers(from: transcript) {
-    guard let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments) else { continue }
-    representedEchoKeyCounts[key, default: 0] += 1
+  // fallback-entry path (empty transcript) still suppresses correctly. With no
+  // echoes there is nothing to suppress, so the counts are skipped.
+  var visibleLocalEchoMessages: [WorkLocalEchoMessage] = []
+  if !localEchoMessages.isEmpty {
+    var representedEchoKeyCounts: [String: Int] = [:]
+    for steer in pendingSteers {
+      guard let key = workLocalEchoDedupeKey(text: steer.text, attachments: steer.attachments) else { continue }
+      representedEchoKeyCounts[key, default: 0] += 1
+    }
+    for message in messages where message.role.lowercased() == "user" {
+      guard let key = workLocalEchoDedupeKey(text: message.markdown, attachments: message.attachments) else { continue }
+      representedEchoKeyCounts[key, default: 0] += 1
+    }
+    visibleLocalEchoMessages = workUnrepresentedLocalEchoMessages(
+      localEchoMessages,
+      representedKeyCounts: representedEchoKeyCounts
+    )
   }
-  for message in messages where message.role.lowercased() == "user" {
-    guard let key = workLocalEchoDedupeKey(text: message.markdown, attachments: message.attachments) else { continue }
-    representedEchoKeyCounts[key, default: 0] += 1
-  }
-  let visibleLocalEchoMessages = workUnrepresentedLocalEchoMessages(
-    localEchoMessages,
-    representedKeyCounts: representedEchoKeyCounts
-  )
 
   entries.append(contentsOf: toolCards.enumerated().map { index, card in
     WorkTimelineEntry(id: "tool-\(card.id)", timestamp: card.startedAt, rank: 1_000 + index, payload: .toolCard(card), turnId: card.turnId)
@@ -1832,23 +1901,10 @@ func buildWorkTimeline(
     WorkTimelineEntry(id: "file-change-\(card.id)", timestamp: card.timestamp, rank: 1_375 + index, payload: .fileChangeCard(card), turnId: card.turnId)
   })
 
-  entries.append(contentsOf: foldWorkSubagentTimelineRows(visibleSubagentRows).enumerated().map { index, item in
-    let timestamp: String
-    let payload: WorkTimelinePayload
-    switch item {
-    case .row(let row):
-      timestamp = row.timestamp
-      payload = .subagent(row)
-    case .grid(let grid):
-      timestamp = grid.rows.last?.timestamp ?? ""
-      payload = .subagentGrid(grid)
-    }
-    let turnId: String?
-    switch item {
-    case .row(let row): turnId = row.snapshot.turnId
-    case .grid(let grid): turnId = grid.rows.first?.snapshot.turnId
-    }
-    return WorkTimelineEntry(id: item.id, timestamp: timestamp, rank: 1_450 + index, payload: payload, turnId: turnId)
+  // One entry per card; adjacent cards join a grid at presentation, after the
+  // rows the thread does not draw are gone (`workGroupingPresentedRuns`).
+  entries.append(contentsOf: visibleSubagentRows.enumerated().map { index, row in
+    WorkTimelineEntry(id: row.id, timestamp: row.timestamp, rank: 1_450 + index, payload: .subagent(row), turnId: row.snapshot.turnId)
   })
 
   let scheduleSnapshots = scheduledSnapshots.filter {
@@ -1880,7 +1936,7 @@ func buildWorkTimeline(
 
   // Derived from the transcript rather than passed in: `ade_card` merges by
   // `cardId`, so there is no per-envelope card list for a caller to hold.
-  entries.append(contentsOf: buildWorkAdeCards(from: transcript).enumerated().map { index, card in
+  entries.append(contentsOf: adeCards.enumerated().map { index, card in
     WorkTimelineEntry(
       id: "ade-card-\(card.id)",
       timestamp: card.timestamp,
@@ -1898,31 +1954,8 @@ func buildWorkTimeline(
   // above so the originating tool/approval envelopes stay hidden from the
   // transcript.
 
-  // Computed before the usage rows so a usage-limit turn's numbers can be folded
-  // into its footer instead of rendered as their own row beside it.
-  let turnEndMarkers = workTurnEndMarkers(
-    from: transcript,
-    usageLimitTurnId: usageLimitTurnId,
-    sourceCountsByTurn: sourceCountsByTurn
-  )
-  let usageLimitTurnKeys = Set(turnEndMarkers.compactMap { $0.usageLimitPaused ? $0.turnId : nil })
-
-  let turnUsageSummaries = transcript.compactMap { envelope -> (id: String, timestamp: String, usage: WorkUsageSummary, turnId: String)? in
-    guard case .done(_, _, let usage, let turnId, _, _, _) = envelope.event, let usage else { return nil }
-    if let key = normalizedWorkTurnId(turnId), usageLimitTurnKeys.contains(key) { return nil }
-    return (envelope.id, envelope.timestamp, usage, turnId)
-  }
-
-  entries.append(contentsOf: turnUsageSummaries.enumerated().map { index, item in
-    WorkTimelineEntry(
-      id: "usage-\(item.id)",
-      timestamp: item.timestamp,
-      rank: 1_650 + index,
-      payload: .usageSummary(item.usage),
-      turnId: item.turnId
-    )
-  })
-
+  // Usage rides on the turn-end line (desktop `DoneTurnDivider`); there is no
+  // standalone usage row. Proof counts are stamped after the sort below.
   entries.append(contentsOf: turnEndMarkers.enumerated().map { index, marker in
     WorkTimelineEntry(
       id: "turn-end-\(marker.turnId)",
@@ -1975,6 +2008,7 @@ func buildWorkTimeline(
       deduped.append(entry)
     }
   }
+  if !artifacts.isEmpty { workStampTurnProofCounts(&deduped) }
   // The spawn-completion fold runs FIRST, on raw transcript adjacency. The tool
   // collapse buffers soft-break rows past a cluster, so `notice · tool · notice`
   // comes out of it as `toolGroup · notice · notice` — folding after that would
@@ -1984,9 +2018,35 @@ func buildWorkTimeline(
   folded = collapseConsecutiveWorkToolEntries(folded)
   folded = collapseConsecutiveWorkActivityEntries(folded)
   folded = collapseActivityPhaseTimelineEntries(folded)
-  folded = collapseSameCauseSubagentEntries(folded, causeOf: workSubagentStoppedGroupCause)
-  folded = collapseConsecutiveWorkBackgroundJobs(folded)
   return folded
+}
+
+/// Stamp each turn-end marker with the proof captured while its turn ran
+/// (desktop `turnProofTimeline.byDoneRowKey`): artifacts between the turn's
+/// first row (a user message or any row naming a turn) and its `done`. The
+/// artifacts themselves stay inline where they were captured; the count is the
+/// `N proof` chip on the turn-end line.
+private func workStampTurnProofCounts(_ entries: inout [WorkTimelineEntry]) {
+  var turnStarted = false
+  var proofCount = 0
+  for index in entries.indices {
+    let entry = entries[index]
+    switch entry.payload {
+    case .artifact:
+      if turnStarted { proofCount += 1 }
+    case .turnEndMarker(var marker):
+      if proofCount > 0 {
+        marker.proofCount = proofCount
+        entries[index] = WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .turnEndMarker(marker), turnId: entry.turnId)
+      }
+      turnStarted = false
+      proofCount = 0
+    case .message(let message) where message.role.lowercased() == "user":
+      turnStarted = true
+    default:
+      if entry.turnId != nil { turnStarted = true }
+    }
+  }
 }
 
 /// Fold a run of 2+ ADJACENT `spawn_completed` peer notices for the SAME child
@@ -2090,6 +2150,10 @@ func workSubagentStoppedGroupCause(
   guard case .subagent(let row) = entry.payload, row.kind == .result else { return nil }
   switch row.snapshot.status {
   case .stopped:
+    // A stopped agent whose report landed, or that says something beyond
+    // "stopped", keeps its own card.
+    if row.snapshot.resultLanded { return nil }
+    if let summary = trimmedWorkSubagentText(row.summary), !workSubagentStopSentence(summary) { return nil }
     return .interrupted
   case .failed:
     let isUsageLimit = workTextIndicatesUsageLimit(row.summary)
@@ -2129,15 +2193,23 @@ private func workSubagentStoppedGroupReason(_ entry: WorkTimelineEntry) -> Strin
   return normalizedWorkSubagentStopReason(row.snapshot.stopReason)
 }
 
-/// Fold each run of 2+ ADJACENT subagent result rows that share one foldable
-/// cause and stop source into a single expandable `.subagentStoppedGroup`
-/// entry — desktop parity with `groupStoppedSubagentResultCards`.
+/// Desktop `SUBAGENT_STOP_SENTENCE`: a summary that only says the agent stopped.
+private func workSubagentStopSentence(_ text: String) -> Bool {
+  text.range(
+    of: #"^(interrupted(\s+by\b.*)?|stopped(\s*[:—-].*)?|agent (stopped|interrupted))[.!]*$"#,
+    options: [.regularExpression, .caseInsensitive]
+  ) != nil
+}
+
+/// Fold each run of more than three ADJACENT subagent result rows that share
+/// one foldable cause and stop source into a single expandable
+/// `.subagentStoppedGroup` entry — desktop parity with
+/// `groupStoppedSubagentResultCards`. Three or fewer stay cards in a grid.
 ///
 /// One pass, not one per cause: a run breaks whenever the cause or source
 /// changes, so a user interrupt and a system stop can never land in the same
-/// group even when they sit next to each other. A lone casualty stays an
-/// ordinary result card — there is no group of one. The group key derives from
-/// the source, reason, and FIRST row's agent so it stays stable as the run grows.
+/// group even when they sit next to each other. The group key derives from the
+/// source, reason, and FIRST row's agent so it stays stable as the run grows.
 func collapseSameCauseSubagentEntries(
   _ entries: [WorkTimelineEntry],
   causeOf: (WorkTimelineEntry) -> WorkSubagentStoppedGroupModel.Reason?
@@ -2155,7 +2227,6 @@ func collapseSameCauseSubagentEntries(
     let stopReason = workSubagentStoppedGroupReason(entries[index])
     var end = index
     while end < entries.count,
-          entries[end].turnId == entries[index].turnId,
           causeOf(entries[end]) == cause,
           workSubagentStoppedGroupSource(entries[end]) == stopSource,
           workSubagentStoppedGroupReason(entries[end]) == stopReason {
@@ -2163,8 +2234,8 @@ func collapseSameCauseSubagentEntries(
     }
     let run = Array(entries[index..<end])
     index = end
-    guard run.count >= 2 else {
-      result.append(run[0])
+    guard run.count > workSubagentGridMaxColumns else {
+      result.append(contentsOf: run)
       continue
     }
     let rows: [WorkSubagentTimelineRow] = run.compactMap { member in
@@ -2202,8 +2273,7 @@ private func workSubagentStoppedGroupIdPrefix(
   }
 }
 
-/// Mirrors desktop `formatTurnWorkSummaryLabel` — one muted line above the turn
-/// footer hairline (`N tool(s) · M file(s)`).
+/// `N tool(s) · M file(s)`: the turn-end line's work toggles, read aloud.
 func workFormatTurnWorkSummaryLabel(toolCount: Int, fileCount: Int) -> String? {
   var parts: [String] = []
   if toolCount > 0 {
@@ -2215,233 +2285,413 @@ func workFormatTurnWorkSummaryLabel(toolCount: Int, fileCount: Int) -> String? {
   return parts.isEmpty ? nil : parts.joined(separator: " · ")
 }
 
-/// The rows the transcript actually draws, from the rows the timeline holds.
-///
-/// This is the seam where presentation-only rules belong. Tool and file-change
-/// clusters stay visible as compact rows, while low-signal activity summaries
-/// are omitted from the phone transcript without changing the raw timeline.
-///
-/// Desktop and Chat Info still retain the underlying activity events, so this
-/// remains a mobile transcript presentation choice rather than a sync change.
-private enum WorkTurnFoldRowRole {
+// MARK: - Turn fold (desktop `shared/chatTurnFold.ts`)
+
+/// A row's part in its turn's fold, in the vocabulary of desktop
+/// `TurnFoldRowRole`.
+private enum WorkTurnFoldRole {
+  /// A user message. Starts a new visual response; never folds.
+  case boundary
+  /// The turn's `done` (its turn-end line).
+  case turnEnd
+  /// Assistant prose: the answer candidates. Non-answer prose folds.
+  case text
+  /// Finished work that folds: thoughts, plan proposals, receipts, chips.
   case history
+  /// Always visible: errors, subagent cards, proof, the task list, unknowns.
   case keep
-  case keepIfLive
+  /// Visible only while it was still live when the turn ended.
+  case keepIfLive(liveKeys: [String])
 }
 
-private func workTurnFoldRole(
-  for entry: WorkTimelineEntry,
-  turnId: String,
-  liveEntryIds: Set<String>
-) -> WorkTurnFoldRowRole {
-  if let entryTurnId = normalizedWorkTurnId(entry.turnId), entryTurnId != turnId {
+private struct WorkTurnFoldFacts {
+  let role: WorkTurnFoldRole
+  let turnId: String?
+  /// A status or diagnostics receipt, or a row with no content. A fold that
+  /// would hide only trivial rows is not drawn.
+  let trivial: Bool
+}
+
+private let workTurnFoldHistoryEventKinds: Set<String> = [
+  "reasoning", "plan", "planText", "contextCompact", "conversationReset", "autoApproval",
+  "autoApprovalReview", "promptSuggestion", "codexState", "codexRecovery", "codexRecoveryReceipt",
+  "turnDiagnostics", "turnDetails", "status", "activity", "activityBundle", "toolUseSummary",
+  "command_lifecycle", "pendingInputResolved",
+  // Resolved approval/question receipts: desktop keeps these only while they
+  // still wait on the user, which the pending-input strip owns on the phone.
+  "question", "approval", "planApproval", "permission", "todo",
+]
+
+private let workTurnFoldTrivialEventKinds: Set<String> = [
+  "status", "activity", "activityBundle", "turnDiagnostics", "turnDetails",
+]
+
+/// Desktop `classifySystemNotice` for the phone's `notice` card: failures,
+/// sign-in and usage limits stay; warnings, info, hooks, spawn chips and host
+/// sleep chips are a record of the turn and fold.
+private func workTurnFoldNoticeRole(_ card: WorkEventCardModel) -> WorkTurnFoldRole {
+  if card.spawnCompletionChildId != nil { return .history }
+  if card.tint == .danger { return .keep }
+  let kind = (card.metadata.first ?? "").lowercased().replacingOccurrences(of: " ", with: "_")
+  switch kind {
+  case "auth", "provider_health", "thread_error", "error", "rate_limit":
     return .keep
+  case "warning", "info", "hook", "file_persist", "config", "subagent_spawned", "spawn_completed":
+    return .history
+  default:
+    // Host sleep chips carry no kind label; they are history like on desktop.
+    return card.icon == "moon.zzz" || card.icon == "play.circle" ? .history : .keep
   }
+}
+
+private func workTurnFoldRow(for entry: WorkTimelineEntry) -> WorkTurnFoldFacts {
+  let turnId = normalizedWorkTurnId(entry.turnId)
   switch entry.payload {
-  case .toolCard, .commandCard, .fileChangeCard, .toolGroup, .changedFiles, .usageSummary:
-    return .history
-  case .backgroundJob(let job):
-    return liveEntryIds.contains(job.id) ? .keepIfLive : .history
-  case .backgroundJobRun(let run):
-    return run.jobs.contains(where: { liveEntryIds.contains($0.id) }) ? .keepIfLive : .history
-  case .scheduledWork(let schedule):
-    return liveEntryIds.contains(entry.id) ? .keepIfLive : .history
-  case .adeCard(let card):
-    return card.variant == "lane_setup" && !liveEntryIds.contains(entry.id) ? .history : .keep
-  case .eventCard(let card):
-    switch card.kind {
-    case "reasoning", "plan", "planProposal", "planText", "contextCompact", "autoApprovalReview", "promptSuggestion", "codexState", "turnDiagnostics", "turnDetails":
-      return .history
-    case "status", "activity", "activityBundle":
-      return .history
-    default:
-      return .keep
-    }
   case .message(let message):
-    guard message.role.lowercased() == "assistant" else { return .keep }
-    return .history
-  case .subagent, .subagentGrid, .subagentStoppedGroup,
-       .artifact, .turnSeparator, .turnEndMarker, .turnFold,
+    let messageTurnId = normalizedWorkTurnId(message.turnId) ?? turnId
+    if message.role.lowercased() == "user" {
+      // A queued steer is not a message yet, so it must not split the turn.
+      let queued = message.deliveryState?.lowercased() == "queued"
+      return WorkTurnFoldFacts(role: queued ? .keep : .boundary, turnId: messageTurnId, trivial: false)
+    }
+    let empty = message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    return WorkTurnFoldFacts(role: .text, turnId: messageTurnId, trivial: empty)
+  case .turnEndMarker:
+    return WorkTurnFoldFacts(role: .turnEnd, turnId: turnId, trivial: true)
+  case .toolCard, .commandCard, .fileChangeCard, .toolGroup, .changedFiles:
+    return WorkTurnFoldFacts(role: .history, turnId: turnId, trivial: false)
+  case .eventCard(let card):
+    let trivial = workTurnFoldTrivialEventKinds.contains(card.kind)
+      || (card.kind == "reasoning" && (card.body ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    if card.kind == "notice" {
+      return WorkTurnFoldFacts(role: workTurnFoldNoticeRole(card), turnId: turnId, trivial: false)
+    }
+    let role: WorkTurnFoldRole = workTurnFoldHistoryEventKinds.contains(card.kind) ? .history : .keep
+    return WorkTurnFoldFacts(role: role, turnId: turnId, trivial: trivial)
+  case .backgroundJob(let job):
+    return WorkTurnFoldFacts(role: .keepIfLive(liveKeys: [job.id]), turnId: turnId, trivial: false)
+  case .backgroundJobRun(let run):
+    return WorkTurnFoldFacts(role: .keepIfLive(liveKeys: run.jobs.map(\.id)), turnId: turnId, trivial: false)
+  case .scheduledWork:
+    return WorkTurnFoldFacts(role: .keepIfLive(liveKeys: [entry.id]), turnId: turnId, trivial: false)
+  case .adeCard(let card):
+    // A new-lane setup record folds once setup finished; every other card stays.
+    let role: WorkTurnFoldRole = card.variant == "lane_setup" ? .keepIfLive(liveKeys: [entry.id]) : .keep
+    return WorkTurnFoldFacts(role: role, turnId: turnId, trivial: false)
+  case .subagent, .subagentGrid, .subagentStoppedGroup, .artifact, .turnFold,
        .pendingQuestion, .pendingPermission, .pendingPlanApproval, .pendingModelSelection:
-    return .keep
+    return WorkTurnFoldFacts(role: .keep, turnId: turnId, trivial: false)
+  }
+}
+
+/// Distinct subagents a row shows (desktop `subagentIdentity`).
+private func workTurnFoldSubagentIds(_ payload: WorkTimelinePayload) -> [String] {
+  switch payload {
+  case .subagent(let row): return [row.snapshot.agentId ?? row.snapshot.taskId]
+  case .subagentGrid(let grid): return grid.rows.map { $0.snapshot.agentId ?? $0.snapshot.taskId }
+  case .subagentStoppedGroup(let group): return group.rows.map { $0.snapshot.agentId ?? $0.snapshot.taskId }
+  default: return []
+  }
+}
+
+private func workTurnFoldJobIsFailed(_ status: String) -> Bool {
+  ["failed", "error"].contains(status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+}
+
+private func workTurnFoldStatus(_ status: String) -> String {
+  switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "interrupted", "stopped", "cancelled", "canceled": return "interrupted"
+  case "failed", "error": return "failed"
+  default: return "completed"
   }
 }
 
 private struct WorkTurnFoldPlan {
   let model: WorkTurnFoldModel
-  let startIndex: Int
+  let spanStart: Int
+  let markerIndex: Int
+  let hidden: Set<Int>
+  let duplicateAnswers: Set<Int>
 }
 
-func workApplyingTurnFolds(
-  _ entries: [WorkTimelineEntry],
-  expandedTurnIds: Set<String> = []
-) -> [WorkTimelineEntry] {
-  var plansByStart: [Int: WorkTurnFoldPlan] = [:]
-  var collapsedHiddenIndices = Set<Int>()
-  var duplicateAnswerIndices = Set<Int>()
-  var turnWindowStart = entries.startIndex
+/// One finished turn's fold, or nil when it does not fold (desktop `foldTurn`).
+private func workTurnFoldPlan(
+  entries: [WorkTimelineEntry],
+  rows: [WorkTurnFoldFacts],
+  windowStart: Int,
+  markerIndex: Int,
+  marker: WorkTurnEndMarker,
+  turnId: String,
+  deferredTurnId: String?,
+  expandedTurnIds: Set<String>,
+  toolActivity: WorkTurnToolActivityIndex?
+) -> WorkTurnFoldPlan? {
+  // The answer: the last prose of this turn, or its last `final_answer` when
+  // the provider labelled one. Commentary is never the answer. A turn with no
+  // answer (tool-only, interrupted before text) does not fold.
+  var lastText = -1
+  var lastFinalAnswer = -1
+  for index in windowStart..<markerIndex {
+    let row = rows[index]
+    guard case .text = row.role else { continue }
+    if let rowTurnId = row.turnId, rowTurnId != turnId { continue }
+    guard case .message(let message) = entries[index].payload else { continue }
+    let phase = message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if phase == "commentary" { continue }
+    lastText = index
+    if phase == "final_answer" { lastFinalAnswer = index }
+  }
+  let answerIndex = lastFinalAnswer >= 0 ? lastFinalAnswer : lastText
+  guard answerIndex >= 0 else { return nil }
 
-  for markerIndex in entries.indices {
-    guard case .turnEndMarker(let marker) = entries[markerIndex].payload else { continue }
-    let windowStart = turnWindowStart
-    turnWindowStart = markerIndex + 1
-    let turnId = normalizedWorkTurnId(marker.turnId) ?? marker.turnId
-    var matchingBoundary: Int?
-    var fallbackBoundary: Int?
+  let answerText: String = {
+    guard case .message(let message) = entries[answerIndex].payload else { return "" }
+    return message.markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+  }()
+  var hidden = Set<Int>()
+  var duplicates = Set<Int>()
+  var hidesContent = false
+  var jobCount = 0
+  var failedJobCount = 0
+  for index in windowStart..<answerIndex {
+    let row = rows[index]
+    switch entries[index].payload {
+    case .backgroundJob(let job):
+      jobCount += 1
+      if workTurnFoldJobIsFailed(job.status) { failedJobCount += 1 }
+    case .backgroundJobRun(let run):
+      jobCount += run.jobs.count
+      failedJobCount += run.jobs.filter { workTurnFoldJobIsFailed($0.status) }.count
+    default:
+      break
+    }
+    if let deferredTurnId, row.turnId == deferredTurnId { continue }
+    let folds: Bool
+    switch row.role {
+    case .history, .turnEnd:
+      folds = true
+    case .text:
+      folds = row.turnId == nil || row.turnId == turnId
+    case .keepIfLive(let liveKeys):
+      folds = !liveKeys.contains { marker.liveEntryIds.contains($0) }
+    case .boundary, .keep:
+      folds = false
+    }
+    guard folds else { continue }
+    hidden.insert(index)
+    if !row.trivial { hidesContent = true }
+    if case .text = row.role, !answerText.isEmpty,
+       case .message(let message) = entries[index].payload,
+       message.markdown.utf8.count >= answerText.utf8.count,
+       message.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == answerText {
+      duplicates.insert(index)
+    }
+  }
+  // A fold over nothing but receipts and empty rows is noise: draw the rows.
+  guard hidesContent else { return nil }
+
+  var subagentIds = Set<String>()
+  for index in windowStart..<markerIndex {
+    subagentIds.formUnion(workTurnFoldSubagentIds(entries[index].payload))
+  }
+  // Tool and file counts cover the whole turn, from the per-turn activity
+  // index (desktop `byDoneRowKey`): tool rows are not drawn in the thread, so
+  // they cannot be counted from it. Callers without an index count the tool
+  // rows still in the window.
+  let toolCount: Int
+  let fileCount: Int
+  if let toolActivity {
+    toolCount = toolActivity.completedByTurnId[marker.turnId]?.count ?? 0
+    fileCount = toolActivity.completedFilesByTurnId[marker.turnId]?.count ?? 0
+  } else {
+    var tools = 0
+    var files = 0
     for index in windowStart..<markerIndex {
-      guard case .message(let message) = entries[index].payload,
-            message.role.lowercased() == "user" else { continue }
-      if normalizedWorkTurnId(message.turnId) == turnId {
-        matchingBoundary = index
-      } else if normalizedWorkTurnId(message.turnId) == nil {
-        fallbackBoundary = index
+      switch entries[index].payload {
+      case .toolCard, .commandCard: tools += 1
+      case .fileChangeCard: files += 1
+      case .toolGroup(let group): tools += group.count
+      case .changedFiles(let group): files += group.count
+      default: break
       }
     }
-    guard let boundaryIndex = matchingBoundary ?? fallbackBoundary else { continue }
-
-    var answerIndex: Int?
-    if boundaryIndex + 1 < markerIndex {
-      for index in stride(from: markerIndex - 1, through: boundaryIndex + 1, by: -1) {
-        guard case .message(let message) = entries[index].payload,
-              message.role.lowercased() == "assistant" else { continue }
-        let rowTurnId = normalizedWorkTurnId(message.turnId)
-        guard rowTurnId == nil || rowTurnId == turnId else { continue }
-        let phase = message.textPhase?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard phase != "commentary" else { continue }
-        if answerIndex == nil { answerIndex = index }
-        if phase == "final_answer" {
-          answerIndex = index
-          break
-        }
-      }
-    }
-    guard let answerIndex else { continue }
-
-    let span = (boundaryIndex + 1)..<answerIndex
-    guard !span.isEmpty else { continue }
-    var foldable: [Int] = []
-    foldable.reserveCapacity(span.count)
-    var toolCount = 0
-    var fileCount = 0
-    var jobCount = 0
-    var subagentIds = Set<String>()
-
-    for index in span {
-      let entry = entries[index]
-      if let rowTurnId = normalizedWorkTurnId(entry.turnId), rowTurnId != turnId { continue }
-      switch entry.payload {
-      case .toolCard, .commandCard:
-        toolCount += 1
-      case .fileChangeCard:
-        fileCount += 1
-      case .toolGroup(let group):
-        toolCount += group.count
-      case .changedFiles(let group):
-        fileCount += group.count
-      case .backgroundJob(let job):
-        jobCount += 1
-      case .backgroundJobRun(let run):
-        jobCount += run.jobs.count
-      case .subagent(let row):
-        subagentIds.insert(row.snapshot.agentId ?? row.snapshot.taskId)
-      case .subagentGrid(let grid):
-        for row in grid.rows { subagentIds.insert(row.snapshot.agentId ?? row.snapshot.taskId) }
-      case .subagentStoppedGroup(let group):
-        for row in group.rows { subagentIds.insert(row.snapshot.agentId ?? row.snapshot.taskId) }
-      default:
-        break
-      }
-      if case .eventCard(let card) = entry.payload,
-         ["status", "activity", "activityBundle", "turnDiagnostics", "turnDetails"].contains(card.kind) {
-        continue
-      }
-      if case .message(let message) = entry.payload,
-         message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        continue
-      }
-      switch workTurnFoldRole(for: entry, turnId: turnId, liveEntryIds: marker.liveEntryIds) {
-      case .history:
-        foldable.append(index)
-      case .keep, .keepIfLive:
-        break
-      }
-    }
-    let hasVisibleWork = jobCount > 0 || toolCount > 0 || fileCount > 0 || !subagentIds.isEmpty
-    guard !foldable.isEmpty || hasVisibleWork else { continue }
-
-    let answer = (entries[answerIndex].payload.asAssistantMessage)?.markdown
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    var duplicates = Set<Int>()
-    if let answer, !answer.isEmpty {
-      for index in foldable {
-        guard case .message(let message) = entries[index].payload,
-              message.role.lowercased() == "assistant",
-              message.markdown.trimmingCharacters(in: .whitespacesAndNewlines) == answer else { continue }
-        duplicates.insert(index)
-      }
-    }
-
-    let status = marker.status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let foldStatus: String = ["interrupted", "stopped", "cancelled", "canceled"].contains(status)
-      ? "interrupted"
-      : ["failed", "error"].contains(status) ? "failed" : "completed"
-    var parts = [foldStatus == "interrupted" ? "Stopped after \(marker.workedDurationLabel)" : "Worked for \(marker.workedDurationLabel)"]
-    if toolCount > 0 { parts.append("\(toolCount) tool\(toolCount == 1 ? "" : "s")") }
-    if fileCount > 0 { parts.append("\(fileCount) file\(fileCount == 1 ? "" : "s")") }
-    if !subagentIds.isEmpty { parts.append("\(subagentIds.count) subagent\(subagentIds.count == 1 ? "" : "s")") }
-    if jobCount > 0 { parts.append("\(jobCount) background job\(jobCount == 1 ? "" : "s")") }
-    if marker.sourceCount > 0 { parts.append("\(marker.sourceCount) source\(marker.sourceCount == 1 ? "" : "s")") }
-    let id = "turn-fold:\(turnId)"
-    let isExpanded = expandedTurnIds.contains(turnId)
-    let plan = WorkTurnFoldPlan(
-      model: WorkTurnFoldModel(id: id, turnId: turnId, label: parts.joined(separator: " · "), isExpanded: isExpanded, status: foldStatus),
-      startIndex: boundaryIndex + 1
-    )
-    plansByStart[plan.startIndex] = plan
-    if isExpanded { duplicateAnswerIndices.formUnion(duplicates) }
-    else { collapsedHiddenIndices.formUnion(foldable) }
+    toolCount = tools
+    fileCount = files
   }
 
-  guard !plansByStart.isEmpty else { return entries }
+  return WorkTurnFoldPlan(
+    model: WorkTurnFoldModel(
+      id: "turn-fold:\(turnId)",
+      turnId: turnId,
+      turnEndTurnId: marker.turnId,
+      isExpanded: expandedTurnIds.contains(turnId),
+      status: workTurnFoldStatus(marker.status),
+      durationLabel: marker.workedDurationLabel,
+      toolCount: toolCount,
+      fileCount: fileCount,
+      subagentCount: subagentIds.count,
+      jobCount: jobCount,
+      failedJobCount: failedJobCount,
+      sourceCount: marker.sourceCount
+    ),
+    spanStart: windowStart,
+    markerIndex: markerIndex,
+    hidden: hidden,
+    duplicateAnswers: duplicates
+  )
+}
+
+/// Every finished turn folds its intermediate work into one
+/// `Worked for 4m 12s · 18 tools` row (desktop `deriveTurnFolds` +
+/// `applyChatTranscriptTurnFolds`, rules in `shared/chatTurnFold.ts`).
+///
+/// A turn's window starts after the nearest user message or the previous turn
+/// end, so a steer starts a new visual response and a turn with no user
+/// message (a wake, a background completion, the first turn of a paged-in
+/// window) starts after the previous turn. The fold row takes the place of the
+/// window's first row; a closed fold drops its hidden rows; an open fold shows
+/// the whole span in order, minus earlier rows that repeat the answer word for
+/// word. Rows after the answer never fold. Every other row keeps its entry, so
+/// row ids (and measured heights) stay put. One O(n) pass.
+func workApplyingTurnFolds(
+  _ entries: [WorkTimelineEntry],
+  expandedTurnIds: Set<String> = [],
+  toolActivity: WorkTurnToolActivityIndex? = nil
+) -> [WorkTimelineEntry] {
+  let rows = entries.map(workTurnFoldRow(for:))
+  var plans: [WorkTurnFoldPlan] = []
+  var foldedTurnIds = Set<String>()
+  var endedTurnIds = Set<String>()
+  var windowStart = 0
+  var boundaryTurnId: String?
+  var windowTurnIds = Set<String>()
+  var deferredBoundary: (index: Int, turnId: String)?
+  for index in entries.indices {
+    let row = rows[index]
+    if case .boundary = row.role {
+      // A queued follow-up keeps its original position when delivered. If it
+      // names a later turn while this window already names another, it opens
+      // the next window instead of truncating the turn still running.
+      if let turnId = row.turnId, !windowTurnIds.isEmpty, !windowTurnIds.contains(turnId) {
+        if deferredBoundary == nil { deferredBoundary = (index, turnId) }
+        continue
+      }
+      windowStart = index + 1
+      boundaryTurnId = row.turnId
+      windowTurnIds = row.turnId.map { [$0] } ?? []
+      continue
+    }
+    guard case .turnEnd = row.role, case .turnEndMarker(let marker) = entries[index].payload else {
+      // A late row of a turn that already ended (a card that updated after
+      // its `done`) does not claim the window: it would make the next turn's
+      // user message and `done` look foreign and stop every later fold.
+      if let turnId = row.turnId, turnId != deferredBoundary?.turnId, !endedTurnIds.contains(turnId) {
+        windowTurnIds.insert(turnId)
+      }
+      continue
+    }
+    let explicitTurnId = marker.turnId.hasPrefix("fallback-") ? nil : normalizedWorkTurnId(marker.turnId)
+    // A subagent's `done` inside the parent's window neither ends the window
+    // nor folds a turn of its own.
+    if let explicitTurnId, !windowTurnIds.isEmpty, !windowTurnIds.contains(explicitTurnId) { continue }
+    if let explicitTurnId { endedTurnIds.insert(explicitTurnId) }
+    let turnId = explicitTurnId
+      ?? boundaryTurnId
+      ?? (windowStart..<index).reversed().lazy.compactMap { rows[$0].role.isText ? rows[$0].turnId : nil }.first
+      ?? marker.turnId
+    if !foldedTurnIds.contains(turnId), windowStart < index,
+       let plan = workTurnFoldPlan(
+         entries: entries,
+         rows: rows,
+         windowStart: windowStart,
+         markerIndex: index,
+         marker: marker,
+         turnId: turnId,
+         deferredTurnId: deferredBoundary?.turnId,
+         expandedTurnIds: expandedTurnIds,
+         toolActivity: toolActivity
+       ) {
+      plans.append(plan)
+      foldedTurnIds.insert(turnId)
+    }
+    if let deferred = deferredBoundary {
+      windowStart = deferred.index + 1
+      boundaryTurnId = deferred.turnId
+      windowTurnIds = [deferred.turnId]
+      deferredBoundary = nil
+    } else {
+      windowStart = index + 1
+      boundaryTurnId = nil
+      windowTurnIds = []
+    }
+  }
+  guard !plans.isEmpty else { return entries }
+
+  var foldByStart: [Int: WorkTurnFoldModel] = [:]
+  var foldedMarkerIndices = Set<Int>()
+  var skipped = Set<Int>()
+  for plan in plans {
+    foldByStart[plan.spanStart] = plan.model
+    foldedMarkerIndices.insert(plan.markerIndex)
+    skipped.formUnion(plan.model.isExpanded ? plan.duplicateAnswers : plan.hidden)
+  }
   var result: [WorkTimelineEntry] = []
   result.reserveCapacity(entries.count)
   for index in entries.indices {
-    if let plan = plansByStart[index] {
+    let entry = entries[index]
+    if let model = foldByStart[index] {
       result.append(WorkTimelineEntry(
-        id: plan.model.id,
-        timestamp: entries[index].timestamp,
-        rank: entries[index].rank,
-        payload: .turnFold(plan.model),
-        turnId: plan.model.turnId
+        id: model.id,
+        timestamp: entry.timestamp,
+        rank: entry.rank,
+        payload: .turnFold(model),
+        turnId: model.turnId
       ))
     }
-    if duplicateAnswerIndices.contains(index) { continue }
-    if collapsedHiddenIndices.contains(index) { continue }
-    result.append(entries[index])
+    if skipped.contains(index) { continue }
+    if foldedMarkerIndices.contains(index), case .turnEndMarker(var marker) = entry.payload {
+      // The tool and file counts moved up to the fold row.
+      marker.workSummaryInFold = true
+      result.append(WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .turnEndMarker(marker), turnId: entry.turnId))
+      continue
+    }
+    result.append(entry)
   }
   return result
 }
 
-private extension WorkTimelinePayload {
-  var asAssistantMessage: WorkChatMessage? {
-    guard case .message(let message) = self, message.role.lowercased() == "assistant" else { return nil }
-    return message
+private extension WorkTurnFoldRole {
+  var isText: Bool {
+    if case .text = self { return true }
+    return false
   }
 }
 
+/// The rows the transcript actually draws, from the rows the timeline holds.
+///
+/// Tool and file-change rows are not drawn (desktop drops `work_log_group`):
+/// a finished turn's tools and files live on its fold row and turn-end line,
+/// and the running turn's tools on the working indicator. Only the exact rows
+/// the activity index attached to a turn — finished, or running while the
+/// chat streams — are dropped, so an orphan cluster from a turn that never
+/// ended stays inline rather than vanishing. Low-signal activity summaries and
+/// the per-turn todo rows (the task list card carries them) are omitted too.
 func workPresentedTimelineEntries(
   _ timeline: [WorkTimelineEntry],
-  provider: String? = nil
+  provider: String? = nil,
+  /// The caller's already-built index for this exact timeline. Passing it
+  /// skips a second full tool-activity walk; nil keeps the old behavior.
+  toolActivity: WorkTurnToolActivityIndex? = nil,
+  isStreaming: Bool = false
 ) -> [WorkTimelineEntry] {
   let hidesPromptSuggestions = provider.map { providerFamilyKey($0) == "claude" } == true
-  // Hide only the exact inline groups flushed into a completed turn's sheet.
-  // Member ids and file paths are not identities — the same path in a later
-  // completed turn must not erase an earlier markerless cluster.
-  let claimedInlineGroupIds = workTurnToolActivityIndex(from: timeline).claimedInlineGroupIds
-  return timeline.filter { entry in
+  let index = toolActivity ?? workTurnToolActivityIndex(from: timeline)
+  let claimedInlineGroupIds = index.claimedInlineGroupIds
+  let liveGroupIds = isStreaming ? index.activeInlineGroupIds : []
+  let drawn = timeline.filter { entry in
     switch entry.payload {
     case .toolGroup, .changedFiles:
-      if claimedInlineGroupIds.contains(entry.id) {
+      if claimedInlineGroupIds.contains(entry.id) || liveGroupIds.contains(entry.id) {
         return false
       }
     default:
@@ -2457,6 +2707,80 @@ func workPresentedTimelineEntries(
       return true
     }
   }
+  return workGroupingPresentedRuns(drawn)
+}
+
+/// Up to three subagent cards side by side on desktop (`SUBAGENT_CARD_GRID_MAX_COLUMNS`).
+let workSubagentGridMaxColumns = 3
+
+/// Runs of drawn rows that share one row, in desktop's order and on the rows
+/// the thread draws, so a hidden tool row never splits a run:
+/// 1. more than three adjacent same-cause stopped cards → one stopped group
+///    (`groupStoppedSubagentResultCards`);
+/// 2. adjacent subagent cards → one side-by-side grid keyed by its first card
+///    (`groupSubagentCardGrids`), so a card joining never moves the others;
+/// 3. 2+ adjacent background jobs → one job group keyed by its first job
+///    (`groupBackgroundJobRuns`), split where one was still running when its
+///    turn ended and the next was not, since the turn fold keeps one and
+///    hides the other.
+func workGroupingPresentedRuns(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
+  let grouped = collapseSameCauseSubagentEntries(entries, causeOf: workSubagentStoppedGroupCause)
+  var liveAtTurnEnd = Set<String>()
+  for entry in grouped {
+    if case .turnEndMarker(let marker) = entry.payload { liveAtTurnEnd.formUnion(marker.liveEntryIds) }
+  }
+  var result: [WorkTimelineEntry] = []
+  result.reserveCapacity(grouped.count)
+  var index = 0
+  while index < grouped.count {
+    let anchor = grouped[index]
+    switch anchor.payload {
+    case .subagent(let first) where first.kind != .backgroundCommand:
+      var rows = [first]
+      var end = index + 1
+      while end < grouped.count, case .subagent(let next) = grouped[end].payload, next.kind != .backgroundCommand {
+        rows.append(next)
+        end += 1
+      }
+      if rows.count > 1 {
+        result.append(WorkTimelineEntry(
+          id: anchor.id,
+          timestamp: anchor.timestamp,
+          rank: anchor.rank,
+          payload: .subagentGrid(WorkSubagentTimelineGrid(id: anchor.id, rows: rows)),
+          turnId: anchor.turnId
+        ))
+      } else {
+        result.append(anchor)
+      }
+      index = end
+    case .backgroundJob(let first):
+      let firstLive = liveAtTurnEnd.contains(first.id)
+      var jobs = [first]
+      var end = index + 1
+      while end < grouped.count, case .backgroundJob(let next) = grouped[end].payload,
+            liveAtTurnEnd.contains(next.id) == firstLive {
+        jobs.append(next)
+        end += 1
+      }
+      if jobs.count > 1 {
+        result.append(WorkTimelineEntry(
+          id: anchor.id,
+          timestamp: anchor.timestamp,
+          rank: anchor.rank,
+          payload: .backgroundJobRun(WorkBackgroundJobRunModel(id: anchor.id, jobs: jobs)),
+          turnId: anchor.turnId
+        ))
+      } else {
+        result.append(anchor)
+      }
+      index = end
+    default:
+      result.append(anchor)
+      index += 1
+    }
+  }
+  return result
 }
 
 /// Fold tool-like timeline entries (tool cards, commands, file changes) into
@@ -2655,17 +2979,21 @@ private func aggregateChangedFiles(from members: [WorkToolGroupMember]) -> [Work
 /// The argsText is pretty-printed JSON so a regex over the canonical key form
 /// is good enough — we're only using it to surface the path on the row, not
 /// for any execution-critical decision.
+private let workCodeChangeFilePathRegexes: [NSRegularExpression] = [
+  #""file_path"\s*:\s*"([^"]+)""#,
+  #""path"\s*:\s*"([^"]+)""#,
+].compactMap { try? NSRegularExpression(pattern: $0) }
+
 private func extractCodeChangeFilePath(fromArgsText argsText: String?) -> String? {
   guard let argsText, !argsText.isEmpty else { return nil }
-  let patterns = [#""file_path"\s*:\s*"([^"]+)""#, #""path"\s*:\s*"([^"]+)""#]
-  for pattern in patterns {
-    if let regex = try? NSRegularExpression(pattern: pattern) {
-      let range = NSRange(argsText.startIndex..<argsText.endIndex, in: argsText)
-      if let match = regex.firstMatch(in: argsText, range: range), match.numberOfRanges >= 2,
-         let pathRange = Range(match.range(at: 1), in: argsText) {
-        let value = String(argsText[pathRange])
-        if !value.isEmpty { return value }
-      }
+  // Compiled once: this runs for every code-change tool card on every
+  // timeline rebuild. `NSRegularExpression` matching is thread-safe.
+  let range = NSRange(argsText.startIndex..<argsText.endIndex, in: argsText)
+  for regex in workCodeChangeFilePathRegexes {
+    if let match = regex.firstMatch(in: argsText, range: range), match.numberOfRanges >= 2,
+       let pathRange = Range(match.range(at: 1), in: argsText) {
+      let value = String(argsText[pathRange])
+      if !value.isEmpty { return value }
     }
   }
   return nil
@@ -3214,28 +3542,14 @@ private func workResolvedInlineItemIds(from transcript: [WorkChatEnvelope]) -> S
   return ids
 }
 
-func workIncrementalEventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
-  eventCard(for: envelope)
-}
-
-func workIncrementalMergedEventCard(
-  _ existing: WorkEventCardModel,
-  with incoming: WorkEventCardModel
-) -> WorkEventCardModel? {
-  mergedWorkEventCard(existing, with: incoming)
-}
-
-func workIncrementalEventCards(from timeline: [WorkTimelineEntry]) -> [WorkEventCardModel] {
-  timeline.compactMap { entry in
-    guard case .eventCard(let card) = entry.payload else { return nil }
-    return card
-  }
-}
-
 func buildWorkEventCards(
   from transcript: [WorkChatEnvelope],
   suppressedItemIds: Set<String> = [],
-  taskList: WorkChatTaskListSnapshot? = nil
+  taskList: WorkChatTaskListSnapshot? = nil,
+  /// The session id of the WHOLE transcript, for a caller that passes a
+  /// subsequence (the thread engine's sparse fold). Nil reads it from
+  /// `transcript`.
+  taskListSessionId: String? = nil
 ) -> [WorkEventCardModel] {
   var byId: [String: WorkEventCardModel] = [:]
   var order: [String] = []
@@ -3334,8 +3648,11 @@ func buildWorkEventCards(
     }
   }
   var cards = order.compactMap { byId[$0] }
+  // The chat's ONE task list sits where the list last changed (desktop
+  // `upsertTaskListRow` re-appends it at each plan or todo update), not at
+  // the end of the thread.
   if let taskList = taskList ?? buildWorkChatTaskListSnapshot(from: transcript),
-     let sessionId = transcript.last?.sessionId {
+     let sessionId = taskListSessionId ?? transcript.last?.sessionId {
     let active = taskList.items.first(where: { $0.status == .running })
       ?? taskList.items.first(where: { $0.status == .pending })
     cards.append(WorkEventCardModel(
@@ -3344,7 +3661,7 @@ func buildWorkEventCards(
       title: taskList.label,
       icon: "checklist",
       tint: .accent,
-      timestamp: transcript.map(\.timestamp).max() ?? taskList.timestamp,
+      timestamp: taskList.timestamp,
       turnId: taskList.turnId,
       body: active?.activeLabel ?? active?.label,
       bullets: taskList.items.map(\.label),
@@ -3445,7 +3762,7 @@ private func redundantWorkTerminalStatus(
     && (normalizedStatus == "interrupted" || normalizedStatus == "failed")
 }
 
-private func workReasoningCardId(
+func workReasoningCardId(
   sessionId: String,
   turnId: String?,
   itemId: String?,
@@ -3554,6 +3871,15 @@ func workSpawnCompletionChildId(from detail: String?) -> String? {
   return trimmed.isEmpty ? nil : trimmed
 }
 
+/// `detail.hasInlineCard == true` on a `subagent_spawned` notice.
+func workNoticeHasInlineSubagentCard(_ detail: String?) -> Bool {
+  guard let detail, detail.contains("hasInlineCard"),
+        let data = detail.data(using: .utf8),
+        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+  else { return false }
+  return object["hasInlineCard"] as? Bool == true
+}
+
 /// Stable identity for ONE host sleep, shared by its paused and resumed halves
 /// so `buildWorkEventCards` folds them into a single chip that resolves in
 /// place — the host's "one sleep, one artifact" contract, and desktop parity
@@ -3651,7 +3977,42 @@ private func workPlanTextCardId(
   return fallback
 }
 
-private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> String {
+/// One streamed reasoning fragment folded into the card's text so far.
+/// Desktop parity with `mergeReasoningFragment` (shared/chatActivityPhase.ts):
+/// fragments append verbatim; a cumulative re-emit replaces the text it
+/// extends; a fragment that repeats the text's tail is dropped. Unlike
+/// `mergeWorkInlineText`, a fragment is never dropped for appearing earlier in
+/// the text and no separator is inserted: streamed pieces such as " minutes."
+/// or "x" (after "Linu") are real text. Byte comparisons keep a fragment's
+/// cost proportional to the fragment, not to the whole block.
+func mergeWorkReasoningFragment(_ existing: String, _ incoming: String) -> String {
+  if existing.isEmpty { return incoming }
+  if incoming.isEmpty { return existing }
+  let old = existing.utf8
+  let new = incoming.utf8
+  if old.count == new.count, old.elementsEqual(new) { return existing }
+  if new.count > old.count, new.prefix(old.count).elementsEqual(old) { return incoming }
+  if old.count > new.count, old.prefix(new.count).elementsEqual(new) { return existing }
+  let trimmedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines).utf8
+  if !trimmedIncoming.isEmpty {
+    var end = old.endIndex
+    while end > old.startIndex {
+      let before = old.index(before: end)
+      let byte = old[before]
+      // ASCII whitespace, the set JS `trimEnd` covers for model output.
+      guard byte == 0x20 || byte == 0x09 || byte == 0x0A || byte == 0x0D else { break }
+      end = before
+    }
+    let body = old[old.startIndex..<end]
+    if body.count >= trimmedIncoming.count,
+       body.suffix(trimmedIncoming.count).elementsEqual(trimmedIncoming) {
+      return existing
+    }
+  }
+  return existing + incoming
+}
+
+func mergeWorkInlineText(_ existing: String, _ incoming: String) -> String {
   if existing.isEmpty { return incoming }
   if incoming.isEmpty { return existing }
   if existing == incoming { return existing }
@@ -3663,7 +4024,7 @@ private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> Stri
   return "\(existing)\(separator)\(incoming)"
 }
 
-private func laterWorkTimestamp(_ lhs: String, _ rhs: String) -> String {
+func laterWorkTimestamp(_ lhs: String, _ rhs: String) -> String {
   let lhsDate = workParsedDate(lhs)
   let rhsDate = workParsedDate(rhs)
 
@@ -3859,7 +4220,7 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
       icon: incoming.icon,
       tint: incoming.tint,
       timestamp: laterWorkTimestamp(existing.timestamp, incoming.timestamp),
-      body: mergeWorkInlineText(existing.body ?? "", incoming.body ?? ""),
+      body: mergeWorkReasoningFragment(existing.body ?? "", incoming.body ?? ""),
       bullets: incoming.bullets.isEmpty ? existing.bullets : incoming.bullets,
       metadata: incoming.metadata.isEmpty ? existing.metadata : incoming.metadata,
       planSteps: incoming.planSteps.isEmpty ? existing.planSteps : incoming.planSteps
@@ -3896,7 +4257,7 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
   return incoming
 }
 
-private func eventCard(
+func eventCard(
   for envelope: WorkChatEnvelope,
   resolutionByItemId: [String: String] = [:]
 ) -> WorkEventCardModel? {
@@ -4157,6 +4518,9 @@ private func eventCard(
         )
       }
       guard !isLowSignalWorkSystemNotice(kind: kind, message: message, detail: detail) else { return nil }
+      // A spawn notice whose subagent card is inline draws nothing: the card
+      // is the announcement (desktop `isInlineCardSpawnNotice`).
+      guard !workNoticeHasInlineSubagentCard(detail) else { return nil }
       return WorkEventCardModel(
         id: envelope.id,
         kind: kind == "conversation_reset" ? "conversationReset" : "notice",
@@ -4191,9 +4555,8 @@ private func eventCard(
         nextAction: nextAction
       )
     case .done:
-      // Usage is rendered as a compact timeline banner near the completed
-      // turn. Avoid a generic event card here because the host summary often
-      // contains raw JSON.
+      // Usage is drawn on the turn-end line. Avoid a generic event card here
+      // because the host summary often contains raw JSON.
       return nil
     case .promptSuggestion(let text, _):
       return WorkEventCardModel(
@@ -4476,94 +4839,6 @@ private extension WorkTimelineEntry {
   }
 }
 
-/// Walk a sorted timeline and emit a turn-separator pill before each user
-/// message so the transcript reads like the desktop AgentChatPane: a centered
-/// "HH:MM AM · Model" label introduces every new turn.
-///
-/// The separator carries the user-message timestamp and the model recorded for
-/// that turn when the host emitted a terminal `done` event. Falling back to the
-/// chat's current model keeps in-progress turns labeled while avoiding relabels
-/// of older turns after a model switch.
-func injectWorkTurnSeparators(
-  into entries: [WorkTimelineEntry],
-  chatSummary: AgentChatSessionSummary?,
-  transcript: [WorkChatEnvelope] = []
-) -> [WorkTimelineEntry] {
-  injectWorkTurnSeparators(
-    into: entries,
-    provider: chatSummary?.provider ?? "",
-    model: chatSummary?.model ?? "",
-    modelId: chatSummary?.modelId,
-    transcript: transcript
-  )
-}
-
-func injectWorkTurnSeparators(
-  into entries: [WorkTimelineEntry],
-  provider: String,
-  model: String,
-  modelId: String?,
-  transcript: [WorkChatEnvelope] = []
-) -> [WorkTimelineEntry] {
-  guard !entries.isEmpty else { return entries }
-  var seenTurnIds = Set<String>()
-  var output: [WorkTimelineEntry] = []
-  output.reserveCapacity(entries.count + 4)
-
-  let fallbackModelId = modelId ?? model
-  let fallbackMetadata = WorkTurnModelMetadata(
-    provider: provider,
-    modelLabel: prettyWorkChatModelName(model),
-    modelId: fallbackModelId
-  )
-  let visibleTurnIds = Set(entries.compactMap { entry -> String? in
-    guard case .message(let message) = entry.payload,
-          message.role.lowercased() == "user"
-    else { return nil }
-    return normalizedWorkTurnId(message.turnId)
-  })
-  let metadataByTurn = workTurnModelMetadataByTurn(
-    from: transcript,
-    fallback: fallbackMetadata,
-    matchingTurnIds: visibleTurnIds
-  )
-
-  for entry in entries {
-    if case .message(let message) = entry.payload, message.role.lowercased() == "user" {
-      // De-dupe by turnId when present; otherwise allow one separator per
-      // user message (which is how desktop chunks the transcript).
-      let key = message.turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "msg-\(message.id)"
-      if !seenTurnIds.contains(key) {
-        seenTurnIds.insert(key)
-        let metadata = message.turnId
-          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-          .flatMap { metadataByTurn[$0] }
-          ?? fallbackMetadata
-        let separator = WorkTurnSeparator(
-          time: message.timestamp,
-          provider: metadata.provider,
-          modelLabel: metadata.modelLabel,
-          modelId: metadata.modelId
-        )
-        // Rank the separator just before the user message at the same
-        // timestamp so the sort below stays stable and the separator hugs
-        // its turn rather than floating alone.
-        output.append(
-          WorkTimelineEntry(
-            id: "turn-sep-\(key)",
-            timestamp: message.timestamp,
-            rank: entry.rank - 1,
-            payload: .turnSeparator(separator),
-            turnId: entry.turnId
-          )
-        )
-      }
-    }
-    output.append(entry)
-  }
-  return output
-}
-
 /// `usageLimitTurnId` is the turn the host's `usageLimitResume` row is anchored
 /// to. It is a second, weaker signal than `apiErrorStatus == 429`: a rate-limit
 /// event can settle the turn without an API error frame, and the resume row is
@@ -4573,22 +4848,52 @@ func workTurnEndMarkers(
   usageLimitTurnId: String? = nil,
   sourceCountsByTurn: [String: Int]? = nil
 ) -> [WorkTurnEndMarker] {
-  let limitTurnKey = normalizedWorkTurnId(usageLimitTurnId)
-  let sourceCounts = sourceCountsByTurn ?? buildWorkChatSourceList(from: transcript).countsByTurn
-  var startByTurn: [String: String] = [:]
-  var markers: [WorkTurnEndMarker] = []
-  var seenEndedTurns = Set<String>()
-  var fallbackStart: String?
-  var currentTurnKey: String?
-  var unkeyedLiveEntryIds = Set<String>()
-  var turnKeyByLiveEntryId: [String: String] = [:]
-  var liveBackgroundJobsByTurn: [String: Set<String>] = [:]
-  var liveScheduledWorkByTurn: [String: Set<String>] = [:]
-
+  var fold = WorkTurnEndMarkerFold(usageLimitTurnId: usageLimitTurnId)
   for envelope in sortedWorkChatEnvelopes(transcript) {
-    if fallbackStart == nil {
-      fallbackStart = envelope.timestamp
+    fold.consume(envelope)
+  }
+  return fold.markers(
+    sourceCountsByTurn: sourceCountsByTurn ?? buildWorkChatSourceList(from: transcript).countsByTurn
+  )
+}
+
+/// `workTurnEndMarkers` as a left fold over the time-sorted transcript, so
+/// the thread engine can resume it from a prefix.
+///
+/// Per-turn source counts are a whole-transcript input, applied at
+/// `markers(sourceCountsByTurn:)` rather than while folding.
+struct WorkTurnEndMarkerFold {
+  let usageLimitTurnId: String?
+  private let limitTurnKey: String?
+  /// Each turn's `status: started` time: the start of a turn with no user
+  /// message (an internal follow-up, a scheduled wake).
+  private var statusStartByTurn: [String: String] = [:]
+  /// Markers with `sourceCount` still 0.
+  private var foldedMarkers: [WorkTurnEndMarker] = []
+  private var seenEndedTurns = Set<String>()
+  /// The latest user message since the previous `done`: where a turn starts.
+  private var userStart: String?
+  private var currentTurnKey: String?
+  private var unkeyedLiveEntryIds = Set<String>()
+  private var turnKeyByLiveEntryId: [String: String] = [:]
+  private var liveBackgroundJobsByTurn: [String: Set<String>] = [:]
+  private var liveScheduledWorkByTurn: [String: Set<String>] = [:]
+
+  func markers(sourceCountsByTurn: [String: Int]) -> [WorkTurnEndMarker] {
+    guard !sourceCountsByTurn.isEmpty else { return foldedMarkers }
+    return foldedMarkers.map { marker in
+      var marker = marker
+      marker.sourceCount = sourceCountsByTurn[marker.turnId] ?? 0
+      return marker
     }
+  }
+
+  init(usageLimitTurnId: String?) {
+    self.usageLimitTurnId = usageLimitTurnId
+    self.limitTurnKey = normalizedWorkTurnId(usageLimitTurnId)
+  }
+
+  mutating func consume(_ envelope: WorkChatEnvelope) {
     switch envelope.event {
     case .scheduledWorkUpdate(let id, let kind, let status, _, _, _, _, _, _, _, _, _, _, _, _, _, let sourceTaskId, let turnId, _):
       let normalizedKind = kind.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -4624,27 +4929,24 @@ func workTurnEndMarkers(
         }
       }
     case .userMessage(_, _, let turnId, _, _, _):
-      // A new visible user turn is also the fallback boundary for providers or
-      // imported transcripts that omit turn ids and terminal events.
-      fallbackStart = envelope.timestamp
+      // Desktop `deriveTurnEndDurations`: a turn runs from the latest user
+      // message before its `done`.
+      userStart = envelope.timestamp
       currentTurnKey = normalizedWorkTurnId(turnId)
-      guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { continue }
-      startByTurn[key] = envelope.timestamp
     case .status(let turnStatus, _, let turnId):
       switch turnStatus.lowercased() {
       case "started", "active", "running", "inprogress", "in_progress", "in-progress":
-        guard let key = normalizedWorkTurnId(turnId) else { continue }
+        guard let key = normalizedWorkTurnId(turnId) else { return }
         currentTurnKey = key
-        guard startByTurn[key] == nil else { continue }
-        startByTurn[key] = envelope.timestamp
+        if statusStartByTurn[key] == nil { statusStartByTurn[key] = envelope.timestamp }
       default:
-        continue
+        return
       }
     case .done(let status, _, let usage, let turnId, let model, let modelId, let terminalReason):
       let explicitKey = normalizedWorkTurnId(turnId)
       let key = explicitKey ?? "fallback-\(envelope.id)"
-      guard !seenEndedTurns.contains(key) else { continue }
-      let start = explicitKey.flatMap { startByTurn[$0] } ?? fallbackStart ?? envelope.timestamp
+      guard !seenEndedTurns.contains(key) else { return }
+      let start = userStart ?? explicitKey.flatMap { statusStartByTurn[$0] }
       seenEndedTurns.insert(key)
       let metadata = workTurnModelMetadata(model: model, modelId: modelId, fallbackProvider: "")
       let usageLimitPaused = envelope.apiErrorStatus == 429
@@ -4652,30 +4954,45 @@ func workTurnEndMarkers(
       let liveIds = (liveBackgroundJobsByTurn[explicitKey ?? key] ?? [])
         .union(liveScheduledWorkByTurn[explicitKey ?? key] ?? [])
         .union(explicitKey == nil ? unkeyedLiveEntryIds : [])
-      markers.append(WorkTurnEndMarker(
+      foldedMarkers.append(WorkTurnEndMarker(
         turnId: key,
         time: envelope.timestamp,
-        workedDurationLabel: formattedSessionDuration(startedAt: start, endedAt: envelope.timestamp),
+        workedDurationLabel: start.flatMap { workTurnDurationLabel(startedAt: $0, endedAt: envelope.timestamp) },
         status: status,
         terminalReasonLabel: workTerminalReasonLabel(terminalReason),
         provider: metadata.provider,
         modelLabel: metadata.modelLabel,
         modelId: metadata.modelId,
         usageLimitPaused: usageLimitPaused,
-        sourceCount: sourceCounts[key] ?? 0,
         liveEntryIds: liveIds,
-        usage: usageLimitPaused ? usage : nil
+        usage: usage
       ))
       if currentTurnKey == explicitKey { currentTurnKey = nil }
       if explicitKey == nil { unkeyedLiveEntryIds.removeAll(keepingCapacity: true) }
-      fallbackStart = nil
+      userStart = nil
     default:
-      guard let key = normalizedWorkTurnId(workTurnId(for: envelope.event)), startByTurn[key] == nil else { continue }
-      startByTurn[key] = envelope.timestamp
+      return
     }
   }
+}
 
-  return markers
+/// Desktop `formatTurnDuration` between two ISO stamps: `<1s`, `4.2s`, `12s`,
+/// `3m 32s`, `3m`. Nil when either stamp does not parse or no time passed
+/// (desktop shows a duration only when it measured one).
+func workTurnDurationLabel(startedAt: String, endedAt: String) -> String? {
+  guard let start = workParsedDate(startedAt), let end = workParsedDate(endedAt) else { return nil }
+  let ms = end.timeIntervalSince(start) * 1000
+  guard ms > 0 else { return nil }
+  return workFormatTurnDuration(ms: ms)
+}
+
+func workFormatTurnDuration(ms: Double) -> String {
+  if ms < 1000 { return "<1s" }
+  let seconds = ms / 1000
+  if seconds < 60 { return seconds < 10 ? String(format: "%.1fs", seconds) : "\(Int(seconds.rounded()))s" }
+  let minutes = Int(seconds / 60)
+  let remSeconds = Int((seconds - Double(minutes * 60)).rounded())
+  return remSeconds > 0 ? "\(minutes)m \(remSeconds)s" : "\(minutes)m"
 }
 
 /// Keep this map aligned with the desktop renderer's terse terminal-reason
@@ -4722,7 +5039,7 @@ func normalizedWorkTurnId(_ turnId: String?) -> String? {
   return key.isEmpty ? nil : key
 }
 
-private func workTurnId(for event: WorkChatEvent) -> String? {
+func workTurnId(for event: WorkChatEvent) -> String? {
   switch event {
   case .userMessage(_, _, let turnId, _, _, _),
        .userMessageResolution(_, _, _, _, _, let turnId),
@@ -4774,7 +5091,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
   }
 }
 
-struct WorkTurnModelMetadata {
+struct WorkTurnModelMetadata: Equatable {
   let provider: String
   let modelLabel: String
   let modelId: String?
@@ -4782,29 +5099,9 @@ struct WorkTurnModelMetadata {
 
 func workTurnModelMetadataByTurn(
   from transcript: [WorkChatEnvelope],
-  fallback: WorkTurnModelMetadata? = nil,
-  matchingTurnIds: Set<String>? = nil
+  fallback: WorkTurnModelMetadata? = nil
 ) -> [String: WorkTurnModelMetadata] {
   var metadataByTurn: [String: WorkTurnModelMetadata] = [:]
-  if let matchingTurnIds {
-    guard !matchingTurnIds.isEmpty else { return metadataByTurn }
-    for envelope in transcript.reversed() {
-      guard case .done(_, _, _, let turnId, let model, let modelId, _) = envelope.event else { continue }
-      let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard matchingTurnIds.contains(normalizedTurnId),
-            metadataByTurn[normalizedTurnId] == nil else { continue }
-      metadataByTurn[normalizedTurnId] = workTurnModelMetadata(
-        model: model,
-        modelId: modelId,
-        fallbackProvider: fallback?.provider ?? "",
-        fallbackModelLabel: fallback?.modelLabel ?? "Model",
-        fallbackModelId: fallback?.modelId
-      )
-      if metadataByTurn.count == matchingTurnIds.count { break }
-    }
-    return metadataByTurn
-  }
-
   for envelope in transcript {
     guard case .done(_, _, _, let turnId, let model, let modelId, _) = envelope.event else { continue }
     let normalizedTurnId = turnId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5278,87 +5575,4 @@ func workErrorCategory(message: String, detail: String?) -> String {
     return "permission"
   }
   return "general"
-}
-
-// MARK: - Idle live-event prune
-
-/// How many *structural* envelopes the idle window keeps, on top of the heavy
-/// content tail. These rows are a few dozen bytes each, so several hundred of
-/// them cost far less than a single tool result — but the budget still exists,
-/// because a long-running chat can emit subagent progress indefinitely.
-let workChatIdleStructuralEventCap = 400
-
-/// A tiny lifecycle envelope that produces a timeline row the canonical *text*
-/// transcript can never regenerate.
-///
-/// The idle prune keeps the last N events and the reopen rebuild back-fills
-/// text from the canonical transcript. That combination made the thread look
-/// complete while every subagent card from an earlier turn was gone. These
-/// kinds are therefore exempt from the tail cut: the budget applies to heavy
-/// content events (assistant text, tool calls/results, diffs, command output)
-/// which the canonical transcript *can* restore.
-///
-/// `todoUpdate` is deliberately NOT structural: it is superseded wholesale by
-/// the next one, and it carries a list, so keeping every historical copy would
-/// spend the structural budget on rows nobody can scroll back to.
-func workChatEventIsStructuralEnvelope(_ event: AgentChatEvent) -> Bool {
-  switch event {
-  case .subagentStarted, .subagentProgress, .subagentResult:
-    return true
-  case .scheduledWorkUpdate:
-    return true
-  // Not a row of its own, but it *suppresses* rows — dropping it silently
-  // un-retracts a retracted message on reopen.
-  case .transcriptRetraction:
-    return true
-  case .userMessageResolution:
-    return true
-  // The resolution receipt for an approval / question / plan card. It is not a
-  // row of its own once folded inline — it is the card's *outcome*. Dropping it
-  // while the card itself is restored (an older history page re-fetches the
-  // request, but nothing re-fetches the pruned band after it) leaves an
-  // answered gate rendering as if it were still waiting.
-  case .pendingInputResolved:
-    return true
-  case .contextCompact, .codexContextCompaction:
-    return true
-  case .claudeGoalUpdated, .claudeGoalCleared:
-    return true
-  case .conversationReset:
-    return true
-  default:
-    return false
-  }
-}
-
-/// Structure-aware idle prune. Keeps the last `heavyTailLimit` heavy content
-/// envelopes plus (up to `structuralCap`) structural ones, in their original
-/// order. Returns the retained events.
-func workPrunedIdleChatEventHistory(
-  _ events: [AgentChatEventEnvelope],
-  keepingHeavyTail heavyTailLimit: Int,
-  structuralCap: Int = workChatIdleStructuralEventCap
-) -> [AgentChatEventEnvelope] {
-  // Explicit fast path: the reverse stride below is empty for an empty input
-  // and the trailing guard already returns `events`, but say so up front.
-  guard !events.isEmpty else { return events }
-  let heavyLimit = max(0, heavyTailLimit)
-  let structuralLimit = max(0, structuralCap)
-  var keptHeavy = 0
-  var keptStructural = 0
-  var keepFlags = [Bool](repeating: false, count: events.count)
-  // Walk from the tail so "keep the last N" falls out of the same pass for
-  // both budgets.
-  for index in stride(from: events.count - 1, through: 0, by: -1) {
-    if workChatEventIsStructuralEnvelope(events[index].event) {
-      guard keptStructural < structuralLimit else { continue }
-      keptStructural += 1
-    } else {
-      guard keptHeavy < heavyLimit else { continue }
-      keptHeavy += 1
-    }
-    keepFlags[index] = true
-  }
-  guard keptHeavy + keptStructural < events.count else { return events }
-  return zip(events, keepFlags).compactMap { $1 ? $0 : nil }
 }

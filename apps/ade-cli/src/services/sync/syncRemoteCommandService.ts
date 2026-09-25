@@ -13,10 +13,18 @@ import {
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { runWithAbortSignal } from "./abortSignal";
+import {
+  buildSyncResultTooLargeError,
+  SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES,
+  SYNC_RESULT_TOO_LARGE_ERROR_CODE,
+  type SyncResultTooLargeError,
+} from "./syncProtocol";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/cursorCloudNaming";
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
 import type {
+  PrSnapshotHydration,
+  PrSummary,
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
   AgentChatAcceptCrossMachineHandoffArgs,
@@ -367,7 +375,35 @@ export type ExternalSessionsRemoteService = {
 
 const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>(EXTERNAL_SESSION_PROVIDER_LIST);
 
+/** Thrown when a command's serialized result is over the sync reply limit. */
+export class SyncRemoteCommandResultTooLargeError extends Error {
+  readonly code = SYNC_RESULT_TOO_LARGE_ERROR_CODE;
+  readonly details: SyncResultTooLargeError;
+
+  constructor(details: SyncResultTooLargeError) {
+    super(details.message);
+    this.name = "SyncRemoteCommandResultTooLargeError";
+    this.details = details;
+  }
+}
+
+/** UTF-8 size of the JSON a result serializes to; 0 when it cannot be measured. */
+export function measureSyncRemoteCommandResultBytes(result: unknown): number {
+  if (result === undefined || result === null) return 0;
+  if (typeof result !== "object" && typeof result !== "string") return 0;
+  try {
+    const json = JSON.stringify(result);
+    return typeof json === "string" ? Buffer.byteLength(json, "utf8") : 0;
+  } catch {
+    // Unserializable results fail later in the envelope encoder with their own
+    // error; the size guard is not the place to report them.
+    return 0;
+  }
+}
+
 type SyncRemoteCommandServiceArgs = {
+  /** Overrides the result size limit. Tests only. */
+  remoteCommandResultMaxBytes?: number;
   /**
    * Per-project cr-sqlite DB. Source of truth for the model-picker store
    * (favorites + recents) when no explicit `getModelPickerStore` accessor is
@@ -6365,6 +6401,135 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
 }
 
+export type PrRefreshSnapshotScope = "all" | "active" | "none";
+
+type PrRefreshSyncArgs = {
+  prId: string | null;
+  prIds: string[];
+  includeSnapshots: PrRefreshSnapshotScope;
+};
+
+/**
+ * Serialized snapshot bytes one `prs.refresh` reply may carry. Snapshots past
+ * it are listed in `omittedSnapshotPrIds`; the client fetches those one PR at
+ * a time (`prs.refresh { prId }`) when the PR is opened.
+ */
+export const PR_REFRESH_SNAPSHOT_BUDGET_BYTES = 6 * 1024 * 1024;
+
+function parsePrRefreshSyncArgs(payload: Record<string, unknown>): PrRefreshSyncArgs {
+  const raw = payload.includeSnapshots;
+  // Old phones send no args; they get the bounded default.
+  const includeSnapshots: PrRefreshSnapshotScope = raw === "all" || raw === "none" ? raw : "active";
+  return {
+    prId: asTrimmedString(payload.prId),
+    prIds: asStringArray(payload.prIds),
+    includeSnapshots,
+  };
+}
+
+function isOpenPrState(state: string | null | undefined): boolean {
+  return state === "open" || state === "draft";
+}
+
+async function listLiveLaneIdsForPrRefresh(args: SyncRemoteCommandServiceArgs): Promise<Set<string> | null> {
+  try {
+    const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
+    return new Set(lanes.map((lane) => lane.id));
+  } catch (error) {
+    args.logger.warn("sync.prs_refresh.live_lanes_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * `prs.refresh` for sync clients. Without `prId`/`prIds` it returns the whole
+ * PR list (small) but only the snapshots that matter now: PRs that are open or
+ * whose lane is still live. Snapshots for merged PRs on archived lanes load on
+ * demand. Every reply is capped at `PR_REFRESH_SNAPSHOT_BUDGET_BYTES` of
+ * snapshots, so the reply can never grow with the project's PR history.
+ */
+export async function refreshPullRequestsForSync(
+  args: Pick<SyncRemoteCommandServiceArgs, "prService" | "laneService" | "logger">,
+  input: PrRefreshSyncArgs,
+  budgetBytes: number = PR_REFRESH_SNAPSHOT_BUDGET_BYTES,
+): Promise<{
+  refreshedCount: number;
+  prs: PrSummary[];
+  snapshots: PrSnapshotHydration[];
+  snapshotScope: PrRefreshSnapshotScope | "requested";
+  omittedSnapshotPrIds: string[];
+}> {
+  const { prId, prIds } = input;
+  let refreshArgs: { prId?: string; prIds?: string[] } = {};
+  if (prId) refreshArgs = { prId };
+  else if (prIds.length > 0) refreshArgs = { prIds };
+  await args.prService.refresh(refreshArgs);
+  const allPrs = await args.prService.listAll();
+  const requestedPrIds = new Set(prId ? [prId] : prIds);
+  const isRequested = requestedPrIds.size > 0;
+  const prs = isRequested ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
+  let refreshedCount = prs.length;
+  if (prId) refreshedCount = 1;
+  else if (prIds.length > 0) refreshedCount = prIds.length;
+
+  let snapshotScope: PrRefreshSnapshotScope | "requested" = isRequested ? "requested" : input.includeSnapshots;
+  if (input.includeSnapshots === "none") snapshotScope = "none";
+  let snapshotPrIds: string[] | null;
+  if (snapshotScope === "none") {
+    snapshotPrIds = [];
+  } else if (snapshotScope === "requested") {
+    snapshotPrIds = [...requestedPrIds];
+  } else if (snapshotScope === "all") {
+    snapshotPrIds = null;
+  } else {
+    const liveLaneIds = await listLiveLaneIdsForPrRefresh(args as SyncRemoteCommandServiceArgs);
+    snapshotPrIds = allPrs
+      .filter((pr) => isOpenPrState(pr.state) || (liveLaneIds?.has(pr.laneId) ?? false))
+      .map((pr) => pr.id);
+  }
+  const wantedPrIds = snapshotPrIds === null ? null : new Set(snapshotPrIds);
+  const candidates = (snapshotPrIds === null
+    ? args.prService.listSnapshots()
+    : snapshotPrIds.length === 0
+      ? []
+      : prId
+        ? args.prService.listSnapshots({ prId })
+        : args.prService.listSnapshots({ prIds: snapshotPrIds }))
+    // The service narrows in SQL; this keeps the reply exact regardless.
+    .filter((snapshot) => wantedPrIds === null || wantedPrIds.has(snapshot.prId));
+
+  // Open PRs first, so a budget cut drops history rather than live work.
+  const stateByPrId = new Map(allPrs.map((pr) => [pr.id, pr.state] as const));
+  const ordered = [...candidates].sort((left, right) =>
+    Number(isOpenPrState(stateByPrId.get(right.prId))) - Number(isOpenPrState(stateByPrId.get(left.prId))));
+  const snapshots: PrSnapshotHydration[] = [];
+  const omittedSnapshotPrIds: string[] = [];
+  let usedBytes = 0;
+  for (const snapshot of ordered) {
+    const bytes = measureSyncRemoteCommandResultBytes(snapshot);
+    // A single requested PR always goes out; the command-level guard still
+    // refuses it if it alone is over the sync limit.
+    if (usedBytes + bytes > budgetBytes && !(prId && snapshots.length === 0)) {
+      omittedSnapshotPrIds.push(snapshot.prId);
+      continue;
+    }
+    usedBytes += bytes;
+    snapshots.push(snapshot);
+  }
+  if (omittedSnapshotPrIds.length > 0) {
+    args.logger.info("sync.prs_refresh.snapshots_over_budget", {
+      snapshotScope,
+      includedCount: snapshots.length,
+      omittedCount: omittedSnapshotPrIds.length,
+      usedBytes,
+      budgetBytes,
+    });
+  }
+  return { refreshedCount, prs, snapshots, snapshotScope, omittedSnapshotPrIds };
+}
+
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("prs.list", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listAll());
   register("prs.listOpenForRepo", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listOpenPullRequests());
@@ -6376,30 +6541,8 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.syncLanePr(parseLaneIdArgs(payload, "prs.syncLanePr").laneId));
   register("prs.reconcileOnFocus", { viewerAllowed: true }, async (payload) =>
     args.prService.reconcileOnFocus({ force: payload?.force === true }));
-  register("prs.refresh", { viewerAllowed: true, observesAbort: true }, async (payload) => {
-    const prId = asTrimmedString(payload.prId);
-    const prIds = asStringArray(payload.prIds);
-    let refreshArgs: { prId?: string; prIds?: string[] } = {};
-    if (prId) refreshArgs = { prId };
-    else if (prIds.length > 0) refreshArgs = { prIds };
-    await args.prService.refresh(refreshArgs);
-    const allPrs = await args.prService.listAll();
-    const requestedPrIds = new Set(prId ? [prId] : prIds);
-    const prs = requestedPrIds.size > 0 ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
-    let refreshedCount = prs.length;
-    if (prId) refreshedCount = 1;
-    else if (prIds.length > 0) refreshedCount = prIds.length;
-    const snapshots = prId
-      ? args.prService.listSnapshots({ prId }).filter((snapshot) => requestedPrIds.has(snapshot.prId))
-      : requestedPrIds.size > 0
-        ? args.prService.listSnapshots().filter((snapshot) => requestedPrIds.has(snapshot.prId))
-        : args.prService.listSnapshots();
-    return {
-      refreshedCount,
-      prs,
-      snapshots,
-    };
-  });
+  register("prs.refresh", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    refreshPullRequestsForSync(args, parsePrRefreshSyncArgs(payload)));
   // iOS "Send to your Mac" deeplink bounce. Mobile cannot natively open a
   // lane / repo-branch / cross-repo PR deeplink, so it forwards the URL to
   // the paired desktop via this command. Desktop main.ts wires up
@@ -6449,10 +6592,13 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getMergeContexts(asStringArray(payload.prIds)));
   register("prs.listWithConflicts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listWithConflicts({ includeConflictAnalysis: payload.includeConflictAnalysis === true }));
-  register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prService.listSnapshots({
+  register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const prIds = asStringArray(payload.prIds);
+    return args.prService.listSnapshots({
       ...(asTrimmedString(payload.prId) ? { prId: asTrimmedString(payload.prId)! } : {}),
-    }));
+      ...(Array.isArray(payload.prIds) ? { prIds } : {}),
+    });
+  });
   register("prs.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
   register("prs.getChecks", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")));
   register("prs.getReviews", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
@@ -6620,6 +6766,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   // a socket close must return control immediately, and this is the only place
   // that knows which derived holder ids a given socket took.
   const macDesktopConnectionLeases: MacDesktopConnectionLeases = new Map();
+  const remoteCommandResultMaxBytes = args.remoteCommandResultMaxBytes ?? SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES;
 
   const register = (
     action: SyncRemoteCommandAction,
@@ -6832,13 +6979,28 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         policy: handler.descriptor.policy,
       });
       const run = () => handler.handler(commandArgs, context);
-      return handler.observesAbort
+      const result = handler.observesAbort
         ? await runWithAbortSignal(
             run,
             context.signal,
             "Remote command aborted.",
           )
         : await run();
+      // Every command is bounded here, so no handler can build a reply that
+      // the transport would refuse (which used to close the connection and
+      // make the client reconnect into the same command forever).
+      const bytes = measureSyncRemoteCommandResultBytes(result);
+      const limitBytes = remoteCommandResultMaxBytes;
+      if (bytes > limitBytes) {
+        const details = buildSyncResultTooLargeError({ label: payload.action, bytes, limitBytes });
+        args.logger.warn("sync.remote_command.result_too_large", {
+          action: payload.action,
+          bytes,
+          limitBytes,
+        });
+        throw new SyncRemoteCommandResultTooLargeError(details);
+      }
+      return result;
     },
   };
 }

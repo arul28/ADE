@@ -76,6 +76,9 @@ struct ADEApp: App {
           // credentials before the first connect so a fresh install lands
           // already paired.
           await syncService.adoptClipPairingHandoffIfPresent()
+          // Fold the most recently opened chats from disk while the socket
+          // comes up, so reopening any of them paints on the first frame.
+          syncService.warmRecentChatThreads()
           await syncService.handleForegroundTransition()
         }
         .onChange(of: scenePhase) { _, newPhase in

@@ -22,7 +22,9 @@ struct WorkChatLaunchPendingScreen: View {
   @State private var errorMessage: String?
   @State private var busyAction: WorkChatLaunchCardAction?
   @State private var retryingMessageId: String?
-  @FocusState private var composerFocused: Bool
+  @State private var composerFocused = false
+  /// This composer cannot hold attachments; the shared card still wants a tray.
+  @State private var noAttachments: [WorkChatInputAttachment] = []
 
   private var entry: ChatLaunchEntry? { store.entry(launchId: launchId) }
 
@@ -151,35 +153,42 @@ struct WorkChatLaunchPendingScreen: View {
         .font(.caption2)
         .foregroundStyle(ADEColor.textMuted)
         .padding(.horizontal, 4)
-      HStack(alignment: .bottom, spacing: 8) {
-        TextField("Message", text: $draft, axis: .vertical)
-          .lineLimit(1...6)
-          .font(.body)
-          .adePromptInputTraits()
-          .focused($composerFocused)
-          .disabled(!canType)
-          .padding(.vertical, 6)
-          .accessibilityLabel("Message")
-          .accessibilityHint("Queued until the agent starts")
-        ADEComposerSendButton(
-          enabled: canType && !trimmed.isEmpty && !sending,
-          sending: sending,
-          accessibilityLabelText: "Queue message",
-          disabledAccessibilityLabel: "Enter a message to queue"
-        ) {
-          Task { await sendQueuedMessage() }
-        }
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .background {
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-          .fill(ADEColor.composerBackground)
-      }
-      .overlay(
-        RoundedRectangle(cornerRadius: 22, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 1)
+      // The app's shared glass prompt box, so the placeholder reads as the
+      // chat it turns into.
+      ADEPlainGlassComposer(
+        text: $draft,
+        isFocused: $composerFocused,
+        attachments: $noAttachments,
+        placeholder: "Message",
+        acceptsPastedImages: false,
+        sendEnabled: canType && !trimmed.isEmpty && !sending,
+        sending: sending,
+        sendAccessibilityLabel: "Queue message",
+        disabledSendAccessibilityLabel: "Enter a message to queue",
+        dictationTargetId: "chat-launch-\(launchId)",
+        onSend: { Task { await sendQueuedMessage() } },
+        menu: { startDictation in
+          Menu {
+            if SpeechDictationService.isAvailable {
+              Button(action: startDictation) {
+                Label("Dictate", systemImage: "mic")
+              }
+            }
+          } label: {
+            Image(systemName: "ellipsis")
+              .font(.system(size: 15, weight: .semibold))
+              .foregroundStyle(ADEColor.textSecondary)
+              .frame(width: 36, height: 36)
+              .contentShape(Circle())
+              .frame(minWidth: 44, minHeight: 44)
+          }
+          .disabled(!canType || !SpeechDictationService.isAvailable)
+          .accessibilityLabel("Composer options")
+        },
+        controls: { EmptyView() }
       )
+      .disabled(!canType)
+      .accessibilityHint("Queued until the agent starts")
     }
     .padding(.horizontal, 12)
     .padding(.top, 6)

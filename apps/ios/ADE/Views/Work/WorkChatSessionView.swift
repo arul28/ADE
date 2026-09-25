@@ -8,11 +8,21 @@ let workChatSubagentActivePopupHeight: CGFloat = 34
 /// The composer chip strip. Its capsules declare `minHeight: 44` for the touch
 /// target, so the row that holds them has to be 44 too — pinning it to 34 was
 /// what squeezed the PR chip's label into an ellipsis.
-let workChatComposerChipRowHeight: CGFloat = 44
-/// Gap between the floating badge chip row and the bottom of the transcript
-/// viewport. The row floats over the thread instead of sitting in the
-/// composer, so this is pure visual breathing room.
-let workChatFloatingBadgeRowBottomPadding: CGFloat = 12
+let workChatComposerChipRowHeight: CGFloat = 32
+/// Gap between the floating badge chip row (and the jump-to-latest button in
+/// line with it) and the top of the composer.
+let workChatFloatingBadgeRowBottomPadding: CGFloat = 6
+/// Space between the composer card and the bottom safe-area edge.
+let workChatComposerBottomGap: CGFloat = 4
+let workChatColumnCoordinateSpace = "work-chat-column"
+/// How much of the transcript's empty tail (tail row + row spacing) may sit
+/// under the bottom chrome.
+let workChatTranscriptTailTuck: CGFloat = 18
+
+func workChatRectsNearlyEqual(_ lhs: CGRect, _ rhs: CGRect) -> Bool {
+  abs(lhs.minX - rhs.minX) <= 0.5 && abs(lhs.minY - rhs.minY) <= 0.5
+    && abs(lhs.width - rhs.width) <= 0.5 && abs(lhs.height - rhs.height) <= 0.5
+}
 let workChatOlderHistoryTriggerDistance: CGFloat = 240
 let workChatOlderHistoryRearmDistance: CGFloat = 420
 let workChatOlderHistoryScrollableDistance: CGFloat = 1
@@ -270,38 +280,149 @@ struct WorkChatSessionRenderContext: Equatable {
   }
 }
 
-struct WorkChatSummaryTimelineKey: Equatable {
-  let provider: String
-  let providerFallback: String?
-  let model: String
-  let modelId: String?
+/// Injects SyncService as an environment object when one exists, for the
+/// sheets a transcript cell presents. The chat view holds only a
+/// non-observing reference, so it cannot use `.environmentObject` directly.
+private struct WorkOptionalSyncServiceObject: ViewModifier {
+  let service: SyncService?
 
-  init(_ context: WorkChatSummaryRenderContext, providerFallback: String? = nil) {
-    self.provider = context.provider
-    self.providerFallback = providerFallback
-    self.model = context.model
-    self.modelId = context.modelId
+  func body(content: Content) -> some View {
+    if let service {
+      content.environmentObject(service)
+    } else {
+      content
+    }
   }
+}
+
+/// Live values a transcript row reads beyond its own render entry. Each one
+/// is folded only into the revisions of the rows that draw it, so a streaming
+/// flip, an in-flight action or a keyboard resize reconfigures those rows and
+/// leaves every other row's cell and cached height alone.
+struct WorkChatTranscriptRowInputs: Equatable {
+  var streamingAssistantMessageId: String?
+  var isStreamingTurn: Bool
+  var liveTurnEntryIds: Set<String>
+  var latestReasoningCardId: String?
+  var latestTurnEndTurnId: String?
+  var viewportHeightBucket: Int
+  /// Hash of what the latest turn-end marker reads (send state, gates, usage).
+  var turnEndState: Int
+  /// The reader's card open/closed overrides. Each row folds in only the
+  /// overrides for ids it draws (see `workTimelineEntryExpansionSignature`),
+  /// so opening one card re-measures that card's row and nothing else.
+  var cardExpansion = WorkCardExpansionState()
+}
+
+/// The part of the reader's expansion overrides that one timeline entry
+/// draws: the entry's own id, its card's id, and — for the grouped panels —
+/// its members' and files' ids. Nil when none apply, so an untouched row's
+/// revision is exactly its base.
+func workTimelineEntryExpansionSignature(
+  _ entry: WorkTimelineEntry,
+  expansion: WorkCardExpansionState
+) -> Int? {
+  guard !expansion.expandedIds.isEmpty || !expansion.collapsedIds.isEmpty else { return nil }
+  var owned: Set<String> = [entry.id]
+  switch entry.payload {
+  case .toolCard(let card): owned.insert(card.id)
+  case .commandCard(let card): owned.insert(card.id)
+  case .fileChangeCard(let card): owned.insert(card.id)
+  case .subagentStoppedGroup(let model): owned.insert(model.id)
+  case .eventCard(let card): owned.insert(card.id)
+  case .adeCard(let card): owned.insert(card.id)
+  case .artifact(let artifact): owned.insert(artifact.id)
+  case .backgroundJobRun(let run): owned.insert(run.id)
+  case .turnFold(let model): owned.insert(model.id)
+  case .toolGroup(let group):
+    owned.insert(group.id)
+    for member in group.members { owned.insert(member.id) }
+  case .changedFiles(let group):
+    owned.insert(group.id)
+    for file in group.files { owned.insert(file.id) }
+  default:
+    break
+  }
+  let expanded = expansion.expandedIds.intersection(owned)
+  let collapsed = expansion.collapsedIds.intersection(owned)
+  guard !expanded.isEmpty || !collapsed.isEmpty else { return nil }
+  var hasher = Hasher()
+  for id in expanded.sorted() { hasher.combine(id) }
+  hasher.combine(0)
+  for id in collapsed.sorted() { hasher.combine(id) }
+  return hasher.finalize()
+}
+
+/// A row's full revision: the engine's content revision (`base`) plus only
+/// the live inputs this row's view actually reads.
+func workChatTranscriptRowRevision(
+  _ entry: WorkTimelineRenderEntry,
+  base: Int,
+  inputs: WorkChatTranscriptRowInputs
+) -> Int {
+  guard case .entry(let timelineEntry) = entry.payload else {
+    // Assistant markdown/monospace rows carry their own streaming flag in the
+    // model, which is already in `base`.
+    return base
+  }
+  var hasher = Hasher()
+  var touched = false
+  if let expansion = workTimelineEntryExpansionSignature(timelineEntry, expansion: inputs.cardExpansion) {
+    hasher.combine("expansion")
+    hasher.combine(expansion)
+    touched = true
+  }
+  if inputs.liveTurnEntryIds.contains(timelineEntry.id) {
+    // Keep-open-while-live cards (plans, ADE cards) change with the turn.
+    hasher.combine("live")
+    touched = true
+  }
+  switch timelineEntry.payload {
+  case .message(let message):
+    if message.id == inputs.streamingAssistantMessageId {
+      hasher.combine("streaming")
+      touched = true
+    }
+  case .eventCard(let card):
+    if card.kind == "reasoning", card.id == inputs.latestReasoningCardId, inputs.isStreamingTurn {
+      hasher.combine("reasoning-live")
+      touched = true
+    }
+  case .pendingQuestion:
+    // An in-flight action is an interaction change (see
+    // `transcriptInteractionRevision`), not part of this row's revision.
+    hasher.combine(inputs.viewportHeightBucket)
+    touched = true
+  case .turnEndMarker(let marker):
+    if marker.turnId == inputs.latestTurnEndTurnId {
+      hasher.combine(inputs.isStreamingTurn)
+      hasher.combine(inputs.turnEndState)
+      touched = true
+    }
+  default:
+    break
+  }
+  guard touched else { return base }
+  hasher.combine(base)
+  return hasher.finalize()
 }
 
 struct WorkChatSessionView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
-  @EnvironmentObject private var syncService: SyncService
+  /// A non-observing handle, NOT `@EnvironmentObject`: SyncService publishes
+  /// ~15 times a second on a connected phone, and observing it here re-ran
+  /// this body — and rebuilt every transcript row — on each publish. The one
+  /// SyncService value this view draws arrives as
+  /// `suppressDomainHydrationNotices` from the destination, which observes it.
+  @Environment(\.workSyncService) private var syncServiceReference
 
   let session: WorkChatSessionRenderContext
   let chatSummaryContext: WorkChatSummaryRenderContext
-  let transcript: [WorkChatEnvelope]
-  let transcriptRenderSignature: Int
-  let allowsIncrementalTranscriptUpdate: Bool
-  @Binding var transcriptIncrementalDelta: [WorkChatEnvelope]
-  let fallbackEntries: [AgentChatTranscriptEntry]
-  let fallbackEntriesRenderSignature: Int
+  /// The thread engine's main-actor face. Every transcript-derived value this
+  /// view draws (timeline, presentation, pending inputs, streaming state) is a
+  /// field of `thread.frame`, folded off the main actor.
+  let thread: ChatThreadModel
   let artifacts: [ComputerUseArtifactSummary]
-  let artifactsRenderSignature: Int
-  let optimisticPendingSteers: [WorkPendingSteerModel]
-  let optimisticPendingSteersRenderSignature: Int
-  let localEchoMessages: [WorkLocalEchoMessage]
-  let localEchoMessagesRenderSignature: Int
   let cardExpansionSnapshot: WorkCardExpansionState
   let cardExpansionRenderSignature: Int
   let artifactContentRenderSignature: Int
@@ -316,27 +437,20 @@ struct WorkChatSessionView: View {
   let artifactRefreshError: String?
   @Binding var sending: Bool
   @Binding var errorMessage: String?
-  @State var visibleTimelineCount = workTimelinePageSize
   @State var actionInFlight = false
   @State var isNearBottom = true
   @State var unreadBelowCount = 0
   @State var lastTimelineTailId: String?
   @State var scrollViewportHeight: CGFloat = 0
   @State var scrollViewportWidth: CGFloat = 0
-  @State var composerLayoutHeight: CGFloat = 150
+  /// The transcript's frame in the chat column's space. It extends under the
+  /// header and the composer; the insets are derived from how far.
+  @State var transcriptFrameInColumn: CGRect = .zero
+  @State var bottomChromeMinY: CGFloat = 0
+  @State var transcriptSafeInsets = EdgeInsets()
   /// The transcript's handle on its own `UICollectionView`. Replaces the
   /// `ScrollViewProxy` that used to be threaded through every row builder.
   @State var transcriptScroller = WorkChatTranscriptScroller()
-  @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
-  @State var timelinePresentation = WorkTimelinePresentation.empty
-  @State var turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
-  @State var timelineIncrementalCache = WorkTimelineIncrementalCache()
-  @State var timelineSourceKey: String?
-  @State var timelineRebuildTask: Task<Void, Never>?
-  @State var timelineRebuildPending = false
-  @State var timelineRebuildGeneration = 0
-  @State var timelineBuildScopeId = UUID().uuidString
-  @State var assistantPreviewCache = WorkAssistantPreviewCache()
   @State var contextUsageViewModelCache = WorkContextUsageViewModelCache()
   /// One presentation host for every box in this transcript. Boxes reach it
   /// through `\.workOutputViewer` rather than each carrying its own cover.
@@ -352,6 +466,8 @@ struct WorkChatSessionView: View {
   @State var olderHistoryLoadTask: Task<Void, Never>?
   let isLive: Bool
   let hostUnreachable: Bool
+  /// `SyncService.shouldSuppressDomainHydrationNotices`, read by the caller.
+  var suppressDomainHydrationNotices = false
   let canComposeMessages: Bool
   let canSendMessages: Bool
   let sendWillQueue: Bool
@@ -403,9 +519,8 @@ struct WorkChatSessionView: View {
   var resolvedSessionStatus: String? = nil
   var lanes: [LaneSummary] = []
   var lanesRenderSignature: Int = 0
-  // Host-side scroll-back: true while older transcript pages remain on the
-  // host beyond what the phone has fetched; the callback pulls the next page.
-  var hasOlderTranscriptHistory: Bool = false
+  // Host-side scroll-back: the engine reports whether older history exists
+  // (disk or host); the callback pulls the next page.
   var onLoadOlderTranscript: (@MainActor () async -> WorkChatOlderHistoryLoadResult)? = nil
   var subagentSnapshots: [WorkSubagentSnapshot] = []
   var subagentSnapshotsRenderSignature: Int = 0
@@ -416,11 +531,6 @@ struct WorkChatSessionView: View {
   var onForkChatInLane: (@MainActor () async -> Void)? = nil
   var prBadge: WorkChatPrBadgeModel? = nil
   var onOpenPrDetails: (() -> Void)? = nil
-  /// Live "turn is running" signal from the sync layer (chat_subscribe ack +
-  /// live status/done events). Covers the gap where the synced session row
-  /// still says idle while chat events are already streaming — without it
-  /// the chat renders output with no stop button or working indicator.
-  var liveTurnActiveHint: Bool? = nil
   var compactComposer = false
   /// The CTO identity session, which may never queue: the host rewrites a
   /// queued delivery on that session into the provider's first live-redirect
@@ -466,12 +576,6 @@ struct WorkChatSessionView: View {
   /// Light haptic when a Claude session-quota card first appears.
   @State var quotaCardHapticToken = 0
   @State var lastLiveQuotaCardId: String?
-  /// Item ids of pending inputs the user just answered. They are hidden from the
-  /// consolidated strip immediately (optimistic removal) so it advances to the
-  /// next request without waiting for the host, and reconciled back out once the
-  /// item leaves the derived queue (or rolled back if the command errored). See
-  /// `dispatchPendingInputAnswer` / `reconcileOptimisticallyAnsweredInputs`.
-  @State var optimisticallyAnsweredInputIds: Set<String> = []
   /// Id of the pending input the user minimized, if any.
   ///
   /// Derived, not synchronized: a minimize applies to the gate the user chose to
@@ -493,13 +597,6 @@ struct WorkChatSessionView: View {
     resolvedSessionStatus ?? session.normalizedStatus
   }
 
-  private var chatSummaryTimelineKey: WorkChatSummaryTimelineKey {
-    WorkChatSummaryTimelineKey(
-      chatSummaryContext,
-      providerFallback: session.providerFallback
-    )
-  }
-
   private var transcriptModelId: String {
     chatSummaryContext.currentModelId
   }
@@ -508,98 +605,53 @@ struct WorkChatSessionView: View {
     chatSummaryContext.modelLabel
   }
 
-  /// Terminal transcript signal from the local event window. When present, it
-  /// beats stale session rows / subscribe hints that can lag a just-finished
-  /// turn by a few seconds.
-  var transcriptLatestTurnEnded: Bool {
-    timelineSnapshot.transcriptLatestTurnEnded
+  /// The newest frame the engine applied. Nil only before the first fold of a
+  /// chat with nothing on disk.
+  /// Tracked everywhere except inside the transcript's row apply: cells are
+  /// configured (and row content built) synchronously inside
+  /// `updateUIViewController`, where SwiftUI records every observable read as
+  /// a dependency of the representable itself. Tracking `frame` there made
+  /// each new frame update the representable twice — once through `body`,
+  /// once through that stray dependency — for a second `apply` with nothing
+  /// to do. `body` already depends on `frame`, and new rows carry new
+  /// revisions, so the rows lose nothing.
+  var frame: ChatThreadFrame? {
+    WorkChatTranscriptCollectionView.isApplyingRows ? thread.untrackedFrame : thread.frame
   }
 
-  /// The live turn hint can be stale if mobile misses the final `done` event.
-  /// When the synced row has an idle/end timestamp newer than our transcript
-  /// tail, prefer the row so the working indicator clears promptly.
-  var sessionRowEndedAfterLatestTranscript: Bool {
-    guard sessionStatus == "idle" || sessionStatus == "ended" else { return false }
-    let rowEndedAt = [
-      chatSummaryContext.idleSinceAt,
-      chatSummaryContext.endedAt,
-      session.chatIdleSinceAt,
-      session.endedAt
-    ]
-    .compactMap { value in
-      value?.isEmpty == false ? value : nil
-    }
-    .max()
-    guard let rowEndedAt else { return false }
-    guard let latestTranscriptAt = timelineSnapshot.latestTranscriptTimestamp else { return false }
-    if rowEndedAt >= latestTranscriptAt {
-      return true
-    }
-    guard let rowEndedDate = workParsedDate(rowEndedAt),
-          let latestTranscriptDate = workParsedDate(latestTranscriptAt) else {
-      return false
-    }
-    return rowEndedDate >= latestTranscriptDate.addingTimeInterval(-0.25)
-  }
+  var timelineSnapshot: WorkChatTimelineSnapshot { frame?.snapshot ?? .empty }
 
-  /// Single source of truth for "the assistant is generating right now".
-  /// Drives the activity indicator, the composer stop button, and the
-  /// streaming-markdown fast path.
-  var isStreamingTurn: Bool {
-    workChatIsStreaming(
-      sessionStatus: sessionStatus,
-      isLive: isLive,
-      transcriptIndicatesActiveTurn: timelineSnapshot.transcriptIndicatesActiveTurn,
-      liveTurnActiveHint: liveTurnActiveHint,
-      transcriptLatestTurnEnded: transcriptLatestTurnEnded,
-      rowEndedAfterLatestTranscript: sessionRowEndedAfterLatestTranscript
-    )
-  }
+  var timelinePresentation: WorkTimelinePresentation { frame?.presentation ?? .empty }
+
+  var turnToolActivity: WorkTurnToolActivityIndex { frame?.turnToolActivity ?? .empty }
+
+  /// Read-only: the engine's folded transcript, for the few surfaces that
+  /// still scan it (queue recovery, context usage, the activity clock).
+  var transcript: [WorkChatEnvelope] { frame?.transcript ?? [] }
+
+  /// Single source of truth for "the assistant is generating right now",
+  /// computed by the engine from the transcript, the host's turn hint, and the
+  /// session row (all fed in as overlays). Drives the activity indicator, the
+  /// composer stop button, and the streaming-markdown fast path.
+  var isStreamingTurn: Bool { frame?.isStreamingTurn ?? false }
 
   var shouldShowInterruptControl: Bool {
     isStreamingTurn && timelineSnapshot.transcriptHasInterruptibleActivity
   }
 
-  /// The host's own count of what is still blocking, preferring the chat summary
-  /// and falling back to the session row — the same precedence
-  /// `workCanonicalSessionState` uses for the "needs you" phase.
-  var hostPendingInputItemId: String? {
-    let fromSummary = chatSummaryContext.pendingInputItemId?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    if !fromSummary.isEmpty { return fromSummary }
-    return session.pendingInputItemId
-  }
-
-  /// The one place the raw derivation is reconciled against the session summary.
-  ///
-  /// Recomputed on every read, so the join cannot be served stale: a summary that
-  /// moves with no new transcript event still repaints the strip. Cheap because
-  /// it walks the (tiny) pending queue, never the transcript — the transcript
-  /// walk stays inside the cached, summary-free `WorkChatTimelineSnapshot`, which
-  /// is exactly why the reconciliation cannot live there.
-  ///
-  /// Without this, a blocking gate whose asker outlived its turn vanishes from
-  /// the strip while the host still counts it: the composer unlocks, the send is
-  /// refused, and there is no card left to answer. Desktop parity:
-  /// `resolvedPendingInputsBySession` in `AgentChatPane.tsx`.
+  /// Canonical pending inputs, reconciled by the engine against the host's own
+  /// pending-input id (summary first, session row fallback). Without that join
+  /// a blocking gate whose asker outlived its turn vanishes from the strip while
+  /// the host still counts it. Desktop parity: `resolvedPendingInputsBySession`.
   var canonicalPendingInputs: [WorkPendingInputItem] {
-    timelineSnapshot.pendingInputQueue.resolved(hostPendingInputItemId: hostPendingInputItemId)
+    frame?.canonicalPendingInputs ?? []
   }
 
-  /// Canonical open pending inputs minus the ones the user just answered.
-  /// `optimisticallyAnsweredInputIds` hides an item the instant a decision is
-  /// dispatched so the consolidated strip advances to the next request without
-  /// waiting for the host round-trip (iOS had no optimistic removal before, so
-  /// the card visibly flickered). Entries are reconciled back out once the item
-  /// leaves the derived queue, or rolled back if the command errored.
+  /// Canonical open pending inputs minus the ones the user just answered
+  /// (`ChatThreadOverlays.optimisticallyAnsweredInputIds`), so the strip
+  /// advances to the next request without waiting for the host round-trip.
   var pendingInputs: [WorkPendingInputItem] {
-    let canonical = canonicalPendingInputs
-    guard !optimisticallyAnsweredInputIds.isEmpty else {
-      return canonical
-    }
-    return canonical.filter {
-      !optimisticallyAnsweredInputIds.contains($0.itemId)
-    }
+    frame?.pendingInputs ?? []
   }
 
   /// Number of still-open requests in the consolidated strip; drives the
@@ -617,10 +669,7 @@ struct WorkChatSessionView: View {
   }
 
   var pendingSteers: [WorkPendingSteerModel] {
-    mergeWorkPendingSteers(
-      optimistic: optimisticPendingSteers,
-      canonical: timelineSnapshot.pendingSteers
-    )
+    frame?.pendingSteers ?? []
   }
 
   /// The same per-provider table the composer's send-mode picker uses, read
@@ -665,7 +714,7 @@ struct WorkChatSessionView: View {
   /// which shrank the budget, which... The floor is the 240 the transcript
   /// reports before its first real measurement.
   var chatSurfaceHeight: CGFloat {
-    max(240, scrollViewportHeight + composerLayoutHeight)
+    max(240, scrollViewportHeight - transcriptTopInset)
   }
 
   var pendingInputMaxHeight: CGFloat {
@@ -810,60 +859,7 @@ struct WorkChatSessionView: View {
   }
 
   var canRequestOlderTranscriptHistory: Bool {
-    hasOlderTranscriptHistory && onLoadOlderTranscript != nil
-  }
-
-  @MainActor
-  func refreshTimelinePresentation(
-    sourceTimeline: [WorkTimelineEntry]? = nil,
-    rebuildToolActivityIndex: Bool = true
-  ) {
-    let timeline = sourceTimeline ?? timelineSnapshot.timeline
-    if rebuildToolActivityIndex {
-      turnToolActivity = workTurnToolActivityIndex(from: timeline)
-    }
-    let summaryProvider = chatSummaryContext.provider.trimmingCharacters(in: .whitespacesAndNewlines)
-    let presentedTimeline = workPresentedTimelineEntries(
-      timeline,
-      provider: summaryProvider.isEmpty ? session.providerFallback : summaryProvider
-    )
-    let expandedTurnIds = Set(cardExpansion.expandedIds.compactMap { id -> String? in
-      id.hasPrefix("turn-fold:") ? String(id.dropFirst("turn-fold:".count)) : nil
-    })
-    var nextPresentation = makeWorkTimelinePresentation(
-      timeline: presentedTimeline,
-      visibleCount: visibleTimelineCount,
-      chatSummary: chatSummaryContext,
-      transcript: transcript,
-      assistantPreviewCache: assistantPreviewCache,
-      streamingAssistantMessageId: streamingAssistantMessageId,
-      expandedTurnIds: expandedTurnIds
-    )
-    let timelineDelta = nextPresentation.timelineCount - timelinePresentation.timelineCount
-    let prependedHistory = (
-      timelineDelta > 0
-      && timelinePresentation.timelineFirstId != nil
-      && timelinePresentation.timelineLastId != nil
-      && timelinePresentation.timelineLastId == nextPresentation.timelineLastId
-      && timelinePresentation.timelineFirstId != nextPresentation.timelineFirstId
-    )
-    if prependedHistory {
-      visibleTimelineCount = workTimelineVisibleCountAfterHistoryPrepend(
-        currentVisibleCount: visibleTimelineCount,
-        prependedCount: timelineDelta
-      )
-      nextPresentation = makeWorkTimelinePresentation(
-        timeline: presentedTimeline,
-        visibleCount: visibleTimelineCount,
-        chatSummary: chatSummaryContext,
-        transcript: transcript,
-        assistantPreviewCache: assistantPreviewCache,
-        streamingAssistantMessageId: streamingAssistantMessageId,
-        expandedTurnIds: expandedTurnIds
-      )
-    }
-    guard nextPresentation != timelinePresentation else { return }
-    timelinePresentation = nextPresentation
+    (frame?.hasOlderHistory ?? false) && onLoadOlderTranscript != nil
   }
 
   /// One derivation for all three composer gates. See `WorkComposerInputGate`
@@ -921,23 +917,6 @@ struct WorkChatSessionView: View {
     return "Answer the waiting prompt above, or decline it before sending another message."
   }
 
-  /// Total height the floating badge chip row occupies over the transcript:
-  /// the chip row itself plus the padding that holds it off the bottom edge.
-  private var floatingBadgeBandHeight: CGFloat {
-    workChatComposerChipRowHeight + workChatFloatingBadgeRowBottomPadding
-  }
-
-  /// How far the scrim gradient fades above the badge band.
-  private var scrimFadeHeight: CGFloat { 20 }
-
-  var jumpToLatestPillBottomPadding: CGFloat {
-    // The badge chip row floats over the same bottom-left corner of the
-    // transcript. Stack the pill above it so both stay fully visible.
-    guard showsComposerBadgeChips else { return 16 }
-    let gapAboveBadges: CGFloat = 8
-    return floatingBadgeBandHeight + gapAboveBadges
-  }
-
   /// How many items the Chat Info sheet would show. Drives both the badge's
   /// count and whether it exists at all.
   var composerBadgeChatInfoCount: Int {
@@ -961,16 +940,15 @@ struct WorkChatSessionView: View {
     inputLockMessage == nil && !isPersonalChat && !laneTools.chips.isEmpty
   }
 
-  /// Whether the floating badge row is on screen. Also reserves transcript
-  /// tail space so the last message can still scroll clear of the chips.
+  /// Whether the floating badge row is on screen. The row is part of the
+  /// bottom chrome, so the transcript's bottom inset covers it.
   var showsComposerBadgeChips: Bool {
     showsComposerChatInfoBadge || showsComposerPrBadge || showsComposerLaneToolChips
   }
 
-  /// Chat-info / PR / lane tool badges. These used to be a fixed 44pt row inside
-  /// `composerInset`, which cost the thread that much height on every chat
-  /// that had a badge. They now float over the transcript like the
-  /// "jump to latest" pill, so the thread scrolls behind them.
+  /// Chat-info / PR / lane tool badges: small glass capsules sitting just
+  /// above the composer, with the jump-to-latest button at the right end of
+  /// the same line. The thread scrolls behind them.
   @ViewBuilder
   var composerBadgeChipRow: some View {
     let chatInfoCount = composerBadgeChatInfoCount
@@ -985,7 +963,7 @@ struct WorkChatSessionView: View {
         ForEach(laneTools.chips) { chip in
           WorkLaneToolChipView(chip: chip) {
             ADEHaptics.light()
-            laneTools.open(chip, macDesktopStream: syncService.supportsMacDesktopStream)
+            laneTools.open(chip, macDesktopStream: syncServiceReference.service?.supportsMacDesktopStream ?? false)
           }
         }
       }
@@ -1041,7 +1019,7 @@ struct WorkChatSessionView: View {
 
     // Connection-caused failures are communicated via the top-right gear, but
     // cached/offline chat actions still need their own visible errors.
-    if let errorMessageSnapshot, !hostUnreachable, !syncService.shouldSuppressDomainHydrationNotices {
+    if let errorMessageSnapshot, !hostUnreachable, !suppressDomainHydrationNotices {
       ADEInstructionErrorCard(
         title: "Couldn't load this chat",
         message: errorMessageSnapshot,
@@ -1102,16 +1080,15 @@ struct WorkChatSessionView: View {
       && onOpenParentSession != nil
     let hasError = errorMessageSnapshot != nil
       && !hostUnreachable
-      && !syncService.shouldSuppressDomainHydrationNotices
+      && !suppressDomainHydrationNotices
     return hasBreadcrumb || hasError
   }
 
+  /// The chips and the composer are reserved by the transcript's bottom
+  /// content inset (see `transcriptBottomInset`), not by this row.
   var tailGutterHeight: CGFloat {
     workChatContentBottomGutterHeight
       + workChatBottomAnchorSpacerHeight
-      // The badge chips float over the transcript, so the tail has to reserve
-      // their height or the last message hides behind them.
-      + (showsComposerBadgeChips ? floatingBadgeBandHeight : 0)
   }
 
   /// The transcript, as rows. Identity here is the collection view's identity:
@@ -1123,6 +1100,8 @@ struct WorkChatSessionView: View {
       var hasher = Hasher()
       hasher.combine(errorMessageSnapshot)
       hasher.combine(chatSummaryContext.parentTitle)
+      hasher.combine(hostUnreachable)
+      hasher.combine(suppressDomainHydrationNotices)
       rows.append(
         WorkChatTranscriptRow(id: "chat-overview", kind: .overview, revision: hasher.finalize())
       )
@@ -1144,23 +1123,31 @@ struct WorkChatSessionView: View {
       )
     } else {
       let entries = visibleTimelineRenderEntries
+      let rowRevisions = frame?.rowRevisions ?? [:]
+      let inputs = transcriptRowInputs
       rows.reserveCapacity(entries.count + 4)
       for index in entries.indices {
+        let entry = entries[index]
+        let base = rowRevisions[entry.id] ?? workChatTranscriptRowRevision(entry)
         rows.append(
           WorkChatTranscriptRow(
-            id: entries[index].id,
+            id: entry.id,
             kind: .entry(index: index),
-            revision: workChatTranscriptRowRevision(entries[index])
+            revision: workChatTranscriptRowRevision(entry, base: base, inputs: inputs)
           )
         )
       }
     }
     if isStreamingTurn {
+      var hasher = Hasher()
+      hasher.combine(turnToolActivity.active?.count ?? 0)
+      hasher.combine(frame?.activityPresentation?.label)
+      hasher.combine(frame?.activityPresentation?.detail)
       rows.append(
         WorkChatTranscriptRow(
           id: "chat-streaming-status",
           kind: .streamingStatus,
-          revision: turnToolActivity.active?.count ?? 0
+          revision: hasher.finalize()
         )
       )
     }
@@ -1176,19 +1163,56 @@ struct WorkChatSessionView: View {
 
   /// Everything a row draws that is not in its own revision: shared state the
   /// whole transcript reads. A change here reconfigures every row, so it is
-  /// deliberately made of values that change rarely.
+  /// deliberately made of values that change rarely. Streaming state, an
+  /// in-flight action and the viewport height are NOT here: they are per-row
+  /// inputs (`transcriptRowInputs`), so only the rows that draw them change.
+  ///
+  /// Card expansion is per-row (`transcriptRowInputs.cardExpansion`), and the
+  /// host/action state rows draw as enabled or disabled is the separate
+  /// `transcriptInteractionRevision`, which never touches a height key.
   var transcriptContentRevision: Int {
     var hasher = Hasher()
-    hasher.combine(cardExpansionRenderSignature)
     hasher.combine(artifactContentRenderSignature)
-    hasher.combine(actionInFlight)
-    hasher.combine(isLive)
-    hasher.combine(hostUnreachable)
-    hasher.combine(streamingAssistantMessageId)
     hasher.combine(maxUserBubbleWidth ?? 0)
-    hasher.combine(scrollViewportHeight)
     hasher.combine(chatSummaryContext.provider)
     hasher.combine(chatSummaryContext.usageLimitResume != nil)
+    return hasher.finalize()
+  }
+
+  /// Live interaction state rows draw as enabled/disabled or busy: a change
+  /// reconfigures the visible cells without re-measuring any row.
+  var transcriptInteractionRevision: Int {
+    var hasher = Hasher()
+    hasher.combine(isLive)
+    hasher.combine(hostUnreachable)
+    hasher.combine(actionInFlight)
+    return hasher.finalize()
+  }
+
+  /// The live values individual rows read beyond their own content.
+  var transcriptRowInputs: WorkChatTranscriptRowInputs {
+    WorkChatTranscriptRowInputs(
+      streamingAssistantMessageId: streamingAssistantMessageId,
+      isStreamingTurn: isStreamingTurn,
+      liveTurnEntryIds: isStreamingTurn ? timelineSnapshot.liveTurnEntryIds : [],
+      latestReasoningCardId: frame?.latestReasoningCardId,
+      latestTurnEndTurnId: timelineSnapshot.latestTurnEndTurnId,
+      viewportHeightBucket: Int(transcriptVisibleHeight.rounded()),
+      turnEndState: latestTurnEndRowState,
+      cardExpansion: cardExpansionSnapshot
+    )
+  }
+
+  /// What the latest turn-end marker (context meter + compact control) reads
+  /// from outside its own row model.
+  private var latestTurnEndRowState: Int {
+    var hasher = Hasher()
+    hasher.combine(sending)
+    hasher.combine(sendingSnapshot)
+    hasher.combine(sessionStatus)
+    hasher.combine(canSendMessages)
+    hasher.combine(hasPendingInputGate)
+    hasher.combine(transcript.count)
     return hasher.finalize()
   }
 
@@ -1271,6 +1295,7 @@ struct WorkChatSessionView: View {
     if isStreamingTurn {
       WorkActivityIndicator(
         transcript: transcript,
+        precomputedPresentation: frame?.activityPresentation,
         isStreaming: true,
         toolCount: turnToolActivity.active?.count ?? 0,
         onOpenActivity: turnToolActivity.active.map { _ in
@@ -1278,7 +1303,7 @@ struct WorkChatSessionView: View {
         }
       )
       .id("chat-streaming-status")
-      .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
+      .frame(maxWidth: .infinity, alignment: .leading)
     }
   }
 
@@ -1290,8 +1315,9 @@ struct WorkChatSessionView: View {
       // The redundant ENDED/RUNNING status pill row has been retired. Chat
       // lifecycle controls live outside the composer; this space is reserved
       // for pending input and send feedback.
-      if let claudeGoal = workClaudeGoal(snapshot: chatSummaryContext.claudeGoal, transcript: transcript) {
+      if let claudeGoal = frame.map(\.claudeGoal) ?? chatSummaryContext.claudeGoal {
         WorkClaudeGoalPill(goal: claudeGoal)
+          .workChatGlass(in: Capsule(style: .continuous))
       }
 
       if !pendingSteers.isEmpty {
@@ -1341,9 +1367,9 @@ struct WorkChatSessionView: View {
         Text(composerFeedback)
           .font(.caption2)
           .foregroundStyle(sessionStatus == "awaiting-input" ? ADEColor.warning : ADEColor.textMuted)
-          .frame(maxWidth: .infinity, alignment: .center)
-          .padding(.horizontal, sessionStatus == "awaiting-input" ? 10 : 0)
-          .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 0)
+          .multilineTextAlignment(.center)
+          .padding(.horizontal, 10)
+          .padding(.vertical, sessionStatus == "awaiting-input" ? 7 : 5)
           .background(
             Group {
               if sessionStatus == "awaiting-input" {
@@ -1352,6 +1378,10 @@ struct WorkChatSessionView: View {
               }
             }
           )
+          // Floats over the thread like every other control: its own glass,
+          // no band behind the composer stack.
+          .workChatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .frame(maxWidth: .infinity, alignment: .center)
       }
 
       consolidatedPendingStripSection
@@ -1368,6 +1398,7 @@ struct WorkChatSessionView: View {
             }
           }
         )
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 10, style: .continuous))
       }
 
       if let usageLimitResume = chatSummaryContext.usageLimitResume {
@@ -1387,6 +1418,7 @@ struct WorkChatSessionView: View {
             { enabled in await runSessionAction { await set(enabled) } }
           }
         )
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
       if chatSummaryContext.spawnKind == .subagent,
@@ -1407,6 +1439,7 @@ struct WorkChatSessionView: View {
             await runSessionAction { await onKeepReportingSubagent() }
           }
         )
+        .workChatGlass(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
       }
 
       WorkChatComposerCard(
@@ -1462,8 +1495,6 @@ struct WorkChatSessionView: View {
       )
     }
     .padding(.horizontal, compactComposer ? 12 : 16)
-    .padding(.top, 4)
-    .padding(.bottom, 0)
   }
 
   /// The transcript.
@@ -1477,13 +1508,38 @@ struct WorkChatSessionView: View {
     WorkChatTranscriptCollectionView(
       rows: transcriptRows,
       contentRevision: transcriptContentRevision,
-      topInset: 9,
-      bottomInset: 9,
+      interactionRevision: transcriptInteractionRevision,
+      topInset: transcriptTopInset,
+      bottomInset: transcriptBottomInset,
       scroller: transcriptScroller,
-      rowContent: { row in
-        AnyView(
+      rowContent: { requested in
+        // A layout pass can dequeue a cell after the thread published a new
+        // frame but before `apply` has the rows for it, so the row's index may
+        // point at another entry by now (a prepend, a fold). Resolve by id;
+        // nil (the row is gone) draws nothing and is reconfigured by the
+        // next apply rather than measured into the height cache.
+        var row = requested
+        if case .entry(let index) = requested.kind {
+          let entries = visibleTimelineRenderEntries
+          if index >= entries.count || entries[index].id != requested.id {
+            guard let actual = entries.firstIndex(where: { $0.id == requested.id }) else {
+              return nil
+            }
+            row = WorkChatTranscriptRow(
+              id: requested.id,
+              kind: .entry(index: actual),
+              revision: requested.revision
+            )
+          }
+        }
+        return AnyView(
           transcriptRowView(row)
-            .environmentObject(syncService)
+            // Cells read SyncService through this non-observing reference, so
+            // a publish never re-renders a cell mid-scroll. The object is still
+            // injected, but only for sheets a cell presents (the attachment
+            // preview); no view inside a cell declares `@EnvironmentObject`.
+            .environment(\.workSyncService, WorkSyncServiceReference(syncServiceReference.service))
+            .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
@@ -1511,22 +1567,17 @@ struct WorkChatSessionView: View {
         }
         if size.width > 0, abs(scrollViewportWidth - size.width) > 1 {
           scrollViewportWidth = size.width
+          thread.updateOverlays { $0.viewportWidth = size.width }
         }
+      },
+      onRowsApplied: { _ in
+        ChatThreadSignposts.noteRowsOnScreen(
+          sessionId: session.id,
+          hasTimelineRows: timelinePresentation.timelineCount > 0
+        )
       }
     )
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .layoutPriority(1)
-    .overlay(alignment: .bottomTrailing) {
-      if unreadBelowCount > 0 || !isNearBottom {
-        WorkJumpToLatestPill(count: unreadBelowCount) {
-          unreadBelowCount = 0
-          transcriptScroller.scrollToLatest(animated: true, reason: "jump-to-latest-pill")
-        }
-        .padding(.trailing, 16)
-        .padding(.bottom, jumpToLatestPillBottomPadding)
-        .transition(.move(edge: .trailing).combined(with: .opacity))
-      }
-    }
   }
 
   /// Product-level reactions to where the reader is. Never decides a scroll
@@ -1544,67 +1595,146 @@ struct WorkChatSessionView: View {
   /// Layout half of the chat column (structure + geometry preferences).
   /// Split from `body` so the type-checker sees bounded expressions; the
   /// behavior chain (onChange/sheet/task) stays in `body`.
+  ///
+  /// The thread is the whole surface and every control floats on top of it:
+  /// the transcript runs under the glass header (it ignores the top safe area,
+  /// which the header's inset is part of) and under the composer, and gets the
+  /// covered bands back as content insets measured from the real chrome — so
+  /// the first and last messages can still scroll fully clear.
   @ViewBuilder
   private var chatColumn: some View {
-      VStack(spacing: 0) {
-        transcriptView
-          .overlay(alignment: .bottomLeading) {
-            // Floats over the thread instead of consuming composer height, so
-            // the transcript scrolls behind the badges (same treatment as the
-            // "jump to latest" pill, which stacks above these).
-            Group {
-              if showsComposerBadgeChips {
-                composerBadgeChipRow
-                  .padding(.horizontal, 16)
-                  .padding(.bottom, workChatFloatingBadgeRowBottomPadding)
-                  .background(alignment: .bottom) {
-                    // Short scrim so capsule text stays legible over prose the
-                    // chips are now floating on top of.
-                    LinearGradient(
-                      colors: [
-                        workChatCanvasBackground.opacity(0),
-                        workChatCanvasBackground.opacity(0.9)
-                      ],
-                      startPoint: .top,
-                      endPoint: .bottom
-                    )
-                    .frame(height: floatingBadgeBandHeight + scrimFadeHeight)
-                    .allowsHitTesting(false)
-                  }
-                  .transition(.opacity)
-              }
-            }
-            .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
+    ZStack(alignment: .bottom) {
+      transcriptView
+        // Keyboard included: the transcript always spans the screen, and the
+        // keyboard (like the composer) is just more bottom inset. A keyboard
+        // show/hide is then an inset change, which re-pins a following reader
+        // and leaves everyone else's offset untouched.
+        .ignoresSafeArea(edges: [.top, .bottom])
+        // The proxy reports the layout frame; the bands the transcript was
+        // allowed to grow into (header + status bar above, home indicator or
+        // keyboard below) come back as its safe-area insets.
+        .onGeometryChange(for: CGRect.self) { proxy in
+          proxy.frame(in: .named(workChatColumnCoordinateSpace))
+        } action: { frame in
+          if !workChatRectsNearlyEqual(transcriptFrameInColumn, frame) {
+            transcriptFrameInColumn = frame
           }
+        }
+        .onGeometryChange(for: EdgeInsets.self) { proxy in
+          proxy.safeAreaInsets
+        } action: { insets in
+          if abs(insets.top - transcriptSafeInsets.top) > 0.5
+            || abs(insets.bottom - transcriptSafeInsets.bottom) > 0.5 {
+            transcriptSafeInsets = insets
+          }
+        }
 
-        composerInset
-          .fixedSize(horizontal: false, vertical: true)
-          .background(alignment: .bottom) {
-            WorkChatComposerBackdrop()
+      bottomChrome
+        .onGeometryChange(for: CGFloat.self) { proxy in
+          proxy.frame(in: .named(workChatColumnCoordinateSpace)).minY
+        } action: { minY in
+          if abs(bottomChromeMinY - minY) > 0.5 {
+            bottomChromeMinY = minY
           }
-          .background(
-            GeometryReader { geometry in
-              Color.clear.preference(
-                key: WorkChatComposerLayoutHeightPreferenceKey.self,
-                value: geometry.size.height
-              )
-            }
-          )
+        }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .coordinateSpace(.named(workChatColumnCoordinateSpace))
+    .background(workChatCanvasBackground.ignoresSafeArea())
+    .adeNavigationGlass()
+    #if DEBUG
+    .task { await benchScrollBackIfRequested() }
+    .onChange(of: transcriptBottomInset) { _, inset in
+      WorkChatScrollTrace.note(
+        "chrome insets top=\(Int(transcriptTopInset)) bottom=\(Int(inset)) safeTop=\(Int(transcriptSafeInsets.top)) safeBottom=\(Int(transcriptSafeInsets.bottom)) chromeMinY=\(Int(bottomChromeMinY))"
+      )
+    }
+    #endif
+  }
+
+  #if DEBUG
+  /// Scroll-bench fixture: `-adeBenchScrollBack <n>` drags the reader about
+  /// n×80pt up from the tail once the opening pin has settled, so the
+  /// "not following" chrome (the jump-to-latest button) can be captured.
+  @MainActor
+  private func benchScrollBackIfRequested() async {
+    let arguments = ProcessInfo.processInfo.arguments
+    guard let index = arguments.firstIndex(of: "-adeBenchScrollBack"),
+          arguments.index(after: index) < arguments.endIndex,
+          let rowsBack = Int(arguments[arguments.index(after: index)]) else { return }
+    try? await Task.sleep(for: .milliseconds(3000))
+    transcriptScroller.benchSimulateUserScroll(by: CGFloat(rowsBack) * 80)
+  }
+  #endif
+
+  /// Everything that floats over the bottom of the thread: the badge chips (and
+  /// the jump-to-latest button in line with them), then the composer stack.
+  private var bottomChrome: some View {
+    VStack(spacing: workChatFloatingBadgeRowBottomPadding) {
+      if showsComposerBadgeChips {
+        HStack(spacing: 8) {
+          composerBadgeChipRow
+          if jumpToLatestVisible {
+            jumpToLatestButton
+          }
+        }
+        .padding(.horizontal, compactComposer ? 12 : 16)
+        .transition(.opacity)
       }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        // Anchored on the column, not on the transcript. The gradient fades the
-        // canvas out from under the translucent navigation bar, so it has to
-        // touch the top safe-area edge; anchoring it here keeps it independent
-        // of whatever the column stacks above the transcript.
-        .overlay(alignment: .top) {
-          WorkChatNavigationBackdrop()
-        }
-        .background(workChatCanvasBackground.ignoresSafeArea())
-        .adeNavigationGlass()
-        .onPreferenceChange(WorkChatComposerLayoutHeightPreferenceKey.self) { height in
-          guard height > 0, abs(composerLayoutHeight - height) > 1 else { return }
-          composerLayoutHeight = height
-        }
+
+      composerInset
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .overlay(alignment: .topTrailing) {
+      // No chip row to sit in: the button floats the same distance above the
+      // composer, where the row would have been, without reserving the band.
+      if !showsComposerBadgeChips, jumpToLatestVisible {
+        // An explicit offset rather than an alignment guide: the guide was
+        // dropped through the conditional overlay content and left the button
+        // sitting on top of the composer's send button.
+        jumpToLatestButton
+          .padding(.trailing, compactComposer ? 12 : 16)
+          .offset(y: -(WorkJumpToLatestPill.diameter + workChatFloatingBadgeRowBottomPadding))
+      }
+    }
+    .padding(.bottom, workChatComposerBottomGap)
+    .animation(.easeInOut(duration: 0.18), value: showsComposerBadgeChips)
+    .animation(.snappy(duration: 0.22), value: jumpToLatestVisible)
+  }
+
+  var jumpToLatestVisible: Bool {
+    unreadBelowCount > 0 || !isNearBottom
+  }
+
+  private var jumpToLatestButton: some View {
+    WorkJumpToLatestPill(count: unreadBelowCount) {
+      unreadBelowCount = 0
+      transcriptScroller.scrollToLatest(animated: true, reason: "jump-to-latest-pill")
+    }
+    .transition(.scale(scale: 0.6).combined(with: .opacity))
+  }
+
+  /// Band the header covers at the top of the transcript: the status bar and
+  /// header the transcript grew under.
+  var transcriptTopInset: CGFloat {
+    max(9, transcriptSafeInsets.top.rounded() + 6)
+  }
+
+  /// Band the composer stack (chips included) covers at the bottom: the
+  /// home-indicator or keyboard band the transcript grew under, plus the
+  /// chrome above it.
+  var transcriptBottomInset: CGFloat {
+    guard transcriptFrameInColumn.height > 0, bottomChromeMinY > 0 else { return 9 }
+    let chromeHeight = max(0, transcriptFrameInColumn.maxY - bottomChromeMinY)
+    // The tail row and the list's own row spacing already put ~17pt under the
+    // last row; letting that band tuck under the chips keeps the working row
+    // (or the last message) a small, even gap above them instead of a hole.
+    return max(9, (transcriptSafeInsets.bottom + chromeHeight).rounded() - workChatTranscriptTailTuck)
+  }
+
+  /// The part of the transcript viewport that is not under chrome.
+  var transcriptVisibleHeight: CGFloat {
+    max(0, scrollViewportHeight - transcriptTopInset - transcriptBottomInset)
   }
 
   /// Older-history scroll-back trigger, driven by the shared scroll sample.
@@ -1693,28 +1823,23 @@ struct WorkChatSessionView: View {
         }
         // A card finished opening or closing. The latch re-reads where the
         // reader ended up; it never moves them on its own.
+        // A fold opening or closing reaches the engine as an overlay change
+        // (`expandedTurnIds`), which rebuilds the presentation off-main.
         .onChange(of: cardExpansionRenderSignature) { _, _ in
-          refreshTimelinePresentation()
           transcriptScroller.noteDisclosureSettled()
         }
   }
 
-  /// Session lifecycle + input-recovery handlers, split from `body` for type-checker budget.
+  /// Session lifecycle handlers, split from `body` for type-checker budget.
+  /// The timeline itself has no handlers here any more: it is a field of the
+  /// engine frame, so nothing on this side rebuilds it.
   private func sessionLifecycleHandlers<V: View>(_ content: V) -> some View {
     content
         .onAppear {
           prepareScrollStateForCurrentSessionIfNeeded(reason: "appear")
-          if transcript.isEmpty && fallbackEntries.isEmpty {
-            scheduleTimelineSnapshotRebuild()
-          } else {
-            rebuildTimelineSnapshot()
-          }
           // Seed the blocking-input tracker so an already-open gate on first
           // render doesn't re-fire the haptic, but a gate that arrives later does.
           lastBlockingPendingInputId = blockingPendingInputId
-        }
-        .task(id: timelineInputRecoveryKey) {
-          recoverEmptyTimelineSnapshotIfNeeded()
         }
         .onDisappear {
           olderHistoryLoadTask?.cancel()
@@ -1723,17 +1848,9 @@ struct WorkChatSessionView: View {
           olderHistoryLoadError = nil
           olderHistoryAutomaticContinuationPending = false
           olderHistoryTriggerArmed = true
-          cancelScheduledTimelineSnapshotRebuild()
         }
-        .onChange(of: chatSummaryTimelineKey) { _, _ in
-          refreshTimelinePresentation()
-        }
-        // The resume row is the second signal for "this turn stopped at a limit"
-        // (the first, `apiErrorStatus: 429`, already lives in the transcript).
-        // It arrives on a `session_meta_updated` event, not a transcript delta,
-        // so the fold has to be asked for explicitly or the footer stays stale.
-        .onChange(of: chatSummaryContext.usageLimitResume?.turnId) { _, _ in
-          scheduleTimelineSnapshotRebuild()
+        .onChange(of: frame?.revision) { _, _ in
+          handleFrameApplied()
         }
         .onChange(of: chatSummaryContext.effectiveFastMode) { _, newValue in
           if let pendingCodexFastMode, pendingCodexFastMode == newValue {
@@ -1746,46 +1863,11 @@ struct WorkChatSessionView: View {
           blockingPendingHapticToken = 0
           lastLiveQuotaCardId = nil
           quotaCardHapticToken = 0
-          optimisticallyAnsweredInputIds.removeAll()
           collapsedPendingInputId = nil
           composerSettingMutationInFlight = false
           composerSettingMutationGeneration &+= 1
           resetScrollStateForCurrentSession(reason: "session-change")
-          cancelScheduledTimelineSnapshotRebuild()
-          timelineSnapshot = .empty
-          timelinePresentation = .empty
-          turnToolActivity = WorkTurnToolActivityIndex(completedByTurnId: [:], completedFilesByTurnId: [:], claimedInlineGroupIds: [], active: nil)
           toolActivitySheet = nil
-          scheduleTimelineSnapshotRebuild()
-        }
-        .onChange(of: transcript) { _, _ in
-          if timelineSnapshot.timeline.isEmpty, !transcript.isEmpty {
-            cancelScheduledTimelineSnapshotRebuild()
-            rebuildTimelineSnapshot()
-          } else {
-            scheduleTimelineSnapshotRebuild()
-          }
-        }
-        .onChange(of: fallbackEntries) { _, _ in
-          guard transcript.isEmpty else {
-            return
-          }
-          if timelineSnapshot.timeline.isEmpty, !fallbackEntries.isEmpty {
-            cancelScheduledTimelineSnapshotRebuild()
-            rebuildTimelineSnapshot()
-          } else {
-            scheduleTimelineSnapshotRebuild()
-          }
-        }
-        .onChange(of: artifacts) { _, _ in
-          scheduleTimelineSnapshotRebuild()
-        }
-        .onChange(of: localEchoMessages) { _, _ in
-          // The user's own message is the one timeline change that must not wait
-          // out the coalescing debounce — it has to be on screen by the frame
-          // after the tap.
-          guard !applyLocalEchoTailImmediatelyIfPossible() else { return }
-          scheduleTimelineSnapshotRebuild()
         }
         .onChange(of: blockingPendingInputId) { _, newId in
           handleBlockingPendingInputChange(newId)
@@ -1793,6 +1875,17 @@ struct WorkChatSessionView: View {
         .onChange(of: liveClaudeQuotaCardId) { _, newId in
           handleLiveQuotaCardChange(newId)
         }
+  }
+
+  /// Per-frame bookkeeping that is not rendering: a history reset (generation
+  /// change, invalidation) drops the reader's anchor and pins to the tail.
+  @MainActor
+  private func handleFrameApplied() {
+    guard let frame else { return }
+    if frame.didResetHistory {
+      transcriptScroller.scrollToLatest(animated: false, reason: "history-reset")
+      unreadBelowCount = 0
+    }
   }
 
   /// Haptics and sheet presenters, split from `body` for type-checker budget.
@@ -1860,6 +1953,7 @@ struct WorkChatSessionView: View {
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.threadViewBody)
     feedbackAndSheets(
       sessionLifecycleHandlers(
         timelineScrollHandlers(chatColumn)
@@ -1939,75 +2033,6 @@ func workLoadedArtifactContentRenderSignature(_ content: [String: WorkLoadedArti
     case .error(let message):
       hasher.combine("error")
       hasher.combine(message)
-    }
-  }
-  return hasher.finalize()
-}
-
-func workChatEnvelopeListRenderSignature(_ transcript: [WorkChatEnvelope]) -> Int {
-  var hasher = Hasher()
-  hasher.combine(transcript.count)
-  for envelope in transcript {
-    hasher.combine(workChatEnvelopeMergeKey(envelope))
-    hasher.combine(envelope.sequence)
-    hasher.combine(envelope.timestamp)
-    if case .assistantText(let text, _, _) = envelope.event {
-      hasher.combine(text.utf8.count)
-      hasher.combine(text.hashValue)
-    }
-  }
-  return hasher.finalize()
-}
-
-func workFallbackEntriesRenderSignature(_ entries: [AgentChatTranscriptEntry]) -> Int {
-  var hasher = Hasher()
-  hasher.combine(entries.count)
-  for entry in entries {
-    hasher.combine(workTranscriptEntryIdentity(entry))
-  }
-  return hasher.finalize()
-}
-
-func workArtifactSummariesRenderSignature(_ artifacts: [ComputerUseArtifactSummary]) -> Int {
-  var hasher = Hasher()
-  hasher.combine(artifacts.count)
-  for artifact in artifacts {
-    hasher.combine(artifact.id)
-    hasher.combine(artifact.uri)
-    hasher.combine(artifact.title)
-    hasher.combine(artifact.reviewState)
-    hasher.combine(artifact.workflowState)
-  }
-  return hasher.finalize()
-}
-
-func workPendingSteersRenderSignature(_ steers: [WorkPendingSteerModel]) -> Int {
-  var hasher = Hasher()
-  hasher.combine(steers.count)
-  for steer in steers {
-    hasher.combine(steer.id)
-    hasher.combine(steer.text.utf8.count)
-    hasher.combine(steer.text.hashValue)
-    hasher.combine(steer.turnId)
-    hasher.combine(steer.timestamp)
-  }
-  return hasher.finalize()
-}
-
-func workLocalEchoMessagesRenderSignature(_ messages: [WorkLocalEchoMessage]) -> Int {
-  var hasher = Hasher()
-  hasher.combine(messages.count)
-  for message in messages {
-    hasher.combine(message.id)
-    hasher.combine(message.text.utf8.count)
-    hasher.combine(message.text.hashValue)
-    hasher.combine(message.timestamp)
-    hasher.combine(message.deliveryState)
-    hasher.combine(message.attachments?.count ?? 0)
-    for attachment in message.attachments ?? [] {
-      hasher.combine(attachment.path)
-      hasher.combine(attachment.type)
-      hasher.combine(attachment.url)
     }
   }
   return hasher.finalize()
@@ -2101,7 +2126,7 @@ func workLaneListRenderSignature(_ lanes: [LaneSummary]) -> Int {
 /// literals otherwise.
 func workPendingInputMaxHeight(chatSurfaceHeight: CGFloat) -> CGFloat {
   // Roughly the composer card's own height in its resting single-line state.
-  // Measuring it for real is not an option: `composerLayoutHeight` includes the
+  // Measuring it for real is not an option: the measured composer band includes the
   // strip we are sizing, so reading it here would be circular.
   let composerReserve: CGFloat = 110
   let available = max(0, chatSurfaceHeight - composerReserve)
@@ -2117,15 +2142,6 @@ func workInlinePendingInputMaxHeight(transcriptViewportHeight: CGFloat) -> CGFlo
   max(240, transcriptViewportHeight * 0.62)
 }
 
-private struct WorkChatComposerLayoutHeightPreferenceKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
-
-  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-    let next = nextValue()
-    if next > 0 { value = next }
-  }
-}
-
 /// Flat transcript canvas. Desktop parity: a single dark #0f0f11 fill behind
 /// the agent prose — no card, no gradient. Light mode keeps the app's warm
 /// paper tone so the chat doesn't look out of place there.
@@ -2135,359 +2151,7 @@ let workChatCanvasBackground = Color(uiColor: UIColor { traits in
     : UIColor(red: 0xf5 / 255.0, green: 0xf3 / 255.0, blue: 0xf0 / 255.0, alpha: 1)
 })
 
-private struct WorkChatNavigationBackdrop: View {
-  var body: some View {
-    LinearGradient(
-      colors: [
-        workChatCanvasBackground,
-        workChatCanvasBackground.opacity(0.96),
-        workChatCanvasBackground.opacity(0)
-      ],
-      startPoint: .top,
-      endPoint: .bottom
-    )
-    .frame(height: 112)
-    .ignoresSafeArea(edges: .top)
-    .allowsHitTesting(false)
-  }
-}
 
-private struct WorkChatComposerBackdrop: View {
-  var body: some View {
-    LinearGradient(
-      colors: [
-        workChatCanvasBackground.opacity(0.98),
-        workChatCanvasBackground.opacity(0.94),
-        workChatCanvasBackground
-      ],
-      startPoint: .top,
-      endPoint: .bottom
-    )
-    .ignoresSafeArea(edges: .bottom)
-    .allowsHitTesting(false)
-  }
-}
-
-struct WorkTimelinePresentation: Equatable {
-  let visibleEntries: [WorkTimelineEntry]
-  let renderEntries: [WorkTimelineRenderEntry]
-  let timelineCount: Int
-  let timelineFirstId: String?
-  let timelineLastId: String?
-  let hiddenCount: Int
-  let signature: Int
-
-  static let empty = WorkTimelinePresentation(
-    visibleEntries: [],
-    renderEntries: [],
-    timelineCount: 0,
-    timelineFirstId: nil,
-    timelineLastId: nil,
-    hiddenCount: 0,
-    signature: 0
-  )
-
-  static func == (lhs: WorkTimelinePresentation, rhs: WorkTimelinePresentation) -> Bool {
-    lhs.signature == rhs.signature
-  }
-}
-
-private func makeWorkTimelinePresentation(
-  timeline: [WorkTimelineEntry],
-  visibleCount: Int,
-  chatSummary: WorkChatSummaryRenderContext,
-  transcript: [WorkChatEnvelope],
-  assistantPreviewCache: WorkAssistantPreviewCache,
-  streamingAssistantMessageId: String?,
-  expandedTurnIds: Set<String>
-) -> WorkTimelinePresentation {
-  let foldedTimeline = workApplyingTurnFolds(timeline, expandedTurnIds: expandedTurnIds)
-  let rawVisibleEntries = visibleWorkTimelineEntries(from: foldedTimeline, visibleCount: visibleCount)
-  let visibleEntriesWithSeparators = injectWorkTurnSeparators(
-    into: rawVisibleEntries,
-    provider: chatSummary.provider,
-    model: chatSummary.model,
-    modelId: chatSummary.modelId,
-    transcript: transcript
-  )
-  let visibleEntries = workTimelineEntriesWithAssistantPreviews(
-    visibleEntriesWithSeparators,
-    cache: assistantPreviewCache
-  )
-  let renderEntries = workTimelineRenderEntries(
-    from: visibleEntries,
-    streamingAssistantMessageId: streamingAssistantMessageId,
-    splitAssistantMessageId: workLatestAssistantMessageId(in: foldedTimeline)
-  )
-  let hiddenCount = max(foldedTimeline.count - rawVisibleEntries.count, 0)
-  return WorkTimelinePresentation(
-    visibleEntries: visibleEntries,
-    renderEntries: renderEntries,
-    timelineCount: foldedTimeline.count,
-    timelineFirstId: foldedTimeline.first?.id,
-    timelineLastId: foldedTimeline.last?.id,
-    hiddenCount: hiddenCount,
-    signature: workTimelinePresentationSignature(
-      timelineCount: foldedTimeline.count,
-      timelineFirstId: foldedTimeline.first?.id,
-      timelineLastId: foldedTimeline.last?.id,
-      visibleEntries: visibleEntries,
-      renderEntries: renderEntries,
-      hiddenCount: hiddenCount
-    )
-  )
-}
-
-func workTimelineVisibleCountAfterHistoryPrepend(
-  currentVisibleCount: Int,
-  prependedCount: Int
-) -> Int {
-  max(0, currentVisibleCount) + min(max(0, prependedCount), workTimelinePageSize)
-}
-
-private func workTimelinePresentationSignature(
-  timelineCount: Int,
-  timelineFirstId: String?,
-  timelineLastId: String?,
-  visibleEntries: [WorkTimelineEntry],
-  renderEntries: [WorkTimelineRenderEntry],
-  hiddenCount: Int
-) -> Int {
-  var hasher = Hasher()
-  hasher.combine(hiddenCount)
-  hasher.combine(timelineCount)
-  hasher.combine(timelineFirstId)
-  hasher.combine(timelineLastId)
-  hasher.combine(visibleEntries.count)
-  hasher.combine(visibleEntries.first?.id)
-  hasher.combine(visibleEntries.last?.id)
-  hasher.combine(renderEntries.count)
-  for entry in renderEntries {
-    hasher.combine(workChatTranscriptRowRevision(entry))
-  }
-  return hasher.finalize()
-}
-
-/// Everything about one render row that can change what it draws.
-///
-/// Shared by the presentation signature (which asks "did the list change") and
-/// by the transcript's per-row revision (which asks "does this cell have to be
-/// reconfigured, and is its measured height still valid"). One function so the
-/// two answers cannot drift apart — a row whose height changed but whose
-/// revision did not would be restored from the height cache at the wrong size.
-func workChatTranscriptRowRevision(_ entry: WorkTimelineRenderEntry) -> Int {
-  var hasher = Hasher()
-  hasher.combine(entry.id)
-  hasher.combine(entry.sourceEntryId)
-  hasher.combine(entry.timestamp)
-  switch entry.payload {
-  case .entry(let timelineEntry):
-    hasher.combine(timelineEntry.id)
-    hasher.combine(timelineEntry.timestamp)
-    hasher.combine(timelineEntry.rank)
-    // Messages take the digest-based fast path below; every other card kind
-    // hashes its whole model, so an in-place update (a tool card gaining its
-    // result, a subagent card gaining a summary, a pending-input card gaining
-    // a resolution) reconfigures the cell and re-measures its height instead
-    // of leaving a stale card on screen.
-    guard case .message(let message) = timelineEntry.payload else {
-      hasher.combine(timelineEntry.payload)
-      return hasher.finalize()
-    }
-    hasher.combine(message.id)
-    hasher.combine(message.role)
-    hasher.combine(message.steerId)
-    hasher.combine(message.deliveryState)
-    hasher.combine(message.processed)
-    hasher.combine(message.unprocessedResolution?.action)
-    hasher.combine(message.unprocessedResolution?.state)
-    hasher.combine(message.unprocessedResolution?.resolvedAt)
-    workTimelineCombineMessageTextSignature(message, into: &hasher)
-    if let preview = message.assistantPreview {
-      // A preview is a pure function of the message text, and the text is
-      // already in this hash. Its shape is enough to separate two previews of
-      // the same message — no need to hash the rendered text, which is
-      // O(message) on every refresh.
-      hasher.combine(preview.totalLineCount)
-      hasher.combine(preview.usesMonospacedRendering)
-    }
-  case .assistantMarkdownBlock(let model):
-    hasher.combine(model.id)
-    hasher.combine(model.messageId)
-    hasher.combine(model.block.id)
-    // The block's own precomputed digest, not a rebuilt `kind.cacheKey`:
-    // building that key allocates a full copy of the block's text, once per
-    // block, on every presentation refresh.
-    hasher.combine(model.block.digest)
-    hasher.combine(model.isStreamingTail)
-  case .assistantMonospaced(let model):
-    hasher.combine(model.id)
-    hasher.combine(model.messageId)
-    // Digest of the source message plus the size of the slice taken from it:
-    // together these change whenever the rendered text does, without hashing
-    // the (potentially very long) slice itself.
-    hasher.combine(model.sourceDigest)
-    hasher.combine(model.text.utf8.count)
-    hasher.combine(model.accessibilityLabel)
-  }
-  return hasher.finalize()
-}
-
-/// Prefers the digest the snapshot fold stamped on the message; only messages
-/// built outside the fold pay to hash their text here.
-private func workTimelineCombineMessageTextSignature(_ message: WorkChatMessage, into hasher: inout Hasher) {
-  hasher.combine(message.markdownRevision)
-
-  // Live assistant deltas already carry a monotonic revision and exact
-  // character metadata. Do not count or hash the growing response here: this
-  // helper runs as part of the presentation signature on every streaming
-  // refresh. The revision is the authoritative invalidation token; the count
-  // only keeps the signature useful when a caller inspects it while a message
-  // is being assembled.
-  if message.markdownRevision > 0 {
-    hasher.combine(message.markdownCharacterCount)
-    return
-  }
-
-  if let digest = message.markdownDigest {
-    hasher.combine(digest)
-    hasher.combine(message.markdownCharacterCount)
-    hasher.combine(message.markdownLineCount)
-  } else {
-    hasher.combine(message.markdown.utf8.count)
-    hasher.combine(message.markdown.hashValue)
-  }
-}
-
-/// Attach each visible assistant message's preview.
-///
-/// Assistant answers render whole, so a preview is a pure function of the
-/// message: there is no budget to resolve, no anchor to pick, and no floor to
-/// carry.
-private func workTimelineEntriesWithAssistantPreviews(
-  _ entries: [WorkTimelineEntry],
-  cache: WorkAssistantPreviewCache
-) -> [WorkTimelineEntry] {
-  var visibleAssistantMessageIds = Set<String>()
-  let hydratedEntries = entries.map { entry -> WorkTimelineEntry in
-    guard case .message(var message) = entry.payload,
-          message.role == "assistant"
-    else { return entry }
-
-    visibleAssistantMessageIds.insert(message.id)
-    message.assistantPreview = cache.preview(for: message)
-    return WorkTimelineEntry(
-      id: entry.id,
-      timestamp: entry.timestamp,
-      rank: entry.rank,
-      payload: .message(message),
-      turnId: entry.turnId
-    )
-  }
-  cache.prune(keeping: visibleAssistantMessageIds)
-  return hydratedEntries
-}
-
-private func workLatestAssistantMessageId(in timeline: [WorkTimelineEntry]) -> String? {
-  for entry in timeline.reversed() {
-    guard case .message(let message) = entry.payload,
-          message.role == "assistant"
-    else { continue }
-    return message.id
-  }
-  return nil
-}
-
-func workTimelineRenderEntries(
-  from entries: [WorkTimelineEntry],
-  streamingAssistantMessageId: String?,
-  splitAssistantMessageId: String? = nil
-) -> [WorkTimelineRenderEntry] {
-  var rendered: [WorkTimelineRenderEntry] = []
-  rendered.reserveCapacity(entries.count)
-
-  for entry in entries {
-    guard case .message(let message) = entry.payload,
-          message.role == "assistant"
-    else {
-      rendered.append(WorkTimelineRenderEntry(
-        id: entry.id,
-        sourceEntryId: entry.id,
-        timestamp: entry.timestamp,
-        payload: .entry(entry)
-      ))
-      continue
-    }
-
-    let preview = message.assistantPreview ?? workAssistantMessagePreview(message.markdown)
-    let shouldSplitAssistantMessage = (
-      message.id == streamingAssistantMessageId
-      || message.id == splitAssistantMessageId
-    )
-    guard shouldSplitAssistantMessage else {
-      rendered.append(WorkTimelineRenderEntry(
-        id: entry.id,
-        sourceEntryId: entry.id,
-        timestamp: entry.timestamp,
-        payload: .entry(entry)
-      ))
-      continue
-    }
-
-    let accessibilityLabel = workAssistantMessageAccessibilityLabel(preview)
-
-    // A truncated tail can start inside a fenced tree and omit the opening
-    // fence. Classify the authoritative full message so markdown prose never
-    // flips into the tiny whole-message monospace renderer while paginating.
-    if preview.usesMonospacedRendering {
-      let model = WorkAssistantMonospacedRenderModel(
-        // Keep the first rendered row anchored to the source timeline entry so
-        // Show More can restore it after the preview changes anchor.
-        id: entry.id,
-        messageId: message.id,
-        turnId: message.turnId,
-        itemId: message.itemId,
-        text: preview.text,
-        accessibilityLabel: accessibilityLabel,
-        sourceDigest: "\(message.markdownDigest ?? ""):\(message.markdownRevision)",
-      )
-      rendered.append(WorkTimelineRenderEntry(
-        id: model.id,
-        sourceEntryId: entry.id,
-        timestamp: entry.timestamp,
-        payload: .assistantMonospaced(model)
-      ))
-    } else {
-      let blocks = message.id == streamingAssistantMessageId
-        ? parseMarkdownBlocksForStreaming(
-          preview.text,
-          cacheKey: "\(message.id):preview",
-          appendOnly: true
-        )
-        : parseMarkdownBlocks(preview.text)
-      rendered.reserveCapacity(rendered.count + blocks.count)
-      let streamingTailBlockId = message.id == streamingAssistantMessageId ? blocks.last?.id : nil
-      for block in blocks {
-        let model = WorkAssistantMarkdownBlockRenderModel(
-          id: block.id == blocks.first?.id ? entry.id : "\(entry.id)-\(block.id)",
-          messageId: message.id,
-          turnId: message.turnId,
-          itemId: message.itemId,
-          block: block,
-          isStreamingTail: block.id == streamingTailBlockId
-        )
-        rendered.append(WorkTimelineRenderEntry(
-          id: model.id,
-          sourceEntryId: entry.id,
-          timestamp: entry.timestamp,
-          payload: .assistantMarkdownBlock(model)
-        ))
-      }
-    }
-  }
-
-  return rendered
-}
 
 func mergeWorkPendingSteers(
   optimistic: [WorkPendingSteerModel],
@@ -2646,19 +2310,19 @@ private struct WorkChatComposerDraftInput: View {
   @State private var isDictating = false
   @State private var inputAttachments: [WorkChatInputAttachment] = []
   @State private var presentedPicker: WorkComposerPicker?
-  /// Collapsed composer: the keyboard is down, the field is one line, the
-  /// suggestion strip is hidden and the tray is chips. A view mode only —
-  /// nothing is unstaged, and `@State` is deliberate so a fresh open of the
-  /// chat always shows the normal composer.
-  @State private var composerCollapsed = false
+  /// Collapsed composer: the keyboard is down and the card is one capsule —
+  /// [⋯ menu] [one-line field] [send / stop]. It follows focus: the field
+  /// losing focus folds the card, gaining it unfolds it to the full composer
+  /// with its controls row. A view mode only — nothing is unstaged. The
+  /// compact (CTO) composer keeps its own single-row layout and only folds on
+  /// the swipe.
+  @State private var composerCollapsed = true
   /// Refs restored from the persisted draft are adopted once, not on every
   /// re-render of the same key.
   @State private var restoredDraftKey = ""
   @State private var stopMode: AgentChatStopMode = .stopAndClear
-  @State private var stopOptionsPresented = false
   @State private var stopHapticToken = 0
   @State private var activeSendMode: WorkActiveSendMode = .inline
-  @State private var sendOptionsPresented = false
   /// Set when a send came back unsent. Drives the one retry row above the
   /// field; cleared by the next attempt and by a chat switch.
   @State private var sendFailureNotice: String?
@@ -2746,14 +2410,6 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
-  private func activeSendModeDetail(_ mode: WorkActiveSendMode) -> String {
-    switch mode {
-    case .queue: return "Keep this message staged until the turn finishes."
-    case .interrupt: return "Stop and redirect \(activeSendAgentLabel) now."
-    case .inline: return "\(activeSendAgentLabel) picks this up after the current tool step."
-    }
-  }
-
   private func activeSendModeIcon(_ mode: WorkActiveSendMode) -> String {
     switch mode {
     case .queue: return "clock"
@@ -2792,27 +2448,10 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
-  /// Rides alongside the field's own recognizers rather than replacing them, so
-  /// text selection and the tray's horizontal scroll keep working; only a
-  /// mostly-vertical swipe past the threshold is claimed.
-  private var foldGesture: some Gesture {
-    DragGesture(minimumDistance: 12, coordinateSpace: .local)
-      .onEnded { value in
-        switch workComposerFoldGesture(translation: value.translation, collapsed: composerCollapsed) {
-        case .collapse: applyFold(.collapse)
-        case .expand: applyFold(.expand)
-        case .ignore: break
-        }
-      }
-  }
-
-  private var composerSurface: some View {
-    RoundedRectangle(cornerRadius: 24, style: .continuous)
-      .fill(ADEColor.composerBackground)
-      .overlay(
-        RoundedRectangle(cornerRadius: 24, style: .continuous)
-          .stroke(ADEColor.glassBorder, lineWidth: 1)
-      )
+  /// The folded one-line capsule. The CTO (compact) composer folds the same
+  /// way now.
+  private var showsFoldedCapsule: Bool {
+    composerCollapsed
   }
 
   private var sendEnabled: Bool {
@@ -2910,51 +2549,28 @@ private struct WorkChatComposerDraftInput: View {
   /// clips the same measured field instead (`collapsed:` below).
   private var composerMaxLines: Int { 6 }
 
+  /// The app's one prompt box (`ADEGlassComposerCard`): folded to
+  /// [⋯][one-line field][send/stop], unfolded on focus to the field plus the
+  /// model/access controls row. The CTO's composer is this same card.
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      sendFailureRow
+    ADEGlassComposerCard(
+      collapsed: showsFoldedCapsule,
+      isDictating: isDictating,
+      // No send-mode hint under the draft: the mode lives in "Stop and send
+      // settings", and the line only took room from the prompt.
+      hint: nil,
+      onFold: applyFold,
+      accessory: {
+        sendFailureRow
 
-      if compact {
         if !composerCollapsed {
           WorkComposerSuggestionStrip(controller: suggestionController)
             .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
         }
 
         attachmentTray
-
-        HStack(alignment: .center, spacing: 8) {
-          if !isDictating {
-            composerOverflowMenu
-
-            WorkChatComposerTextField(
-              draftState: draftState,
-              controller: suggestionController,
-              canCompose: canCompose,
-              placeholder: composerPlaceholder,
-              acceptsPastedImages: canCompose && attachmentsAvailable,
-              onPasteImages: { images in
-                workChatInputPasteImages(images, into: $inputAttachments)
-              },
-              maxLines: 1,
-              collapsed: composerCollapsed,
-              onFoldSwipeDown: { applyFold(.collapse) }
-            )
-          }
-
-          composerDictationControl
-
-          if !isDictating {
-            sendOrInterruptControls()
-          }
-        }
-      } else {
-        if !composerCollapsed {
-          WorkComposerSuggestionStrip(controller: suggestionController)
-            .animation(.smooth(duration: 0.16), value: suggestionController.isVisible)
-        }
-
-        attachmentTray
-
+      },
+      field: {
         WorkChatComposerTextField(
           draftState: draftState,
           controller: suggestionController,
@@ -2968,53 +2584,41 @@ private struct WorkChatComposerDraftInput: View {
           collapsed: composerCollapsed,
           onFoldSwipeDown: { applyFold(.collapse) }
         )
+      },
+      menu: {
+        composerOverflowMenu()
+      },
+      controls: {
+        WorkComposerChipStrip(
+          chatSummary: chatSummary,
+          settingsMutationInFlight: settingsMutationInFlight,
+          codexFastModeOverride: codexFastModeOverride,
+          onOpenModelPicker: onOpenModelPicker,
+          onSelectRuntimeMode: onSelectRuntimeMode
+        )
 
-        if showInterrupt && hasSendableDraftOrAttachment {
-          Text(activeTurnSendHint)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityIdentifier("Work.Chat.Composer.StagingHint")
-        }
+        DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
+      },
+      trailing: {
+        composerDictationControl
 
-        HStack(alignment: .center, spacing: 8) {
         if !isDictating {
-          composerOverflowMenu
-
-          WorkComposerChipStrip(
-            chatSummary: chatSummary,
-            settingsMutationInFlight: settingsMutationInFlight,
-            codexFastModeOverride: codexFastModeOverride,
-            onOpenModelPicker: onOpenModelPicker,
-            onSelectRuntimeMode: onSelectRuntimeMode
-          )
-
-          DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
-
-          Spacer(minLength: 0)
-        }
-
-          composerDictationControl
-
-          if !isDictating {
-            sendOrInterruptControls()
-          }
+          sendOrInterruptControls()
         }
       }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, compact ? 8 : 10)
-    .background(composerSurface)
-    // The gesture covers the card's chrome, not just the field, so the swipe
-    // works from the padding and the controls row too.
-    .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-    .simultaneousGesture(foldGesture)
-    .accessibilityAction(named: composerCollapsed ? "Expand composer" : "Collapse composer") {
-      applyFold(composerCollapsed ? .expand : .collapse)
-    }
+    )
     .onAppear {
       configureSuggestionController()
     }
+    #if DEBUG
+    // Scroll-bench fixture: `-adeBenchFocusComposer` raises the keyboard once
+    // the thread has settled, so the expanded composer can be captured.
+    .task {
+      guard ProcessInfo.processInfo.arguments.contains("-adeBenchFocusComposer") else { return }
+      try? await Task.sleep(for: .milliseconds(3500))
+      applyFold(.expand)
+    }
+    #endif
     // Bind before applying a restore: `bind` only seeds an empty field, so a
     // failed-send restore that runs first would be preserved either way, but
     // binding first keeps the persisted key correct for the very first autosave.
@@ -3022,8 +2626,6 @@ private struct WorkChatComposerDraftInput: View {
       stopMode = AgentChatStopMode(rawValue: UserDefaults.standard.string(forKey: "\(draftPersistenceKey).stopMode") ?? "")
         ?? WorkChatStopCapability.defaultMode
       restoreActiveSendMode()
-      sendOptionsPresented = false
-      stopOptionsPresented = false
       draftState.bind(persistenceKey: draftPersistenceKey)
     }
     .task(id: composerDraftRestore?.id) {
@@ -3032,20 +2634,12 @@ private struct WorkChatComposerDraftInput: View {
     // The 400ms autosave debounce can't survive a navigation pop; flush here so
     // backing out of a chat mid-sentence keeps the sentence.
     .onDisappear { draftState.flushDraft() }
-    // A turn starting or ending is not a change of intent: the mode the user
-    // picked survives it, and only the transient popovers close.
-    .onChange(of: showInterrupt) { _, _ in
-      sendOptionsPresented = false
-      stopOptionsPresented = false
-    }
     // A provider change is: the new runtime may have no inline channel at all,
     // so anything it cannot honor snaps back to that provider's default.
     .onChange(of: chatSummary.provider) { _, _ in
       if !activeSendCapability.modes.contains(activeSendMode) {
         activeSendMode = activeSendCapability.defaultMode
       }
-      sendOptionsPresented = false
-      stopOptionsPresented = false
       configureSuggestionController()
     }
     .onChange(of: laneId) { _, _ in configureSuggestionController() }
@@ -3066,8 +2660,11 @@ private struct WorkChatComposerDraftInput: View {
     // Typing is the escape from the collapsed state, so it is never a mode the
     // user has to work out how to leave.
     .onChange(of: draftState.isFocused) { _, focused in
-      guard focused, composerCollapsed else { return }
-      withAnimation(workComposerFoldAnimation) { composerCollapsed = false }
+      // The full composer is the keyboard-up state; putting the keyboard away
+      // (a scroll, a sheet, the swipe) folds it back to the capsule.
+      let collapsed = !focused
+      guard collapsed != composerCollapsed else { return }
+      withAnimation(workComposerFoldAnimation) { composerCollapsed = collapsed }
     }
     // Stage every ready attachment on the host the moment it lands, then persist
     // the refs. Uploading on attach is what makes the draft persistable (refs,
@@ -3165,7 +2762,7 @@ private struct WorkChatComposerDraftInput: View {
     inputAttachments = Array(restored.prefix(workChatInputAttachmentLimit))
   }
 
-  private var composerOverflowMenu: some View {
+  private func composerOverflowMenu() -> some View {
     WorkComposerOverflowButton(
       presentedPicker: $presentedPicker,
       draft: $draftState.text,
@@ -3178,8 +2775,92 @@ private struct WorkChatComposerDraftInput: View {
       stashAvailable: stashAvailable,
       scope: WorkPromptStashScope(chatSessionId: sessionId),
       provider: chatSummary.provider,
-      modelId: chatSummary.currentModelId
+      modelId: chatSummary.currentModelId,
+      extraMenuContent: AnyView(stopAndSendSettingsMenu)
     )
+  }
+
+  private var queueAwareStop: Bool {
+    chatSummary.provider.lowercased() == "claude" && queueAwareStopAvailable
+  }
+
+  private var stopJobCount: Int { chatSummary.activeBackgroundTaskCount ?? 0 }
+
+  /// Send modes this chat can choose between. A single mode is still listed
+  /// (checked), so the submenu always says what a send during a turn does.
+  private var stopAndSendSettingsSendModes: [WorkActiveSendMode] {
+    activeSendModePickerVisible ? activeSendCapability.modes : [effectiveActiveSendMode]
+  }
+
+  /// Stop modes this chat can choose between: the full queue-aware table for
+  /// Claude chats that support it, otherwise the one plain stop.
+  private var stopAndSendSettingsStopModes: [AgentChatStopMode] {
+    queueAwareStop ? WorkChatStopCapability.modes : [.stopAndClear]
+  }
+
+  private var stopAndSendSettingsCurrentStopMode: AgentChatStopMode {
+    queueAwareStop ? stopMode : .stopAndClear
+  }
+
+  /// The last thing in the "⋯" menu, active turn or not: one "Stop and send
+  /// settings" submenu holding a Send and a Stop submenu. Each lists only the
+  /// modes this chat supports (the same capability gates the send and stop
+  /// buttons use) with a checkmark on the current choice. Model and access are
+  /// not here — they live in the expanded composer's controls row.
+  ///
+  /// The overflow menu opens upward from the composer and iOS lays menu items
+  /// out nearest-first, so leading this content puts it at the menu's bottom.
+  @ViewBuilder
+  private var stopAndSendSettingsMenu: some View {
+    Section {
+      Menu {
+        // Written bottom-up: the menu opens upward from the composer and iOS
+        // lays items out nearest-first, so this reads Send, then Stop, each
+        // listing its modes in table order.
+        Picker(selection: Binding(
+          get: { stopAndSendSettingsCurrentStopMode },
+          set: { mode in
+            if queueAwareStop { rememberStopMode(mode) }
+          }
+        )) {
+          ForEach(stopAndSendSettingsStopModes.reversed(), id: \.self) { mode in
+            Label(
+              WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount).title,
+              systemImage: WorkChatStopCapability.systemImage(for: mode)
+            )
+            .tag(mode)
+          }
+        } label: {
+          Label("Stop", systemImage: "stop.circle")
+        }
+        .pickerStyle(.menu)
+        .accessibilityIdentifier("Work.Chat.Composer.StopSettings")
+
+        Picker(selection: Binding(
+          get: { effectiveActiveSendMode },
+          set: { mode in
+            activeSendMode = mode
+            WorkActiveSendModeStore.save(mode, for: activeSendModeStorageKey)
+          }
+        )) {
+          ForEach(stopAndSendSettingsSendModes.reversed(), id: \.self) { mode in
+            Label(activeSendModeTitle(mode), systemImage: activeSendModeIcon(mode)).tag(mode)
+          }
+        } label: {
+          Label("Send", systemImage: "paperplane")
+        }
+        .pickerStyle(.menu)
+        .accessibilityIdentifier("Work.Chat.Composer.SendSettings")
+      } label: {
+        Label("Stop and send settings", systemImage: "slider.horizontal.3")
+      }
+      .accessibilityIdentifier("Work.Chat.Composer.StopAndSendSettings")
+    }
+  }
+
+  private func rememberStopMode(_ mode: AgentChatStopMode) {
+    stopMode = mode
+    UserDefaults.standard.set(mode.rawValue, forKey: "\(draftPersistenceKey).stopMode")
   }
 
   private var composerDictationControl: some View {
@@ -3226,99 +2907,19 @@ private struct WorkChatComposerDraftInput: View {
     }
   }
 
-  @ViewBuilder
+  /// The send button during a turn: its glyph says which mode it will use.
+  /// The mode itself is chosen in the "⋯" menu's "Stop and send settings".
   private func activeTurnSendButton() -> some View {
-    HStack(spacing: 0) {
-      WorkChatComposerSendButton(
-        draftState: draftState,
-        attachments: $inputAttachments,
-        canSend: canSend,
-        canUploadAttachments: canUploadAttachments,
-        sending: sending,
-        accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
-        systemImageName: activeSendModeIcon(effectiveActiveSendMode),
-        minimumTapTargetSize: 32,
-        action: { performSend(mode: effectiveActiveSendMode) }
-      )
-
-      Button {
-        sendOptionsPresented.toggle()
-      } label: {
-        Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .bold))
-          .foregroundStyle(Color(red: 0.12, green: 0.12, blue: 0.14))
-          .frame(width: 24, height: 32)
-          .background(Color.white.opacity(0.9))
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("More send options")
-      .accessibilityValue(activeSendModeTitle(effectiveActiveSendMode))
-      .accessibilityHint("Choose how this message reaches the active \(activeSendAgentLabel) turn")
-      .popover(isPresented: $sendOptionsPresented, arrowEdge: .bottom) {
-        VStack(alignment: .leading, spacing: 0) {
-          ForEach(Array(activeSendCapability.modes.enumerated()), id: \.element) { index, mode in
-            if index > 0 { Divider() }
-            activeSendOption(
-              mode: mode,
-              title: activeSendModeTitle(mode),
-              detail: activeSendModeDetail(mode),
-              systemImage: activeSendModeIcon(mode)
-            )
-          }
-        }
-        .frame(width: 270)
-        .presentationCompactAdaptation(.popover)
-      }
-    }
-    .clipShape(Capsule())
-  }
-
-  private var activeTurnSendHint: String {
-    guard activeSendModePickerVisible else {
-      return "Message will stage behind the active turn."
-    }
-    switch effectiveActiveSendMode {
-    case .queue:
-      if let draftInlineBlockedReason {
-        return "\(draftInlineBlockedReason) Message will send after the active turn."
-      }
-      return "Message will send after the active turn."
-    case .interrupt: return "Message will interrupt and redirect \(activeSendAgentLabel)."
-    case .inline: return "Message will reach \(activeSendAgentLabel) during the active turn."
-    }
-  }
-
-  @ViewBuilder
-  private func activeSendOption(mode: WorkActiveSendMode, title: String, detail: String, systemImage: String) -> some View {
-    Button {
-      activeSendMode = mode
-      WorkActiveSendModeStore.save(mode, for: activeSendModeStorageKey)
-      sendOptionsPresented = false
-    } label: {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: systemImage)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(mode == .interrupt ? ADEColor.warning : ADEColor.accent)
-          .frame(width: 16)
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(detail)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 4)
-        if effectiveActiveSendMode == mode {
-          Image(systemName: "checkmark")
-            .font(.caption.weight(.bold))
-            .foregroundStyle(ADEColor.accent)
-        }
-      }
-      .padding(12)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
+    WorkChatComposerSendButton(
+      draftState: draftState,
+      attachments: $inputAttachments,
+      canSend: canSend,
+      canUploadAttachments: canUploadAttachments,
+      sending: sending,
+      accessibilityLabelText: activeSendModeTitle(effectiveActiveSendMode),
+      systemImageName: activeSendModeIcon(effectiveActiveSendMode),
+      action: { performSend(mode: effectiveActiveSendMode) }
+    )
   }
 
   private func configureSuggestionController() {
@@ -3327,160 +2928,47 @@ private struct WorkChatComposerDraftInput: View {
     suggestionController.syncService = syncService
   }
 
+  /// Red stop circle, the desktop's colour
+  /// (`border-red-500/25 bg-red-500/[0.08] text-red-400`). One tap stops with
+  /// the remembered mode; the mode is chosen in the "⋯" menu's "Stop and send
+  /// settings".
   @ViewBuilder
   private func stopButton() -> some View {
-    if chatSummary.provider.lowercased() == "claude" && queueAwareStopAvailable {
-      HStack(spacing: 0) {
-        Button {
-          stopHapticToken &+= 1
-          Task { await onInterrupt(stopMode) }
-        } label: {
-          stopButtonModeIcon()
-            .foregroundStyle(ADEColor.danger.opacity(0.85))
-            .frame(width: 32, height: 32)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(WorkChatStopCapability.copy(mode: stopMode, jobCount: chatSummary.activeBackgroundTaskCount ?? 0).title)
-        .accessibilityValue(WorkChatStopCapability.copy(mode: stopMode, jobCount: chatSummary.activeBackgroundTaskCount ?? 0).title)
-        .accessibilityHint("Choose whether the turn, queue, and background jobs are stopped")
-        .disabled(interruptInFlight)
-
-        Button {
-          stopOptionsPresented.toggle()
-        } label: {
-          Image(systemName: "chevron.down")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(ADEColor.danger.opacity(0.72))
-            .frame(width: 24, height: 32)
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("More stop options")
-        .accessibilityValue(WorkChatStopCapability.copy(mode: stopMode, jobCount: chatSummary.activeBackgroundTaskCount ?? 0).title)
-        .accessibilityHint("Choose whether the turn, queue, and background jobs are stopped")
-        .disabled(interruptInFlight)
-        .popover(isPresented: $stopOptionsPresented, arrowEdge: .bottom) {
-          let jobCount = chatSummary.activeBackgroundTaskCount ?? 0
-          VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(WorkChatStopCapability.modes.enumerated()), id: \.element) { index, mode in
-              if index > 0 {
-                Divider().padding(.horizontal, 12)
-              }
-              stopOption(
-                mode: mode,
-                title: WorkChatStopCapability.copy(mode: mode, jobCount: jobCount).title,
-                detail: WorkChatStopCapability.copy(mode: mode, jobCount: jobCount).detail,
-                systemImage: WorkChatStopCapability.systemImage(for: mode)
-              )
-            }
-          }
-          .frame(width: 300)
-          .presentationCompactAdaptation(.popover)
-        }
-      }
-      .background(
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .fill(ADEColor.danger.opacity(0.08))
-      )
-      .overlay {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
-          .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
-      }
-      .sensoryFeedback(.impact(weight: .medium), trigger: stopHapticToken)
-    } else {
-      Button {
-        stopHapticToken &+= 1
-        Task { await onInterrupt(.stopAndClear) }
-      } label: {
-        stopButtonIcon()
-        .foregroundStyle(ADEColor.danger.opacity(0.85))
-        .frame(width: 28, height: 28)
-        .background(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(ADEColor.danger.opacity(0.08))
-        )
-        .overlay(
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
-        )
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel(interruptInFlight ? "Interrupting turn" : "Stop turn")
-      .disabled(interruptInFlight)
-      .sensoryFeedback(.impact(weight: .medium), trigger: stopHapticToken)
-      .adeInspectable(
-        "Work.Chat.Composer.StopButton",
-        metadata: [
-          "label": interruptInFlight ? "Interrupting turn" : "Stop turn",
-          "role": "button"
-        ]
-      )
-    }
-  }
-
-  @ViewBuilder
-  private func stopOption(mode: AgentChatStopMode, title: String, detail: String, systemImage: String) -> some View {
+    let mode: AgentChatStopMode = queueAwareStop ? stopMode : .stopAndClear
+    let title = queueAwareStop
+      ? WorkChatStopCapability.copy(mode: mode, jobCount: stopJobCount).title
+      : (interruptInFlight ? "Interrupting turn" : "Stop turn")
     Button {
-      stopMode = mode
-      UserDefaults.standard.set(mode.rawValue, forKey: "\(draftPersistenceKey).stopMode")
-      stopOptionsPresented = false
+      stopHapticToken &+= 1
+      Task { await onInterrupt(mode) }
     } label: {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: systemImage)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.danger)
-          .frame(width: 16)
-        VStack(alignment: .leading, spacing: 2) {
-          Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text(detail)
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        Spacer(minLength: 4)
-        if stopMode == mode {
-          Image(systemName: "checkmark")
-            .font(.caption.weight(.bold))
-            .foregroundStyle(ADEColor.accent)
+      ZStack {
+        if interruptInFlight {
+          ProgressView()
+            .controlSize(.mini)
+            .tint(ADEColor.danger)
+        } else {
+          Image(systemName: "stop.fill")
+            .font(.system(size: 11, weight: .bold))
+            .foregroundStyle(ADEColor.danger)
         }
       }
-      .padding(12)
-      .contentShape(Rectangle())
+      .frame(width: 32, height: 32)
+      .background(ADEColor.danger.opacity(0.14), in: Circle())
+      .overlay(Circle().stroke(ADEColor.danger.opacity(0.35), lineWidth: 1))
+      .contentShape(Circle())
     }
     .buttonStyle(.plain)
-  }
-
-  @ViewBuilder
-  private func stopButtonIcon() -> some View {
-    if interruptInFlight {
-      ProgressView()
-        .controlSize(.mini)
-        .tint(ADEColor.danger)
-    } else {
-      Image(systemName: "stop.fill")
-        .font(.system(size: 10, weight: .bold))
-    }
-  }
-
-  @ViewBuilder
-  private func stopButtonModeIcon() -> some View {
-    if interruptInFlight {
-      ProgressView()
-        .controlSize(.mini)
-        .tint(ADEColor.danger)
-    } else if stopMode == .stopOnly {
-      Image(systemName: WorkChatStopCapability.systemImage(for: .stopOnly))
-        .font(.system(size: 10, weight: .bold))
-    } else if stopMode == .stopAndBackground {
-      Image(systemName: WorkChatStopCapability.systemImage(for: .stopAndBackground))
-        .font(.system(size: 10, weight: .bold))
-    } else if stopMode == .stopAndClearAndBackground {
-      Image(systemName: WorkChatStopCapability.systemImage(for: .stopAndClearAndBackground))
-        .font(.system(size: 11, weight: .bold))
-    } else {
-      Image(systemName: WorkChatStopCapability.systemImage(for: .stopAndClear))
-        .font(.system(size: 11, weight: .bold))
-    }
+    .disabled(interruptInFlight)
+    .accessibilityLabel(title)
+    .sensoryFeedback(.impact(weight: .medium), trigger: stopHapticToken)
+    .adeInspectable(
+      "Work.Chat.Composer.StopButton",
+      metadata: [
+        "label": title,
+        "role": "button"
+      ]
+    )
   }
 }
 

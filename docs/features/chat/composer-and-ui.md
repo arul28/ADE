@@ -2747,12 +2747,10 @@ prompt linking Settings → AI connections instead of an empty list.
   103 events, including two `approval_request` envelopes carrying whole
   AskUserQuestion cards and 31 short text chunks (short text has no
   content dedupe key of its own — that requires >= 24 characters — so it
-  fell through to the sequence-derived id). Blocking gates additionally
-  get itemId-based content dedupe keys in
-  `SyncService.chatEventContentDedupeKey` (`approval_request`,
-  `structured_question`, `pending_input_resolved`): a dropped gate is a
-  question the user never sees and can never answer, so it must not
-  depend on sequence uniqueness at all.
+  fell through to the sequence-derived id). The phone's thread engine now
+  keys its log on the durable envelope `sequence`, and pending-input cards
+  are still derived per `itemId` (`derivePendingWorkInputs`), so a gate
+  delivered twice renders one answerable card.
 - **`isAskUserToolName` deliberately does not match `AskUserQuestion`.**
   For Claude's own ask-user tool the host emits *both* a `tool_call` (keyed
   by the SDK tool-use id) and a separate `approval_request` (keyed by a

@@ -10,7 +10,10 @@ import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
 } from "../../../../desktop/src/shared/chatAttachmentLimits";
-import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  createSyncRemoteCommandService,
+  SyncRemoteCommandResultTooLargeError,
+} from "./syncRemoteCommandService";
 import {
   ATTACHMENT_UPLOAD_PATH,
   createAttachmentUploadRegistry,
@@ -64,6 +67,7 @@ function createService(options?: {
     call: ReturnType<typeof vi.fn>;
     streamEvents?: ReturnType<typeof vi.fn>;
   };
+  remoteCommandResultMaxBytes?: number;
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -125,6 +129,9 @@ function createService(options?: {
     ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
     ...(options?.personalChatScope ? { personalChatScope: options.personalChatScope } : {}),
     ...(options?.attachmentUploads ? { attachmentUploads: options.attachmentUploads } : {}),
+    ...(options?.remoteCommandResultMaxBytes != null
+      ? { remoteCommandResultMaxBytes: options.remoteCommandResultMaxBytes }
+      : {}),
     logger,
   } as any);
   return { service, ptyService, sessionService, externalSessionsService: options?.externalSessionsService, logger };
@@ -3450,5 +3457,115 @@ describe("web-reachable settings and lane-risk commands", () => {
 
     await service.execute(makePayload("ai.cursorCloudStopRun", { agentId: "bc-3" }));
     expect(stopAgentRun).toHaveBeenCalledWith("bc-3");
+  });
+});
+
+describe("remote command reply bounds", () => {
+  function pr(id: string, state: string, laneId: string) {
+    return { id, state, laneId };
+  }
+  function snapshot(prId: string, filler = 0) {
+    return { prId, detail: null, status: null, checks: [], reviews: [], comments: [], files: [{ patch: "x".repeat(filler) }], commits: [], updatedAt: null };
+  }
+
+  it("fails any command whose result is over the size limit with result_too_large", async () => {
+    const { service, logger } = createService({
+      remoteCommandResultMaxBytes: 1024,
+      prService: { listAll: vi.fn().mockResolvedValue([{ id: "pr-1", title: "x".repeat(4096) }]) },
+    });
+
+    const failure = await service.execute(makePayload("prs.list")).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(SyncRemoteCommandResultTooLargeError);
+    const details = (failure as SyncRemoteCommandResultTooLargeError).details;
+    expect(details).toMatchObject({ code: "result_too_large", limitBytes: 1024 });
+    expect(details.bytes).toBeGreaterThan(4096);
+    expect(details.message).toContain("prs.list");
+    expect(logger.warn).toHaveBeenCalledWith("sync.remote_command.result_too_large", expect.objectContaining({ action: "prs.list" }));
+  });
+
+  it("prs.refresh without ids returns every PR but only snapshots for open PRs and live lanes", async () => {
+    const listSnapshots = vi.fn((args: { prId?: string; prIds?: string[] } = {}) =>
+      (args.prIds ?? ["open-1", "merged-live", "merged-archived"]).map((id) => snapshot(id)));
+    const refresh = vi.fn().mockResolvedValue(undefined);
+    const { service } = createService({
+      laneService: { list: vi.fn().mockResolvedValue([{ id: "lane-live" }]) },
+      prService: {
+        refresh,
+        listAll: vi.fn().mockResolvedValue([
+          pr("open-1", "open", "lane-gone"),
+          pr("merged-live", "merged", "lane-live"),
+          pr("merged-archived", "merged", "lane-archived"),
+        ]),
+        listSnapshots,
+      },
+    });
+
+    const result = await service.execute(makePayload("prs.refresh")) as {
+      prs: Array<{ id: string }>;
+      snapshots: Array<{ prId: string }>;
+      snapshotScope: string;
+      omittedSnapshotPrIds: string[];
+    };
+
+    expect(refresh).toHaveBeenCalledWith({});
+    expect(result.prs.map((entry) => entry.id)).toEqual(["open-1", "merged-live", "merged-archived"]);
+    expect(listSnapshots).toHaveBeenCalledWith({ prIds: ["open-1", "merged-live"] });
+    expect(result.snapshots.map((entry) => entry.prId).sort()).toEqual(["merged-live", "open-1"]);
+    expect(result.snapshotScope).toBe("active");
+    expect(result.omittedSnapshotPrIds).toEqual([]);
+
+    const none = await service.execute(makePayload("prs.refresh", { includeSnapshots: "none" })) as { snapshots: unknown[] };
+    expect(none.snapshots).toEqual([]);
+
+    const all = await service.execute(makePayload("prs.refresh", { includeSnapshots: "all" })) as { snapshots: unknown[] };
+    expect(all.snapshots).toHaveLength(3);
+  });
+
+  it("prs.refresh caps snapshot bytes and lists the PRs it left out, keeping open PRs first", async () => {
+    const big = 4 * 1024 * 1024;
+    const { service } = createService({
+      laneService: { list: vi.fn().mockResolvedValue([{ id: "lane-a" }]) },
+      prService: {
+        refresh: vi.fn().mockResolvedValue(undefined),
+        listAll: vi.fn().mockResolvedValue([
+          pr("merged-1", "merged", "lane-a"),
+          pr("merged-2", "merged", "lane-a"),
+          pr("open-1", "open", "lane-a"),
+        ]),
+        listSnapshots: vi.fn(() => [snapshot("merged-1", big), snapshot("merged-2", big), snapshot("open-1", big)]),
+      },
+    });
+
+    const result = await service.execute(makePayload("prs.refresh", { includeSnapshots: "all" })) as {
+      snapshots: Array<{ prId: string }>;
+      omittedSnapshotPrIds: string[];
+    };
+
+    expect(result.snapshots.map((entry) => entry.prId)).toEqual(["open-1"]);
+    expect(result.omittedSnapshotPrIds).toEqual(["merged-1", "merged-2"]);
+  });
+
+  it("prs.refresh with a prId returns just that PR's snapshot", async () => {
+    const listSnapshots = vi.fn(() => [snapshot("merged-1")]);
+    const { service } = createService({
+      laneService: { list: vi.fn().mockResolvedValue([]) },
+      prService: {
+        refresh: vi.fn().mockResolvedValue(undefined),
+        listAll: vi.fn().mockResolvedValue([pr("merged-1", "merged", "lane-x"), pr("open-1", "open", "lane-y")]),
+        listSnapshots,
+      },
+    });
+
+    const result = await service.execute(makePayload("prs.refresh", { prId: "merged-1" })) as {
+      refreshedCount: number;
+      prs: Array<{ id: string }>;
+      snapshots: Array<{ prId: string }>;
+    };
+
+    expect(listSnapshots).toHaveBeenCalledWith({ prId: "merged-1" });
+    expect(result.refreshedCount).toBe(1);
+    expect(result.prs.map((entry) => entry.id)).toEqual(["merged-1"]);
+    expect(result.snapshots.map((entry) => entry.prId)).toEqual(["merged-1"]);
   });
 });

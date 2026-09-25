@@ -422,6 +422,7 @@ import type {
   AgentChatDismissSubagentTakeoverPromptArgs,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
+  AgentChatLogState,
   AgentChatContextAttachment,
   AgentChatFileRef,
   AgentChatHandoffArgs,
@@ -627,6 +628,7 @@ import {
   sanitizeAnswersForTranscript,
 } from "../../../shared/pendingInputAnswers";
 import { retainUnresolvedApprovalRequests } from "../../../shared/chatPendingInputRetention";
+import { turnAlignedSnapshotStart } from "../../../shared/chatSnapshotBoundary";
 import { defaultProviderInstanceId } from "../../../shared/types/providerInstances";
 import { pickAlternateInstanceForLimitedChat } from "../usage/accountBalance";
 import { usageLimitHandoffPrompt } from "../../../shared/usageLimitAccountHandoff";
@@ -879,6 +881,7 @@ import { createHostSleepChipTracker } from "./hostSleepChipTracker";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
   readTranscriptHistoryPage,
+  readTranscriptHistoryPageBeforeSequence,
   type TranscriptHistoryPageRead,
 } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
@@ -1790,6 +1793,12 @@ type PersistedChatState = {
    * see `resolveRehydratedEventSequence` for why both sources are consulted.
    */
   eventSequence?: number;
+  /**
+   * Generation of the persisted event history. Starts at 1 (absent) and is
+   * bumped whenever the transcript is rewritten in place, so a client's cached
+   * log keyed by `sequence` can tell it no longer matches. Never decreases.
+   */
+  historyGeneration?: number;
   updatedAt: string;
 } & HostSessionConfigFields;
 
@@ -1888,6 +1897,11 @@ export function resolveRehydratedEventSequence(
   const positiveInteger = (value: unknown): number =>
     typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
   return Math.max(positiveInteger(transcriptMaxSequence), positiveInteger(persistedSequence));
+}
+
+/** A persisted history generation, or 1 when absent/invalid. */
+export function normalizeHistoryGeneration(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : 1;
 }
 
 function normalizeUnprocessedMessageResolutionReceipts(
@@ -4318,6 +4332,8 @@ type ManagedChatSession = {
   ctoToolPacks: Set<CtoToolPack>;
   activeBashControllers: Set<AbortController>;
   eventSequence: number;
+  /** See `PersistedChatState.historyGeneration`. Absent means 1. */
+  historyGeneration?: number;
   lastActivityTimestamp: number;
   turnBeforeSha: string | null;
   /** The dirty tree at turn start; scopes an uncommitted turn's diff summary. */
@@ -13093,6 +13109,10 @@ export function createAgentChatService(args: {
     maxEvents: number;
     requestedMaxBytes: number | null;
     responseMaxChars: number;
+    /** Move the cut back to the nearest turn boundary (≤ 1× budget extra). */
+    turnBoundaryAligned?: boolean;
+    /** Report re-admitted approvals in `pinnedEvents` instead of `events`. */
+    separatePinnedEvents?: boolean;
     transcriptHistory: Pick<
       TranscriptHistoryCacheEntry,
       "envelopes" | "truncated" | "startOffset" | "endOffset" | "envelopeStartOffsetByIdentity"
@@ -13118,19 +13138,39 @@ export function createAgentChatService(args: {
     const countWindowed = parentVisibleLength > maxEvents
       ? parentVisibleMerged.slice(-maxEvents)
       : parentVisibleMerged;
-    const budgeted = requestedMaxBytes == null
+    let budgeted = requestedMaxBytes == null
       ? trimEnvelopesToByteBudget(countWindowed, responseMaxChars)
       : keepNewestWithinCharBudget(countWindowed, responseMaxChars, estimateEnvelopeBytes, {
         keepOversizeNewest: false,
       });
+    if (args.turnBoundaryAligned && budgeted.length > 0 && budgeted.length < parentVisibleLength) {
+      // `budgeted` is a suffix of `parentVisibleMerged`; extend it back to the
+      // turn that its first event belongs to, within one more budget.
+      const sizeOf = requestedMaxBytes == null ? estimateEnvelopeChars : estimateEnvelopeBytes;
+      const naturalStart = parentVisibleLength - budgeted.length;
+      const alignedStart = turnAlignedSnapshotStart(
+        parentVisibleMerged,
+        naturalStart,
+        responseMaxChars,
+        (index) => sizeOf(parentVisibleMerged[index]!),
+      );
+      if (alignedStart < naturalStart) budgeted = parentVisibleMerged.slice(alignedStart);
+    }
     // An `approval_request` with no receipt is a control, not history: aging it
     // out deletes the card from every client while this service goes on
-    // counting the session as blocked. Re-admitted in place, past both budgets.
-    const windowed = retainUnresolvedApprovalRequests(parentVisibleMerged, budgeted);
+    // counting the session as blocked. Re-admitted in place, past both budgets
+    // (or, for callers that asked, reported separately as `pinnedEvents`).
+    const retained = retainUnresolvedApprovalRequests(parentVisibleMerged, budgeted);
+    let windowed = retained;
+    let pinnedEvents: AgentChatEventEnvelope[] | null = null;
+    if (args.separatePinnedEvents) {
+      const inWindow = new Set<AgentChatEventEnvelope>(budgeted);
+      pinnedEvents = retained.filter((envelope) => !inWindow.has(envelope));
+      windowed = budgeted;
+    }
     const windowTruncated =
       mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
-      || parentVisibleLength > maxEvents
-      || budgeted.length < countWindowed.length;
+      || budgeted.length < parentVisibleLength;
     const truncated = transcriptTruncated || windowTruncated;
     // Authoritative "older content exists beyond this response" signal. Both
     // inputs are computed at tail-read / merge-window time, never from envelope
@@ -13178,6 +13218,7 @@ export function createAgentChatService(args: {
       hasOlderHistory,
       sessionFound: true,
       tailStartOffset,
+      ...(pinnedEvents ? { pinnedEvents } : {}),
     };
   };
 
@@ -13207,7 +13248,18 @@ export function createAgentChatService(args: {
    */
   const getChatEventHistory = async (
     sessionId: string,
-    options?: { maxEvents?: number; maxBytes?: number; signal?: AbortSignal },
+    options?: {
+      maxEvents?: number;
+      maxBytes?: number;
+      signal?: AbortSignal;
+      /**
+       * Start the window at a turn boundary (`user_message` or turn
+       * `status: started`), reading up to one extra budget to find it.
+       */
+      turnBoundaryAligned?: boolean;
+      /** Report unresolved approvals older than the window in `pinnedEvents`. */
+      separatePinnedEvents?: boolean;
+    },
   ): Promise<AgentChatEventHistorySnapshot> => {
     const trimmedId = sessionId.trim();
     if (!trimmedId.length) return missingChatEventHistorySnapshot(trimmedId);
@@ -13219,9 +13271,11 @@ export function createAgentChatService(args: {
     // is returned to the renderer; unopened detached chats stay cold.
     if (row.status === "detached") ensureManagedSession(trimmedId);
     const { maxEvents, requestedMaxBytes, responseMaxChars } = chatEventHistoryLimits(options);
+    const tailBytes = requestedMaxBytes == null ? CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES : responseMaxChars;
     const transcriptHistory = await readTranscriptEnvelopesForSessionIdAsync(
       trimmedId,
-      requestedMaxBytes == null ? CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES : responseMaxChars,
+      // An aligned cut may reach back up to one more budget for its boundary.
+      options?.turnBoundaryAligned ? tailBytes * 2 : tailBytes,
       options?.signal,
     );
     return buildChatEventHistorySnapshot({
@@ -13229,8 +13283,60 @@ export function createAgentChatService(args: {
       maxEvents,
       requestedMaxBytes,
       responseMaxChars,
+      turnBoundaryAligned: options?.turnBoundaryAligned === true,
+      separatePinnedEvents: options?.separatePinnedEvents === true,
       transcriptHistory,
     });
+  };
+
+  /**
+   * The on-disk transcript every history reader for this chat uses — the same
+   * file `getChatEventHistory` and `getChatEventHistoryPage` resolve, with any
+   * queued appends flushed first. Returns the plain append target (never the
+   * `.gz` sibling) so byte cursors taken from it stay valid across storage
+   * compression. Null when the id is not an agent chat or has no transcript.
+   */
+  const resolveChatTranscriptPath = async (
+    sessionId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<string | null> => {
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) return null;
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    await flushQueuedTranscriptWrite(path.join(chatTranscriptsDir, `${trimmedId}.jsonl`));
+    const resolved = await resolveTranscriptPathForSessionId(trimmedId, options?.signal);
+    if (!resolved) return null;
+    return resolved.endsWith(".gz") ? resolved.slice(0, -3) : resolved;
+  };
+
+  /**
+   * Freshness of a chat's persisted event log: its history generation and
+   * durable `sequence` high-water. Live sessions answer from memory; others
+   * from persisted state. Null when the id is not an agent chat.
+   */
+  const getChatLogState = (sessionId: string): AgentChatLogState | null => {
+    const trimmedId = sessionId.trim();
+    if (!trimmedId.length) return null;
+    const managed = managedSessions.get(trimmedId);
+    if (managed && !managed.deleted) {
+      return {
+        historyGeneration: normalizeHistoryGeneration(managed.historyGeneration),
+        maxSequence: Math.max(0, managed.eventSequence),
+      };
+    }
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return null;
+    let persisted: PersistedChatState | null = null;
+    try {
+      persisted = readPersistedState(trimmedId);
+    } catch {
+      persisted = null;
+    }
+    return {
+      historyGeneration: normalizeHistoryGeneration(persisted?.historyGeneration),
+      maxSequence: resolveRehydratedEventSequence(0, persisted?.eventSequence),
+    };
   };
 
   /**
@@ -13248,7 +13354,17 @@ export function createAgentChatService(args: {
    */
   const getChatEventHistoryPage = async (
     sessionId: string,
-    options: { beforeOffset: number; maxBytes?: number; signal?: AbortSignal },
+    options: {
+      beforeOffset: number;
+      /**
+       * Sequence cursor: page the persisted events with `sequence <
+       * beforeSequence` instead of the bytes before `beforeOffset`. For clients
+       * whose cached log trims its oldest rows and so cannot keep a byte cursor.
+       */
+      beforeSequence?: number;
+      maxBytes?: number;
+      signal?: AbortSignal;
+    },
   ): Promise<AgentChatEventHistoryPage> => {
     const trimmedId = sessionId.trim();
     const emptyPage = (sessionFound: boolean): AgentChatEventHistoryPage => ({
@@ -13269,19 +13385,32 @@ export function createAgentChatService(args: {
     const beforeOffset = typeof beforeOffsetRaw === "number" && Number.isFinite(beforeOffsetRaw)
       ? Math.floor(beforeOffsetRaw)
       : 0;
-    if (beforeOffset <= 0) return emptyPage(true);
+    const beforeSequenceRaw = options?.beforeSequence;
+    const beforeSequence = typeof beforeSequenceRaw === "number" && Number.isFinite(beforeSequenceRaw)
+      ? Math.floor(beforeSequenceRaw)
+      : null;
+    if (beforeSequence == null && beforeOffset <= 0) return emptyPage(true);
+    if (beforeSequence != null && beforeSequence <= 1) return emptyPage(true);
 
     let transcriptPath = await resolveTranscriptPathForSessionId(trimmedId, options.signal);
     if (!transcriptPath) return emptyPage(true);
 
     const readPage = async (readPath: string): Promise<TranscriptHistoryPageRead> =>
-      await readTranscriptHistoryPage({
-        transcriptPath: readPath,
-        sessionId: trimmedId,
-        beforeOffset,
-        maxBytes: options?.maxBytes,
-        signal: options.signal,
-      });
+      beforeSequence != null
+        ? await readTranscriptHistoryPageBeforeSequence({
+          transcriptPath: readPath,
+          sessionId: trimmedId,
+          beforeSequence,
+          maxBytes: options?.maxBytes,
+          signal: options.signal,
+        })
+        : await readTranscriptHistoryPage({
+          transcriptPath: readPath,
+          sessionId: trimmedId,
+          beforeOffset,
+          maxBytes: options?.maxBytes,
+          signal: options.signal,
+        });
 
     let page: TranscriptHistoryPageRead;
     try {
@@ -16205,6 +16334,12 @@ export function createAgentChatService(args: {
       managed.eventSequence,
       prevPersisted?.eventSequence,
     );
+    // Same rule for the history generation: a persist must never hand back a
+    // generation a client may already hold a stale cache for.
+    const historyGeneration = Math.max(
+      normalizeHistoryGeneration(managed.historyGeneration),
+      normalizeHistoryGeneration(prevPersisted?.historyGeneration),
+    );
     const survivingPreviousPendingSteers = prevPersisted?.pendingSteers?.length
       ? survivingPersistedSteers(managed, prevPersisted.pendingSteers)
       : [];
@@ -16483,6 +16618,7 @@ export function createAgentChatService(args: {
       ...(managed.lastTurnFailure ? { lastTurnFailure: managed.lastTurnFailure } : {}),
       ...(managed.contextHealth ? { contextHealth: managed.contextHealth } : {}),
       ...(eventSequenceHighWaterMark > 0 ? { eventSequence: eventSequenceHighWaterMark } : {}),
+      ...(historyGeneration > 1 ? { historyGeneration } : {}),
       updatedAt: nowIso()
     };
 
@@ -17007,6 +17143,9 @@ export function createAgentChatService(args: {
           ? { runtimeMode: record.runtimeMode }
           : {}),
         ...(persistedEventSequence > 0 ? { eventSequence: persistedEventSequence } : {}),
+        ...(normalizeHistoryGeneration(record.historyGeneration) > 1
+          ? { historyGeneration: normalizeHistoryGeneration(record.historyGeneration) }
+          : {}),
         ...hydrateSpawnLineageFields(record as Record<string, unknown>),
         updatedAt: typeof record.updatedAt === "string" && record.updatedAt.trim().length ? record.updatedAt : nowIso()
       };
@@ -22801,6 +22940,7 @@ export function createAgentChatService(args: {
       transcriptHydration.maxEventSequence,
       persisted?.eventSequence,
     );
+    managed.historyGeneration = normalizeHistoryGeneration(persisted?.historyGeneration);
     normalizeSessionNativePermissionControls(managed.session, resolveChatConfig());
     managed.transcriptLimitReached = managed.transcriptBytesWritten >= MAX_CHAT_TRANSCRIPT_BYTES;
     refreshReconstructionContext(managed);
@@ -37533,6 +37673,17 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Mark the persisted history of `managed` as rewritten. Every in-place
+   * transcript rewrite must call this after it lands.
+   */
+  const bumpHistoryGeneration = (managed: ManagedChatSession): number => {
+    const next = normalizeHistoryGeneration(managed.historyGeneration) + 1;
+    managed.historyGeneration = next;
+    persistChatState(managed, { fsync: true });
+    return next;
+  };
+
   const repairClaudeEnvelopeSplicesBeforeResume = async (
     managed: ManagedChatSession,
     sdkSessionId: string,
@@ -37594,15 +37745,22 @@ export function createAgentChatService(args: {
     eventHistoryBySession.delete(sessionId);
     transcriptHistoryCacheBySession.delete(sessionId);
     resolvedTranscriptPathBySession.delete(sessionId);
+    // The repair renumbered sequences in place: anything a client cached under
+    // the old numbering is now wrong, so the history gets a new generation.
+    // Persisted (fsynced) straight away — a durable resume must never pair the
+    // rewritten file with the old generation.
+    const historyGeneration = bumpHistoryGeneration(managed);
     logger.info("agent_chat.envelope_splice_repaired", {
       sessionId,
       sdkSessionId,
       repairedTurns,
       filesChanged,
+      historyGeneration,
     });
     emitTransientChatEnvelope(sessionId, {
       type: "session_meta_updated",
       historyInvalidated: true,
+      historyGeneration,
     });
   };
 
@@ -59721,6 +59879,8 @@ export function createAgentChatService(args: {
     getChatTranscriptPage,
     getChatEventHistory,
     getChatEventHistoryPage,
+    resolveChatTranscriptPath,
+    getChatLogState,
     ensureIdentitySession,
     startFreshIdentitySession,
     getSessionTurnHealth,

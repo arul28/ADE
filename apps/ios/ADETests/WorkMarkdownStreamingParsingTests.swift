@@ -75,7 +75,9 @@ final class WorkMarkdownStreamingParsingTests: XCTestCase {
     """)
 
     let starts = blocks.compactMap { block -> Int? in
-      guard case .orderedList(let start, _) = block.kind else { return nil }
+      guard case .list(let items) = block.kind,
+            case .ordered(let start)? = items.first?.marker
+      else { return nil }
       return start
     }
     XCTAssertEqual(starts, [1, 2, 3])
@@ -1130,11 +1132,11 @@ final class WorkBoundedProseRowTests: XCTestCase {
     let blocks = parseMarkdownBlocks(text)
 
     XCTAssertEqual(blocks.count, 1)
-    guard case .orderedList(start: 1, let items) = blocks[0].kind else {
+    guard case .list(let items) = blocks[0].kind, items.first?.marker == .ordered(1) else {
       return XCTFail("a long real list item must keep its ordered-list semantics")
     }
     XCTAssertEqual(items.count, 1)
-    XCTAssertEqual(items[0], String(text.dropFirst(3)))
+    XCTAssertEqual(items[0].text, String(text.dropFirst(3)))
   }
 
   /// Splitting must not reach any other block kind. A fenced block is rendered
@@ -1145,5 +1147,207 @@ final class WorkBoundedProseRowTests: XCTestCase {
     let blocks = parseMarkdownBlocks("```swift\n\(code)\n```")
     XCTAssertEqual(blocks.count, 1)
     XCTAssertEqual(blocks.first?.kind, .code(language: "swift", code: code))
+  }
+}
+
+/// Nested lists, marker-column alignment, and the quiet inline-code style.
+final class WorkMarkdownNestedListTests: XCTestCase {
+  private func assertStreamingMatchesFullParse(
+    _ fullText: String,
+    deltaSizes: [Int] = [1, 3, 7, 16],
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    let cacheKey = "nested-\(UUID().uuidString)"
+    var snapshot = ""
+    var remainder = Substring(fullText)
+    var sizeIndex = 0
+    while !remainder.isEmpty {
+      let size = deltaSizes[sizeIndex % deltaSizes.count]
+      sizeIndex += 1
+      snapshot += remainder.prefix(size)
+      remainder = remainder.dropFirst(size)
+      let streamed = parseMarkdownBlocksForStreaming(snapshot, cacheKey: cacheKey)
+      XCTAssertEqual(streamed, parseMarkdownBlocks(snapshot), "Block mismatch at snapshot length \(snapshot.count)", file: file, line: line)
+    }
+  }
+
+  private func listRows(_ blocks: [WorkMarkdownBlock], file: StaticString = #filePath, line: UInt = #line) -> [[WorkMarkdownListItem]] {
+    blocks.compactMap { block in
+      guard case .list(let items) = block.kind else { return nil }
+      return items
+    }
+  }
+
+  func testUnorderedSubItemsNestUnderOrderedParent() {
+    let blocks = parseMarkdownBlocks("""
+    1. **Parser** changes:
+       - store rows
+       - keep ids stable
+    2. Renderer
+    """)
+    XCTAssertEqual(blocks.count, 1, "sub-bullets must stay in their parent's list, not become a new top-level list")
+    let rows = listRows(blocks)[0]
+    XCTAssertEqual(rows.map(\.marker), [.ordered(1), .bullet, .bullet, .ordered(2)])
+    XCTAssertEqual(rows.map(\.depth), [0, 1, 1, 0])
+    XCTAssertEqual(rows.map(\.text), ["**Parser** changes:", "store rows", "keep ids stable", "Renderer"])
+    XCTAssertEqual(rows[1].ancestors, [.ordered(digits: 1)])
+    XCTAssertEqual(rows[1].column, .bullet(depth: 1))
+    XCTAssertEqual(rows[1].markerLabel, "\u{25E6}")
+  }
+
+  func testOrderedSubItemsNestUnderUnorderedParentWithTheirOwnNumbering() {
+    let rows = listRows(parseMarkdownBlocks("""
+    - alpha
+      3. third
+      4. fourth
+    - beta
+    """))[0]
+    XCTAssertEqual(rows.map(\.marker), [.bullet, .ordered(3), .ordered(4), .bullet])
+    XCTAssertEqual(rows.map(\.depth), [0, 1, 1, 0])
+    XCTAssertEqual(rows[1].ancestors, [.bullet(depth: 0)])
+    XCTAssertEqual(rows[1].column, .ordered(digits: 1))
+  }
+
+  func testThreeLevelsOfNestingAndReturnToTop() {
+    let rows = listRows(parseMarkdownBlocks("""
+    - top
+      - second
+        1. third
+      - second again
+    - back to top
+    """))[0]
+    XCTAssertEqual(rows.map(\.depth), [0, 1, 2, 1, 0])
+    XCTAssertEqual(rows.map(\.text), ["top", "second", "third", "second again", "back to top"])
+    XCTAssertEqual(rows[2].ancestors, [.bullet(depth: 0), .bullet(depth: 1)])
+    XCTAssertEqual(rows[2].marker, .ordered(1))
+    XCTAssertEqual(rows.map(\.markerLabel), ["\u{2022}", "\u{25E6}", "1.", "\u{25E6}", "\u{2022}"])
+    XCTAssertEqual(workMarkdownBulletGlyph(depth: 2), "\u{2022}")
+  }
+
+  func testContinuationLinesAndParagraphsStayInsideTheirItem() {
+    let blocks = parseMarkdownBlocks("""
+    1. first line
+       wrapped onto a second line
+
+       A second paragraph of item one.
+    2. next
+    """)
+    XCTAssertEqual(blocks.count, 1)
+    let rows = listRows(blocks)[0]
+    XCTAssertEqual(rows.map(\.marker), [.ordered(1), .continuation, .ordered(2)])
+    XCTAssertEqual(rows[0].text, "first line\nwrapped onto a second line")
+    XCTAssertEqual(rows[1].text, "A second paragraph of item one.")
+    XCTAssertEqual(rows[1].depth, 0)
+    XCTAssertEqual(rows[1].column, .ordered(digits: 1), "a continuation aligns with its item's text")
+    XCTAssertNil(rows[1].markerLabel)
+  }
+
+  func testContinuationAfterSubListBelongsToTheParentItem() {
+    let rows = listRows(parseMarkdownBlocks("""
+    1. parent
+       - child
+       back in the parent
+    """))[0]
+    XCTAssertEqual(rows.map(\.marker), [.ordered(1), .bullet, .continuation])
+    XCTAssertEqual(rows[2].depth, 0)
+    XCTAssertEqual(rows[2].text, "back in the parent")
+  }
+
+  func testBlankSeparatedSubListStillNestsButLooseTopLevelItemsStaySeparate() {
+    let blocks = parseMarkdownBlocks("""
+    1. parent
+
+       - child
+
+    2. sibling
+    """)
+    let lists = listRows(blocks)
+    XCTAssertEqual(lists.count, 2)
+    XCTAssertEqual(lists[0].map(\.marker), [.ordered(1), .bullet])
+    XCTAssertEqual(lists[0][1].depth, 1)
+    XCTAssertEqual(lists[1].map(\.marker), [.ordered(2)])
+  }
+
+  func testDifferentTopLevelMarkerKindsAndUnindentedProseStillEndTheList() {
+    let blocks = parseMarkdownBlocks("""
+    1. ordered
+    - bullet
+    plain prose
+    """)
+    XCTAssertEqual(blocks.count, 3)
+    XCTAssertEqual(listRows([blocks[0]])[0].map(\.marker), [.ordered(1)])
+    XCTAssertEqual(listRows([blocks[1]])[0].map(\.marker), [.bullet])
+    XCTAssertEqual(blocks[2].kind, .paragraph("plain prose"))
+  }
+
+  func testOrderedMarkerColumnIsSizedToTheWidestSiblingMarker() {
+    let rows = listRows(parseMarkdownBlocks("""
+    9. nine
+       - child of nine
+    10. ten
+    """))[0]
+    XCTAssertEqual(rows[0].column, .ordered(digits: 2), "item 9 must reserve the same column as item 10")
+    XCTAssertEqual(rows[2].column, .ordered(digits: 2))
+    XCTAssertEqual(rows[1].ancestors, [.ordered(digits: 2)], "children indent past the parent's full column")
+    XCTAssertEqual(workMarkdownListMarkerPlaceholder(.ordered(digits: 2)), "00.")
+    XCTAssertEqual(workMarkdownListMarkerPlaceholder(.ordered(digits: 3)), "000.")
+    XCTAssertEqual(workMarkdownListMarkerPlaceholder(.bullet(depth: 0)), workMarkdownListMarkerPlaceholder(.bullet(depth: 2)))
+  }
+
+  func testNestedListsSplitIntoBoundedBlocksWithoutLosingIndentation() {
+    let markdown = (1...20).map { "\($0). item \($0)\n   - child \($0)" }.joined(separator: "\n")
+    let lists = listRows(parseMarkdownBlocks(markdown))
+    XCTAssertTrue(lists.allSatisfy { $0.count <= workMarkdownListItemsPerRenderBlock })
+    let rows = lists.flatMap { $0 }
+    XCTAssertEqual(rows.count, 40)
+    XCTAssertTrue(rows.enumerated().allSatisfy { index, row in row.depth == index % 2 })
+    XCTAssertTrue(rows.allSatisfy { $0.column == .ordered(digits: 2) || $0.ancestors == [.ordered(digits: 2)] })
+  }
+
+  func testStreamingMatchesFullParseWhileNestedListsGrow() {
+    assertStreamingMatchesFullParse("""
+    Intro paragraph with `code`.
+
+    1. **Parser** changes in `WorkMarkdownParsing.swift`:
+       - store list rows
+       - keep ids stable
+         1. nested ordered
+         2. another
+    2. Renderer
+
+       Continuation paragraph.
+    10. Ten
+
+    - top
+      - second
+        - third
+    """)
+  }
+
+  func testStreamingAppendOfASubItemKeepsEarlierBlocksAndTheListIdStable() {
+    let key = "nested-append-\(UUID().uuidString)"
+    let before = parseMarkdownBlocksForStreaming("Intro.\n\n1. parent\n   - first child", cacheKey: key)
+    // A snapshot ending on a bare marker must not flash a stray "-" row.
+    let partial = parseMarkdownBlocksForStreaming("Intro.\n\n1. parent\n   - first child\n   -", cacheKey: key)
+    let after = parseMarkdownBlocksForStreaming("Intro.\n\n1. parent\n   - first child\n   - second child", cacheKey: key)
+
+    XCTAssertEqual(before.map(\.id), ["markdown-block-0", "markdown-block-1"])
+    XCTAssertEqual(after.map(\.id), before.map(\.id))
+    XCTAssertEqual(after[0], before[0], "the settled intro keeps its digest")
+    XCTAssertEqual(partial[1], before[1], "a bare trailing marker is not rendered")
+    XCTAssertNotEqual(after[1].digest, before[1].digest)
+    let rows = listRows([after[1]])[0]
+    XCTAssertEqual(rows.map(\.text), ["parent", "first child", "second child"])
+    XCTAssertEqual(rows.map(\.depth), [0, 1, 1])
+    XCTAssertEqual(parseMarkdownBlocks("Intro.\n\n1. parent\n   - first child\n   - second child"), after)
+  }
+
+  func testInlineCodeUsesTheQuietSharedStyle() {
+    let attributed = markdownAttributedString("see `apps/ios/ADE/Views/Work/WorkMarkdownViews.swift` here")
+    let codeRuns = attributed.runs.filter { ($0.inlinePresentationIntent ?? []).contains(.code) }
+    XCTAssertEqual(codeRuns.count, 1)
+    XCTAssertEqual(codeRuns.first?.swiftUI.font, WorkChatTypography.inlineCode)
+    XCTAssertNil(codeRuns.first?.swiftUI.foregroundColor, "inline code keeps the body color instead of an accent chip")
   }
 }

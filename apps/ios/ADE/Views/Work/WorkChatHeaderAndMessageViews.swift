@@ -180,16 +180,7 @@ struct WorkChatHeaderMenu: View, Equatable {
 
       sessionItems
     } label: {
-      Image(systemName: "ellipsis")
-        .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(width: 34, height: 34)
-        .background(ADEColor.surfaceBackground.opacity(0.9), in: Circle())
-        .overlay(
-          Circle()
-            .stroke(ADEColor.glassBorder.opacity(0.75), lineWidth: 0.5)
-        )
-        .contentShape(Rectangle())
+      WorkChatGlassCircleLabel(systemName: "ellipsis", glyphSize: 17)
     }
     .buttonStyle(.plain)
     .accessibilityLabel("Chat actions")
@@ -612,7 +603,7 @@ func workChipAttributedMessage(
       var pill = AttributedString(workChipInlineLabel(chip))
       pill.foregroundColor = chipForeground
       pill.backgroundColor = chipBackground
-      pill.font = .body.weight(.semibold)
+      pill.font = WorkChatTypography.body.weight(.semibold)
       if let url = workChipNavigationURL(chip) {
         pill.link = url
       }
@@ -664,7 +655,7 @@ struct WorkChipMessageText: View {
         Text(text)
       }
     }
-    .font(.body)
+    .font(WorkChatTypography.body)
     .foregroundStyle(foreground)
     .lineSpacing(5)
     .multilineTextAlignment(.leading)
@@ -858,60 +849,6 @@ func workChatAccessibilityPreview(_ markdown: String) -> String {
   return "\(markdown.prefix(workChatAccessibilityPreviewLimit))..."
 }
 
-/// Centered time pill that introduces each turn (model lives in the usage
-/// row and composer; matches desktop’s time-only turn divider).
-struct WorkTurnSeparatorView: View {
-  let separator: WorkTurnSeparator
-
-  private var accent: Color {
-    ADEColor.chatSurfaceAccent(modelId: separator.modelId, provider: separator.provider)
-  }
-
-  var body: some View {
-    HStack(spacing: 10) {
-      hairline
-      HStack(spacing: 6) {
-        runtimeGlyph
-        Text(workTurnSeparatorTimeLabel(separator.time))
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      hairline
-    }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 4)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(
-      "New turn at \(workTurnSeparatorTimeLabel(separator.time))"
-        + (separator.modelLabel.isEmpty ? "" : ". Model: \(separator.modelLabel)")
-    )
-  }
-
-  /// Small per-runtime mark — the bundled provider logo when one exists,
-  /// otherwise a tinted dot in the chat-surface accent. Keeps the divider
-  /// quietly themed to whichever runtime drove the turn.
-  @ViewBuilder
-  private var runtimeGlyph: some View {
-    if let asset = providerAssetName(separator.provider) {
-      Image(asset)
-        .resizable()
-        .scaledToFit()
-        .frame(width: 11, height: 11)
-        .opacity(0.85)
-    } else {
-      Circle()
-        .fill(accent.opacity(0.7))
-        .frame(width: 5, height: 5)
-    }
-  }
-
-  private var hairline: some View {
-    Rectangle()
-      .fill(ADEColor.glassBorder)
-      .frame(height: 0.6)
-  }
-}
-
 /// Provider handoff divider: the transcript's "a different agent picked this
 /// thread up" marker. Mirrors desktop `AgentChatMessageList` — hairline, the
 /// outgoing provider's logo, a small uppercase "handoff" label, an arrow, the
@@ -973,7 +910,9 @@ struct WorkModelHandoffDivider: View {
 struct WorkResetCreditNoticeView: View {
   let card: WorkEventCardModel
 
-  @EnvironmentObject private var syncService: SyncService
+  /// Not `@EnvironmentObject`: renders inside a transcript cell (see
+  /// `WorkSyncServiceReference`).
+  @Environment(\.workSyncService) private var syncReference
   @State private var spending = false
   @State private var outcome: String?
 
@@ -996,7 +935,7 @@ struct WorkResetCreditNoticeView: View {
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
           .fixedSize(horizontal: false, vertical: true)
-      } else if let accountId, syncService.canInvokeRemoteAction("usage.consumeResetCredit") {
+      } else if let accountId, syncReference.service?.canInvokeRemoteAction("usage.consumeResetCredit") == true {
         Button("Use reset") {
           Task { await spend(accountId: accountId) }
         }
@@ -1023,6 +962,7 @@ struct WorkResetCreditNoticeView: View {
   /// dressed up as a reset — see `workResetCreditOutcomeText`.
   @MainActor
   private func spend(accountId: String) async {
+    guard let syncService = syncReference.service else { return }
     spending = true
     defer { spending = false }
     do {
@@ -1036,11 +976,42 @@ struct WorkResetCreditNoticeView: View {
   }
 }
 
+/// Desktop `formatTurnTokenParts`: `12.3k`, `1.2M`; nil for zero.
+func workTurnTokenCount(_ value: Int) -> String? {
+  guard value > 0 else { return nil }
+  if value >= 1_000_000 { return String(format: "%.1fM", Double(value) / 1_000_000) }
+  if value >= 1_000 { return String(format: "%.1fk", Double(value) / 1_000) }
+  return String(value)
+}
+
+/// Desktop `formatDoneTurnTokenLine`: the usage-limit footer's details line.
+func workDoneTurnTokenLine(_ usage: WorkUsageSummary?) -> String? {
+  guard let usage else { return nil }
+  var segments: [String] = []
+  if let value = workTurnTokenCount(usage.inputTokens) { segments.append("in \(value)") }
+  if let value = workTurnTokenCount(usage.outputTokens) { segments.append("out \(value)") }
+  if let value = workTurnTokenCount(usage.cacheReadTokens) { segments.append("cached \(value) ✶") }
+  if let value = workTurnTokenCount(usage.cacheCreationTokens) { segments.append("cache write \(value)") }
+  if let value = workTurnTokenCount(usage.reasoningTokens) { segments.append("reasoning \(value)") }
+  return segments.isEmpty ? nil : segments.joined(separator: " · ")
+}
+
+/// The turn-end line (desktop `DoneTurnDivider` + `ChatTurnWorkSummary`): one
+/// row that never wraps —
+/// `🕐 ran 4m 30s · 02:15 AM  [2 proof] [3 sources] · ↑IN 12k/↓OUT 3k/~40k   🔧 4 tools ›  ± 3 files ›`.
+/// A failed or interrupted turn leads with the model and reads the status in
+/// place of the time. A turn that folded keeps only time, usage, proof and
+/// sources (its tools and files moved up to the fold row). A usage-limit turn
+/// collapses to one quiet `Paused · usage limit · 4m` line with its token
+/// usage behind a details toggle. The tools and files toggles open the turn's
+/// activity sheet (desktop expands them inline).
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
   var toolCount: Int = 0
-  var fileCount: Int = 0
+  var fileStat: (count: Int, additions: Int, deletions: Int)? = nil
   var onOpenActivity: (() -> Void)? = nil
+  /// The context meter rides the latest turn's line on the phone; desktop
+  /// shows it in the composer.
   var usageViewModel: WorkContextUsageViewModel? = nil
   var modelLabel: String? = nil
   var compact: WorkContextCompactControl = .hidden
@@ -1061,221 +1032,245 @@ struct WorkTurnEndMarkerView: View {
     status == "failed" ? ADEColor.danger : ADEColor.warning
   }
 
-  private var accent: Color {
-    ADEColor.chatSurfaceAccent(modelId: marker.modelId, provider: marker.provider)
-  }
+  private var ranFor: String? { marker.workedDurationLabel.map { "ran \($0)" } }
 
-  /// A turn that ended at a usage limit is a pause, not a failure: one muted
-  /// line, no FAILED, no red. The turn's usage numbers move behind the details
-  /// toggle below rather than sitting in their own row beside it.
-  private var workSummaryLabel: String? {
-    let base = workFormatTurnWorkSummaryLabel(toolCount: toolCount, fileCount: fileCount)
-    let sourceCount = marker.sourceCount > 0
-      ? "\(marker.sourceCount) source\(marker.sourceCount == 1 ? "" : "s")"
-      : nil
-    let label = [base, sourceCount].compactMap { $0 }.joined(separator: " · ")
-    return label.isEmpty ? nil : label
-  }
+  private var showsWorkToggles: Bool { !marker.workSummaryInFold }
 
   private var usageLimitLine: String {
-    "Paused · usage limit · \(marker.workedDurationLabel)"
+    marker.workedDurationLabel.map { "Paused · usage limit · \($0)" } ?? "Paused · usage limit"
   }
 
+  private var tokenLine: String? { workDoneTurnTokenLine(marker.usage) }
+
   private var markerAccessibilityLabel: String {
-    if marker.usageLimitPaused {
-      return "Turn paused at the usage limit after \(marker.workedDurationLabel)."
-    }
-    let activityLabel = workSummaryLabel.map { "\($0). Opens activity details." }
+    if marker.usageLimitPaused { return usageLimitLine }
+    var parts: [String] = []
     if completed {
-      return [
-        "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Ran for \(marker.workedDurationLabel)",
-        activityLabel,
-      ].compactMap { $0 }.joined(separator: ". ")
+      parts.append("Turn ended at \(workTurnSeparatorTimeLabel(marker.time))")
+    } else {
+      parts.append(contentsOf: [marker.modelLabel, "Turn \(status)", marker.terminalReasonLabel].compactMap { $0?.isEmpty == false ? $0 : nil })
     }
-    return [
-      "Turn \(status)",
-      marker.terminalReasonLabel,
-      marker.modelLabel.isEmpty ? nil : marker.modelLabel,
-      "Elapsed \(marker.workedDurationLabel)",
-      activityLabel,
-    ].compactMap { $0 }.joined(separator: ". ")
+    if let ranFor { parts.append(ranFor) }
+    if let tokenLine { parts.append(tokenLine) }
+    if marker.proofCount > 0 { parts.append("\(marker.proofCount) proof") }
+    if marker.sourceCount > 0 { parts.append(workPluralCount(marker.sourceCount, "source")) }
+    if showsWorkToggles, let work = workFormatTurnWorkSummaryLabel(toolCount: toolCount, fileCount: fileStat?.count ?? 0) {
+      parts.append(work)
+    }
+    return parts.joined(separator: ". ")
   }
 
   var body: some View {
-    if marker.usageLimitPaused {
-      usageLimitBody
-    } else {
-      standardBody
-    }
-  }
-
-  private var usageLimitBody: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      workSummaryRow
-        .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: 10) {
-        hairline
-        Button {
-          usageLimitDetailsExpanded.toggle()
-        } label: {
-          HStack(spacing: 5) {
-            Image(systemName: "clock")
-              .font(.system(size: 9, weight: .semibold))
-            Text(usageLimitLine)
-              .font(.caption2)
-            if usageLimitDetails {
-              Image(systemName: usageLimitDetailsExpanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 8, weight: .semibold))
-                .opacity(0.55)
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 8) {
+        HStack(spacing: 8) {
+          if marker.usageLimitPaused {
+            usageLimitLead
+            chips
+          } else {
+            lead
+            chips
+            if let usage = marker.usage, workTurnTokenCount(usage.inputTokens) != nil
+                || workTurnTokenCount(usage.outputTokens) != nil
+                || workTurnTokenCount(usage.cacheReadTokens) != nil {
+              separator
+              tokens(usage)
             }
           }
+        }
+        .lineLimit(1)
+        .layoutPriority(1)
+        Spacer(minLength: 4)
+        if showsWorkToggles { workToggles }
+        if let usageViewModel { contextMeter(usageViewModel) }
+      }
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textMuted)
+      .frame(minHeight: 44)
+      if marker.usageLimitPaused, usageLimitDetailsExpanded, let tokenLine {
+        Text(tokenLine)
+          .font(.caption2.monospacedDigit())
           .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-          .minimumScaleFactor(0.82)
-          .frame(minHeight: 44)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!usageLimitDetails)
-        .layoutPriority(1)
-        hairline
-      }
-
-      if usageLimitDetailsExpanded, let usage = marker.usage {
-        WorkTurnUsageSummaryBanner(
-          summary: usage,
-          provider: marker.provider,
-          modelLabel: modelLabel ?? marker.modelLabel
-        )
+          .padding(.leading, 12)
+          .overlay(alignment: .leading) {
+            Rectangle().fill(ADEColor.glassBorder).frame(width: 0.6)
+          }
+          .padding(.bottom, 6)
       }
     }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityElement(children: .contain)
     .accessibilityLabel(markerAccessibilityLabel)
-    .accessibilityHint(usageLimitDetails ? "Shows this turn's token usage." : "")
   }
 
-  private var usageLimitDetails: Bool { marker.usage != nil }
-
   @ViewBuilder
-  private var workSummaryRow: some View {
-    if let workSummaryLabel, let onOpenActivity {
-      Button(action: onOpenActivity) {
-        HStack(spacing: 5) {
-          Image(systemName: "chevron.right")
-            .font(.system(size: 8, weight: .semibold))
+  private var lead: some View {
+    HStack(spacing: 6) {
+      if !completed, !marker.modelLabel.isEmpty {
+        HStack(spacing: 4) {
+          runtimeGlyph
+          Text(marker.modelLabel).fontWeight(.medium)
+        }
+      }
+      if let ranFor {
+        HStack(spacing: 3) {
+          Image(systemName: "clock").font(.system(size: 9, weight: .bold))
+          Text(ranFor)
+        }
+        separator
+      }
+      if completed {
+        Text(workTurnSeparatorTimeLabel(marker.time))
+      } else {
+        Text(status.uppercased()).fontWeight(.medium).tracking(0.4)
+        if let reason = marker.terminalReasonLabel {
+          separator
+          Text(reason)
+        }
+      }
+    }
+    .font(.caption2.monospacedDigit())
+    .foregroundStyle(completed ? ADEColor.textMuted : statusTint.opacity(0.9))
+    .fixedSize(horizontal: true, vertical: false)
+  }
+
+  private var usageLimitLead: some View {
+    Button {
+      usageLimitDetailsExpanded.toggle()
+    } label: {
+      HStack(spacing: 5) {
+        Text(usageLimitLine)
+        if tokenLine != nil {
+          Image(systemName: usageLimitDetailsExpanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 8, weight: .bold))
             .opacity(0.55)
-          Text(workSummaryLabel)
-            .font(.caption2.weight(.medium))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(minHeight: 44)
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityHint("Opens activity details.")
-    } else if let workSummaryLabel {
-      Text(workSummaryLabel)
-        .font(.caption2.weight(.medium))
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-  }
-
-  private var standardBody: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      workSummaryRow
-        .frame(maxWidth: .infinity, alignment: .leading)
-      HStack(spacing: 10) {
-        hairline
-        content
-        hairline
-        if let usageViewModel {
-          WorkContextUsageMeter(
-            usage: usageViewModel,
-            isPresented: $contextUsagePresented
-          )
-          .popover(
-            isPresented: $contextUsagePresented,
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .bottom
-          ) {
-            WorkContextUsagePopover(
-              usage: usageViewModel,
-              modelLabel: modelLabel ?? marker.modelLabel,
-              compact: compact,
-              onCompact: {
-                contextUsagePresented = false
-                onCompact?()
-              }
-            )
-            .presentationCompactAdaptation(.popover)
-            .presentationBackground(ADEColor.surfaceBackground)
-          }
-          .layoutPriority(2)
         }
       }
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
     }
-    .frame(maxWidth: .infinity)
-    .padding(.vertical, 8)
-    .accessibilityElement(children: .contain)
-    .accessibilityLabel(markerAccessibilityLabel)
+    .buttonStyle(.plain)
+    .disabled(tokenLine == nil)
+    .accessibilityHint(tokenLine == nil ? "" : "Shows this turn's token usage.")
   }
 
   @ViewBuilder
-  private var content: some View {
-    if completed {
-      Text("\(workTurnSeparatorTimeLabel(marker.time)) · Ran for \(marker.workedDurationLabel)")
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
-        .minimumScaleFactor(0.9)
-        .fixedSize(horizontal: true, vertical: false)
-        .layoutPriority(1)
-    } else {
-      ViewThatFits(in: .horizontal) {
-        HStack(spacing: 6) {
-          runtimeGlyph
-          if !marker.modelLabel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            Text(marker.modelLabel)
-              .font(.caption2.weight(.semibold))
-          }
-          Text(status.uppercased())
-            .font(.caption2.weight(.semibold))
-            .tracking(0.5)
-          if let terminalReasonLabel = marker.terminalReasonLabel {
-            Text("·")
-              .opacity(0.42)
-            Text(terminalReasonLabel)
-              .font(.caption2)
-          }
-          Text("·")
-            .opacity(0.42)
-          Text("Elapsed \(marker.workedDurationLabel)")
-            .font(.caption2)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-
-        HStack(spacing: 5) {
-          runtimeGlyph
-          Text(status.uppercased())
-            .font(.caption2.weight(.semibold))
-            .tracking(0.4)
-          Text("·")
-            .opacity(0.42)
-          Text("Elapsed \(marker.workedDurationLabel)")
-            .font(.caption2)
-        }
-        .lineLimit(1)
-        .minimumScaleFactor(0.82)
-      }
-      .foregroundStyle(statusTint.opacity(0.9))
-      .lineLimit(1)
-      .minimumScaleFactor(0.82)
-      .layoutPriority(1)
+  private var chips: some View {
+    if marker.proofCount > 0 {
+      chip(icon: "cube", text: "\(marker.proofCount) proof")
     }
+    if marker.sourceCount > 0 {
+      chip(icon: "globe", text: workPluralCount(marker.sourceCount, "source"))
+    }
+  }
+
+  private func chip(icon: String, text: String) -> some View {
+    HStack(spacing: 3) {
+      Image(systemName: icon).font(.system(size: 8, weight: .bold))
+      Text(text).font(.caption2.monospacedDigit())
+    }
+    .padding(.horizontal, 5)
+    .padding(.vertical, 1)
+    .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).stroke(ADEColor.glassBorder, lineWidth: 0.6))
+    .fixedSize()
+  }
+
+  /// `↑IN 12k / ↓OUT 3k / ~40k`, in desktop's amber / red / emerald.
+  private func tokens(_ usage: WorkUsageSummary) -> some View {
+    let input = workTurnTokenCount(usage.inputTokens)
+    let output = workTurnTokenCount(usage.outputTokens)
+    let cached = workTurnTokenCount(usage.cacheReadTokens)
+    return HStack(spacing: 3) {
+      if let input {
+        HStack(spacing: 1) {
+          Image(systemName: "arrow.up").font(.system(size: 7, weight: .bold))
+          Text("IN").font(.system(size: 8, weight: .semibold))
+          Text(input)
+        }
+        .foregroundStyle(ADEColor.warning.opacity(0.9))
+      }
+      if input != nil, output != nil || cached != nil { Text("/").opacity(0.4) }
+      if let output {
+        HStack(spacing: 1) {
+          Image(systemName: "arrow.down").font(.system(size: 7, weight: .bold))
+          Text("OUT").font(.system(size: 8, weight: .semibold))
+          Text(output)
+        }
+        .foregroundStyle(ADEColor.danger.opacity(0.9))
+      }
+      if output != nil, cached != nil { Text("/").opacity(0.4) }
+      if let cached {
+        Text("~\(cached)").foregroundStyle(ADEColor.success.opacity(0.9))
+      }
+    }
+    .font(.caption2.monospacedDigit())
+    .fixedSize(horizontal: true, vertical: false)
+    .layoutPriority(-1)
+  }
+
+  @ViewBuilder
+  private var workToggles: some View {
+    HStack(spacing: 10) {
+      if toolCount > 0 {
+        workToggle {
+          Image(systemName: "wrench.fill").font(.system(size: 9, weight: .bold))
+          Text("\(toolCount)").monospacedDigit()
+          Text(toolCount == 1 ? "tool" : "tools")
+        }
+      }
+      if let fileStat, fileStat.count > 0 {
+        workToggle {
+          Image(systemName: "plusminus").font(.system(size: 9, weight: .bold))
+          Text(workPluralCount(fileStat.count, "file"))
+          if fileStat.additions > 0 { Text("+\(fileStat.additions)").monospacedDigit().foregroundStyle(ADEColor.success.opacity(0.85)) }
+          if fileStat.deletions > 0 { Text("−\(fileStat.deletions)").monospacedDigit().foregroundStyle(ADEColor.danger.opacity(0.85)) }
+        }
+      }
+    }
+    .fixedSize()
+  }
+
+  private func workToggle<Label: View>(@ViewBuilder label: () -> Label) -> some View {
+    Button {
+      onOpenActivity?()
+    } label: {
+      HStack(spacing: 3) {
+        label()
+        Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold)).opacity(0.7)
+      }
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textSecondary)
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(onOpenActivity == nil)
+  }
+
+  private func contextMeter(_ usage: WorkContextUsageViewModel) -> some View {
+    WorkContextUsageMeter(usage: usage, isPresented: $contextUsagePresented)
+      .popover(
+        isPresented: $contextUsagePresented,
+        attachmentAnchor: .rect(.bounds),
+        arrowEdge: .bottom
+      ) {
+        WorkContextUsagePopover(
+          usage: usage,
+          modelLabel: modelLabel ?? marker.modelLabel,
+          compact: compact,
+          onCompact: {
+            contextUsagePresented = false
+            onCompact?()
+          }
+        )
+        .presentationCompactAdaptation(.popover)
+        .presentationBackground(ADEColor.surfaceBackground)
+      }
+      .layoutPriority(2)
+  }
+
+  private var separator: some View {
+    Text("·").opacity(0.45)
   }
 
   @ViewBuilder
@@ -1288,15 +1283,9 @@ struct WorkTurnEndMarkerView: View {
         .opacity(0.9)
     } else {
       Circle()
-        .fill(accent.opacity(0.75))
+        .fill(ADEColor.chatSurfaceAccent(modelId: marker.modelId, provider: marker.provider).opacity(0.75))
         .frame(width: 5, height: 5)
     }
-  }
-
-  private var hairline: some View {
-    Rectangle()
-      .fill(ADEColor.glassBorder)
-      .frame(height: 0.6)
   }
 }
 

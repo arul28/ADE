@@ -33,6 +33,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
+  AgentChatLogState,
   CrsqlChangeRow,
   DeviceMarker,
   FileContent,
@@ -134,7 +135,15 @@ import {
   type CoalescedChatEvent,
   type SubagentProgressCoalescer,
 } from "../../../../desktop/src/shared/chatMobileSlim";
-import { readTranscriptHistoryPage } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
+import {
+  readTranscriptHistoryPage,
+  readTranscriptHistoryPageBeforeSequence,
+} from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
+import {
+  CHAT_SEQUENCE_RESUME_MAX_BYTES,
+  readChatEventsAfterSequence,
+  readTurnAlignedTranscriptTail,
+} from "./chatLogResume";
 import { readArtifactByteRange } from "../../../../desktop/src/main/services/computerUse/artifactByteRange";
 import { findStoredToolResult } from "../../../../desktop/src/main/services/chat/chatToolResultLookup";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
@@ -245,6 +254,8 @@ import {
   SyncProtocolVersionMismatchError,
   SYNC_RUNTIME_ONLY_CAPABILITY,
   wsDataToText,
+  buildSyncOversizedReplyPayload,
+  buildSyncResultTooLargeError,
   type ParsedSyncEnvelope,
 } from "./syncProtocol";
 // One parser for both ingress paths (this host and the brain's projectless
@@ -254,7 +265,11 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  createSyncRemoteCommandService,
+  SyncRemoteCommandResultTooLargeError,
+  type SyncRemoteCommandService,
+} from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import {
@@ -931,6 +946,11 @@ type PeerState = {
   // machine-scoped personal chats and cross-project quick looks. Scope stays
   // separate because only personal chats may survive a project-host handoff.
   resolvedChatTranscriptPaths: Map<string, string>;
+  // Active-project subscriptions: the transcript the chat service's history
+  // readers resolved at subscribe time (the durable, uncapped file). The
+  // hydration offset, the pump, and chat_tool_result all read this one file,
+  // so their byte cursors agree with the snapshot's.
+  projectChatTranscriptPaths: Map<string, string>;
   pendingChangesetBatch: PendingChangesetBatch | null;
   mobileReplicaReseedDisabled: boolean;
   // All-projects roster (mobile hub): whether this peer is subscribed, the
@@ -1755,6 +1775,10 @@ export function buildSyncHostHelloOkPayload(args: {
       },
       chatHistoryPaging: {
         enabled: true,
+      },
+      chatLogV2: {
+        enabled: true,
+        resumeMaxBytes: CHAT_SEQUENCE_RESUME_MAX_BYTES,
       },
       ...(args.attachmentUploadEnabled
         ? {
@@ -3679,6 +3703,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       chatTranscriptScanOffsets: new Map(),
       chatEventIdsSent: new Map(),
       resolvedChatTranscriptPaths: new Map(),
+      projectChatTranscriptPaths: new Map(),
       pendingChangesetBatch: null,
       mobileReplicaReseedDisabled: false,
       rosterSubscribed: false,
@@ -4031,6 +4056,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             const transcriptPath = await args.personalChatScope?.transcriptPath?.(sessionId).catch(() => null) ?? null;
             if (!transcriptPath) continue;
             peer.resolvedChatTranscriptPaths.set(sessionId, transcriptPath);
+          } else if (scope === "project") {
+            const transcriptPath = await resolveProjectChatTranscriptPath(sessionId).catch(() => null);
+            if (transcriptPath) peer.projectChatTranscriptPaths.set(sessionId, transcriptPath);
           }
           // Re-acknowledge the subscription before enabling its live stream.
           // The host sequence high-water was restored above, so subsequent
@@ -4727,24 +4755,53 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return true;
   }
 
-  function sendRequired<TPayload>(peer: PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
+  function sendRequired<TPayload>(
+    peer: PeerState,
+    type: SyncEnvelope["type"],
+    payload: TPayload,
+    requestId?: string | null,
+    context?: { action?: string | null },
+  ): boolean {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
     const frames = encodeFramesFor(peer, type, payload, requestId);
     const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
-    const backpressured = isPeerBackpressured(peer);
-    if (
-      ws.bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES ||
-      (backpressured && isPeerBackpressuredTooLong(peer))
-    ) {
-      args.logger.warn("sync_host.required_send_backpressured", {
-        type,
-        requestId: requestId ?? null,
-        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
-        bufferedAmount: ws.bufferedAmount,
-        frameBytes,
-      });
+    const bufferedAmount = ws.bufferedAmount;
+    const logFields = {
+      type,
+      action: context?.action ?? null,
+      requestId: requestId ?? null,
+      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+      bufferedAmount,
+      frameBytes,
+    };
+    // Genuine backpressure: the client is not draining what is already queued.
+    // Only that closes the connection; a reconnect is the way to recover it.
+    if (bufferedAmount >= REQUIRED_SEND_MAX_BUFFERED_BYTES || isPeerBackpressuredTooLong(peer)) {
+      args.logger.warn("sync_host.required_send_backpressured", logFields);
       closeBackpressuredPeer(peer, "Required sync response backpressured");
+      return false;
+    }
+    // This one reply does not fit. That is a property of the reply, not of the
+    // connection: closing here made the client reconnect, re-ask, and loop.
+    // Fail the request with a small typed error and keep the socket open.
+    if (bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES) {
+      const limitBytes = REQUIRED_SEND_MAX_BUFFERED_BYTES - bufferedAmount;
+      args.logger.warn("sync_host.required_send_oversized", {
+        ...logFields,
+        limitBytes,
+        repliedWithError: Boolean(requestId),
+      });
+      if (requestId) {
+        const error = buildSyncResultTooLargeError({
+          label: context?.action ?? type,
+          bytes: frameBytes,
+          limitBytes,
+        });
+        for (const frame of encodeFramesFor(peer, type, buildSyncOversizedReplyPayload(payload, error), requestId)) {
+          ws.send(frame);
+        }
+      }
       return false;
     }
     let reported = false;
@@ -5897,6 +5954,63 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return transcriptPath ? { kind: "foreign", transcriptPath } : { kind: "rejected" };
   }
 
+  /**
+   * Where an active-project chat's history lives when no subscribe-time
+   * resolution is recorded (handoff-adopted subscriptions, hosts without a chat
+   * service): the durable `.ade/transcripts/chat/<id>.jsonl` file when it
+   * exists, else the session row's legacy (8 MB-capped) file. With a chat
+   * service present the durable file is always the append target, so it wins
+   * even before it exists.
+   */
+  function fallbackProjectChatTranscriptPath(sessionId: string): string | null {
+    const row = args.sessionService.get(sessionId);
+    if (!row) return null;
+    const durablePath = path.join(layout.chatTranscriptsDir, `${sessionId}.jsonl`);
+    if (resolveReadableHistoryPath(durablePath)) return durablePath;
+    const legacyPath = toOptionalString(row.transcriptPath);
+    if (legacyPath && resolveReadableHistoryPath(legacyPath)) return legacyPath;
+    return args.agentChatService ? durablePath : legacyPath ?? null;
+  }
+
+  function projectChatTranscriptPathFor(peer: PeerState, sessionId: string): string | null {
+    return peer.projectChatTranscriptPaths.get(sessionId) ?? fallbackProjectChatTranscriptPath(sessionId);
+  }
+
+  /** The file every history reader of an active-project chat uses (H1). */
+  async function resolveProjectChatTranscriptPath(
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
+    let resolved: string | null = null;
+    try {
+      resolved = await args.agentChatService?.resolveChatTranscriptPath?.(
+        sessionId,
+        signal ? { signal } : undefined,
+      ) ?? null;
+    } catch (error) {
+      signal?.throwIfAborted();
+      args.logger.warn("sync_host.chat_transcript_resolve_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return resolved ?? fallbackProjectChatTranscriptPath(sessionId);
+  }
+
+  function projectChatLogState(sessionId: string): AgentChatLogState | null {
+    try {
+      return args.agentChatService?.getChatLogState?.(sessionId) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  function normalizedCursor(value: unknown, minimum: number): number | null {
+    return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= minimum
+      ? value
+      : null;
+  }
+
   // Per-session replay buffers for resumable chat event streams. Map insertion
   // order doubles as the LRU order — recordChatEventSeq re-inserts on touch.
   const chatEventReplayBuffers = new Map<string, ChatEventReplayBuffer>();
@@ -6066,6 +6180,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   /**
+   * Put one row of a durable (`sinceSequence`) resume on the wire. Required
+   * send, and no already-sent skip: the client said it lacks every row after
+   * its sequence, and it dedupes by sequence if one was in flight.
+   */
+  function deliverResumedChatEvent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
+    const seq = chatEventReplayBuffers.get(event.sessionId)?.seqByKey.get(chatEventDeliveryKey(event))
+      ?? event.sequence;
+    const syncEvent = peerWantsSlimChat(peer)
+      ? compactMobileChatEventEnvelopeOnce(event)
+      : compactChatEventEnvelopeOnce(event);
+    return sendRequired(peer, "chat_event", {
+      ...syncEvent,
+      ...(typeof seq === "number" ? { seq } : {}),
+    } satisfies SyncChatEventPayload);
+  }
+
+  /**
    * Release subagent progress whose one-second window has closed. Driven by the
    * existing poll pump (400 ms) rather than a per-peer timer, so a quiet
    * session costs nothing.
@@ -6130,7 +6261,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // A foreign quick-look session has no local row; tail its resolved
       // transcript path directly. Local sessions resolve via sessionService.
       const resolvedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
-      const configuredTranscriptPath = resolvedTranscriptPath ?? args.sessionService.get(sessionId)?.transcriptPath;
+      const configuredTranscriptPath = resolvedTranscriptPath
+        ?? projectChatTranscriptPathFor(peer, sessionId);
       const transcriptPath = configuredTranscriptPath
         ? resolveReadableHistoryPath(configuredTranscriptPath) ?? configuredTranscriptPath
         : null;
@@ -6703,7 +6835,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
     const respond = (response: SyncFileResponsePayload) => {
-      sendRequired(peer, "file_response", response, requestId);
+      sendRequired(peer, "file_response", response, requestId, { action: `files.${payload.action}` });
     };
 
     try {
@@ -6823,7 +6955,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     const sendResult = (record: CachedMobileCommand | null, result: SyncCommandResultPayload) => {
       if (!record) {
-        sendRequired(peer, "command_result", result, requestId);
+        sendRequired(peer, "command_result", result, requestId, { action: payload.action });
         return;
       }
       record.result = result;
@@ -6831,7 +6963,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lastCommandResultLatencyMs = Math.max(0, record.completedAtMs - record.acceptedAtMs);
       const waiters = record.waiters.splice(0);
       for (const waiter of waiters) {
-        sendRequired(waiter.peer, "command_result", result, waiter.requestId);
+        sendRequired(waiter.peer, "command_result", result, waiter.requestId, { action: payload.action });
       }
       pruneMobileCommandResultCache();
       try {
@@ -6843,7 +6975,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     };
     const startCommandRecord = (ack: SyncCommandAckPayload): CachedMobileCommand | null => {
-      sendRequired(peer, "command_ack", ack, requestId);
+      sendRequired(peer, "command_ack", ack, requestId, { action: payload.action });
       if (!commandCacheKey) return null;
       const record: CachedMobileCommand = {
         commandId,
@@ -6877,13 +7009,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           status: "rejected",
           message: mismatchResult.error?.message ?? null,
         }, requestId);
-        sendRequired(peer, "command_result", mismatchResult, requestId);
+        sendRequired(peer, "command_result", mismatchResult, requestId, { action: payload.action });
         return;
       }
       commandReplayCount += 1;
       sendRequired(peer, "command_ack", existingCommand.ack, requestId);
       if (existingCommand.result) {
-        sendRequired(peer, "command_result", existingCommand.result, requestId);
+        sendRequired(peer, "command_result", existingCommand.result, requestId, { action: existingCommand.action });
       } else {
         addMobileCommandWaiter(existingCommand, peer, requestId);
       }
@@ -7118,6 +7250,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // the message alone would also mangle legit prefixes like git's "fatal:".
       const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
       const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
+      if (error instanceof SyncRemoteCommandResultTooLargeError) {
+        sendResult(acceptedRecord, { commandId, ok: false, error: error.details });
+        return;
+      }
       sendResult(acceptedRecord, {
         commandId,
         ok: false,
@@ -8866,6 +9002,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const beforeOffset = typeof payload?.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
           ? Math.max(0, Math.floor(payload.beforeOffset))
           : 0;
+        // chatLogV2 sequence cursor; takes precedence over the byte cursor.
+        const beforeSequence = normalizedCursor(payload?.beforeSequence, 0);
         const unavailablePage = (): AgentChatEventHistoryPage => ({
           sessionId,
           events: [],
@@ -8893,13 +9031,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           const subscribedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
           if (subscribedTranscriptPath) {
             const read = await runWithAbortSignal(
-              () => readTranscriptHistoryPage({
-                transcriptPath: subscribedTranscriptPath,
-                sessionId,
-                beforeOffset,
-                maxBytes: payload?.maxBytes,
-                signal,
-              }),
+              () => beforeSequence != null
+                ? readTranscriptHistoryPageBeforeSequence({
+                  transcriptPath: subscribedTranscriptPath,
+                  sessionId,
+                  beforeSequence,
+                  maxBytes: payload?.maxBytes,
+                  signal,
+                })
+                : readTranscriptHistoryPage({
+                  transcriptPath: subscribedTranscriptPath,
+                  sessionId,
+                  beforeOffset,
+                  maxBytes: payload?.maxBytes,
+                  signal,
+                }),
               signal,
               "Sync operation aborted.",
             );
@@ -8915,11 +9061,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               sessionFound: true,
             };
           } else if (args.agentChatService) {
+            const generationBefore = projectChatLogState(sessionId)?.historyGeneration ?? null;
             page = await args.agentChatService.getChatEventHistoryPage(sessionId, {
               beforeOffset,
+              ...(beforeSequence != null ? { beforeSequence } : {}),
               ...(typeof payload?.maxBytes === "number" ? { maxBytes: payload.maxBytes } : {}),
               ...(signal ? { signal } : {}),
             });
+            const generationAfter = projectChatLogState(sessionId)?.historyGeneration ?? null;
+            if (generationBefore !== generationAfter) {
+              // The history was rewritten while this page was read: its rows
+              // cannot be attributed to either generation. The client retries.
+              page = unavailablePage();
+            } else if (generationAfter != null && page.sessionFound !== false) {
+              page = { ...page, historyGeneration: generationAfter };
+            }
           } else {
             page = unavailablePage();
           }
@@ -8991,8 +9147,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         }
         try {
           const configuredTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId)
-            ?? args.sessionService.get(sessionId)?.transcriptPath
-            ?? null;
+            ?? projectChatTranscriptPathFor(peer, sessionId);
           const transcriptPath = configuredTranscriptPath
             ? resolveReadableHistoryPath(configuredTranscriptPath) ?? configuredTranscriptPath
             : null;
@@ -9060,6 +9215,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           subscribed: peer.subscribedChatSessionIds.has(sessionId),
           binding: peer.chatSubscriptionBindings.get(sessionId),
           transcriptPath: peer.resolvedChatTranscriptPaths.get(sessionId),
+          projectTranscriptPath: peer.projectChatTranscriptPaths.get(sessionId),
           offset: peer.chatTranscriptOffsets.get(sessionId),
           scanOffset: peer.chatTranscriptScanOffsets.get(sessionId),
           sentIds: peer.chatEventIdsSent.get(sessionId),
@@ -9113,13 +9269,35 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.resolvedChatTranscriptPaths.delete(sessionId);
         }
 
-        const session = foreignScope.kind === "local" ? args.sessionService.get(sessionId) : null;
-        const transcriptPath = foreignTranscriptPath ?? session?.transcriptPath ?? null;
+        // Active-project chats read the file the chat service's history readers
+        // use (the durable, uncapped transcript), resolved once here so the
+        // hydration offset, the pump and the snapshot share one byte space.
+        const projectTranscriptPath = foreignScope.kind === "local"
+          ? await runWithAbortSignal(
+              () => resolveProjectChatTranscriptPath(sessionId, signal),
+              signal,
+              "Sync operation aborted.",
+            )
+          : null;
+        if (projectTranscriptPath) {
+          peer.projectChatTranscriptPaths.set(sessionId, projectTranscriptPath);
+        } else {
+          peer.projectChatTranscriptPaths.delete(sessionId);
+        }
+        const transcriptPath = foreignTranscriptPath ?? projectTranscriptPath;
         // Establish the durable handoff boundary before any async snapshot
         // work. The pump stays behind the hydration barrier until after the
         // ack, then starts here so appends that race the snapshot are replayed
         // (snapshot overlap is removed by the normal delivery-key dedupe).
         const hydrationStartOffset = await readTranscriptLogicalSize(transcriptPath);
+        // chatLogV2: the chat's history generation and sequence high-water.
+        // Only the active project's chat service tracks them.
+        const chatLogState = foreignScope.kind === "local" ? projectChatLogState(sessionId) : null;
+        const chatLogFields: Pick<SyncChatSubscribeSnapshotPayload, "historyGeneration" | "maxSequence"> = chatLogState
+          ? { historyGeneration: chatLogState.historyGeneration, maxSequence: chatLogState.maxSequence }
+          : {};
+        const chatLogV2Requested = payload?.chatLogV2 === true;
+        const sinceSequence = normalizedCursor(payload?.sinceSequence, 0);
         // Snapshots are byte-capped transcript tails — a long-running turn's
         // `status: started` event can sit outside the tail, leaving a client
         // that subscribes mid-turn unable to tell the session is streaming.
@@ -9150,11 +9328,103 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // Replay buffers hold the ACTIVE project's live events — a foreign
         // quick-look whose session id collides with a local session must never
         // resume from them (it would splice local events into the foreign feed).
+        let sequenceGap = false;
+        if (sinceSequence != null) {
+          // Durable resume: every persisted event after the client's last
+          // sequence, read from the same file the pump tails. Served only when
+          // the client's cached generation is current and the gap fits the cap.
+          const requestedGeneration = normalizedCursor(payload?.generation, 1);
+          let gapReason: string = "scope_without_log";
+          let resumeRead: Awaited<ReturnType<typeof readChatEventsAfterSequence>> | null = null;
+          if (chatLogState && transcriptPath) {
+            if (requestedGeneration !== chatLogState.historyGeneration) {
+              gapReason = "generation_mismatch";
+            } else {
+              try {
+                resumeRead = await runWithAbortSignal(
+                  () => readChatEventsAfterSequence({
+                    transcriptPath,
+                    sessionId,
+                    sinceSequence,
+                    maxBytes: CHAT_SEQUENCE_RESUME_MAX_BYTES,
+                    ...(signal ? { signal } : {}),
+                  }),
+                  signal,
+                  "Sync operation aborted.",
+                );
+              } catch (error) {
+                signal?.throwIfAborted();
+                gapReason = "read_failed";
+                args.logger.warn("sync_host.chat_sequence_resume_read_failed", {
+                  sessionId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+              if (resumeRead?.status === "gap") gapReason = resumeRead.reason;
+              // A rewrite that raced the read makes it unattributable.
+              if (
+                resumeRead?.status === "ok"
+                && projectChatLogState(sessionId)?.historyGeneration !== chatLogState.historyGeneration
+              ) {
+                resumeRead = null;
+                gapReason = "generation_changed_during_read";
+              }
+            }
+          }
+          if (chatLogState && resumeRead?.status === "ok") {
+            // Same handoff as a snapshot: the pump starts at the boundary
+            // captured before the read, and delivery keys dedupe the overlap.
+            peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
+            peer.chatTranscriptScanOffsets.delete(sessionId);
+            // Anything the live coalescer holds for this session is on disk
+            // and inside this resume, which supersedes it.
+            discardChatEventCoalescer(peer, sessionId);
+            const replayEvents = peerWantsSlimChat(peer)
+              ? foldSubagentProgressForSnapshot(resumeRead.events).events
+              : resumeRead.events;
+            const resumeAck: SyncChatSubscribeSnapshotPayload = {
+              sessionId,
+              capturedAt: nowIso(),
+              truncated: false,
+              events: [],
+              resumed: true,
+              resumeKind: "sequence",
+              historyGeneration: chatLogState.historyGeneration,
+              maxSequence: Math.max(chatLogState.maxSequence, resumeRead.maxSequence),
+              ...(await resolveLiveStatusFields()),
+            };
+            sendRequired(peer, "chat_subscribe", resumeAck, envelope.requestId);
+            hydrationSucceeded = true;
+            // Required sends: a durable log must never be left with a silent
+            // hole. If the socket cannot take a row it is closed, and the
+            // client resumes again from its last row on reconnect.
+            for (const event of replayEvents) {
+              if (!deliverResumedChatEvent(peer, event)) break;
+            }
+            for (const event of resumeRead.events) markChatEventSent(peer, event);
+            args.logger.debug("sync_host.chat_subscribe_sequence_resumed", {
+              sessionId,
+              sinceSequence,
+              replayedEventCount: replayEvents.length,
+            });
+            break;
+          }
+          sequenceGap = true;
+          args.logger.debug("sync_host.chat_subscribe_sequence_gap", {
+            sessionId,
+            sinceSequence,
+            reason: gapReason,
+          });
+        }
+        // The in-memory ring (`sinceSeq`) is the pre-chatLogV2 resume. A client
+        // that asked for a durable resume gets an authoritative snapshot.
         const replayBuffer = foreignScope.kind === "local" ? chatEventReplayBuffers.get(sessionId) : undefined;
-        const resumePlan = planChatEventResume(
-          replayBuffer,
-          payload?.sinceSeq,
-        );
+        const resumePlan: ChatEventResumePlan = sinceSequence != null
+          ? { mode: "snapshot" }
+          : planChatEventResume(
+            replayBuffer,
+            payload?.sinceSeq,
+          );
         if (resumePlan.mode === "replay") {
           // The replay buffer covers everything the peer missed: skip the
           // snapshot, fast-forward the transcript pump past content the
@@ -9207,11 +9477,41 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),
         );
         let events: AgentChatEventEnvelope[];
+        let pinnedEvents: AgentChatEventEnvelope[] = [];
         let truncated: boolean;
         let transcriptSize: number;
         let tailStartOffset = 0;
         let hasOlderHistory = false;
-        if (foreignTranscriptPath) {
+        let alignedForeignSnapshot: Awaited<ReturnType<typeof readTurnAlignedTranscriptTail>> | null = null;
+        if (foreignTranscriptPath && chatLogV2Requested) {
+          try {
+            alignedForeignSnapshot = await runWithAbortSignal(
+              () => readTurnAlignedTranscriptTail({
+                transcriptPath: foreignTranscriptPath,
+                sessionId,
+                maxBytes,
+                ...(signal ? { signal } : {}),
+              }),
+              signal,
+              "Sync operation aborted.",
+            );
+          } catch (error) {
+            signal?.throwIfAborted();
+            // Fall back to the plain tail below.
+            args.logger.warn("sync_host.chat_aligned_tail_failed", {
+              sessionId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        if (alignedForeignSnapshot) {
+          events = alignedForeignSnapshot.events;
+          pinnedEvents = alignedForeignSnapshot.pinnedEvents;
+          truncated = alignedForeignSnapshot.truncated;
+          transcriptSize = alignedForeignSnapshot.transcriptSize;
+          tailStartOffset = alignedForeignSnapshot.tailStartOffset;
+          hasOlderHistory = alignedForeignSnapshot.tailStartOffset > 0;
+        } else if (foreignTranscriptPath) {
           const foreignSnapshot = await runWithAbortSignal(
             () => readForeignChatSnapshot(foreignTranscriptPath, maxBytes, signal),
             signal,
@@ -9234,9 +9534,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               maxEvents: CHAT_EVENT_REPLAY_MAX_EVENTS,
               maxBytes,
               ...(signal ? { signal } : {}),
+              ...(chatLogV2Requested ? { turnBoundaryAligned: true, separatePinnedEvents: true } : {}),
               })
             : null;
           events = history?.events ?? [];
+          pinnedEvents = chatLogV2Requested ? history?.pinnedEvents ?? [] : [];
           transcriptSize = await readTranscriptLogicalSize(transcriptPath);
           truncated = history?.truncated ?? (transcriptSize > maxBytes);
           tailStartOffset = history?.tailStartOffset ?? 0;
@@ -9244,9 +9546,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ?? (history?.truncated === true && tailStartOffset > 0);
         }
         const slimChatPeer = peerWantsSlimChat(peer);
-        events = events.map(
-          slimChatPeer ? compactChatEventEnvelopeForMobileSync : compactChatEventEnvelopeForSync,
-        );
+        const compactForPeer = slimChatPeer ? compactChatEventEnvelopeForMobileSync : compactChatEventEnvelopeForSync;
+        events = events.map(compactForPeer);
+        pinnedEvents = pinnedEvents.map(compactForPeer);
         // Fold streaming deltas into the message they belong to. Snapshot-only
         // and capability-gated: the replay-buffer resume path below stays
         // unfolded because its per-event `seq` monotonicity is load-bearing for
@@ -9301,9 +9603,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           hasOlderHistory,
           cursorKind: "byte",
           events,
+          ...chatLogFields,
+          ...(sequenceGap ? { gap: true } : {}),
+          ...(chatLogV2Requested && pinnedEvents.length > 0 ? { pinnedEvents } : {}),
           ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
+        for (const event of pinnedEvents) {
+          markChatEventSent(peer, event);
+        }
         // Mark the PRE-fold envelopes: a collapsed delta still has its own
         // delivery key, and leaving it unmarked lets the transcript pump
         // re-send it as a separate event the client would render twice.
@@ -9331,6 +9639,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               peer.resolvedChatTranscriptPaths.set(sessionId, priorSubscription.transcriptPath);
             } else {
               peer.resolvedChatTranscriptPaths.delete(sessionId);
+            }
+            if (priorSubscription.projectTranscriptPath !== undefined) {
+              peer.projectChatTranscriptPaths.set(sessionId, priorSubscription.projectTranscriptPath);
+            } else {
+              peer.projectChatTranscriptPaths.delete(sessionId);
             }
             if (priorSubscription.offset !== undefined) {
               peer.chatTranscriptOffsets.set(sessionId, priorSubscription.offset);
@@ -9369,6 +9682,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptScanOffsets.delete(sessionId);
           peer.chatEventIdsSent.delete(sessionId);
           peer.resolvedChatTranscriptPaths.delete(sessionId);
+          peer.projectChatTranscriptPaths.delete(sessionId);
           discardChatEventCoalescer(peer, sessionId);
         }
         break;
