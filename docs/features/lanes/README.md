@@ -51,6 +51,33 @@ Balancing is an explicit choice rather than the dialog's silent default because
 selecting a non-bound machine rebinds the whole app tab; doing that merely
 because a dialog opened would move the window under the user.
 
+## Default-branch auto-pull
+
+The primary checkout's default branch stays current without a manual pull.
+`defaultBranchAutoPull.ts` (desktop main, local-runtime only) runs a
+decision-and-maybe-pull pass on project open and then on a bounded
+five-minute background timer — the same "startup plus background refresh"
+trigger t3code uses. The pass is a **fast-forward only**:
+
+1. It gates locally first. The target must be the primary lane, HEAD must be
+   attached and on the lane's recorded branch (`lanes.branch_ref`, i.e. the
+   project's default branch), there must be no staged or unstaged **tracked**
+   change, no in-progress rebase/merge/cherry-pick/revert, no held
+   `lane_worktree_locks` lease, and a configured upstream. Untracked files do
+   not block: a fast-forward can never lose one, and git itself refuses if the
+   pull would overwrite one.
+2. It fetches the primary lane (the shared `git.fetch` primitive).
+3. It re-reads the sync status against the now-fresh remote-tracking ref and
+   pulls with `git pull --ff-only` only when the branch is strictly behind.
+   Ahead-only is "up to date"; ahead-and-behind (diverged) skips, because a
+   true merge is not this service's to make.
+4. Every skip is silent. A failed fetch (offline, no auth, no remote) and a
+   failed pull are logged at `debug`/`warn` with no user-facing surface.
+
+The gate is `evaluateDefaultBranchAutoPull` in
+`apps/desktop/src/main/services/lanes/defaultBranchAutoPull.ts`; it is pure and
+unit-tested independently of git.
+
 ## Source file map
 
 Core services. The canonical lane lifecycle now runs in the **ADE
@@ -79,6 +106,7 @@ Desktop fallback services (`apps/desktop/src/main/services/lanes/`):
 | `laneUsageTombstone.ts` | The one row a deleted lane leaves behind so ADE's lifetime stats are not survivor stats. See [What a deleted lane leaves behind](#what-a-deleted-lane-leaves-behind). `writeLaneUsageTombstone` is called from inside `cleanupLaneDatabaseRows` *before* the cascade, while the rows it counts still exist, and rides the caller's `begin immediate` so the tombstone and the deletes commit together. `encodeActiveDayBits` / `decodeActiveDayKeys` pack the lane's active local days into a hex bitmap (capped at a 4,096-day span) so `activeDays` and streaks stay reconstructible without a per-day breakdown. |
 | `worktreeResidualCleanup.ts` | Machine-local retry worker for managed worktree directories that survive lane deletion. It stores cleanup debt in `local_worktree_residual_cleanups`, retries during `laneService.list()`, drops unsafe records, skips registered Git worktrees, active lane paths, and pending creations, removes old empty untracked directories under the managed worktrees directory, and leaves unknown non-empty directories alone unless they were explicitly recorded from the delete path. |
 | `laneWorktreeLockService.ts` | Database-backed lease for any operation that mutates a lane worktree. PR conflict/integration work and storage reclaim/restore share the same lock table, so two processes cannot remove, restore, or edit the same worktree concurrently. Expired leases are swept; active blockers carry an owner label for clear UI errors. |
+| `defaultBranchAutoPull.ts` | Keeps the primary checkout's default branch current without a manual pull. Pure `evaluateDefaultBranchAutoPull` gate (primary lane, attached HEAD on the default branch, clean **tracked** worktree, no in-progress git operation, no held worktree lease, configured upstream) plus a service that fetches then `git pull --ff-only` when strictly behind, on project open and a five-minute background timer. Silent on skip/failure; local-runtime only. |
 | `autoRebaseService.ts` | Auto-rebase worker for stacked lanes, attention state, head-change handlers. Consults `resolvePrRebaseMode` to determine whether a lane with a linked PR should auto-rebase (`pr_target` strategy) or only surface manual attention (`lane_base` strategy). `listStatuses({ includeAll: true })` returns stored statuses without recomputing lane git status for PR workflow views. |
 | `rebaseSuggestionService.ts` | Emits rebase suggestions when a parent lane advances, dismiss/defer lifecycle. Each suggestion may include up to 20 `RebaseTargetCommit` entries showing the behind commits the rebase would pull in. |
 | `laneEnvironmentService.ts` | Environment init pipeline: env files, docker services, dependencies, mount points, copy paths, setup script (Phase 5 W1); docker teardown on archive/delete/reclaim. Also exposes `onEvent(listener)` (in-process observers of every `LaneEnvInitEvent`, the same stream the runtime broadcasts) and `abortLaneEnvironment(laneId, worktreePath)`, which stops the lane's init at its next step boundary and kills every setup command still running inside the worktree. |
