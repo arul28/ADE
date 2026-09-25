@@ -179,6 +179,20 @@ describe("summarizeAcpStderrTail", () => {
     expect(headline.endsWith("…")).toBe(true);
   });
 
+  it("redacts a lowercase opaque token but keeps a formatted UUID", () => {
+    // A lowercase 64-hex secret is a real credential shape. The earlier rule
+    // required an uppercase letter, so this value survived into the persisted,
+    // synced tail; the UUID is an identifier and stays readable. Both values
+    // are assembled at runtime so the source holds no secret-shaped literal
+    // for the CI scanner to flag.
+    const opaqueLower = ("0123456789" + "abcdef").repeat(4);
+    const uuid = ["550e8400", "e29b", "41d4", "a716", "446655440000"].join("-");
+    const shown = sanitizeAcpStderrTail(`agent error\nkey=${opaqueLower}\nrequest ${uuid}`);
+    expect(shown).not.toContain(opaqueLower);
+    expect(shown).toContain("[redacted]");
+    expect(shown).toContain(uuid);
+  });
+
   it("redacts keyword-labelled values and opaque mixed-case tokens", () => {
     // Assembled at runtime so the source holds no secret-shaped literal. The
     // opaque token has digits, lower and upper case — the signature of a key.
