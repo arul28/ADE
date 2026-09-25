@@ -9,6 +9,7 @@ import type {
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { normalizeSubagentLifecycleEvent } from "../../../desktop/src/shared/chatSubagents";
+import { isSettledSteerDeliveryState } from "../../../desktop/src/shared/chatTranscript";
 import {
   formatLegacyProviderRetryActivityDetail,
   formatProviderRetryActivityDetail,
@@ -889,7 +890,9 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
         }
       } else {
         steerMap.delete(event.steerId);
-        resolvedSteerIds.add(event.steerId);
+        // `accepted` is not final: a refused Cursor/OpenCode inline steer comes
+        // back as `queued` on the same steerId, and must show as staged again.
+        if (isSettledSteerDeliveryState(event.deliveryState)) resolvedSteerIds.add(event.steerId);
       }
       continue;
     }

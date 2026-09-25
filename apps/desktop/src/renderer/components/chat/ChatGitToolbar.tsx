@@ -155,12 +155,17 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const laneType = scope.lane?.laneType ?? "worktree";
   const laneBranchRef = scope.lane?.branchRef ?? "";
   const laneBaseRef = scope.lane?.baseRef ?? "";
+  const laneHeadBranchRef = scope.lane?.branchDrift?.headBranchRef ?? "";
+  const laneExpectedBranchRef = scope.lane?.branchDrift?.expectedBranchRef ?? "";
   const laneForPr = useMemo(() => ({
     id: laneId,
     laneType,
     branchRef: laneBranchRef,
     baseRef: laneBaseRef,
-  }), [laneBaseRef, laneBranchRef, laneId, laneType]);
+    branchDrift: laneHeadBranchRef
+      ? { expectedBranchRef: laneExpectedBranchRef, headBranchRef: laneHeadBranchRef }
+      : null,
+  }), [laneBaseRef, laneBranchRef, laneExpectedBranchRef, laneHeadBranchRef, laneId, laneType]);
 
   const [dirtyCount, setDirtyCount] = useState(0);
   const [linkedPrs, setLinkedPrs] = useState<PrSummary[]>([]);

@@ -49,6 +49,18 @@ export function formatCursorModeLabel(modeId: string): string {
  * next launch and pins the session to it. That is the durable-pin bug the
  * Droid and Claude native controls carry the same warning about.
  */
+/**
+ * Full Auto and Plan chosen on a Cursor SDK model used to be stored on the
+ * OpenCode permission slot. Launch still honors those two values when the
+ * Cursor slot itself is empty.
+ */
+export function cursorPermissionFromMisfiledOpenCode(
+  mode: string | null | undefined,
+): "full-auto" | "plan" | null {
+  if (mode === "full-auto" || mode === "plan") return mode;
+  return null;
+}
+
 export function legacyPermissionModeToCursorModeId(
   mode: string | null | undefined,
 ): CursorModeId | null {

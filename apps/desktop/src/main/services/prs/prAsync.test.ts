@@ -764,6 +764,112 @@ describe("prPollingService", () => {
       message: "One or more required CI checks failed on this pull request.",
     }));
   });
+
+  it("announces checks failing once per red stretch", async () => {
+    // The poller is a state machine with no UI. This table is the check that a
+    // pending dip on the same head does not raise another toast.
+    const cases: Array<{ name: string; steps: Array<Partial<PrSummary>>; announcements: number }> = [
+      {
+        name: "pending and not_run dips stay quiet until checks pass",
+        steps: [
+          { checksStatus: "passing" },
+          { checksStatus: "failing" },
+          { checksStatus: "pending" },
+          { checksStatus: "failing" },
+          { checksStatus: "not_run" },
+          { checksStatus: "failing" },
+          { checksStatus: "none" },
+          { checksStatus: "failing" },
+          { checksStatus: "passing" },
+          { checksStatus: "failing" },
+        ],
+        announcements: 2,
+      },
+      {
+        name: "a new head commit arms the toast on the next poll, not the first sight",
+        steps: [
+          { checksStatus: "failing", headSha: "aaa" },
+          { checksStatus: "failing", headSha: "bbb" },
+          { checksStatus: "failing", headSha: "bbb" },
+        ],
+        announcements: 1,
+      },
+      {
+        name: "a missing head SHA keeps the last commit",
+        steps: [
+          { checksStatus: "failing", headSha: "aaa" },
+          { checksStatus: "pending", headSha: null },
+          { checksStatus: "failing", headSha: null },
+          { checksStatus: "failing", headSha: "bbb" },
+          { checksStatus: "failing", headSha: "bbb" },
+        ],
+        announcements: 1,
+      },
+      {
+        name: "already failing at startup does not announce the next dip",
+        steps: [
+          { checksStatus: "failing", headSha: "aaa" },
+          { checksStatus: "pending", headSha: "aaa" },
+          { checksStatus: "failing", headSha: "aaa" },
+        ],
+        announcements: 0,
+      },
+      {
+        name: "a closed pull request does not announce",
+        steps: [
+          { checksStatus: "passing", state: "open" },
+          { checksStatus: "failing", state: "closed" },
+        ],
+        announcements: 0,
+      },
+      {
+        name: "a draft announces on the way into failing",
+        steps: [
+          { checksStatus: "pending", state: "draft" },
+          { checksStatus: "failing", state: "draft" },
+        ],
+        announcements: 1,
+      },
+    ];
+
+    for (const entry of cases) {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      let step = 0;
+      let summary = createSummary(entry.steps[0]);
+      const events: Array<{ type?: string; kind?: string }> = [];
+      const service = createPrPollingService({
+        logger: createLogger() as any,
+        prService: {
+          listAll: () => [summary],
+          refresh: vi.fn(async () => {
+            summary = createSummary({
+              ...summary,
+              ...entry.steps[step],
+              updatedAt: new Date(Date.now()).toISOString(),
+            });
+            step += 1;
+            return [summary];
+          }),
+          getHotRefreshDelayMs: () => null,
+          getHotRefreshPrIds: () => [],
+        } as any,
+        projectConfigService: { get: () => ({ effective: {} }) } as any,
+        onEvent: (event) => events.push(event),
+      });
+      service.start();
+      await vi.advanceTimersByTimeAsync(12_000);
+      for (let index = 1; index < entry.steps.length; index += 1) {
+        service.poke();
+        await vi.advanceTimersByTimeAsync(0);
+      }
+      service.dispose();
+      const announcements = events.filter((event) => event.type === "pr-notification" && event.kind === "checks_failing");
+      expect(announcements, entry.name).toHaveLength(entry.announcements);
+      vi.useRealTimers();
+    }
+  });
 });
 
 /**

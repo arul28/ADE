@@ -3381,7 +3381,16 @@ function parseCreateLaneFromPrBranchArgs(value: Record<string, unknown>): Create
   if (githubPrNumber == null || !Number.isInteger(githubPrNumber) || githubPrNumber <= 0) {
     throw new Error("prs.createLaneFromPrBranch requires a positive integer githubPrNumber.");
   }
-  return { repoOwner, repoName, githubPrNumber };
+  // Optional user-chosen lane name. The service falls back to the PR title when
+  // it is absent, so forwarding it here is what keeps the hosted-web/mobile
+  // surfaces from silently ignoring a rename typed in the desktop dialog.
+  const laneName = asTrimmedString(value.laneName);
+  return {
+    repoOwner,
+    repoName,
+    githubPrNumber,
+    ...(laneName ? { laneName } : {}),
+  };
 }
 
 function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDescriptionArgs {
@@ -4159,6 +4168,10 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     unarchiveLaneWithRuntimeSetup(args, payload));
   register("lanes.delete", { viewerAllowed: true, queueable: true }, async (payload) =>
     deleteLaneWithRuntimeCleanup(args, payload));
+  register("lanes.deleteLeftoverWorktree", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.laneService.deleteLeftoverWorktree(
+      requireString(payload.laneId, "lanes.deleteLeftoverWorktree requires laneId."),
+    ));
   register("lanes.getStackChain", { viewerAllowed: true }, async (payload) =>
     args.laneService.getStackChain(requireString(payload.laneId, "lanes.getStackChain requires laneId.")));
   register("lanes.getChildren", { viewerAllowed: true }, async (payload) =>
@@ -5037,7 +5050,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.dispatchSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").dispatchSteer(parseAgentChatDispatchSteerArgs(payload));
-    return { ok: true, dispatchedAt: result.dispatchedAt };
+    return { ok: true, dispatchedAt: result.dispatchedAt, ...(result.reason ? { reason: result.reason } : {}) };
   });
   register("chat.cancelDispatchedSteer", { viewerAllowed: true, queueable: false }, async (payload) => {
     const result = await requireService(args.agentChatService, "Agent chat service not available.").cancelDispatchedSteer(parseAgentChatCancelDispatchedSteerArgs(payload));

@@ -7,8 +7,10 @@ import type {
   ChatLaunchChatArgs,
   ChatLaunchCompleteClientArgs,
   ChatLaunchIdArgs,
+  ChatLaunchLaneConfig,
   ChatLaunchQueueMessageArgs,
 } from "../../../shared/types";
+import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
 import { isRecord } from "../shared/utils";
 
 /**
@@ -169,6 +171,32 @@ function parseChatLaunchChat(value: unknown): ChatLaunchChatArgs {
 }
 
 /**
+ * The optional lane recipe a client may attach to a new-lane launch. Unknown
+ * modes are dropped (a launch that only carried the mode is a default root
+ * lane); every other field is optional and trimmed.
+ */
+export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig | undefined {
+  if (!isRecord(value)) return undefined;
+  const mode = value.mode === "child" ? "child" : value.mode === "import" ? "import" : value.mode === "root" ? "root" : null;
+  if (!mode) return undefined;
+  const parentLaneId = asTrimmedString(value.parentLaneId);
+  const branchRef = asTrimmedString(value.branchRef);
+  const templateId = asTrimmedString(value.templateId);
+  const color = asTrimmedString(value.color);
+  // The canonical strict parser, so a malformed issue degrades to null instead
+  // of reaching the lane service and throwing on a missing field.
+  const linearIssue = parseLaneLinearIssueValue(value.linearIssue);
+  return {
+    mode,
+    ...(parentLaneId ? { parentLaneId } : {}),
+    ...(branchRef ? { branchRef } : {}),
+    ...(templateId ? { templateId } : {}),
+    ...(color ? { color } : {}),
+    ...(linearIssue ? { linearIssue } : {}),
+  };
+}
+
+/**
  * `chat.startLaunch`. The lane and session ids are the launch's to assign; the
  * launch service normalizes and checks the reserved ids and auto-picks an
  * empty model, shared by every entry point.
@@ -179,6 +207,7 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
   const kind = record.kind === "cli" ? "cli" : "chat";
   const attachments = parseAgentChatFileRefs(record.attachments);
   const chat = kind === "chat" ? parseChatLaunchChat(record.chat) : undefined;
+  const laneConfig = parseChatLaunchLaneConfig(record.laneConfig);
   return {
     kind,
     mode: record.mode === "background" ? "background" : "foreground",
@@ -189,6 +218,7 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
     ...(asTrimmedString(record.displayPrompt) ? { displayPrompt: asTrimmedString(record.displayPrompt) } : {}),
     ...(attachments?.length ? { attachments } : {}),
     ...(asTrimmedString(record.baseBranch) ? { baseBranch: asTrimmedString(record.baseBranch) } : {}),
+    ...(laneConfig ? { laneConfig } : {}),
     ...(asTrimmedString(record.modelId) ? { modelId: asTrimmedString(record.modelId) } : {}),
     ...(asTrimmedString(record.provider) ? { provider: asTrimmedString(record.provider) } : {}),
     ...(asTrimmedString(record.title) ? { title: asTrimmedString(record.title) } : {}),

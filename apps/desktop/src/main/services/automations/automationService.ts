@@ -64,6 +64,7 @@ import { buildClaudeReadOnlyWorkerAllowedTools } from "../ai/tools/workerSandbox
 import { isRecord, matchesGlob, normalizeSet, nowIso, resolvePathWithinRoot, safeJsonParse } from "../shared/utils";
 import { terminateProcessTree } from "../shared/processExecution";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById, modelSupportsFastMode, resolveChatProviderForDescriptor, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
+import { cursorPermissionFromMisfiledOpenCode } from "../../../shared/cursorModes";
 import { resolveTailscaleCliPath } from "../sync/resolveTailscaleCliPath";
 import {
   normalizeAutomationAgentLimits,
@@ -1914,10 +1915,24 @@ export function createAutomationService({
     const allowedTools = computeAllowedToolList(rule, options, action);
     const cli = action?.permissionConfig?.cli ?? rule.permissionConfig?.cli;
     const inProcess = action?.permissionConfig?.inProcess ?? rule.permissionConfig?.inProcess;
+    const ruleProviders = rule.permissionConfig?.providers;
+    const actionProviders = action?.permissionConfig?.providers;
     const providers = {
-      ...(rule.permissionConfig?.providers ?? {}),
-      ...(action?.permissionConfig?.providers ?? {}),
+      ...(ruleProviders ?? {}),
+      ...(actionProviders ?? {}),
     };
+    const actionCursorRaw = actionProviders?.cursor as string | undefined;
+    const ruleCursorRaw = ruleProviders?.cursor as string | undefined;
+    const actionClearedCursor = actionCursorRaw === "inherit";
+    const actionCursor = actionClearedCursor ? undefined : actionProviders?.cursor;
+    const ruleCursor = ruleCursorRaw === "inherit" ? undefined : ruleProviders?.cursor;
+    const cursorMode = rule.verification.mode === "dry-run"
+      ? "plan"
+      : (actionCursor
+        ?? (actionClearedCursor ? undefined : cursorPermissionFromMisfiledOpenCode(actionProviders?.opencode))
+        ?? ruleCursor
+        ?? cursorPermissionFromMisfiledOpenCode(ruleProviders?.opencode)
+        ?? "edit");
     return {
       ...(cli
         ? {
@@ -1937,7 +1952,7 @@ export function createAutomationService({
       providers: {
         claude: rule.verification.mode === "dry-run" ? "plan" : (providers.claude ?? "edit"),
         codex: rule.verification.mode === "dry-run" ? "plan" : (providers.codex ?? "default"),
-        cursor: rule.verification.mode === "dry-run" ? "plan" : (providers.cursor ?? "edit"),
+        cursor: cursorMode,
         opencode: rule.verification.mode === "dry-run" ? "plan" : (providers.opencode ?? "edit"),
         codexSandbox: providers.codexSandbox ?? "workspace-write",
         ...(providers.writablePaths?.length ? { writablePaths: providers.writablePaths } : {}),

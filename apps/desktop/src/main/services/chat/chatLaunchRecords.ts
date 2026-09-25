@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { ChatLaunchChatArgs, ChatLaunchSnapshot } from "../../../shared/types";
+import type { ChatLaunchChatArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "../../../shared/types";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
@@ -15,6 +15,8 @@ export type ChatLaunchRecord = {
   snapshot: ChatLaunchSnapshot;
   chat: ChatLaunchChatArgs | null;
   baseBranch: string | null;
+  /** Explicit lane recipe (child/import/template/color), or null for the default root lane. */
+  laneConfig: ChatLaunchLaneConfig | null;
   provider: string | null;
   templateId: string | null;
   messageSent: boolean;

@@ -2201,6 +2201,7 @@ export type SyncRemoteCommandAction =
   | "lanes.archive"
   | "lanes.unarchive"
   | "lanes.delete"
+  | "lanes.deleteLeftoverWorktree"
   | "lanes.getStackChain"
   | "lanes.getChildren"
   | "lanes.attachGitHubIssueToSession"

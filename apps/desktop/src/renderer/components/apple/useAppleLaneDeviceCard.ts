@@ -24,14 +24,36 @@ const POLL_MS = 6_000;
 export type AppleLaneDeviceCard = {
   name: string;
   state: "starting" | "running" | "off";
+  /**
+   * The lane this reading belongs to.
+   *
+   * The card keeps its last value while the NEXT lane's read is in flight, so a
+   * menu that acted on `name`/`udid` with the newly selected `laneId` could
+   * delete or boot the wrong lane's device. Callers gate on
+   * `card.laneId === laneId` before acting.
+   */
+  laneId: string;
+  /** The lane's device udid. The menu boots it by name. */
+  udid: string;
+  /** `clone` is ADE's to delete; `attached` is the user's and only ever released. */
+  origin: "clone" | "attached";
 };
 
 export function useAppleLaneDeviceCard(args: {
   laneId: string | null;
   runtimePin: OpenProjectBinding | null;
   enabled: boolean;
+  /**
+   * Bump to re-read now.
+   *
+   * The card normally learns about a change from the `apple.device.state`
+   * event feed, but the hosted web client receives no Apple events — so the
+   * card menu's own mutations request a fresh read instead of waiting out the
+   * poll. Ignored when `enabled` is false.
+   */
+  refreshKey?: unknown;
 }): AppleLaneDeviceCard | null {
-  const { laneId, runtimePin, enabled } = args;
+  const { laneId, runtimePin, enabled, refreshKey } = args;
   const [card, setCard] = useState<AppleLaneDeviceCard | null>(null);
   const [starting, setStarting] = useState(false);
   const [readNonce, setReadNonce] = useState(0);
@@ -65,7 +87,13 @@ export function useAppleLaneDeviceCard(args: {
         setCard(null);
         return;
       }
-      setCard({ name: lane.name, state: laneDeviceBooted(listed) ? "running" : "off" });
+      setCard({
+        name: lane.name,
+        state: laneDeviceBooted(listed) ? "running" : "off",
+        laneId: lane.laneId,
+        udid: lane.udid,
+        origin: lane.origin,
+      });
     };
     void read();
     const timer = window.setInterval(() => void read(), POLL_MS);
@@ -73,7 +101,7 @@ export function useAppleLaneDeviceCard(args: {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [enabled, laneId, readNonce]);
+  }, [enabled, laneId, readNonce, refreshKey]);
 
   useEffect(() => {
     if (!enabled || !laneId) return undefined;
@@ -96,4 +124,19 @@ export function useAppleLaneDeviceCard(args: {
 
   if (!card) return null;
   return starting && card.state !== "running" ? { ...card, state: "starting" } : card;
+}
+
+/**
+ * The card only when it belongs to `laneId`, else null.
+ *
+ * The hook keeps its last reading while the next lane's read is in flight, and
+ * the device verbs (`deviceStart`, `deviceDelete`) act on the LANE rather than
+ * a udid — so acting on a card left over from the previous lane would boot or
+ * delete the wrong lane's device. Callers that offer those verbs gate on this.
+ */
+export function appleLaneDeviceForLane(
+  card: AppleLaneDeviceCard | null,
+  laneId: string | null,
+): AppleLaneDeviceCard | null {
+  return card && laneId && card.laneId === laneId ? card : null;
 }

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { GitBranch, Warning } from "@phosphor-icons/react";
 import type { GitCommitSummary } from "../../../../shared/types";
 import { isWebClientMode } from "../../../lib/webClientMode";
+import { revealLaneWorktree } from "../../../lib/revealLaneWorktree";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { getLaneAccent } from "../laneColorPalette";
 import { COLORS } from "../laneDesignTokens";
@@ -323,7 +324,7 @@ export function LaneDashboard({
     : notice?.source === "auto-rebase"
       ? () => onDismissAutoRebase(laneId)
       : null;
-  const canReveal = !isWebClientMode() && !isRemoteProject && Boolean(lane.worktreePath) && Boolean(window.ade?.app?.revealPath);
+  const canReveal = !isWebClientMode() && !isRemoteProject && Boolean(lane.worktreePath) && Boolean(window.ade?.lanes?.revealWorktree);
   const accent = getLaneAccent(lane, colorIndex);
 
   return (
@@ -344,7 +345,7 @@ export function LaneDashboard({
             canReveal={canReveal}
             onStartChat={onStartChat ? () => onStartChat(laneId) : null}
             onOpenFiles={() => openFiles()}
-            onReveal={() => { void window.ade.app.revealPath(lane.worktreePath).catch(() => {}); }}
+            onReveal={() => { void revealLaneWorktree(lane.id); }}
             onOpenMenu={(anchor) => onOpenLaneMenu(laneId, anchor)}
             onSelectLane={onSelectLane}
           />

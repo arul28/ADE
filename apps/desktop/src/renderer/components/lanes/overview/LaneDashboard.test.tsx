@@ -52,6 +52,7 @@ type AdeOverrides = {
 function installAde(overrides: AdeOverrides = {}) {
   const ade = {
     app: { revealPath: vi.fn(async () => {}), openExternal: vi.fn(async () => {}) },
+    lanes: { revealWorktree: vi.fn(async () => {}) },
     agentChat: {
       list: vi.fn(async () => overrides.chats ?? []),
       onEvent: vi.fn(() => () => {}),
@@ -287,7 +288,7 @@ describe("LaneDashboard", () => {
     fireEvent.click(screen.getByTestId("lane-new-chat"));
     expect(handlers.onStartChat).toHaveBeenCalledWith("lane-1");
     fireEvent.click(screen.getByTestId("lane-reveal"));
-    expect(ade.app.revealPath).toHaveBeenCalledWith("/tmp/lane-one");
+    expect(ade.lanes.revealWorktree).toHaveBeenCalledWith({ laneId: "lane-1" });
     fireEvent.click(screen.getByTestId("lane-more"));
     expect(handlers.onOpenLaneMenu).toHaveBeenCalledWith("lane-1", expect.anything());
     fireEvent.click(screen.getByTestId("lane-open-files"));

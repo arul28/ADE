@@ -12,6 +12,7 @@ import {
   getSessionInfo,
   getSessionMessages,
   gzipSync,
+  installRealTranscriptParser,
   mockState,
   parkCursorSend,
   parseAgentChatTranscript,
@@ -1200,6 +1201,78 @@ describe("createAgentChatService", () => {
           summary: "Stopped before finishing.",
         });
       });
+    });
+
+    it("does not report a finished child's turn a second time when the idle child is deleted", async () => {
+      // The incident: the delete path re-reported the child's last turn as
+      // "Stopped before finishing" and woke the parent again for work it had
+      // already been told about.
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-delete-idle", slash_commands: [] };
+        yield {
+          type: "assistant",
+          message: { id: "msg-idle-summary", content: [{ type: "text", text: "Done." }], usage: { input_tokens: 1, output_tokens: 1 } },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-delete-idle",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service, sessionService } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Finished child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+      const wakes = () => events.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id);
+
+      await service.sendMessage({ sessionId: child.id, text: "Finish up." });
+      await vi.waitFor(() => { expect(wakes()).toHaveLength(1); });
+      const firstWake = wakes()[0]!.event;
+      expect(firstWake.type === "user_message" ? firstWake.metadata?.spawnCompletion?.status : null).toBe("completed");
+      // Let the woken parent's turn end, so the restart below starts from two
+      // idle chats rather than disposing a parent mid-wake.
+      await vi.waitFor(() => {
+        expect(events.some((event) => event.sessionId === parent.id && event.event.type === "done")).toBe(true);
+      });
+      // Transcript appends are async; the restart below reads the child's done
+      // event from disk, so wait for it to land before disposing.
+      const childTranscriptPath = String(sessionService.get(child.id)?.transcriptPath);
+      await vi.waitFor(() => {
+        expect(fs.existsSync(childTranscriptPath) ? fs.readFileSync(childTranscriptPath, "utf8") : "").toContain('"type":"done"');
+      });
+
+      // Restart, with the parent's copy of that report gone (compaction or the
+      // transcript cap): the parent's history can no longer dedupe it.
+      service.forceDisposeAll();
+      installRealTranscriptParser();
+      const realParse = vi.mocked(parseAgentChatTranscript).getMockImplementation()!;
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        realParse(raw).filter((envelope) => envelope.sessionId !== parent.id));
+      const after: AgentChatEventEnvelope[] = [];
+      const restarted = createService({ onEvent: (event: AgentChatEventEnvelope) => after.push(event) });
+      await restarted.service.resumeSession({ sessionId: child.id });
+
+      await restarted.service.deleteSession({ sessionId: child.id });
+      await restarted.service.getSessionSummary(parent.id);
+
+      expect(after.filter((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id)).toEqual([]);
+      restarted.service.forceDisposeAll();
     });
 
     it("notes a deleted parent once in the child and stops retrying", async () => {

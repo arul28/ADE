@@ -1,4 +1,4 @@
-import type { ChatLaunchArgs, ChatLaunchChatArgs } from "../../../../shared/types";
+import type { ChatLaunchArgs, ChatLaunchChatArgs, ChatLaunchLaneConfig } from "../../../../shared/types";
 import type { DraftLaunchKind, DraftLaunchMode, PreparedDraftLaunch } from "../../../lib/draftLaunchJobs";
 
 /**
@@ -20,6 +20,10 @@ export function buildNewLaneLaunchArgs(input: {
   cliTitle: string | null;
   /** Chat launches only. */
   chat?: ChatLaunchChatArgs;
+  /** Explicit base ref for a configured root lane; omitted = project default. */
+  baseBranch?: string | null;
+  /** Explicit lane recipe (child/import/template/color), when the user configured one. */
+  laneConfig?: ChatLaunchLaneConfig | null;
   originClientId: string;
 }): ChatLaunchArgs {
   const { prepared } = input;
@@ -32,6 +36,8 @@ export function buildNewLaneLaunchArgs(input: {
     prompt: prepared.finalText,
     displayPrompt: prepared.finalDisplayText,
     attachments: prepared.selectedAttachments,
+    ...(input.baseBranch ? { baseBranch: input.baseBranch } : {}),
+    ...(input.laneConfig ? { laneConfig: input.laneConfig } : {}),
     modelId: prepared.modelId || null,
     provider: input.provider,
     title: input.cliTitle,

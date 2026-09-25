@@ -209,6 +209,14 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       await call("lanes.dismissAutoRebaseStatus", args, undefined, false);
     },
     openFolder: async () => undefined,
+    revealWorktree: async () => {
+      throw new Error("Reveal in Finder is available in the desktop app.");
+    },
+    revealLeftoverWorktree: async () => {
+      throw new Error("Reveal in Finder is available in the desktop app.");
+    },
+    deleteLeftoverWorktree: async (args: unknown) =>
+      call("lanes.deleteLeftoverWorktree", args, { removed: false }, false),
     initEnv: (args: unknown) => call("lanes.initEnv", args, null, false),
     getEnvStatus: (args: unknown) => call("lanes.getEnvStatus", args, null),
     listTemplates: () => call("lanes.listTemplates", {}, []),

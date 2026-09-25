@@ -27,7 +27,7 @@ import type {
   PrSummary,
 } from "../../../shared/types";
 
-type LanePrTarget = Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef">;
+type LanePrTarget = Pick<LaneSummary, "id" | "laneType" | "branchRef" | "baseRef" | "branchDrift">;
 
 function makeLane(overrides: Partial<LanePrTarget> = {}): LanePrTarget {
   return {

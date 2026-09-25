@@ -2870,6 +2870,27 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
+  it("refuses to detach or delete a device other than the one the caller named", async () => {
+    // The tools-card menu reads a device, then acts on the LANE; a udid that no
+    // longer matches means the lane's device changed under the read, and the
+    // request must be refused rather than applied to the wrong device.
+    const { service, calls, dispose } = setup();
+    try {
+      await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-2" } });
+
+      await expect(service.deviceDetach({ laneId: "lane-b", udid: "some-other-udid" }))
+        .rejects.toThrow(/APPLE_DEVICE_CHANGED/);
+      // Still bound: the refusal changed nothing.
+      expect((await service.deviceList({ laneId: "lane-b" })).lane?.udid).toBe("device-clone");
+
+      await expect(service.deviceDelete({ laneId: "lane-b", udid: "some-other-udid", ignoreOwnership: true }))
+        .rejects.toThrow(/APPLE_DEVICE_CHANGED/);
+      expect(calls).not.toContain("xcrun simctl delete device-clone");
+    } finally {
+      dispose();
+    }
+  });
+
   it("omits user-only simulator actions from agent capabilities", async () => {
     const { service, dispose } = setup();
     try {

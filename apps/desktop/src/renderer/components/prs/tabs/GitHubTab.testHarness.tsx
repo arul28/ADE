@@ -1,5 +1,5 @@
 import React from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { cleanup, render } from "@testing-library/react";
 import { vi } from "vitest";
 import type { LaneSummary, MergeMethod } from "../../../../shared/types";
@@ -7,6 +7,15 @@ import type { GitHubTabProps } from "./GitHubTab";
 import { installGitHubTabWindowMocks, makePrsContext } from "./GitHubTab.testFixtures";
 
 export const mockUsePrs = vi.fn();
+
+/** The router path the harness last rendered, so a test can assert navigation. */
+export const harnessRouterState: { path: string } = { path: "" };
+
+function LocationProbe() {
+  const location = useLocation();
+  harnessRouterState.path = `${location.pathname}${location.search}`;
+  return null;
+}
 
 export function MockPanelGroup({ children }: { children: React.ReactNode }) {
   return <div data-testid="github-tab-layout">{children}</div>;
@@ -70,6 +79,7 @@ export function setupGitHubTabTest(): void {
 
 export function cleanupGitHubTabTest(): void {
   cleanup();
+  harnessRouterState.path = "";
   vi.useRealTimers();
 }
 
@@ -86,7 +96,8 @@ export function renderGitHubTab(
   const onSelectPr = overrides.onSelectPr ?? vi.fn();
   const onRefreshAll = overrides.onRefreshAll ?? vi.fn().mockResolvedValue(undefined);
   render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={["/prs"]}>
+      <LocationProbe />
       <Component
         lanes={overrides.lanes ?? []}
         mergeMethod={"squash" satisfies MergeMethod}

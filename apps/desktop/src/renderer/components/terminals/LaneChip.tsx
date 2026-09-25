@@ -23,7 +23,8 @@ export function LaneLogoMark({
 export type LaneChipProps = {
   laneName: string;
   laneColor?: string | null;
-  maxWidth?: number;
+  /** Cap for the name. A number is px; a string is used verbatim (e.g. "100%"). */
+  maxWidth?: number | string;
   compact?: boolean;
   naming?: boolean;
   className?: string;
@@ -95,7 +96,6 @@ export function SessionLaneHeaderLabel({
   laneName,
   laneColor,
   branchLabel,
-  laneMaxWidth = 120,
   sessionTitleClassName,
   onSessionTitleClick,
   onLaneClick,
@@ -106,7 +106,6 @@ export function SessionLaneHeaderLabel({
   laneColor?: string | null;
   /** Git branch label (e.g. from `branchNameFromRef`); truncates before lane/session title. */
   branchLabel?: string | null;
-  laneMaxWidth?: number;
   sessionTitleClassName?: string;
   /** Opens this session in the Work tabs view. */
   onSessionTitleClick?: () => void;

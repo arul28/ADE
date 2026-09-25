@@ -2357,6 +2357,11 @@ describe("createAgentChatService", () => {
           && (event.event as any).deliveryState === "inline",
       );
       expect((delivered.event as any).steerId).toBe(steerResult.steerId);
+      // Shown as "Steering…" before the round trip, then moved on: one row.
+      const rows = events.filter((event) =>
+        event.event.type === "user_message" && event.event.text === "Fold this into the live turn.");
+      expect(rows.map((event) => (event.event as any).deliveryState)).toEqual(["accepted", "inline"]);
+      expect(rows.every((event) => (event.event as any).steerId === steerResult.steerId)).toBe(true);
 
       await finishFirstTurn();
     });
@@ -2432,11 +2437,10 @@ describe("createAgentChatService", () => {
       });
       expect(steerResult.queued).toBe(true);
       expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
-      expect(events.some((entry) =>
-        entry.event.type === "user_message"
-        && entry.event.text === "This one has to wait."
-        && (entry.event as any).deliveryState === "queued"
-      )).toBe(true);
+      // The row it was offered on reads queued again, not "Steering…".
+      expect(events.filter((entry) =>
+        entry.event.type === "user_message" && entry.event.text === "This one has to wait."
+      ).map((entry) => (entry.event as any).deliveryState)).toEqual(["accepted", "queued"]);
       expect(events.some((entry) =>
         entry.event.type === "system_notice"
         && /couldn't go into the running turn/i.test(entry.event.message)

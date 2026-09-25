@@ -342,4 +342,25 @@ describe("WorkToolPicker", () => {
     expect(screen.getByText(IOS_RUNTIME_UNSUPPORTED_REASON)).toBeTruthy();
     expect(screen.queryByText("Desktop app only")).toBeNull();
   });
+
+  it("renders a per-tool card action beside the card, never inside its button", () => {
+    render(
+      <WorkToolPicker
+        activeTool={null}
+        context={LOCAL}
+        statuses={{}}
+        loading={false}
+        onPick={vi.fn()}
+        cardActions={{ ios: <button type="button" data-testid="ios-action" /> }}
+      />,
+    );
+
+    const action = screen.getByTestId("ios-action");
+    const card = cardById("ios");
+    // Siblings, not nested: a button inside a button is invalid and unfocusable.
+    expect(card.contains(action)).toBe(false);
+    expect(action.parentElement?.contains(card)).toBe(false);
+    // The grid still has exactly one card button per tool.
+    expect(document.querySelectorAll("button[data-tool-id]")).toHaveLength(WORK_TOOL_DEFINITIONS.length);
+  });
 });

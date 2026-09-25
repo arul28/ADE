@@ -5,7 +5,7 @@ import type { ModelConfig, ThinkingLevel } from "../../../../shared/types";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
 import { labelCls, selectCls } from "../designTokens";
-import { permissionControlsForModel, patchPermissionConfig } from "../permissionControls";
+import { permissionControlsForModel, patchPermissionConfig, selectedPermissionMode } from "../permissionControls";
 import { cn } from "../../ui/cn";
 import { AUTOMATION_AGENT_LIMIT_MAX_MIN } from "../../../../shared/automationLimits";
 import type { WorkflowStep } from "./draftBridge";
@@ -28,7 +28,7 @@ function PermissionPicker({
   const modelId = step.modelConfig?.modelId ?? defaultModelId();
   const meta = permissionControlsForModel(modelId);
   if (!meta) return null;
-  const current = (step.permissionConfig?.providers as Record<string, string> | undefined)?.[meta.key] ?? "";
+  const current = selectedPermissionMode(step.permissionConfig, modelId);
   return (
     <label className="block space-y-1">
       <span className={labelCls}>Permissions</span>

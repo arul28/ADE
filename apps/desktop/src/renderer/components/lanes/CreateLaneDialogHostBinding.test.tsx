@@ -58,6 +58,8 @@ vi.mock("./CreateLaneDialog", () => ({
     onSelectMachine?: (machineId: string) => void;
     machines?: { id: string; name: string }[];
     error?: string | null;
+    onSubmit?: () => void;
+    submitLabelOverride?: string | null;
   }) => (
     <div>
       {(props.machines ?? []).map((machine) => (
@@ -70,6 +72,9 @@ vi.mock("./CreateLaneDialog", () => ({
         </button>
       ))}
       {props.error ? <span>{`error:${props.error}`}</span> : null}
+      <button type="button" onClick={() => props.onSubmit?.()}>
+        {props.submitLabelOverride ?? "submit"}
+      </button>
     </div>
   ),
 }));
@@ -171,5 +176,33 @@ describe("CreateLaneDialogHost machine binding", () => {
     await waitFor(() =>
       expect(switchProjectToPath).toHaveBeenCalledWith(localBinding.rootPath),
     );
+  });
+});
+
+describe("CreateLaneDialogHost configure-for-chat", () => {
+  it("hands the validated recipe back instead of creating a lane", async () => {
+    const onConfigured = vi.fn();
+    render(
+      <CreateLaneDialogHost
+        open
+        onOpenChange={vi.fn()}
+        behavior="configure-for-chat"
+        prefill={{ name: "Payments cleanup" }}
+        onConfigured={onConfigured}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Use this setup" }));
+
+    await waitFor(() => expect(onConfigured).toHaveBeenCalledTimes(1));
+    expect(onConfigured).toHaveBeenCalledWith(
+      expect.objectContaining({ mode: "root", name: "Payments cleanup" }),
+    );
+  });
+
+  it("offers no machine picker while configuring a draft", async () => {
+    render(<CreateLaneDialogHost open onOpenChange={vi.fn()} behavior="configure-for-chat" />);
+    await screen.findByRole("button", { name: "Use this setup" });
+    expect(screen.queryByText("pick:MacBook Pro (97)")).toBeNull();
   });
 });

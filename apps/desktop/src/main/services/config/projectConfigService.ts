@@ -772,6 +772,9 @@ function coerceAutomationPermissionConfig(value: unknown): AutomationPermissionC
         ...(asString(value.providers.codex)?.trim()
           ? { codex: asString(value.providers.codex)!.trim() as NonNullable<AutomationPermissionConfig["providers"]>["codex"] }
           : {}),
+        ...(asString(value.providers.cursor)?.trim()
+          ? { cursor: asString(value.providers.cursor)!.trim() as NonNullable<AutomationPermissionConfig["providers"]>["cursor"] }
+          : {}),
         ...(asString(value.providers.opencode)?.trim()
           ? { opencode: asString(value.providers.opencode)!.trim() as NonNullable<AutomationPermissionConfig["providers"]>["opencode"] }
           : {}),

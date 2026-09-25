@@ -34,6 +34,7 @@ import { GitHubTabPrRow } from "../shared/GitHubTabPrRow";
 import { GitHubTab } from "./GitHubTab";
 import {
   cleanupGitHubTabTest,
+  harnessRouterState,
   renderGitHubTab,
   setupGitHubTabTest,
 } from "./GitHubTab.testHarness";
@@ -491,15 +492,16 @@ describe("GitHubTab rows", () => {
     });
     const dialog = await screen.findByRole("dialog", { name: /create lane from pr branch/i });
     const cancel = within(dialog).getByRole("button", { name: /cancel/i });
-    const confirm = within(dialog).getByRole("button", { name: /create lane/i });
-    expect(document.activeElement).toBe(cancel);
-    await user.tab({ shift: true });
-    expect(document.activeElement).toBe(confirm);
+    // The editable name is the dialog's point and takes focus once the
+    // preflight lands (the field is disabled while it runs).
+    const nameField = within(dialog).getByRole("textbox", { name: "Lane name" });
+    await waitFor(() => expect(document.activeElement).toBe(nameField));
     await user.tab();
     expect(document.activeElement).toBe(cancel);
     expect(within(dialog).getByText(/#200 Unlinked PR/)).toBeTruthy();
     expect(within(dialog).getAllByText("origin/feature/open").length).toBeGreaterThan(0);
-    expect(within(dialog).getAllByText("Unlinked PR").length).toBeGreaterThan(0);
+    // The suggested name is editable: it seeds the field, not a read-only row.
+    expect((nameField as HTMLInputElement).value).toBe("Unlinked PR");
     expect(within(dialog).getAllByText("main").length).toBeGreaterThan(0);
     await user.keyboard("{Escape}");
     expect(screen.queryByRole("dialog", { name: /create lane from pr branch/i })).toBeNull();
@@ -783,13 +785,21 @@ describe("GitHubTab rows", () => {
     renderTab({ onSelectPr, onRefreshAll });
 
     await user.click(await screen.findByRole("button", { name: /open as lane/i }));
-    await user.click(await screen.findByRole("button", { name: /^create lane$/i }));
+    // The user can rename the lane before creating it; the edited value is
+    // what reaches the service, not the preflight suggestion.
+    const dialog = await screen.findByRole("dialog", { name: /create lane from pr branch/i });
+    const nameField = within(dialog).getByRole("textbox", { name: "Lane name" });
+    await waitFor(() => expect((nameField as HTMLInputElement).value).toBe("Unlinked PR"));
+    await user.clear(nameField);
+    await user.type(nameField, "Renamed lane");
+    await user.click(within(dialog).getByRole("button", { name: /^create lane$/i }));
 
     await waitFor(() => {
       expect(window.ade.prs.createLaneFromPrBranch).toHaveBeenCalledWith({
         repoOwner: "ade-dev",
         repoName: "ade",
         githubPrNumber: 200,
+        laneName: "Renamed lane",
       });
     });
     await waitFor(() => {
@@ -809,6 +819,10 @@ describe("GitHubTab rows", () => {
     await act(async () => {
       forcedSnapshot.resolve(snapshotWithUnlinked);
       await forcedSnapshot.promise;
+    });
+    // The flow lands on the Lanes tab with the lane it just created.
+    await waitFor(() => {
+      expect(harnessRouterState.path).toBe("/lanes?laneId=lane-created&focus=single");
     });
   });
 });

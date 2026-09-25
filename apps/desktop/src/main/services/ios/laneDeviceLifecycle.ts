@@ -124,6 +124,23 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
   };
 
   /**
+   * Refuse a device that is not the one the caller displayed.
+   *
+   * A UI reads a device, then acts on the LANE; between the two the lane's
+   * device can change. A caller that names a udid gets the same read-act safety
+   * the lane queue already gives a single operation. Callers that name none
+   * (the CLI, the pane) keep the lane-scoped default.
+   */
+  const assertExpectedDevice = (device: AppleLaneDevice, expectedUdid: string | null | undefined): void => {
+    const wanted = expectedUdid?.trim();
+    if (wanted && wanted !== device.udid) {
+      throw new Error(
+        `APPLE_DEVICE_CHANGED: this lane's device is now ${device.udid}, not ${wanted}. Re-read the device and try again.`,
+      );
+    }
+  };
+
+  /**
    * Give up the lane's device and keep the simulator installed.
    *
    * The off card's "Choose another device": the lane goes back to the picker
@@ -140,7 +157,9 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
   const deviceDetach = async (detachArgs: AppleDeviceDetachArgs = {}): Promise<AppleLaneDevice | null> => {
     const runtime = deps.requireLaneScope(detachArgs);
     return deps.serializeDeviceLifecycle(runtime, async () => {
-      if (!deps.laneDevices.get(runtime.key)) return null;
+      const laneDevice = deps.laneDevices.get(runtime.key);
+      if (!laneDevice) return null;
+      assertExpectedDevice(laneDevice, detachArgs.udid);
       deps.assertSessionOwner(runtime, detachArgs);
       return detachStep(runtime);
     });
@@ -164,6 +183,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
     await deps.serializeDeviceLifecycle(runtime, async () => {
       const laneDevice = deps.laneDevices.get(runtime.key);
       if (!laneDevice) return;
+      assertExpectedDevice(laneDevice, deleteArgs.udid);
       deps.assertSessionOwner(runtime, { chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: deleteArgs.ignoreOwnership });
       if (laneDevice.origin === "attached") {
         // Refused before the stream stops, so the owner keeps a working view.

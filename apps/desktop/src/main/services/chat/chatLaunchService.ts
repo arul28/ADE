@@ -11,6 +11,7 @@ import type {
   ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
   ChatLaunchIdArgs,
+  ChatLaunchLaneConfig,
   ChatLaunchPhase,
   ChatLaunchQueueMessageArgs,
   ChatLaunchSnapshot,
@@ -20,6 +21,7 @@ import type {
   DeleteLaneArgs,
   LaneEnvInitEvent,
   LaneEnvInitProgress,
+  LaneLinearIssue,
   LaneSummary,
 } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
@@ -51,9 +53,31 @@ import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLa
 
 type LaneServiceLike = {
   create: (
-    args: { name: string; baseBranch?: string; branchName?: string },
+    args: {
+      name: string;
+      baseBranch?: string;
+      branchName?: string;
+      /** Bound to the new lane the same way a manual create binds it. */
+      linearIssue?: LaneLinearIssue | null;
+    },
     options?: LaneCreateRuntimeOptions,
   ) => Promise<LaneSummary>;
+  /**
+   * child-mode launches. `createChild` is the path that resolves a remote base
+   * override (fetches/creates the local tracking branch), which a bare
+   * `create({ parentLaneId })` does not.
+   */
+  createChild?: (
+    args: { parentLaneId: string; name: string; baseBranchRef?: string; linearIssue?: LaneLinearIssue | null },
+    options?: LaneCreateRuntimeOptions,
+  ) => Promise<LaneSummary>;
+  /** import-mode launches adopt an existing branch instead of cutting a new one. */
+  importBranch?: (
+    args: { branchRef: string; name: string },
+    options?: { laneId?: string },
+  ) => Promise<LaneSummary>;
+  /** Accent color applied once the lane row exists. */
+  updateAppearance?: (args: { laneId: string; color: string | null }) => void;
   delete: (args: DeleteLaneArgs) => Promise<unknown>;
   /** Clear what an earlier, failed checkout left at the lane's reserved worktree path. */
   cleanupReservedWorktree?: (args: { laneId: string; name: string }) => Promise<void>;
@@ -92,7 +116,7 @@ export type ChatLaunchServiceDeps = {
   resolveBase: () => Promise<ChatLaunchBaseResolution>;
   /** Resolve a ref to its commit sha in the project checkout (for the stage detail). */
   resolveCommit: (ref: string) => Promise<string | null>;
-  planEnvironment: () => ChatLaunchEnvironmentPlan;
+  planEnvironment: (templateId?: string | null) => ChatLaunchEnvironmentPlan;
   /**
    * Fill an empty chat `model` with the host's first available one — the same
    * auto-pick the sync host's `chat.create` applies. Every launch path (desktop
@@ -148,6 +172,11 @@ function autoLaneGenericSuffix(date: Date): string {
 }
 
 const temporaryAutoLaneBranch = (): string => `ade/${randomUUID().replace(/-/g, "").slice(0, 8)}`;
+
+/** A child or imported lane is not cut from a remote base, so no fetch stage runs. */
+function laneConfigSkipsFetch(config: ChatLaunchLaneConfig | null | undefined): boolean {
+  return config?.mode === "child" || config?.mode === "import";
+}
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());
 
@@ -421,7 +450,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       setStage(record, "checkout", "done", { percent: 100, detail: "Recovered after restart" });
       publish(record);
       assertActive(record);
-      startLaneNaming(record, interrupted);
+      // A user-configured lane keeps the name they chose; only a prompt-derived
+      // auto-create lane is AI-renamed.
+      if (!record.laneConfig) startLaneNaming(record, interrupted);
       return;
     }
     if (record.checkoutAttempted && deps.laneService.cleanupReservedWorktree) {
@@ -434,26 +465,66 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     setStage(record, "checkout", "running");
     publish(record);
     let totalFiles = 0;
-    const lane = await deps.laneService.create(
-      {
-        name: record.snapshot.laneName,
-        branchName: temporaryAutoLaneBranch(),
-        ...(baseRef ? { baseBranch: baseRef } : {}),
-      },
-      {
-        laneId: record.snapshot.laneId,
-        signal: runtime.abort.signal,
-        onCheckoutProgress: (progress) => {
-          const stage = stageOf(record, "checkout");
-          if (!stage || stage.status !== "running") return;
-          if (stage.percent === progress.percent) return;
-          stage.percent = progress.percent;
-          totalFiles = progress.total;
-          publishProgress(record);
+    const onCheckoutProgress = (progress: { percent: number; total: number }) => {
+      const stage = stageOf(record, "checkout");
+      if (!stage || stage.status !== "running") return;
+      if (stage.percent === progress.percent) return;
+      stage.percent = progress.percent;
+      totalFiles = progress.total;
+      publishProgress(record);
+    };
+    const runtimeOptions: LaneCreateRuntimeOptions = {
+      laneId: record.snapshot.laneId,
+      signal: runtime.abort.signal,
+      onCheckoutProgress,
+    };
+    const config = record.laneConfig;
+    let lane: LaneSummary;
+    if (config?.mode === "import") {
+      if (!config.branchRef) throw new Error("Importing a branch needs a branch ref.");
+      if (!deps.laneService.importBranch) throw new Error("This runtime cannot import an existing branch.");
+      lane = await deps.laneService.importBranch(
+        {
+          branchRef: config.branchRef,
+          name: record.snapshot.laneName,
         },
-      },
-    );
+        // Keep the launch's reserved lane id so the chat the client already
+        // opened, restart recovery, and cleanup all address the same lane.
+        { laneId: record.snapshot.laneId },
+      );
+    } else if (config?.mode === "child" && config.parentLaneId) {
+      if (!deps.laneService.createChild) throw new Error("This runtime cannot create child lanes.");
+      lane = await deps.laneService.createChild(
+        {
+          parentLaneId: config.parentLaneId,
+          name: record.snapshot.laneName,
+          ...(baseRef ? { baseBranchRef: baseRef } : {}),
+          ...(config.linearIssue ? { linearIssue: config.linearIssue } : {}),
+        },
+        runtimeOptions,
+      );
+    } else {
+      lane = await deps.laneService.create(
+        {
+          name: record.snapshot.laneName,
+          // A configured lane derives its branch from the user's name; an
+          // auto-create lane gets a placeholder branch and is renamed after.
+          ...(record.laneConfig ? {} : { branchName: temporaryAutoLaneBranch() }),
+          ...(baseRef ? { baseBranch: baseRef } : {}),
+          ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
+        },
+        runtimeOptions,
+      );
+    }
     adoptLane(record, lane);
+    // Appearance is a nicety; a color collision must never fail the launch.
+    if (config?.color && deps.laneService.updateAppearance) {
+      try {
+        deps.laneService.updateAppearance({ laneId: lane.id, color: config.color });
+      } catch (error) {
+        logger.warn("chat_launch.appearance_failed", { launchId: record.snapshot.launchId, error: getErrorMessage(error) });
+      }
+    }
     if (runtime.progressTimer) {
       clearTimeout(runtime.progressTimer);
       runtime.progressTimer = null;
@@ -465,7 +536,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     publish(record);
     // A cancel that raced the checkout's last moments still owns this lane.
     assertActive(record);
-    startLaneNaming(record, lane);
+    // Keep the user's configured name and its derived branch; only a
+    // prompt-derived auto-create lane is AI-renamed.
+    if (!record.laneConfig) startLaneNaming(record, lane);
   };
 
   /**
@@ -712,12 +785,13 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       || deriveDeterministicLaneTitleFromPrompt(prompt)
       || deriveDeterministicLaneNameFromPrompt(prompt, { genericSuffix: autoLaneGenericSuffix(now()) });
     const baseBranch = args.baseBranch?.trim() || null;
-    const environment = deps.planEnvironment();
+    const laneConfig = args.laneConfig ?? null;
+    const environment = deps.planEnvironment(laneConfig?.templateId ?? null);
     const snapshot = createChatLaunchSnapshot({
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
       laneName,
-      includeFetch: !baseBranch && !deps.usesLocalLaneBase(),
+      includeFetch: !baseBranch && !laneConfigSkipsFetch(laneConfig) && !deps.usesLocalLaneBase(),
       includeEnvironment: environment.hasEnvironment,
       templateName: environment.templateName,
       nowIso: nowIso(),
@@ -726,6 +800,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       snapshot,
       chat,
       baseBranch,
+      laneConfig,
       provider: args.provider ?? chat?.create.provider ?? null,
       templateId: environment.templateId,
       messageSent: false,
@@ -764,12 +839,16 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     // A lane whose create inserted its row but never returned (restart
     // mid-checkout) is this launch's too, even though laneCreated is false.
     if (record.snapshot.laneCreated || findInterruptedLane(record)) {
+      // An import lane adopted a pre-existing branch the user already had.
+      // Deleting the lane row is this launch's to do; deleting that branch
+      // (local or remote) is not — the manual delete defaults to keeping it.
+      const importedBranch = record.laneConfig?.mode === "import";
       try {
         await deps.laneService.delete({
           laneId: record.snapshot.laneId,
           force: true,
-          deleteBranch: true,
-          deleteRemoteBranch: true,
+          deleteBranch: !importedBranch,
+          deleteRemoteBranch: !importedBranch,
           requireRemoteBranchDelete: false,
         });
         record.snapshot.laneCreated = false;

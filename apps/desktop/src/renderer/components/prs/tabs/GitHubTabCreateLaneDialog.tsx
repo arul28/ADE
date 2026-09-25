@@ -1,6 +1,5 @@
 import { GitBranch, Warning } from "@phosphor-icons/react";
-import * as Dialog from "@radix-ui/react-dialog";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type {
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflight,
@@ -15,9 +14,8 @@ import {
   LABEL_STYLE,
   MONO_FONT,
   SANS_FONT,
-  outlineButton,
-  primaryButton,
 } from "../../lanes/laneDesignTokens";
+import { Dialog } from "../../ui/dialog";
 import { branchNameFromRef } from "./githubPrBranch";
 import { prRouteCoordinatesEqual, prRouteCoordinatesKey } from "../prsRouteState";
 
@@ -42,11 +40,16 @@ export function createLaneFromPrBranchApi(): CreateLaneFromPrBranchApi {
   return window.ade.prs as typeof window.ade.prs & CreateLaneFromPrBranchApi;
 }
 
-export function createLaneFromPrBranchArgs(item: GitHubPrListItem): CreateLaneFromPrBranchArgs {
+export function createLaneFromPrBranchArgs(
+  item: GitHubPrListItem,
+  laneName?: string | null,
+): CreateLaneFromPrBranchArgs {
+  const trimmedName = laneName?.trim();
   return {
     repoOwner: item.repoOwner,
     repoName: item.repoName,
     githubPrNumber: item.githubPrNumber,
+    ...(trimmedName ? { laneName: trimmedName } : {}),
   };
 }
 
@@ -192,135 +195,146 @@ export function CreateLaneFromPrBranchDialog({
   busy: boolean;
   error: string | null;
   onCancel: () => void;
-  onConfirm: () => void;
+  /** Receives the (possibly edited) lane name the user wants to create. */
+  onConfirm: (laneName: string) => void;
 }) {
-  const returnFocusRef = useRef<HTMLElement | null>(
-    document.activeElement instanceof HTMLElement ? document.activeElement : null,
-  );
-  const cancelRef = useRef<HTMLButtonElement | null>(null);
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
+  const requestKey = createLaneFromPrBranchRequestKey(item);
+  const [laneName, setLaneName] = useState("");
+  const seededRequestRef = useRef<string | null>(null);
+
+  // Seed the field with the server's suggested name once per PR (and after the
+  // preflight lands). Editing is sticky: a later render must not clobber what
+  // the user typed.
+  useEffect(() => {
+    if (loading) return;
+    if (seededRequestRef.current === requestKey) return;
+    seededRequestRef.current = requestKey;
+    setLaneName(preflightTargetLaneName(preflight, item));
+  }, [item, loading, preflight, requestKey]);
+
+  // The field is disabled while the preflight runs, so Radix's open-time focus
+  // attempt on `initialFocusRef` is a no-op and never re-runs. Put focus in the
+  // field as soon as it becomes editable, so keyboard and screen-reader users
+  // land on the one control that takes input.
+  useEffect(() => {
+    if (loading || busy) return;
+    nameInputRef.current?.focus();
+  }, [loading, busy]);
+
   const blockingConflict = preflightBlockingConflict(preflight);
-  const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy;
+  const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy && laneName.trim().length > 0;
   const sourceBranch = preflightRemoteBranch(preflight, item);
   const importRef = preflightImportRef(preflight);
   const rows = [
     ["PR", `#${preflightPrNumber(preflight, item)} ${preflightTitle(preflight, item)}`],
     ["Source branch", sourceBranch],
     ...(importRef && importRef !== sourceBranch ? [["Import ref", importRef] as const] : []),
-    ["Target lane", preflightTargetLaneName(preflight, item)],
     ["Base branch", preflightBaseBranch(preflight, item)],
   ] as const;
 
-  useEffect(() => {
-    if (busy) cancelRef.current?.focus();
-  }, [busy]);
+  const handleSubmit = () => {
+    const trimmed = laneName.trim();
+    if (!canConfirm || !trimmed) return;
+    onConfirm(trimmed);
+  };
 
   return (
-    <Dialog.Root open onOpenChange={(open) => { if (!open && !busy) onCancel(); }}>
-      <Dialog.Portal>
-        <Dialog.Overlay
-          style={{
-            position: "fixed",
-            inset: 0,
-            zIndex: 100,
-            background: "rgba(0,0,0,0.52)",
-            backdropFilter: "blur(10px)",
-          }}
-        />
-        <Dialog.Content
-          aria-describedby={undefined}
-          onCloseAutoFocus={(event) => {
-            event.preventDefault();
-            returnFocusRef.current?.focus();
-          }}
-          onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
-          style={{
-          position: "fixed",
-          left: "50%",
-          top: "50%",
-          transform: "translate(-50%, -50%)",
-          zIndex: 101,
-          width: "min(560px, 100%)",
-          maxWidth: "calc(100vw - 40px)",
-          borderRadius: 12,
-          border: `1px solid ${COLORS.border}`,
-          background: COLORS.cardBgSolid,
-          boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
-          overflow: "hidden",
-        }}
-        >
-        <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <Dialog.Title style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}>
-            Create lane from PR branch
-          </Dialog.Title>
-        </div>
-        <div style={{ padding: 20, display: "grid", gap: 14 }}>
-          {loading ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
-              Checking branch ownership and PR head availability...
-            </div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {rows.map(([label, value]) => (
-                <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
-                  <div style={LABEL_STYLE}>{label}</div>
-                  <div style={{ fontFamily: label === "PR" ? SANS_FONT : MONO_FONT, fontSize: 12, color: COLORS.textSecondary, minWidth: 0, overflowWrap: "anywhere" }}>
-                    {value}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {blockingConflict ? (
-            <div style={{
-              display: "flex",
-              gap: 10,
-              padding: "10px 12px",
-              borderRadius: 9,
-              background: "rgba(239,68,68,0.08)",
-              border: "1px solid rgba(239,68,68,0.18)",
-              color: COLORS.danger,
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open && !busy) onCancel(); }}
+      title="Create lane from PR branch"
+      description="Check this pull request's branch out into a local lane. Give the lane a name you'll recognize in the Lanes tab."
+      size="md"
+      dismissible={!busy}
+      // Only point the primitive's open-time autofocus at the field once it is
+      // enabled. While the preflight runs the field is disabled, so a focus
+      // call on it is a no-op that would leave focus behind the modal; the
+      // effect above owns focus and lands it the moment the field enables.
+      initialFocusRef={loading || busy ? undefined : nameInputRef}
+      testId="create-lane-from-pr-dialog"
+      actions={[
+        { label: "Cancel", variant: "secondary", onClick: onCancel, disabled: busy },
+        {
+          label: busy ? "Creating…" : "Create lane",
+          variant: "solid",
+          icon: <GitBranch size={14} />,
+          busy,
+          disabled: !canConfirm,
+          onClick: handleSubmit,
+        },
+      ]}
+    >
+      <div style={{ display: "grid", gap: 14 }}>
+        <label style={{ display: "grid", gap: 6 }}>
+          <span style={LABEL_STYLE}>Lane name</span>
+          <input
+            ref={nameInputRef}
+            type="text"
+            value={laneName}
+            disabled={loading || busy}
+            aria-label="Lane name"
+            placeholder="New lane"
+            onChange={(event) => setLaneName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleSubmit();
+              }
+            }}
+            style={{
+              height: 34,
+              padding: "0 10px",
+              borderRadius: 8,
+              border: `1px solid ${COLORS.border}`,
+              background: COLORS.recessedBg,
+              color: COLORS.textPrimary,
               fontFamily: SANS_FONT,
-              fontSize: 12,
-              lineHeight: 1.5,
-            }}>
-              <Warning size={15} weight="fill" style={{ marginTop: 2, flexShrink: 0 }} />
-              <span>{blockingConflict}</span>
-            </div>
-          ) : null}
-          {error ? (
-            <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>
-              {error}
-            </div>
-          ) : null}
-        </div>
-        <div style={{ padding: "14px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${COLORS.border}` }}>
-          <Dialog.Close asChild>
-            <button
-              ref={cancelRef}
-              type="button"
-              aria-disabled={busy}
-              onClick={(event) => {
-                if (busy) {
-                  event.preventDefault();
-                  event.stopPropagation();
-                }
-              }}
-              style={outlineButton({ height: 34, opacity: busy ? 0.6 : 1 })}
-            >
-              Cancel
-            </button>
-          </Dialog.Close>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={!canConfirm}
-            style={primaryButton({ height: 34, opacity: canConfirm ? 1 : 0.5 })}
-          >
-            <GitBranch size={14} /> {busy ? "Creating..." : "Create lane"}
-          </button>
-        </div>
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+              fontSize: 12.5,
+              outline: "none",
+              opacity: loading || busy ? 0.6 : 1,
+            }}
+          />
+        </label>
+        {loading ? (
+          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
+            Checking branch ownership and PR head availability...
+          </div>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {rows.map(([label, value]) => (
+              <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
+                <div style={LABEL_STYLE}>{label}</div>
+                <div style={{ fontFamily: label === "PR" ? SANS_FONT : MONO_FONT, fontSize: 12, color: COLORS.textSecondary, minWidth: 0, overflowWrap: "anywhere" }}>
+                  {value}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {blockingConflict ? (
+          <div style={{
+            display: "flex",
+            gap: 10,
+            padding: "10px 12px",
+            borderRadius: 9,
+            background: `color-mix(in srgb, ${COLORS.danger} 8%, transparent)`,
+            border: `1px solid color-mix(in srgb, ${COLORS.danger} 18%, transparent)`,
+            color: COLORS.danger,
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            lineHeight: 1.5,
+          }}>
+            <Warning size={15} weight="fill" style={{ marginTop: 2, flexShrink: 0 }} />
+            <span>{blockingConflict}</span>
+          </div>
+        ) : null}
+        {error ? (
+          <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>
+            {error}
+          </div>
+        ) : null}
+      </div>
+    </Dialog>
   );
 }

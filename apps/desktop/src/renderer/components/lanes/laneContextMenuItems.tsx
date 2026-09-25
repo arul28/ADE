@@ -22,6 +22,7 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
+import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
 import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { LANE_CLASSIC_COLORS, LANE_RAINBOW_COLORS, colorsInUse, type LaneColor } from "./laneColorPalette";
 
@@ -209,7 +210,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       dataTour: "lanes.manageLane",
       onSelect: () => {
         onClose();
-        window.ade.app.revealPath(lane.worktreePath!).catch(() => {});
+        void revealLaneWorktree(laneId);
       },
     });
   }

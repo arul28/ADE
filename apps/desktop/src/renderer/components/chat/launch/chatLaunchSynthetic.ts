@@ -54,6 +54,29 @@ export function selectRosterChatLaunches(
     .filter(shouldListChatLaunchRow);
 }
 
+/**
+ * Session ids owned by a live launch on this project — listed or not.
+ *
+ * A launch row delists the instant its agent starts (see `shouldListChatLaunchRow`)
+ * while the host's own row for it lands only on the next roster read. Work keeps
+ * these ids valid across that gap so an open tab is not dropped (and the active
+ * chat moved) in the hand-off.
+ */
+export function selectKnownLaunchSessionIds(
+  sources: readonly ChatLaunchRowSource[],
+  activeBindingKey: string,
+  sameProjectBindingKeys: ReadonlySet<string>,
+): Set<string> {
+  const ids = new Set<string>();
+  for (const source of sources) {
+    if (source.bindingKey !== activeBindingKey && !sameProjectBindingKeys.has(source.bindingKey)) continue;
+    const { snapshot } = source;
+    if (snapshot.kind !== "chat" || snapshot.phase === "cancelled") continue;
+    ids.add(snapshot.sessionId ?? snapshot.launchId);
+  }
+  return ids;
+}
+
 export function buildChatLaunchSessionRow(snapshot: ChatLaunchSnapshot): TerminalSessionSummary {
   const toolType = chatToolTypeForProvider(launchProvider(snapshot));
   const title = snapshot.title?.trim() || snapshot.prompt.displayText?.trim() || snapshot.prompt.text.trim() || "New chat";

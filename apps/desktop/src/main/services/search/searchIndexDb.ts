@@ -14,10 +14,14 @@ const { DatabaseSync } = require("node:sqlite") as {
  * The search index is a machine-local, disposable cache. It lives in its own
  * SQLite file (never inside ade.db): FTS5 virtual tables cannot be cr-sqlite
  * CRRs, the index must never sync to other devices, and a rebuild must be as
- * cheap as deleting the file. Bump the schema version for any DDL change —
- * mismatches drop and recreate the database instead of migrating.
+ * cheap as deleting the file. Bump the schema version for any DDL change, or
+ * when doc ids change shape — mismatches drop and recreate the database
+ * instead of migrating, and the delayed background backfill refills it.
+ *
+ * 5: a steer's lifecycle rows fold onto one `chat:<session>:steer:<steerId>`
+ * doc; indexes built before that still hold them as per-row docs.
  */
-export const SEARCH_INDEX_SCHEMA_VERSION = 4;
+export const SEARCH_INDEX_SCHEMA_VERSION = 5;
 
 export const SEARCH_INDEX_DB_FILENAME = "search-index.db";
 

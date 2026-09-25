@@ -66,6 +66,16 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
     )
     resolutionOrderBySteerId[normalizedSteerId] = (envelope.timestamp, sequence)
   }
+  // A steer's newest row decides whether its bubble shows. A Cursor or
+  // OpenCode steer is shown as `accepted` while the live turn decides, and goes
+  // back to `queued` when the turn refuses it; its earlier bubble would then
+  // duplicate the queued card until it is sent.
+  var latestDeliveryStateBySteerId: [String: String] = [:]
+  for envelope in transcript {
+    if case .userMessage(_, _, _, let steerId?, let deliveryState, _) = envelope.event {
+      latestDeliveryStateBySteerId[steerId] = deliveryState ?? ""
+    }
+  }
   // Tracks whether the previous envelope was assistantText so nil-itemId
   // streaming fragments can merge into it. MUST be reset to false on every
   // non-assistantText branch below — otherwise a subsequent nil-itemId
@@ -79,6 +89,9 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
       previousEnvelopeWasAssistantText = false
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
+        continue
+      }
+      if let steerId, latestDeliveryStateBySteerId[steerId] == "queued" {
         continue
       }
       if let lastIndex = messages.indices.last,
@@ -1390,7 +1403,7 @@ private func duplicateWorkTextEnvelopeCount(_ transcript: [WorkChatEnvelope]) ->
 }
 
 /// Drop stale queued `user_message` rows once the same steerId has graduated
-/// to delivered/inline/failed, been resolved by a steer system notice, or has
+/// to a settled row, been resolved by a steer system notice, or has
 /// a non-queued Claude command lifecycle frame.
 func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
   guard !transcript.isEmpty else { return transcript }
@@ -1413,10 +1426,15 @@ func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [Wor
           queuedSteerIdsByText[normalizedText, default: []].insert(steerId)
         }
       } else {
-        // A delivered/inline/failed row graduates at most ONE queued steer.
+        // A settled row graduates at most ONE queued steer.
         // Prefer the exact steerId match; only fall back to text (consuming a
         // single queued id) so duplicate prompts don't clear multiple pending
         // steers at once.
+        if steerId != nil, !isSettledSteerDeliveryState(deliveryState) {
+          // Not final: a refused Cursor/OpenCode inline steer comes back as
+          // `queued` on the same steerId, and that row must survive.
+          continue
+        }
         let normalizedText = normalizedQueuedSteerText(text)
         if let steerId {
           resolvedSteerIds.insert(steerId)
@@ -2239,7 +2257,7 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     switch envelope.event {
     case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, _):
       if let steerId, deliveryState == "queued", !resolved.contains(steerId) {
-        if queue[steerId] == nil { order.append(steerId) }
+        if queue[steerId] == nil, !order.contains(steerId) { order.append(steerId) }
         queue[steerId] = WorkPendingSteerModel(
           id: steerId,
           text: text,
@@ -2256,7 +2274,12 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
         // steerId, then fall back to consuming a single text-matched queued id so
         // a duplicate prompt doesn't clear multiple pending steers at once.
         let normalizedText = normalizedQueuedSteerText(text)
-        if let steerId, deliveryState == "delivered" || deliveryState == "inline" || deliveryState == "failed" {
+        if let steerId, !isSettledSteerDeliveryState(deliveryState) {
+          // Offered to the live turn: off the staging strip, but not final. A
+          // refusal brings the same steerId back as `queued`.
+          queue.removeValue(forKey: steerId)
+          queuedSteerIdsByText[normalizedText]?.remove(steerId)
+        } else if let steerId {
           queue.removeValue(forKey: steerId)
           resolved.insert(steerId)
           if !normalizedText.isEmpty {
@@ -2284,6 +2307,11 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
     }
   }
   return order.compactMap { queue[$0] }
+}
+
+/// Mirrors `isSettledSteerDeliveryState` in apps/desktop/src/shared/chatTranscript.ts.
+func isSettledSteerDeliveryState(_ state: String?) -> Bool {
+  state != "queued" && state != "accepted"
 }
 
 func normalizedQueuedSteerText(_ text: String) -> String {

@@ -307,7 +307,7 @@ function relativeCommitAge(iso: string | null | undefined): string | null {
 
 /**
  * §9's card subtitle: `No device` | `{name} · Starting` | `{name} · Running` |
- * `{name} · Off`.
+ * `{name} · Shut down`.
  *
  * The LANE's device, not the app session: a lane can own a booted simulator
  * with nothing installed on it, and "Not booted" over a running iPhone was the
@@ -453,6 +453,13 @@ export function useWorkToolStatuses(args: {
    * to be.
    */
   activeTool?: WorkSidebarTab | null;
+  /**
+   * Bump to re-read the lane's Apple device now — the card menu's refresh
+   * after it boots, releases, or deletes. Forwarded to
+   * {@link useAppleLaneDeviceCard}; the desktop also hears `apple.device.state`
+   * events, but the hosted web client does not, so this covers that client.
+   */
+  appleDeviceRefreshKey?: unknown;
 }): {
   statuses: WorkToolStatusMap;
   loading: boolean;
@@ -462,8 +469,14 @@ export function useWorkToolStatuses(args: {
    * render belongs to a different lane and needs its attribution banner.
    */
   appControlSession: AppControlSession | null;
+  /**
+   * The lane's Apple device, for the card's action menu. Null when the lane
+   * owns none (or the read has not landed), which is exactly when the menu has
+   * nothing to offer.
+   */
+  appleDevice: AppleLaneDeviceCard | null;
 } {
-  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null } = args;
+  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null, appleDeviceRefreshKey } = args;
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [prCount, setPrCount] = useState<number | null>(null);
@@ -518,6 +531,7 @@ export function useWorkToolStatuses(args: {
     laneId,
     runtimePin,
     enabled: enabled && !offline,
+    refreshKey: appleDeviceRefreshKey,
   });
 
   useEffect(() => {
@@ -611,5 +625,6 @@ export function useWorkToolStatuses(args: {
     statuses,
     loading: enabled && !settled,
     appControlSession,
+    appleDevice,
   };
 }

@@ -170,21 +170,40 @@ describe("transcriptEntriesFromEnvelopes", () => {
     ]);
   });
 
-  it("emits a graduated steer once, not as queued plus delivered", () => {
-    // Regression: the host writes a steered message twice — `queued` when it is
-    // staged and `inline` when the SDK consumes it. Emitting both showed the
-    // text twice in `ade chat read` and made iOS resurrect the queued strip
-    // entry after the bubble had already landed.
-    const entries = transcriptEntriesFromEnvelopes(SESSION, [
-      envelope({ type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued" }),
-      envelope({ type: "text", text: "working", messageId: "msg-a", turnId: "turn-1" }),
-      envelope({ type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "inline" }),
-    ]);
+  // The host writes a steer's row once per lifecycle state. Emitting each
+  // showed the text twice in `ade chat read` and made iOS resurrect the queued
+  // strip entry after the bubble had already landed. A steer still pending on
+  // the queue is the only record of that message, so it stays.
+  it.each([
+    {
+      label: "a graduated steer once, not as queued plus delivered",
+      events: (): AgentChatEvent[] => [
+        { type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued" },
+        { type: "text", text: "working", messageId: "msg-a", turnId: "turn-1" },
+        { type: "user_message", text: "also run the linter", turnId: "turn-1", steerId: "steer-1", deliveryState: "inline" },
+      ],
+      expected: [["assistant", "working"], ["user", "also run the linter"]],
+    },
+    {
+      label: "a still-pending queued steer",
+      events: (): AgentChatEvent[] => [
+        { type: "user_message", text: "queue me", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued" },
+      ],
+      expected: [["user", "queue me"]],
+    },
+    {
+      label: "a queued steer when only another steer graduated",
+      events: (): AgentChatEvent[] => [
+        { type: "user_message", text: "first", turnId: "turn-1", steerId: "steer-a", deliveryState: "queued" },
+        { type: "user_message", text: "second", turnId: "turn-1", steerId: "steer-b", deliveryState: "queued" },
+        { type: "user_message", text: "first", turnId: "turn-1", steerId: "steer-a", deliveryState: "inline" },
+      ],
+      expected: [["user", "second"], ["user", "first"]],
+    },
+  ])("emits $label", ({ events, expected }) => {
+    const entries = transcriptEntriesFromEnvelopes(SESSION, events().map(envelope));
 
-    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
-      ["assistant", "working"],
-      ["user", "also run the linter"],
-    ]);
+    expect(entries.map((entry) => [entry.role, entry.text])).toEqual(expected);
   });
 
   it("does not split an assistant run around a queued steer it drops", () => {
@@ -202,27 +221,6 @@ describe("transcriptEntriesFromEnvelopes", () => {
     expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
       ["assistant", "Checking the pairing now."],
       ["user", "also run the linter"],
-    ]);
-  });
-
-  it("keeps a still-pending queued steer", () => {
-    const entries = transcriptEntriesFromEnvelopes(SESSION, [
-      envelope({ type: "user_message", text: "queue me", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued" }),
-    ]);
-
-    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([["user", "queue me"]]);
-  });
-
-  it("keeps a queued steer when only another steer graduated", () => {
-    const entries = transcriptEntriesFromEnvelopes(SESSION, [
-      envelope({ type: "user_message", text: "first", turnId: "turn-1", steerId: "steer-a", deliveryState: "queued" }),
-      envelope({ type: "user_message", text: "second", turnId: "turn-1", steerId: "steer-b", deliveryState: "queued" }),
-      envelope({ type: "user_message", text: "first", turnId: "turn-1", steerId: "steer-a", deliveryState: "inline" }),
-    ]);
-
-    expect(entries.map((entry) => [entry.role, entry.text])).toEqual([
-      ["user", "second"],
-      ["user", "first"],
     ]);
   });
 
