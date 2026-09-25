@@ -23,11 +23,19 @@ import type {
 } from "../../../shared/types";
 import {
   proofRecordedBeforeRequestLine,
-  proofSourceLine,
   readProofProvenance,
 } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
 import { MediaLightbox } from "../ui/MediaLightbox";
+import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
+import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import {
+  buildProofDrawerGroups,
+  EMPTY_PROOF_DRAWER_FILTER,
+  proofArtifactPullRequest,
+  type ProofDrawerFilter,
+  type ProofDrawerItem,
+} from "../../../shared/proofDrawerModel";
 import { Banner } from "../ui/notice/Banner";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
@@ -62,31 +70,21 @@ function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult
 }
 
 /**
- * Who made the bytes, and whether an attached video predates the request.
- * One quiet line each; rows filed before ADE recorded this print nothing.
+ * Whether an attached video predates the request: the one provenance fact a
+ * proof surface prints. Where the bytes came from is kept in the record and
+ * not drawn; the owner found the "Captured by ADE" lines to be noise.
  */
-export function ProofProvenanceLines({ artifact, className, warningClassName }: {
+export function ProofProvenanceLines({ artifact, warningClassName }: {
   artifact: ComputerUseArtifactView;
-  className: string;
+  className?: string;
   warningClassName: string;
 }) {
-  const provenance = readProofProvenance(artifact.metadata);
-  const source = proofSourceLine(provenance);
-  const older = proofRecordedBeforeRequestLine(provenance);
-  if (!source && !older) return null;
+  const older = proofRecordedBeforeRequestLine(readProofProvenance(artifact.metadata));
+  if (!older) return null;
   return (
-    <>
-      {source ? (
-        <div data-proof-source="" className={cn("truncate", className)} title={source}>
-          {source}
-        </div>
-      ) : null}
-      {older ? (
-        <div data-proof-recorded-before-request="" className={cn("truncate", warningClassName)} title={older}>
-          {older}
-        </div>
-      ) : null}
-    </>
+    <div data-proof-recorded-before-request="" className={cn("truncate", warningClassName)} title={older}>
+      {older}
+    </div>
   );
 }
 
@@ -416,6 +414,7 @@ function DrawerProofTile({
   const hasPreviewProblem = storedFileMissing || failed;
   const failureText = externalUrl ? "Stored at its source." : explanation;
   const recoverable = recoverableArtifactSource(artifact) !== null;
+  const pullRequest = proofArtifactPullRequest(artifact);
 
   return (
     <div
@@ -506,8 +505,20 @@ function DrawerProofTile({
       </div>
 
       <div className="min-w-0">
-        <div className="truncate font-sans text-[10.5px] font-medium leading-[14px] text-fg/74" title={artifact.title}>
-          {artifact.title}
+        <div className="flex min-w-0 items-center gap-1">
+          <div className="min-w-0 flex-1 truncate font-sans text-[10.5px] font-medium leading-[14px] text-fg/74" title={artifact.title}>
+            {artifact.title}
+          </div>
+          {pullRequest ? (
+            <button
+              type="button"
+              title={`Posted to ${pullRequest.label}`}
+              onClick={() => void window.ade.app.openExternal(pullRequest.url)}
+              className="shrink-0 rounded-full border border-emerald-300/[0.16] bg-emerald-400/[0.07] px-1.5 font-mono text-[8.5px] leading-[14px] text-emerald-200/75 transition-colors hover:text-emerald-100"
+            >
+              {pullRequest.label}
+            </button>
+          ) : null}
         </div>
         <div className="truncate font-mono text-[8.5px] leading-[13px] text-muted-fg/34">
           {relativeTime(artifact.createdAt)}
@@ -536,12 +547,62 @@ function DrawerProofTile({
   );
 }
 
+const EMPTY_EVENTS: readonly AgentChatEventEnvelope[] = [];
+
+const MEDIA_FILTERS: ReadonlyArray<{ value: ProofDrawerFilter["media"]; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "pictures", label: "Pictures" },
+  { value: "videos", label: "Videos" },
+];
+
+function DrawerSectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="col-span-2 font-sans text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-fg/40">
+      {children}
+    </div>
+  );
+}
+
+function DrawerItems({
+  items,
+  tileProps,
+}: {
+  items: ProofDrawerItem[];
+  tileProps: Omit<React.ComponentProps<typeof DrawerProofTile>, "artifact" | "busy"> & { busyIds: ReadonlySet<string> };
+}) {
+  const { busyIds, ...rest } = tileProps;
+  return (
+    <>
+      {items.map((item) => item.kind === "pair" ? (
+        <div key={`${item.before.id}:${item.after.id}`} data-proof-drawer-pair="" className="col-span-2 flex min-w-0 flex-col gap-1.5">
+          <div className="grid min-w-0 grid-cols-2 gap-x-2">
+            {([["Before", item.before], ["After", item.after]] as const).map(([side, artifact]) => (
+              <div key={side} className="min-w-0">
+                <div className="mb-1 font-sans text-[8.5px] font-semibold uppercase tracking-[0.08em] text-muted-fg/40">{side}</div>
+                <DrawerProofTile {...rest} artifact={artifact} busy={busyIds.has(artifact.id)} />
+              </div>
+            ))}
+          </div>
+          {item.caption ? (
+            <div className="font-sans text-[10px] leading-[14px] text-fg/60">{item.caption}</div>
+          ) : null}
+        </div>
+      ) : (
+        <DrawerProofTile key={item.artifact.id} {...rest} artifact={item.artifact} busy={busyIds.has(item.artifact.id)} />
+      ))}
+    </>
+  );
+}
+
 export function ChatComputerUsePanel({
   snapshot,
+  events = EMPTY_EVENTS,
   onRefresh,
   allowLocalArtifactProtocol = false,
 }: {
   snapshot: ComputerUseOwnerSnapshot | null;
+  /** The chat's transcript, which says what each turn's answer showed. */
+  events?: readonly AgentChatEventEnvelope[];
   onRefresh: () => void | Promise<void>;
   allowLocalArtifactProtocol?: boolean;
 }) {
@@ -551,6 +612,13 @@ export function ChatComputerUsePanel({
   const artifacts = useMemo(() => snapshot?.artifacts ?? [], [snapshot]);
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
+
+  const [filter, setFilter] = useState<ProofDrawerFilter>(EMPTY_PROOF_DRAWER_FILTER);
+  const groups = useMemo(
+    () => buildProofDrawerGroups(artifacts, events, filter),
+    [artifacts, events, filter],
+  );
+  const filtered = filter.query.trim() !== "" || filter.media !== "all" || filter.inAnswerOnly;
 
   const brokenCount = useMemo(
     () => artifacts.filter((artifact) => isBrokenArtifact(artifact)).length,
@@ -638,18 +706,88 @@ export function ChatComputerUsePanel({
         <Banner model={{ id: "proof-artifact-error", tone: "error", title: error }} layout="inline" />
       ) : null}
 
-      <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">
-        {artifacts.map((artifact) => (
-          <DrawerProofTile
-            key={artifact.id}
-            artifact={artifact}
-            allowLocalArtifactProtocol={allowLocalArtifactProtocol}
-            busy={busyIds.has(artifact.id)}
-            onDelete={handleDelete}
-            onRecover={handleRecover}
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="relative">
+          <MagnifyingGlass
+            size={12}
+            aria-hidden
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50"
           />
-        ))}
+          <input
+            value={filter.query}
+            onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))}
+            placeholder="Search proof"
+            aria-label="Search proof"
+            className={cn(INPUT_CLASS_NAME, "mt-0 h-7 pl-7 text-[11px]")}
+          />
+        </div>
+        <div className="flex min-w-0 items-center gap-1">
+          {MEDIA_FILTERS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={filter.media === option.value}
+              onClick={() => setFilter((current) => ({ ...current, media: option.value }))}
+              className={cn(
+                "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
+                filter.media === option.value
+                  ? "bg-white/[0.09] text-fg/85"
+                  : "text-muted-fg/50 hover:bg-white/[0.05] hover:text-fg/70",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+          <span className="mx-0.5 h-3 w-px bg-white/[0.08]" aria-hidden />
+          <button
+            type="button"
+            aria-pressed={filter.inAnswerOnly}
+            onClick={() => setFilter((current) => ({ ...current, inAnswerOnly: !current.inAnswerOnly }))}
+            className={cn(
+              "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
+              filter.inAnswerOnly
+                ? "bg-white/[0.09] text-fg/85"
+                : "text-muted-fg/50 hover:bg-white/[0.05] hover:text-fg/70",
+            )}
+          >
+            In answers
+          </button>
+        </div>
       </div>
+
+      {groups.length === 0 ? (
+        <div className="px-0.5 py-3 font-sans text-[11px] text-muted-fg/50">
+          {filtered ? "No proof matches." : "No proof yet."}
+        </div>
+      ) : null}
+
+      {groups.map((group) => (
+        <section key={group.key} data-proof-drawer-turn={group.turnId ?? "earlier"} className="flex min-w-0 flex-col gap-2 pt-1">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <div
+              className="line-clamp-2 min-w-0 flex-1 font-sans text-[11px] font-medium leading-[15px] text-fg/78"
+              title={group.prompt ?? undefined}
+            >
+              {group.turnId ? group.prompt ?? "A turn" : "Earlier in this chat"}
+            </div>
+            <div className="shrink-0 font-mono text-[8.5px] text-muted-fg/34">{relativeTime(group.at)}</div>
+          </div>
+          <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">
+            {group.inAnswer.length > 0 && group.other.length > 0 ? <DrawerSectionLabel>In the answer</DrawerSectionLabel> : null}
+            <DrawerItems
+              items={group.inAnswer}
+              tileProps={{ allowLocalArtifactProtocol, busyIds, onDelete: handleDelete, onRecover: handleRecover }}
+            />
+            {group.other.length > 0 ? (
+              <DrawerSectionLabel>{group.inAnswer.length > 0 ? "Also filed" : "Not in an answer"}</DrawerSectionLabel>
+            ) : null}
+            <DrawerItems
+              items={group.other}
+              tileProps={{ allowLocalArtifactProtocol, busyIds, onDelete: handleDelete, onRecover: handleRecover }}
+            />
+          </div>
+        </section>
+      ))}
     </div>
   );
 }

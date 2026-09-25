@@ -73,6 +73,7 @@ import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
 import { artifactImageSrc } from "../../../shared/artifactStreamUrl";
 import { ProofCitationProvider } from "./ChatProofCitation";
+import { citedProofArtifactIds, PROOF_COMPARE_FENCE_LANGUAGE } from "../../../shared/proofCitation";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
@@ -282,6 +283,7 @@ import {
 
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
+const EMPTY_CITED_PROOF_IDS: ReadonlySet<string> = new Set();
 const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
@@ -6374,6 +6376,23 @@ function AgentChatMessageListMain({
     return artifactImageSrc(artifact.uri, chatScope.rootPath);
   }, [allowLocalProofArtifactProtocol, chatScope.rootPath]);
 
+  /**
+   * Proof an answer already shows inline. The turn's "N proof" chip and the
+   * inline filmstrip skip it, so a picture never shows twice in one thread.
+   * Text streams in pieces; joining it first keeps a split citation whole.
+   */
+  const answerCitedProofIds = useMemo(() => {
+    if (!proofArtifacts.length) return EMPTY_CITED_PROOF_IDS;
+    let answerText = "";
+    for (const envelope of events) {
+      if (envelope.event.type === "text") answerText += envelope.event.text;
+    }
+    if (!answerText.includes("ade-proof") && !answerText.includes(PROOF_COMPARE_FENCE_LANGUAGE)) {
+      return EMPTY_CITED_PROOF_IDS;
+    }
+    return new Set(citedProofArtifactIds(answerText));
+  }, [events, proofArtifacts.length]);
+
   const turnProofTimeline = useMemo(() => {
     const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
     const inlineByRowKey = new Map<string, ComputerUseArtifactView[]>();
@@ -6381,6 +6400,7 @@ function AgentChatMessageListMain({
       return { byDoneRowKey, inlineByRowKey, unanchored: EMPTY_PROOF_ARTIFACTS };
     }
     const stamped = proofArtifacts
+      .filter((artifact) => !answerCitedProofIds.has(artifact.id))
       .map((artifact) => ({ artifact, at: Date.parse(artifact.createdAt) }))
       .filter((entry) => Number.isFinite(entry.at))
       .sort((left, right) => left.at - right.at);
@@ -6454,7 +6474,7 @@ function AgentChatMessageListMain({
       inlineByRowKey,
       unanchored,
     };
-  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts]);
+  }, [allGroupedRows, presentedRows, hasOlderHistory, proofArtifacts, answerCitedProofIds]);
   const turnProofByRowKey = turnProofTimeline.byDoneRowKey;
   // Sources the agent used per turn: the turn-end chip and the fold count.
   // A turn's list keeps its identity while its sources are unchanged, so a
