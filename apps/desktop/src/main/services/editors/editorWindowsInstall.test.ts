@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  _testing as installTesting,
   parseRegistryUninstallOutput,
   resolveWindowsEditorExecutable,
   type WindowsEditorInstallIo,
 } from "./editorWindowsInstall";
 import { _testing as detectionTesting } from "./editorDetection";
+import { EDITOR_TARGETS } from "../../../shared/editorTargets";
 
 function fakeIo(options: {
   files?: string[];
@@ -158,5 +160,52 @@ describe("detectInstalledEditorTargets on win32", () => {
     expect(detectionTesting.resolveDetectedEditorCommand("cursor")).toBe(
       "C:\\Users\\me\\AppData\\Local\\Programs\\Cursor\\Cursor.exe",
     );
+  });
+
+  it("probes every editor concurrently rather than one after another", async () => {
+    let started = 0;
+    let maxConcurrent = 0;
+    let releaseGate: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+    let allStartedResolve: () => void = () => {};
+    const allStarted = new Promise<void>((resolve) => { allStartedResolve = resolve; });
+    const pending = detectionTesting.detectInstalledEditorTargets({
+      platform: "linux",
+      env: {},
+      commandSucceeds: async () => {
+        started += 1;
+        maxConcurrent = Math.max(maxConcurrent, started);
+        if (started === EDITOR_TARGETS.length) allStartedResolve();
+        await gate;
+        return false;
+      },
+      resolveWindowsExecutable: async () => null,
+    });
+    await allStarted;
+    releaseGate();
+    await pending;
+    // Every probe was in flight at the same moment; a serial loop would cap
+    // concurrency at 1.
+    expect(maxConcurrent).toBe(EDITOR_TARGETS.length);
+  });
+});
+
+describe("findRegistryAppForSpec", () => {
+  const app = (displayName: string) => ({ displayName });
+
+  it("does not let vscode claim a Visual Studio Code - Insiders entry", () => {
+    const vscode = installTesting.windowsEditorSpec("vscode")!;
+    const insiders = installTesting.windowsEditorSpec("vscode-insiders")!;
+    const apps = [app("Visual Studio Code - Insiders")];
+    expect(installTesting.findRegistryAppForSpec(vscode, apps)).toBeNull();
+    expect(installTesting.findRegistryAppForSpec(insiders, apps)?.displayName).toBe(
+      "Visual Studio Code - Insiders",
+    );
+  });
+
+  it("prefers an exact DisplayName over a contains match", () => {
+    const vscode = installTesting.windowsEditorSpec("vscode")!;
+    const apps = [app("Visual Studio Code - Insiders"), app("Visual Studio Code")];
+    expect(installTesting.findRegistryAppForSpec(vscode, apps)?.displayName).toBe("Visual Studio Code");
   });
 });

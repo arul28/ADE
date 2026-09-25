@@ -76,19 +76,16 @@ export async function detectInstalledEditorTargets(
   const deps = { ...defaultDeps(), ...overrides };
   const probeCommand = deps.platform === "win32" ? "where.exe" : "which";
   resolvedEditorCommands.clear();
-  const found: EditorTarget[] = [];
-  for (const target of EDITOR_TARGETS) {
+  // Probe every target in parallel: each probe can burn its full 1.5 s timeout,
+  // so a serial walk makes the "Open in" menu wait ~1.5 s per missing editor.
+  const detected = await Promise.all(EDITOR_TARGETS.map(async (target): Promise<EditorTarget | null> => {
     if (deps.platform === "darwin" && target.macAppName) {
       const appInstalled = await deps.commandSucceeds("open", ["-Ra", target.macAppName], deps.env);
-      if (appInstalled) {
-        found.push(target.id);
-        continue;
-      }
+      if (appInstalled) return target.id;
     }
     if (await deps.commandSucceeds(probeCommand, [target.command], deps.env)) {
       resolvedEditorCommands.set(target.id, target.command);
-      found.push(target.id);
-      continue;
+      return target.id;
     }
     if (deps.platform === "win32") {
       // Not on PATH: look in the default install locations and the uninstall
@@ -96,11 +93,12 @@ export async function detectInstalledEditorTargets(
       const executable = await deps.resolveWindowsExecutable(target.id);
       if (executable) {
         resolvedEditorCommands.set(target.id, executable);
-        found.push(target.id);
-        continue;
+        return target.id;
       }
     }
-  }
+    return null;
+  }));
+  const found = detected.filter((id): id is EditorTarget => id !== null);
   if (deps.platform !== "darwin") return found;
   const seenMacApps = new Set<string>();
   return found.filter((id) => {
