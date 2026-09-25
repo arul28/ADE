@@ -96,6 +96,17 @@ export function parseProofCompareBlock(source: string): ProofCompareBlock | null
   return before && after ? { before, after, caption } : null;
 }
 
+/** Every ```proof-compare block in a markdown text that names a pair. */
+export function proofCompareBlocks(markdown: string): ProofCompareBlock[] {
+  const fence = new RegExp("```" + PROOF_COMPARE_FENCE_LANGUAGE + "[^\\n]*\\n([\\s\\S]*?)```", "gi");
+  const blocks: ProofCompareBlock[] = [];
+  for (const match of markdown.matchAll(fence)) {
+    const block = parseProofCompareBlock(match[1] ?? "");
+    if (block) blocks.push(block);
+  }
+  return blocks;
+}
+
 /** Every artifact id an answer cites, without repeats: citations first, then compare blocks. */
 export function citedProofArtifactIds(markdown: string): string[] {
   const ids: string[] = [];
@@ -105,13 +116,9 @@ export function citedProofArtifactIds(markdown: string): string[] {
   for (const match of markdown.matchAll(/!\[[^\]]*\]\(\s*<?(ade-proof:[^)\s>]+)>?[^)]*\)/gi)) {
     add(parseProofCitationUrl(match[1]));
   }
-  const fence = new RegExp("```" + PROOF_COMPARE_FENCE_LANGUAGE + "[^\\n]*\\n([\\s\\S]*?)```", "gi");
-  for (const match of markdown.matchAll(fence)) {
-    const block = parseProofCompareBlock(match[1] ?? "");
-    if (block) {
-      add(block.before.artifactId);
-      add(block.after.artifactId);
-    }
+  for (const block of proofCompareBlocks(markdown)) {
+    add(block.before.artifactId);
+    add(block.after.artifactId);
   }
   return ids;
 }

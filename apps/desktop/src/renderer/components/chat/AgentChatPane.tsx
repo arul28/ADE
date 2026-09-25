@@ -13462,6 +13462,7 @@ export function AgentChatPane({
       ) : null}
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
+        events={selectedEventsForDisplay}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
         allowLocalArtifactProtocol={!isRemoteChat}
       />
