@@ -16,6 +16,7 @@
  * session and feed every update for that session through it in arrival order.
  */
 
+import { hasNonEmptyRecord } from "../../../../shared/agentObservationNormalizers";
 import type { AgentChatEvent, AgentChatPlanStep, ChatSourceRef } from "../../../../shared/types";
 import { boundChatSourceRefs } from "../../../../shared/chatSources";
 import { acpResourceLinkSourceRef, acpToolSourceRefs } from "../chatSourceAdapters";
@@ -189,10 +190,6 @@ function classifyRowKind(kind: AcpToolKind): AcpToolRowKind {
     default:
       return assertNever(kind, "acp tool kind");
   }
-}
-
-function hasRawInput(rawInput: unknown): boolean {
-  return Boolean(rawInput) && typeof rawInput === "object" && Object.keys(rawInput as object).length > 0;
 }
 
 function readRawInputString(rawInput: unknown, keys: readonly string[]): string {
@@ -374,7 +371,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
   };
 
   const toolCallRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent => {
-    if (hasRawInput(rawInput)) tracked.argsEmitted = true;
+    if (hasNonEmptyRecord(rawInput)) tracked.argsEmitted = true;
     return withTurn({
       type: "tool_call" as const,
       tool: tracked.toolName,
@@ -531,7 +528,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         const events: AgentChatEvent[] = [];
         if (!tracked.opened) {
           events.push(...openRow(tracked, update.toolCallId, tracked.rawInput));
-        } else if (tracked.rowKind === "tool" && !tracked.argsEmitted && hasRawInput(update.rawInput)) {
+        } else if (tracked.rowKind === "tool" && !tracked.argsEmitted && hasNonEmptyRecord(update.rawInput)) {
           // Input that arrived after the opening frame. Same item id, so the
           // row merges; it goes out before any close below, because a
           // `tool_call` after its result would mark the row running again.

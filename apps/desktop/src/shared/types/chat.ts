@@ -2,6 +2,19 @@
 // Agent chat types
 // ---------------------------------------------------------------------------
 
+/** ACP's `ToolKind` (agentclientprotocol.com, tool calls). */
+export type AcpToolKind =
+  | "read"
+  | "edit"
+  | "delete"
+  | "move"
+  | "search"
+  | "execute"
+  | "think"
+  | "fetch"
+  | "switch_mode"
+  | "other";
+
 import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
@@ -1131,11 +1144,10 @@ export type AgentChatEvent =
       args: unknown;
       /**
        * The provider's own category for this tool, when its protocol has one
-       * (ACP `ToolKind`: read, edit, delete, move, search, execute, think,
-       * fetch, switch_mode, other). Lets activity detection read tools whose
-       * names are free text.
+       * (ACP `ToolKind`). Lets activity detection read tools whose names are
+       * free text.
        */
-      toolKind?: string;
+      toolKind?: AcpToolKind;
       mcp?: AgentChatMcpToolSource;
       itemId: string;
       logicalItemId?: string;

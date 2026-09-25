@@ -513,16 +513,16 @@ export function createSessionService({
     const current = normalizeSessionActivityReport(existing.activityStatusJson);
     const nowIso = new Date().toISOString();
     const report = next(current, nowIso);
-    // `undefined` means "leave the row as it is".
+    // `undefined` means "leave the row as it is"; `null` clears it.
     if (report === undefined) return true;
     const json = report ? JSON.stringify(report) : null;
     if (json === (current ? JSON.stringify(current) : null)) return true;
-    return mutateSessionMeta(trimmed, (id) => {
-      db.run(
-        "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
-        [json, nowIso, id],
-      );
-    });
+    db.run(
+      "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
+      [json, nowIso, trimmed],
+    );
+    emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return true;
   };
 
   const writeSessionActivity = (sessionId: string, value: unknown): boolean => {
@@ -2341,9 +2341,12 @@ export function createSessionService({
       sessionId: string,
       value: SessionActivityValue,
       turnStartedAt: string | null,
+      options: { onlyIfEmpty?: boolean } = {},
     ): boolean {
       return writeSessionActivityRow(sessionId, (current, nowIso) => (
-        nextDetectedActivityReport(current, value, { turnStartedAt, nowIso }) ?? undefined
+        options.onlyIfEmpty && current
+          ? undefined
+          : nextDetectedActivityReport(current, value, { turnStartedAt, nowIso })
       ));
     },
 

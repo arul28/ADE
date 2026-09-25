@@ -115,7 +115,7 @@ import {
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
-import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
   isSessionActivityValue,
@@ -24715,6 +24715,11 @@ function boardMoveColumns(record: JsonObject): string | undefined {
   return from ? `${label(from)} -> ${label(to)}` : label(to);
 }
 
+const ACTIVITY_SOURCE_LABEL: Record<SessionActivitySource, string> = {
+  agent: "reported by the agent",
+  detected: "detected",
+};
+
 /**
  * What `ade session show` says a session is DOING, as opposed to which columns
  * it has. `runtime state` alone reads `idle` for a chat that is holding a warm
@@ -24745,9 +24750,9 @@ function sessionStatusLine(record: JsonObject, now: number, snoozed: boolean): s
   const label = elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
   // An agent reading its own row should know whether ADE saw the activity or
   // the agent said it.
-  const source = presentation.activitySource === "agent"
-    ? "reported by the agent"
-    : presentation.activitySource === "detected" ? "detected" : null;
+  const source = presentation.activitySource
+    ? ACTIVITY_SOURCE_LABEL[presentation.activitySource]
+    : null;
   return source ? `${label} (${source})` : label;
 }
 

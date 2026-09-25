@@ -56,7 +56,12 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
-import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
+import { hasNonEmptyRecord } from "../../../shared/agentObservationNormalizers";
+import {
+  createSessionActivityDetector,
+  isActivityEvidenceEvent,
+  type SessionActivityDetector,
+} from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
   claudePluginDeliveryForSource,
@@ -4162,8 +4167,13 @@ type ManagedChatSession = {
    * engages, alongside the persisted activity it feeds.
    */
   activityDetector?: SessionActivityDetector;
-  /** The detected activity last handed to the session row, so it is written once per change. */
-  lastDetectedActivity?: string | null;
+  /**
+   * A turn started since the detector last wrote. A continuation turn (a
+   * subagent finishing, a wake) keeps the detector's state, but an agent
+   * report left from the previous turn is hidden by the presentation, so the
+   * next detection must be written even when its value did not change.
+   */
+  activityRowNeedsWrite?: boolean;
   /**
    * `ade_card` identity cache: cardId → last emitted content fingerprint and the
    * card's original `createdAt`. Lets `emitAdeCard` answer "is this a no-op
@@ -18786,14 +18796,23 @@ export function createAgentChatService(args: {
    */
   const observeSessionActivity = (managed: ManagedChatSession, event: AgentChatEvent): void => {
     const detector = managed.activityDetector ??= createSessionActivityDetector();
+    if (event.type === "status" && event.turnStatus === "started") managed.activityRowNeedsWrite = true;
+    const before = detector.current;
     const detected = detector.observe(event, Date.now());
-    if (!detected || detected === managed.lastDetectedActivity) return;
-    managed.lastDetectedActivity = detected;
+    if (!detected) return;
+    const changed = detected !== before || managed.activityRowNeedsWrite === true;
+    // An unchanged detection only refills an empty row (an agent ran
+    // `ade chat activity clear`): rewriting it would override an agent report
+    // the evidence has not moved away from. Tool events only, so text and
+    // reasoning frames do not each cost a row read.
+    if (!changed && !isActivityEvidenceEvent(event)) return;
+    managed.activityRowNeedsWrite = false;
     try {
       sessionService.setDetectedSessionActivity(
         managed.session.id,
         detected,
         managed.session.currentTurnStartedAt ?? null,
+        { onlyIfEmpty: !changed },
       );
     } catch (error) {
       logger.warn("agent_chat.activity_detect_write_failed", {
@@ -18810,10 +18829,7 @@ export function createAgentChatService(args: {
    */
   const resetSessionActivity = (sessionId: string): void => {
     sessionService.clearSessionActivity(sessionId);
-    const managed = managedSessions.get(sessionId);
-    if (!managed) return;
-    managed.activityDetector?.reset();
-    managed.lastDetectedActivity = null;
+    managedSessions.get(sessionId)?.activityDetector?.reset();
   };
 
   const emitChatEvent = (
@@ -30135,7 +30151,7 @@ export function createAgentChatService(args: {
             };
 
             const input = part.state.input;
-            const hasInput = Boolean(input) && typeof input === "object" && Object.keys(input).length > 0;
+            const hasInput = hasNonEmptyRecord(input);
             if (!previousStatus) {
               const nextActivity = activityForToolName(part.tool);
               emitChatEvent(managed, {
@@ -54613,9 +54629,10 @@ export function createAgentChatService(args: {
    * because the question really is still open.
    *
    * `sessionService.clearTurnStartMarkers` clears the attention and failure
-   * columns plus the settle-lifecycle clear-on-activity. The separate
-   * `sessionService.clearSessionActivity` clears `activity_status_json`; that
-   * report belongs to the turn and must not be cleared by ordinary PTY input.
+   * columns plus the settle-lifecycle clear-on-activity. `resetSessionActivity`
+   * clears `activity_status_json` and the detector behind it: answering is the
+   * user engaging, which starts the activity over. Ordinary PTY input must not
+   * clear it.
    * `pending_input_item_id` is NOT written here — it is owned by the card
    * stores and their `pending_input_resolved` receipts.
    */

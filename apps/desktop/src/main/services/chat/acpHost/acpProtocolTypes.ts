@@ -22,6 +22,8 @@
  * against `schema/schema.json` in the published package.
  */
 
+import type { AcpToolKind } from "../../../../shared/types/chat";
+
 /** Wire values are plain JSON. */
 export type AcpJsonValue =
   | null
@@ -114,17 +116,8 @@ export type AcpContentBlock =
 
 // ── Tool calls ───────────────────────────────────────────────────────────────
 
-export type AcpToolKind =
-  | "read"
-  | "edit"
-  | "delete"
-  | "move"
-  | "search"
-  | "execute"
-  | "think"
-  | "fetch"
-  | "switch_mode"
-  | "other";
+// `ToolKind` lives with the chat event types, which carry it on `tool_call`.
+export type { AcpToolKind };
 
 export type AcpToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 

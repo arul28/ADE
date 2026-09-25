@@ -202,12 +202,13 @@ const REPORTED_ACTIVITY_PRESENTATION: Record<SessionActivityReport["value"], Ses
  * peer. A detected one is not — the host clears it whenever the user engages,
  * and it deliberately carries across continuation turns.
  */
-export function currentActivityReport(
+function currentActivityReport(
   report: SessionActivityReport | null | undefined,
   currentTurnStartedAt: string | null | undefined,
 ): SessionActivityReport | null {
   if (!report) return null;
   if (!Number.isFinite(Date.parse(report.updatedAt))) return null;
+  if (report.source === "detected") return report;
   return isReportFromTurn(report, currentTurnStartedAt) ? report : null;
 }
 

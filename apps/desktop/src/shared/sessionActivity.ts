@@ -68,38 +68,29 @@ const AGENT_REPORT_COVERS: Record<SessionActivityValue, ReadonlySet<SessionActiv
   monitoring: new Set(["monitoring", "exploring"]),
 };
 
-export function agentReportCoversDetectedActivity(
-  reported: SessionActivityValue,
-  detected: SessionActivityValue,
-): boolean {
-  return AGENT_REPORT_COVERS[reported].has(detected);
-}
-
 /**
- * The row an agent report writes. Re-reporting the activity the row already
- * shows keeps its entry time, so an agent confirming what ADE detected does
- * not reset the elapsed. The caller clears the row at every turn start, so a
- * matching report is always from the current turn.
+ * The row an agent report writes. Confirming the activity ADE already detected
+ * keeps its entry time, so the elapsed does not reset. An agent's own earlier
+ * report is not kept: it may be from an earlier turn, which the presentation
+ * hides, and hiding the report the agent just made would be wrong.
  */
 export function nextAgentActivityReport(
   current: SessionActivityReport | null,
   value: SessionActivityValue,
   nowIso: string,
 ): SessionActivityReport {
-  return {
-    value,
-    source: "agent",
-    updatedAt: current?.value === value ? current.updatedAt : nowIso,
-  };
+  const keepsEntryTime = current?.source === "detected" && current.value === value;
+  return { value, source: "agent", updatedAt: keepsEntryTime ? current.updatedAt : nowIso };
 }
 
 /**
- * The row the tool-call detector writes, or null when the row should stay.
+ * The row the tool-call detector writes, or `undefined` when the row should
+ * stay as it is.
  *
- * A same-valued row stays, keeping its entry time. An agent report from this
- * turn stays while it still covers what the detector sees; one from an earlier
- * turn is replaced. Anything else is replaced: detection is the primary source
- * and the agent's word only refines it.
+ * A same-valued detected row stays, keeping its entry time. An agent report
+ * from this turn stays while it still covers what the detector sees; one from
+ * an earlier turn is replaced. Anything else is replaced: detection is the
+ * primary source and the agent's word only refines it.
  *
  * Only agent reports are turn-scoped. A detected row may carry across a
  * continuation turn (a subagent finishing, a background wake) because the
@@ -109,28 +100,23 @@ export function nextDetectedActivityReport(
   current: SessionActivityReport | null,
   detected: SessionActivityValue,
   args: { turnStartedAt: string | null; nowIso: string },
-): SessionActivityReport | null {
-  if (current?.value === detected && current.source === "detected") return null;
-  if (current?.source === "agent" && isReportFromTurn(current, args.turnStartedAt)) {
-    if (agentReportCoversDetectedActivity(current.value, detected)) return null;
+): SessionActivityReport | undefined {
+  if (current?.source === "detected" && current.value === detected) return undefined;
+  if (
+    current?.source === "agent"
+    && isReportFromTurn(current, args.turnStartedAt)
+    && AGENT_REPORT_COVERS[current.value].has(detected)
+  ) {
+    return undefined;
   }
-  return {
-    value: detected,
-    source: "detected",
-    // An agent that named this same activity first set its entry time.
-    updatedAt: current?.value === detected ? current.updatedAt : args.nowIso,
-  };
+  return { value: detected, source: "detected", updatedAt: args.nowIso };
 }
 
-/**
- * Whether a report belongs to the turn that started at `turnStartedAt`.
- * Detected reports are not turn-scoped (see `nextDetectedActivityReport`).
- */
+/** Whether a report was made at or after `turnStartedAt` (no turn marker: yes). */
 export function isReportFromTurn(
   report: SessionActivityReport,
   turnStartedAt: string | null | undefined,
 ): boolean {
-  if (report.source === "detected" || !turnStartedAt) return true;
-  const turnStartedMs = Date.parse(turnStartedAt);
+  const turnStartedMs = turnStartedAt ? Date.parse(turnStartedAt) : Number.NaN;
   return !Number.isFinite(turnStartedMs) || Date.parse(report.updatedAt) >= turnStartedMs;
 }
