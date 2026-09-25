@@ -104,6 +104,10 @@ export function WorkToolPicker({
   useEffect(() => {
     if (!playing) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      // A card action's own Radix menu (the Apple `⋯`) consumes the arrow that
+      // opened it; without this the picker ALSO moved the highlight and pulled
+      // focus off the open menu.
+      if (event.defaultPrevented) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const step = event.key === "ArrowRight" || event.key === "ArrowDown"
         ? 1

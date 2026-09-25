@@ -223,16 +223,16 @@ describe("work tool status lines", () => {
     // §9's card subtitle: the LANE's device and what it is doing, not the app
     // session — a lane can own a booted simulator with nothing installed on it.
     expect(iosStatusLine(null).line).toBe("No device");
-    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "running", udid: "udid-1", origin: "clone" })).toMatchObject({
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "running", laneId: "lane-1", udid: "udid-1", origin: "clone" })).toMatchObject({
       line: "iPhone 17 Pro · Running",
       live: true,
     });
-    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "starting", udid: "udid-1", origin: "clone" })).toMatchObject({
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "starting", laneId: "lane-1", udid: "udid-1", origin: "clone" })).toMatchObject({
       line: "iPhone 17 Pro · Starting",
       live: false,
       attention: true,
     });
-    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "off", udid: "udid-1", origin: "clone" })).toMatchObject({
+    expect(iosStatusLine({ name: "iPhone 17 Pro", state: "off", laneId: "lane-1", udid: "udid-1", origin: "clone" })).toMatchObject({
       line: "iPhone 17 Pro · Shut down",
       live: false,
     });

@@ -24,6 +24,15 @@ const POLL_MS = 6_000;
 export type AppleLaneDeviceCard = {
   name: string;
   state: "starting" | "running" | "off";
+  /**
+   * The lane this reading belongs to.
+   *
+   * The card keeps its last value while the NEXT lane's read is in flight, so a
+   * menu that acted on `name`/`udid` with the newly selected `laneId` could
+   * delete or boot the wrong lane's device. Callers gate on
+   * `card.laneId === laneId` before acting.
+   */
+  laneId: string;
   /** The lane's device udid. The menu boots it by name. */
   udid: string;
   /** `clone` is ADE's to delete; `attached` is the user's and only ever released. */
@@ -81,6 +90,7 @@ export function useAppleLaneDeviceCard(args: {
       setCard({
         name: lane.name,
         state: laneDeviceBooted(listed) ? "running" : "off",
+        laneId: lane.laneId,
         udid: lane.udid,
         origin: lane.origin,
       });

@@ -488,7 +488,11 @@ export function WorkSidebar({
    * exactly what it always was.
    */
   const toolCardActions = useMemo<Partial<Record<WorkSidebarTab, ReactNode>>>(() => {
-    if (!laneId || !appleDevice) return {};
+    // The card keeps its last reading while the next lane's read is in flight;
+    // acting on it with the newly selected lane would boot or delete that
+    // lane's device off the old lane's name. Only the reading FOR this lane
+    // may carry the menu.
+    if (!laneId || !appleDevice || appleDevice.laneId !== laneId) return {};
     return {
       ios: (
         <AppleToolCardMenu

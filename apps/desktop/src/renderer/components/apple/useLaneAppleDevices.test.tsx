@@ -199,7 +199,7 @@ describe("useAppleLaneDeviceCard", () => {
       // the Apple Development card still said Running. The grid's read landed
       // before `simctl shutdown` did, and nothing but the 6s poll re-read it.
       const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
-      await waitFor(() => expect(result.current).toMatchObject({ name: "iPhone 17 Pro", state: "running", udid: "udid-1", origin: "attached" }));
+      await waitFor(() => expect(result.current).toMatchObject({ name: "iPhone 17 Pro", state: "running", laneId: "lane-a", udid: "udid-1", origin: "attached" }));
 
       power = "Shutdown";
       const readsBefore = deviceList.mock.calls.length;
