@@ -1836,9 +1836,6 @@ enum WorkListPreviewData {
   }
 }
 
-#endif
-
-
 /// Chat Info over a real transcript, derived with the app's own builders, so a
 /// simulator screenshot shows the sheet as a real chat fills it.
 struct WorkChatInfoPreviewHost: View {
@@ -1889,3 +1886,4 @@ struct WorkChatInfoPreviewHost: View {
     )
   }
 }
+#endif
