@@ -1000,6 +1000,47 @@ describe("tool call translation", () => {
     expect(closed[0]).toMatchObject({ type: "command", command: "npm test", output: "passed", itemId: "late-execute" });
   });
 
+  it("updates an opened execute row when a partial command becomes complete", () => {
+    const translator = createAcpEventTranslator();
+    translator.beginTurn("turn-partial-command");
+    const opened = translator.translate({
+      sessionUpdate: "tool_call",
+      toolCallId: "partial-execute",
+      title: "bash",
+      kind: "execute",
+      status: "pending",
+      rawInput: { command: "npm" },
+    });
+    expect(opened[0]).toMatchObject({ type: "command", command: "npm", itemId: "partial-execute" });
+
+    const updated = translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "partial-execute",
+      status: "in_progress",
+      rawInput: { command: "npm test", cwd: "/lane" },
+    });
+    expect(updated).toEqual([expect.objectContaining({
+      type: "command",
+      command: "npm test",
+      cwd: "/lane",
+      itemId: "partial-execute",
+    })]);
+
+    const closed = translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "partial-execute",
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "passed" } }],
+    });
+    expect(closed).toEqual([expect.objectContaining({
+      type: "command",
+      command: "npm test",
+      output: "passed",
+      status: "completed",
+      itemId: "partial-execute",
+    })]);
+  });
+
   it("re-emits an ordinary tool once when raw input arrives after its title", () => {
     const translator = createAcpEventTranslator();
     translator.beginTurn("turn-late-args");
@@ -1040,6 +1081,37 @@ describe("tool call translation", () => {
       rawInput: { pattern: "TODO", path: "src", include: "*.ts" },
       rawOutput: { count: 2 },
     }).filter((event) => event.type === "tool_call")).toHaveLength(0);
+  });
+
+  it("keeps an ordinary tool closed when arguments arrive after completion", () => {
+    const translator = createAcpEventTranslator();
+    translator.beginTurn("turn-late-terminal-input");
+    translator.translate({
+      sessionUpdate: "tool_call",
+      toolCallId: "late-terminal-search",
+      title: "Search",
+      name: "grep",
+      kind: "search",
+      status: "in_progress",
+    });
+    translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-terminal-search",
+      status: "completed",
+      rawOutput: { count: 1 },
+    });
+
+    const lateInput = translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-terminal-search",
+      rawInput: { pattern: "TODO" },
+    });
+
+    expect(lateInput.map((event) => event.type)).toEqual(["tool_call", "tool_result"]);
+    expect(lateInput).toMatchObject([
+      { type: "tool_call", args: { pattern: "TODO" }, itemId: "late-terminal-search" },
+      { type: "tool_result", status: "completed", result: { count: 1 }, itemId: "late-terminal-search" },
+    ]);
   });
 
   it("keeps a file-change row unclaimed until a diff or another row type arrives", () => {

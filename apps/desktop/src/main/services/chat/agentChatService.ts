@@ -30157,6 +30157,7 @@ export function createAgentChatService(args: {
 
             const input = part.state.input;
             const hasInput = hasNonEmptyRecord(input);
+            const newInputArrived = hasInput && !runtime.toolInputEmittedPartIds.has(part.id);
             if (!previousStatus) {
               const nextActivity = activityForToolName(part.tool);
               emitChatEvent(managed, {
@@ -30169,7 +30170,7 @@ export function createAgentChatService(args: {
             // Re-emitting the same item merges into its row (args replace the
             // empty ones). It must precede the result below: a `tool_call`
             // after its `tool_result` would flip the finished row to running.
-            if (!previousStatus || (hasInput && !runtime.toolInputEmittedPartIds.has(part.id))) {
+            if (!previousStatus || newInputArrived) {
               if (hasInput) runtime.toolInputEmittedPartIds.add(part.id);
               emitChatEvent(managed, {
                 type: "tool_call",
@@ -30181,13 +30182,16 @@ export function createAgentChatService(args: {
               });
             }
 
-            if (nextStatus === "completed" && previousStatus !== "completed") {
-              // A media-producing tool's attachment is its output, so it keeps
-              // the generation card; every other tool's images are views.
-              const attachmentIsGenerated = isOpenCodeImageGenerationToolName(part.tool);
-              for (const attachment of part.state.attachments ?? []) {
-                if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
-                else emitOpenCodeImageAttachment(attachment);
+            if (nextStatus === "completed" && (previousStatus !== "completed" || newInputArrived)) {
+              if (previousStatus !== "completed") {
+                // A media-producing tool's attachment is its output, so it keeps
+                // the generation card; every other tool's images are views. Do
+                // not duplicate attachments when a late input re-emits the result.
+                const attachmentIsGenerated = isOpenCodeImageGenerationToolName(part.tool);
+                for (const attachment of part.state.attachments ?? []) {
+                  if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
+                  else emitOpenCodeImageAttachment(attachment);
+                }
               }
               const webSources = openCodeWebToolSourceRefs(
                 part.tool,
@@ -30210,7 +30214,7 @@ export function createAgentChatService(args: {
                 turnId,
                 status: "completed",
               });
-            } else if (nextStatus === "error" && previousStatus !== "error") {
+            } else if (nextStatus === "error" && (previousStatus !== "error" || newInputArrived)) {
               emitChatEvent(managed, {
                 type: "tool_result",
                 tool: part.tool,
@@ -30224,12 +30228,14 @@ export function createAgentChatService(args: {
                 turnId,
                 status: "failed",
               });
-              emitChatEvent(managed, {
-                type: "error",
-                message: `Tool '${part.tool}' failed: ${part.state.error}`,
-                itemId,
-                turnId,
-              });
+              if (previousStatus !== "error") {
+                emitChatEvent(managed, {
+                  type: "error",
+                  message: `Tool '${part.tool}' failed: ${part.state.error}`,
+                  itemId,
+                  turnId,
+                });
+              }
             }
             continue;
           }

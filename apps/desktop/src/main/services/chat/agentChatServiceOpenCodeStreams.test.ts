@@ -308,6 +308,57 @@ describe("createAgentChatService", () => {
       expect(events.some((entry) => entry.event.type === "tool_result" && entry.event.itemId === "tool-call-late-input"))
         .toBe(false);
 
+      pushEvents(
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part-late-completed-input",
+              sessionID: "opencode-session-1",
+              messageID: "assistant-tool-msg",
+              type: "tool",
+              callID: "tool-call-late-completed-input",
+              tool: "bash",
+              state: { status: "completed", output: "passed" },
+            },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part-late-completed-input",
+              sessionID: "opencode-session-1",
+              messageID: "assistant-tool-msg",
+              type: "tool",
+              callID: "tool-call-late-completed-input",
+              tool: "bash",
+              state: { status: "completed", input: { command: "npm test" }, output: "passed" },
+            },
+          },
+        },
+      );
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> } =>
+          event.event.type === "tool_call"
+          && event.event.itemId === "tool-call-late-completed-input"
+          && Boolean((event.event.args as { command?: string })?.command),
+      );
+      const completedPartEvents = events.filter((entry) =>
+        (entry.event.type === "tool_call" || entry.event.type === "tool_result")
+        && entry.event.itemId === "tool-call-late-completed-input");
+      expect(completedPartEvents.map((entry) => entry.event.type)).toEqual([
+        "tool_call",
+        "tool_result",
+        "tool_call",
+        "tool_result",
+      ]);
+      expect(completedPartEvents.slice(-2)).toMatchObject([
+        { event: { type: "tool_call", args: { command: "npm test" } } },
+        { event: { type: "tool_result", status: "completed" } },
+      ]);
+
       releaseStream();
       await sendPromise;
     });

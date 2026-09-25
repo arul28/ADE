@@ -94,6 +94,82 @@ describe("chat history ordering", () => {
     expect(merged[1]).toMatchObject({ event: { type: "tool_result", result: "passed", status: "completed" } });
   });
 
+  it("keeps newer streamed tool arguments inside a stale snapshot range", () => {
+    const anchor = envelope("2026-07-29T10:00:00.000Z", "anchor");
+    const snapshotCall = toolEnvelope("2026-07-29T10:00:02.000Z", {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-stale", logicalItemId: "logical-stale", turnId: "turn-stale",
+    });
+    const streamedCall = toolEnvelope("2026-07-29T10:00:03.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "npm test" }, itemId: "call-stale",
+      logicalItemId: "logical-stale", turnId: "turn-stale",
+    });
+    const tail = envelope("2026-07-29T10:00:04.000Z", "tail");
+
+    const merged = mergeAgentChatHistorySnapshot(
+      [anchor, snapshotCall, tail],
+      [anchor, streamedCall, tail],
+    );
+
+    expect(merged).toHaveLength(3);
+    expect(merged[1]).toMatchObject({
+      timestamp: snapshotCall.timestamp,
+      event: { type: "tool_call", args: { command: "npm test" } },
+    });
+  });
+
+  it("uses arrival order to resolve equal-millisecond tool-call updates", () => {
+    const timestamp = "2026-07-29T10:00:02.000Z";
+    const stale = toolEnvelope(timestamp, {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-equal", logicalItemId: "logical-equal", turnId: "turn-equal",
+    });
+    const latest = toolEnvelope(timestamp, {
+      type: "tool_call", tool: "bash", args: { command: "npm test" }, itemId: "call-equal",
+      logicalItemId: "logical-equal", turnId: "turn-equal",
+    });
+
+    const merged = mergeAgentChatHistorySnapshot([stale, latest], []);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ event: { type: "tool_call", args: { command: "npm test" } } });
+  });
+
+  it("keeps equal-millisecond streamed tool arguments over a stale snapshot", () => {
+    const timestamp = "2026-07-29T10:00:02.000Z";
+    const stale = toolEnvelope(timestamp, {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-live-tie", logicalItemId: "logical-live-tie", turnId: "turn-live-tie",
+    });
+    const streamed = toolEnvelope(timestamp, {
+      type: "tool_call", tool: "bash", args: { command: "npm test" }, itemId: "call-live-tie",
+      logicalItemId: "logical-live-tie", turnId: "turn-live-tie",
+    });
+
+    const merged = mergeAgentChatHistorySnapshot([stale], [streamed]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      timestamp,
+      event: { type: "tool_call", args: { command: "npm test" } },
+    });
+  });
+
+  it("consolidates repeated tool calls on the first history snapshot", () => {
+    const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-first", logicalItemId: "logical-first", turnId: "turn-first",
+    });
+    const updated = toolEnvelope("2026-07-29T10:00:01.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "npm test" }, itemId: "call-first",
+      logicalItemId: "logical-first", turnId: "turn-first",
+    });
+
+    const merged = mergeAgentChatHistorySnapshot([call, updated], []);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({
+      timestamp: call.timestamp,
+      event: { type: "tool_call", args: { command: "npm test" } },
+    });
+  });
+
   it("inserts a delayed old envelope before the completed tail", () => {
     const prompt = envelope("2026-07-29T10:00:00.000Z", "prompt");
     const done = envelope("2026-07-29T10:00:03.000Z", "done");
