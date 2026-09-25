@@ -4,6 +4,7 @@ import {
   CircleNotch,
   X,
   CaretDown, CaretRight,
+  TreeStructure,
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
@@ -36,6 +37,8 @@ import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergea
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
+import { DiffFileTree, type DiffFileTreeEntry } from "../../shared/DiffFileTree";
+import { readPersistedFlag, writePersistedFlag } from "../../shared/persistedFlag";
 import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
@@ -1497,7 +1500,12 @@ export function PrDetailPane({
           lane={laneForPr}
         />
         {activeTab === "files" && (
-          <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
+          <FilesTab
+            files={files}
+            expandedFile={expandedFile}
+            setExpandedFile={setExpandedFile}
+            persistKey="pr-code-tab"
+          />
         )}
         {activeTab === "checks" && (
           <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
@@ -1523,9 +1531,72 @@ export function PrDetailPane({
 // FILES TAB
 // ================================================================
 
-function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; expandedFile: string | null; setExpandedFile: (f: string | null) => void }) {
+const FILE_TREE_STORAGE_PREFIX = "ade:diff:fileTree:";
+
+function readPersistedFileTree(key: string | undefined): boolean {
+  return readPersistedFlag(FILE_TREE_STORAGE_PREFIX, key);
+}
+
+function writePersistedFileTree(key: string | undefined, value: boolean): void {
+  writePersistedFlag(FILE_TREE_STORAGE_PREFIX, key, value);
+}
+
+function FilesTab({
+  files,
+  expandedFile,
+  setExpandedFile,
+  persistKey,
+}: {
+  files: PrFile[];
+  expandedFile: string | null;
+  setExpandedFile: (f: string | null) => void;
+  /** Stable per-view id so the tree toggle is remembered across mounts. */
+  persistKey?: string;
+}) {
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
+  const [showTree, setShowTree] = React.useState(() => readPersistedFileTree(persistKey));
+  const rowRefs = React.useRef(new Map<string, HTMLDivElement | null>());
+  const pendingScrollRef = React.useRef<string | null>(null);
+
+  const toggleTree = React.useCallback(() => {
+    setShowTree((value) => {
+      const next = !value;
+      writePersistedFileTree(persistKey, next);
+      return next;
+    });
+  }, [persistKey]);
+
+  const treeEntries = React.useMemo<DiffFileTreeEntry[]>(
+    () => files.map((file) => ({
+      path: file.filename,
+      status: file.status,
+      previousPath: file.previousFilename,
+      additions: file.additions,
+      deletions: file.deletions,
+    })),
+    [files],
+  );
+
+  // Tree click = expand that file's diff, then scroll it into view. The scroll
+  // is deferred to the effect so it runs after the expanded row has mounted;
+  // re-clicking an already-open file still scrolls it back.
+  const handleTreeSelect = React.useCallback((path: string) => {
+    if (expandedFile === path) {
+      rowRefs.current.get(path)?.scrollIntoView({ block: "start", behavior: "smooth" });
+      return;
+    }
+    pendingScrollRef.current = path;
+    setExpandedFile(path);
+  }, [expandedFile, setExpandedFile]);
+
+  React.useEffect(() => {
+    const path = pendingScrollRef.current;
+    if (!path) return;
+    pendingScrollRef.current = null;
+    rowRefs.current.get(path)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [expandedFile]);
+
   const toPatchStatus = (status: PrFile["status"]): FilePatch["status"] => {
     if (status === "removed") return "deleted";
     if (status === "copied") return "added";
@@ -1552,17 +1623,57 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
           <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>+{totalAdd}</span>
           <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>-{totalDel}</span>
         </div>
+        {files.length > 0 ? (
+          <button
+            type="button"
+            onClick={toggleTree}
+            aria-pressed={showTree}
+            aria-label="Show changed files as a tree"
+            title="Show changed files as a tree"
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              height: 26, padding: "0 10px", borderRadius: 6,
+              border: `1px solid ${COLORS.border}`,
+              background: showTree ? `color-mix(in srgb, ${COLORS.accent} 12%, transparent)` : "transparent",
+              color: showTree ? COLORS.accent : COLORS.textSecondary,
+              fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            <TreeStructure size={12} weight="bold" />
+            Tree
+          </button>
+        ) : null}
       </div>
       {files.length === 0 ? (
         <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>No files changed</div>
       ) : (
-        <div style={{ ...cardStyle(), padding: 0, overflow: "hidden" }}>
-          {files.map((file, idx) => {
-            const isExpanded = expandedFile === file.filename;
-            const statusCol = fileStatusColor(file.status);
-            const filePatch = toPatch(file);
-            return (
-              <div key={file.filename}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+          {showTree ? (
+            <div
+              style={{
+                position: "sticky", top: 0, width: 260, flexShrink: 0,
+                maxHeight: "min(70vh, 640px)", display: "flex", flexDirection: "column",
+                ...cardStyle({ padding: 0, overflow: "hidden" }),
+              }}
+            >
+              <DiffFileTree
+                files={treeEntries}
+                selectedPath={expandedFile}
+                onSelectFile={handleTreeSelect}
+                className="h-full"
+              />
+            </div>
+          ) : null}
+          <div style={cardStyle({ padding: 0, overflow: "hidden", flex: 1, minWidth: 0 })}>
+            {files.map((file, idx) => {
+              const isExpanded = expandedFile === file.filename;
+              const statusCol = fileStatusColor(file.status);
+              const filePatch = toPatch(file);
+              return (
+                <div
+                  key={file.filename}
+                  ref={(node) => { rowRefs.current.set(file.filename, node); }}
+                >
                 <button
                   type="button"
                   onClick={() => setExpandedFile(isExpanded ? null : file.filename)}
@@ -1611,8 +1722,9 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   </div>
                 ) : null}
               </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
