@@ -1491,13 +1491,18 @@ banner):
   so the badge falls back to the underlying snapshot. While
   `installing` (or after the user clicks install but before the main
   process flips status), the badge animates in fuchsia and is
-  disabled. The post-install dialog is a centered card titled
+  disabled.   The post-install dialog is a centered card titled
   "Updated to vX.Y.Z" (the running version) with an X close button
-  and click-outside dismiss; it offers a "Changelog" button that opens
+  and click-outside dismiss. When this build bundled
+  `changelog/vX.Y.Z.mdx`, the card shows that page's summary and section
+  bullets. It offers a "Changelog" button that opens
   `recentlyInstalled.releaseNotesUrl` (the docs changelog) and a "View
   on GitHub" button that opens `recentlyInstalled.githubReleaseUrl`
   (the GitHub release page). Each button is shown only when its URL is
-  present; opening either link also dismisses the notice.
+  present; opening either link also dismisses the notice. The same
+  relaunch reopens the local project tabs that were open when the update
+  quit, and each project comes back on the route and chat it already
+  remembered. A normal launch still opens on the welcome surface.
 - `apps/desktop/src/renderer/components/app/useAutoUpdateSnapshot.ts` — the
   shared subscription hook (initial `updateGetState()` read + live
   `onUpdateEvent`). Every truthful-version surface — the top-bar pill, the

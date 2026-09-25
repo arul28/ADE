@@ -1059,8 +1059,11 @@ export function TopBar({
   }, [openProjectTabRoots]);
 
   useEffect(() => {
+    // The first paint has an empty tab list. Sending it before the window
+    // session is read would replace the tabs the main process restored.
+    if (!windowSessionRestored) return;
     window.ade.app.setWindowProjectTabs(openProjectTabRoots).catch(() => {});
-  }, [openProjectTabRoots]);
+  }, [openProjectTabRoots, windowSessionRestored]);
 
   useEffect(() => {
     if (!windowSessionRestored) return;
