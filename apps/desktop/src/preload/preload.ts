@@ -2931,6 +2931,30 @@ const pinnedRuntimeEvents = createPinnedRuntimeEvents({
 const startPinnedRuntimeEventPump =
   pinnedRuntimeEvents.startPinnedRuntimeEventPump;
 
+// Listeners told when the active binding's event stream may have dropped
+// events: a buffer gap, an epoch change (runtime restart), or the first good
+// poll after a failed one. State mirrors (new-lane launches) re-read their
+// list then instead of waiting for the window to become visible again.
+const activeRuntimeEventResyncListeners = new Set<() => void>();
+let remoteRuntimeEventPollFailed = false;
+
+function notifyActiveRuntimeEventResync(): void {
+  for (const listener of [...activeRuntimeEventResyncListeners]) {
+    try {
+      listener();
+    } catch (error) {
+      console.error("preload runtime event resync listener failed", error);
+    }
+  }
+}
+
+function subscribeActiveRuntimeEventResync(listener: () => void): () => void {
+  activeRuntimeEventResyncListeners.add(listener);
+  return () => {
+    activeRuntimeEventResyncListeners.delete(listener);
+  };
+}
+
 function clearPendingRemoteRuntimeEventPoll(): void {
   if (!remoteRuntimeEventTimer) return;
   clearTimeout(remoteRuntimeEventTimer);
@@ -3123,14 +3147,19 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
         remoteRuntimeEventReplaySuppressed = binding.kind === "remote";
         resetRemoteRuntimeEmptyPolls();
         resetRemoteRuntimeEventDedup(binding.key);
+        remoteRuntimeEventPollFailed = false;
+        notifyActiveRuntimeEventResync();
         nextDelayMs = 0;
         return;
       }
     }
+    const recoveredFromFailure = remoteRuntimeEventPollFailed;
+    remoteRuntimeEventPollFailed = false;
     if (batch.gap === true) {
       resetRemoteRuntimeEventDedup(binding.key);
       resetRemoteRuntimeEmptyPolls();
     }
+    if (batch.gap === true || recoveredFromFailure) notifyActiveRuntimeEventResync();
 
     remoteRuntimeEventCursor = Number.isFinite(batch.nextCursor)
       ? Math.max(0, Math.floor(batch.nextCursor))
@@ -3180,6 +3209,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       nextDelayMs = 0;
     } else {
       console.warn("ADE runtime event polling failed", error);
+      remoteRuntimeEventPollFailed = true;
       nextDelayMs = 2_000;
     }
   } finally {
@@ -3229,6 +3259,7 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventReplaySuppressed = binding.kind === "remote";
       resetRemoteRuntimeEventDedup(binding.key);
+      notifyActiveRuntimeEventResync();
     }
   }
   if (isPinnedRuntimeEventStale(remoteRuntimeEventStartedAtMs, payload.event.timestamp)) {
@@ -3668,12 +3699,14 @@ function subscribePinnedProjectRuntimeEvents<T>(
   cb: (payload: T) => void,
   label: string,
   onPayload?: () => void,
+  onResync?: () => void,
 ): (() => void) | null {
   if (!pin || pin.key === currentProjectBinding?.key) return null;
   return startPinnedRuntimeEventPump({
     pin,
     label,
     suppressReplay: true,
+    ...(onResync ? { onResync } : {}),
     dispatch: (event) => {
       const payload = decode(event.payload);
       if (!payload) return;
@@ -4421,7 +4454,7 @@ const adeBridge = {
       ),
   },
   project: {
-    openRepo: async (args?: { rootPath?: string }): Promise<ProjectInfo | null> => {
+    openRepo: async (args?: { rootPath?: string; trustGitOwnership?: boolean }): Promise<ProjectInfo | null> => {
       // `clearAround` runs its cleanup callback both before AND after the
       // action. Nulling the binding inside that callback meant a successful
       // open clobbered the freshly-published binding (set by the
@@ -6958,15 +6991,31 @@ const adeBridge = {
       callChatLaunchAction<ChatLaunchSnapshot>(pin, "queueLaunchMessage", { args }),
     completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null): Promise<ChatLaunchSnapshot | null> =>
       callChatLaunchAction<ChatLaunchSnapshot | null>(pin, "completeLaunchClient", { args }),
-    onEvent: (cb: (event: ChatLaunchEvent) => void, pin?: OpenProjectBinding | null): (() => void) => {
+    /**
+     * `onResync` fires when the event stream may have dropped launch events
+     * (a buffer gap, a runtime restart, recovery after failed polls), so the
+     * caller can re-read `list` instead of trusting a stale snapshot.
+     */
+    onEvent: (
+      cb: (event: ChatLaunchEvent) => void,
+      pin?: OpenProjectBinding | null,
+      onResync?: () => void,
+    ): (() => void) => {
       const removePinned = subscribePinnedProjectRuntimeEvents(
         pin,
         (payload) => toWrappedEvent<ChatLaunchEvent>(payload, "chat_launch_event"),
         cb,
         "chat launch",
+        undefined,
+        onResync,
       );
       if (removePinned) return removePinned;
-      return remoteChatLaunchEventFanout.subscribe(cb);
+      const removeEvents = remoteChatLaunchEventFanout.subscribe(cb);
+      const removeResync = onResync ? subscribeActiveRuntimeEventResync(onResync) : () => {};
+      return () => {
+        removeResync();
+        removeEvents();
+      };
     },
   },
   agentChat: {

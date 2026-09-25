@@ -135,6 +135,8 @@ type LaneFrame = {
 };
 
 type Subscription = {
+  /** The subscription's key: its connection and its client-chosen id. */
+  key: string;
   subscriptionId: string;
   laneId: string;
   connectionId: string;
@@ -193,6 +195,15 @@ function statusSessions(status: AppControlSyncStatusSource | null | undefined): 
 /** The lane's session in a status answer, whichever service shape it came from. */
 function laneSession(status: AppControlSyncStatusSource | null | undefined, laneId: string): AppControlSession | null {
   return statusSessions(status).find((session) => session.laneId === laneId) ?? null;
+}
+
+/**
+ * A subscription id is the client's own name for its stream, so it is only
+ * unique on the connection that chose it. Keying by both means one viewer can
+ * never end or replace another viewer's stream by reusing its id.
+ */
+function subscriptionKey(connectionId: string, subscriptionId: string): string {
+  return `${connectionId}\u0000${subscriptionId}`;
 }
 
 function clampFps(value: number | null | undefined): number {
@@ -359,7 +370,7 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
   ): void {
     if (subscription.ended) return;
     subscription.ended = true;
-    subscriptions.delete(subscription.subscriptionId);
+    subscriptions.delete(subscription.key);
     cancelTimer(subscription);
     subscription.pending = null;
     if (options.notify) {
@@ -425,30 +436,29 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
   return {
     /**
      * The lane's App Control state for a remote viewer. A chat id names the
-     * chat's lane. With neither, the project-wide view: the active session
-     * plus every session the host has.
+     * chat's lane. With neither there is no session to show: a viewer watches
+     * one lane at a time, like Mac Desktop and Apple, and never falls back to
+     * some other lane's app.
      */
     async getStatus(args: { laneId?: string | null; chatSessionId?: string | null } = {}): Promise<SyncAppControlStatus> {
       const chatSessionId = cleanId(args.chatSessionId);
       const status = await readStatus(cleanId(args.laneId), chatSessionId);
       const laneId = cleanId(args.laneId) ?? cleanId(status?.laneId);
-      const sessions = statusSessions(status);
-      const session = laneId ? laneSession(status, laneId) : (status?.activeSession ?? sessions[0] ?? null);
-      const streamLaneId = laneId ?? cleanId(session?.laneId);
-      const latest = streamLaneId ? latestFrames.get(streamLaneId) ?? null : null;
+      const session = laneId ? laneSession(status, laneId) : null;
+      const latest = laneId ? latestFrames.get(laneId) ?? null : null;
       const latestIsCurrent = Boolean(latest && session && latest.frame.sessionId === session.id);
       return {
         laneId,
         platform: status?.platform ?? process.platform,
         supported: status?.supported ?? false,
         session: toSyncAppControlSession(session),
-        sessions: laneId ? [] : sessions.map((entry) => toSyncAppControlSession(entry)!).filter(Boolean),
+        sessions: [],
         stream: {
           live: Boolean(latestIsCurrent && latest && now() - latest.receivedAtMs < APP_CONTROL_SYNC_STREAM_LIVE_WINDOW_MS),
           lastFrameAt: latestIsCurrent && latest ? latest.frame.capturedAt : null,
           width: latestIsCurrent && latest ? latest.frame.width : null,
           height: latestIsCurrent && latest ? latest.frame.height : null,
-          viewerCount: streamLaneId ? laneViewerCount(streamLaneId) : 0,
+          viewerCount: laneId ? laneViewerCount(laneId) : 0,
         },
       };
     },
@@ -472,9 +482,10 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       }
       const sink = args.sink;
       if (!sink) throw new Error("appControl.streamSubscribe requires a live sync connection.");
-      const existing = subscriptions.get(subscriptionId);
+      const key = subscriptionKey(args.connectionId, subscriptionId);
+      const existing = subscriptions.get(key);
       if (existing) {
-        if (existing.connectionId === args.connectionId && existing.laneId === laneId) return existing.result;
+        if (existing.laneId === laneId) return existing.result;
         endSubscription(existing, "connection_closed", undefined, { notify: false });
       }
       if (connectionLaneCount(args.connectionId, laneId) >= APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE) {
@@ -498,10 +509,11 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       };
       // A second subscribe with the same id can land while the status read was
       // in flight. The first one wins; this one hands back its result.
-      const raced = subscriptions.get(subscriptionId);
-      if (raced && raced.connectionId === args.connectionId && raced.laneId === laneId) return raced.result;
+      const raced = subscriptions.get(key);
+      if (raced && raced.laneId === laneId) return raced.result;
       if (raced) endSubscription(raced, "connection_closed", undefined, { notify: false });
       const subscription: Subscription = {
+        key,
         subscriptionId,
         laneId,
         connectionId: args.connectionId,
@@ -519,7 +531,7 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
         droppedFrames: 0,
         ended: false,
       };
-      subscriptions.set(subscriptionId, subscription);
+      subscriptions.set(key, subscription);
       deps.logger.debug("app_control.sync_stream_subscribed", {
         subscriptionId,
         laneId,
@@ -553,10 +565,14 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       return result;
     },
 
-    /** Ends one subscription. Safe for an id this process never had. */
-    unsubscribe(subscriptionId: string): { ok: true } {
+    /**
+     * Ends one of this connection's subscriptions. Safe for an id this process
+     * never had, and a no-op for another connection's id: without the
+     * connection that subscribed there is nothing this caller may end.
+     */
+    unsubscribe(subscriptionId: string, connectionId?: string | null): { ok: true } {
       const id = cleanId(subscriptionId);
-      const subscription = id ? subscriptions.get(id) : undefined;
+      const subscription = id && connectionId ? subscriptions.get(subscriptionKey(connectionId, id)) : undefined;
       if (subscription) endSubscription(subscription, "unsubscribed", undefined, { notify: true });
       return { ok: true };
     },

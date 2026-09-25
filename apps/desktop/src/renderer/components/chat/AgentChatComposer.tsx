@@ -80,6 +80,7 @@ import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "..
 import { serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
   activeTurnDispatchModes,
+  activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
   type HeicConversionErrorCode,
@@ -502,7 +503,6 @@ export type ParallelComposerControlSlot = {
   onDroidPermissionModeChange: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
-  onCursorConfigChange: (configId: string, value: string | boolean | null) => void;
 };
 
 /**
@@ -1123,16 +1123,6 @@ const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode,
 const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
   BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
 
-/** A Cursor boolean option's label: unset is Cursor's default, not Off. */
-export function cursorBooleanConfigLabel(value: unknown): "On" | "Off" | "Default" {
-  return value === true ? "On" : value === false ? "Off" : "Default";
-}
-
-/** The next value of a Cursor boolean option: Default, then On, then Off, then Default again. */
-export function nextCursorBooleanConfigValue(value: unknown): boolean | null {
-  return value === true ? false : value === false ? null : true;
-}
-
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
   return snapshot.configOptions.find((option) => option.id === snapshot.modeConfigId || option.category === "mode") ?? null;
@@ -1304,6 +1294,8 @@ function stagedSteerHint(args: {
   capability: ActiveTurnSendCapability;
   canSendNow: boolean;
   canInterrupt: boolean;
+  /** Why some staged messages cannot be sent during the turn, when any cannot. */
+  inlineBlockedReason?: string | null;
 }): string {
   const actions = [
     ...(args.canSendNow ? ["send during the turn"] : []),
@@ -1313,6 +1305,7 @@ function stagedSteerHint(args: {
   ];
   const list = `${actions.slice(0, -1).join(", ")} or ${actions[actions.length - 1]}`;
   const sentence = `${list.charAt(0).toUpperCase()}${list.slice(1)}.`;
+  if (args.inlineBlockedReason) return `${sentence} ${args.inlineBlockedReason}`;
   if (args.capability.modes.some((mode) => mode !== "queue")) return sentence;
   return `${sentence} ${args.capability.agentLabel} cannot take a message mid-turn, so this one waits for the turn to end.`;
 }
@@ -1376,6 +1369,7 @@ function ActiveTurnSendButton({
   capability,
   allowInline,
   allowInterrupt,
+  inlineBlockedReason,
   onModeChange,
   onSend,
 }: {
@@ -1384,6 +1378,8 @@ function ActiveTurnSendButton({
   capability: ActiveTurnSendCapability;
   allowInline: boolean;
   allowInterrupt: boolean;
+  /** Why "Send during turn" is withheld for this draft, shown in the menu. */
+  inlineBlockedReason?: string | null;
   onModeChange: (mode: ActiveTurnSendMode) => void;
   onSend: () => void;
 }) {
@@ -1406,6 +1402,7 @@ function ActiveTurnSendButton({
           content={{
             label: selectedCopy.label,
             description: selectedCopy.description,
+            ...(inlineBlockedReason ? { effect: inlineBlockedReason } : {}),
           }}
         >
           <button
@@ -1500,6 +1497,11 @@ function ActiveTurnSendButton({
                       </button>
                     );
                   })}
+                  {inlineBlockedReason ? (
+                    <div className="border-t border-white/[0.05] px-2.5 py-2 text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                      {inlineBlockedReason}
+                    </div>
+                  ) : null}
                 </div>
               );
             })(),
@@ -1719,7 +1721,6 @@ export function AgentChatComposer({
   onOpenCodePermissionModeChange,
   onDroidPermissionModeChange,
   onCursorModeChange,
-  onCursorConfigChange,
   onRemoveIosElementContext,
   onRemoveAppControlContext,
   onRemoveBuiltInBrowserContext,
@@ -1933,7 +1934,6 @@ export function AgentChatComposer({
   onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
-  onCursorConfigChange?: (configId: string, value: string | boolean | null) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
   onRemoveIosElementContext?: (id: string) => void;
   onRemoveAppControlContext?: (id: string) => void;
@@ -2114,9 +2114,27 @@ export function AgentChatComposer({
   // live session's provider (which drives the handlers). On the CTO, where
   // queue is not offered, that keeps the primary button inside the same menu
   // the caret shows instead of silently labelling itself "send after turn".
+  const draftInlineBlockedReason = activeTurnInlineAttachmentBlock(sessionProvider, {
+    attachments,
+    contextAttachmentCount: contextAttachments.length
+      + iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length,
+  });
+  const stagedSteerInlineBlock = (steer: {
+    attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[];
+  }): string | null => activeTurnInlineAttachmentBlock(sessionProvider, {
+    attachments: steer.attachments,
+    contextAttachmentCount: steer.contextAttachments.length,
+  });
+  // A draft the live turn cannot take is not offered "Send during turn"; the
+  // fallback below then lands on "Send after turn", with interrupt still in
+  // the menu.
+  const draftInlineSteerHandler = draftInlineBlockedReason ? undefined : onSendSteerNow;
   const activeTurnSendModeDispatchable = (mode: ActiveTurnSendMode): boolean => (
     mode === "inline"
-      ? Boolean(onSendSteerNow)
+      ? Boolean(draftInlineSteerHandler)
       : mode === "interrupt"
         ? Boolean(onSendSteerInterrupt)
         : activeTurnSendCapability.modes.includes("queue")
@@ -4336,12 +4354,6 @@ export function AgentChatComposer({
     }
 
     const cursorModeOption = resolveCursorModeOption(cmsUse);
-    const cursorExtraOptions = (cmsUse?.configOptions ?? []).filter((option) => {
-      if (option.id === cmsUse?.modelConfigId) return false;
-      if (option.id === cursorModeOption?.id) return false;
-      return true;
-    });
-
     if (sp === "cursor" && (cmsUse?.availableModeIds?.length || cursorModeOption)) {
       const modeValue = typeof cursorModeOption?.currentValue === "string"
         ? cursorModeOption.currentValue
@@ -4353,97 +4365,20 @@ export function AgentChatComposer({
             label: formatCursorModeLabel(modeId),
           }));
       const cursorModeOptions = modeChoices.map((option) => cursorPermissionPickerOption(option.value, option.label));
+      // Only the mode lives in the prompt box. Cursor's Fast is the model
+      // picker's Fast chip, and its other model options keep Cursor's default.
+      if (!modeChoices.length) return null;
       return (
-        <div className="flex flex-wrap items-center gap-2">
-          {modeChoices.length ? (
-            <PermissionModePicker
-              ariaLabel="Cursor mode"
-              selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
-              options={cursorModeOptions}
-              disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
-              onSelect={(value) => {
-                if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
-                else onCursorModeChange?.(value);
-              }}
-            />
-          ) : null}
-          {cursorExtraOptions.map((option) => {
-            if (option.type === "boolean") {
-              const active = option.currentValue === true;
-              // Three states: Default (unset, Cursor decides), On, Off. The
-              // cycle ends back at Default, so an option can be un-set again.
-              const next = nextCursorBooleanConfigValue(option.currentValue);
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
-                  onClick={() => {
-                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, next);
-                    else onCursorConfigChange?.(option.id, next);
-                  }}
-                  className={cn(
-                    "inline-flex h-8 min-h-8 items-center gap-2 rounded-md px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
-                    plainComposerToolbarChrome
-                      ? cn(
-                          "border border-transparent bg-transparent",
-                          active ? "text-emerald-200/90" : "text-fg/72",
-                          nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:bg-white/[0.05] hover:text-fg/86",
-                        )
-                      : cn(
-                          "border px-2.5 py-1.5",
-                          active
-                            ? "border-emerald-500/24 bg-emerald-500/[0.10] text-emerald-100/88"
-                            : "border-white/[0.06] bg-[#1a1a22] text-fg/72",
-                          nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:border-white/[0.1] hover:text-fg/86",
-                        ),
-                  )}
-                  title={option.description ?? option.name}
-                  aria-pressed={active}
-                >
-                  <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.12em] text-muted-fg/45">
-                    {cursorBooleanConfigLabel(option.currentValue)}
-                  </span>
-                  <span>{option.name}</span>
-                </button>
-              );
-            }
-
-            const choices = option.options ?? [];
-            if (!choices.length) return null;
-            return (
-              <label
-                key={option.id}
-                className={cn(
-                  "flex h-8 min-h-8 items-center gap-2 rounded-md px-2",
-                  plainComposerToolbarChrome
-                    ? "border border-transparent bg-transparent"
-                    : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
-                )}
-                title={option.description ?? option.name}
-              >
-                <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">
-                  {option.name}
-                </span>
-                <select
-                  value={typeof option.currentValue === "string" ? option.currentValue : ""}
-                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
-                  onChange={(event) => {
-                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, event.target.value);
-                    else onCursorConfigChange?.(option.id, event.target.value);
-                  }}
-                  className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
-                >
-                  {choices.map((choice) => (
-                    <option key={`${option.id}:${choice.value}`} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            );
-          })}
-        </div>
+        <PermissionModePicker
+          ariaLabel="Cursor mode"
+          selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
+          options={cursorModeOptions}
+          disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+          onSelect={(value) => {
+            if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
+            else onCursorModeChange?.(value);
+          }}
+        />
       );
     }
 
@@ -4470,7 +4405,6 @@ export function AgentChatComposer({
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
-    onCursorConfigChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
     onOpenCodePermissionModeChange,
@@ -5249,9 +5183,9 @@ export function AgentChatComposer({
       else submitComposerDraft();
       return;
     }
-    if (onSendSteerNow) onSendSteerNow();
+    if (draftInlineSteerHandler) draftInlineSteerHandler();
     else submitComposerDraft();
-  }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
+  }, [draftInlineSteerHandler, effectiveActiveTurnSendMode, onSendSteerInterrupt, submitComposerDraft]);
 
   /**
    * The request behind `askQuestionActive`, narrowed for the card. There is
@@ -6430,8 +6364,9 @@ export function AgentChatComposer({
                       enabled={activeSteerEnabled}
                       mode={effectiveActiveTurnSendMode}
                       capability={activeTurnSendCapability}
-                      allowInline={Boolean(onSendSteerNow)}
+                      allowInline={Boolean(draftInlineSteerHandler)}
                       allowInterrupt={Boolean(onSendSteerInterrupt)}
+                      inlineBlockedReason={onSendSteerNow ? draftInlineBlockedReason : null}
                       onModeChange={setActiveTurnSendMode}
                       onSend={submitActiveTurnDraft}
                     />
@@ -6863,8 +6798,12 @@ export function AgentChatComposer({
             <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
               {stagedSteerHint({
                 capability: activeTurnSendCapability,
-                canSendNow: Boolean(onDispatchSteerInline),
+                canSendNow: Boolean(onDispatchSteerInline)
+                  && pendingSteers.some((steer) => !stagedSteerInlineBlock(steer)),
                 canInterrupt: Boolean(onDispatchSteerInterrupt),
+                inlineBlockedReason: onDispatchSteerInline
+                  ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null
+                  : null,
               })}
             </span>
           </div>
@@ -6880,7 +6819,9 @@ export function AgentChatComposer({
                 steer.attachments,
                 steer.contextAttachments,
               )}
-              onSendNow={onDispatchSteerInline ? () => onDispatchSteerInline(steer.steerId) : undefined}
+              onSendNow={onDispatchSteerInline && !stagedSteerInlineBlock(steer)
+                ? () => onDispatchSteerInline(steer.steerId)
+                : undefined}
               onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />
           ))}

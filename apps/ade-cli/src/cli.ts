@@ -215,6 +215,7 @@ import {
   normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
+import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
@@ -16699,10 +16700,16 @@ function findProjectRoots(startDir: string): {
   const git = spawnSync("git", ["rev-parse", "--show-toplevel"], {
     cwd: startDir,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
   const gitRoot = git.status === 0 ? git.stdout.trim() : "";
+  if (git.status !== 0) {
+    // Git refuses folders that belong to another account; say so instead of
+    // silently treating the cwd as the project. Trusting is the user's call.
+    const ownership = parseGitOwnershipError(String(git.stderr ?? ""));
+    if (ownership) process.stderr.write(`ade: ${gitOwnershipMessage(ownership)}\n`);
+  }
   const fallback = gitRoot ? path.resolve(gitRoot) : path.resolve(startDir);
   return { projectRoot: fallback, workspaceRoot: fallback };
 }

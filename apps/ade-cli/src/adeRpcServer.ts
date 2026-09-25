@@ -3779,7 +3779,14 @@ export function scopeAppControlAdeActionArgs(
   if (isCtoOnlyAdeAction("app_control", action)) {
     scopeAccessDenied("app_control viewing actions belong to user clients", method);
   }
-  const { chatSessionId: _callerSupplied, ...rest } = appControlArgs;
+  // `sessionId` names a session and, through it, a lane: an agent names only
+  // its own lane, so a foreign session id must not steer the lookup.
+  const {
+    chatSessionId: _callerSupplied,
+    sessionId: _callerSession,
+    agentCaller: _callerAgent,
+    ...rest
+  } = appControlArgs;
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const sessionLaneId = resolveChatSessionLaneId(runtime, session);
   if (!sessionLaneId && APP_CONTROL_LANE_BOUND_ACTIONS.has(action)) {
@@ -3799,6 +3806,7 @@ export function scopeAppControlAdeActionArgs(
     ...rest,
     ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
     ...(sessionLaneId ? { laneId: sessionLaneId } : {}),
+    agentCaller: true,
   };
 }
 
@@ -3825,7 +3833,12 @@ export async function scopeUnboundAppControlAdeActionArgs(
   callerRootRaw: unknown,
 ): Promise<Record<string, unknown>> {
   const method = `run_ade_action:app_control.${action}`;
-  const { chatSessionId: _callerSupplied, ...rest } = appControlArgs;
+  const {
+    chatSessionId: _callerSupplied,
+    sessionId: _callerSession,
+    agentCaller: _callerAgent,
+    ...rest
+  } = appControlArgs;
   const callerRoot = asOptionalTrimmedString(callerRootRaw);
   if (callerRoot && !path.isAbsolute(callerRoot)) {
     throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
@@ -3849,7 +3862,7 @@ export async function scopeUnboundAppControlAdeActionArgs(
       `app_control.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`,
     );
   }
-  return { ...rest, ...(laneId ? { laneId } : {}) };
+  return { ...rest, ...(laneId ? { laneId } : {}), agentCaller: true };
 }
 
 /**

@@ -587,8 +587,37 @@ struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
   let agentLabel: String
   let interruptContinues: Bool
+  /// Hand mirror of desktop `activeTurnInlineCarriesAttachments`: false when the
+  /// provider's "send during turn" channel takes text only. Cursor's
+  /// `Run.steer(text)` does, so a Cursor message with attachments can only wait
+  /// for the turn or interrupt it.
+  var inlineCarriesAttachments: Bool = true
 
   var defaultMode: WorkActiveSendMode { modes.first ?? .queue }
+
+  /// Why a message with these attachments cannot be sent during the turn, or
+  /// nil when it can. `attachmentTypes` are the attachments' kinds ("image",
+  /// "file", ...), used only to word the reason.
+  func inlineAttachmentBlockReason(attachmentTypes: [String]) -> String? {
+    guard !inlineCarriesAttachments, !attachmentTypes.isEmpty else { return nil }
+    let imagesOnly = attachmentTypes.allSatisfy { $0.hasPrefix("image") }
+    return "\(imagesOnly ? "Images" : "Attachments") can't join a running \(agentLabel) turn."
+  }
+
+  /// Drops `.inline` for a message whose attachments the inline channel cannot
+  /// carry, so the default falls to "Send after turn" with interrupt still on
+  /// offer. The desktop composer applies the same rule to its draft.
+  func withholdingInline(forAttachmentTypes attachmentTypes: [String]) -> WorkActiveSendCapability {
+    guard modes.contains(.inline), inlineAttachmentBlockReason(attachmentTypes: attachmentTypes) != nil else {
+      return self
+    }
+    return WorkActiveSendCapability(
+      modes: modes.filter { $0 != .inline },
+      agentLabel: agentLabel,
+      interruptContinues: interruptContinues,
+      inlineCarriesAttachments: inlineCarriesAttachments
+    )
+  }
 
   /// The atomic active-turn dispatch modes — everything except plain staging.
   /// These are the ones `chat.dispatchSteer` accepts, so they are also the set
@@ -606,7 +635,8 @@ struct WorkActiveSendCapability: Equatable {
     return WorkActiveSendCapability(
       modes: modes.filter { $0 != .inline },
       agentLabel: agentLabel,
-      interruptContinues: interruptContinues
+      interruptContinues: interruptContinues,
+      inlineCarriesAttachments: inlineCarriesAttachments
     )
   }
 
@@ -628,7 +658,12 @@ struct WorkActiveSendCapability: Equatable {
       // carve-out is a SESSION fact, so it lives in
       // `withholdingInlineIfNeeded` and is applied by the caller that knows the
       // session.
-      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Cursor", interruptContinues: true)
+      return WorkActiveSendCapability(
+        modes: [.inline, .queue, .interrupt],
+        agentLabel: "Cursor",
+        interruptContinues: true,
+        inlineCarriesAttachments: false
+      )
     case "opencode":
       // OpenCode's v2 session prompt admits `delivery: "steer"` into the live
       // agent loop. No interrupt: like Codex there is no cancel-and-resend.
@@ -661,12 +696,19 @@ struct WorkQueuedSteerDisposition: Equatable {
 /// a provider gains or loses inline steering.
 func workQueuedSteerDisposition(
   capability: WorkActiveSendCapability,
-  turnActive: Bool
+  turnActive: Bool,
+  inlineBlockedReason: String? = nil
 ) -> WorkQueuedSteerDisposition {
   guard turnActive else {
     return WorkQueuedSteerDisposition(
       shortText: "after turn",
       detailText: "It sends as soon as \(capability.agentLabel) is ready."
+    )
+  }
+  if let inlineBlockedReason {
+    return WorkQueuedSteerDisposition(
+      shortText: "sends when turn ends",
+      detailText: "\(inlineBlockedReason) It sends when this turn ends."
     )
   }
   if capability.modes.contains(.inline) {

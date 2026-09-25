@@ -500,7 +500,9 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       })
       .catch(() => {});
     const unsubscribe = appControlBridge.onEvent((event) => {
-      if ("laneId" in event && event.laneId && event.laneId !== laneId) return;
+      // Only this drawer's lane: an event that names no lane, or another
+      // lane, is never this drawer's app.
+      if (!laneId || !("laneId" in event) || event.laneId !== laneId) return;
       if (event.type === "session-started" || event.type === "session-updated") {
         setAppControlTabState(deriveAppControlTabState(event.session));
       } else if (event.type === "session-stopped") {

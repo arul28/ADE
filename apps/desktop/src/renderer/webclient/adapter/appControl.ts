@@ -65,7 +65,7 @@ export type AppControlWebApi = {
   onStreamFrame: (listener: (frame: SyncAppControlStreamFramePayload) => void) => () => void;
   onStreamEnded: (listener: (ended: SyncAppControlStreamEndedPayload) => void) => () => void;
   listTargets: () => Promise<[]>;
-  getTrace: () => Promise<AppControlTraceResult>;
+  getTrace: (args?: unknown) => Promise<AppControlTraceResult>;
   listArtifacts: () => Promise<[]>;
   listDevices: () => Promise<[]>;
 } & Record<string, unknown>;
@@ -111,7 +111,8 @@ function toAppControlStatus(status: SyncAppControlStatus | null): AppControlStat
     supported: status?.supported ?? false,
     laneId: status?.laneId ?? null,
     activeSession: toAppControlSession(status?.session),
-    sessions: (status?.sessions ?? []).map((session) => toAppControlSession(session)!).filter(Boolean),
+    // The lane's own session only: a view never falls back to another lane's.
+    sessions: status?.session ? [toAppControlSession(status.session)!] : [],
     providers: [],
   } as AppControlStatus;
 }
@@ -138,7 +139,8 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
 
   /** The lane the panel is looking at: the last lane a status read named. */
   let watchedLaneId: string | null = null;
-  let lastSession: AppControlSession | null = null;
+  /** Each lane's last-seen session, so one lane's change is never told as another's. */
+  const lastSessions = new Map<string, AppControlSession | null>();
   let subscription: { id: string; laneId: string } | null = null;
   let subscribing = false;
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -179,12 +181,13 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   /** Tells listeners about a session change the poll found. */
   const noteStatus = (status: AppControlStatus): void => {
     const next = status.activeSession;
-    const laneId = status.laneId ?? next?.laneId ?? watchedLaneId;
-    if (sessionKey(next) === sessionKey(lastSession)) return;
-    const previous = lastSession;
-    lastSession = next;
+    const laneId = status.laneId ?? next?.laneId ?? null;
+    if (!laneId) return;
+    const previous = lastSessions.get(laneId) ?? null;
+    if (sessionKey(next) === sessionKey(previous)) return;
+    lastSessions.set(laneId, next);
     // The cached picture belongs to the app that was there before.
-    if (latestFrame && latestFrame.frame.sessionId !== next?.id) latestFrame = null;
+    if (latestFrame && latestFrame.laneId === laneId && latestFrame.frame.sessionId !== next?.id) latestFrame = null;
     if (listeners.size === 0) return;
     if (!next) {
       emit({ type: "session-stopped", laneId: laneId ?? null, previousSession: previous } as AppControlEventPayload);
@@ -265,7 +268,8 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   };
 
   const getLatestFrame = async (args?: unknown): Promise<AppControlScreencastFrame | null> => {
-    const laneId = stringArg(args, "laneId") ?? watchedLaneId;
+    // Only the lane the caller names: no lane, no picture.
+    const laneId = stringArg(args, "laneId");
     if (!laneId) return null;
     if (latestFrame?.laneId === laneId) return latestFrame.frame;
     // Subscribed but no picture yet (a still app): a fresh subscription makes
@@ -281,7 +285,7 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     const requestedLane = stringArg(argsOrPin, "laneId");
     const requestedChat = stringArg(argsOrPin, "chatSessionId");
     const status = toAppControlStatus(
-      await readStatus(requestedLane ?? (requestedChat ? null : watchedLaneId), requestedChat),
+      await readStatus(requestedLane, requestedChat),
     );
     const laneId = requestedLane ?? status.laneId ?? status.activeSession?.laneId ?? null;
     if (laneId && laneId !== watchedLaneId) {
@@ -399,7 +403,10 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     // Reads the desktop panel makes while a session is connected. The web
     // client has no CDP socket, so they answer empty instead of null.
     listTargets: async () => [],
-    getTrace: async () => ({ sessionId: lastSession?.id ?? null, entries: [] }),
+    getTrace: async (args?: unknown) => {
+      const laneId = stringArg(args, "laneId");
+      return { sessionId: laneId ? lastSessions.get(laneId)?.id ?? null : null, entries: [] };
+    },
     // A new subscription gets the host's replay; a panel that mounts under a
     // subscription that is already live gets the newest frame it delivered.
     getLatestFrame,

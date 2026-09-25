@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   formatGitExecutionError,
+  gitSafeDirectorySpec,
+  parseGitOwnershipError,
   getHeadSha,
   runGit,
   runGitMergeTree,
@@ -169,6 +171,61 @@ describe("macOS git selection", () => {
     expect(message).toContain("ADE needs Git");
     expect(message).toContain("not an ADE iOS Simulator or code-signing requirement");
     expect(message).toContain("sudo xcodebuild -license");
+  });
+
+  // Git for Windows output cannot be produced on a macOS/Linux runner, so the
+  // parser is pinned against the real message shapes here.
+  it.each([
+    {
+      name: "POSIX git (no owner in the message)",
+      raw: "fatal: detected dubious ownership in repository at '/srv/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /srv/repo\n",
+      expected: { path: "/srv/repo" },
+    },
+    {
+      name: "Git for Windows with a named owner",
+      raw: "fatal: detected dubious ownership in repository at 'C:/Users/arul2/proj'\r\n'C:/Users/arul2/proj' is owned by:\r\n\tBUILTIN/Administrators (S-1-5-32-544)\r\nbut the current user is:\r\n\tarul/arul2 (S-1-5-21-1-2-3-1001)\r\nTo add an exception for this directory, call:\r\n\r\n\tgit config --global --add safe.directory C:/Users/arul2/proj\r\n",
+      expected: { path: "C:/Users/arul2/proj", owner: "BUILTIN\\Administrators" },
+    },
+    {
+      name: "Git for Windows with only a SID",
+      raw: "fatal: detected dubious ownership in repository at 'D:/work'\n'D:/work' is owned by:\n\t'S-1-5-32-544'\nbut the current user is:\n\t'S-1-5-21-9'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory D:/work\n",
+      expected: { path: "D:/work", owner: "BUILTIN\\Administrators" },
+    },
+    {
+      name: "a UNC share, using git's own suggested spelling",
+      raw: "fatal: detected dubious ownership in repository at '//server/share/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory '%(prefix)///server/share/repo'\n",
+      expected: { path: "%(prefix)///server/share/repo" },
+    },
+    {
+      name: "a path with a space, which git shell-quotes",
+      raw: "fatal: detected dubious ownership in repository at '/Users/a b/repo'\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory '/Users/a b/repo'\n",
+      expected: { path: "/Users/a b/repo" },
+    },
+    {
+      name: "git 2.35.2's wording",
+      raw: "fatal: unsafe repository ('/home/other/repo' is owned by someone else)\nTo add an exception for this directory, call:\n\n\tgit config --global --add safe.directory /home/other/repo",
+      expected: { path: "/home/other/repo" },
+    },
+    { name: "an unrelated git failure", raw: "fatal: not a git repository (or any of the parent directories): .git", expected: null },
+  ])("recognizes git's ownership refusal: $name", ({ raw, expected }) => {
+    expect(parseGitOwnershipError(raw)).toEqual(expected);
+    const message = formatGitExecutionError(raw);
+    if (expected) {
+      expect(message).not.toMatch(/fatal:/);
+      expect(message).toContain("Git does not trust");
+    } else {
+      expect(message).toBe(raw);
+    }
+  });
+
+  it.each([
+    ["C:\\Users\\arul2\\proj\\", "C:/Users/arul2/proj"],
+    ["/C:/Users/arul2/proj", "C:/Users/arul2/proj"],
+    ["C:\\", "C:/"],
+    ["/srv/repo/", "/srv/repo"],
+    ["/", "/"],
+  ])("normalizes %s to the safe.directory value %s", (input, expected) => {
+    expect(gitSafeDirectorySpec(input)).toBe(expected);
   });
 });
 

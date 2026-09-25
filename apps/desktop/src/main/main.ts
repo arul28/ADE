@@ -152,7 +152,14 @@ import { createProjectSearchService } from "./services/search/searchServiceWirin
 import type { SearchService } from "./services/search/searchService";
 import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
 import { chatImportedRefsProvider } from "./services/externalSessions/liveChatProviderRefs";
-import { runGit } from "./services/git/git";
+import {
+  GitUntrustedFolderError,
+  gitOwnershipReason,
+  gitUntrustedFolderProblem,
+  runGit,
+  trustGitSafeDirectory,
+} from "./services/git/git";
+import { codedError, GIT_UNTRUSTED_FOLDER_CODE } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -4702,6 +4709,9 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      // A lane may not claim another lane's App Control app. Read at call
+      // time: the App Control service is built just below.
+      appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),
       // The real-input lease question rides the normal pending-input card, the
       // same one `ade chat ask` and MCP elicitation resolve through.
       requestChatInput: (input) => agentChatService.requestChatInput(input),
@@ -4764,6 +4774,8 @@ app.whenReady().then(async () => {
       // Recording: macOS records the app's window with the desktop helper
       // (the service's default); Windows/Linux use this desktop's encoder.
       getScreencastRecorder: () => appControlScreencastRecorder,
+      // A lane may not attach to an app another lane's Mac Desktop holds.
+      macDesktopLaneForProcess: (pid: number) => macDesktopService.laneForProcess(pid),
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
@@ -6366,7 +6378,10 @@ app.whenReady().then(async () => {
     }
     try {
       return normalizeProjectRoot(await resolveRepoRoot(requestedRoot));
-    } catch {
+    } catch (error) {
+      // Trusting a folder is only offered on the desktop, where the user can
+      // see which folder and who owns it; say why instead of "not a repo".
+      if (error instanceof GitUntrustedFolderError) throw new Error(error.message);
       throw new Error("Choose a Git repository folder.");
     }
   }
@@ -6722,8 +6737,52 @@ app.whenReady().then(async () => {
     path.join(app.getPath("userData"), "project-open.jsonl"),
   );
 
+  /**
+   * `resolveRepoRoot` for a folder the user chose to open. When git refuses it
+   * for belonging to another account (safe.directory), this throws a
+   * `git_untrusted_folder` coded error and the renderer asks "Trust this
+   * folder?". Only after the user says yes does the retry arrive with
+   * `trustGitOwnership`, and only then is that one folder added to their
+   * global safe.directory list. Nothing else — background scans, agents, the
+   * CLI, mobile — ever trusts a folder.
+   */
+  const resolveRepoRootForUserOpen = async (
+    selectedPath: string,
+    trustGitOwnership: boolean,
+  ): Promise<string> => {
+    try {
+      return await resolveRepoRoot(selectedPath);
+    } catch (error) {
+      const problem = gitUntrustedFolderProblem(error);
+      if (!problem) throw error;
+      if (!trustGitOwnership) {
+        projectOpenLogger.info("project.open.git_untrusted_folder", {
+          selectedPath,
+          gitPath: problem.path,
+          owner: problem.owner ?? null,
+        });
+        throw codedError(gitOwnershipReason(problem), GIT_UNTRUSTED_FOLDER_CODE);
+      }
+      const trusted = await trustGitSafeDirectory(problem.path);
+      projectOpenLogger.info("project.open.git_folder_trusted", {
+        selectedPath,
+        safeDirectory: trusted.spec,
+        added: trusted.added,
+      });
+      try {
+        return await resolveRepoRoot(selectedPath);
+      } catch (retryError) {
+        // Still refused after trusting (git spells the folder differently, or
+        // a parent needs it too): say so plainly rather than asking again.
+        if (retryError instanceof GitUntrustedFolderError) throw new Error(retryError.message);
+        throw retryError;
+      }
+    }
+  };
+
   const switchProjectFromDialog = async (
     selectedPath: string,
+    options: { trustGitOwnership?: boolean } = {},
   ): Promise<ProjectInfo> => {
     const startedAt = Date.now();
     const windowId = currentIpcWindowId();
@@ -6780,7 +6839,9 @@ app.whenReady().then(async () => {
     projectOpenLogger.info("project.open.begin", { selectedPath });
     try {
       const resolveStartedAt = Date.now();
-      repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      repoRoot = normalizeProjectRoot(
+        await resolveRepoRootForUserOpen(selectedPath, options.trustGitOwnership === true),
+      ); // require a real git repo for onboarding.
       // INVARIANT: a root is recorded as "attempted" only once it has been
       // proven to be a real git repository on disk — `resolveRepoRoot` throws
       // otherwise. The registry widens what a renderer may later name in

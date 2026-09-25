@@ -11,18 +11,19 @@
  * its gates in, and keeps the API surface.
  */
 
-import type {
-  DesktopSeatProvider,
-  MacDesktopClaimArgs,
-  MacDesktopEventPayload,
-  MacDesktopOpenArgs,
-  MacDesktopOpenResult,
-  MacDesktopPresentArgs,
-  MacDesktopReleaseArgs,
-  MacDesktopWindow,
+import {
+  MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+  type DesktopSeatProvider,
+  type MacDesktopClaimArgs,
+  type MacDesktopEventPayload,
+  type MacDesktopOpenArgs,
+  type MacDesktopOpenResult,
+  type MacDesktopPresentArgs,
+  type MacDesktopReleaseArgs,
+  type MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
 import type { Logger } from "../logging/logger";
-import type { MacDesktopOwnershipRegistry } from "./macDesktopOwnership";
+import { MacDesktopOwnershipError, type MacDesktopOwnershipRegistry } from "./macDesktopOwnership";
 import { asNullableString, asNumber, asWindows } from "./macDesktopSeatProvider";
 
 export type MacDesktopWindowsDeps = {
@@ -36,6 +37,8 @@ export type MacDesktopWindowsDeps = {
   requireDisplay: (laneId: string) => void;
   assertPermission: (which: "screenRecording" | "accessibility") => void;
   ownership: MacDesktopOwnershipRegistry;
+  /** The lane whose App Control session runs this process, or null. */
+  appControlLaneForProcess?: ((pid: number) => Promise<string | null> | string | null) | null;
 };
 
 export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
@@ -68,6 +71,19 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     const windows = asWindows(reply.windows);
     const bundleId = asNullableString(reply.bundleId);
     const pid = typeof reply.pid === "number" ? reply.pid : null;
+    // Opening an app that is already running re-uses that instance. When the
+    // instance is another lane's App Control app, hand back whatever the
+    // driver parked and refuse, as `claim` does.
+    const holder = pid != null ? await appControlHolder(pid, laneId) : null;
+    if (holder) {
+      const parked = (await seat.listWindows({ laneId }).catch(() => [] as MacDesktopWindow[]))
+        .filter((window) => window.pid === pid)
+        .map((window) => window.id);
+      for (const windowId of new Set([...windows.filter((window) => window.pid === pid).map((w) => w.id), ...parked])) {
+        await seat.unpark({ windowId, laneId }).catch(() => undefined);
+      }
+      throw otherLanesAppControlAppError(holder, asNullableString(reply.appName));
+    }
     for (const window of windows) {
       ownership.claimWindow({
         laneId,
@@ -109,11 +125,45 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     };
   };
 
+  /** The other lane whose App Control session runs this process, or null. */
+  const appControlHolder = async (pid: number, laneId: string): Promise<string | null> => {
+    const lookup = deps.appControlLaneForProcess;
+    if (!lookup || !pid) return null;
+    const holder = await Promise.resolve(lookup(pid)).catch(() => null);
+    return holder && holder !== laneId ? holder : null;
+  };
+
+  const otherLanesAppControlAppError = (holder: string, appName: string | null | undefined) =>
+    new MacDesktopOwnershipError(
+      MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
+      `${appName || "This app"} is lane ${holder}'s App Control app. A lane cannot claim another lane's app. `
+        + "Stop it from that lane first.",
+      holder,
+    );
+
+  /**
+   * An app another lane runs under App Control is that lane's. Claiming one of
+   * its windows would move it onto this lane's screen and hand this lane its
+   * frames and input, which App Control's own lane rule forbids.
+   */
+  const assertNotOtherLanesAppControlApp = async (
+    seat: DesktopSeatProvider,
+    laneId: string,
+    windowId: number,
+  ): Promise<void> => {
+    if (!deps.appControlLaneForProcess) return;
+    const window = (await seat.listWindows({ laneId: null })).find((entry) => entry.id === windowId);
+    if (!window?.pid) return;
+    const holder = await appControlHolder(window.pid, laneId);
+    if (holder) throw otherLanesAppControlAppError(holder, window.appName);
+  };
+
   const claimWindow = async (args: MacDesktopClaimArgs): Promise<MacDesktopWindow> => {
     const laneId = args.laneId.trim();
     deps.requireDisplay(laneId);
     const seat = await deps.ensureProvider();
     deps.assertPermission("accessibility");
+    await assertNotOtherLanesAppControlApp(seat, laneId, args.windowId);
     const existing = ownership.getWindow(args.windowId);
     if (existing && existing.laneId !== laneId && existing.singleInstance && existing.bundleId) {
       ownership.assertSingleInstanceAvailable({

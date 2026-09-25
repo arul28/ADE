@@ -217,7 +217,9 @@ describe("macDesktop sync wire contract", () => {
     await expect(service.execute(makePayload("macDesktop.streamUnsubscribe", {
       subscriptionId: fixture.subscriptionId,
     }))).resolves.toEqual({ ok: true });
-    expect(unsubscribe).toHaveBeenCalledWith(fixture.subscriptionId);
+    // The unsubscribe is scoped to the connection that sent it; this payload
+    // carries none, so the service gets null and ends nothing it does not own.
+    expect(unsubscribe).toHaveBeenCalledWith(fixture.subscriptionId, null);
 
     await expect(service.execute(makePayload("macDesktop.streamUnsubscribe", {})))
       .rejects.toThrow(/requires subscriptionId/);

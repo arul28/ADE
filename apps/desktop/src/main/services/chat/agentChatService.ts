@@ -1117,7 +1117,11 @@ import {
 } from "./cursorSdkSystemPrompt";
 import { promises as fsPromises } from "node:fs";
 import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
-import { CURSOR_AVAILABLE_MODE_IDS, legacyPermissionModeToCursorModeId } from "../../../shared/cursorModes";
+import {
+  CURSOR_AVAILABLE_MODE_IDS,
+  foldLegacyCursorFastConfigValue,
+  legacyPermissionModeToCursorModeId,
+} from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import {
   CALLER_MCP_CAPABLE_PROVIDERS,
@@ -8939,6 +8943,21 @@ function persistedPiRouteIds(
   return out;
 }
 
+/**
+ * Why a message could not join the live Cursor run. Only attachments are named
+ * to the user; every other refusal reads the same (see
+ * `emitInlineSteerFallbackNotice`).
+ */
+type CursorInlineSteerRefusal =
+  | { kind: "attachments"; imagesOnly: boolean }
+  | { kind: "refused" };
+
+type CursorInlineSteerResult =
+  | { delivered: true }
+  | { delivered: false; refusal: CursorInlineSteerRefusal };
+
+const CURSOR_INLINE_STEER_REFUSED: CursorInlineSteerResult = { delivered: false, refusal: { kind: "refused" } };
+
 function buildCursorModeSnapshotFromRuntime(runtime: CursorRuntime): AgentChatCursorModeSnapshot | undefined {
   const hasData =
     Boolean(runtime.modeConfigId)
@@ -16505,7 +16524,7 @@ export function createAgentChatService(args: {
       const modelHandoffHistory = normalizeModelHandoffHistory(record.modelHandoffHistory);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
-      const fastMode = readLegacyFastMode(record as Record<string, unknown>);
+      const storedFastMode = readLegacyFastMode(record as Record<string, unknown>);
       const cursorCloudServiceTier = normalizeCursorCloudServiceTier(record.cursorCloudServiceTier);
       const cursorCloudPendingRequest = normalizeCursorCloudPendingRequest(record.cursorCloudPendingRequest);
       const autoContinueAtUsageLimit = record.autoContinueAtUsageLimit === false ? false : undefined;
@@ -16544,7 +16563,14 @@ export function createAgentChatService(args: {
         : record.cursorModeId === null
           ? null
           : undefined;
-      const cursorConfigValues = normalizeCursorConfigValueRecord(record.cursorConfigValues);
+      // Older builds stored Cursor's Fast toggle as a model option; it is the
+      // chat's Fast tier now, so a saved choice carries over to the Fast chip.
+      const foldedCursorFast = foldLegacyCursorFastConfigValue(
+        storedFastMode,
+        normalizeCursorConfigValueRecord(record.cursorConfigValues),
+      );
+      const fastMode = foldedCursorFast.fastMode === true;
+      const cursorConfigValues = foldedCursorFast.configValues ?? undefined;
       const callerMcpServers = normalizeCallerMcpServers(record.mcpServers);
       const strictMcpConfig = typeof record.strictMcpConfig === "boolean"
         ? record.strictMcpConfig
@@ -39146,7 +39172,13 @@ export function createAgentChatService(args: {
     spawnKind: requestedSpawnKind,
     idempotencyKey,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
-    const requestedFastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
+    // A client that still sends Cursor's Fast toggle as a model option gets it
+    // as the chat's Fast tier, the one control that now carries it.
+    const foldedRequestedCursorFast = foldLegacyCursorFastConfigValue(
+      requestedFastModeArg ?? requestedLegacyFastModeArg,
+      requestedCursorConfigValues,
+    );
+    const requestedFastMode = foldedRequestedCursorFast.fastMode;
     const normalizedParentSessionId = requestedOrchestrationParentSessionId?.trim() || null;
     if (normalizedParentSessionId && requestedSpawnKind !== "subagent" && requestedSpawnKind !== "peer") {
       throw new Error(
@@ -39347,7 +39379,7 @@ export function createAgentChatService(args: {
       : requestedCursorModeId === null
         ? null
         : undefined;
-    const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
+    const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(foldedRequestedCursorFast.configValues);
     // Caller-injected MCP servers arrive only from an external embedder (the
     // ADE SDK). A chat that asks for none keeps its persisted state and every
     // provider option byte-for-byte identical to before this feature existed.
@@ -45128,19 +45160,24 @@ export function createAgentChatService(args: {
    * `/cancelled|delivering/i` test (`AgentChatPane.tsx`), which this wording
    * fails either way — the message is still queued and its chip must stay.
    *
-   * The wording names no culprit on purpose. Most refusals are ADE's own —
-   * attachments, per-message overrides, a cloud run, no live turn — and the
-   * steer channel is never even consulted for them. The consequence is
-   * identical either way, so the line states only that.
+   * Attachments are the one refusal the user can act on, so that one says why:
+   * pressing Steer again can never work, and "Interrupt & continue" can. The
+   * other refusals — per-message overrides, a cloud run, no live turn, the run
+   * declining — have the same consequence and nothing to act on, so their line
+   * states only that.
    */
   const emitInlineSteerFallbackNotice = (
     managed: ManagedChatSession,
     runtime: { activeTurnId: string | null },
+    refusal?: CursorInlineSteerRefusal,
   ): void => {
+    const message = refusal?.kind === "attachments"
+      ? `${refusal.imagesOnly ? "Images" : "Attachments"} can't join a running Cursor turn, so this message will send after the turn ends.`
+      : "This message couldn't go into the running turn, so it will send as a new message.";
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
-      message: "This message couldn't go into the running turn, so it will send as a new message.",
+      message,
       turnId: runtime.activeTurnId ?? undefined,
     });
   };
@@ -45218,15 +45255,24 @@ export function createAgentChatService(args: {
     runtime: CursorRuntime,
     row: QueuedSteer,
     onDelivered?: () => void,
-  ): Promise<boolean> => {
+  ): Promise<CursorInlineSteerResult> => {
+    // `Run.steer(text)` is text-only (`activeTurnInlineCarriesAttachments`).
     if (row.attachments.length || row.contextAttachments.length || row.resolvedAttachments.length) {
-      return false;
+      return {
+        delivered: false,
+        refusal: {
+          kind: "attachments",
+          imagesOnly: row.contextAttachments.length === 0
+            && row.attachments.length > 0
+            && row.attachments.every((attachment) => attachment.type !== "file"),
+        },
+      };
     }
     // Per-message overrides cannot ride a text-only channel either. No caller
     // pairs them with an inline dispatch today; this keeps the next one from
     // losing them silently.
     if (rowHasPerMessageOverrides(row)) {
-      return false;
+      return CURSOR_INLINE_STEER_REFUSED;
     }
     // Gated here, not only in the renderer: a cloud run refuses every steer, and
     // the CLI, the TUI, iOS and `messageSession` auto-routing all reach this
@@ -45235,28 +45281,28 @@ export function createAgentChatService(args: {
     // NOT covered by a unit test: reaching it needs a promoted cloud session
     // running a stalled cloud turn, which the local-turn harness cannot build.
     // Verified by review of every caller instead.
-    if (cursorSessionRunsInCloud(managed.session)) return false;
-    if (managed.closed || managed.runtime !== runtime || !runtime.busy) return false;
+    if (cursorSessionRunsInCloud(managed.session)) return CURSOR_INLINE_STEER_REFUSED;
+    if (managed.closed || managed.runtime !== runtime || !runtime.busy) return CURSOR_INLINE_STEER_REFUSED;
 
     const outcome = await cursorSdkSteerText(managed, runtime, row.text);
-    if (outcome !== "complete_delivered") return false;
+    if (outcome !== "complete_delivered") return CURSOR_INLINE_STEER_REFUSED;
 
     // Recycle during the await copies `pendingSteers` onto a replacement
     // runtime and kills this one. An ack from the dying run is not ownership
     // on the session that remains: treat it as a refusal so the caller keeps
     // (or restages) the only surviving copy. Emitting `inline` here would also
     // retire the chip for a message the replacement turn never saw.
-    if (managed.runtime !== runtime) return false;
+    if (managed.runtime !== runtime) return CURSOR_INLINE_STEER_REFUSED;
 
     // The run took the text, so the caller's bookkeeping runs even if the
     // session closed meanwhile. Skipping it there would leave a delivered row
     // on `pendingSteers`, which `persistChatState` carries forward — the
     // message would be sent again on reopen.
     onDelivered?.();
-    if (managed.closed) return true;
+    if (managed.closed) return { delivered: true };
     emitSteerUserRow(managed, row, "inline", runtime.activeTurnId ?? undefined);
     persistChatState(managed);
-    return true;
+    return { delivered: true };
   };
 
   /**
@@ -49047,9 +49093,9 @@ export function createAgentChatService(args: {
           ...(executionMode ? { executionMode } : {}),
           ...(interactionMode ? { interactionMode } : {}),
         };
-        let inlineRefused = false;
+        let inlineRefusal: CursorInlineSteerRefusal | null = null;
         if (dispatchMode === "inline") {
-          const delivered = await tryCursorInlineSteer(
+          const inlineResult = await tryCursorInlineSteer(
             managed,
             rt,
             queuedRow,
@@ -49064,8 +49110,8 @@ export function createAgentChatService(args: {
               // `dispatchClaudeSteerMessage` omits it for the same reason.
             },
           );
-          if (delivered) return { steerId, queued: false };
-          inlineRefused = true;
+          if (inlineResult.delivered) return { steerId, queued: false };
+          inlineRefusal = inlineResult.refusal;
           // `tryCursorInlineSteer` awaits the worker, so the runtime can be
           // recycled while the steer is in flight. Staging onto a detached
           // runtime's array strands the message where nothing drains it.
@@ -49102,7 +49148,7 @@ export function createAgentChatService(args: {
         }
         // Emitted only once the message is genuinely going to be queued. Above
         // the queue-full guard it would promise a delivery that never happens.
-        if (inlineRefused) emitInlineSteerFallbackNotice(managed, rt);
+        if (inlineRefusal) emitInlineSteerFallbackNotice(managed, rt, inlineRefusal);
         rt.pendingSteers.push(queuedRow);
         emitQueuedCursorSteerRow(managed, rt, queuedRow);
         emitChatEvent(managed, {
@@ -49116,7 +49162,7 @@ export function createAgentChatService(args: {
         // `queued` has to follow what the drain actually did: reporting a
         // message as queued after it went out as its own turn is the same lie
         // `dispatchSteer` takes care to avoid.
-        const flushed = inlineRefused ? await drainCursorQueueHeadIfIdle(managed, rt) : null;
+        const flushed = inlineRefusal ? await drainCursorQueueHeadIfIdle(managed, rt) : null;
         return { steerId, queued: flushed !== steerId };
       }
       const preparedSteer = prepareSendMessage({
@@ -50171,9 +50217,9 @@ export function createAgentChatService(args: {
         // below, because `drainCursorQueueHeadIfIdle` refuses to run while any
         // dispatch is marked in flight.
         runtime.dispatchingSteerIds.add(steerId);
-        let delivered: boolean;
+        let inlineResult: CursorInlineSteerResult;
         try {
-          delivered = await tryCursorInlineSteer(
+          inlineResult = await tryCursorInlineSteer(
             managed,
             runtime,
             staged,
@@ -50189,8 +50235,8 @@ export function createAgentChatService(args: {
         } finally {
           runtime.dispatchingSteerIds.delete(steerId);
         }
-        if (delivered) return { dispatchedAt: Date.now() };
-        emitInlineSteerFallbackNotice(managed, runtime);
+        if (inlineResult.delivered) return { dispatchedAt: Date.now() };
+        emitInlineSteerFallbackNotice(managed, runtime, inlineResult.refusal);
         persistChatState(managed);
         // The row is still staged and Cursor only drains at a turn boundary. If
         // that boundary already passed while the steer was in flight, nothing
@@ -55735,14 +55781,23 @@ export function createAgentChatService(args: {
     opencodePermissionMode,
     droidPermissionMode,
     cursorModeId,
-    cursorConfigValues,
+    cursorConfigValues: requestedCursorConfigValuesArg,
     acpPermissionMode: requestedAcpPermissionMode,
     permissionMode,
     spawnKind: requestedSpawnKind,
     subagentTakeoverPromptShown,
     autoContinueAtUsageLimit: requestedAutoContinueAtUsageLimit,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
-    const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
+    // Cursor's Fast toggle sent as a model option by an older client becomes
+    // the chat's Fast tier; an option record left empty by the fold clears.
+    const foldedCursorFast = foldLegacyCursorFastConfigValue(
+      requestedFastModeArg ?? requestedLegacyFastModeArg,
+      requestedCursorConfigValuesArg,
+    );
+    const fastMode = foldedCursorFast.fastMode;
+    const cursorConfigValues = foldedCursorFast.folded
+      ? foldedCursorFast.configValues ?? null
+      : requestedCursorConfigValuesArg;
     const managed = ensureManagedSession(sessionId);
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && (title !== undefined || manuallyNamed !== undefined)) {
       throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);

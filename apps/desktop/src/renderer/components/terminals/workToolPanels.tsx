@@ -33,7 +33,6 @@ import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
-import { Banner } from "../ui/notice";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
@@ -66,13 +65,6 @@ export type WorkToolPanelProps = {
   toolContext: WorkToolContext;
   pinnedMachineOffline: boolean;
   pinnedMachineName: string | null;
-  /**
-   * Lane attribution: this tool is attached to a DIFFERENT lane than the one on
-   * screen. A real state warning, not an explanation of a capability — the
-   * panels drop their controls when a capability is absent rather than
-   * narrating it in a banner.
-   */
-  warningReason: string | null;
   canInsertContext: boolean;
   shouldPersistPanelAttachment: boolean;
   resumingSession: boolean;
@@ -99,16 +91,6 @@ function useWorkToolMountScope(runtimePin: OpenProjectBinding | null): string {
 
 /* ── Shared chrome ────────────────────────────────────────────────────────── */
 
-export function WarningBanner({ message }: { message: string }) {
-  return (
-    <Banner
-      layout="inline"
-      model={{ id: "work-tool-lane-warning", tone: "warning", title: message }}
-      style={{ margin: "6px 8px", flexShrink: 0 }}
-    />
-  );
-}
-
 /**
  * The pane's empty state: one line, and at most one thing to press.
  *
@@ -128,18 +110,19 @@ export function WorkToolEmptyState({
 }
 
 /** Every tool below the terminal and the browser needs a lane to talk about. */
-function NoLaneNotice() {
+function NoLaneEmptyLine() {
   return <WorkToolEmptyLine title="Select a lane to use this tool" />;
 }
 
-/** The native panels share one frame: optional warning bar, then the panel. */
+/**
+ * The native panels share one frame. It has no lane warning: a pane only ever
+ * shows its own lane's tool, so there is no other lane's session to warn about.
+ */
 function NativePanelFrame({
-  warningReason,
   padded,
   frameRef,
   children,
 }: {
-  warningReason: string | null;
   padded?: boolean;
   /** Registers the tool as mounted, for `ade ui show`. */
   frameRef?: (element: HTMLDivElement | null) => void;
@@ -147,7 +130,6 @@ function NativePanelFrame({
 }) {
   return (
     <div ref={frameRef} className="flex h-full min-h-0 flex-col">
-      {warningReason ? <WarningBanner message={warningReason} /> : null}
       <div className={cn("min-h-0 flex-1", padded ? "overflow-auto px-3 py-3" : "overflow-hidden")}>
         {children}
       </div>
@@ -234,7 +216,6 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     toolContext,
     runtimePin,
     panelSessionId,
-    warningReason,
     canInsertContext,
     shouldPersistPanelAttachment,
     onAddAttachment,
@@ -255,7 +236,7 @@ function WorkBrowserTool(props: WorkToolPanelProps) {
     );
   }
   return (
-    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
+    <NativePanelFrame frameRef={mountRef}>
       <ChatBuiltInBrowserPanel
         key={`work-browser:${mountScope}`}
         sessionId={panelSessionId}
@@ -283,7 +264,7 @@ function WorkGitTool({
 }: WorkToolPanelProps) {
   const navigate = useNavigate();
   const mountScope = useWorkToolMountScope(runtimePin);
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   if (pinnedMachineOffline) {
     return <WorkToolEmptyState title={`${pinnedMachineName} is offline`} />;
   }
@@ -313,7 +294,7 @@ function WorkGitTool({
 
 function WorkFilesTool({ laneId, runtimePin }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
     <FilesTab
       key={`work-files:${mountScope}`}
@@ -348,7 +329,6 @@ function WorkIosTool({
   laneRoot,
   panelSessionId,
   runtimePin,
-  warningReason,
   canInsertContext,
   onAddIosContext,
   onInsertDraft,
@@ -475,12 +455,12 @@ function WorkIosTool({
       });
     };
   }, [laneId]);
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   // Deliberately NOT `padded`. The Apple pane fills its host: the tools pane's
   // 12px gutter and scroll container turned the device back into the drawer
   // this rebuild replaced.
   return (
-    <NativePanelFrame warningReason={warningReason} frameRef={mountRef}>
+    <NativePanelFrame frameRef={mountRef}>
       {/* `contents`, so this ref holder generates no box at all and the pane
           stays the flex child it was — the node exists only to be queried for
           the decoder canvas during the unmount above. */}
@@ -507,7 +487,6 @@ function WorkAppControlTool({
   toolContext,
   panelSessionId,
   runtimePin,
-  warningReason,
   canInsertContext,
   shouldPersistPanelAttachment,
   onAddAttachment,
@@ -528,9 +507,9 @@ function WorkAppControlTool({
       </div>
     );
   }
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
-    <NativePanelFrame warningReason={warningReason} padded frameRef={mountRef}>
+    <NativePanelFrame padded frameRef={mountRef}>
       <ChatAppControlPanel
         // One session per lane: another lane is another session, read afresh.
         key={`work-appcontrol:${mountScope}:${laneId}`}
@@ -565,7 +544,6 @@ function WorkMacDesktopTool({
   toolContext,
   panelSessionId,
   runtimePin,
-  warningReason,
 }: WorkToolPanelProps) {
   const mountScope = useWorkToolMountScope(runtimePin);
   // `ade mac-desktop show` answers "shown" only once this is on screen.
@@ -577,9 +555,9 @@ function WorkMacDesktopTool({
       </div>
     );
   }
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
-    <NativePanelFrame warningReason={warningReason} padded frameRef={mountRef}>
+    <NativePanelFrame padded frameRef={mountRef}>
       <ChatMacDesktopPanel
         key={`work-mac-desktop:${mountScope}`}
         laneId={laneId}
@@ -598,7 +576,7 @@ function WorkPrTool({
   runtimePin,
   panelSessionId,
 }: WorkToolPanelProps) {
-  if (!laneId) return <NoLaneNotice />;
+  if (!laneId) return <NoLaneEmptyLine />;
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-col">
       <ChatPrPane

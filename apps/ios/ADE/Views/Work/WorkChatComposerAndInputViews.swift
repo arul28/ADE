@@ -733,7 +733,11 @@ struct WorkQueuedSteerStrip: View {
             await onCancel(steer.id)
           },
           onSave: { text in await onSaveEdit(steer.id, text) },
-          onDispatchInline: onDispatchInline.map { dispatch in
+          // A row the live turn cannot take (Cursor with attachments) is not
+          // offered "Send now": pressing it could only re-queue the message.
+          onDispatchInline: capability.inlineAttachmentBlockReason(
+            attachmentTypes: (steer.attachments ?? []).map(\.type)
+          ) != nil ? nil : onDispatchInline.map { dispatch in
             { await dispatch(steer.id) }
           },
           onDispatchInterrupt: onDispatchInterrupt.map { dispatch in
@@ -964,7 +968,13 @@ struct WorkQueuedSteerRow: View {
   /// Says what happens next, not when it was typed: a queued message's
   /// timestamp is always "a moment ago" and carried no information.
   private var dispositionText: String {
-    workQueuedSteerDisposition(capability: capability, turnActive: turnActive).shortText
+    workQueuedSteerDisposition(
+      capability: capability,
+      turnActive: turnActive,
+      inlineBlockedReason: capability.inlineAttachmentBlockReason(
+        attachmentTypes: (steer.attachments ?? []).map(\.type)
+      )
+    ).shortText
   }
 
   // Icon-only tap target with an accessibility label so the row's actions stay

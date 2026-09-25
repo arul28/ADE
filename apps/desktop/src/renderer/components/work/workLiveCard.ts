@@ -240,9 +240,9 @@ export function macDesktopFloatState(args: {
  *
  * App Control floats in its own player (`AppControlMiniPlayer`, on the shared
  * `FloatingPlayerShell`), not in the corner card. The rule is Mac Desktop's:
- * it shows for the chat in front when that chat may see the lane's app (its
- * agent owns the session, its agent was granted the float, it floated the app
- * by hand, or the session belongs to no chat and this is a chat of the lane),
+ * it shows for the chat in front when the app is its own lane's and that chat
+ * may see it (its agent owns the session, its agent was granted the float, it
+ * floated the app by hand, or the session belongs to no chat),
  * the chat has not turned the preview off, and a session is live.
  *
  * It is never in view while the tools pane shows App Control: a copy of the
@@ -264,13 +264,17 @@ export function appControlFloatState(args: {
   paneTool: WorkSidebarTab | null;
   paneMounted?: boolean;
 }): { present: boolean; visible: boolean } {
+  // The chat's own lane must be the lane whose app this is, whatever else
+  // holds: a grant, a hand float or ownership never shows another lane's app.
+  const ownLane = args.sessionLaneId != null && args.sessionLaneId === args.laneId;
   const authorized = Boolean(
     args.chatSessionId
+    && ownLane
     && (
       args.ownerChatSessionId === args.chatSessionId
       || args.granted
       || args.floated
-      || (args.ownerChatSessionId == null && args.sessionLaneId != null && args.sessionLaneId === args.laneId)
+      || args.ownerChatSessionId == null
     ),
   );
   const present = Boolean(

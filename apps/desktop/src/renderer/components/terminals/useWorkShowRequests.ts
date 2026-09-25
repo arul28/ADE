@@ -117,6 +117,18 @@ export function useWorkShowRequests({
   ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
     if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return "declined";
     /*
+     * A floating card shows one lane's screen or app, so it floats only when
+     * the chat's own lane is the lane the pane grants it on, and the request
+     * (when it names a lane) names that same lane. A lane-less chat, whose
+     * tools borrow the pane's fallback lane, gets none.
+     */
+    const chatLaneId = activeWorkSession.laneId || null;
+    const floatsOnChatLane = Boolean(
+      chatLaneId
+        && chatLaneId === activeLaneId
+        && (!request.laneId || request.laneId === chatLaneId),
+    );
+    /*
      * One lane for every surface: `activeLaneId`, the one the pane mounts its
      * tools under. Writing the tool into the store is a request, not a result:
      * "shown" is answered only once the tool is on screen there.
@@ -149,7 +161,7 @@ export function useWorkShowRequests({
     }
     if (request.surface === "floating-mac-desktop") {
       // Like the floating device: only over a chat of the card's own lane.
-      if (!activeWorkSession.laneId) return "declined";
+      if (!floatsOnChatLane) return "declined";
       if (isWorkSurfaceOnScreen(workSurfaceKey("mac-desktop", scopeKey, activeLaneId))) return "shown";
       if (request.auto) {
         if (macDesktopToolOpening) return "declined";
@@ -176,7 +188,7 @@ export function useWorkShowRequests({
     if (request.surface === "floating-app-control") {
       // Like the floating Mac Desktop: only over a chat of the app's own lane,
       // and never beside the pane already showing it.
-      if (!activeWorkSession.laneId) return "declined";
+      if (!floatsOnChatLane) return "declined";
       if (isWorkSurfaceOnScreen(workSurfaceKey("app-control", scopeKey, activeLaneId))) return "shown";
       if (request.auto) {
         if (appControlToolOpening) return "declined";

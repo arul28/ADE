@@ -125,7 +125,7 @@ import {
   type ProviderFamily,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
-import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
+import { CURSOR_AVAILABLE_MODE_IDS, foldLegacyCursorFastConfigValue } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import {
   AgentChatComposer,
@@ -2645,6 +2645,25 @@ function nativeControlsFromLaunchSource(
   };
 }
 
+/**
+ * Native controls plus Fast, with a Cursor Fast toggle that older builds saved
+ * as a model option folded into Fast. Fast is Cursor's speed tier now, shown
+ * as the model picker's Fast chip, so a saved launch keeps its choice.
+ */
+function launchFastModeAndControls(
+  fastMode: boolean,
+  controlsSource: Partial<LaunchConfigSessionSource>,
+  defaults: NativeControlState,
+): { fastMode: boolean; controls: NativeControlState } {
+  const controls = nativeControlsFromLaunchSource(controlsSource, defaults);
+  const folded = foldLegacyCursorFastConfigValue(fastMode, controls.cursorConfigValues);
+  if (!folded.folded) return { fastMode, controls };
+  return {
+    fastMode: folded.fastMode === true,
+    controls: { ...controls, cursorConfigValues: folded.configValues ?? {} },
+  };
+}
+
 function buildLastLaunchConfig(
   source: Partial<LaunchConfigSessionSource>,
   defaults: NativeControlState,
@@ -2652,14 +2671,15 @@ function buildLastLaunchConfig(
 ): LastLaunchConfig | null {
   const modelId = source.modelId ?? resolveRegistryModelId(source.model);
   if (!modelId) return null;
+  const { fastMode, controls } = launchFastModeAndControls(source.fastMode === true, source, defaults);
   return {
     version: 1,
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
-    fastMode: source.fastMode === true,
+    fastMode,
     cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
-    controls: nativeControlsFromLaunchSource(source, defaults),
+    controls,
     updatedAt,
   };
 }
@@ -2671,7 +2691,8 @@ function normalizeStoredLaunchConfig(
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   if (!modelId) return null;
-  const controls = nativeControlsFromLaunchSource(
+  const { fastMode, controls } = launchFastModeAndControls(
+    readStoredFastMode(value),
     isRecord(value.controls) ? value.controls : {},
     defaults,
   );
@@ -2681,7 +2702,7 @@ function normalizeStoredLaunchConfig(
     reasoningEffort: typeof value.reasoningEffort === "string" && value.reasoningEffort.trim().length
       ? value.reasoningEffort.trim()
       : null,
-    fastMode: readStoredFastMode(value),
+    fastMode,
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -2920,19 +2941,21 @@ function normalizeStoredComposerDraft(
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   const attachments = normalizeComposerFileAttachments(value.attachments);
   const updatedAt = nonEmptyString(value.updatedAt) ?? new Date(0).toISOString();
+  const { fastMode, controls } = launchFastModeAndControls(
+    readStoredFastMode(value),
+    isRecord(value.controls) ? value.controls : {},
+    defaults,
+  );
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
     mentionLabels: normalizeComposerMentionLabels(value.mentionLabels),
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
-    fastMode: readStoredFastMode(value),
+    fastMode,
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
-    controls: nativeControlsFromLaunchSource(
-      isRecord(value.controls) ? value.controls : {},
-      defaults,
-    ),
+    controls,
     attachments,
     attachmentDraftIds: normalizeStoredDraftAttachmentIds(value.attachmentDraftIds, attachments, updatedAt),
     submittedDraftTextEdit: normalizeSubmittedDraftTextEdit(value.submittedDraftTextEdit),
@@ -5987,9 +6010,6 @@ export function AgentChatPane({
       onOpenCodePermissionModeChange: (mode) => patchParallelSlot(idx, { opencodePermissionMode: mode }),
       onDroidPermissionModeChange: (mode) => patchParallelSlot(idx, { droidPermissionMode: mode }),
       onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
-      onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
-        cursorConfigValues: userSetCursorConfigValues({ ...row.cursorConfigValues, [configId]: value }),
-      }),
     };
   }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
 
@@ -13707,7 +13727,9 @@ export function AgentChatPane({
           />
         ) : (
           <ChatAppControlPanel
-            key={activeComposerRuntimeBinding?.key ?? "bound"}
+            // Keyed by lane too: a late reply for the old lane must never land
+            // in the new lane's pane.
+            key={`${activeComposerRuntimeBinding?.key ?? "bound"}:${laneId ?? ""}`}
             sessionId={selectedSessionId}
             laneId={laneId}
             projectRoot={iosSimulatorProjectRoot}
@@ -14306,14 +14328,6 @@ export function AgentChatPane({
             onOpenCodePermissionModeChange={(value) => { void updateNativeControls({ opencodePermissionMode: value }); }}
             onDroidPermissionModeChange={(value) => { void updateNativeControls({ droidPermissionMode: value }); }}
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
-            onCursorConfigChange={(configId, value) => {
-              void updateNativeControls({
-                cursorConfigValues: userSetCursorConfigValues({
-                  ...nativeControlsRef.current.cursorConfigValues,
-                  [configId]: value,
-                }),
-              });
-            }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onRemoveIosElementContext={removeIosElementContext}
             onRemoveAppControlContext={removeAppControlContext}

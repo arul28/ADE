@@ -1103,7 +1103,7 @@ declare global {
         ) => Promise<StorageCleanupResult>;
       };
       project: {
-        openRepo: (args?: { rootPath?: string }) => Promise<ProjectInfo | null>;
+        openRepo: (args?: { rootPath?: string; trustGitOwnership?: boolean }) => Promise<ProjectInfo | null>;
         chooseDirectory: (args?: {
           title?: string;
           defaultPath?: string;
@@ -1979,7 +1979,12 @@ declare global {
         startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
         queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
         completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
-        onEvent: (cb: (event: ChatLaunchEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        /** `onResync`: the event stream may have dropped events (gap, runtime restart, reconnect); re-read `list`. */
+        onEvent: (
+          cb: (event: ChatLaunchEvent) => void,
+          pin?: OpenProjectBinding | null,
+          onResync?: () => void,
+        ) => () => void;
       };
       agentChat: {
         list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;

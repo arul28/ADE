@@ -7023,10 +7023,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               pendingBytes: () => peer.ws.bufferedAmount,
             }
           : undefined;
-      // App Control frames ride the same per-socket id. Only the subscribe
-      // handler reads the sink; frames are pushed, never returned.
+      // App Control frames ride the same per-socket id. The subscribe handler
+      // pushes frames through the sink; unsubscribe reads only its connection
+      // id, so a connection can end its own streams and never another's.
       const appControlStreamSink: AppControlSyncStreamSink | undefined =
-        args.appControlSyncStream && peer.authenticated && payload.action === "appControl.streamSubscribe"
+        args.appControlSyncStream
+        && peer.authenticated
+        && (payload.action === "appControl.streamSubscribe" || payload.action === "appControl.streamUnsubscribe")
           ? {
               connectionId: peer.macDesktopConnectionId,
               sendFrame: (frame) => send(peer, "appControl.streamFrame", frame),

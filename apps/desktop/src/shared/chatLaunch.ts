@@ -271,7 +271,11 @@ export function buildLaneSetupCard(snapshot: ChatLaunchSnapshot, nowMs: number):
   const context = { kind: snapshot.kind, templateName: snapshot.templateName };
   const rows: AdeCardRow[] = snapshot.stages.map((stage) => {
     const duration = formatChatLaunchDuration(chatLaunchStageDurationMs(stage, nowMs));
-    const detail = [stage.error ?? stage.detail, stage.status === "running" ? null : duration || null]
+    // A warning keeps its detail ("Fetch timed out; using …") and adds why it warns.
+    const text = stage.status === "warning" && stage.error && stage.detail
+      ? `${stage.detail} — ${stage.error}`
+      : stage.error ?? stage.detail;
+    const detail = [text, stage.status === "running" ? null : duration || null]
       .filter((part): part is string => Boolean(part))
       .join(" · ");
     return {

@@ -85,26 +85,6 @@ function escapeIsClaimedInside(target: Element): boolean {
  */
 export type { WorkSidebarContextTarget };
 
-function shortLaneId(laneId: string): string {
-  return laneId.length <= 8 ? laneId : `${laneId.slice(0, 4)}...${laneId.slice(-3)}`;
-}
-
-function laneDisplayName(lanes: LaneSummary[], laneId: string | null): string {
-  if (!laneId) return "another lane";
-  return lanes.find((lane) => lane.id === laneId)?.name ?? shortLaneId(laneId);
-}
-
-function laneMismatchMessage(
-  toolName: string,
-  ownerLaneId: string | null,
-  activeLaneId: string | null,
-  lanes: LaneSummary[],
-): string {
-  const ownerLane = laneDisplayName(lanes, ownerLaneId);
-  const activeLane = laneDisplayName(lanes, activeLaneId);
-  return `This ${toolName} view is claimed by ${ownerLane}, not ${activeLane}. You can still view, inspect, and attach context here. Claim it from ${activeLane} to move ownership.`;
-}
-
 function hideBuiltInBrowserView(projectRoot: string | null): void {
   const browser = window.ade?.builtInBrowser;
   if (!browser) return;
@@ -272,7 +252,6 @@ export function WorkSidebar({
   const {
     statuses,
     loading: statusesLoading,
-    appControlSession,
   } = useWorkToolStatuses({
     enabled: active,
     laneId,
@@ -283,21 +262,8 @@ export function WorkSidebar({
     activeTool: tool,
   });
 
-  function resolveToolAttributionReason(): string | null {
-    if (!laneId) return null;
-    // The catalogue's names, not literals: the banner is the one place the pane
-    // used to call the simulator something the header and the picker do not.
-    if (effectiveTool === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
-      return laneMismatchMessage(workToolLabel("app-control"), appControlSession.laneId, laneId, scopedLanes);
-    }
-    // Apple has no pane-level claim: per-device ownership lives in the picker.
-    return null;
-  }
-  // Lane attribution only. "This session cannot receive inserted context" is
-  // not a warning — it is a capability the panels simply do not offer here, so
-  // they drop the controls that depend on it rather than narrating the absence
-  // in a banner above controls you can still see.
-  const warningReason = resolveToolAttributionReason();
+  // No lane warning: every tool here is this lane's own. Another lane's App
+  // Control session is never shown, so there is nothing to warn about.
   const contextDisabledReason = targetDisabledReason;
   const canInsertContext = Boolean(contextTarget && !contextDisabledReason);
   const shouldPersistPanelAttachment = canInsertContext && contextTarget?.kind === "pty";
@@ -377,7 +343,6 @@ export function WorkSidebar({
     toolContext,
     pinnedMachineOffline,
     pinnedMachineName,
-    warningReason,
     canInsertContext,
     shouldPersistPanelAttachment,
     resumingSession,
@@ -423,7 +388,6 @@ export function WorkSidebar({
     paneOwnerSessionId,
     shouldPersistPanelAttachment,
     toolContext,
-    warningReason,
   ]);
 
   // `active &&` must keep UNMOUNTING the tool, never hide it with CSS.

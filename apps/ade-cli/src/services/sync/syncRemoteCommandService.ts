@@ -5641,9 +5641,11 @@ function registerMacDesktopRemoteCommands({
         sink,
       });
     });
-    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload) =>
+    // Only the connection that subscribed may end its stream.
+    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
       macDesktopSyncStream.unsubscribe(
         requireString(payload.subscriptionId, "macDesktop.streamUnsubscribe requires subscriptionId."),
+        context.macDesktopStream?.connectionId ?? null,
       ));
   }
 }
@@ -5680,9 +5682,11 @@ function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegis
       sink,
     });
   });
-  register("appControl.streamUnsubscribe", { viewerAllowed: true }, async (payload) =>
+  // Only the connection that subscribed may end its stream.
+  register("appControl.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
     stream.unsubscribe(
       requireString(payload.subscriptionId, "appControl.streamUnsubscribe requires subscriptionId."),
+      context.appControlStream?.connectionId ?? null,
     ));
 }
 

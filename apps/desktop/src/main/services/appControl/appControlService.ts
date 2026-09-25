@@ -5,6 +5,7 @@ import http from "node:http";
 import net from "node:net";
 import path from "node:path";
 import { appControlProofCaption } from "../../../shared/proofProvenance";
+import { MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE } from "../../../shared/types/macDesktop";
 import { WebSocket, type RawData } from "ws";
 import type {
   AppControlAgentClearArgs,
@@ -144,6 +145,12 @@ type CreateAppControlServiceArgs = {
   resolvePrimaryPrUrl?: ((laneId: string) => Promise<string | null> | string | null) | null;
   /** The lane's name, for the caption of a recording that filed itself. */
   resolveLaneName?: ((laneId: string) => Promise<string | null> | string | null) | null;
+  /**
+   * The lane whose Mac Desktop display holds this process's windows, or null.
+   * Connecting to such an app from any other lane is refused: it sits on that
+   * lane's screen. The mirror of Mac Desktop's `appControlLaneForProcess`.
+   */
+  macDesktopLaneForProcess?: ((pid: number) => Promise<string | null> | string | null) | null;
 };
 
 /** How a call names its lane: directly, by the session it holds, or by its chat. */
@@ -151,6 +158,11 @@ type AppControlLaneRef = {
   laneId?: string | null;
   chatSessionId?: string | null;
   sessionId?: string | null;
+  /**
+   * Set by the RPC server for agent callers, never taken from them. An agent's
+   * status lists only its own lane's session, never every lane's.
+   */
+  agentCaller?: boolean | null;
 };
 
 /** An event as a lane controller emits it; the controller adds its `laneId`. */
@@ -1280,8 +1292,6 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   const sourceFileCache = new Map<string, string[]>();
   /** laneId → that lane's session machinery. One service per project, one session per lane. */
   const controllers = new Map<string, LaneController>();
-  /** The newest selection on any lane, for callers that do not name one. */
-  let lastSelectedItemAnyLane: AppControlContextItem | null = null;
 
   const recording = createAppControlRecording({
     logger: args.logger,
@@ -3218,7 +3228,9 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       supported: true,
       laneId,
       activeSession,
-      sessions: liveSessions(),
+      // An agent sees its own lane's session only: another lane's app, its
+      // port and its chat are not an agent's to read.
+      sessions: ref.agentCaller === true ? (activeSession ? [activeSession] : []) : liveSessions(),
       providers: providersFor(activeSession),
     };
   };
@@ -3229,6 +3241,58 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     return getStatus({ laneId });
   };
 
+  /**
+   * The lane whose live session holds this CDP port, when it is not `laneId`.
+   *
+   * The debug port is the whole app: whoever connects to it sees every frame
+   * and can drive every window. So one lane may never connect to, or launch
+   * onto, the port of an app another lane launched or attached — the same
+   * rule Apple's device ownership and Mac Desktop's window ownership apply.
+   * Ended sessions (stopped, exited, failed) hold nothing.
+   */
+  const laneHoldingPort = (port: number, laneId: string): string | null => {
+    for (const controller of controllers.values()) {
+      if (controller.laneId === laneId) continue;
+      const session = controller.getSession();
+      if (!session || session.cdpPort !== port) continue;
+      if (["stopped", "exited", "failed"].includes(session.status)) continue;
+      return controller.laneId;
+    }
+    return null;
+  };
+
+  const assertPortFree = (port: number | null, laneId: string, action: string): void => {
+    if (!port) return;
+    const holder = laneHoldingPort(port, laneId);
+    if (!holder) return;
+    throw new Error(
+      `App Control ${action} refused: CDP port ${port} belongs to lane ${holder}'s App Control session. `
+        + "A lane may only view and drive the app it launched or connected. Stop that session from its own lane first.",
+    );
+  };
+
+  /**
+   * Refuses a port whose app another lane's Mac Desktop has parked on its
+   * display. The debug port drives that app's windows, which are on the other
+   * lane's screen, so the refusal is Mac Desktop's own "owned by another lane".
+   * Nothing is read when no Mac Desktop is wired (tests, runtimes without one).
+   */
+  const assertAppNotOnOtherLanesDesktop = async (port: number | null, laneId: string, action: string): Promise<void> => {
+    const lookup = args.macDesktopLaneForProcess;
+    if (!port || !lookup) return;
+    const pid = await readAppProcessId(port).catch(() => null);
+    if (!pid) return;
+    const holder = await Promise.resolve(lookup(pid)).catch(() => null);
+    if (!holder || holder === laneId) return;
+    const error = new Error(
+      `${MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE}: App Control ${action} refused: the app on CDP port ${port} is on lane ${holder}'s Mac Desktop. `
+        + "A lane cannot view or drive another lane's app. Release it from that lane first.",
+    ) as Error & { code: string; laneId: string };
+    error.code = MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE;
+    error.laneId = holder;
+    throw error;
+  };
+
   const launch = async (launchArgs: AppControlLaunchArgs = {}): Promise<AppControlSession> => {
     requireSupportedDriver(launchArgs.driver);
     const projectRoot = normalizeProjectRoot(launchArgs.projectRoot, args.projectRoot);
@@ -3237,13 +3301,36 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     if (!laneId) {
       throw new Error("App Control could not resolve a lane for the terminal. Select a lane or pass laneId.");
     }
+    const requestedPort = asPositiveInt(launchArgs.debugPort ?? launchArgs.cdpPort);
+    assertPortFree(requestedPort, laneId, "launch");
+    await assertAppNotOnOtherLanesDesktop(requestedPort, laneId, "launch");
     return await controllerFor(laneId).launch({ ...launchArgs, laneId });
   };
 
   const connect = async (connectArgs: AppControlConnectArgs): Promise<AppControlSession> => {
     requireSupportedDriver(connectArgs.driver);
     const laneId = await requireLaneId(connectArgs, "connect");
+    const port = asPositiveInt(connectArgs.cdpPort);
+    assertPortFree(port, laneId, "connect");
+    await assertAppNotOnOtherLanesDesktop(port, laneId, "connect");
     return await controllerFor(laneId).connect({ ...connectArgs, laneId });
+  };
+
+  /**
+   * The lane whose live App Control session runs this process, if any. Mac
+   * Desktop asks before it parks a window, so one lane cannot claim another
+   * lane's App Control app onto its own screen.
+   */
+  const laneForAppProcess = async (pid: number): Promise<string | null> => {
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    for (const controller of controllers.values()) {
+      const session = controller.getSession();
+      if (!session || ["stopped", "exited", "failed"].includes(session.status)) continue;
+      if (session.pid === pid) return controller.laneId;
+      const appPid = await controller.resolveAppProcessId().catch(() => null);
+      if (appPid === pid) return controller.laneId;
+    }
+    return null;
   };
 
   const stop = async (stopArgs: AppControlStopArgs = {}): Promise<{ ok: true; previousSession: AppControlSession | null }> => {
@@ -3293,11 +3380,8 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   const onLane = <T,>(action: string, run: (controller: LaneController) => Promise<T> | T) =>
     async (ref: AppControlLaneRef = {}): Promise<T> => await run(await sessionController(ref, action));
 
-  const selectPoint = async (point: AppControlInspectPointArgs): Promise<AppControlSelectResult> => {
-    const result = await (await sessionController(point, "selectPoint")).selectPoint(point);
-    lastSelectedItemAnyLane = result.item;
-    return result;
-  };
+  const selectPoint = async (point: AppControlInspectPointArgs): Promise<AppControlSelectResult> =>
+    await (await sessionController(point, "selectPoint")).selectPoint(point);
 
   const attachToTarget = async (
     input: string | AppControlAttachToTargetArgs,
@@ -3407,6 +3491,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     stop,
     stopForChat,
     stopForLane,
+    laneForAppProcess,
     focusWindow: onLane("focusWindow", (controller) => controller.focusWindow()),
     minimizeWindow: onLane("minimizeWindow", (controller) => controller.minimizeWindow()),
     screenshot: onLane("screenshot", (controller) => controller.screenshot()),
@@ -3428,8 +3513,9 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     ): Promise<{ ok: true }> =>
       (await sessionController(terminalArgs, "signalTerminal")).signalTerminal(terminalArgs),
     getLastSelectedItem: (ref: AppControlLaneRef = {}): AppControlContextItem | null => {
+      // Only the named lane's pick: another lane's selection is not this caller's.
       const laneId = cleanClaimId(ref.laneId);
-      return laneId ? controllers.get(laneId)?.getLastSelectedItem() ?? null : lastSelectedItemAnyLane;
+      return laneId ? controllers.get(laneId)?.getLastSelectedItem() ?? null : null;
     },
     dispose: () => {
       for (const controller of controllers.values()) controller.dispose();

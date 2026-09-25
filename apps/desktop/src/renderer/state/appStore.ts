@@ -14,7 +14,7 @@ import {
   serializeAppleDevicePreferences,
   type AppleDevicePreferences,
 } from "../../shared/appleDeviceSettings";
-import { parseCodedErrorMessage } from "../lib/codedError";
+import { GIT_UNTRUSTED_FOLDER_CODE, parseCodedErrorMessage } from "../lib/codedError";
 import { toAdeRecoveryErrorCode, type AdeRecoveryErrorCode } from "../../shared/types/recovery";
 import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
@@ -1283,6 +1283,12 @@ export type AppState = {
    * until the user picks lane-vs-standalone. Null when no prompt is pending.
    */
   worktreeOpenPrompt: { inspection: ProjectPathInspection } | null;
+  /**
+   * Set when git refused a folder the user chose to open because it belongs to
+   * another account (safe.directory). Drives GitFolderTrustPrompt; `message`
+   * is main's "Git does not trust … because it belongs to …" sentence.
+   */
+  gitFolderTrustPrompt: GitFolderTrustPrompt | null;
   isNewTabOpen: boolean;
   personalChatsTabOpen: boolean;
   laneSnapshots: LaneListSnapshot[];
@@ -1534,6 +1540,10 @@ export type AppState = {
     opts?: { skipWorktreeGate?: boolean },
   ) => Promise<void>;
   dismissWorktreeOpenPrompt: () => void;
+  /** The user said Trust: add this folder to git's safe.directory and open it. */
+  trustGitFolderAndOpen: () => Promise<ProjectInfo | null>;
+  /** The user said Cancel: nothing is trusted, the folder stays closed. */
+  dismissGitFolderTrustPrompt: () => void;
   switchRemoteProject: (targetId: string, projectId: string) => Promise<OpenProjectBinding>;
   /// `preserveRemoteViewState` keeps open remote tabs' `workViewByProject` /
   /// `laneWorkViewByScope` while still dropping their stale data caches. Pass it
@@ -1693,6 +1703,29 @@ function reuseStructurallyEqualValue<T>(incoming: T, current: T): T {
   return JSON.stringify(incoming) === JSON.stringify(current) ? current : incoming;
 }
 
+export type GitFolderTrustPrompt = { rootPath: string; message: string };
+
+/**
+ * What a failed open or switch leaves behind: the banner, or — when git refused
+ * the folder for belonging to another account — the "Trust this folder?"
+ * prompt instead of a banner. Only a user-initiated open reaches here, which is
+ * what makes asking appropriate.
+ */
+function transitionFailureState(
+  kind: "opening" | "switching",
+  error: unknown,
+  rootPath: string | null,
+): { projectTransitionError: ProjectTransitionError | null; gitFolderTrustPrompt?: GitFolderTrustPrompt } {
+  const parsed = parseCodedErrorMessage(error);
+  if (parsed.code === GIT_UNTRUSTED_FOLDER_CODE && rootPath) {
+    return {
+      projectTransitionError: null,
+      gitFolderTrustPrompt: { rootPath, message: parsed.message },
+    };
+  }
+  return { projectTransitionError: formatProjectTransitionError(kind, error) };
+}
+
 const createAppState: StateCreator<AppState> = (set, get) => {
   let warmupTimer: number | null = null;
   /** Monotonic counter incremented before each lane refresh request.
@@ -1723,6 +1756,78 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     }, delay);
   };
 
+  /**
+   * The open itself, once a folder is known: bind it in main and apply the
+   * result. Shared by the picker flow and by "Trust" on the git-ownership
+   * prompt, which re-opens the same folder with `trustGitOwnership`.
+   */
+  const openPickedRepo = async (
+    picked: string,
+    extras: { trustGitOwnership?: boolean },
+  ): Promise<ProjectInfo | null> => {
+    const project = await window.ade.project.openRepo({ rootPath: picked, ...extras });
+    if (!project) {
+      set({ projectTransition: null, lanesLoading: false });
+      return null;
+    }
+    get().setProject(project);
+    set((prev) => {
+      const restoredSelection =
+        prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
+      const cachedLanes = prev.laneCacheByProject[project.rootPath];
+      // personalChatsTabOpen is deliberately omitted so the machine-level Chats tab survives project transitions.
+      return {
+        projectHydrated: true,
+        showWelcome: false,
+        projectTransition: null,
+        projectTransitionError: null,
+        isNewTabOpen: false,
+        laneSnapshots: cachedLanes?.laneSnapshots ?? [],
+        lanes: cachedLanes?.lanes ?? [],
+        lanesLoading: !cachedLanes,
+        laneDeleteProgressByLaneId: {},
+        selectedLaneId: restoredSelection.laneId,
+        focusedSessionId: restoredSelection.sessionId,
+        laneInspectorTabs: {},
+        keybindings: null,
+        terminalAttention: EMPTY_TERMINAL_ATTENTION,
+        ctoAttention: EMPTY_CTO_ATTENTION,
+        dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
+        dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
+      };
+    });
+    invalidateAiDiscoveryCache(project.rootPath);
+    invalidateProjectConfigCache(project.rootPath);
+    void Promise.allSettled([
+      get().refreshLanes({ includeStatus: false }),
+      get().refreshKeybindings()
+    ]);
+    scheduleProjectHydration();
+    return project;
+  };
+
+  const openRepoAtPath = async (
+    rootPath: string,
+    extras: { trustGitOwnership?: boolean },
+  ): Promise<ProjectInfo | null> => {
+    ++laneRefreshVersion;
+    set({
+      projectTransition: { kind: "opening", rootPath, startedAtMs: Date.now() },
+      projectTransitionError: null,
+      projectBinding: null,
+    });
+    try {
+      return await openPickedRepo(rootPath, extras);
+    } catch (error) {
+      set({
+        projectTransition: null,
+        lanesLoading: false,
+        ...transitionFailureState("opening", error, rootPath),
+      });
+      throw error;
+    }
+  };
+
   return ({
   project: null,
   projectBinding: null,
@@ -1733,6 +1838,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   projectTransition: null,
   projectTransitionError: null,
   worktreeOpenPrompt: null,
+  gitFolderTrustPrompt: null,
   isNewTabOpen: false,
   personalChatsTabOpen: false,
   laneSnapshots: [],
@@ -1970,6 +2076,23 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
   dismissWorktreeOpenPrompt: () => set({ worktreeOpenPrompt: null }),
+  dismissGitFolderTrustPrompt: () => {
+    const prompt = get().gitFolderTrustPrompt;
+    if (!prompt) return;
+    set({
+      gitFolderTrustPrompt: null,
+      projectTransitionError: {
+        message: `ADE did not open this folder. ${prompt.message} Nothing was changed; open it again to trust it.`,
+        retryRootPath: prompt.rootPath,
+      },
+    });
+  },
+  trustGitFolderAndOpen: async () => {
+    const prompt = get().gitFolderTrustPrompt;
+    if (!prompt) return null;
+    set({ gitFolderTrustPrompt: null });
+    return await openRepoAtPath(prompt.rootPath, { trustGitOwnership: true });
+  },
   setLanes: (lanes) => set({ lanes, lanesLoading: false }),
   setLaneDeleteProgressByLaneId: (next) =>
     set((prev) => ({
@@ -2621,13 +2744,14 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       projectTransitionError: null,
       projectBinding: null,
     });
+    let picked: string | null = null;
     try {
       // Pick the target folder first (native picker, no bind yet) so the
       // worktree gate can run before we bind — the OS "Open repository" dialog
       // must behave like the in-app open flows. chooseDirectory uses the same
       // showOpenDialog(["openDirectory"]) as the fused openRepo picker; passing
       // the matching title keeps it visually identical.
-      const picked = await window.ade.project.chooseDirectory({ title: "Open repository" });
+      picked = await window.ade.project.chooseDirectory({ title: "Open repository" });
       if (!picked) {
         set({ projectTransition: null, lanesLoading: false });
         return null;
@@ -2655,50 +2779,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         }
       }
 
-      const project = await window.ade.project.openRepo({ rootPath: picked });
-      if (!project) {
-        set({ projectTransition: null, lanesLoading: false });
-        return null;
-      }
-      get().setProject(project);
-      set((prev) => {
-        const restoredSelection =
-          prev.laneSelectionByProject[project.rootPath] ?? { laneId: null, sessionId: null };
-        const cachedLanes = prev.laneCacheByProject[project.rootPath];
-        // personalChatsTabOpen is deliberately omitted so the machine-level Chats tab survives project transitions.
-        return {
-          projectHydrated: true,
-          showWelcome: false,
-          projectTransition: null,
-          projectTransitionError: null,
-          isNewTabOpen: false,
-          laneSnapshots: cachedLanes?.laneSnapshots ?? [],
-          lanes: cachedLanes?.lanes ?? [],
-          lanesLoading: !cachedLanes,
-          laneDeleteProgressByLaneId: {},
-          selectedLaneId: restoredSelection.laneId,
-          focusedSessionId: restoredSelection.sessionId,
-          laneInspectorTabs: {},
-          keybindings: null,
-          terminalAttention: EMPTY_TERMINAL_ATTENTION,
-          ctoAttention: EMPTY_CTO_ATTENTION,
-          dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
-          dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
-        };
-      });
-      invalidateAiDiscoveryCache(project.rootPath);
-      invalidateProjectConfigCache(project.rootPath);
-      void Promise.allSettled([
-        get().refreshLanes({ includeStatus: false }),
-        get().refreshKeybindings()
-      ]);
-      scheduleProjectHydration();
-      return project;
+      return await openPickedRepo(picked, {});
     } catch (error) {
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: formatProjectTransitionError("opening", error),
+        ...transitionFailureState("opening", error, picked),
       });
       throw error;
     }
@@ -2912,13 +2998,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         }).catch(() => {});
       }, 750);
     } catch (error) {
-      const projectTransitionError = formatProjectTransitionError("switching", error);
+      const failure = transitionFailureState("switching", error, rootPath);
+      const projectTransitionError = failure.projectTransitionError;
       set({
         projectTransition: null,
         lanesLoading: false,
-        projectTransitionError: projectTransitionError.code
-          ? { ...projectTransitionError, rootPath }
-          : { ...projectTransitionError, retryRootPath: rootPath },
+        ...failure,
+        projectTransitionError: !projectTransitionError
+          ? null
+          : projectTransitionError.code
+            ? { ...projectTransitionError, rootPath }
+            : { ...projectTransitionError, retryRootPath: rootPath },
       });
       throw error;
     }

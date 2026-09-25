@@ -70,3 +70,56 @@ export function effectiveCursorModeId(
   if (explicit.length) return explicit;
   return legacyPermissionModeToCursorModeId(permissionMode) ?? CURSOR_DEFAULT_MODE_ID;
 }
+
+/**
+ * Cursor's Fast toggle, as older builds stored it: a model option
+ * (`cursorConfigValues.fast`) rendered as a loose prompt-box control. Fast is
+ * now the model's speed tier, carried by the chat's `fastMode` like every other
+ * provider's Fast chip.
+ */
+function isLegacyCursorFastConfigKey(key: string): boolean {
+  return /^fast(?:[_-]?mode)?$/i.test(key.trim());
+}
+
+function legacyCursorFastConfigBoolean(value: unknown): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1 ? true : value === 0 ? false : null;
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  if (["true", "on", "yes", "1"].includes(normalized)) return true;
+  if (["false", "off", "no", "0"].includes(normalized)) return false;
+  return null;
+}
+
+/**
+ * Fold a stored Cursor Fast option into `fastMode`.
+ *
+ * An explicit stored value wins over `fastMode`: the old Fast chip never showed
+ * for these models, so the option was the user's only way to pick. The option
+ * key is dropped either way, so it can never again reach Cursor as a config
+ * value that overrides the Fast chip. Returns the inputs unchanged when there
+ * is no Fast option to fold.
+ */
+export function foldLegacyCursorFastConfigValue<V>(
+  fastMode: boolean | null | undefined,
+  configValues: Readonly<Record<string, V>> | null | undefined,
+): { fastMode: boolean | null | undefined; configValues: Record<string, V> | null | undefined; folded: boolean } {
+  if (!configValues) return { fastMode, configValues: configValues as Record<string, V> | null | undefined, folded: false };
+  const keys = Object.keys(configValues).filter(isLegacyCursorFastConfigKey);
+  if (!keys.length) return { fastMode, configValues: configValues as Record<string, V>, folded: false };
+  let nextFastMode = fastMode;
+  const kept: Record<string, V> = {};
+  for (const [key, value] of Object.entries(configValues)) {
+    if (!isLegacyCursorFastConfigKey(key)) {
+      kept[key] = value;
+      continue;
+    }
+    const parsed = legacyCursorFastConfigBoolean(value);
+    if (parsed != null) nextFastMode = parsed;
+  }
+  return {
+    fastMode: nextFastMode,
+    configValues: Object.keys(kept).length ? kept : undefined,
+    folded: true,
+  };
+}

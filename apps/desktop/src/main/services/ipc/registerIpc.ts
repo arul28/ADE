@@ -1805,7 +1805,7 @@ export function registerIpc({
   injectedProjectRecoveryService?: ProjectRecoveryService | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
-  switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  switchProjectFromDialog: (selectedPath: string, options?: { trustGitOwnership?: boolean }) => Promise<ProjectInfo>;
   /**
    * Roots main has tried to open. Read-only here: main.ts is the single
    * writer (it records a root only after resolving it to a real repository),
@@ -2829,20 +2829,20 @@ export function registerIpc({
   };
 
   /**
-   * The lane an App Control call acts on. Every call carries one: App Control
-   * keeps a session per lane and refuses a call that names none.
+   * The lane an App Control call acts on: the pane's own lane, or its chat's
+   * lane. App Control keeps a session per lane and refuses a call that names
+   * none. A session id is not accepted: it would name a lane through another
+   * lane's session, and a pane only ever acts on its own lane.
    */
   const parseAppControlLaneRef = (
     record: Record<string, unknown>,
     channel: string,
-  ): { laneId?: string | null; chatSessionId?: string | null; sessionId?: string | null } => {
-    const ref: { laneId?: string | null; chatSessionId?: string | null; sessionId?: string | null } = {};
+  ): { laneId?: string | null; chatSessionId?: string | null } => {
+    const ref: { laneId?: string | null; chatSessionId?: string | null } = {};
     const laneId = optionalAppControlString(record, "laneId", channel, 512);
     if (laneId !== undefined) ref.laneId = laneId;
     const chatSessionId = optionalAppControlString(record, "chatSessionId", channel, 128);
     if (chatSessionId !== undefined) ref.chatSessionId = chatSessionId;
-    const sessionId = optionalAppControlString(record, "sessionId", channel, 128);
-    if (sessionId !== undefined) ref.sessionId = sessionId;
     return ref;
   };
 
@@ -4239,7 +4239,10 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.projectOpenRepo, async (event, args: { rootPath?: string } = {}): Promise<ProjectInfo | null> => {
+  ipcMain.handle(IPC.projectOpenRepo, async (
+    event,
+    args: { rootPath?: string; trustGitOwnership?: boolean } = {},
+  ): Promise<ProjectInfo | null> => {
     // The chosen root is only known in the main process (the OS dialog picks
     // it), so a coded open failure must carry it back to the renderer for the
     // recovery screen — otherwise a disk-full/db-repair failure from the Open
@@ -4249,7 +4252,11 @@ export function registerIpc({
       const requestedRoot = args.rootPath?.trim();
       if (requestedRoot) {
         chosenRoot = requestedRoot;
-        return await switchProjectFromDialog(requestedRoot);
+        // `trustGitOwnership` is the user's "Trust" answer to the
+        // git_untrusted_folder prompt for this same folder.
+        return await switchProjectFromDialog(requestedRoot, {
+          trustGitOwnership: args.trustGitOwnership === true,
+        });
       }
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
       const options: Electron.OpenDialogOptions = {
@@ -9498,7 +9505,10 @@ export function registerIpc({
 
   ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
-    return ensureAppControl().getStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetStatus));
+    const status = await ensureAppControl().getStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetStatus));
+    // A pane shows its own lane's session only; it never gets another lane's
+    // session to fall back to.
+    return { ...status, sessions: status.activeSession ? [status.activeSession] : [] };
   });
 
   ipcMain.handle(IPC.appControlLaunch, async (event, arg) => {

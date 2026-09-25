@@ -4071,6 +4071,38 @@ export function supportsActiveTurnDispatchMode(
 }
 
 /**
+ * True when `provider`'s "inline" channel can carry attachments (files, images,
+ * and context items such as browser or simulator captures).
+ *
+ * Cursor's `Run.steer(text)` takes text only, so a Cursor message with any
+ * attachment can never join the running turn: it is staged for after the turn,
+ * or sent through interrupt-and-continue, which starts a real turn that carries
+ * the attachments. Surfaces offering "inline" read this so they never offer a
+ * steer that is certain to be refused. iOS mirrors it by hand beside the table.
+ */
+export function activeTurnInlineCarriesAttachments(provider: AgentChatProvider | null | undefined): boolean {
+  return provider !== "cursor";
+}
+
+/**
+ * Why a message cannot be sent during the turn because of what it carries, or
+ * null when it can. Cursor's live-run steer takes text only
+ * (`activeTurnInlineCarriesAttachments`), so a message with images or other
+ * attachments waits for the turn or interrupts it; offering "Send during turn"
+ * would only queue it with a notice every time it was pressed.
+ */
+export function activeTurnInlineAttachmentBlock(
+  provider: AgentChatProvider | null | undefined,
+  message: { attachments: readonly AgentChatFileRef[]; contextAttachmentCount: number },
+): string | null {
+  if (activeTurnInlineCarriesAttachments(provider)) return null;
+  if (!message.attachments.length && message.contextAttachmentCount === 0) return null;
+  const imagesOnly = message.contextAttachmentCount === 0
+    && message.attachments.every((attachment) => attachment.type !== "file");
+  return `${imagesOnly ? "Images" : "Attachments"} can't join a running ${providerDisplayLabel(provider, "agent")} turn.`;
+}
+
+/**
  * True when the provider's "interrupt" cancels the live run and resends on the
  * same thread (so the turn continues from the new message) rather than folding
  * the message into the running query. Lives beside the table because it is the

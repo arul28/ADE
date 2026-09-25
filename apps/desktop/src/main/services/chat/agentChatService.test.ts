@@ -25349,12 +25349,12 @@ describe("createAgentChatService", () => {
           attachments: [{ path: imagePath, type: "image" }],
         });
 
-        // The steer channel is never even asked, so the notice must not blame
-        // the agent for a refusal ADE made itself.
+        // The steer channel is never even asked, and the notice says why: the
+        // image is what the running turn cannot take, so pressing Steer again
+        // cannot help.
         expect(mockState.cursorSdkSteerCalls).toEqual([]);
-        const notice = noticeTexts(events).find((text) => text.includes("send as a new message"));
-        expect(notice).toBeTruthy();
-        expect(notice).not.toMatch(/cursor/i);
+        const notice = noticeTexts(events).find((text) => text.includes("after the turn"));
+        expect(notice).toMatch(/images can't join a running cursor turn/i);
         expect(events.some((event) =>
           event.event.type === "user_message" && event.event.deliveryState === "queued")).toBe(true);
       });

@@ -1596,6 +1596,9 @@ export async function createAdeRuntime(args: {
         },
         getScreencastRecorder: () =>
           appControlRecorderBridgeHolder.isAttached() ? appControlRecorderBridgeHolder.current : null,
+        // A lane may not attach to an app another lane's Mac Desktop holds.
+        // Read at call time: the Mac Desktop service is built just below.
+        macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
@@ -1658,6 +1661,9 @@ export async function createAdeRuntime(args: {
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        // A lane may not claim another lane's App Control app onto its screen.
+        appControlLaneForProcess: (pid: number): Promise<string | null> | null =>
+          appControlService?.laneForAppProcess(pid) ?? null,
         // The lease question rides the normal pending-input card.
         requestChatInput: async (input) => {
           const chat = agentChatServiceHolder.current;
@@ -1999,13 +2005,28 @@ export async function createAdeRuntime(args: {
             return false;
           }
         },
-        resolveBase: async () => {
-          const { baseRef, fetchSucceeded } = await resolveLaneCreateRemoteBaseDetailed({
+        resolveBase: async (progress) => {
+          const resolution = await resolveLaneCreateRemoteBaseDetailed({
             laneService,
             gitService,
             projectConfigService,
+            ...(progress?.onWaitingForStaleFetch ? { onWaitingForStaleFetch: progress.onWaitingForStaleFetch } : {}),
           });
-          return { baseRef, fetch: baseRef ? (fetchSucceeded === false ? "failed" : "ok") : "skipped" };
+          const { baseRef, fetchSucceeded, fetchOutcome, fetchError, freshness, stale } = resolution;
+          const fetch = !baseRef
+            ? "skipped"
+            : fetchSucceeded === false
+              ? (fetchOutcome === "timeout" ? "timeout" : "failed")
+              : "ok";
+          return {
+            baseRef,
+            fetch,
+            fetchError: fetchError ?? null,
+            lastFetchedAtMs: freshness?.lastFetchedAtMs ?? null,
+            baseCommittedAtMs: freshness?.committedAtMs ?? null,
+            behindLocal: freshness?.behindLocal ?? null,
+            stale: stale === true,
+          };
         },
         resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
         resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),

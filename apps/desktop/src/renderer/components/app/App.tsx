@@ -21,6 +21,7 @@ import {
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
 import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
+import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
@@ -1408,6 +1409,8 @@ export function App() {
           <DialogHost />
           {/* "May this agent use the ADE browser?" — only when the setting asks. */}
           <BrowserAgentAccessPromptHost />
+          {/* "Trust this folder?" — git refused a folder the user chose to open. */}
+          <GitFolderTrustPromptHost />
         </div>
       </Router>
     </LaunchGate>

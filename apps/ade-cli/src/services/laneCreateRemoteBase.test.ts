@@ -46,19 +46,19 @@ afterEach(() => {
 describe("resolveLaneCreateRemoteBase", () => {
   it("returns the tracked upstream when it resolves, with the fetch outcome", async () => {
     const { deps } = setup(true);
-    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toEqual({ baseRef: "origin/main", fetchSucceeded: true });
+    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toMatchObject({ baseRef: "origin/main", fetchSucceeded: true });
   });
 
   it("returns null (local default) when the configured upstream is gone", async () => {
     const { deps } = setup(false);
     await expect(resolveLaneCreateRemoteBase(deps)).resolves.toBeNull();
-    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toEqual({ baseRef: null, fetchSucceeded: true });
+    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toMatchObject({ baseRef: null, fetchSucceeded: true });
     expect(deps.onWarning).toHaveBeenCalledWith(expect.stringContaining("no longer exists"));
   });
 
   it("reports a failed fetch structurally instead of through the warning text", async () => {
     const { deps } = setup(true);
     (deps.gitService as unknown as { fetch: ReturnType<typeof vi.fn> }).fetch.mockRejectedValueOnce(new Error("offline"));
-    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toEqual({ baseRef: "origin/main", fetchSucceeded: false });
+    await expect(resolveLaneCreateRemoteBaseDetailed(deps)).resolves.toMatchObject({ baseRef: "origin/main", fetchSucceeded: false, fetchOutcome: "failed" });
   });
 });
