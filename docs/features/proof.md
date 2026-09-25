@@ -238,6 +238,32 @@ databases, private keys, and certificates are rejected even when they are under
 the project root. The broker resolves symlinks for both its allow- and deny-root
 checks and opens the source with `O_NOFOLLOW` before copying.
 
+### `ade proof publish`
+
+Post chosen proof to a GitHub pull request as one comment.
+
+```
+ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading "<text>"] [--note "<text>"]
+```
+
+- The CLI reads the items through `list_computer_use_artifacts`, so a caller
+  can post only its own chat's or lane's proof.
+- It runs `gh pr comment <pr> --body-file … --attach …` on the machine that
+  holds the files (`apps/ade-cli/src/proofPublish.ts`). Each item becomes a
+  `proof-N.ext` image reference plus its caption; `gh` uploads the files as
+  GitHub attachments and rewrites the references. A video renders as a player.
+- It needs `gh` 2.99.0 or later and refuses an older one with the upgrade
+  command. A PR number needs a GitHub remote in the current repository;
+  otherwise pass the PR URL.
+- Limits: 10 MB per picture; 10 MB per video on GitHub Free, 100 MB on paid
+  plans. A larger item, a trace, or an item with no stored file is skipped
+  with the reason; a video over 10 MB posts with a warning.
+- After the post, `link_computer_use_artifacts_to_pr` adds a `github_pr`
+  owner link (`published_to`, keyed by the PR URL, `metadata.commentUrl`) to
+  each posted item. The drawer shows it as a "PR #N" chip. If the link fails,
+  the command still reports the comment and prints a warning.
+- Exit codes: `0` when the comment posted; `1` when nothing posted.
+
 ### `ade proof list`
 
 Print the proof set for the current session as JSON, or as a table with `--text`.
@@ -357,24 +383,35 @@ Proof surfaces across chat and linked workflow contexts:
   reveals a horizontally scrollable filmstrip directly below that turn. It
   starts collapsed, remains in chronology when newer messages arrive, and is
   never pinned to the thread tail.
-- **Proof drawer** — the current chat's complete collected set, with the same
-  previews and captions plus irreversible artifact deletion. It is a
-  collection view, not an approval workflow: there are no
-  accept/reject/publish controls and local files are never handed to Finder
-  just to see them.
+- **Proof drawer** — the Proof section of the chat actions drawer
+  (`ChatComputerUsePanel.tsx`, grouping in `shared/proofDrawerModel.ts`).
+  Proof is grouped by the turn that filed it, newest first, under that turn's
+  prompt. Inside a turn, "In the answer" (items an answer cites, in citation
+  order) comes before "Also filed". Two items a `proof-compare` block names
+  show as one Before/After pair. A search box, a Pictures/Videos filter, an
+  "In answers" filter and a PR chip (from the `github_pr` owner link) sit on
+  top. Deletion stays. A turn's "N proof" chip in the thread counts only proof
+  the answer does not already show.
+- **Chat actions drawer layout** — the drawer never scrolls as a whole
+  (`ChatActionsDrawerPanel.tsx`). It grows with its content up to the pane's
+  height; past that, each section keeps its own region and scrolls inside it.
+  A region never shrinks below its content or 160 px, whichever is smaller.
+  Tasks, Subagents, Proof and Sources share one collapsible, sticky header.
 - **iOS chat** — proof stays in the message timeline, and the Proof sheet
-  (`WorkProofSheet.swift`) is the phone's drawer: the chat's artifacts newest
-  first, each row a thumbnail plus "kind · when", pull-to-refresh only. Tapping
+  (`WorkProofSheet.swift`) is the phone's drawer. It uses the same grouping as
+  the desktop (`workProofDrawerGroups`) and the same four tabs (All, Pictures,
+  Videos, In answers) as a segmented control under the search field. Each turn
+  is one quiet line (the prompt and the time) over a two-column grid of
+  thumbnails; a Before/After pair fills its row so the two pictures sit side
+  by side. Pull-to-refresh. Tapping
   a row opens a full-screen viewer with **one page per artifact**, so the rest
   of the set is one swipe away; page dots show only when there is somewhere to
   swipe. Preview/share actions, no review-state chrome. See
   [iOS companion › The Proof sheet and viewer](./sync-and-multi-device/ios-companion.md#the-proof-sheet-and-viewer).
-- **Where it came from** — the drawer tile, the timeline card, and the iOS
-  Proof sheet row print one quiet line under the title: `Recorded by ADE ·
-  10:24–10:25 AM` (plus `· idle cut 1:52` when the recorder cut still time),
-  `Captured by ADE`, or `Attached by the agent`. A video
-  flagged as older adds an amber line: `Recorded at 5:19 AM, before this
-  request.` Rows without `proofSource` print nothing.
+- **Where it came from** — the record keeps `proofSource`, but no proof
+  surface draws it any more (the owner found the lines to be noise); the iOS
+  row still speaks it to VoiceOver. A video flagged as older keeps its amber
+  line: `Recorded at 5:19 AM, before this request.`
 - **Lane and PR review** — linked proof can be surfaced alongside lane work and PR closeout.
 
 Both clients resolve media through the owning runtime instead of opening the
@@ -392,6 +429,48 @@ unreachable or a desktop remote preview exceeds its bound, the artifact remains
 listed with an unavailable-preview state.
 
 ---
+
+## Proof in the answer
+
+The agent puts proof inside its own answer, directly under the claim it
+proves. Two plain-markdown forms (`apps/desktop/src/shared/proofCitation.ts`):
+
+- **Citation:** `![caption](ade-proof://<artifactId>)`. A picture shows inline
+  at a readable size; a video plays inline. The caption goes under it, with the
+  provenance line.
+- **Comparison:** a fenced `proof-compare` block with `before: <id> <label>`,
+  `after: <id> <label>` and an optional `caption: <sentence>`. The two sides
+  show side by side.
+
+Every proof command prints the id and a ready snippet (`cite: ![…](ade-proof://…)`),
+and its JSON result carries `artifacts[].citation`. There is no limit on how
+many items an answer cites. An agent can also compose its own picture (a crop,
+a side-by-side), attach it, and cite it.
+
+The answer shows each item with its caption only. It adds no badge and no
+provenance line; the one exception is the amber line for a video recorded
+before the request. The drawer still shows where each item came from.
+
+Each new artifact that a chat owns stores `metadata.turnId`: the id of the
+chat's latest turn when it was filed, the same id the transcript's `done` row
+carries. The broker stamps it; callers cannot set it.
+
+Renderers:
+
+- **Desktop and web client:** `chatMarkdownBlock.tsx` renders the image
+  override and the fence through `ChatProofCitation.tsx`. The figure finds the
+  artifact in the chat's proof list, else reads it by id through the chat's
+  runtime (`computerUse.listArtifacts({ artifactId })`), and loads bytes with
+  `useArtifactPreview` like the drawer. A click opens `MediaLightbox`
+  (`components/ui/MediaLightbox.tsx`): the picture fits the window, with a
+  floating copy, download and close toolbar. The Files image viewer has the
+  same copy and download actions.
+- **iOS:** `WorkMarkdownParsing.swift` makes a `proofCitation` block from a
+  line that holds only a citation, and a `proofCompare` block from the fence.
+  `WorkProofCitationView` reads the chat's proof list and loads bytes with the
+  proof sheet's loader. An id outside the chat's list shows "This chat has no
+  proof with the id …".
+- A client that predates this shows the alt text or the code fence.
 
 ## For agents
 

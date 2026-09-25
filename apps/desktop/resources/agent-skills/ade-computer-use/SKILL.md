@@ -56,6 +56,12 @@ refuse the user's real screen unless you pass `--real-screen`. Pass it only
 when the user asks for proof of their own screen. The **ade-proof-artifacts**
 skill covers attaching files and confirming a filing.
 
+Each of these commands prints a `cite:` line, such as
+`![Settings saved](ade-proof://<id>)`. Paste it into your answer directly under
+the claim it proves: the picture shows there, and a video plays there. For a
+before/after, use a `proof-compare` block (see **ade-proof-artifacts**). Caption
+each item, and say what it does not show.
+
 ## Show the user
 
 ```bash

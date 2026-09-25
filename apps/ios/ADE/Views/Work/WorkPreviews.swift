@@ -1169,6 +1169,48 @@ enum WorkProofPreviewData {
     ),
   ]
 
+  /// Proof tagged with the turn that filed it, for the grouped sheet and the
+  /// answer fixture.
+  static let turnArtifacts: [ComputerUseArtifactSummary] = artifacts.map { artifact in
+    var tagged = artifact
+    let turn = ["proof-1", "proof-2", "proof-3"].contains(artifact.id) ? "turn-2" : "turn-1"
+    tagged.metadataJson = "{\"turnId\":\"\(turn)\",\"proofSource\":\"ade-capture\"}"
+    return tagged
+  }
+
+  /// The second turn's answer, citing proof the way an agent writes it.
+  static let answerMarkdown = """
+  The dashboard loads, and the empty inbox now explains itself.
+
+  ![The dashboard after sign-in](ade-proof://proof-1)
+
+  ```proof-compare
+  before: proof-3 Profile page before the change
+  after: proof-2 Inbox with every filter cleared
+  caption: The empty state now names the filters to clear. The preview data has no messages.
+  ```
+  """
+
+  @MainActor static let transcript: [WorkChatEnvelope] = {
+    let sessionId = WorkPreviewData.chatSummary.sessionId
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    func at(_ minutesAgo: Int, _ sequence: Int, _ event: WorkChatEvent) -> WorkChatEnvelope {
+      WorkChatEnvelope(
+        sessionId: sessionId,
+        timestamp: formatter.string(from: Date().addingTimeInterval(TimeInterval(-minutesAgo * 60))),
+        sequence: sequence,
+        event: event
+      )
+    }
+    return [
+      at(50, 1, .userMessage(text: "Record the sign-in flow on docs.example.com", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: true)),
+      at(46, 2, .assistantText(text: "I recorded the sign-in flow.", turnId: "turn-1", itemId: "a1")),
+      at(20, 3, .userMessage(text: "Check the dashboard and the empty inbox", attachments: nil, turnId: "turn-2", steerId: nil, deliveryState: nil, processed: true)),
+      at(1, 4, .assistantText(text: answerMarkdown, turnId: "turn-2", itemId: "a2")),
+    ]
+  }()
+
   static let toolsFrame = pageImage(
     host: "app.example.com/dashboard",
     heading: "Dashboard",
@@ -1270,6 +1312,8 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// to screenshot that the list does NOT banner it. See
   /// `WorkConnectivityBannerPreviewHost`.
   case connectivityBanner = "connectivity-banner"
+  /// An answer that cites proof inline and as a before/after pair.
+  case proofAnswer = "proof-answer"
   /// The real Work tab list seeded with lanes, subagents, CLI rows and PR
   /// badges. See `WorkListPreviewHost`.
   case workList = "work-list"
@@ -1307,7 +1351,8 @@ struct ADEPreviewScreenHost: View {
     switch screen {
     case .proofList:
       WorkProofSheet(
-        artifacts: WorkProofPreviewData.artifacts,
+        artifacts: WorkProofPreviewData.turnArtifacts,
+        transcript: WorkProofPreviewData.transcript,
         artifactContent: $content,
         isRefreshing: false,
         refreshError: nil,
@@ -1323,6 +1368,17 @@ struct ADEPreviewScreenHost: View {
         onRefresh: {},
         onLoadArtifact: { _, _ in }
       )
+    case .proofAnswer:
+      ScrollView {
+        WorkMarkdownRenderer(markdown: WorkProofPreviewData.answerMarkdown)
+          .padding(16)
+      }
+      .background(ADEColor.pageBackground.ignoresSafeArea())
+      .environment(\.workProofCitations, WorkProofCitationContext(
+        artifactsById: Dictionary(uniqueKeysWithValues: WorkProofPreviewData.turnArtifacts.map { ($0.id, $0) }),
+        content: content,
+        load: { _, _ in }
+      ))
     case .proofViewer:
       WorkProofViewer(
         artifacts: WorkProofPreviewData.artifacts.reversed(),

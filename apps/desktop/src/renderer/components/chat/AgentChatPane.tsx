@@ -13456,12 +13456,10 @@ export function AgentChatPane({
     />
   );
   const proofTabContent = (
-    <div ref={proofDrawerRef} className="px-4 py-3">
-      {computerUseSnapshot && proofArtifactCount === 0 ? (
-        <p className="font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
-      ) : null}
+    <div ref={proofDrawerRef}>
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
+        events={selectedEventsForDisplay}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
         allowLocalArtifactProtocol={!isRemoteChat}
       />

@@ -14901,7 +14901,8 @@ describe("ADE CLI", () => {
     ADE_CHAT_SESSION_ID: undefined,
   }, () => {
     const plain = expectExecutePlan(buildCliPlan(["browser", "proof", "--tab", "tab-1", "--caption", "Verified"]));
-    expect(plain.steps).toHaveLength(2);
+    // observe → ingest → re-read through ade proof list.
+    expect(plain.steps).toHaveLength(3);
     expect(plain.steps[0]?.params).toMatchObject({
       arguments: { domain: "built_in_browser", action: "observe", args: { tabId: "tab-1", includeDom: false } },
     });
@@ -14918,14 +14919,22 @@ describe("ADE CLI", () => {
         ],
       },
     });
+    expect(plain.steps[2]).toMatchObject({
+      key: "verify",
+      params: { name: "list_computer_use_artifacts" },
+    });
 
     const proof = expectExecutePlan(buildCliPlan(["browser", "proof", "--tab", "tab-1", "--har", "--caption", "Checkout 500s"]));
-    // observe → exportHar → ingest, so both artifacts come from the same tab
-    // state and land under the same owners.
-    expect(proof.steps).toHaveLength(3);
+    // observe → exportHar → ingest → re-read, so both artifacts come from the
+    // same tab state and land under the same owners, then confirm they did.
+    expect(proof.steps).toHaveLength(4);
     expect(proof.steps[1]?.params).toMatchObject({
       name: "run_ade_action",
       arguments: { domain: "built_in_browser", action: "exportHar", args: { tabId: "tab-1" } },
+    });
+    expect(proof.steps[3]).toMatchObject({
+      key: "verify",
+      params: { name: "list_computer_use_artifacts" },
     });
     const ingest = proof.steps[2]?.params;
     if (typeof ingest !== "function") throw new Error("Expected an ingest params builder");
@@ -15181,12 +15190,17 @@ describe("ADE CLI", () => {
       ]);
       expect(plan.kind).toBe("execute");
       if (plan.kind !== "execute") return;
-      expect(plan.steps).toHaveLength(2);
+      // screenshot → ingest → re-read through ade proof list.
+      expect(plan.steps).toHaveLength(3);
       expect(plan.steps[0]).toMatchObject({
         key: "screenshot",
         params: {
           arguments: { domain: "ios_simulator", action: "screenshot" },
         },
+      });
+      expect(plan.steps[2]).toMatchObject({
+        key: "verify",
+        params: { name: "list_computer_use_artifacts" },
       });
       const ingest = plan.steps[1]?.params;
       expect(typeof ingest).toBe("function");

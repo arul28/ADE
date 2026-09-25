@@ -2495,11 +2495,14 @@ describe("AgentChatPane companion drawers", () => {
 
   describe("chat actions drawer sections", () => {
     const drawerSections = () => screen.getByTestId("chat-actions-drawer-sections");
-    const expectSingleScroll = () => {
-      expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-auto");
-      expect(
-        drawerSections().querySelector("[class*='overflow-y-auto'], [class*='overflow-auto'], [class*='min-h-full'], .h-full"),
-      ).toBeNull();
+    const visibleRegions = () =>
+      screen.queryAllByTestId("chat-actions-drawer-region")
+        .filter((region) => !region.className.split(/\s+/).includes("hidden"));
+    const expectRegionScrollers = () => {
+      expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-y-auto");
+      for (const region of visibleRegions()) {
+        expect(region.querySelector("[class*='overflow-y-auto']")).toBeTruthy();
+      }
     };
     const attachmentEvent = (sessionId: string): AgentChatEventEnvelope => ({
       sessionId,
@@ -2518,14 +2521,14 @@ describe("AgentChatPane companion drawers", () => {
       fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
 
       // The agents section is always handed over and renders nothing here, so
-      // the line is the sole child left, which is what its `only:block` shows.
+      // no region shows and the empty line is visible.
       const line = await screen.findByTestId("chat-actions-drawer-empty");
-      expect(line.matches(":only-child")).toBe(true);
-      expect(line.className).toContain("only:block");
+      expect(line.className).not.toContain("hidden");
+      expect(visibleRegions()).toHaveLength(0);
       expect(screen.getByTestId("chat-actions-drawer-scroll").closest(".ade-floating-side-pane")).not.toBeNull();
       expect(screen.queryByText(/No agent activity|Single-agent mode|No sources yet|No features yet/i)).toBeNull();
       expect(screen.queryByText("Sources")).toBeNull();
-      expectSingleScroll();
+      expectRegionScrollers();
     });
 
     it("mounts Sources for a non-Codex chat once it has a source, and only then", async () => {
@@ -2552,9 +2555,8 @@ describe("AgentChatPane companion drawers", () => {
         expect(within(drawerSections()).getByText("Sources")).toBeTruthy();
       });
       expect(within(drawerSections()).getByText("spec.md")).toBeTruthy();
-      expect(screen.getByTestId("chat-actions-drawer-empty").matches(":only-child")).toBe(false);
-      // The Sources section draws no scroller or placeholder of its own.
-      expectSingleScroll();
+      expect(screen.getByTestId("chat-actions-drawer-empty").className).toContain("hidden");
+      expectRegionScrollers();
       expect(screen.queryByText(/No sources yet|used in this Codex chat/i)).toBeNull();
     });
 
@@ -2580,11 +2582,10 @@ describe("AgentChatPane companion drawers", () => {
       await waitFor(() => {
         expect(within(drawerSections()).getByTestId("chat-subagents-pane")).toBeTruthy();
       });
-      const sections = [...drawerSections().children].filter(
-        (child) => child.getAttribute("data-testid") !== "chat-actions-drawer-empty",
-      );
-      expect(sections.map((child) => child.getAttribute("data-testid"))).toEqual(["chat-subagents-pane"]);
-      expectSingleScroll();
+      const regions = visibleRegions();
+      expect(regions).toHaveLength(1);
+      expect(within(regions[0]!).getByTestId("chat-subagents-pane")).toBeTruthy();
+      expectRegionScrollers();
     });
 
     it("right-pane host (beside an open terminal pane) keeps the drawer to one scroll", async () => {
@@ -2619,7 +2620,7 @@ describe("AgentChatPane companion drawers", () => {
       const scroll = screen.getByTestId("chat-actions-drawer-scroll");
       expect(scroll.closest(".ade-floating-side-pane")).toBeNull();
       expect(scroll.closest("[class*='bg-surface/80']")).not.toBeNull();
-      expectSingleScroll();
+      expectRegionScrollers();
     });
   });
 

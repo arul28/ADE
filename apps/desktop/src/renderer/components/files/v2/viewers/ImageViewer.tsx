@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowsOut, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@phosphor-icons/react";
+import { ArrowsOut, Check, Copy, DownloadSimple, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@phosphor-icons/react";
+import { showToast } from "../../../app/toast/toastStore";
+import { copyPictureToClipboard, saveMediaAs } from "../../../ui/MediaLightbox";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { streamFileBytes } from "../streamBytes";
 import type { ViewerProps } from "./types";
@@ -97,6 +99,23 @@ export function ImageViewer({ files, workspaceId, content, tab }: ViewerProps) {
     setOffset({ x: 0, y: 0 });
   };
 
+  const [copied, setCopied] = useState(false);
+  const fileName = tab.path.split(/[\\/]/).pop() || tab.title;
+  const copy = async () => {
+    if (!src) return;
+    try {
+      await copyPictureToClipboard(src);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1400);
+    } catch (err) {
+      showToast({
+        title: "Could not copy the picture",
+        message: err instanceof Error ? err.message : String(err),
+        tone: "error",
+      });
+    }
+  };
+
   const transform = useMemo(
     () => (fit ? undefined : `translate(${offset.x}px, ${offset.y}px) scale(${scale})`),
     [fit, offset.x, offset.y, scale],
@@ -120,6 +139,12 @@ export function ImageViewer({ files, workspaceId, content, tab }: ViewerProps) {
         <span className="ml-auto text-xs" style={{ color: COLORS.textDim }}>
           {formatBytes(content.size)}
         </span>
+        <button type="button" disabled={!src} onClick={() => void copy()} title={copied ? "Copied" : "Copy picture"} aria-label={copied ? "Copied" : "Copy picture"} className="rounded p-1 hover:bg-white/5 disabled:opacity-40">
+          {copied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
+        </button>
+        <button type="button" disabled={!src} onClick={() => src && saveMediaAs(src, fileName)} title="Download" aria-label="Download" className="rounded p-1 hover:bg-white/5 disabled:opacity-40">
+          <DownloadSimple size={15} />
+        </button>
       </div>
       <div
         ref={containerRef}

@@ -1,4 +1,5 @@
 import {
+  ArrowClockwise,
   ArrowSquareOut,
   Cube,
   FileText,
@@ -9,13 +10,10 @@ import {
   Trash,
   VideoCamera,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import React, {
   useCallback,
-  useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import type {
@@ -25,11 +23,20 @@ import type {
 } from "../../../shared/types";
 import {
   proofRecordedBeforeRequestLine,
-  proofSourceLine,
   readProofProvenance,
 } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
-import { Dialog } from "../ui/dialog";
+import { MediaLightbox } from "../ui/MediaLightbox";
+import { SectionHeader } from "./ChatSubagentsPanel";
+import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
+import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
+import {
+  buildProofDrawerGroups,
+  EMPTY_PROOF_DRAWER_FILTER,
+  proofArtifactPullRequest,
+  type ProofDrawerFilter,
+  type ProofDrawerItem,
+} from "../../../shared/proofDrawerModel";
 import { Banner } from "../ui/notice/Banner";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
@@ -64,35 +71,24 @@ function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult
 }
 
 /**
- * Who made the bytes, and whether an attached video predates the request.
- * One quiet line each; rows filed before ADE recorded this print nothing.
+ * Whether an attached video predates the request: the one provenance fact a
+ * proof surface prints. Where the bytes came from is kept in the record and
+ * not drawn; the owner found the "Captured by ADE" lines to be noise.
  */
-function ProofProvenanceLines({ artifact, className, warningClassName }: {
+export function ProofProvenanceLines({ artifact, warningClassName }: {
   artifact: ComputerUseArtifactView;
-  className: string;
   warningClassName: string;
 }) {
-  const provenance = readProofProvenance(artifact.metadata);
-  const source = proofSourceLine(provenance);
-  const older = proofRecordedBeforeRequestLine(provenance);
-  if (!source && !older) return null;
+  const older = proofRecordedBeforeRequestLine(readProofProvenance(artifact.metadata));
+  if (!older) return null;
   return (
-    <>
-      {source ? (
-        <div data-proof-source="" className={cn("truncate", className)} title={source}>
-          {source}
-        </div>
-      ) : null}
-      {older ? (
-        <div data-proof-recorded-before-request="" className={cn("truncate", warningClassName)} title={older}>
-          {older}
-        </div>
-      ) : null}
-    </>
+    <div data-proof-recorded-before-request="" className={cn("truncate", warningClassName)} title={older}>
+      {older}
+    </div>
   );
 }
 
-function ProofPreviewFailureNotice({ failureText }: { failureText: string }) {
+export function ProofPreviewFailureNotice({ failureText }: { failureText: string }) {
   return (
     <Banner
       model={{ id: "proof-preview-failed", tone: "warning", title: failureText }}
@@ -162,7 +158,12 @@ function VideoProofPoster({
   );
 }
 
-function ArtifactLightbox({
+/**
+ * A proof picture or video opened full size, in ADE's one media viewer. Copy
+ * and download read the bytes through the chat's runtime, so they work for
+ * proof on this computer, on a paired one and in the web client.
+ */
+export function ArtifactLightbox({
   artifact,
   preview,
   failed,
@@ -177,64 +178,34 @@ function ArtifactLightbox({
   onMediaError: () => void;
   onClose: () => void;
 }) {
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-  const media = isImageArtifact(artifact) ? "image" : "video";
+  const scope = useChatRuntimeScope();
+  const readDataUrl = useCallback(
+    () => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin),
+    [artifact.uri, scope.pin],
+  );
+  // A video that plays from main's media server is saved by main, which can
+  // stream it whole; the preview read stops at 10 MB.
+  const saveMediaAs = window.ade.computerUse.saveMediaAs;
+  const video = isVideoArtifact(artifact);
+  const saveToDisk = useMemo(() => (
+    video && saveMediaAs && /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(preview)
+      ? async () => {
+        const extension = artifact.uri.match(/\.[a-z0-9]+$/i)?.[0] ?? ".mp4";
+        await saveMediaAs({ url: preview, fileName: `${artifact.title || "ade-proof"}${extension}` });
+      }
+      : undefined
+  ), [artifact.title, artifact.uri, preview, saveMediaAs, video]);
   return (
-    <Dialog
-      open
-      onOpenChange={(next) => {
-        if (!next) onClose();
-      }}
-      title={`Preview ${artifact.title}`}
-      hideHeader
-      width={media === "video" ? "max-content" : 1152}
-      maxHeight="calc(100vh - 40px)"
-      bodyPadding={false}
-      scrollBody={false}
-      bodyStyle={{ display: "flex", flexDirection: "column" }}
-      // Proof renders on this dark surface in every theme.
-      panelStyle={{ background: "#0d0d11", borderRadius: 16 }}
-      initialFocusRef={closeRef}
-    >
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
-        <div className="min-w-0">
-          <div className="truncate font-sans text-[12px] font-semibold text-fg/88">{artifact.title}</div>
-          <div className="mt-0.5 font-mono text-[9.5px] text-muted-fg/42">
-            {kindLabel(artifact.kind)} · {relativeTime(artifact.createdAt)}
-          </div>
-        </div>
-        <button
-          ref={closeRef}
-          type="button"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/55 transition-colors hover:bg-white/[0.07] hover:text-fg/85"
-          aria-label="Close proof preview"
-          onClick={onClose}
-        >
-          <X size={15} weight="bold" />
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto bg-black/30 p-3">
-        {failed ? (
-          <ProofPreviewFailureNotice failureText={failureText} />
-        ) : media === "video" ? (
-          <video
-            src={preview}
-            controls
-            autoPlay
-            playsInline
-            onError={onMediaError}
-            className="mx-auto block h-auto max-h-[calc(85vh-4.5rem)] w-auto max-w-[calc(90vw-1.5rem)] rounded-xl bg-black object-contain"
-          />
-        ) : (
-          <img
-            src={preview}
-            alt={artifact.title}
-            onError={onMediaError}
-            className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
-          />
-        )}
-      </div>
-    </Dialog>
+    <MediaLightbox
+      src={preview}
+      kind={isImageArtifact(artifact) ? "image" : "video"}
+      title={artifact.description?.trim() || artifact.title}
+      readDataUrl={externalArtifactUrl(artifact.uri) ? undefined : readDataUrl}
+      saveToDisk={saveToDisk}
+      onMediaError={onMediaError}
+      failureText={failed ? failureText : null}
+      onClose={onClose}
+    />
   );
 }
 
@@ -291,7 +262,6 @@ export function ChatProofArtifactCard({
           </div>
           <ProofProvenanceLines
             artifact={artifact}
-            className="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-muted-fg/40"
             warningClassName="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-200/60"
           />
         </div>
@@ -463,6 +433,7 @@ function DrawerProofTile({
   const hasPreviewProblem = storedFileMissing || failed;
   const failureText = externalUrl ? "Stored at its source." : explanation;
   const recoverable = recoverableArtifactSource(artifact) !== null;
+  const pullRequest = proofArtifactPullRequest(artifact);
 
   return (
     <div
@@ -553,15 +524,26 @@ function DrawerProofTile({
       </div>
 
       <div className="min-w-0">
-        <div className="truncate font-sans text-[10.5px] font-medium leading-[14px] text-fg/74" title={artifact.title}>
-          {artifact.title}
+        <div className="flex min-w-0 items-center gap-1">
+          <div className="min-w-0 flex-1 truncate font-sans text-[10.5px] font-medium leading-[14px] text-fg/74" title={artifact.title}>
+            {artifact.title}
+          </div>
+          {pullRequest ? (
+            <button
+              type="button"
+              title={`Posted to ${pullRequest.label}`}
+              onClick={() => void window.ade.app.openExternal(pullRequest.url)}
+              className="shrink-0 rounded-full border border-emerald-300/[0.16] bg-emerald-400/[0.07] px-1.5 font-mono text-[8.5px] leading-[14px] text-emerald-200/75 transition-colors hover:text-emerald-100"
+            >
+              {pullRequest.label}
+            </button>
+          ) : null}
         </div>
         <div className="truncate font-mono text-[8.5px] leading-[13px] text-muted-fg/34">
           {relativeTime(artifact.createdAt)}
         </div>
         <ProofProvenanceLines
           artifact={artifact}
-          className="font-sans text-[9px] leading-[13px] text-muted-fg/38"
           warningClassName="font-sans text-[9px] leading-[13px] text-amber-200/55"
         />
         {hasPreviewProblem ? (
@@ -585,12 +567,62 @@ function DrawerProofTile({
   );
 }
 
+const EMPTY_EVENTS: readonly AgentChatEventEnvelope[] = [];
+
+const MEDIA_FILTERS: ReadonlyArray<{ value: ProofDrawerFilter["media"]; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "pictures", label: "Pictures" },
+  { value: "videos", label: "Videos" },
+];
+
+function DrawerSectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="col-span-2 font-sans text-[9px] font-semibold uppercase tracking-[0.08em] text-muted-fg/40">
+      {children}
+    </div>
+  );
+}
+
+function DrawerItems({
+  items,
+  tileProps,
+}: {
+  items: ProofDrawerItem[];
+  tileProps: Omit<React.ComponentProps<typeof DrawerProofTile>, "artifact" | "busy"> & { busyIds: ReadonlySet<string> };
+}) {
+  const { busyIds, ...rest } = tileProps;
+  return (
+    <>
+      {items.map((item) => item.kind === "pair" ? (
+        <div key={`${item.before.id}:${item.after.id}`} data-proof-drawer-pair="" className="col-span-2 flex min-w-0 flex-col gap-1.5">
+          <div className="grid min-w-0 grid-cols-2 gap-x-2">
+            {([["Before", item.before], ["After", item.after]] as const).map(([side, artifact]) => (
+              <div key={side} className="min-w-0">
+                <div className="mb-1 font-sans text-[8.5px] font-semibold uppercase tracking-[0.08em] text-muted-fg/40">{side}</div>
+                <DrawerProofTile {...rest} artifact={artifact} busy={busyIds.has(artifact.id)} />
+              </div>
+            ))}
+          </div>
+          {item.caption ? (
+            <div className="font-sans text-[10px] leading-[14px] text-fg/60">{item.caption}</div>
+          ) : null}
+        </div>
+      ) : (
+        <DrawerProofTile key={item.artifact.id} {...rest} artifact={item.artifact} busy={busyIds.has(item.artifact.id)} />
+      ))}
+    </>
+  );
+}
+
 export function ChatComputerUsePanel({
   snapshot,
+  events = EMPTY_EVENTS,
   onRefresh,
   allowLocalArtifactProtocol = false,
 }: {
   snapshot: ComputerUseOwnerSnapshot | null;
+  /** The chat's transcript, which says what each turn's answer showed. */
+  events?: readonly AgentChatEventEnvelope[];
   onRefresh: () => void | Promise<void>;
   allowLocalArtifactProtocol?: boolean;
 }) {
@@ -600,6 +632,14 @@ export function ChatComputerUsePanel({
   const artifacts = useMemo(() => snapshot?.artifacts ?? [], [snapshot]);
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
   const [error, setError] = useState<string | null>(null);
+
+  const [filter, setFilter] = useState<ProofDrawerFilter>(EMPTY_PROOF_DRAWER_FILTER);
+  const [collapsed, setCollapsed] = useState(false);
+  const groups = useMemo(
+    () => buildProofDrawerGroups(artifacts, events, filter),
+    [artifacts, events, filter],
+  );
+  const filtered = filter.query.trim() !== "" || filter.media !== "all" || filter.inAnswerOnly;
 
   const brokenCount = useMemo(
     () => artifacts.filter((artifact) => isBrokenArtifact(artifact)).length,
@@ -654,22 +694,35 @@ export function ChatComputerUsePanel({
     });
   }, [artifacts, scope.pin, withBusy]);
 
-  if (!snapshot || artifacts.length === 0) return null;
+  if (!snapshot) return null;
 
   return (
-    <div className="flex min-w-0 flex-col gap-2.5">
-      <div className="flex items-center justify-between gap-2 px-0.5">
-        <div className="font-sans text-[10.5px] text-muted-fg/42">
-          {artifacts.length} item{artifacts.length === 1 ? "" : "s"}
-        </div>
-        <button
-          type="button"
-          onClick={() => void onRefresh()}
-          className="rounded-lg px-2 py-1 font-sans text-[10px] text-muted-fg/42 transition-colors hover:bg-white/[0.05] hover:text-fg/68"
-        >
-          Refresh
-        </button>
-      </div>
+    <section data-testid="chat-proof-panel" className="flex min-w-0 flex-col pb-3">
+      <SectionHeader
+        label="Proof"
+        hint={String(artifacts.length)}
+        tone="proof"
+        emphasized
+        sticky
+        collapsible
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((current) => !current)}
+        action={(
+          <button
+            type="button"
+            title="Refresh proof"
+            aria-label="Refresh proof"
+            onClick={() => void onRefresh()}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-fg/35 transition-colors hover:bg-white/[0.05] hover:text-fg/70"
+          >
+            <ArrowClockwise size={11} weight="bold" />
+          </button>
+        )}
+      />
+      {collapsed ? null : artifacts.length === 0 ? (
+        <p className="px-4 pt-1 font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
+      ) : (
+    <div className="flex min-w-0 flex-col gap-2.5 px-4 pt-1">
 
       {brokenCount > 0 ? (
         <Banner
@@ -687,18 +740,90 @@ export function ChatComputerUsePanel({
         <Banner model={{ id: "proof-artifact-error", tone: "error", title: error }} layout="inline" />
       ) : null}
 
-      <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">
-        {artifacts.map((artifact) => (
-          <DrawerProofTile
-            key={artifact.id}
-            artifact={artifact}
-            allowLocalArtifactProtocol={allowLocalArtifactProtocol}
-            busy={busyIds.has(artifact.id)}
-            onDelete={handleDelete}
-            onRecover={handleRecover}
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <div className="relative">
+          <MagnifyingGlass
+            size={12}
+            aria-hidden
+            className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-fg/50"
           />
-        ))}
+          <input
+            value={filter.query}
+            onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))}
+            placeholder="Search proof"
+            aria-label="Search proof"
+            className={cn(INPUT_CLASS_NAME, "mt-0 h-7 pl-7 text-[11px]")}
+          />
+        </div>
+        <div className="flex min-w-0 items-center gap-1">
+          {MEDIA_FILTERS.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={filter.media === option.value}
+              onClick={() => setFilter((current) => ({ ...current, media: option.value }))}
+              className={cn(
+                "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
+                filter.media === option.value
+                  ? "bg-white/[0.09] text-fg/85"
+                  : "text-muted-fg/50 hover:bg-white/[0.05] hover:text-fg/70",
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+          <span className="mx-0.5 h-3 w-px bg-white/[0.08]" aria-hidden />
+          <button
+            type="button"
+            aria-pressed={filter.inAnswerOnly}
+            onClick={() => setFilter((current) => ({ ...current, inAnswerOnly: !current.inAnswerOnly }))}
+            className={cn(
+              "rounded-md px-2 py-0.5 font-sans text-[10px] transition-colors",
+              filter.inAnswerOnly
+                ? "bg-white/[0.09] text-fg/85"
+                : "text-muted-fg/50 hover:bg-white/[0.05] hover:text-fg/70",
+            )}
+          >
+            In answers
+          </button>
+        </div>
       </div>
+
+      {groups.length === 0 ? (
+        <div className="px-0.5 py-3 font-sans text-[11px] text-muted-fg/50">
+          {filtered ? "No proof matches." : "No proof yet."}
+        </div>
+      ) : null}
+
+      {groups.map((group) => (
+        <section key={group.key} data-proof-drawer-turn={group.turnId ?? "earlier"} className="flex min-w-0 flex-col gap-2 pt-1">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <div
+              className="line-clamp-2 min-w-0 flex-1 font-sans text-[11px] font-medium leading-[15px] text-fg/78"
+              title={group.prompt ?? undefined}
+            >
+              {group.turnId ? group.prompt ?? "A turn" : "Earlier in this chat"}
+            </div>
+            <div className="shrink-0 font-mono text-[8.5px] text-muted-fg/34">{relativeTime(group.at)}</div>
+          </div>
+          <div className="grid min-w-0 grid-cols-2 gap-x-2 gap-y-3">
+            {group.inAnswer.length > 0 && group.other.length > 0 ? <DrawerSectionLabel>In the answer</DrawerSectionLabel> : null}
+            <DrawerItems
+              items={group.inAnswer}
+              tileProps={{ allowLocalArtifactProtocol, busyIds, onDelete: handleDelete, onRecover: handleRecover }}
+            />
+            {group.other.length > 0 ? (
+              <DrawerSectionLabel>{group.inAnswer.length > 0 ? "Also filed" : "Not in an answer"}</DrawerSectionLabel>
+            ) : null}
+            <DrawerItems
+              items={group.other}
+              tileProps={{ allowLocalArtifactProtocol, busyIds, onDelete: handleDelete, onRecover: handleRecover }}
+            />
+          </div>
+        </section>
+      ))}
     </div>
+      )}
+    </section>
   );
 }

@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { CHAT_ACTIONS_DRAWER_EMPTY_COPY, ChatActionsDrawerPanel } from "./ChatActionsDrawerPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
@@ -8,13 +8,10 @@ import { MissionControlPanel } from "./MissionControlPanel";
 
 afterEach(cleanup);
 
-function sectionsRoot(): HTMLElement {
-  return screen.getByTestId("chat-actions-drawer-sections");
-}
-
-/** Real sections, i.e. every drawer child except the empty line. */
-function renderedSections(): Element[] {
-  return [...sectionsRoot().children].filter((child) => child.getAttribute("data-testid") !== "chat-actions-drawer-empty");
+/** The regions a section actually occupies, i.e. every non-empty one. */
+function visibleRegions(): HTMLElement[] {
+  return screen.queryAllByTestId("chat-actions-drawer-region")
+    .filter((region) => !region.className.split(/\s+/).includes("hidden"));
 }
 
 function emptyLineShowing(): boolean {
@@ -25,7 +22,7 @@ function emptyLineShowing(): boolean {
 }
 
 describe("ChatActionsDrawerPanel", () => {
-  it("stacks sections in order in one scroll with dividers only between siblings", () => {
+  it("gives each present section its own region, in order, with a divider between siblings", () => {
     render(
       <ChatActionsDrawerPanel
         sections={[
@@ -41,13 +38,18 @@ describe("ChatActionsDrawerPanel", () => {
     const sources = screen.getByText("Sources body");
     expect(agents.compareDocumentPosition(proof) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(proof.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(sectionsRoot().className).toContain("[&>*+*]:border-t");
+
+    const regions = visibleRegions();
+    expect(regions).toHaveLength(3);
+    expect(regions[0]!.className).not.toContain("border-t");
+    expect(regions[1]!.className).toContain("border-t");
+    expect(regions[2]!.className).toContain("border-t");
     expect(emptyLineShowing()).toBe(false);
     expect(screen.queryByRole("button", { name: "Agents" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Proof" })).toBeNull();
   });
 
-  it("with only proof, shows proof at the top and no agents or sources box", () => {
+  it("with only proof, shows only the proof region and no agents box", () => {
     render(
       <ChatActionsDrawerPanel
         sections={[
@@ -59,14 +61,15 @@ describe("ChatActionsDrawerPanel", () => {
       />,
     );
 
-    expect(renderedSections().map((el) => el.getAttribute("data-testid"))).toEqual(["proof-section"]);
-    expect(sectionsRoot().firstElementChild?.getAttribute("data-testid")).toBe("proof-section");
+    const regions = visibleRegions();
+    expect(regions).toHaveLength(1);
+    expect(within(regions[0]!).getByTestId("proof-section")).toBeTruthy();
     expect(screen.queryByTestId("chat-subagents-pane")).toBeNull();
     expect(screen.queryByText(/No agent activity|Single-agent|No sources yet/i)).toBeNull();
     expect(emptyLineShowing()).toBe(false);
   });
 
-  it("with only tasks, shows just the agents panel section", () => {
+  it("with only tasks, shows just the agents panel region", () => {
     render(
       <ChatActionsDrawerPanel
         sections={[
@@ -86,7 +89,9 @@ describe("ChatActionsDrawerPanel", () => {
       />,
     );
 
-    expect(renderedSections().map((el) => el.getAttribute("data-testid"))).toEqual(["chat-subagents-pane"]);
+    const regions = visibleRegions();
+    expect(regions).toHaveLength(1);
+    expect(within(regions[0]!).getByTestId("chat-subagents-pane")).toBeTruthy();
     expect(screen.getByText("Wire the drawer")).toBeTruthy();
     expect(emptyLineShowing()).toBe(false);
   });
@@ -94,7 +99,7 @@ describe("ChatActionsDrawerPanel", () => {
   it("shows one short line when no section was passed", () => {
     render(<ChatActionsDrawerPanel sections={[false, null, undefined]} />);
 
-    expect(renderedSections()).toHaveLength(0);
+    expect(visibleRegions()).toHaveLength(0);
     expect(screen.getByText(CHAT_ACTIONS_DRAWER_EMPTY_COPY)).toBeTruthy();
     expect(emptyLineShowing()).toBe(true);
   });
@@ -106,11 +111,11 @@ describe("ChatActionsDrawerPanel", () => {
       />,
     );
 
-    expect(renderedSections()).toHaveLength(0);
+    expect(visibleRegions()).toHaveLength(0);
     expect(emptyLineShowing()).toBe(true);
   });
 
-  it("owns the only scroll: no nested scroller or full-height box inside", () => {
+  it("scrolls each section inside its own region, under the one drawer scroll", () => {
     render(
       <ChatActionsDrawerPanel
         sections={[
@@ -130,8 +135,12 @@ describe("ChatActionsDrawerPanel", () => {
       />,
     );
 
-    expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-auto");
-    expect(sectionsRoot().querySelector("[class*='overflow-y-auto'], [class*='overflow-auto'], [class*='min-h-full'], .h-full")).toBeNull();
+    expect(screen.getByTestId("chat-actions-drawer-scroll").className).toContain("overflow-y-auto");
+    const regions = visibleRegions();
+    expect(regions).toHaveLength(2);
+    for (const region of regions) {
+      expect(region.querySelector("[class*='overflow-y-auto']")).toBeTruthy();
+    }
   });
 });
 

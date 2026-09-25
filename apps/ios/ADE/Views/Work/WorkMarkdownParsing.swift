@@ -276,6 +276,10 @@ enum WorkMarkdownBlockKind: Equatable {
   case table(headers: [String], rows: [[String]])
   case code(language: String?, code: String)
   case rule
+  /// `![caption](ade-proof://<artifactId>)` on its own line.
+  case proofCitation(artifactId: String, caption: String)
+  /// A ```proof-compare fence that names a before and an after artifact.
+  case proofCompare(WorkProofCompare)
 
   var cacheKey: String {
     switch self {
@@ -294,8 +298,92 @@ enum WorkMarkdownBlockKind: Equatable {
       return "code|\(language ?? "")|\(code)"
     case .rule:
       return "rule"
+    case .proofCitation(let artifactId, let caption):
+      return "proofCitation|\(artifactId)|\(caption)"
+    case .proofCompare(let compare):
+      return "proofCompare|\(compare.before.artifactId)|\(compare.before.label)|\(compare.after.artifactId)|\(compare.after.label)|\(compare.caption)"
     }
   }
+}
+
+/// One side of a ```proof-compare block. Mirrors `ProofCompareSide` in
+/// proofCitation.ts.
+struct WorkProofCompareSide: Equatable {
+  let artifactId: String
+  let label: String
+}
+
+struct WorkProofCompare: Equatable {
+  let before: WorkProofCompareSide
+  let after: WorkProofCompareSide
+  let caption: String
+}
+
+let workProofCompareFenceLanguage = "proof-compare"
+
+private let workProofArtifactIdPattern = try! NSRegularExpression(pattern: "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$")
+private let workProofCitationLinePattern = try! NSRegularExpression(
+  pattern: #"^!\[([^\]]*)\]\(\s*<?ade-proof:/{0,2}([^/?#\s>)]+)/?>?\s*\)$"#,
+  options: [.caseInsensitive]
+)
+
+private func workIsProofArtifactId(_ value: String) -> Bool {
+  workProofArtifactIdPattern.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil
+}
+
+/// The artifact id an `ade-proof://<id>` token names, or a bare id.
+func workProofArtifactId(fromToken token: String) -> String? {
+  var value = token.trimmingCharacters(in: .whitespaces)
+  if value.lowercased().hasPrefix("ade-proof:") {
+    value = String(value.dropFirst("ade-proof:".count))
+    while value.hasPrefix("/") { value.removeFirst() }
+    while value.hasSuffix("/") { value.removeLast() }
+  }
+  let decoded = value.removingPercentEncoding ?? value
+  return workIsProofArtifactId(decoded) ? decoded : nil
+}
+
+/// A line that is only a proof citation: `![caption](ade-proof://<id>)`.
+func workProofCitation(fromLine line: String) -> (artifactId: String, caption: String)? {
+  let trimmed = line.trimmingCharacters(in: .whitespaces)
+  guard trimmed.hasPrefix("!["),
+        let match = workProofCitationLinePattern.firstMatch(in: trimmed, range: NSRange(trimmed.startIndex..., in: trimmed)),
+        let captionRange = Range(match.range(at: 1), in: trimmed),
+        let idRange = Range(match.range(at: 2), in: trimmed),
+        let artifactId = workProofArtifactId(fromToken: String(trimmed[idRange]))
+  else { return nil }
+  return (artifactId, String(trimmed[captionRange]).trimmingCharacters(in: .whitespaces))
+}
+
+/// Reads a ```proof-compare body. Nil unless both sides name an id, so a
+/// half-written block renders as the code it is.
+func workParseProofCompare(_ code: String) -> WorkProofCompare? {
+  var before: WorkProofCompareSide?
+  var after: WorkProofCompareSide?
+  var caption = ""
+  for rawLine in code.split(separator: "\n", omittingEmptySubsequences: false) {
+    let line = rawLine.trimmingCharacters(in: .whitespaces)
+    guard let colon = line.firstIndex(of: ":") else { continue }
+    let key = line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()
+    let rest = line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+    if key == "caption" {
+      caption = rest
+      continue
+    }
+    guard key == "before" || key == "after" else { continue }
+    var words = rest.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+    guard let token = words.first, let artifactId = workProofArtifactId(fromToken: token) else { continue }
+    words.removeFirst()
+    var label = words.joined(separator: " ")
+    while let first = label.first, "-–—:|".contains(first) {
+      label.removeFirst()
+      label = label.trimmingCharacters(in: .whitespaces)
+    }
+    let side = WorkProofCompareSide(artifactId: artifactId, label: label)
+    if key == "before" { before = side } else { after = side }
+  }
+  guard let before, let after else { return nil }
+  return WorkProofCompare(before: before, after: after, caption: caption)
 }
 
 struct WorkMarkdownBlock: Identifiable, Equatable {
@@ -858,7 +946,18 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
         index += 1
       }
       if index < lines.count { index += 1 }
-      appendBlock(.code(language: language.isEmpty ? nil : language, code: codeLines.joined(separator: "\n")))
+      let code = codeLines.joined(separator: "\n")
+      if language.lowercased() == workProofCompareFenceLanguage, let compare = workParseProofCompare(code) {
+        appendBlock(.proofCompare(compare))
+      } else {
+        appendBlock(.code(language: language.isEmpty ? nil : language, code: code))
+      }
+      continue
+    }
+
+    if let citation = workProofCitation(fromLine: trimmed) {
+      appendBlock(.proofCitation(artifactId: citation.artifactId, caption: citation.caption))
+      index += 1
       continue
     }
 
@@ -923,6 +1022,10 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
       if value.isEmpty || value.hasPrefix("```") || value.hasPrefix(">") || isMarkdownTableHeader(lines: lines, index: index) || isMarkdownListItem(value, ordered: false) || isMarkdownListItem(value, ordered: true) || ["---", "***", "___"].contains(value) {
         break
       }
+      // A citation line is its own block, never part of a paragraph. The
+      // first line is exempt: the citation branch above already took it, so
+      // a break here would leave `index` unadvanced.
+      if !paragraphLines.isEmpty, workProofCitation(fromLine: value) != nil { break }
       // Only break for REAL headings (hashes followed by text). A line of
       // only '#' characters is not matched by the heading branch above, so
       // breaking on it here would leave `index` unadvanced and spin this

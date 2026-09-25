@@ -148,10 +148,10 @@ describe("proof rendering", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: "Enlarge Proof 2" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Preview Proof 2" });
+    const dialog = screen.getByRole("dialog", { name: "Description 2" });
     expect(dialog.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,AAAA");
     expect(dialog.querySelector("video")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -353,7 +353,7 @@ describe("proof rendering", () => {
     expect(view.container.querySelector("video[controls]")).toBeNull();
 
     fireEvent.click(poster);
-    const dialog = screen.getByRole("dialog", { name: "Preview Sim recording" });
+    const dialog = screen.getByRole("dialog", { name: "Description 10" });
     const player = dialog.querySelector("video");
     expect(player?.hasAttribute("controls")).toBe(true);
     expect(player?.getAttribute("src")).toBe("data:video/mp4;base64,AAAA");
@@ -362,7 +362,7 @@ describe("proof rendering", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     fireEvent.click(screen.getByRole("button", { name: "Play Sim recording" }));
-    fireEvent.click(screen.getByRole("button", { name: "Close proof preview" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
@@ -384,7 +384,7 @@ describe("proof rendering", () => {
     expect(poster.tagName).toBe("BUTTON");
     expect(poster.querySelector("video")?.hasAttribute("controls")).toBe(false);
     fireEvent.click(poster);
-    expect(screen.getByRole("dialog", { name: "Preview Proof 11" }).querySelector("video[controls]")
+    expect(screen.getByRole("dialog", { name: "Description 11" }).querySelector("video[controls]")
       ?.getAttribute("src")).toBe("data:video/mp4;base64,BBBB");
   });
 
@@ -403,7 +403,7 @@ describe("proof rendering", () => {
     );
 
     fireEvent.click(await screen.findByRole("button", { name: "Play Proof 12" }));
-    const dialog = screen.getByRole("dialog", { name: "Preview Proof 12" });
+    const dialog = screen.getByRole("dialog", { name: "Description 12" });
     fireEvent.error(dialog.querySelector("video")!);
 
     await waitFor(() => expect(dialog.querySelector("video")).toBeNull());
@@ -569,43 +569,14 @@ describe("proof rendering", () => {
 });
 
 describe("proof provenance lines", () => {
-  // Local wall-clock times, so the clock text is the same in every time zone.
+  // The one provenance fact a proof surface still prints: proof that was
+  // recorded before the request it is attached to. Where the bytes came from
+  // is still in the record but no longer drawn. `proofSourceLine` itself is
+  // covered in shared/proofProvenance.test.ts.
   const at = (hour: number, minute: number) => new Date(2026, 8, 23, hour, minute).toISOString();
-  const clock = (iso: string) => new Date(iso).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
-  it("says an ADE recording was recorded by ADE, with its times, in the drawer and the timeline", () => {
-    const recorded = artifact(1, {
-      kind: "video_recording",
-      mimeType: "video/mp4",
-      metadata: { proofSource: "ade-recorder", recordedFrom: at(10, 24), recordedTo: at(10, 25) },
-    });
-    render(<ChatComputerUsePanel snapshot={snapshotOf([recorded])} onRefresh={vi.fn()} />);
-    const drawerLine = document.querySelector("[data-proof-source]")!;
-    expect(drawerLine.textContent).toMatch(/^Recorded by ADE · 10:24/);
-    expect(drawerLine.textContent).toContain(clock(at(10, 25)));
-    cleanup();
-
-    render(<ChatProofTimeline artifacts={[recorded]} />);
-    expect(document.querySelector("[data-proof-source]")!.textContent).toMatch(/^Recorded by ADE · 10:24/);
-  });
-
-  it("says captured by ADE, or attached by the agent", () => {
-    render(
-      <ChatComputerUsePanel
-        snapshot={snapshotOf([
-          artifact(1, { metadata: { proofSource: "ade-capture" } }),
-          artifact(2, { metadata: { proofSource: "attached" } }),
-        ])}
-        onRefresh={vi.fn()}
-      />,
-    );
-    const lines = [...document.querySelectorAll("[data-proof-source]")].map((node) => node.textContent);
-    expect(lines).toEqual(["Captured by ADE", "Attached by the agent"]);
-  });
-
-  it("shows nothing for a row filed before provenance existed", () => {
+  it("shows no warning for a row that predates the provenance fields", () => {
     render(<ChatComputerUsePanel snapshot={snapshotOf([artifact(1)])} onRefresh={vi.fn()} />);
-    expect(document.querySelector("[data-proof-source]")).toBeNull();
     expect(document.querySelector("[data-proof-recorded-before-request]")).toBeNull();
   });
 
@@ -618,6 +589,5 @@ describe("proof provenance lines", () => {
     render(<ChatProofTimeline artifacts={[older]} />);
     const line = document.querySelector("[data-proof-recorded-before-request]")!;
     expect(line.textContent).toMatch(/before this request/);
-    expect(document.querySelector("[data-proof-source]")!.textContent).toBe("Attached by the agent");
   });
 });

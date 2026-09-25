@@ -11,10 +11,57 @@ When the user asks to capture, send, attach, or provide proof, create evidence w
 
 **Attach, then confirm.** A filing command is not done until you have read its
 confirmation. Run the attach, check that the last line says
-`Attached 1 artifact to lane <id> / chat <id> (<title>)`, then run
+`Attached 1 artifact to lane <id> / chat <id> (<title>)` and copy the `cite:`
+line above it, then run
 `ade proof list --text` and see the row. If the output contains `failed`, or the
 list does not show it, the drawer is empty — fix it now rather than reporting
 proof you did not file.
+
+## Show the proof in your answer
+
+The user reads your answer, not the drawer. Put each proof directly under the
+claim it proves. Every proof command prints a `cite:` line with the artifact id:
+
+```
+cite: ![Preferences shows the new key](ade-proof://3f2c9a41-…)
+```
+
+Paste that line into your final message, on a line of its own (not inside a
+sentence or a list item: the phone shows a citation only on its own line). A picture shows inline, and a video
+plays inline, on the desktop, the web client and the phone.
+
+For a before/after, write a `proof-compare` block. The two pictures show side
+by side:
+
+````
+```proof-compare
+before: <artifact-id> The old sidebar
+after: <artifact-id> The new sidebar
+caption: The rows now use the lane color.
+```
+````
+
+You can also compose a picture yourself (a crop, a side-by-side, an
+annotation), file it with `ade proof attach`, and cite it.
+
+How to write it:
+
+- Put the proof under the claim, not in a pile at the end.
+- Give each item a caption that says what it shows.
+- Add an honest caveat when the picture does not show everything: mock data,
+  a partial state, a step you could not check.
+- Cite as many items as your claims need. There is no limit. Choose the items
+  that show the claim; do not paste every capture.
+- Prefer proof that ADE captured or recorded over a file you made yourself.
+
+A citation of an id ADE does not have shows "ADE has no proof with the id …".
+Copy the id from the `cite:` line; do not type it.
+
+## Put proof on the PR
+
+`ade proof publish --pr <number or URL> <id> <id>` posts the items you pick
+as one PR comment, with each picture and video under its caption, and marks
+them in the drawer. See the **ade-pr-workflows** skill for the limits.
 
 ## Commands
 
