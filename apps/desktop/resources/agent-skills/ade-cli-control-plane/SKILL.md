@@ -452,10 +452,22 @@ model-specific support with `ade actions run chat.modelCatalog --json`.
 
 ## Fallback path
 
-If `command -v ade` fails:
+If `command -v ade` fails (PowerShell: `Get-Command ade`):
 
-1. Try `${ADE_CLI_PATH:-}` if set.
-2. Try `${ADE_CLI_BIN_DIR:-}/ade` if set.
+1. Try `${ADE_CLI_PATH:-}` if set (PowerShell: `& $env:ADE_CLI_PATH ...`).
+2. Try `${ADE_CLI_BIN_DIR:-}/ade` if set (PowerShell: `& "$env:ADE_CLI_BIN_DIR\ade.cmd" ...`).
 3. In an ADE source checkout, after confirming it exists, use `node apps/ade-cli/dist/cli.cjs ...`.
 
 The normal reason to skip ADE CLI is that it is truly unreachable after these fallbacks.
+
+## Do not repair ADE from a task
+
+- Use the `ade` your shell was given. It names the brain that started you.
+  Another `ade` (for example `~/.ade/bin/ade.exe`) can belong to another
+  channel and reach a different brain, or none.
+- Never start, stop, restart, install or update a brain or service
+  (`ade brain start|stop|restart|update`, `ade runtime run`). It may belong to
+  another channel, and the user's running ADE depends on it.
+- Never run `npm install` (or pnpm, yarn, bun) in the user's repo to fix ADE
+  itself, for example after `Cannot find module` from ADE's `cli.cjs`.
+- When ADE itself fails, stop and report the exact error.

@@ -24,18 +24,6 @@ export type AppControlRecordingReceipt = {
   filePath: string | null;
 };
 
-export function appControlRecordingCaption(appLabel: string | null | undefined, laneName: string | null | undefined): string {
-  const app = appLabel?.trim();
-  const lane = laneName?.trim();
-  const base = app ? `App Control recording of ${app}` : "App Control recording";
-  return lane ? `${base} · ${lane}` : base;
-}
-
-/** The caption the pane's Proof button prefills; the service's own default too. */
-export function appControlProofCaption(appLabel: string | null | undefined): string {
-  return `App Control screenshot · ${appLabel?.trim() || "app"}`;
-}
-
 /** The grants a refused start reported as off. Only Screen Recording matters to a recording. */
 export function appControlRecordingMissingPermissions(
   permissions: MacDesktopPermissions | null | undefined,

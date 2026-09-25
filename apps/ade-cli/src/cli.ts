@@ -558,6 +558,12 @@ export type CliPlan =
       summary?: "status" | "doctor" | "auth";
       formatter?: FormatterId;
       preferHeadless?: boolean;
+      /**
+       * The feature name when this plan needs state that lives in the running
+       * brain. Such a plan never falls back to an in-process headless runtime;
+       * it fails with one line that says how to reach the brain.
+       */
+      needsLiveRuntime?: string;
       machineOnly?: boolean;
       machineAutoStart?: boolean;
       /**
@@ -12056,7 +12062,23 @@ function buildAppControlRecordPlan(
   );
 }
 
+/** App Control subcommands that answer without a live session. */
+const APP_CONTROL_SESSIONLESS_SUBCOMMANDS = new Set(["help", "actions", "drivers", "list-drivers"]);
+
+/**
+ * App Control sessions live in the brain: the app runs in the brain's
+ * terminal and the session outlives one CLI call. A headless CLI would launch
+ * the app in its own throwaway runtime (pid 0) and lose the session on exit,
+ * so every call that needs a session must reach the running brain.
+ */
 function buildAppControlPlan(args: string[]): CliPlan {
+  const sub = args.find((value) => value !== "--" && !value.startsWith("-")) ?? "status";
+  const plan = buildAppControlSubcommandPlan(args);
+  if (plan.kind !== "execute" || APP_CONTROL_SESSIONLESS_SUBCOMMANDS.has(sub)) return plan;
+  return { ...plan, needsLiveRuntime: "App Control" };
+}
+
+function buildAppControlSubcommandPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: buildAppControlHelp(args) };
   // App Control keeps one session per lane, so every call names its lane
@@ -18772,21 +18794,38 @@ async function resolveDesktopSocketProjectId(
   }
 }
 
+/** The one line a live-session command prints instead of going headless. */
+export function liveRuntimeRequiredMessage(feature: string, socketPath: string | null): string {
+  const where = socketPath ? `no brain answered at ${socketPath}` : "--headless runs without one";
+  return `${feature} needs the running ADE brain; ${where}. `
+    + "Use the `ade` on PATH in an ADE terminal or agent shell (it names its brain), "
+    + "or pass --socket <endpoint> from that brain's `ade brain status`.";
+}
+
 async function createConnection(
   options: GlobalOptions,
-  args: { autoRegisterProject?: boolean; machineRuntimeOnly?: boolean } = {},
+  args: {
+    autoRegisterProject?: boolean;
+    machineRuntimeOnly?: boolean;
+    /** Feature name of a plan that must not fall back to headless mode. */
+    needsLiveRuntime?: string;
+  } = {},
 ): Promise<CliConnection> {
   const roots = resolveRoots(options);
   const { resolveAdeLayout } =
     await import("../../desktop/src/shared/adeLayout");
   const layout = resolveAdeLayout(roots.projectRoot);
   const socketPathOverride = options.socketPath?.trim() || null;
-  const legacySocketPath =
+  const explicitEndpoint =
     socketPathOverride ||
     process.env.ADE_RPC_URL?.trim() ||
     process.env.ADE_RPC_SOCKET_PATH?.trim() ||
-    layout.socketPath;
+    null;
+  const legacySocketPath = explicitEndpoint || layout.socketPath;
   const autoRegisterProject = args.autoRegisterProject ?? true;
+  if (args.needsLiveRuntime && options.headless) {
+    throw new CliToolError(liveRuntimeRequiredMessage(args.needsLiveRuntime, null), undefined);
+  }
 
   if (!options.headless) {
     let socketClient: SocketJsonRpcClient | null = null;
@@ -18829,9 +18868,11 @@ async function createConnection(
         socketClient?.close();
       } catch {}
       if (args.machineRuntimeOnly) throw error;
+      // Bare `--socket` means this channel's brain. The per-project pipe is
+      // tried only when a caller named an endpoint.
       if (
         options.requireSocket &&
-        !shouldAttemptDesktopSocketConnection(legacySocketPath)
+        (!explicitEndpoint || !shouldAttemptDesktopSocketConnection(legacySocketPath))
       ) {
         throw error;
       }
@@ -18878,6 +18919,11 @@ async function createConnection(
 
   if (options.requireSocket) {
     throw new Error(`ADE endpoint is not available at ${legacySocketPath}.`);
+  }
+  if (args.needsLiveRuntime) {
+    const machineSocketPath = explicitEndpoint
+      ?? await resolveMachineRuntimeSocketPath(null).catch(() => null);
+    throw new CliToolError(liveRuntimeRequiredMessage(args.needsLiveRuntime, machineSocketPath), undefined);
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -28112,14 +28158,21 @@ async function executePlan(
     connection = await createConnection(connectionOptions, {
       autoRegisterProject: shouldAutoRegisterProjectForPlan(plan),
       machineRuntimeOnly: plan.machineAutoStart === true,
+      ...(plan.needsLiveRuntime ? { needsLiveRuntime: plan.needsLiveRuntime } : {}),
     });
   } catch (error) {
+    if (error instanceof CliToolError) throw error;
     const roots = resolveRoots(options);
     let socketPath = path.join(roots.projectRoot, ".ade", "ade.sock");
     try {
-      const { resolveAdeLayout } =
-        await import("../../desktop/src/shared/adeLayout");
-      socketPath = resolveAdeLayout(roots.projectRoot).socketPath;
+      if (connectionOptions.requireSocket && !options.socketPath?.trim()) {
+        // Bare --socket asked for this channel's brain; name its endpoint.
+        socketPath = await resolveMachineRuntimeSocketPath(null);
+      } else {
+        const { resolveAdeLayout } =
+          await import("../../desktop/src/shared/adeLayout");
+        socketPath = resolveAdeLayout(roots.projectRoot).socketPath;
+      }
     } catch {
       // Keep the conventional Unix fallback if shared layout loading fails.
     }
@@ -28141,7 +28194,7 @@ async function executePlan(
         nextAction: plan.machineOnly
           ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
           : options.requireSocket
-            ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
+            ? "Open the ADE app for this channel, or run the `ade` on PATH in an ADE terminal or agent shell. `--socket <endpoint>` picks another brain."
           : sourceRuntimeInterop
             ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
             : "Verify --project-root points at an ADE project and run ade doctor --json.",

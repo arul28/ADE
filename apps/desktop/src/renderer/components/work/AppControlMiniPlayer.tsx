@@ -287,6 +287,12 @@ function AppControlMiniPlayerBox({
    */
   const shownForSeed = visible || pip.active;
   const connectedTargetId = session.status === "connected" ? session.cdpTargetId : null;
+  // Web client: frames cross the relay only while a view shows them. The
+  // feed's own listener is status-only, so the player holds them while shown.
+  useEffect(() => {
+    if (!shownForSeed) return undefined;
+    return window.ade?.appControl?.holdFrames?.();
+  }, [shownForSeed]);
   useEffect(() => {
     const read = window.ade?.appControl?.getLatestFrame;
     if (!shownForSeed || !connectedTargetId || typeof read !== "function") return undefined;
@@ -355,7 +361,7 @@ function AppControlMiniPlayerBox({
       concealed={pip.active}
       attrPrefix="app-control-mini"
       playerId={laneId}
-      ariaLabel={`App Control, ${session.label}, floating`}
+      ariaLabel="App, floating"
       recording={recording}
       onStartDrag={startDrag}
       onStartResize={startResize}
@@ -409,7 +415,7 @@ function AppControlMiniPlayerBox({
             data-app-control-mini-waiting=""
             className="absolute inset-0 flex items-center justify-center px-4 text-center font-sans text-[12px] text-fg/70"
           >
-            {connected ? "Waiting for the first frame…" : `Starting ${session.label}…`}
+            {connected ? "Waiting for the first frame…" : "Starting the app…"}
           </p>
         ) : null}
         <div
@@ -419,11 +425,10 @@ function AppControlMiniPlayerBox({
             "opacity-0 transition-opacity duration-[120ms] ease-out group-hover:opacity-100 motion-reduce:transition-none",
           )}
         >
+          {/* "App", never the session label: without `--label` that is the
+              launch command ("npm start"). */}
           <span className="shrink-0 rounded-full border border-border bg-surface px-2 py-0.5 font-sans text-[10.5px] font-medium text-fg/85">
-            App Control
-          </span>
-          <span className="min-w-0 truncate rounded-full border border-border bg-surface px-2 py-0.5 font-sans text-[10.5px] text-fg/85">
-            {session.label}
+            App
           </span>
           <span
             data-app-control-mini-state={stateLabel}

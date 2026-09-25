@@ -713,6 +713,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode, piThinkingLevel } from "../../../shared/cliLaunch";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
+import { stripHostRuntimeEnv, userProcessEnv } from "../shared/hostRuntimeEnv";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
 import {
   buildProviderGroupBlocks,
@@ -9932,7 +9933,7 @@ export function createAgentChatService(args: {
    */
   const sessionProviderLookupEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const patch = providerInstanceEnvPatch(resolveSessionInstance(managed));
-    return Object.keys(patch).length ? { ...process.env, ...patch } : process.env;
+    return { ...userProcessEnv(), ...patch };
   };
 
   /**
@@ -36937,11 +36938,11 @@ export function createAgentChatService(args: {
       // this asserts ADE's map is self-consistent, NOT that the SDK keeps every
       // core tool eagerly loaded. If a CTO is ever seen failing to find a core
       // tool, put this ternary back — it is a one-line revert.
-      opts.env = {
+      opts.env = stripHostRuntimeEnv({
         ...process.env as Record<string, string>,
         ...opts.env as Record<string, string> | undefined,
         ENABLE_TOOL_SEARCH: "auto",
-      };
+      });
     }
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {

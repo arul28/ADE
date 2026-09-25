@@ -97,7 +97,18 @@ final class AppControlLiveSession: ObservableObject {
         subscriptionId: subscriptionId,
         viewerLabel: viewerLabel
       )
-      guard token == generation else { return }
+      guard token == generation else {
+        // Stopped while the subscribe was in flight. The unsubscribe sent then
+        // reached the host before this subscription existed there, so it
+        // would stream to nobody. Release it, unless a newer view already
+        // registered the same id and now shares it.
+        if !service.isAppControlStreamRegistered(subscriptionId: subscriptionId),
+           service.connectionState == .connected {
+          let id = subscriptionId
+          Task { try? await service.appControlStreamUnsubscribe(subscriptionId: id) }
+        }
+        return
+      }
       if let width = reply.width, let height = reply.height, width > 0, height > 0 {
         pictureWidth = width
         pictureHeight = height
@@ -184,19 +195,15 @@ func appControlIsLive(_ appControl: WorkToolsAppControlState?) -> Bool {
 // MARK: - Picture
 
 /// The live picture: the newest frame, aspect fit, with an optional pinch,
-/// pan and double-tap zoom (the same zoom rules as the macOS picture).
+/// pan and double-tap zoom (the macOS picture's `livePictureZoom`).
 struct AppControlLivePicture: View {
   @ObservedObject var session: AppControlLiveSession
   /// The app is attached; drives the Live/Off tag.
   var live: Bool
   var zoomable: Bool = false
-  /// Card style (rounded, tinted slot) or viewer style (bare, on black).
+  /// Card style (rounded, tinted slot, Live tag on the picture) or viewer
+  /// style (bare, on black; the viewer's footer carries the tag, like macOS).
   var inCard: Bool = true
-
-  @State private var zoom = MacDesktopZoom.identity
-  @State private var lastMagnification: CGFloat = 1
-  @State private var lastPanTranslation: CGSize = .zero
-  @State private var pictureSize: CGSize = .zero
 
   var body: some View {
     ZStack {
@@ -211,33 +218,21 @@ struct AppControlLivePicture: View {
     }
     .frame(maxWidth: .infinity)
     .aspectRatio(session.aspectRatio, contentMode: .fit)
-    .background(
-      GeometryReader { proxy in
-        Color.clear
-          .onAppear { pictureSize = proxy.size }
-          .onChange(of: proxy.size) { _, size in
-            pictureSize = size
-            resetZoom()
-          }
-      }
-    )
-    .scaleEffect(zoom.scale)
-    .offset(zoom.offset)
-    .clipped()
-    .contentShape(Rectangle())
-    .gesture(zoomGesture, including: zoomable ? .all : .subviews)
+    .livePictureZoom(enabled: zoomable)
     .background(
       Color.black.opacity(inCard ? 0.12 : 0),
       in: RoundedRectangle(cornerRadius: inCard ? 12 : 0, style: .continuous)
     )
     .clipShape(RoundedRectangle(cornerRadius: inCard ? 12 : 0, style: .continuous))
     .overlay(alignment: .topTrailing) {
-      AppControlLiveTag(live: live && session.phase != .idle)
-        .padding(8)
-        .allowsHitTesting(false)
+      if inCard {
+        AppControlLiveTag(live: live && session.phase != .idle)
+          .padding(8)
+          .allowsHitTesting(false)
+      }
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel(live ? "App Control, live" : "App Control, off")
+    .accessibilityLabel(live ? "App, live" : "App, off")
   }
 
   @ViewBuilder
@@ -272,41 +267,6 @@ struct AppControlLivePicture: View {
     .foregroundStyle(inCard ? ADEColor.textSecondary : .white.opacity(0.85))
     .multilineTextAlignment(.center)
     .padding(8)
-  }
-
-  private var zoomGesture: some Gesture {
-    MagnifyGesture()
-      .onChanged { value in
-        guard zoomable, lastMagnification > 0 else { return }
-        let factor = value.magnification / lastMagnification
-        lastMagnification = value.magnification
-        zoom = zoom.magnified(by: factor, around: value.startLocation, in: pictureSize)
-      }
-      .onEnded { _ in lastMagnification = 1 }
-      .simultaneously(with: DragGesture(minimumDistance: 8, coordinateSpace: .local)
-        .onChanged { value in
-          guard zoomable else { return }
-          let delta = CGSize(
-            width: value.translation.width - lastPanTranslation.width,
-            height: value.translation.height - lastPanTranslation.height
-          )
-          lastPanTranslation = value.translation
-          zoom = zoom.panned(by: delta, in: pictureSize)
-        }
-        .onEnded { _ in lastPanTranslation = .zero })
-      .simultaneously(with: SpatialTapGesture(count: 2, coordinateSpace: .local)
-        .onEnded { value in
-          guard zoomable else { return }
-          withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-            zoom = zoom.toggled(at: value.location, in: pictureSize)
-          }
-        })
-  }
-
-  private func resetZoom() {
-    zoom = .identity
-    lastMagnification = 1
-    lastPanTranslation = .zero
   }
 }
 
@@ -374,10 +334,11 @@ struct AppControlCard: View {
     return "\(appControl.driver) · \(appControlStatusLabel(appControl.status))"
   }
 
+  /// One "App" chip. The host's app name is often the launch command
+  /// ("npm start"), which is not a name, so the phone never shows it.
   private func chips(_ appControl: WorkToolsAppControlState) -> some View {
     HStack(spacing: 6) {
-      appControlChip(text: "App Control", systemImage: "macwindow")
-      appControlChip(text: appControl.appName, systemImage: "app.dashed")
+      appControlChip(text: appControlTagLabel, systemImage: "macwindow")
       Spacer(minLength: 0)
     }
   }
@@ -517,6 +478,10 @@ struct AppControlCard: View {
   }
 }
 
+/// What every App Control tag on the phone says: the card chip, the lane chip
+/// and the viewer's title. Just "App"; the status goes in its own tag.
+let appControlTagLabel = "App"
+
 /// The app's session status in a word, for the chip when it is not live.
 func appControlStatusLabel(_ status: String) -> String {
   switch status {
@@ -532,7 +497,12 @@ func appControlStatusLabel(_ status: String) -> String {
 // MARK: - Viewer
 
 /// Full-screen view of the lane's App Control app. Built like the macOS
-/// viewer: black stage, Close on top, one line underneath. Watch only.
+/// viewer: black stage, Close and Rotate on top with the title between, one
+/// line underneath. Watch only.
+///
+/// The picture zooms (pinch, pan, double-tap) and the phone can turn to
+/// landscape, with the device or with Rotate, on the macOS viewer's rules
+/// (`MacDesktopViewerOrientation`, `livePictureZoom`).
 struct AppControlViewer: View {
   let laneId: String
 
@@ -545,6 +515,8 @@ struct AppControlViewer: View {
   @State private var appControl: WorkToolsAppControlState?
   @State private var loaded: Bool
   @State private var session: AppControlLiveSession?
+  @State private var orientation = MacDesktopViewerOrientation()
+  @Environment(\.verticalSizeClass) private var verticalSizeClass
 
   init(laneId: String, initialState: WorkToolsAppControlState?) {
     self.laneId = laneId
@@ -560,7 +532,9 @@ struct AppControlViewer: View {
         Spacer(minLength: 0)
         stage
         Spacer(minLength: 0)
-        footer
+        if !compactHeight {
+          footer
+        }
       }
     }
     .preferredColorScheme(.dark)
@@ -572,8 +546,14 @@ struct AppControlViewer: View {
         await refresh()
       }
     }
-    .onAppear { updateLifecycle() }
-    .onDisappear { stopSession() }
+    .onAppear {
+      orientation.openedIn = MacDesktopViewerRotation.currentOrientation()
+      updateLifecycle()
+    }
+    .onDisappear {
+      stopSession()
+      restoreOrientationOnClose()
+    }
     .onChange(of: scenePhase) { _, _ in updateLifecycle() }
     .onChange(of: syncService.connectionState) { _, _ in updateLifecycle() }
     .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
@@ -581,29 +561,53 @@ struct AppControlViewer: View {
 
   private var controls: some View {
     HStack(spacing: 14) {
-      Button {
-        ADEHaptics.light()
+      controlButton(systemName: "xmark", label: "Close") {
         stopSession()
         dismiss()
-      } label: {
-        Image(systemName: "xmark")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(.white)
-          .frame(width: 44, height: 44)
-          .background(Color.white.opacity(0.12), in: Circle())
       }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Close")
       Spacer(minLength: 0)
+      if rotates {
+        controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
+      }
     }
     .overlay {
-      Label("App Control", systemImage: "macwindow")
+      Label(appControlTagLabel, systemImage: "macwindow")
         .font(.footnote.weight(.semibold))
         .foregroundStyle(.white.opacity(0.85))
         .accessibilityAddTraits(.isHeader)
     }
     .padding(.horizontal, 18)
-    .padding(.vertical, 12)
+    .padding(.vertical, compactHeight ? 6 : 12)
+  }
+
+  private func controlButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
+    Button {
+      ADEHaptics.light()
+      action()
+    } label: {
+      macDesktopViewerControlLabel(systemName: systemName)
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(label)
+  }
+
+  /// Landscape on a phone. The line under the picture goes, so the picture
+  /// keeps the height.
+  private var compactHeight: Bool { verticalSizeClass == .compact }
+
+  /// Only a phone turns. An iPad keeps whatever its window is doing.
+  private var rotates: Bool { UIDevice.current.userInterfaceIdiom == .phone }
+
+  private func rotate() {
+    let request = orientation.toggleRotation(current: MacDesktopViewerRotation.currentOrientation())
+    MacDesktopViewerRotation.apply(lockLandscape: false, request: request)
+  }
+
+  /// A turn this viewer made is undone; a turn the person made with the
+  /// device stays.
+  private func restoreOrientationOnClose() {
+    guard rotates else { return }
+    MacDesktopViewerRotation.apply(lockLandscape: false, request: orientation.close())
   }
 
   @ViewBuilder
@@ -634,12 +638,14 @@ struct AppControlViewer: View {
       .padding(.horizontal, 32)
   }
 
+  /// "Watching" and the Live/Off tag, where the macOS viewer puts its
+  /// ribbon. Never the host's app name: that is often the launch command.
   private var footer: some View {
     HStack(spacing: 8) {
       if let appControl {
-        Text(appControl.appName)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(.white.opacity(0.85))
+        Text("Watching")
+          .font(.caption)
+          .foregroundStyle(.white.opacity(0.7))
           .lineLimit(1)
         AppControlLiveTag(live: appControlIsLive(appControl))
       }

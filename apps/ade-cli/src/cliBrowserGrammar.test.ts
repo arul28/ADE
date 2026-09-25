@@ -641,8 +641,11 @@ const BUILD_CLI_PLAN_HELP_CALL_SITES = 2;
  * `readAppControlLaneScope` reads the lane and chat for every `ade app-control`
  * subcommand, and `buildAppControlRecordPlan` reads `record start|stop|status`.
  * Their flags are App Control flags, not browser flags.
+ *
+ * 115 since `buildAppControlSubcommandPlan` wraps the App Control subcommands
+ * so the stateful ones refuse headless mode. Same App Control flags.
  */
-const ARGV_READER_COUNT = 114;
+const ARGV_READER_COUNT = 115;
 /*
  * The moved readers — `readParentSessionId`, `readAgentSpawnLineage`,
  * `collectLaunchArgs`/`normalizeLaunchArgs` — now live in launchArgs.ts, which

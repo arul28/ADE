@@ -4,6 +4,7 @@ import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
 import path from "node:path";
+import { appControlProofCaption } from "../../../shared/proofProvenance";
 import { WebSocket, type RawData } from "ws";
 import type {
   AppControlAgentClearArgs,
@@ -1260,8 +1261,12 @@ const providersFor = (activeSession: AppControlSession | null): AppControlStatus
     },
     {
       provider: "computer-use",
-      available: process.platform === "darwin",
-      detail: process.platform === "darwin" ? "macOS window proof and OS-level input can complement CDP." : "Computer use proof is currently macOS-only.",
+      // Proof (screenshots and recordings) works on every platform; macOS adds
+      // window capture and OS-level input.
+      available: true,
+      detail: process.platform === "darwin"
+        ? "Proof: screenshots and window recordings. macOS OS-level input can complement CDP."
+        : "Proof: screenshots and screencast recordings through CDP.",
     },
   ];
 };
@@ -3328,14 +3333,16 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
   const captureProof = async (proofArgs: AppControlCaptureProofArgs = {}): Promise<AppControlCaptureProofResult> => {
     const controller = await sessionController(proofArgs, "captureProof");
     const laneId = controller.laneId;
-    const session = controller.getSession();
-    const appName = session?.label?.trim() || "app";
-    const caption = proofArgs.caption?.trim() || `App Control screenshot · ${appName}`;
     const chatSessionId = cleanClaimId(proofArgs.chatSessionId);
     if (!args.ingestArtifacts) {
       throw new Error("App Control proof is unavailable: this ADE host has no proof store.");
     }
     const shot = await controller.observe({ includeDom: false, includeDiagnostics: false });
+    // The page title and the lane, never the launch command.
+    const caption = proofArgs.caption?.trim() || appControlProofCaption(
+      shot.title?.trim() || await controller.getTargetTitle().catch(() => null),
+      await Promise.resolve(args.resolveLaneName?.(laneId)).catch(() => null),
+    );
     const owners: ComputerUseArtifactOwner[] = [{ kind: "lane", id: laneId, relation: "attached_to" }];
     if (chatSessionId) owners.push({ kind: "chat_session", id: chatSessionId, relation: "attached_to" });
     const prUrl = (await Promise.resolve(args.resolvePrimaryPrUrl?.(laneId)).catch(() => null))?.trim() || null;
@@ -3367,13 +3374,19 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         + `${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    const artifactId = filed?.artifacts[0]?.id ?? null;
+    const filedRecord = filed?.artifacts[0] ?? null;
+    const artifactId = filedRecord?.id ?? null;
     if (!artifactId) {
       throw new Error(`The screenshot was taken (${shot.filePath}), but the proof store filed no record.`);
     }
+    // The filed copy, not the observation: the scratch file is pruned once filed.
+    const filedUri = filedRecord?.uri?.trim() ?? "";
+    const filedPath = filedUri && !/^[a-z][a-z0-9+.-]*:\/\//i.test(filedUri)
+      ? path.resolve(args.projectRoot, filedUri)
+      : shot.filePath;
     return {
       artifactId,
-      filePath: shot.filePath,
+      filePath: filedPath,
       width: shot.width,
       height: shot.height,
       caption,

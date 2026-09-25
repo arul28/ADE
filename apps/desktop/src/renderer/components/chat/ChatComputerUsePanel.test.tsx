@@ -233,7 +233,7 @@ describe("proof rendering", () => {
 
     await waitFor(() => {
       expect(view.container.querySelector('[data-chat-proof-artifact="artifact-21"] video')?.getAttribute("src"))
-        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/inside.mp4`);
+        .toBe(`${MEDIA_BASE}/project/.ade/artifacts/inside.mp4?root=${encodeURIComponent("/Users/me/repo")}`);
     });
     expect(window.ade.computerUse.readArtifactPreview).toHaveBeenCalledTimes(1);
     expect(window.ade.computerUse.readArtifactPreview)

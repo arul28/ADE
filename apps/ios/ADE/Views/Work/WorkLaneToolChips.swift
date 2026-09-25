@@ -14,7 +14,8 @@ enum WorkToolChipKind: Equatable {
   case browser(tabCount: Int, agentUsing: Bool)
   /// What App Control is attached to. Opens `AppControlViewer` when the host
   /// streams its frames, else `WorkToolsSheet`. `live`: the app is attached
-  /// over CDP, so frames flow.
+  /// over CDP, so frames flow. The chip reads "App": the host's `appName` is
+  /// often the launch command ("npm start"), which is not a name.
   case appControl(appName: String, live: Bool = false)
   /// The lane's private macOS screen, while it has one. Opens
   /// `MacDesktopViewer`. `streamLive`: frames flow at full rate.
@@ -41,7 +42,7 @@ struct WorkToolChip: Equatable, Identifiable {
     switch kind {
     case .simulator(let name, _): return name
     case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
-    case .appControl(let appName, _): return appName
+    case .appControl: return appControlTagLabel
     case .macDesktop: return "macOS"
     }
   }
@@ -76,8 +77,8 @@ struct WorkToolChip: Equatable, Identifiable {
 /// - Browser: when the desktop browser has tabs ("1 tab" / "N tabs"), or when
 ///   an agent is driving it with none listed ("Browser") — an agent on the
 ///   browser was always reason enough to surface it.
-/// - App Control: the attached app's name. Live dot while the app is attached
-///   and sending frames.
+/// - App Control: "App" while an app is attached. Live dot while it is
+///   attached and sending frames.
 func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   if let name = appleDeviceRunningName(appleDevice) {
@@ -414,8 +415,8 @@ func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
       : "\(base). Tap for details."
   case .appControl(_, let live):
     return live
-      ? "App Control on your Mac, \(chip.label), live. Tap to watch."
-      : "App Control on your Mac, \(chip.label). Tap for details."
+      ? "\(chip.label) on your Mac, live. Tap to watch."
+      : "\(chip.label) on your Mac. Tap for details."
   case .macDesktop(let streamLive, let agentDriving):
     var text = "This lane's macOS desktop"
     if streamLive { text += ", live" }

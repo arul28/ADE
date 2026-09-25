@@ -7,6 +7,7 @@ import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
+import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import {
   clearLastFailure,
   recordLastFailure,
@@ -245,6 +246,7 @@ import {
 import { createTeardownStack } from "./services/runtime/startupTeardown";
 import {
   adeCliShimDirName,
+  packagedCliNodeModulePaths,
   renderAdeCliShim,
   resolveAdeCliShimBrain,
   type AdeCliShimBrain,
@@ -499,7 +501,12 @@ function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain): { dir: str
   const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
   try {
     fs.mkdirSync(shimDir, { recursive: true });
-    const body = renderAdeCliShim({ entryPath, execPath: process.execPath, brain });
+    const body = renderAdeCliShim({
+      entryPath,
+      execPath: process.execPath,
+      brain,
+      nodeModulePaths: packagedCliNodeModulePaths(entryPath),
+    });
     if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
       fs.writeFileSync(shimPath, body, "utf8");
     }
@@ -650,7 +657,7 @@ export function createHeadlessAdeCliAgentEnv(
   } = {},
 ): NodeJS.ProcessEnv {
   cleanupLegacyBundledAdeSkillsForCli();
-  const next: NodeJS.ProcessEnv = { ...baseEnv };
+  const next: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...baseEnv });
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: next,
     includeInteractiveShell: true,

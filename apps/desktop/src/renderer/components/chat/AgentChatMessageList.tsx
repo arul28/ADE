@@ -6379,15 +6379,15 @@ function AgentChatMessageListMain({
   /**
    * Thumbnail source for inline proof. The stored `uri` is project-relative
    * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
-   * exactly that against the active project root — so a local project gets real
+   * exactly that against the chat's project root (named in the URL) — so a local project gets real
    * previews synchronously, with no per-tile IPC. A remote project has no such
    * handler, so tiles fall back to their kind label and the drawer (which reads
    * bytes over the runtime) stays the way to view them.
    */
   const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
     if (!allowLocalProofArtifactProtocol) return null;
-    return artifactImageSrc(artifact.uri);
-  }, [allowLocalProofArtifactProtocol]);
+    return artifactImageSrc(artifact.uri, chatScope.rootPath);
+  }, [allowLocalProofArtifactProtocol, chatScope.rootPath]);
 
   const turnProofTimeline = useMemo(() => {
     const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();

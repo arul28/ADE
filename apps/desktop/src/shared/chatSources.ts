@@ -200,6 +200,32 @@ function fileName(value: string): string {
   return normalized.split(/[\\/]/).pop() || value;
 }
 
+const GENERATED_NAME_PREFIX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}(?:[-_. ]|$)/i;
+
+/**
+ * The name to show for a file the user attached. A pasted image is stored
+ * under a generated name (`<uuid>.png`, or `<uuid>-<original>` when staged),
+ * which means nothing to the person who pasted it. Keeps the original name when
+ * the stored one carries it; otherwise "Pasted image", or "Attached PDF file"
+ * for a staged file.
+ */
+export function attachmentDisplayName(path: string, type: "file" | "image" | "image-url"): string {
+  const name = fileName(path);
+  const extension = /\.[A-Za-z0-9]{1,8}$/.exec(name)?.[0] ?? "";
+  const stem = name.slice(0, name.length - extension.length);
+  const isImage = type !== "file" || /^\.(?:png|jpe?g|gif|webp|heic|bmp|tiff?)$/i.test(extension);
+  const generic = isImage
+    ? "Pasted image"
+    : extension ? `Attached ${extension.slice(1).toUpperCase()} file` : "Attached file";
+  if (GENERATED_NAME_PREFIX.test(stem)) {
+    const original = stem.replace(GENERATED_NAME_PREFIX, "").trim();
+    return original ? `${original}${extension}` : generic;
+  }
+  // A browser or clipboard paste names every image `image.png`.
+  if (isImage && /^(?:image|clipboard|pasted[ _-]?image)$/i.test(stem)) return generic;
+  return name || generic;
+}
+
 /**
  * Title for a page the provider reported without one: the domain and path
  * (`anthropic.com/research`), or just the domain for a site root. It names the
@@ -541,7 +567,7 @@ export function deriveChatSources(
             key: `url:${normalizedUrl}`,
             kind: "file",
             url: attachment.url.trim(),
-            title: fileName(attachment.path) || undefined,
+            title: attachment.path ? attachmentDisplayName(attachment.path, attachment.type) : undefined,
             attached: true,
             countsTowardTurn: false,
           }, { timestamp });
@@ -549,7 +575,14 @@ export function deriveChatSources(
         }
         const path = text(attachment.path);
         if (!path) continue;
-        add({ key: `file:${path}`, kind: "file", path, attached: true, countsTowardTurn: false }, { timestamp });
+        add({
+          key: `file:${path}`,
+          kind: "file",
+          path,
+          title: attachmentDisplayName(path, attachment.type),
+          attached: true,
+          countsTowardTurn: false,
+        }, { timestamp });
       }
       for (const context of event.contextAttachments ?? []) {
         if (context.type !== "linear_issue") continue;
@@ -689,8 +722,8 @@ export function chatSourceGroup(source: Pick<ChatSource, "cited" | "kinds" | "ur
 }
 
 /** The letter drawn when there is no favicon: first letter of the domain or file name. */
-export function chatSourceInitial(source: Pick<ChatSource, "domain" | "title" | "path">): string {
-  const basis = source.domain ?? (source.path ? fileName(source.path) : source.title);
+export function chatSourceInitial(source: Pick<ChatSource, "domain" | "title" | "path" | "attached">): string {
+  const basis = source.domain ?? (source.path && !source.attached ? fileName(source.path) : source.title);
   const match = basis.match(/[\p{L}\p{N}]/u);
   return (match?.[0] ?? "•").toUpperCase();
 }
@@ -708,10 +741,12 @@ function titleNamesDomain(title: string, domain: string): boolean {
 
 /**
  * Readable secondary text for a source row: domain, path:lines, or app
- * actions. Null when there is nothing the title does not already say.
+ * actions. A file the user attached says so instead of printing its stored
+ * path. Null when there is nothing the title does not already say.
  */
 export function chatSourceSubtitle(source: ChatSource): string | null {
   if (source.domain) return titleNamesDomain(source.title, source.domain) ? null : source.domain;
+  if (source.attached) return "Attached by you";
   if (source.path) {
     if (source.lineStart !== undefined) {
       const range = source.lineEnd !== undefined && source.lineEnd !== source.lineStart

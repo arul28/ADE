@@ -26,8 +26,14 @@ between `ade apple`, `ade mac-desktop`, `ade app-control` and `ade browser`.
   means ADE sent the input. Read the `hit:` and `effect:` lines and the new
   observation. Report only what you confirmed.
 - **`ade: Unknown command 'app-control'` means your shell found an older
-  `ade`.** Run the same command as `"$ADE_CLI_PATH" app-control ...` and keep
-  using `"$ADE_CLI_PATH"` for the rest of the task.
+  `ade`.** Run the same command as `"$ADE_CLI_PATH" app-control ...`
+  (PowerShell: `& $env:ADE_CLI_PATH app-control ...`) and keep using it for
+  the rest of the task.
+- **App Control needs the running ADE brain.** A session lives in the brain,
+  so `--headless` is refused. If a command says no brain answered, you are
+  running the wrong `ade`: use `$ADE_CLI_PATH`. Never start, stop or install a
+  brain or service, and never `npm install` in the user's repo to fix ADE.
+  Report the error instead.
 
 ## Common tasks
 
@@ -135,6 +141,9 @@ animation, a retry. Use a **still** (`proof`) when one screen proves the claim.
 - `record start` captures the app's own window. Still stretches are cut unless
   you pass `--keep-idle`. A recording stops itself after 10 minutes of real
   time; `--max-seconds <n>` sets another limit.
+- Set the cap from the real pace of your steps, not a guess. Each command
+  takes seconds of real time, so count your steps and time one. When you
+  cannot tell, pass a large cap and stop the recording yourself.
 - Always pass `--caption`. `record stop` files a captioned video as proof under
   your lane, your chat and the lane's PR. A video with no caption stays a
   scratch file (unless the cap or the app closing ended it).

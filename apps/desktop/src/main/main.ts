@@ -363,6 +363,8 @@ import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import {
   respondToArtifactProtocolRequest,
+  type ArtifactServeRefusal,
+  type ArtifactServeScope,
   type RemoteArtifactRangeReader,
 } from "./services/computerUse/artifactStreamProtocol";
 import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
@@ -1356,13 +1358,41 @@ app.whenReady().then(async () => {
   /** Reads proof bytes from a paired computer; set once the runtime bridge is up. */
   let remoteArtifactRangeReader: RemoteArtifactRangeReader | null = null;
 
+  /**
+   * The project a proof read is served from. A URL that names a `root` is
+   * served from that project, and only when it is open on this computer: a
+   * chat's proof must not depend on which window last had focus. A URL with no
+   * `root` (an older stored uri) keeps the focused project. Either way the
+   * path stays jailed in that one project's `.ade/artifacts`.
+   */
+  const artifactServeScope = (requestedRoot: string | null): ArtifactServeScope => {
+    if (!requestedRoot) return { projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir };
+    let openRoot: string | null = null;
+    for (const root of projectContexts.keys()) {
+      if (pathsEqual(root, requestedRoot)) {
+        openRoot = root;
+        break;
+      }
+    }
+    if (!openRoot) return { projectRoot: null, allowedDir: null, refusal: "unknown-project" };
+    try {
+      return { projectRoot: openRoot, allowedDir: resolveAdeLayout(openRoot).artifactsDir };
+    } catch {
+      return { projectRoot: openRoot, allowedDir: null };
+    }
+  };
+  const logArtifactServeRefusal = (refusal: ArtifactServeRefusal): void => {
+    logMachineEvent("warn", "computer_use.artifact_serve_refused", refusal);
+  };
+
   // Proof videos play from this loopback server, not `ade-artifact://`:
   // `protocol.handle` cannot answer the second Range read a long recording
   // needs. It starts on the first renderer ask and closes on quit.
   const artifactMediaServer = createArtifactMediaServer({
-    localScope: () => ({ projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir }),
+    localScope: artifactServeScope,
     remoteReader: () => remoteArtifactRangeReader,
-    warn: (message, details) => console.warn(message, details),
+    warn: (message, details) => logMachineEvent("warn", "computer_use.artifact_media_failed", { message, ...details }),
+    onRefused: logArtifactServeRefusal,
   });
   ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
   app.on("will-quit", () => {
@@ -1381,8 +1411,8 @@ app.whenReady().then(async () => {
   // Handle ade-artifact:// requests — serves local files for proof drawer images.
   protocol.handle("ade-artifact", (request) => respondToArtifactProtocolRequest(
     request,
-    { projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir },
-    (message, details) => console.warn(message, details),
+    artifactServeScope,
+    logArtifactServeRefusal,
   ));
   // What this computer's GPU was told to do, decided before any project opens.
   logMachineEvent("info", "app.hardware_acceleration", {

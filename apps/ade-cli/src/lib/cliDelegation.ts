@@ -210,7 +210,11 @@ export type AdeCmdShimLaunch = {
   execPath: string;
   entryPath: string;
   defaults: Array<[string, string]>;
+  /** Module dirs the shim puts in front of the caller's NODE_PATH. */
+  nodePath?: string;
 };
+
+const SHIM_NODE_PATH_SUFFIX = ";%NODE_PATH%";
 
 /**
  * Read a Windows `ade.cmd` exactly as `renderAdeCliShim` writes it for a JS
@@ -222,11 +226,14 @@ export function parseAdeCmdShim(text: string): AdeCmdShimLaunch | null {
   if (lines[0] !== "@echo off" || lines[1] !== "setlocal") return null;
   const unbatch = (value: string) => value.replace(/%%/g, "%");
   const defaults: Array<[string, string]> = [];
+  let nodePath: string | undefined;
   let runtimeFlag = false;
   for (const line of lines.slice(2, -1)) {
     const set = /^set "([A-Z_]+)=([^"]*)"$/.exec(line);
     if (set && SHIM_DEFAULT_NAMES.has(set[1]!)) {
       defaults.push([set[1]!, unbatch(set[2]!)]);
+    } else if (set && set[1] === "NODE_PATH" && set[2]!.endsWith(SHIM_NODE_PATH_SUFFIX)) {
+      nodePath = unbatch(set[2]!.slice(0, -SHIM_NODE_PATH_SUFFIX.length));
     } else if (line === "set ELECTRON_RUN_AS_NODE=1") {
       runtimeFlag = true;
     } else if (
@@ -239,7 +246,12 @@ export function parseAdeCmdShim(text: string): AdeCmdShimLaunch | null {
   }
   const exec = /^"([^"]+)" "([^"]+)" %\*$/.exec(lines[lines.length - 1] ?? "");
   if (!runtimeFlag || !exec) return null;
-  return { execPath: unbatch(exec[1]!), entryPath: unbatch(exec[2]!), defaults };
+  return {
+    execPath: unbatch(exec[1]!),
+    entryPath: unbatch(exec[2]!),
+    defaults,
+    ...(nodePath ? { nodePath } : {}),
+  };
 }
 
 type DelegatedInvocation = { command: string; args: string[]; env: NodeJS.ProcessEnv; windowsVerbatimArguments?: boolean };
@@ -276,6 +288,9 @@ function resolveDelegatedInvocation(args: {
         env: {
           ...args.env,
           ...(callerPicked ? {} : Object.fromEntries(shim.defaults)),
+          ...(shim.nodePath
+            ? { NODE_PATH: args.env.NODE_PATH ? `${shim.nodePath};${args.env.NODE_PATH}` : shim.nodePath }
+            : {}),
           ELECTRON_RUN_AS_NODE: "1",
         },
       };

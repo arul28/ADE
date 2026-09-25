@@ -19,6 +19,7 @@ import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { assertCursorSdkSupportedOnThisPlatform } from "./cursorSdkLoader";
 import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
 import {
@@ -180,7 +181,7 @@ async function runCommand(args: {
 }): Promise<SpawnResult> {
   return await new Promise((resolve, reject) => {
     const env = {
-      ...process.env,
+      ...userProcessEnv(),
       NO_COLOR: "1",
       TERM: "dumb",
     };

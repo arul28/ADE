@@ -341,7 +341,9 @@ struct MacDesktopViewer: View {
   }
 }
 
-private func macDesktopViewerControlLabel(systemName: String) -> some View {
+/// A round white-on-dark button face for the top bar of every full-screen
+/// live viewer (macOS, App Control).
+func macDesktopViewerControlLabel(systemName: String) -> some View {
   Image(systemName: systemName)
     .font(.system(size: 15, weight: .semibold))
     .foregroundStyle(.white)

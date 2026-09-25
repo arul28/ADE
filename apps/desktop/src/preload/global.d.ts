@@ -2991,6 +2991,14 @@ declare global {
           cb: (ev: AppControlEventPayload) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
+        /**
+         * Web client only: a view that shows live frames holds this while it
+         * is on screen. Frames stream over the relay only while one is held;
+         * status-only `onEvent` listeners do not keep them flowing. Returns
+         * the release. The desktop gets frames from the local screencast and
+         * has no such member.
+         */
+        holdFrames?: () => () => void;
       };
       builtInBrowser: {
         getStatus: (

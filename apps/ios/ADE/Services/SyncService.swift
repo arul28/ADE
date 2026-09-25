@@ -15480,6 +15480,11 @@ final class SyncService: ObservableObject {
     appControlStreamEndedHandlers.removeValue(forKey: subscriptionId)
   }
 
+  /// True while a view has this subscription id registered for frames.
+  func isAppControlStreamRegistered(subscriptionId: String) -> Bool {
+    appControlStreamFrameHandlers[subscriptionId] != nil
+  }
+
   private func resetAppControlStreamHandlers() {
     appControlStreamFrameHandlers.removeAll()
     appControlStreamEndedHandlers.removeAll()

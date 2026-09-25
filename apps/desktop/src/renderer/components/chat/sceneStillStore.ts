@@ -260,9 +260,12 @@ export function useCallStills(
 export function sceneStillSrc(
   record: SceneStillRecord | null | undefined,
   dataUrl?: string | null,
+  projectRoot?: string | null,
 ): string | null {
   if (dataUrl) return dataUrl;
-  return artifactImageSrc(record?.uri);
+  // The chat's project root, so main serves the still from that project and
+  // not from whichever window last had focus.
+  return artifactImageSrc(record?.uri, projectRoot);
 }
 
 /**
@@ -333,7 +336,7 @@ export function useSceneStillPreview(still: SceneStill | null | undefined): Scen
     const answered = answer?.uri === uri;
     return { src: answered ? answer.src : null, pending: !answered };
   }
-  return { src: sceneStillSrc(still?.record ?? null, null), pending: false };
+  return { src: sceneStillSrc(still?.record ?? null, null, scope.rootPath), pending: false };
 }
 
 /** Test seam: forget everything this window remembers. */

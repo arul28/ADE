@@ -179,6 +179,16 @@ any of them later.
   `ade-artifact://` handler makes; a remote one is read chunk by chunk from
   that machine's broker, which applies the check on its side. Remote images
   use `computerUse.readArtifactPreview`.
+  Local URLs carry the chat's project root as `?root=<root>`. Main serves such
+  a URL only when that root is a project open on this computer, and jails the
+  path in that project's `.ade/artifacts`. It never uses the focused window's
+  project for it, so a chat in one window still shows its proof while another
+  project has focus. A URL without `root` (an older stored uri) resolves
+  against the focused project. Every refused read is logged to the machine log
+  as `computer_use.artifact_serve_refused` with the reason (`unknown-project`,
+  `missing`, `outside`, `not-file`, `no-project`), the requested and resolved
+  project, and the path. A local stream that fails to load retries once through
+  `computerUse.readArtifactPreview` before the preview reports it.
   A failed preview names its cause when known (the machine is offline, it sent
   nothing, or the bytes did not play). Neither path falls back to Finder.
 - `apps/desktop/src/renderer/components/chat/useArtifactPreview.ts` — resolves

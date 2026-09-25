@@ -54,6 +54,7 @@ import {
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
+import { appControlAppName } from "../terminals/useWorkToolStatuses";
 import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
 import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
 import { floatWorkLiveCardForChat } from "./chatCompanionUiState";
@@ -70,7 +71,8 @@ import { MacDesktopStateCard, MAC_DESKTOP_SECONDARY_BUTTON } from "./MacDesktopS
 import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
 import { RecordingSavedRow } from "../shared/RecordingReceipt";
 import { formatRecordingElapsed } from "../shared/recordingFormat";
-import { appControlProofCaption, appControlRecordingCaption, useAppControlRecording } from "./useAppControlRecording";
+import { useAppControlRecording } from "./useAppControlRecording";
+import { appControlProofCaption } from "../../../shared/proofProvenance";
 import {
   CURSOR_TRACE_ACTIONS,
   countConsoleErrors,
@@ -266,7 +268,8 @@ function shortId(value: string | null | undefined): string | null {
   return value ? value.slice(0, 8) : null;
 }
 
-function statusInfo(session: AppControlSession | null): StatusInfo {
+/** `name` is `appControlAppName` or "App", never the launch command. */
+function statusInfo(session: AppControlSession | null, name: string): StatusInfo {
   if (!session) {
     // One phrase, one casing. The pane said "no app", "No app attached" and
     // "Pick an app to drive" about the same fact; the header's "No app" is the
@@ -286,14 +289,14 @@ function statusInfo(session: AppControlSession | null): StatusInfo {
       return {
         label: "Connected",
         word: "live",
-        detail: session.cdpPort ? `${session.label} on CDP port ${session.cdpPort}` : session.label,
+        detail: session.cdpPort ? `${name} on CDP port ${session.cdpPort}` : name,
         tone: "active",
       };
     case "starting":
       return {
         label: "Starting",
         word: "launching",
-        detail: `${session.label} is starting${suffix ? ` · ${suffix}` : ""}`,
+        detail: `${name} is starting${suffix ? ` · ${suffix}` : ""}`,
         tone: "warn",
       };
     case "running":
@@ -301,26 +304,26 @@ function statusInfo(session: AppControlSession | null): StatusInfo {
         return {
           label: "Disconnected",
           word: "disconnected",
-          detail: session.lastError ?? `${session.label} stopped responding. The app may have quit while the launch terminal is still running.`,
+          detail: session.lastError ?? `${name} stopped responding. The app may have quit while the launch terminal is still running.`,
           tone: "error",
         };
       }
       return {
         label: "Running",
         word: "launching",
-        detail: `${session.label} is running${suffix ? ` · ${suffix}` : " in the terminal"}`,
+        detail: `${name} is running${suffix ? ` · ${suffix}` : " in the terminal"}`,
         tone: "warn",
       };
     case "stopping":
-      return { label: "Stopping", word: "stopping", detail: `${session.label} is stopping`, tone: "warn" };
+      return { label: "Stopping", word: "stopping", detail: `${name} is stopping`, tone: "warn" };
     case "exited":
-      return { label: "Exited", word: "exited", detail: `${session.label} has exited`, tone: "muted" };
+      return { label: "Exited", word: "exited", detail: `${name} has exited`, tone: "muted" };
     case "stopped":
-      return { label: "Stopped", word: "stopped", detail: `${session.label} stopped`, tone: "muted" };
+      return { label: "Stopped", word: "stopped", detail: `${name} stopped`, tone: "muted" };
     case "failed":
-      return { label: "Failed", word: "failed", detail: session.lastError ?? `${session.label} failed`, tone: "error" };
+      return { label: "Failed", word: "failed", detail: session.lastError ?? `${name} failed`, tone: "error" };
     default:
-      return { label: session.status, word: session.status, detail: session.label, tone: "muted" };
+      return { label: session.status, word: session.status, detail: name, tone: "muted" };
   }
 }
 
@@ -443,7 +446,13 @@ export function ChatAppControlPanel({
   const activeSession = status?.activeSession ?? snapshot?.session ?? null;
   const activeSessionRef = useRef<AppControlSession | null>(activeSession);
   activeSessionRef.current = activeSession;
-  const sessionStatus = useMemo(() => statusInfo(activeSession), [activeSession]);
+  // The page title only counts when the snapshot is of this session.
+  const snapshotTitle = snapshot?.session?.id === activeSession?.id ? snapshot?.title ?? null : null;
+  const appName = appControlAppName(activeSession, snapshotTitle);
+  const sessionStatus = useMemo(
+    () => statusInfo(activeSession, appName ?? "App"),
+    [activeSession, appName],
+  );
   const controlsDisabled = Boolean(controlDisabledReason);
   /**
    * This host has somewhere to send an element or a screenshot.
@@ -1343,7 +1352,8 @@ export function ChatAppControlPanel({
     runtimePin,
     enabled: hasActiveSession,
   });
-  const defaultCaption = appControlRecordingCaption(activeSession?.label, laneName);
+  // The app's page title and the lane; the service files the same default.
+  const defaultCaption = appControlProofCaption(appName, laneName);
   const toggleRecording = useCallback(() => {
     if (recorder.running) {
       void recorder.stop();
@@ -1355,17 +1365,16 @@ export function ChatAppControlPanel({
     setCaptionDraft((current) => (current != null && captionFor === "record" ? null : defaultCaption));
     setCaptionFor("record");
   }, [captionFor, defaultCaption, recorder]);
-  const defaultProofCaption = appControlProofCaption(activeSession?.label);
   // Proof: one still of the app, filed as proof. Like Record, it asks for a
   // caption, prefilled, because the caption is what a reviewer judges it on.
   const toggleProof = useCallback(() => {
     setConfirmStop(false);
-    setCaptionDraft((current) => (current != null && captionFor === "proof" ? null : defaultProofCaption));
+    setCaptionDraft((current) => (current != null && captionFor === "proof" ? null : defaultCaption));
     setCaptionFor("proof");
-  }, [captionFor, defaultProofCaption]);
+  }, [captionFor, defaultCaption]);
   const submitCaption = useCallback(() => {
     if (captionFor === "proof") {
-      const caption = captionDraft?.trim() || defaultProofCaption;
+      const caption = captionDraft?.trim() || defaultCaption;
       setCaptionDraft(null);
       void recorder.captureProof(caption);
       return;
@@ -1373,7 +1382,7 @@ export function ChatAppControlPanel({
     const caption = captionDraft?.trim() || defaultCaption;
     setCaptionDraft(null);
     void recorder.start(caption);
-  }, [captionDraft, captionFor, defaultCaption, defaultProofCaption, recorder]);
+  }, [captionDraft, captionFor, defaultCaption, recorder]);
 
   // "The agent is driving" fades a few seconds after its last action. One
   // timer per action, never a poll.
@@ -1433,7 +1442,7 @@ export function ChatAppControlPanel({
         key: `waiting:${activeSession.id}`,
         tone: "notice",
         busy: true,
-        sentence: `Starting ${activeSession.label}. Waiting for its debug port on 127.0.0.1:${activeSession.cdpPort}.`,
+        sentence: `Starting ${appName ?? "the app"}. Waiting for its debug port on 127.0.0.1:${activeSession.cdpPort}.`,
         detail: "ADE adds the debug flags for common npm, pnpm, yarn, bun and direct Electron launches. If this does not end, quit any older copy of the app, or pass ADE_APP_CONTROL_DEBUG_FLAGS to the launcher.",
         actions: terminal ? [{ label: "Show terminal", onClick: () => onShowTerminal?.(terminal), muted: true }] : undefined,
         testId: "app-control-waiting",
@@ -1465,8 +1474,8 @@ export function ChatAppControlPanel({
         tone: "notice",
         icon: <Crosshair size={13} />,
         sentence: lastActionLine
-          ? `The agent is driving ${activeSession?.label ?? "the app"} · ${lastActionLine}`
-          : `The agent is driving ${activeSession?.label ?? "the app"}`,
+          ? `The agent is driving ${appName ?? "the app"} · ${lastActionLine}`
+          : `The agent is driving ${appName ?? "the app"}`,
         testId: "app-control-agent-driving",
       };
     }
@@ -1736,7 +1745,7 @@ export function ChatAppControlPanel({
             testId="app-control-starting"
             tone="busy"
             icon={Desktop}
-            title={`Starting ${activeSession?.label ?? "the app"}…`}
+            title={`Starting ${appName ?? "the app"}…`}
             detail={sessionStatus.detail}
             actions={canStop ? (
               <button type="button" className={MAC_DESKTOP_SECONDARY_BUTTON} onClick={() => setConfirmStop(true)}>
@@ -1952,7 +1961,7 @@ export function ChatAppControlPanel({
     <div className="flex h-full min-h-0 flex-col font-sans text-[11px] text-fg/75" data-testid="app-control-panel">
       {hasActiveSession ? (
         <AppControlToolbar
-          appLabel={activeSession?.label ?? "Pick an app"}
+          appLabel={activeSession ? appName ?? "App" : "Pick an app"}
           hasSession={hasActiveSession}
           recents={recents}
           launchCommand={launchCommand}

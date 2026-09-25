@@ -55,6 +55,7 @@ import {
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
+import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
@@ -6257,17 +6258,16 @@ export function createPtyService({
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
       const explicitNoColor = hasEnvKey(effectiveArgs.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const explicitForceColor = hasEnvKey(effectiveArgs.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
-      const inheritedProcessEnv = { ...process.env };
-      // The desktop/runtime itself may be launched from an agent shell. Do not
-      // leak that host role into an ordinary terminal; tracked agent CLIs set
-      // their role explicitly below.
-      delete inheritedProcessEnv.ADE_DEFAULT_ROLE;
-      const baseLaunchEnv = {
-        ...inheritedProcessEnv,
+      // Host-only keys (the brain's ELECTRON_RUN_AS_NODE, its role, its
+      // lifecycle keys) never reach a terminal, even when a caller such as App
+      // Control passes a copy of process.env. Tracked agent CLIs set their
+      // role explicitly below.
+      const baseLaunchEnv = stripHostRuntimeEnv({
+        ...process.env,
         ...laneRuntimeEnv,
         ...sessionLinearEnv,
         ...(effectiveArgs.env ?? {})
-      };
+      });
       if (explicitNoColor && !explicitForceColor) {
         delete baseLaunchEnv.FORCE_COLOR;
       }

@@ -607,11 +607,6 @@ struct MacDesktopControlPicture: View {
   @State private var pressOutstanding = false
   @State private var pictureSize: CGSize = .zero
   @State private var pump = MacDesktopPointerPump()
-  @State private var zoom = MacDesktopZoom.identity
-  /// The last magnification and pan translation seen, so each gesture update
-  /// applies only its change. Pinch and pan can then run at the same time.
-  @State private var lastMagnification: CGFloat = 1
-  @State private var lastPanTranslation: CGSize = .zero
 
   private var controlling: Bool { holderId != nil }
 
@@ -639,10 +634,8 @@ struct MacDesktopControlPicture: View {
         }
         .onChange(of: controlling) { _, next in
           focused = next
-          if next { resetZoom() }
           onControlChange?(next)
         }
-        .onChange(of: pictureSize) { _, _ in resetZoom() }
       controls
     }
     .task(id: holderId) { await heartbeat() }
@@ -656,63 +649,12 @@ struct MacDesktopControlPicture: View {
   }
 
   /// One view tree in every mode. The gesture masks switch the input on and
-  /// off, so taking control does not rebuild the display layer.
+  /// off, so taking control does not rebuild the display layer. Taking
+  /// control turns zoom off, which puts the picture back at 1x.
   private var gesturedPicture: some View {
     measuredPicture
       .highPriorityGesture(drag, including: controlling ? .all : .subviews)
-      .scaleEffect(zoom.scale)
-      .offset(zoom.offset)
-      .clipped()
-      .contentShape(Rectangle())
-      .gesture(zoomGesture, including: zoomActive ? .all : .subviews)
-  }
-
-  private var zoomGesture: some Gesture {
-    magnifyGesture
-      .simultaneously(with: panGesture)
-      .simultaneously(with: doubleTapGesture)
-  }
-
-  private var magnifyGesture: some Gesture {
-    MagnifyGesture()
-      .onChanged { value in
-        guard zoomActive, lastMagnification > 0 else { return }
-        let factor = value.magnification / lastMagnification
-        lastMagnification = value.magnification
-        zoom = zoom.magnified(by: factor, around: value.startLocation, in: pictureSize)
-      }
-      .onEnded { _ in lastMagnification = 1 }
-  }
-
-  /// One finger, or the fingers of a pinch, move a zoomed picture.
-  private var panGesture: some Gesture {
-    DragGesture(minimumDistance: 8, coordinateSpace: .local)
-      .onChanged { value in
-        guard zoomActive else { return }
-        let delta = CGSize(
-          width: value.translation.width - lastPanTranslation.width,
-          height: value.translation.height - lastPanTranslation.height
-        )
-        lastPanTranslation = value.translation
-        zoom = zoom.panned(by: delta, in: pictureSize)
-      }
-      .onEnded { _ in lastPanTranslation = .zero }
-  }
-
-  private var doubleTapGesture: some Gesture {
-    SpatialTapGesture(count: 2, coordinateSpace: .local)
-      .onEnded { value in
-        guard zoomActive else { return }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-          zoom = zoom.toggled(at: value.location, in: pictureSize)
-        }
-      }
-  }
-
-  private func resetZoom() {
-    zoom = .identity
-    lastMagnification = 1
-    lastPanTranslation = .zero
+      .livePictureZoom(enabled: zoomActive)
   }
 
   private var measuredPicture: some View {
@@ -875,5 +817,101 @@ struct MacDesktopControlPicture: View {
       try? await service.macDesktopInput(laneId: lane, call: call)
       _ = try? await service.macDesktopReturnControl(laneId: lane, controllerId: id)
     }
+  }
+}
+
+// MARK: - Zoom
+
+/// Watch-mode zoom for every live picture on the phone (macOS, App Control):
+/// pinch 1x-4x, pan when zoomed, double-tap 1x / 2.5x. The rules are
+/// `MacDesktopZoom`; this is the gesture wiring around them.
+///
+/// Turning it off, or a change in the picture's size (a rotation), puts the
+/// picture back at 1x.
+struct LivePictureZoom: ViewModifier {
+  var enabled: Bool
+
+  @State private var zoom = MacDesktopZoom.identity
+  /// The last magnification and pan translation seen, so each gesture update
+  /// applies only its change. Pinch and pan can then run at the same time.
+  @State private var lastMagnification: CGFloat = 1
+  @State private var lastPanTranslation: CGSize = .zero
+  @State private var size: CGSize = .zero
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        GeometryReader { proxy in
+          Color.clear
+            .onAppear { size = proxy.size }
+            .onChange(of: proxy.size) { _, next in
+              size = next
+              reset()
+            }
+        }
+      )
+      .scaleEffect(zoom.scale)
+      .offset(zoom.offset)
+      .clipped()
+      .contentShape(Rectangle())
+      .gesture(zoomGesture, including: enabled ? .all : .subviews)
+      .onChange(of: enabled) { _, on in
+        if !on { reset() }
+      }
+  }
+
+  private var zoomGesture: some Gesture {
+    magnify
+      .simultaneously(with: pan)
+      .simultaneously(with: doubleTap)
+  }
+
+  private var magnify: some Gesture {
+    MagnifyGesture()
+      .onChanged { value in
+        guard enabled, lastMagnification > 0 else { return }
+        let factor = value.magnification / lastMagnification
+        lastMagnification = value.magnification
+        zoom = zoom.magnified(by: factor, around: value.startLocation, in: size)
+      }
+      .onEnded { _ in lastMagnification = 1 }
+  }
+
+  /// One finger, or the fingers of a pinch, move a zoomed picture.
+  private var pan: some Gesture {
+    DragGesture(minimumDistance: 8, coordinateSpace: .local)
+      .onChanged { value in
+        guard enabled else { return }
+        let delta = CGSize(
+          width: value.translation.width - lastPanTranslation.width,
+          height: value.translation.height - lastPanTranslation.height
+        )
+        lastPanTranslation = value.translation
+        zoom = zoom.panned(by: delta, in: size)
+      }
+      .onEnded { _ in lastPanTranslation = .zero }
+  }
+
+  private var doubleTap: some Gesture {
+    SpatialTapGesture(count: 2, coordinateSpace: .local)
+      .onEnded { value in
+        guard enabled else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+          zoom = zoom.toggled(at: value.location, in: size)
+        }
+      }
+  }
+
+  private func reset() {
+    zoom = .identity
+    lastMagnification = 1
+    lastPanTranslation = .zero
+  }
+}
+
+extension View {
+  /// See `LivePictureZoom`.
+  func livePictureZoom(enabled: Bool) -> some View {
+    modifier(LivePictureZoom(enabled: enabled))
   }
 }

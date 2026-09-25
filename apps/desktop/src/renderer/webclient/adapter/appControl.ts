@@ -9,10 +9,14 @@
  * The desktop's App Control panel reads `getStatus` and listens on `onEvent`
  * for `frame` and session events. This namespace gives it the same shapes:
  * - `getStatus` answers from `appControl.status`;
- * - while `onEvent` has a listener, it holds one frame subscription on the
- *   lane the last status named, and polls status every few seconds so the
- *   panel hears session changes (the host has no session push for sync
+ * - while `onEvent` has a listener, it polls status every few seconds so
+ *   listeners hear session changes (the host has no session push for sync
  *   clients);
+ * - while a view also holds `holdFrames`, it holds one frame subscription on
+ *   the lane the last status named. Status-only listeners (the Work page's
+ *   tool feed, recording cards) never keep frames flowing over the relay;
+ * - the newest frame per lane stays cached after the subscription ends, so a
+ *   view that mounts again paints it at once through `getLatestFrame`;
  * - the reads the panel makes while a session is connected answer empty, and
  *   every call that would drive the app rejects with a clear message.
  *
@@ -23,6 +27,7 @@
 
 import type {
   AppControlEventPayload,
+  AppControlScreencastFrame,
   AppControlSession,
   AppControlStatus,
   AppControlTraceResult,
@@ -53,6 +58,7 @@ export type AppControlStreamSubscribeArgs = {
 export type AppControlWebApi = {
   getStatus: (argsOrPin?: unknown) => Promise<AppControlStatus>;
   onEvent: (listener: (event: AppControlEventPayload) => void, pin?: unknown) => () => void;
+  holdFrames: () => () => void;
   supportsLiveStream: () => boolean;
   streamSubscribe: (args: AppControlStreamSubscribeArgs) => Promise<SyncAppControlStreamSubscribeResult | null>;
   streamUnsubscribe: (args: { subscriptionId: string }) => Promise<unknown>;
@@ -138,6 +144,14 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   let pollTimer: ReturnType<typeof setInterval> | null = null;
   let resubscribeTimer: ReturnType<typeof setTimeout> | null = null;
   let detachTransport: (() => void) | null = null;
+  /** Mounted views that show frames. Only they keep the subscription. */
+  let frameHolds = 0;
+  /**
+   * The newest frame the subscription delivered, kept after it ends. A view
+   * that mounts again paints this at once through `getLatestFrame`, before the
+   * new subscription's replay arrives. Cleared when the session changes.
+   */
+  let latestFrame: { laneId: string; frame: AppControlScreencastFrame } | null = null;
 
   const readStatus = async (
     laneId: string | null,
@@ -169,6 +183,8 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     if (sessionKey(next) === sessionKey(lastSession)) return;
     const previous = lastSession;
     lastSession = next;
+    // The cached picture belongs to the app that was there before.
+    if (latestFrame && latestFrame.frame.sessionId !== next?.id) latestFrame = null;
     if (listeners.size === 0) return;
     if (!next) {
       emit({ type: "session-stopped", laneId: laneId ?? null, previousSession: previous } as AppControlEventPayload);
@@ -192,35 +208,73 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     ).catch(() => {});
   };
 
-  /** Holds one subscription on the watched lane while anyone listens. */
+  /** Frames reach views through `onEvent`, so a hold needs a listener too. */
+  const wantsFrames = (): boolean => listeners.size > 0 && frameHolds > 0;
+
+  /** Holds one subscription on the watched lane while a view shows frames. */
   const ensureSubscription = async (): Promise<void> => {
     const laneId = watchedLaneId;
-    if (listeners.size === 0 || !laneId || !client.supportsAppControlStream()) {
+    if (!wantsFrames() || !laneId || !client.supportsAppControlStream()) {
       dropSubscription();
       return;
     }
-    if (subscription?.laneId === laneId || subscribing) return;
+    // One subscribe at a time. The in-flight one re-checks when it settles.
+    if (subscribing || subscription?.laneId === laneId) return;
     dropSubscription();
     const id = newSubscriptionId();
     subscribing = true;
     subscription = { id, laneId };
+    let registered = false;
     try {
       const result = await commands.call(
         "appControl.streamSubscribe",
         { laneId, subscriptionId: id, viewerLabel: "Web viewer" },
         { fallback: null as SyncAppControlStreamSubscribeResult | null, idempotent: false },
       );
-      if (!result && subscription?.id === id) subscription = null;
+      registered = Boolean(result);
     } catch {
-      if (subscription?.id === id) subscription = null;
+      registered = false;
     } finally {
       subscribing = false;
     }
-    // The lane or the listeners changed while the call was in flight.
-    if (subscription?.id === id && (listeners.size === 0 || watchedLaneId !== laneId)) {
+    if (subscription?.id !== id) {
+      // Dropped while in flight (the panel closed, the lane changed, the socket
+      // dropped). The unsubscribe sent then reached the host before this
+      // subscription existed there, so it was a no-op: release it now, or it
+      // streams to nobody and counts against the per-lane cap.
+      if (registered) {
+        void commands.call(
+          "appControl.streamUnsubscribe",
+          { subscriptionId: id },
+          { fallback: null, idempotent: false },
+        ).catch(() => {});
+      }
+      // A listener that arrived meanwhile was turned away by `subscribing`.
+      void ensureSubscription();
+      return;
+    }
+    if (!registered) {
+      subscription = null;
+      return;
+    }
+    // The lane or the frame demand changed while the call was in flight.
+    if (!wantsFrames() || watchedLaneId !== laneId) {
       dropSubscription();
       void ensureSubscription();
     }
+  };
+
+  const getLatestFrame = async (args?: unknown): Promise<AppControlScreencastFrame | null> => {
+    const laneId = stringArg(args, "laneId") ?? watchedLaneId;
+    if (!laneId) return null;
+    if (latestFrame?.laneId === laneId) return latestFrame.frame;
+    // Subscribed but no picture yet (a still app): a fresh subscription makes
+    // the host replay its newest frame or capture one.
+    if (subscription?.laneId === laneId && !subscribing) {
+      dropSubscription();
+      void ensureSubscription();
+    }
+    return null;
   };
 
   const getStatus = async (argsOrPin?: unknown): Promise<AppControlStatus> => {
@@ -241,13 +295,16 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   const handleFrame = (frame: SyncAppControlStreamFramePayload): void => {
     if (!subscription || frame.subscriptionId !== subscription.id || listeners.size === 0) return;
     const { subscriptionId: _subscriptionId, seq: _seq, laneId, ...screencastFrame } = frame;
-    emit({ type: "frame", laneId, frame: { ...screencastFrame, laneId } } as AppControlEventPayload);
+    const next = { ...screencastFrame, laneId } as AppControlScreencastFrame;
+    latestFrame = { laneId, frame: next };
+    emit({ type: "frame", laneId, frame: next } as AppControlEventPayload);
   };
 
   const handleEnded = (ended: SyncAppControlStreamEndedPayload): void => {
     if (!subscription || ended.subscriptionId !== subscription.id) return;
     subscription = null;
-    if (ended.reason === "unsubscribed" || listeners.size === 0) return;
+    latestFrame = null;
+    if (ended.reason === "unsubscribed" || !wantsFrames()) return;
     if (resubscribeTimer != null) return;
     resubscribeTimer = setTimeout(() => {
       resubscribeTimer = null;
@@ -265,8 +322,10 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
       const detachStatus = client.subscribe((status) => {
         const ready = status.state === "connected" && status.readiness === "ready";
         // The host released every subscription of the old socket.
-        if (!ready) subscription = null;
-        else void ensureSubscription();
+        if (!ready) {
+          subscription = null;
+          latestFrame = null;
+        } else void ensureSubscription();
       });
       const detachFrames = client.onAppControlStreamFrame(handleFrame);
       const detachEnded = client.onAppControlStreamEnded(handleEnded);
@@ -306,6 +365,17 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
         if (listeners.size === 0) stopWatching();
       };
     },
+    holdFrames: () => {
+      frameHolds += 1;
+      void ensureSubscription();
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        frameHolds -= 1;
+        void ensureSubscription();
+      };
+    },
     supportsLiveStream: () => client.supportsAppControlStream(),
     streamSubscribe: (args) =>
       commands.call(
@@ -330,9 +400,9 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     // client has no CDP socket, so they answer empty instead of null.
     listTargets: async () => [],
     getTrace: async () => ({ sessionId: lastSession?.id ?? null, entries: [] }),
-    // Frames reach the web client over `streamSubscribe`, which replays the
-    // lane's newest picture itself.
-    getLatestFrame: async () => null,
+    // A new subscription gets the host's replay; a panel that mounts under a
+    // subscription that is already live gets the newest frame it delivered.
+    getLatestFrame,
     listArtifacts: async () => [],
     listDevices: async () => [],
     // Everything below needs the app's CDP socket on the host.

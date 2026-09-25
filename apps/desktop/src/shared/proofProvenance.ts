@@ -150,3 +150,18 @@ const DRAWER_OWNER_KINDS: ReadonlySet<string> = new Set<ComputerUseArtifactOwner
 export function hasDrawerOwner(owners: ReadonlyArray<{ kind: string | null | undefined }>): boolean {
   return owners.some((owner) => Boolean(owner.kind && DRAWER_OWNER_KINDS.has(owner.kind)));
 }
+
+/**
+ * The default caption for App Control proof, a still or a recording: the
+ * app's page title and the lane, like "Todo · fix-login". "App" stands in for
+ * a missing title. Never the launch command: `npm start` says nothing about
+ * what the proof shows.
+ */
+export function appControlProofCaption(
+  appTitle: string | null | undefined,
+  laneName: string | null | undefined,
+): string {
+  const app = appTitle?.replace(/\s+/g, " ").trim() || "App";
+  const lane = laneName?.trim();
+  return lane ? `${app} · ${lane}` : app;
+}

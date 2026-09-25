@@ -20,6 +20,7 @@ import {
   type DirtyFileTextLookup,
 } from "../../shared/utils";
 import { terminateProcessTree } from "../../shared/processExecution";
+import { userProcessEnv } from "../../shared/hostRuntimeEnv";
 
 const execFileAsync = promisify(execFile);
 
@@ -1413,8 +1414,8 @@ function createBashTool(
               windowsHide: true,
               env:
                 process.platform === "win32"
-                  ? { ...process.env }
-                  : { ...process.env, TERM: "dumb" },
+                  ? userProcessEnv()
+                  : { ...userProcessEnv(), TERM: "dumb" },
             });
             let abortMessage: string | null = null;
             let forceKillId: NodeJS.Timeout | null = null;

@@ -25,7 +25,7 @@
  *   and the start says so.
  */
 
-import { formatProofDuration, proofIdleCutLabel } from "../../../shared/proofProvenance";
+import { appControlProofCaption, formatProofDuration, proofIdleCutLabel } from "../../../shared/proofProvenance";
 import type {
   AppControlEventPayload,
   AppControlRecordStartArgs,
@@ -202,11 +202,6 @@ export function appControlRecordingKey(laneId: string): string {
   return `app-control:${laneId}`;
 }
 
-function recordingCaption(laneName: string | null | undefined): string {
-  const lane = laneName?.trim();
-  return lane ? `App Control recording · ${lane}` : "App Control recording";
-}
-
 const DEFAULT_RECORDING_DESCRIPTION = "Recording of the lane's App Control app.";
 
 function captionDuration(status: AppControlRecordingStatus): string {
@@ -235,6 +230,8 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
   const recordings = new Map<string, AppControlRecordingStatus>();
   /** laneId → the path the engine was told to write, for a stop that fails. */
   const recordingPaths = new Map<string, string>();
+  /** The app's page title when the recording started, for a self-filed caption after the app is gone. */
+  const recordingAppTitles = new Map<string, string>();
   const capTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const stopping = new Map<string, Promise<AppControlRecordingStatus>>();
   /** laneId → the screencast backend a running recording feeds. */
@@ -437,6 +434,12 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       permissions: null,
     };
     recordings.set(laneId, status);
+    recordingAppTitles.delete(laneId);
+    void Promise.resolve(deps.resolveTargetTitle?.(laneId))
+      .then((title) => {
+        if (title?.trim()) recordingAppTitles.set(laneId, title.trim());
+      })
+      .catch(() => {});
     if (maxDurationMs !== null) armCap(laneId, maxDurationMs);
     deps.logger.info("app_control.recording.started", { laneId, engine, fps, keepIdle, maxDurationMs });
     publish(status);
@@ -463,10 +466,16 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     recordedTo: string,
   ): Promise<{ caption: string | null; proofArtifactId: string | null }> => {
     const selfFiled = !existing.caption && reason !== "requested" && Boolean(existing.chatSessionId);
-    const caption = existing.caption
-      ?? (selfFiled
-        ? `${recordingCaption(await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))} · ${captionDuration(finished)}`
-        : null);
+    const startTitle = recordingAppTitles.get(laneId) ?? null;
+    recordingAppTitles.delete(laneId);
+    let caption = existing.caption;
+    if (!caption && selfFiled) {
+      const [liveTitle, laneName] = await Promise.all([
+        Promise.resolve(deps.resolveTargetTitle?.(laneId)).catch(() => null),
+        Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null),
+      ]);
+      caption = `${appControlProofCaption(liveTitle || startTitle, laneName)} · ${captionDuration(finished)}`;
+    }
     if (!caption || !finished.filePath || !deps.ingestArtifacts) return { caption, proofArtifactId: null };
     const owners: ComputerUseArtifactOwner[] = [{ kind: "lane", id: laneId, relation: "attached_to" }];
     const chatSessionId = existing.chatSessionId ?? stopperChatSessionId;

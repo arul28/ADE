@@ -221,8 +221,12 @@ a native menu, a control with no `AXPress`.
 - **`ade: Unknown command 'mac-desktop'` means your shell found an older
   `ade`,** not that the lane has no screen: a login shell can rebuild PATH and
   put an installed CLI ahead of the one this ADE launched. Run the same command
-  through the launched CLI: `"$ADE_CLI_PATH" mac-desktop status --text`, and
-  keep using `"$ADE_CLI_PATH"` for the rest of the task.
+  through the launched CLI: `"$ADE_CLI_PATH" mac-desktop status --text`
+  (PowerShell: `& $env:ADE_CLI_PATH mac-desktop status --text`), and keep
+  using it for the rest of the task.
+- **Never repair ADE from a task.** Do not start, stop or install a brain or
+  service (another channel may own it), and do not `npm install` in the user's
+  repo to fix ADE's own errors. Report the error.
 - **If `ade mac-desktop` still refuses after that, stop and report it.** Do not
   fall back to the user's real screen, and do not record it with `ade proof
   record --real-screen`.
@@ -253,7 +257,8 @@ judge is not proof. It captures, then re-observes, and prints the state it filed
 A recording cuts still stretches out by default, so the video shows only the
 changes. Add `--keep-idle` to keep them at real length. A recording that a chat
 started stops by itself after 10 minutes; `--max-seconds <n>` sets another
-limit:
+limit. Set it from the real pace of your steps (each command takes seconds),
+or pass a large cap and stop the recording yourself:
 
 ```bash
 ade mac-desktop record start --caption "<what>" --keep-idle --max-seconds 1200 --text

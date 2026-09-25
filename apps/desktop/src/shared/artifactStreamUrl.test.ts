@@ -18,20 +18,21 @@ function afterBase(url: string | null): string {
 
 describe("proof stream URLs", () => {
   const root = "/Users/me/repo";
+  const rootQ = `?root=${encodeURIComponent(root)}`;
 
   it("maps every in-project form to the range-capable project URL", () => {
     // The owner's 2026-09-23 report: a recording filed with a project-relative
     // uri never matched the protocol and fell back to a 10 MB data URL.
     expect(localArtifactStreamUrl(".ade/artifacts/apple-recordings/lane-1/rec.mp4", root))
-      .toBe("ade-artifact://project/.ade/artifacts/apple-recordings/lane-1/rec.mp4");
+      .toBe(`ade-artifact://project/.ade/artifacts/apple-recordings/lane-1/rec.mp4${rootQ}`);
     expect(localArtifactStreamUrl("ade-artifact://project/.ade/artifacts/proof.mov", root))
-      .toBe("ade-artifact://project/.ade/artifacts/proof.mov");
+      .toBe(`ade-artifact://project/.ade/artifacts/proof.mov${rootQ}`);
     expect(localArtifactStreamUrl(`${root}/.ade/artifacts/a b#1.mp4`, root))
-      .toBe("ade-artifact://project/.ade/artifacts/a%20b%231.mp4");
+      .toBe(`ade-artifact://project/.ade/artifacts/a%20b%231.mp4${rootQ}`);
     expect(localArtifactStreamUrl("./.ade/artifacts/x.png", root))
-      .toBe("ade-artifact://project/.ade/artifacts/x.png");
+      .toBe(`ade-artifact://project/.ade/artifacts/x.png${rootQ}`);
     expect(localArtifactStreamUrl("C:\\repo\\.ade\\artifacts\\x.mp4", "C:\\Repo"))
-      .toBe("ade-artifact://project/.ade/artifacts/x.mp4");
+      .toBe(`ade-artifact://project/.ade/artifacts/x.mp4?root=${encodeURIComponent("C:\\Repo")}`);
   });
 
   it("compares a Windows-shaped root without case and a POSIX root exactly", () => {
@@ -70,10 +71,11 @@ describe("proof stream URLs", () => {
 
   it("builds media server URLs for videos here and on a paired machine, and parses them back", () => {
     const local = localArtifactMediaUrl(`${BASE}/`, `${root}/.ade/artifacts/a b#1.mp4`, root);
-    expect(local).toBe(`${BASE}/project/.ade/artifacts/a%20b%231.mp4`);
+    expect(local).toBe(`${BASE}/project/.ade/artifacts/a%20b%231.mp4${rootQ}`);
     expect(parseArtifactMediaPath(afterBase(local))).toEqual({
       kind: "project",
       relativePath: ".ade/artifacts/a b#1.mp4",
+      projectRoot: root,
     });
     expect(localArtifactMediaUrl(BASE, "../x.mp4", root)).toBeNull();
     expect(localArtifactMediaUrl("", ".ade/artifacts/x.mp4", root)).toBeNull();
@@ -108,6 +110,6 @@ describe("proof stream URLs", () => {
     expect(parseArtifactMediaPath("remote/t/p")).toBeNull();
     expect(parseArtifactMediaPath("remote//p/x.mp4")).toBeNull();
     expect(parseArtifactMediaPath("elsewhere/x.mp4")).toBeNull();
-    expect(parseArtifactMediaPath("project/x.mp4?t=1")).toEqual({ kind: "project", relativePath: "x.mp4" });
+    expect(parseArtifactMediaPath("project/x.mp4?t=1")).toEqual({ kind: "project", relativePath: "x.mp4", projectRoot: null });
   });
 });

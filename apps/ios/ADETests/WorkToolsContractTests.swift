@@ -460,7 +460,7 @@ final class WorkToolsContractTests: XCTestCase {
     let chip = WorkToolChip(kind: .simulator(name: "iPhone 16 Pro", family: "iphone"))
     XCTAssertEqual(chip.displayLabel, "16 Pro")
     XCTAssertEqual(chip.label, "iPhone 16 Pro")
-    XCTAssertEqual(WorkToolChip(kind: .appControl(appName: "iPhone Mirroring")).displayLabel, "iPhone Mirroring")
+    XCTAssertEqual(WorkToolChip(kind: .appControl(appName: "iPhone Mirroring")).displayLabel, "App")
   }
 
   private static func macDesktop(
