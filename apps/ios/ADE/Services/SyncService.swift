@@ -3908,6 +3908,16 @@ final class MacDesktopStreamDecodeQueue {
   }
 }
 
+/// One slash command as the host's discovery reports it
+/// (`chat.getSlashCommands`). `argumentHint` is the host's cue that the command
+/// accepts input; `source` is `"sdk"` (discovered) or `"local"` (built in).
+struct HostSlashCommand: Codable, Equatable {
+  let name: String
+  let description: String?
+  let argumentHint: String?
+  let source: String?
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
@@ -12075,6 +12085,29 @@ final class SyncService: ObservableObject {
       action: "work.getExternalSessionDetail",
       args: args,
       as: ExternalSessionDetail.self
+    )
+  }
+
+  /// Whether the connected host advertises the discovered slash-command
+  /// registry. An older brain omits `chat.getSlashCommands`; iOS then keeps its
+  /// minimal static fallback.
+  var supportsSlashCommandRegistry: Bool {
+    supportsRemoteAction("chat.getSlashCommands")
+  }
+
+  /// The host's discovered slash commands for a provider (and lane worktree,
+  /// when supplied). Newer hosts return the real registry; callers must keep a
+  /// static fallback for an older host or an offline failure.
+  func getSlashCommands(provider: String, laneId: String? = nil) async throws -> [HostSlashCommand] {
+    try requireInvokableRemoteAction("chat.getSlashCommands")
+    var args: [String: Any] = ["provider": provider]
+    if let laneId, !laneId.isEmpty {
+      args["laneId"] = laneId
+    }
+    return try await sendDecodableCommand(
+      action: "chat.getSlashCommands",
+      args: args,
+      as: [HostSlashCommand].self
     )
   }
 

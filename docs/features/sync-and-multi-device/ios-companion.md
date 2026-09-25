@@ -621,7 +621,12 @@ apps/ios/
 │   │   │                            # WorkComposerTypedTriggers (UITextView
 │   │   │                            #   composer + cursor-relative /command
 │   │   │                            #   & @file detection, inline suggestion
-│   │   │                            #   strip, chip pills, smart-link detection,
+│   │   │                            #   strip; the /command rows are the
+│   │   │                            #   host's discovered registry over
+│   │   │                            #   chat.getSlashCommands, with a minimal
+│   │   │                            #   static fallback for an older host or
+│   │   │                            #   an offline fetch, chip pills,
+│   │   │                            #   smart-link detection,
 │   │   │                            #   atomic deletion + Copy/Remove menus,
 │   │   │                            #   deferred/coalesced
 │   │   │                            #   UIKit focus transitions; replaced the
