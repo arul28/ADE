@@ -231,9 +231,16 @@ Renderer:
   last mode across viewer remounts (e.g. the reload after a save).
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
-  `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
-  diffs delegate to `MonacoDiffView`. Also used from `LaneDiffPane`,
-  `ChatFileChangesPanel`, and `PrDetailPane`.
+  `PatchDiff` with split/unified, wrap, line numbers, and an
+  **Ignore whitespace** toggle); editable working-tree diffs delegate to
+  `MonacoDiffView`. Also used from `LaneDiffPane`,
+  `ChatFileChangesPanel`, and `PrDetailPane`. The toggle is persisted per
+  view under `ade:diff:ignoreWhitespace:<persistKey>` (the PR code tab and
+  chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the
+  pure rule: full-contents diffs set `parseDiffOptions.ignoreWhitespace`,
+  and pre-parsed patches drop `-`/`+` pairs equal after `trim()` and
+  recompute their `@@` counts. A file left with no hunks shows a
+  "whitespace-only changes hidden" state instead of an empty diff.
 - `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
   — renderer workbench state and model-lifetime tests, including

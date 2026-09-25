@@ -1,4 +1,4 @@
-import React, { forwardRef, useImperativeHandle, useMemo, useRef, useState } from "react";
+import React, { forwardRef, useCallback, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Copy } from "@phosphor-icons/react";
 import { MultiFileDiff, PatchDiff } from "@pierre/diffs/react";
 import type { FileContents } from "@pierre/diffs/react";
@@ -6,6 +6,7 @@ import type { FileDiff, FilePatch } from "../../../shared/types";
 import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
+import { isWhitespaceOnlyTextDiff, stripWhitespaceOnlyPatchChanges } from "./diffWhitespace";
 
 export type AdeDiffViewerHandle = MonacoDiffHandle;
 
@@ -20,7 +21,33 @@ type AdeDiffViewerProps = {
   theme?: "dark" | "light";
   compact?: boolean;
   showToolbar?: boolean;
+  /**
+   * Stable per-view id. When set, the Ignore-whitespace toggle is remembered
+   * under `ade:diff:ignoreWhitespace:<persistKey>` across mounts, like a view
+   * preference; without it the toggle is local to the instance and defaults off.
+   */
+  persistKey?: string;
 };
+
+const IGNORE_WHITESPACE_STORAGE_PREFIX = "ade:diff:ignoreWhitespace:";
+
+function readPersistedIgnoreWhitespace(key: string | undefined): boolean {
+  if (!key || typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(`${IGNORE_WHITESPACE_STORAGE_PREFIX}${key}`) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writePersistedIgnoreWhitespace(key: string | undefined, value: boolean): void {
+  if (!key || typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(`${IGNORE_WHITESPACE_STORAGE_PREFIX}${key}`, value ? "1" : "0");
+  } catch {
+    // A blocked storage write is not worth failing the toggle over.
+  }
+}
 
 const DIFF_UNSAFE_CSS = `
   [data-diffs-header="default"] {
@@ -107,6 +134,7 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
     theme = "dark",
     compact = false,
     showToolbar = true,
+    persistKey,
   },
   ref,
 ) {
@@ -114,6 +142,14 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
   const [layout, setLayout] = useState<DiffLayout>("split");
   const [overflow, setOverflow] = useState<DiffOverflow>("scroll");
   const [lineNumbers, setLineNumbers] = useState(true);
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(() => readPersistedIgnoreWhitespace(persistKey));
+  const toggleIgnoreWhitespace = useCallback(() => {
+    setIgnoreWhitespace((value) => {
+      const next = !value;
+      writePersistedIgnoreWhitespace(persistKey, next);
+      return next;
+    });
+  }, [persistKey]);
 
   useImperativeHandle(ref, () => ({
     getModifiedValue: () => monacoRef.current?.getModifiedValue() ?? null,
@@ -123,6 +159,17 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
   }));
 
   const activePath = patch?.path ?? diff?.path ?? "";
+  const normalizedPatch = patch ? normalizePatchForRenderer(patch) : "";
+  const oldFile = diff && !patch ? makeFileContents(diff.path, diff.original.text ?? "", "old") : null;
+  const newFile = diff && !patch ? makeFileContents(diff.path, diff.modified.text ?? "", "new") : null;
+  const hasInlineDiffContent = Boolean(
+    oldFile
+    && newFile
+    && (
+      (diff?.original.text ?? "").length > 0
+      || (diff?.modified.text ?? "").length > 0
+    ),
+  );
   const options = useMemo(
     () => ({
       theme: theme === "light" ? "pierre-light" : "pierre-dark",
@@ -135,9 +182,19 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
       collapsedContextThreshold: 12,
       expansionLineCount: 20,
       unsafeCSS: DIFF_UNSAFE_CSS,
+      // Applies only when Pierre computes the diff from oldFile/newFile (the
+      // chat turn diff panel); pre-parsed patches are filtered below.
+      ...(ignoreWhitespace ? { parseDiffOptions: { ignoreWhitespace: true } } : {}),
     }) as const,
-    [layout, lineNumbers, overflow, theme],
+    [ignoreWhitespace, layout, lineNumbers, overflow, theme],
   );
+  const filteredPatch = useMemo(
+    () => (ignoreWhitespace && normalizedPatch ? stripWhitespaceOnlyPatchChanges(normalizedPatch) : null),
+    [ignoreWhitespace, normalizedPatch],
+  );
+  const whitespaceOnlyTextDiff = ignoreWhitespace && oldFile && newFile
+    ? isWhitespaceOnlyTextDiff(oldFile.contents, newFile.contents)
+    : false;
 
   if (editable && diff) {
     return <MonacoDiffView ref={monacoRef} diff={diff} editable className={className} theme={theme} />;
@@ -145,17 +202,6 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
 
   const binary = Boolean(patch?.isBinary || diff?.isBinary);
   const truncated = Boolean(patch?.isTruncated || diff?.original.isTruncated || diff?.modified.isTruncated);
-  const normalizedPatch = patch ? normalizePatchForRenderer(patch) : "";
-  const oldFile = diff && !patch ? makeFileContents(diff.path, diff.original.text ?? "", "old") : null;
-  const newFile = diff && !patch ? makeFileContents(diff.path, diff.modified.text ?? "", "new") : null;
-  const hasInlineDiffContent = Boolean(
-    oldFile
-    && newFile
-    && (
-      (diff?.original.text ?? "").length > 0
-      || (diff?.modified.text ?? "").length > 0
-    ),
-  );
 
   return (
     <div
@@ -188,6 +234,17 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
           <button type="button" className={TOOLBAR_BUTTON_CLASS} style={toolbarButton(lineNumbers)} onClick={() => setLineNumbers((value) => !value)}>
             Lines
           </button>
+          <button
+            type="button"
+            className={TOOLBAR_BUTTON_CLASS}
+            style={toolbarButton(ignoreWhitespace)}
+            title="Ignore whitespace-only changes"
+            aria-label="Ignore whitespace-only changes"
+            aria-pressed={ignoreWhitespace}
+            onClick={toggleIgnoreWhitespace}
+          >
+            Whitespace
+          </button>
           {activePath ? (
             <button
               type="button"
@@ -212,13 +269,21 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
         {binary ? (
           <ViewerState title="Binary diff preview unavailable" detail={activePath} />
         ) : patch ? (
-          normalizedPatch ? (
+          ignoreWhitespace && filteredPatch ? (
+            filteredPatch.whitespaceOnly ? (
+              <ViewerState title="Whitespace-only changes hidden" detail="Turn off Whitespace to see them." />
+            ) : (
+              <PatchDiff patch={filteredPatch.patch} options={options} />
+            )
+          ) : normalizedPatch ? (
             <PatchDiff patch={normalizedPatch} options={options} />
           ) : (
             <ViewerState title="No patch available" detail={activePath} />
           )
         ) : oldFile && newFile ? (
-          hasInlineDiffContent ? (
+          whitespaceOnlyTextDiff ? (
+            <ViewerState title="Whitespace-only changes hidden" detail="Turn off Whitespace to see them." />
+          ) : hasInlineDiffContent ? (
             <MultiFileDiff oldFile={oldFile} newFile={newFile} options={options} />
           ) : (
             <ViewerState title="No text diff available" detail={activePath} />

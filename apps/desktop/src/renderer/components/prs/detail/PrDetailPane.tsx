@@ -1594,7 +1594,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                 </button>
                 {isExpanded && filePatch ? (
                   <div style={{ borderBottom: `1px solid ${COLORS.border}`, height: 500 }}>
-                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" />
+                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" persistKey="pr-code-tab" />
                   </div>
                 ) : isExpanded ? (
                   <div
