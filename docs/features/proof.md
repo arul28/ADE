@@ -249,8 +249,8 @@ ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading 
 - The CLI reads the items through `list_computer_use_artifacts`, so a caller
   can post only its own chat's or lane's proof.
 - It runs `gh pr comment <pr> --body-file … --attach …` on the machine that
-  holds the files (`apps/ade-cli/src/proofPublish.ts`). Each item becomes
-  `![caption](./proof-N.ext)` plus its caption; `gh` uploads the files as
+  holds the files (`apps/ade-cli/src/proofPublish.ts`). Each item becomes a
+  `proof-N.ext` image reference plus its caption; `gh` uploads the files as
   GitHub attachments and rewrites the references. A video renders as a player.
 - It needs `gh` 2.99.0 or later and refuses an older one with the upgrade
   command. A PR number needs a GitHub remote in the current repository;

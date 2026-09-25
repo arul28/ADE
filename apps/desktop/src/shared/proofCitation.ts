@@ -96,11 +96,16 @@ export function parseProofCompareBlock(source: string): ProofCompareBlock | null
   return before && after ? { before, after, caption } : null;
 }
 
-/** Every ```proof-compare block in a markdown text that names a pair. */
+/**
+ * Every ```proof-compare block a markdown answer actually renders that names a
+ * pair. Code is stripped first, so a comparison written as an example inside a
+ * fence or an inline span is code, not proof.
+ */
 export function proofCompareBlocks(markdown: string): ProofCompareBlock[] {
+  const rendered = withoutCode(markdown);
   const fence = new RegExp("```" + PROOF_COMPARE_FENCE_LANGUAGE + "[^\\n]*\\n([\\s\\S]*?)```", "gi");
   const blocks: ProofCompareBlock[] = [];
-  for (const match of markdown.matchAll(fence)) {
+  for (const match of rendered.matchAll(fence)) {
     const block = parseProofCompareBlock(match[1] ?? "");
     if (block) blocks.push(block);
   }

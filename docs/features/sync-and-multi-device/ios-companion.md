@@ -657,9 +657,15 @@ apps/ios/
 │   │   │                            #   44pt target, compact thumbnail/status,
 │   │   │                            #   expandable preview, and a friendly
 │   │   │                            #   unavailable fallback),
-│   │   │                            # WorkProofSheet (the Proof drawer: row
-│   │   │                            #   model, list, and full-screen paged
-│   │   │                            #   viewer, split out of
+│   │   │                            # WorkProofSheet + WorkProofDrawerModel
+│   │   │                            #   (the Proof drawer: turn-grouped,
+│   │   │                            #   segmented-grid sheet and full-screen
+│   │   │                            #   paged viewer; the grouping mirrors
+│   │   │                            #   shared/proofDrawerModel.ts), and
+│   │   │                            # WorkProofCitation (an inline
+│   │   │                            #   `ade-proof://` citation or a
+│   │   │                            #   `proof-compare` pair rendered in a
+│   │   │                            #   chat answer), split out of
 │   │   │                            #   WorkArtifactTerminalViews),
 │   │   │                            # WorkPreviews (DEBUG-only fixture screens
 │   │   │                            #   + ADEPreviewScreenHost),
@@ -3240,10 +3246,22 @@ already carried.
 ### The Proof sheet and viewer
 
 `WorkProofSheet.swift` is the phone's proof drawer, presented from the chat
-session view at `.medium`/`.large` detents with a drag indicator. It is a plain
-list of the chat's captured artifacts **newest first** (the host appends to the
-tail, so the sheet reverses it); a row is a thumbnail, a title, and one line of
-"kind · when". Refresh is pull-to-refresh only — nothing polls.
+session view at `.medium`/`.large` detents with a drag indicator. It groups the
+chat's proof exactly as the desktop drawer does: `WorkProofDrawerModel.swift`
+mirrors `apps/desktop/src/shared/proofDrawerModel.ts`, so proof is bucketed by
+the turn that filed it (newest first, an "Earlier" group last), the answer's own
+citations come first inside a turn, and two items a `proof-compare` block names
+become one Before/After pair. Each turn is one quiet line — the prompt and the
+time — over a two-column grid of thumbnails; a pair fills its row so the two
+pictures sit side by side. A segmented control under the search field filters
+All, Pictures, Videos, and In answers. Refresh is pull-to-refresh only — nothing
+polls.
+
+Proof a chat answer cites renders inline in the transcript. `WorkMarkdownParsing.swift`
+turns a line that holds only `![caption](ade-proof://<id>)` into a `proofCitation`
+block and a `proof-compare` fence into a `proofCompare` block; `WorkProofCitation.swift`
+finds the artifact in the chat's proof list, loads its bytes with the sheet's
+loader, and shows an id outside that list as "This chat has no proof with the id …".
 
 `WorkProofRowModel` derives everything a row writes — title fallback (an empty
 title becomes the kind label), kind label, relative time, and the VoiceOver
