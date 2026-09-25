@@ -100,7 +100,8 @@
 		E20000000000000000000C21 /* ChatThreadEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C21 /* ChatThreadEngine.swift */; };
 		E20000000000000000000C22 /* ChatThreadModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C22 /* ChatThreadModel.swift */; };
 		E20000000000000000000C23 /* ChatThreadRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C23 /* ChatThreadRegistry.swift */; };
-		E20000000000000000000C24 /* ChatThreadTailPatch.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C24 /* ChatThreadTailPatch.swift */; };
+		E20000000000000000000C27 /* ChatThreadLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C27 /* ChatThreadLog.swift */; };
+		E1000000000000000000BB13 /* WorkChatTranscriptViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000BB13 /* WorkChatTranscriptViewport.swift */; };
 		E20000000000000000000C25 /* ChatThreadPresentationBuilder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C25 /* ChatThreadPresentationBuilder.swift */; };
 		E20000000000000000000C26 /* ChatThreadTimelineFold.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C26 /* ChatThreadTimelineFold.swift */; };
 		D30000000000000000000F72 /* ChatThreadEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000F62 /* ChatThreadEngineTests.swift */; };
@@ -654,7 +655,8 @@
 		D20000000000000000000C21 /* ChatThreadEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadEngine.swift; path = ADE/Services/ChatThread/ChatThreadEngine.swift; sourceTree = "<group>"; };
 		D20000000000000000000C22 /* ChatThreadModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadModel.swift; path = ADE/Services/ChatThread/ChatThreadModel.swift; sourceTree = "<group>"; };
 		D20000000000000000000C23 /* ChatThreadRegistry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadRegistry.swift; path = ADE/Services/ChatThread/ChatThreadRegistry.swift; sourceTree = "<group>"; };
-		D20000000000000000000C24 /* ChatThreadTailPatch.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadTailPatch.swift; path = ADE/Services/ChatThread/ChatThreadTailPatch.swift; sourceTree = "<group>"; };
+		D20000000000000000000C27 /* ChatThreadLog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadLog.swift; path = ADE/Services/ChatThread/ChatThreadLog.swift; sourceTree = "<group>"; };
+		D1000000000000000000BB13 /* WorkChatTranscriptViewport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatTranscriptViewport.swift; path = ADE/Views/Work/WorkChatTranscriptViewport.swift; sourceTree = "<group>"; };
 		D20000000000000000000C25 /* ChatThreadPresentationBuilder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadPresentationBuilder.swift; path = ADE/Services/ChatThread/ChatThreadPresentationBuilder.swift; sourceTree = "<group>"; };
 		D20000000000000000000C26 /* ChatThreadTimelineFold.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadTimelineFold.swift; path = ADE/Services/ChatThread/ChatThreadTimelineFold.swift; sourceTree = "<group>"; };
 		D30000000000000000000F62 /* ChatThreadEngineTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadEngineTests.swift; path = ADETests/ChatThreadEngineTests.swift; sourceTree = "<group>"; };
@@ -1093,6 +1095,7 @@
 				D10000000000000000000042 /* WorkPreviews.swift */,
 				D1000000000000000000BB01 /* WorkChatScrollBench.swift */,
 				D1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift */,
+				D1000000000000000000BB13 /* WorkChatTranscriptViewport.swift */,
 				D1000000000000000000BB02 /* WorkChatFollowLatch.swift */,
 				D20000000000000000000090 /* WorkComposerTypedTriggers.swift */,
 				D10000000000000000000045 /* WorkSelectionActionBar.swift */,
@@ -1230,7 +1233,7 @@
 				D20000000000000000000C21 /* ChatThreadEngine.swift */,
 				D20000000000000000000C22 /* ChatThreadModel.swift */,
 				D20000000000000000000C23 /* ChatThreadRegistry.swift */,
-				D20000000000000000000C24 /* ChatThreadTailPatch.swift */,
+				D20000000000000000000C27 /* ChatThreadLog.swift */,
 				D20000000000000000000C25 /* ChatThreadPresentationBuilder.swift */,
 				D20000000000000000000C26 /* ChatThreadTimelineFold.swift */,
 			);
@@ -1782,7 +1785,7 @@
 				E20000000000000000000C21 /* ChatThreadEngine.swift in Sources */,
 				E20000000000000000000C22 /* ChatThreadModel.swift in Sources */,
 				E20000000000000000000C23 /* ChatThreadRegistry.swift in Sources */,
-				E20000000000000000000C24 /* ChatThreadTailPatch.swift in Sources */,
+				E20000000000000000000C27 /* ChatThreadLog.swift in Sources */,
 				E20000000000000000000C25 /* ChatThreadPresentationBuilder.swift in Sources */,
 				E20000000000000000000C26 /* ChatThreadTimelineFold.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
@@ -1955,6 +1958,7 @@
 				E10000000000000000000042 /* WorkPreviews.swift in Sources */,
 				E1000000000000000000BB01 /* WorkChatScrollBench.swift in Sources */,
 				E1000000000000000000BB03 /* WorkChatTranscriptCollectionView.swift in Sources */,
+				E1000000000000000000BB13 /* WorkChatTranscriptViewport.swift in Sources */,
 				E1000000000000000000BB02 /* WorkChatFollowLatch.swift in Sources */,
 				E20000000000000000000090 /* WorkComposerTypedTriggers.swift in Sources */,
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,

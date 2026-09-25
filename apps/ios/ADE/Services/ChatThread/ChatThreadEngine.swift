@@ -31,14 +31,14 @@ actor ChatThreadEngine {
 
   // MARK: Log
 
-  private struct LogEntry {
+  struct LogEntry {
     var envelope: AgentChatEventEnvelope
     var raw: Data
     /// Envelope `sequence` (nil for unsequenced live rows).
     var sequence: Int?
   }
 
-  private enum InsertOutcome {
+  enum InsertOutcome {
     case appended
     case duplicate
     /// Anything that is not a pure tail append: a middle insert, a replaced
@@ -46,38 +46,38 @@ actor ChatThreadEngine {
     case rewritten
   }
 
-  private var sequenced: [LogEntry] = []
-  private var unsequenced: [LogEntry] = []
-  private var unsequencedKeys: Set<String> = []
+  var sequenced: [LogEntry] = []
+  var unsequenced: [LogEntry] = []
+  var unsequencedKeys: Set<String> = []
 
-  private var generation: Int?
-  private var hostSnapshotReceived = false
-  private var hasDiskRows = false
-  private var hasHostRows = false
-  private var sessionDeleted = false
-  private var hasOlderHistory = false
+  var generation: Int?
+  var hostSnapshotReceived = false
+  var hasDiskRows = false
+  var hasHostRows = false
+  var sessionDeleted = false
+  var hasOlderHistory = false
   /// Byte cursor for hosts without `chatLogV2`.
-  private var olderByteCursor: Int?
+  var olderByteCursor: Int?
   /// Oldest sequence the disk cache holds (from meta), used to page from disk
   /// before asking the host.
-  private var diskOldestSequence: Int?
-  private var hostSupportsChatLogV2 = false
-  private var olderState: ChatThreadOlderHistoryState = .idle
-  private var hostTurnActiveHint: Bool?
-  private var awaitingBoundaryPage = false
-  private var boundaryPageRequested = false
-  private var loadFailure: String?
-  private var pendingHistoryReset = false
+  var diskOldestSequence: Int?
+  var hostSupportsChatLogV2 = false
+  var olderState: ChatThreadOlderHistoryState = .idle
+  var hostTurnActiveHint: Bool?
+  var awaitingBoundaryPage = false
+  var boundaryPageRequested = false
+  var loadFailure: String?
+  var pendingHistoryReset = false
 
   // MARK: Fold state
 
-  private enum TranscriptWork {
+  enum TranscriptWork {
     case none
     case appended([AgentChatEventEnvelope])
     case full
   }
 
-  private enum TimelineWork: Int, Comparable {
+  enum TimelineWork: Int, Comparable {
     case none = 0
     /// Frame inputs moved (summary, session status, paging window, optimistic
     /// steers or answers); the snapshot did not.
@@ -89,47 +89,47 @@ actor ChatThreadEngine {
     static func < (lhs: TimelineWork, rhs: TimelineWork) -> Bool { lhs.rawValue < rhs.rawValue }
   }
 
-  private enum GoalState {
+  enum GoalState {
     case untouched
     case set(AgentChatClaudeGoal)
     case cleared
   }
 
-  private var subagentFilter = WorkSubagentTranscriptFilter()
-  private var transcript: [WorkChatEnvelope] = []
-  private var transcriptRevision = 0
-  private var goalState: GoalState = .untouched
-  private var snapshot = WorkChatTimelineSnapshot.empty
+  var subagentFilter = WorkSubagentTranscriptFilter()
+  var transcript: [WorkChatEnvelope] = []
+  var transcriptRevision = 0
+  var goalState: GoalState = .untouched
+  var snapshot = WorkChatTimelineSnapshot.empty
   /// Resumable timeline fold: a rebuild re-folds only the envelopes after its
   /// checkpoint. Told about every transcript change below.
-  private var timelineFold = ChatThreadTimelineFold()
+  var timelineFold = ChatThreadTimelineFold()
   /// Merge-key lookup for `transcript`, kept across appends.
-  private var transcriptKeyIndex: WorkChatTranscriptKeyIndex?
-  private var toolActivity = WorkTurnToolActivityIndex(
+  var transcriptKeyIndex: WorkChatTranscriptKeyIndex?
+  var toolActivity = WorkTurnToolActivityIndex(
     completedByTurnId: [:],
     completedFilesByTurnId: [:],
     claimedInlineGroupIds: [],
     active: nil
   )
-  private var presentation = WorkTimelinePresentation.empty
-  private let assistantPreviewCache = WorkAssistantPreviewCache()
-  private var visibleTimelineCount = workTimelinePageSize
-  private var overlays = ChatThreadOverlays()
-  private var activityPresentationCache: (revision: Int, value: WorkActivityIndicator.Presentation?)?
+  var presentation = WorkTimelinePresentation.empty
+  let assistantPreviewCache = WorkAssistantPreviewCache()
+  var visibleTimelineCount = workTimelinePageSize
+  var overlays = ChatThreadOverlays()
+  var activityPresentationCache: (revision: Int, value: WorkActivityIndicator.Presentation?)?
 
-  private var pendingTranscript: TranscriptWork = .none
-  private var pendingTimeline: TimelineWork = .none
-  private var pendingUrgent = false
-  private var foldScheduled = false
-  private var frameRevision = 0
-  private var lastFrame: ChatThreadFrame?
+  var pendingTranscript: TranscriptWork = .none
+  var pendingTimeline: TimelineWork = .none
+  var pendingUrgent = false
+  var foldScheduled = false
+  var frameRevision = 0
+  var lastFrame: ChatThreadFrame?
 
   // MARK: Output + persistence
 
-  private var sink: (@Sendable (ChatThreadEngineSignal) -> Void)?
-  private let store: ChatLogStore?
+  var sink: (@Sendable (ChatThreadEngineSignal) -> Void)?
+  let store: ChatLogStore?
 
-  private enum PersistOp: @unchecked Sendable {
+  enum PersistOp: @unchecked Sendable {
     case touch
     case append([ChatLogStoredEvent], generation: Int?)
     case replaceRange(from: Int, events: [ChatLogStoredEvent], generation: Int?, hasOlder: Bool, olderCursor: Int?)
@@ -139,8 +139,8 @@ actor ChatThreadEngine {
     case barrier(CheckedContinuation<Void, Never>)
   }
 
-  private let persistContinuation: AsyncStream<PersistOp>.Continuation
-  private let persistTask: Task<Void, Never>
+  let persistContinuation: AsyncStream<PersistOp>.Continuation
+  let persistTask: Task<Void, Never>
 
   init(
     key: ChatThreadKey,
@@ -353,435 +353,9 @@ actor ChatThreadEngine {
     return request
   }
 
-  // MARK: - Log application
-
-  private func applyCached(meta: ChatLogSessionMeta?, events: [ChatLogStoredEvent]) {
-    guard !sessionDeleted else { return }
-    if let cachedGeneration = meta?.generation, let generation, cachedGeneration != generation {
-      // The host already told us a newer generation; this disk read is stale.
-      return
-    }
-    if generation == nil { generation = meta?.generation }
-    if let meta {
-      if let oldest = meta.oldestSequence {
-        diskOldestSequence = min(diskOldestSequence ?? oldest, oldest)
-      }
-      if !hostSnapshotReceived {
-        hasOlderHistory = meta.hasOlder
-        olderByteCursor = meta.olderCursor
-      }
-    }
-    var outcomes: [InsertOutcome] = []
-    var appended: [AgentChatEventEnvelope] = []
-    let decoder = JSONDecoder()
-    for stored in events {
-      guard let envelope = try? decoder.decode(AgentChatEventEnvelope.self, from: stored.payload) else { continue }
-      let entry = LogEntry(envelope: envelope, raw: stored.payload, sequence: stored.sequence)
-      // Disk never overrides what the host already delivered.
-      let outcome = insertSequenced(entry, sequenceStart: nil, replaceExisting: false)
-      outcomes.append(outcome)
-      if case .appended = outcome { appended.append(envelope) }
-    }
-    if !events.isEmpty { hasDiskRows = true }
-    noteLogChange(outcomes: outcomes, appended: appended)
-  }
-
-  private func applySnapshot(_ input: ChatThreadSnapshotInput) {
-    hostSupportsChatLogV2 = input.hostSupportsChatLogV2
-    loadFailure = nil
-    if input.sessionFound == false {
-      clearLog()
-      sessionDeleted = true
-      hostSnapshotReceived = true
-      enqueuePersist(.drop)
-      pendingTranscript = .full
-      pendingTimeline = .rebuild
-      pendingUrgent = true
-      return
-    }
-    sessionDeleted = false
-    if let incoming = input.historyGeneration {
-      if let generation, generation != incoming {
-        clearLog()
-        pendingHistoryReset = true
-        // The store drops its rows itself when it sees a new generation.
-      }
-      generation = incoming
-    }
-
-    if let turnActive = input.turnActive {
-      hostTurnActiveHint = turnActive
-    } else if !input.resumed {
-      hostTurnActiveHint = nil
-    }
-
-    var outcomes: [InsertOutcome] = []
-    var appended: [AgentChatEventEnvelope] = []
-    var persisted: [ChatLogStoredEvent] = []
-
-    if input.resumed {
-      for event in input.events {
-        let outcome = insertLive(event, outcomes: &outcomes, appended: &appended)
-        if outcome, let stored = storedEvent(event) { persisted.append(stored) }
-      }
-      if !persisted.isEmpty {
-        enqueuePersist(.append(persisted, generation: generation))
-      }
-    } else {
-      let sequencedEvents = input.events.filter { $0.envelope.sequence != nil }
-      let firstSequence = sequencedEvents.compactMap { $0.sequenceStart ?? $0.envelope.sequence }.min()
-      let lastSequence = sequencedEvents.compactMap(\.envelope.sequence).max()
-      if let firstSequence, let lastSequence {
-        let cachedBelow = sequenced.last(where: { ($0.sequence ?? 0) < firstSequence })?.sequence
-        // A hole between the newest cached row below the snapshot and the
-        // snapshot itself means rows are missing in the middle: treat it as
-        // a gap so the older rows are never shown out of order.
-        let hole = cachedBelow.map { $0 < firstSequence - 1 } ?? false
-        let dropBelow = input.gap || hole
-        let before = sequenced.count
-        sequenced.removeAll { entry in
-          guard let sequence = entry.sequence else { return false }
-          if sequence >= firstSequence && sequence <= lastSequence { return true }
-          return dropBelow && sequence < firstSequence
-        }
-        if sequenced.count != before { outcomes.append(.rewritten) }
-        for event in sequencedEvents {
-          _ = insertLive(event, outcomes: &outcomes, appended: &appended)
-          if let stored = storedEvent(event) { persisted.append(stored) }
-        }
-        // Rows newer than the snapshot survive in memory; the store's
-        // replaceRange is authoritative for everything >= first, so re-add
-        // them after it.
-        let newer = sequenced.filter { ($0.sequence ?? 0) > lastSequence }.compactMap(storedEvent)
-        if dropBelow {
-          enqueuePersist(.dropBelow(firstSequence))
-        }
-        enqueuePersist(.replaceRange(
-          from: firstSequence,
-          events: persisted + newer,
-          generation: generation,
-          hasOlder: resolvedHasOlder(input, dropBelow: dropBelow),
-          olderCursor: input.hostSupportsChatLogV2 ? nil : snapshotByteCursor(input)
-        ))
-      } else if input.gap {
-        if !sequenced.isEmpty { outcomes.append(.rewritten) }
-        sequenced.removeAll()
-        enqueuePersist(.drop)
-      }
-      // The snapshot's own unsequenced rows replace the live tail.
-      unsequenced.removeAll()
-      unsequencedKeys.removeAll()
-      for event in input.events where event.envelope.sequence == nil {
-        appendUnsequenced(event.envelope, raw: event.raw, outcomes: &outcomes, appended: &appended)
-      }
-      outcomes.append(.rewritten)
-
-      hasOlderHistory = resolvedHasOlder(input, dropBelow: false)
-      olderByteCursor = snapshotByteCursor(input)
-      if olderState == .exhausted || olderState == .idle {
-        olderState = hasOlderHistory ? .idle : .exhausted
-      }
-    }
-
-    if !input.pinnedEvents.isEmpty {
-      var pinnedStored: [ChatLogStoredEvent] = []
-      for event in input.pinnedEvents {
-        if insertLive(event, outcomes: &outcomes, appended: &appended),
-           let stored = storedEvent(event) {
-          pinnedStored.append(stored)
-        }
-      }
-      if !pinnedStored.isEmpty {
-        enqueuePersist(.append(pinnedStored, generation: generation))
-      }
-    }
-
-    if !input.events.isEmpty || !input.pinnedEvents.isEmpty { hasHostRows = true }
-    let firstHostSnapshot = !hostSnapshotReceived
-    hostSnapshotReceived = true
-
-    // Older host: a byte-capped tail can start mid-turn. Pull one older page
-    // before the first host frame so the turn is not shown headless.
-    if !input.hostSupportsChatLogV2,
-       !input.resumed,
-       firstHostSnapshot,
-       !boundaryPageRequested,
-       hasOlderHistory,
-       let first = input.events.first,
-       !chatThreadEnvelopeIsTurnBoundary(first.envelope) {
-      awaitingBoundaryPage = true
-      boundaryPageRequested = true
-      sink?(.needsBoundaryPage)
-    }
-
-    noteLogChange(outcomes: outcomes, appended: appended)
-    pendingUrgent = true
-  }
-
-  private func applyLive(_ events: [ChatThreadLiveEvent]) {
-    guard !sessionDeleted else { return }
-    var outcomes: [InsertOutcome] = []
-    var appended: [AgentChatEventEnvelope] = []
-    var persisted: [ChatLogStoredEvent] = []
-    for event in events {
-      if event.historyInvalidated {
-        noteLogChange(outcomes: outcomes, appended: appended)
-        if !persisted.isEmpty { enqueuePersist(.append(persisted, generation: generation)) }
-        invalidate(reason: "historyInvalidated", notify: true)
-        return
-      }
-      let before = hostTurnActiveHint
-      switch event.envelope.event {
-      case .status(let turnStatus, _, _):
-        hostTurnActiveHint = turnStatus == .started
-      case .done:
-        hostTurnActiveHint = false
-      default:
-        break
-      }
-      if before != hostTurnActiveHint { pendingUrgent = true }
-      if insertLive(event, outcomes: &outcomes, appended: &appended),
-         let stored = storedEvent(event) {
-        persisted.append(stored)
-      }
-    }
-    if !persisted.isEmpty {
-      hasHostRows = true
-      enqueuePersist(.append(persisted, generation: generation))
-    }
-    noteLogChange(outcomes: outcomes, appended: appended)
-  }
-
-  private func applyOlderPage(_ page: ChatThreadOlderPageInput) {
-    let wasAwaitingBoundary = awaitingBoundaryPage
-    awaitingBoundaryPage = false
-    if let failure = page.failureMessage {
-      olderState = .failed(failure)
-      pendingTimeline = max(pendingTimeline, .presentationOnly)
-      pendingUrgent = wasAwaitingBoundary
-      return
-    }
-    if page.unavailable {
-      olderState = .failed("Could not load earlier messages from this machine.")
-      pendingTimeline = max(pendingTimeline, .presentationOnly)
-      return
-    }
-    guard page.sessionFound else {
-      hasOlderHistory = false
-      olderState = .exhausted
-      pendingTimeline = max(pendingTimeline, .presentationOnly)
-      return
-    }
-    if let pageGeneration = page.historyGeneration, let generation, pageGeneration != generation {
-      invalidate(reason: "generation changed while paging", notify: true)
-      return
-    }
-    var outcomes: [InsertOutcome] = []
-    var appended: [AgentChatEventEnvelope] = []
-    var persisted: [ChatLogStoredEvent] = []
-    let decoderFreeEvents = page.events.filter { $0.envelope.sequence != nil }
-    for event in decoderFreeEvents {
-      guard let sequence = event.envelope.sequence else { continue }
-      let outcome = insertSequenced(
-        LogEntry(envelope: event.envelope, raw: event.raw, sequence: sequence),
-        sequenceStart: event.sequenceStart,
-        replaceExisting: false
-      )
-      outcomes.append(outcome)
-      if case .appended = outcome { appended.append(event.envelope) }
-      if case .duplicate = outcome { continue }
-      if let stored = storedEvent(event) { persisted.append(stored) }
-    }
-    // Unsequenced rows on a page (very old hosts) have no key; they are only
-    // kept when the log has nothing sequenced to order them against.
-    if sequenced.isEmpty {
-      for event in page.events where event.envelope.sequence == nil {
-        appendUnsequenced(event.envelope, raw: event.raw, outcomes: &outcomes, appended: &appended)
-      }
-    }
-    hasOlderHistory = page.hasMore
-    if !hostSupportsChatLogV2 {
-      olderByteCursor = page.hasMore ? page.startOffset : 0
-    }
-    olderState = page.hasMore ? .idle : .exhausted
-    if !persisted.isEmpty {
-      enqueuePersist(.append(persisted, generation: generation))
-    }
-    enqueuePersist(.updateMeta(
-      generation: generation,
-      hasOlder: hasOlderHistory,
-      olderCursor: hostSupportsChatLogV2 ? nil : olderByteCursor
-    ))
-    // A page only ever adds rows above the window: never a tail append.
-    if !outcomes.isEmpty { outcomes.append(.rewritten) }
-    noteLogChange(outcomes: outcomes, appended: appended)
-    pendingTimeline = max(pendingTimeline, .presentationOnly)
-    if wasAwaitingBoundary { pendingUrgent = true }
-  }
-
-  private func invalidate(reason: String, notify: Bool) {
-    chatThreadLog.notice("thread invalidate key=\(self.key.description, privacy: .public) reason=\(reason, privacy: .public)")
-    clearLog()
-    generation = nil
-    hostSnapshotReceived = false
-    hasHostRows = false
-    hasDiskRows = false
-    hasOlderHistory = false
-    olderByteCursor = nil
-    diskOldestSequence = nil
-    olderState = .idle
-    pendingHistoryReset = true
-    enqueuePersist(.drop)
-    pendingTranscript = .full
-    pendingTimeline = .rebuild
-    pendingUrgent = true
-    if notify { sink?(.needsSnapshot(reason: reason)) }
-  }
-
-  private func clearLog() {
-    sequenced.removeAll()
-    unsequenced.removeAll()
-    unsequencedKeys.removeAll()
-    pendingTranscript = .full
-    pendingTimeline = .rebuild
-  }
-
-  /// Insert one host event (live, resume, snapshot row). Returns whether the
-  /// event changed the log.
-  @discardableResult
-  private func insertLive(
-    _ event: ChatThreadLiveEvent,
-    outcomes: inout [InsertOutcome],
-    appended: inout [AgentChatEventEnvelope]
-  ) -> Bool {
-    guard let sequence = event.envelope.sequence else {
-      return appendUnsequenced(event.envelope, raw: event.raw, outcomes: &outcomes, appended: &appended)
-    }
-    let outcome = insertSequenced(
-      LogEntry(envelope: event.envelope, raw: event.raw, sequence: sequence),
-      sequenceStart: event.sequenceStart,
-      replaceExisting: true
-    )
-    outcomes.append(outcome)
-    switch outcome {
-    case .appended:
-      appended.append(event.envelope)
-      return true
-    case .rewritten:
-      return true
-    case .duplicate:
-      return false
-    }
-  }
-
-  @discardableResult
-  private func appendUnsequenced(
-    _ envelope: AgentChatEventEnvelope,
-    raw: Data,
-    outcomes: inout [InsertOutcome],
-    appended: inout [AgentChatEventEnvelope]
-  ) -> Bool {
-    let dedupeKey = "\(envelope.timestamp)|\(envelope.event.typeName)|\(envelope.id)"
-    guard unsequencedKeys.insert(dedupeKey).inserted else {
-      outcomes.append(.duplicate)
-      return false
-    }
-    unsequenced.append(LogEntry(envelope: envelope, raw: raw, sequence: nil))
-    outcomes.append(.appended)
-    appended.append(envelope)
-    return true
-  }
-
-  private func insertSequenced(_ entry: LogEntry, sequenceStart: Int?, replaceExisting: Bool) -> InsertOutcome {
-    guard let sequence = entry.sequence else { return .duplicate }
-    var rewrote = false
-    // A folded replay row covers [sequenceStart, sequence]: drop the deltas
-    // it replaces so their text is not merged in twice.
-    if let sequenceStart, sequenceStart < sequence, replaceExisting {
-      let lower = lowerBound(sequenceStart)
-      let upper = lowerBound(sequence)
-      if lower < upper {
-        sequenced.removeSubrange(lower..<upper)
-        rewrote = true
-      }
-    }
-    let index = lowerBound(sequence)
-    if index < sequenced.count, sequenced[index].sequence == sequence {
-      if sequenced[index].envelope == entry.envelope { return rewrote ? .rewritten : .duplicate }
-      guard replaceExisting else { return rewrote ? .rewritten : .duplicate }
-      sequenced[index] = entry
-      return .rewritten
-    }
-    let isTail = index == sequenced.count
-    sequenced.insert(entry, at: index)
-    // Unsequenced live rows are ordered after every sequenced row; a new
-    // sequenced row arriving behind them is still a tail append for the
-    // transcript merge, which orders by timestamp.
-    return (isTail && !rewrote) ? .appended : .rewritten
-  }
-
-  private func lowerBound(_ sequence: Int) -> Int {
-    var low = 0
-    var high = sequenced.count
-    while low < high {
-      let mid = (low + high) / 2
-      if (sequenced[mid].sequence ?? Int.min) < sequence {
-        low = mid + 1
-      } else {
-        high = mid
-      }
-    }
-    return low
-  }
-
-  private func noteLogChange(outcomes: [InsertOutcome], appended: [AgentChatEventEnvelope]) {
-    guard !outcomes.isEmpty else { return }
-    let rewritten = outcomes.contains { if case .rewritten = $0 { return true } else { return false } }
-    if rewritten {
-      pendingTranscript = .full
-    } else if !appended.isEmpty {
-      switch pendingTranscript {
-      case .none:
-        pendingTranscript = .appended(appended)
-      case .appended(let existing):
-        pendingTranscript = .appended(existing + appended)
-      case .full:
-        break
-      }
-    }
-  }
-
-  private func storedEvent(_ event: ChatThreadLiveEvent) -> ChatLogStoredEvent? {
-    guard let sequence = event.envelope.sequence else { return nil }
-    return ChatLogStoredEvent(sequence: sequence, timestamp: event.envelope.timestamp, payload: event.raw)
-  }
-
-  private func storedEvent(_ entry: LogEntry) -> ChatLogStoredEvent? {
-    guard let sequence = entry.sequence else { return nil }
-    return ChatLogStoredEvent(sequence: sequence, timestamp: entry.envelope.timestamp, payload: entry.raw)
-  }
-
-  private func resolvedHasOlder(_ input: ChatThreadSnapshotInput, dropBelow: Bool) -> Bool {
-    if let hasOlder = input.hasOlderHistory { return hasOlder }
-    return (input.tailStartOffset ?? 0) > 0
-  }
-
-  private func snapshotByteCursor(_ input: ChatThreadSnapshotInput) -> Int? {
-    syncChatSubscribeHistoryCursor(
-      hasOlderHistory: input.hasOlderHistory,
-      tailStartOffset: input.tailStartOffset,
-      cursorKind: input.cursorKind
-    )
-  }
-
-  private func enqueuePersist(_ op: PersistOp) {
-    guard store != nil else { return }
-    persistContinuation.yield(op)
-  }
-
   // MARK: - Fold
 
-  private func scheduleFold() {
+  func scheduleFold() {
     guard !foldScheduled else { return }
     guard case .none = pendingTranscript, pendingTimeline == .none else {
       foldScheduled = true
@@ -790,13 +364,13 @@ actor ChatThreadEngine {
     }
   }
 
-  private func runScheduledFold() {
+  func runScheduledFold() {
     foldScheduled = false
     flushNow()
   }
 
   @discardableResult
-  private func flushNow() -> ChatThreadFrame? {
+  func flushNow() -> ChatThreadFrame? {
     let hasTranscriptWork: Bool = {
       if case .none = pendingTranscript { return false }
       return true
@@ -860,12 +434,12 @@ actor ChatThreadEngine {
   }
 
   /// The disk cache holds rows older than the in-memory window.
-  private var diskHoldsOlderRows: Bool {
+  var diskHoldsOlderRows: Bool {
     guard let diskOldest = diskOldestSequence, let memoryOldest = sequenced.first?.sequence else { return false }
     return diskOldest < memoryOldest
   }
 
-  private func rebuildTranscript() {
+  func rebuildTranscript() {
     subagentFilter.reset()
     let entries = sequenced.map(\.envelope) + unsequenced.map(\.envelope)
     let admitted = subagentFilter.admit(entries) ?? []
@@ -878,7 +452,7 @@ actor ChatThreadEngine {
     for envelope in transcript { advanceGoalState(with: envelope) }
   }
 
-  private func advanceGoalState(with envelope: WorkChatEnvelope) {
+  func advanceGoalState(with envelope: WorkChatEnvelope) {
     switch envelope.event {
     case .claudeGoalUpdated(let goal, _):
       goalState = .set(goal)
@@ -889,7 +463,7 @@ actor ChatThreadEngine {
     }
   }
 
-  private func rebuildTimeline() {
+  func rebuildTimeline() {
     if transcript.isEmpty && overlays.localEchoMessages.isEmpty && overlays.artifacts.isEmpty {
       snapshot = .empty
     } else {
@@ -902,7 +476,7 @@ actor ChatThreadEngine {
     }
   }
 
-  private func buildFrame() -> ChatThreadFrame {
+  func buildFrame() -> ChatThreadFrame {
     let summary = overlays.summary
     let sessionStatus = overlays.sessionStatus ?? ""
     let effectiveHint = hostTurnActiveHint ?? overlays.turnActiveHint

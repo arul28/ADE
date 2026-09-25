@@ -3542,24 +3542,6 @@ private func workResolvedInlineItemIds(from transcript: [WorkChatEnvelope]) -> S
   return ids
 }
 
-func workIncrementalEventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
-  eventCard(for: envelope)
-}
-
-func workIncrementalMergedEventCard(
-  _ existing: WorkEventCardModel,
-  with incoming: WorkEventCardModel
-) -> WorkEventCardModel? {
-  mergedWorkEventCard(existing, with: incoming)
-}
-
-func workIncrementalEventCards(from timeline: [WorkTimelineEntry]) -> [WorkEventCardModel] {
-  timeline.compactMap { entry in
-    guard case .eventCard(let card) = entry.payload else { return nil }
-    return card
-  }
-}
-
 func buildWorkEventCards(
   from transcript: [WorkChatEnvelope],
   suppressedItemIds: Set<String> = [],
@@ -4275,7 +4257,7 @@ private func mergedWorkEventCard(_ existing: WorkEventCardModel, with incoming: 
   return incoming
 }
 
-private func eventCard(
+func eventCard(
   for envelope: WorkChatEnvelope,
   resolutionByItemId: [String: String] = [:]
 ) -> WorkEventCardModel? {
