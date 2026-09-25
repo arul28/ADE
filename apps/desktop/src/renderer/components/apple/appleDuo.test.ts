@@ -50,6 +50,13 @@ describe("appleDuoPanelRotationsDeg", () => {
     expect(appleDuoPanelRotationsDeg(appleDuoPoseForAngle(105, true))).toEqual({ upper: 75, lower: 0 });
     expect(appleDuoPanelRotationsDeg(appleDuoPoseForAngle(105, false))).toEqual({ upper: 37.5, lower: -37.5 });
   });
+
+  it("never folds a laptop screen past vertical", () => {
+    // Nudging a laptop posture all the way down must not lay the screen back
+    // through its own flat base.
+    expect(appleDuoPanelRotationsDeg(appleDuoPoseForAngle(0, true))).toEqual({ upper: 90, lower: 0 });
+    expect(appleDuoPanelRotationsDeg(appleDuoPoseForAngle(30, true))).toEqual({ upper: 90, lower: 0 });
+  });
 });
 
 describe("appleDuoPanelForInnerPoint", () => {

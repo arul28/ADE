@@ -104,7 +104,10 @@ export function nearestAppleDuoStance(angle: number): AppleDuoStanceId {
 export function appleDuoPanelRotationsDeg(pose: AppleDuoPose): { upper: number; lower: number } {
   const angle = clampAppleDuoAngle(pose.angle);
   if (pose.lowerFlat) {
-    return { upper: APPLE_DUO_MAX_ANGLE - angle, lower: 0 };
+    // The base stays down, so the screen tips up from flat (180°) to vertical
+    // (90°) and never folds past it — a laptop lid does not lie back through
+    // its own base.
+    return { upper: Math.min(90, APPLE_DUO_MAX_ANGLE - angle), lower: 0 };
   }
   const fold = (APPLE_DUO_MAX_ANGLE - angle) / 2;
   return { upper: fold, lower: fold === 0 ? 0 : -fold };
