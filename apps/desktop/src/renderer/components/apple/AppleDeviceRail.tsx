@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  ArrowsInLineVertical,
   ArrowsOut,
   Camera,
   Check,
@@ -22,6 +23,11 @@ import {
   Stop,
 } from "@phosphor-icons/react";
 import type { AppleDeviceOrientation, AppleHardwareButtonName } from "../../../shared/types/iosSimulator";
+import {
+  APPLE_DUO_NUDGE_DEGREES,
+  APPLE_DUO_STANCES,
+  type AppleDuoStanceId,
+} from "./appleDuo";
 import {
   APPLE_ORIENTATION_CHOICES,
   appleOrientationIconDegrees,
@@ -63,6 +69,20 @@ export type AppleDeviceRailProps = {
   orientationPending?: boolean;
   onHome: () => void;
   /**
+   * The foldable "Duo" posture. Present ONLY for a device that reports
+   * fold/dual-screen support and a working 3D view; absent everywhere else, so
+   * the rail is unchanged for a normal device.
+   */
+  duo?: {
+    capable: boolean;
+    /** Interior hinge angle in degrees: 0 shut, 180 flat. */
+    angle: number;
+    /** The named posture this angle is nearest to, for the checked item. */
+    stance: AppleDuoStanceId;
+  } | undefined;
+  onDuoStance?: (stance: AppleDuoStanceId) => void;
+  onDuoNudge?: (delta: number) => void;
+  /**
    * Press one of the device's physical buttons (lock, volume, Siri, app
    * switcher). `shake` is deliberately absent: this Xcode's `simctl` and the
    * helper cannot press it, so the service refuses it, and a control that can
@@ -97,7 +117,8 @@ export type AppleDeviceRailProps = {
  * The device's controls, in one pill on the right edge of the picture.
  *
  * Round 4 §A5 fixes the order and the contents: Home, Hardware buttons,
- * Rotate, Inspect, Screenshot, Record, View, Tools, More. Appearance and Text
+ * Duo (foldable only), Rotate, Inspect, Screenshot, Record, View, Tools, More.
+ * Appearance and Text
  * size are GONE from here — they were duplicated in the drawer, which is where
  * device settings live; Inspect and Record came the other way, out of the
  * drawer, because they act on the picture rather than on the device's settings.
@@ -123,6 +144,9 @@ export function AppleDeviceRail({
   orientationPending = false,
   onHome,
   onHardwareButton,
+  duo,
+  onDuoStance,
+  onDuoNudge,
   onOrientation,
   onScreenshot,
   onToggleTools,
@@ -201,6 +225,51 @@ export function AppleDeviceRail({
             App switcher
           </DropdownMenu.Item>
         </RailMenu>
+        {/*
+          * The foldable device's posture. Only a device that reports
+          * fold/dual-screen support reaches this menu; the presets jump the
+          * hinge, and the two nudge items step it, mirroring the pinch gesture
+          * on the glass. The label carries the live angle so the control says
+          * what it is set to without opening.
+          */}
+        {duo?.capable && onDuoStance ? (
+          <RailMenu
+            label={`Duo: ${duo.angle}\u00b0`}
+            icon={<ArrowsInLineVertical size={16} />}
+          >
+            <div className={MENU_LABEL_CLASS}>{"Duo posture \u00b7 "}{`${duo.angle}\u00b0`}</div>
+            {APPLE_DUO_STANCES.map((stance) => (
+              <DropdownMenu.Item
+                key={stance.id}
+                className={MENU_ITEM_CLASS}
+                aria-checked={stance.id === duo.stance}
+                onSelect={() => onDuoStance(stance.id)}
+              >
+                {stance.id === duo.stance
+                  ? <Check size={14} weight="bold" />
+                  : <span className="w-[14px]" aria-hidden="true" />}
+                {stance.label}
+              </DropdownMenu.Item>
+            ))}
+            <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+            <DropdownMenu.Item
+              className={MENU_ITEM_CLASS}
+              disabled={duo.angle <= 0}
+              onSelect={() => onDuoNudge?.(-APPLE_DUO_NUDGE_DEGREES)}
+            >
+              <ArrowsInLineVertical size={14} />
+              {`Close hinge ${APPLE_DUO_NUDGE_DEGREES}\u00b0`}
+            </DropdownMenu.Item>
+            <DropdownMenu.Item
+              className={MENU_ITEM_CLASS}
+              disabled={duo.angle >= 180}
+              onSelect={() => onDuoNudge?.(APPLE_DUO_NUDGE_DEGREES)}
+            >
+              <ArrowsInLineVertical size={14} />
+              {`Open hinge ${APPLE_DUO_NUDGE_DEGREES}\u00b0`}
+            </DropdownMenu.Item>
+          </RailMenu>
+        ) : null}
         {/*
           * §V2: the orientation control, which SHOWS the orientation.
           *
