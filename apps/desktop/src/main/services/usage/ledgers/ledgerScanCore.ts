@@ -114,6 +114,12 @@ export interface TokenEntry {
   webSearchRequests?: number;
   costOverrideUsd?: number;
   /**
+   * Claude Code's fast mode (`usage.speed: "fast"`), which bills at a multiple
+   * of the model's standard rate. Set only by the Claude scanner; other
+   * providers have no such mode.
+   */
+  fast?: boolean;
+  /**
    * Context size of the ONE model request this entry records (uncached input
    * + cache read + cache write). Set only by scanners whose entries are single
    * requests; pricing uses it to pick a vendor's long-context tier. Absent on
