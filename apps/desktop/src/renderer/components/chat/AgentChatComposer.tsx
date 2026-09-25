@@ -76,6 +76,7 @@ import {
   parseComposerClipboard,
   serializeComposerClipboard,
 } from "../../../shared/composerClipboard";
+import { pastedTextAttachmentFile, shouldFoldPastedText } from "../../../shared/composerPasteFolding";
 import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "../../../shared/chips";
 import { serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
@@ -4913,6 +4914,15 @@ export function AgentChatComposer({
         return;
       }
       const pastedText = event.clipboardData.getData("text/plain");
+      // A pasted log or whole file would flood the draft. Stage it as a text
+      // attachment instead, so the normal chip and preview carry it. Only
+      // plain text reaches here (files and images returned above), and a small
+      // paste keeps the native selection-replace and undo path.
+      if (shouldFoldPastedText(pastedText)) {
+        event.preventDefault();
+        void addFileAttachments([pastedTextAttachmentFile(pastedText)]);
+        return;
+      }
       if (pastedText && findSmartLinks(pastedText).length > 0) {
         if (event.currentTarget instanceof HTMLTextAreaElement) {
           const node = event.currentTarget;
