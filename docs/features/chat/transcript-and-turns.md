@@ -882,7 +882,7 @@ implements a two-layer transform:
    **One-line previews strip inline Markdown.** `summarizeInlineText`
    (`chatTranscriptRows.ts`) collapses whitespace and now also strips the
    inline punctuation a collapsed preview would otherwise show literally —
-   bold/italic, inline code, `[label](url)`, strikethrough, and leading
+   bold/italic, inline code, Markdown links, strikethrough, and leading
    heading/quote/list markers — via `stripInlineMarkdown`. It is used by the
    collapsed work-log entry args, the tool-summary header, the minimap prompt
    and reply previews, and the voice-call opening line; the expanded render is
