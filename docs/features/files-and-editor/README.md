@@ -631,8 +631,9 @@ the renderer only names a target from `EDITOR_TARGETS`.
 | Piece | Role |
 |-------|------|
 | `shared/editorTargets.ts` | Catalog (`vscode`, `cursor`, `zed`, JetBrains, Xcode, …), `OpenPathTarget` (`default` / `finder` / editor id), `OpenInTarget`, `resolveOpenInTarget` / `canOfferOpenIn` / `isRemoteEditorOpenRequest`, and `buildRemoteEditorUrl`. |
-| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Duplicate macOS apps that share `macAppName` (`zed` / `zeditor`) collapse to one. |
-| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
+| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Duplicate macOS apps that share `macAppName` (`zed` / `zeditor`) collapse to one. On Windows a miss off PATH falls through to `editorWindowsInstall.ts` and records the resolved absolute executable for the open action. |
+| `services/editors/editorWindowsInstall.ts` | Windows-only, read-only resolution beyond PATH: `%ProgramFiles%` / `%ProgramFiles(x86)%` / `%LOCALAPPDATA%\Programs` install folders, `<ProgramFiles>\JetBrains\<Product>*\bin`, `%LOCALAPPDATA%\JetBrains\Toolbox\apps\<Product>\ch-*\`, and the `HKLM`/`HKCU` uninstall registry keys (`DisplayName` + `InstallLocation` / `DisplayIcon`). Every path is verified to exist, results are cached five minutes, and it never launches a GUI or asks for elevation. |
+| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; on Windows uses the executable `editorDetection` resolved (falling back to the bare command); `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
 | `ade.app.getInstalledEditors` / `ade.app.openPathInEditor` | Direct IPC (not a runtime action). Local `rootPath` must sit under a known workspace root. |
 | `OpenInSubmenu` | Shared UI on `LaneContextMenu`, `LaneActionsSubmenu`, `SessionContextMenu`, and `ForeignLaneContextMenu`. |
 
