@@ -55,17 +55,23 @@ const ACP_SECRET_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}/g, "[redacted]"],
 ];
 
-// An opaque token longer than a base64 run: mixed case plus digits is the
-// signature of a key, token, or hash that no keyword or prefix rule named. An
-// all-lowercase run (a UUID, a hex digest) is an identifier, not a credential,
-// so it is kept for diagnosis. `/` is excluded so a long path or URL is not
-// swallowed as if it were a token.
+// An opaque token longer than a base64 run: a digit plus a letter is the
+// signature of a key, token, or digest that no keyword or prefix rule named.
+// Case is deliberately NOT required — a lowercase 64-hex secret (an HMAC,
+// some API keys) is exactly the shape a case-sensitive rule missed, and this
+// tail is persisted and synced. The cost is that a hex commit SHA or a long
+// lowercase identifier in the fold also redacts, which is the safe side of
+// that trade. The one exception is a canonical UUID: it is a formatted id, not
+// a credential, and it is worth keeping. `/` is excluded so a long path or URL
+// is not swallowed as if it were a token.
 const ACP_OPAQUE_TOKEN = /[A-Za-z0-9+=_-]{32,}/g;
+const ACP_CANONICAL_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function redactOpaqueTokens(text: string): string {
-  return text.replace(ACP_OPAQUE_TOKEN, (run) => (
-    /[0-9]/.test(run) && /[a-z]/.test(run) && /[A-Z]/.test(run) ? "[redacted]" : run
-  ));
+  return text.replace(ACP_OPAQUE_TOKEN, (run) => {
+    if (ACP_CANONICAL_UUID.test(run)) return run;
+    return /[0-9]/.test(run) && /[A-Za-z]/.test(run) ? "[redacted]" : run;
+  });
 }
 
 /**
