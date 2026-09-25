@@ -61,7 +61,7 @@ import { cachedGitRemoteIdentity, originUrlForBinding } from "../lanes/laneMachi
 import { useWorkMachineRouter } from "./useWorkMachineRouter";
 import { clearChatCompanionUiState } from "../chat/chatCompanionUiState";
 import { chatLaunchBindingKey, useChatLaunchRowSources } from "../../state/chatLaunchStore";
-import { mergeChatLaunchRows, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
+import { mergeChatLaunchRows, selectKnownLaunchSessionIds, selectRosterChatLaunches } from "../chat/launch/chatLaunchSynthetic";
 import { subscribeChatLaunchClosed } from "../chat/launch/chatLaunchDraftRestore";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
@@ -698,6 +698,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [retainedCrossMachineSlices]);
   const pendingChatLaunches = useMemo(
     () => selectRosterChatLaunches(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
+    [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
+  );
+  /**
+   * Session ids owned by a live launch on this project — listed or not (see
+   * `selectKnownLaunchSessionIds`). The prune below keeps these valid so the
+   * hand-off from a launch's synthetic row to the host's own row never drops the
+   * open tab and moves the active chat (the random jump after auto-create setup).
+   */
+  const knownLaunchSessionIds = useMemo(
+    () => selectKnownLaunchSessionIds(chatLaunchRowSources, activeChatLaunchBindingKey, crossMachineBindingKeys),
     [activeChatLaunchBindingKey, chatLaunchRowSources, crossMachineBindingKeys],
   );
   const sessions = useMemo(() => {
@@ -2069,6 +2079,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const sessionId of pendingOptimisticSessionsRef.current.keys()) {
       validIds.add(sessionId);
     }
+    // A live launch's reserved session stays valid through the hand-off to the
+    // host's own row; dropping it here moved the active tab (see above).
+    for (const sessionId of knownLaunchSessionIds) {
+      validIds.add(sessionId);
+    }
 
     setProjectViewState((prev) => {
       const nextOpen = prev.openItemIds.filter((id) => validIds.has(id));
@@ -2101,7 +2116,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         selectedItemId: nextSelected,
       };
     });
-  }, [projectStateKey, sessionsById, setProjectViewState]);
+  }, [knownLaunchSessionIds, projectStateKey, sessionsById, setProjectViewState]);
 
   const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
     if (!sessionId) return;

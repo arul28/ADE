@@ -1,5 +1,6 @@
 import type { AgentChatCreateArgs, AgentChatSendArgs, AgentChatFileRef } from "./chat";
 import type { LaneEnvInitStep } from "./config";
+import type { LaneLinearIssue } from "./lanes";
 
 /**
  * A chat (or CLI session) launched into a lane that does not exist yet.
@@ -168,6 +169,29 @@ export type ChatLaunchChatArgs = {
   message: Omit<AgentChatSendArgs, "sessionId">;
 };
 
+/**
+ * An explicit recipe for the lane a launch creates, when the user configured one
+ * instead of taking the prompt-derived default. Optional and additive: a launch
+ * that omits it behaves exactly as before (deterministic name, project default
+ * base and template). The lane name still travels as `ChatLaunchArgs.laneName`
+ * and a root lane's base as `ChatLaunchArgs.baseBranch`, so this only carries
+ * what those two fields cannot express.
+ */
+export type ChatLaunchLaneConfig = {
+  /** `root` branches from the base; `child` branches from `parentLaneId`; `import` adopts `branchRef`. */
+  mode: "root" | "child" | "import";
+  /** child mode: the lane to branch from. */
+  parentLaneId?: string | null;
+  /** import mode: the existing local or remote branch ref to adopt. */
+  branchRef?: string | null;
+  /** Lane template applied as this launch's environment; omitted = project default. */
+  templateId?: string | null;
+  /** Accent color applied once the lane row exists. */
+  color?: string | null;
+  /** Linear issue bound to the new lane. */
+  linearIssue?: LaneLinearIssue | null;
+};
+
 export type ChatLaunchArgs = {
   kind: ChatLaunchKind;
   mode: ChatLaunchMode;
@@ -194,6 +218,12 @@ export type ChatLaunchArgs = {
   attachments?: AgentChatFileRef[];
   /** Optional explicit base ref; omitted = the project's configured new-lane base. */
   baseBranch?: string | null;
+  /**
+   * Optional explicit recipe for the lane this launch creates (child lane,
+   * imported branch, template, color, Linear issue). Omitted = the default
+   * prompt-derived root lane.
+   */
+  laneConfig?: ChatLaunchLaneConfig | null;
   /** Registry model id used for background lane naming and for display. */
   modelId?: string | null;
   /** ADE provider of the chat (lane-naming hint). */

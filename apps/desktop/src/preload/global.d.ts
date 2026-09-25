@@ -1717,7 +1717,7 @@ declare global {
         createFromUnstaged: (
           args: CreateLaneFromUnstagedArgs,
         ) => Promise<LaneSummary>;
-        importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
+        importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         previewBranchSwitch: (
           args: LaneBranchSwitchArgs,
         ) => Promise<LaneBranchSwitchPreview>;
@@ -1828,6 +1828,7 @@ declare global {
         setDefaultTemplate: (args: SetDefaultLaneTemplateArgs) => Promise<void>;
         applyTemplate: (
           args: ApplyLaneTemplateArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LaneEnvInitProgress>;
         saveTemplate: (args: SaveLaneTemplateArgs) => Promise<void>;
         deleteTemplate: (args: DeleteLaneTemplateArgs) => Promise<void>;

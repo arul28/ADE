@@ -5124,7 +5124,10 @@ export function createLaneService({
       }, runtimeOptions);
     },
 
-    async createChild(args: CreateChildLaneArgs): Promise<LaneSummary> {
+    async createChild(
+      args: CreateChildLaneArgs,
+      runtimeOptions: LaneCreateRuntimeOptions = {},
+    ): Promise<LaneSummary> {
       const parent = getLaneRow(args.parentLaneId);
       if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
       if (parent.status === "archived") throw new Error("Parent lane is archived");
@@ -5168,7 +5171,7 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
-        });
+        }, runtimeOptions);
       }
 
       if (parent.lane_type === "primary") {
@@ -5187,7 +5190,7 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
-        });
+        }, runtimeOptions);
       }
 
       const parentHeadSha = await getHeadSha(parent.worktree_path);
@@ -5201,7 +5204,7 @@ export function createLaneService({
         folder: args.folder,
         branchName: args.branchName,
         linearIssue: args.linearIssue ?? null,
-      });
+      }, runtimeOptions);
     },
 
     async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {
@@ -5341,7 +5344,10 @@ export function createLaneService({
       }
     },
 
-    async importBranch(args: { branchRef: string; name?: string; description?: string; baseBranch?: string }): Promise<LaneSummary> {
+    async importBranch(
+      args: { branchRef: string; name?: string; description?: string; baseBranch?: string },
+      runtimeOptions: { laneId?: string } = {},
+    ): Promise<LaneSummary> {
       const rawRef = (args.branchRef ?? "").trim();
       if (!rawRef) throw new Error("branchRef is required");
       if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
@@ -5392,7 +5398,7 @@ export function createLaneService({
         logger.warn("laneService.importBranch.worktree_ownership_check_failed", { branchRef, error: err instanceof Error ? err.message : String(err) });
       }
 
-      const laneId = randomUUID();
+      const laneId = runtimeOptions.laneId?.trim() || randomUUID();
       const now = new Date().toISOString();
       const displayName = (args.name ?? "").trim() || branchRef;
       const slug = slugify(displayName);

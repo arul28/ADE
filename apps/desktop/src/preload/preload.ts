@@ -5982,9 +5982,13 @@ const adeBridge = {
       clearGitReadCaches();
       return lane as LaneSummary;
     },
-    importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => {
+    importBranch: async (
+      args: ImportBranchLaneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
+        pin,
         "lane",
         "importBranch",
         { args },
@@ -6425,9 +6429,14 @@ const adeBridge = {
     },
     applyTemplate: async (
       args: ApplyLaneTemplateArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LaneEnvInitProgress> =>
-      callProjectRuntimeActionOr("lane", "applyTemplate", { args }, () =>
-        ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
+      callPinnedOrBoundRuntimeActionOr<LaneEnvInitProgress>(
+        pin,
+        "lane",
+        "applyTemplate",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
       ),
     saveTemplate: async (args: SaveLaneTemplateArgs): Promise<void> => {
       await callProjectRuntimeActionOr("lane", "saveTemplate", { args }, () =>

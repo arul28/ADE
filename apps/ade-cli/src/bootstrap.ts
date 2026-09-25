@@ -1952,10 +1952,17 @@ export async function createAdeRuntime(args: {
         },
         resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
         resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),
-        planEnvironment: () => {
+        planEnvironment: (requestedTemplateId) => {
           const effective = projectConfigService.getEffective();
-          const templateId = laneTemplateService.getDefaultTemplateId();
+          const requested = requestedTemplateId?.trim() || null;
+          const templateId = requested || laneTemplateService.getDefaultTemplateId();
           const template = templateId ? laneTemplateService.getTemplate(templateId) : null;
+          // An explicitly requested template that no longer resolves must fail
+          // the launch, not silently run without it. A stale DEFAULT template
+          // still degrades quietly as before.
+          if (requested && !template) {
+            throw new Error(`The selected lane template no longer exists: ${requested}`);
+          }
           return planNewLaneEnvironment({
             laneEnvInit: effective.laneEnvInit ?? null,
             laneOverlayPolicies: effective.laneOverlayPolicies ?? null,
