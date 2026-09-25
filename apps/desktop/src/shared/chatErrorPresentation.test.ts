@@ -179,6 +179,23 @@ describe("summarizeAcpStderrTail", () => {
     expect(headline.endsWith("…")).toBe(true);
   });
 
+  it("redacts keyword-labelled values and opaque mixed-case tokens", () => {
+    // Assembled at runtime so the source holds no secret-shaped literal. The
+    // opaque token has digits, lower and upper case — the signature of a key.
+    const opaque = "Aa1".repeat(12);
+    const keywordTail = [
+      "authorization: " + opaque,
+      "diagnostic id 550e8400-e29b-41d4-a716-446655440000",
+      "failed to start",
+    ].join("\n");
+    const summary = summarizeAcpStderrTail(keywordTail);
+    const shown = summary.technicalDetail ?? "";
+    expect(shown).not.toContain(opaque);
+    // A lowercase UUID is an identifier worth keeping, not a credential.
+    expect(shown).toContain("550e8400-e29b-41d4-a716-446655440000");
+    expect(shown).toContain("failed to start");
+  });
+
   it("stays inside the cap even when redaction replaces many short tokens", () => {
     // Redacting `token=a` to `token=[redacted]` can grow the text, so the cap
     // must be re-applied after redaction, not only before it.

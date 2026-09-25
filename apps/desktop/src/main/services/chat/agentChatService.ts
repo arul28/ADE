@@ -946,6 +946,7 @@ import {
   ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
   pendingPermissionToInputRequest,
+  readAcpStderrTailFromError,
   setAcpReasoningEffort,
   textPromptBlock,
   type AcpDialect,
@@ -29214,8 +29215,13 @@ export function createAgentChatService(args: {
    * full sanitized tail behind Copy; with no tail it stays the generic error,
    * so a non-process failure is never decorated with invented text.
    */
-  const emitAcpTurnFailure = (managed: ManagedChatSession, turnId: string, message: string): void => {
-    const stderrTail = managed.acpLastExitStderrTail?.trim() || null;
+  const emitAcpTurnFailure = (
+    managed: ManagedChatSession,
+    turnId: string,
+    message: string,
+    stderrTailOverride?: string | null,
+  ): void => {
+    const stderrTail = (stderrTailOverride ?? managed.acpLastExitStderrTail)?.trim() || null;
     if (!stderrTail) {
       emitChatEvent(managed, { type: "error", message, turnId });
       return;
@@ -29272,7 +29278,14 @@ export function createAgentChatService(args: {
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
       reportProviderRuntimeFailure(provider, message);
-      emitAcpTurnFailure(managed, turnId, message);
+      // A crash before the runtime existed (during the handshake) never fires
+      // onProcessExit, so the pool's rethrow is the only carrier of stderr.
+      emitAcpTurnFailure(
+        managed,
+        turnId,
+        message,
+        managed.acpLastExitStderrTail ?? readAcpStderrTailFromError(error),
+      );
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
       appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });

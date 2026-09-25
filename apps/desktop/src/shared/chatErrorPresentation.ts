@@ -42,17 +42,31 @@ const ACP_ANSI_SIMPLE = /\x1b[@-Z\\-_]/g;
 const ACP_CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 
 // Conservative secret redaction. stderr routinely echoes the argv or config an
-// agent was handed, so a token can land in the tail verbatim; the card and its
+// agent was handed, so a token can land in the tail verbatim; because the tail
+// is persisted in the transcript and synced to every client, the card and its
 // Copy button must never be a way to lift a credential out of ADE.
 const ACP_SECRET_RULES: ReadonlyArray<readonly [RegExp, string]> = [
   [/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]"],
   [
-    /\b(api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|token)\b(\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
+    /\b(api[_-]?key|apikey|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|passphrase|secret|token|authorization|cookie|set-cookie|x-api-key|signature)\b(\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
     "$1$2$3[redacted]",
   ],
   [/\b(sk-[A-Za-z0-9_-]{6,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{6,}|AKIA[0-9A-Z]{16})\b/g, "[redacted]"],
   [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}/g, "[redacted]"],
 ];
+
+// An opaque token longer than a base64 run: mixed case plus digits is the
+// signature of a key, token, or hash that no keyword or prefix rule named. An
+// all-lowercase run (a UUID, a hex digest) is an identifier, not a credential,
+// so it is kept for diagnosis. `/` is excluded so a long path or URL is not
+// swallowed as if it were a token.
+const ACP_OPAQUE_TOKEN = /[A-Za-z0-9+=_-]{32,}/g;
+
+function redactOpaqueTokens(text: string): string {
+  return text.replace(ACP_OPAQUE_TOKEN, (run) => (
+    /[0-9]/.test(run) && /[a-z]/.test(run) && /[A-Z]/.test(run) ? "[redacted]" : run
+  ));
+}
 
 /**
  * Last-line-of-defence cleaning for an agent process's captured stderr. ANSI
@@ -70,6 +84,7 @@ export function sanitizeAcpStderrTail(tail: string | null | undefined): string {
     .replace(ACP_CONTROL_CHARS, "");
   if (text.length > ACP_STDERR_TAIL_LIMIT) text = text.slice(-ACP_STDERR_TAIL_LIMIT);
   for (const [pattern, replacement] of ACP_SECRET_RULES) text = text.replace(pattern, replacement);
+  text = redactOpaqueTokens(text);
   // A redaction can be longer than the value it replaces, so re-bound the
   // result rather than trusting the pre-redaction cap to hold.
   if (text.length > ACP_STDERR_TAIL_LIMIT) text = text.slice(-ACP_STDERR_TAIL_LIMIT);
