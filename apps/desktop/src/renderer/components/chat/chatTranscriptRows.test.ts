@@ -27,6 +27,7 @@ import {
   readTurnEndSnapshots,
   sameTurnFolds,
   summarizeDiffStats,
+  stripInlineMarkdown,
   summarizeInlineText,
   summarizeTurnDetails,
   type ChatTranscriptGroupedEnvelope,
@@ -1208,6 +1209,39 @@ describe("summarizeInlineText", () => {
 
   it("does not truncate text shorter than maxChars", () => {
     expect(summarizeInlineText("short", 100)).toBe("short");
+  });
+
+  it("strips inline Markdown from the collapsed preview", () => {
+    expect(summarizeInlineText("**bold** and `code` and [link](https://x)")).toBe(
+      "bold and code and link",
+    );
+  });
+});
+
+describe("stripInlineMarkdown", () => {
+  it.each([
+    ["**bold**", "bold"],
+    ["__bold__", "bold"],
+    ["*italic*", "italic"],
+    ["_italic_", "italic"],
+    ["`inline code`", "inline code"],
+    ["[label](https://example.com)", "label"],
+    ["![alt](https://example.com/a.png)", "alt"],
+    ["~~struck~~", "struck"],
+    ["- list item", "list item"],
+    ["* list item", "list item"],
+    ["+ list item", "list item"],
+    ["1. ordered item", "ordered item"],
+    ["# heading", "heading"],
+    ["## heading", "heading"],
+    ["> quoted", "quoted"],
+    ["plain text", "plain text"],
+    ["snake_case_name stays", "snake_case_name stays"],
+    ["rm **/*.log", "rm **/*.log"],
+    ["a * b * c", "a * b * c"],
+    ["2 * 3 = 6", "2 * 3 = 6"],
+  ])("strips %j to %j", (input, expected) => {
+    expect(stripInlineMarkdown(input)).toBe(expected);
   });
 });
 

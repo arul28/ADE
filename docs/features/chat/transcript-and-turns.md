@@ -879,6 +879,20 @@ implements a two-layer transform:
    selected provider actually emitted, without synthesizing Claude-style file
    histories for other runtimes.
 
+   **One-line previews strip inline Markdown.** `summarizeInlineText`
+   (`chatTranscriptRows.ts`) collapses whitespace and now also strips the
+   inline punctuation a collapsed preview would otherwise show literally —
+   bold/italic, inline code, Markdown links, strikethrough, and leading
+   heading/quote/list markers — via `stripInlineMarkdown`. It is used by the
+   collapsed work-log entry args, the tool-summary header, the minimap prompt
+   and reply previews, and the voice-call opening line; the expanded render is
+   unchanged. It is a small conservative scanner, not a parser: markers are
+   removed only in pairs and `_`/`*` only at word boundaries, so `snake_case`,
+   a shell glob, and a lone `*` survive. Internal status/delegation
+   normalization uses `normalizeInlineText` (whitespace only) so grouping logic
+   is unaffected. iOS mirrors it in `workStripInlineMarkdown`; the TUI imports
+   the desktop helper directly.
+
 5. **Turn fold (desktop and hosted web; not yet ADE Code or iOS).** Once a
    turn has its `done` row, the rows between
    its user message and its answer fold into one row, so a finished turn reads
