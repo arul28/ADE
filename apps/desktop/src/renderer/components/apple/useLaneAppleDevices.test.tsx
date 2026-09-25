@@ -11,7 +11,7 @@ import {
   laneAppleDeviceLabel,
   useLaneAppleDevices,
 } from "./useLaneAppleDevices";
-import { useAppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
+import { appleLaneDeviceForLane, useAppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
 
 const { platformForTest } = vi.hoisted(() => ({ platformForTest: { mac: true } }));
 vi.mock("../../lib/platform", async (importOriginal) => ({
@@ -254,5 +254,25 @@ describe("useAppleLaneDeviceCard", () => {
       expect(result.current?.state).toBe("running");
       expect(deviceList.mock.calls.length).toBe(readsBefore);
     });
+  });
+});
+
+describe("appleLaneDeviceForLane", () => {
+  const card = {
+    name: "iPhone 17e",
+    state: "off" as const,
+    laneId: "lane-a",
+    udid: "udid-1",
+    origin: "clone" as const,
+  };
+
+  it("returns the card only for its own lane, so device verbs cannot act on a stale one", () => {
+    // The card keeps its last reading while the next lane's read is in flight;
+    // the verbs act on the LANE, so this gate is what stops a lane switch from
+    // booting or deleting the wrong lane's device.
+    expect(appleLaneDeviceForLane(card, "lane-a")).toBe(card);
+    expect(appleLaneDeviceForLane(card, "lane-b")).toBeNull();
+    expect(appleLaneDeviceForLane(null, "lane-a")).toBeNull();
+    expect(appleLaneDeviceForLane(card, null)).toBeNull();
   });
 });

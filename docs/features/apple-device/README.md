@@ -124,6 +124,12 @@ is no separate column.
   web viewer, or a desktop reconnect on a device that is off shows
   "{name} is off." with Start. Only Start, the picker, `apple start`,
   `stream-start`, `open-device` and `launch` power a device on.
+- The **tools card** names the lane's device and its power state
+  (`{name} · Running | Starting | Shut down`) and carries a corner menu that
+  boots, opens, releases, or — for an ADE clone only — deletes the device
+  without opening the pane. Releasing a device with a live session confirms
+  first. The mark beside each lane in the Work session list is green while the
+  device is booted and muted while it is claimed but off.
 
 ## Agent discovery
 
@@ -178,7 +184,9 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds). |
-| `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device. |
+| `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
+| `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |
+| `apps/desktop/src/renderer/components/apple/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the device picker. |
 | `apps/desktop/src/renderer/components/apple/AppleDeviceMiniPlayer.tsx`, `appleMiniPlayerStore.ts` | The floating device player over the chat. |
 | `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |
 | `apps/ade-cli/src/help/appleHelp.ts` | Help text for each `ade apple` subcommand, and the help aliases. |

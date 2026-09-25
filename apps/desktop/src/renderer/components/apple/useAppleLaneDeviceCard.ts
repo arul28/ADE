@@ -125,3 +125,18 @@ export function useAppleLaneDeviceCard(args: {
   if (!card) return null;
   return starting && card.state !== "running" ? { ...card, state: "starting" } : card;
 }
+
+/**
+ * The card only when it belongs to `laneId`, else null.
+ *
+ * The hook keeps its last reading while the next lane's read is in flight, and
+ * the device verbs (`deviceStart`, `deviceDelete`) act on the LANE rather than
+ * a udid — so acting on a card left over from the previous lane would boot or
+ * delete the wrong lane's device. Callers that offer those verbs gate on this.
+ */
+export function appleLaneDeviceForLane(
+  card: AppleLaneDeviceCard | null,
+  laneId: string | null,
+): AppleLaneDeviceCard | null {
+  return card && laneId && card.laneId === laneId ? card : null;
+}

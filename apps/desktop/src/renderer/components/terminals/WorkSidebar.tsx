@@ -31,6 +31,7 @@ import { cn } from "../ui/cn";
 import { WorkToolPicker } from "./WorkToolPicker";
 import { useWorkToolStatuses } from "./useWorkToolStatuses";
 import { AppleToolCardMenu } from "../apple/AppleToolCardMenu";
+import { appleLaneDeviceForLane } from "../apple/useAppleLaneDeviceCard";
 import { useNativeToolFeeds } from "./NativeToolFeedsContext";
 import { isAvailableWorkSidebarTab, workToolContextLabel, workToolLabel } from "./workTools";
 import { WORK_TOOL_COMPONENTS, type WorkToolPanelProps } from "./workToolPanels";
@@ -492,11 +493,12 @@ export function WorkSidebar({
     // acting on it with the newly selected lane would boot or delete that
     // lane's device off the old lane's name. Only the reading FOR this lane
     // may carry the menu.
-    if (!laneId || !appleDevice || appleDevice.laneId !== laneId) return {};
+    const menuDevice = appleLaneDeviceForLane(appleDevice, laneId);
+    if (!laneId || !menuDevice) return {};
     return {
       ios: (
         <AppleToolCardMenu
-          device={appleDevice}
+          device={menuDevice}
           laneId={laneId}
           chatSessionId={panelSessionId}
           runtimePin={runtimePin}
