@@ -53,6 +53,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
+import { getCachedDevinModels, warmDevinModels } from "./devinModelsDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
@@ -1185,6 +1186,19 @@ export function createAiIntegrationService(args: {
         !(descriptor.isCliWrapped && descriptor.family === family)
       );
       if (!hasAuth) continue;
+      if (provider === "devin") {
+        // `devin models list` is the account's real catalog, ahead of the
+        // curated family picks. Serve the cached rows; warm once in the
+        // background when cold so this read never blocks on a subprocess.
+        const discovered = getCachedDevinModels();
+        if (discovered?.length) {
+          mergeDynamicAcpModelDescriptors("devin", discovered);
+        } else {
+          void warmDevinModels().then((rows) => {
+            if (rows.length) mergeDynamicAcpModelDescriptors("devin", rows);
+          });
+        }
+      }
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }

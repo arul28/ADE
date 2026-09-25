@@ -26,6 +26,7 @@ import { settingsRouteFor } from "../settings/settingsManifest";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 import { FleetRow, SectionHeader, isDevinCloudFleetEntryActive } from "./DevinCloudFleetRow";
 
 type FleetFilter = "all" | "active" | "needs_you" | "finished" | "failed";
@@ -709,34 +710,39 @@ export function DevinCloudFleetModal({
           )}
         </div>
 
-        {/* Pulled notice toast */}
+        {/* Pulled notice — the shared floating banner, same as Cursor's pull. */}
         {pulledNotice ? (
           <div
-            role="status"
-            className="absolute bottom-12 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-lg border border-emerald-400/25 bg-[#101a14]/95 px-3.5 py-2 text-[11.5px] text-emerald-100/90 shadow-lg"
+            className="absolute bottom-12 left-1/2 -translate-x-1/2"
+            style={{ width: "max-content", maxWidth: "calc(100% - 32px)" }}
           >
-            {pulledNotice}
-            {pulledTarget ? (
-              <button
-                type="button"
-                disabled={continueBusy}
-                onClick={() => void continueInLane()}
-                className="ml-1 inline-flex items-center gap-1 rounded-md border border-emerald-300/30 px-2 py-0.5 text-[11px] font-medium text-emerald-100/90 transition-colors hover:bg-emerald-300/10 disabled:opacity-50"
-              >
-                {continueBusy ? "Opening…" : "Continue in lane"}
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={() => {
-                setPulledNotice(null);
-                setPulledTarget(null);
+            <Banner
+              layout="floating"
+              model={{
+                id: "devin-cloud-pulled",
+                tone: "success",
+                title: pulledNotice,
+                ...(pulledTarget
+                  ? {
+                      actions: [{
+                        label: "Continue in lane",
+                        variant: "primary",
+                        busy: continueBusy,
+                        disabled: continueBusy,
+                        onClick: () => void continueInLane(),
+                      }],
+                    }
+                  : {}),
+                dismiss: {
+                  onDismiss: () => {
+                    setPulledNotice(null);
+                    setPulledTarget(null);
+                  },
+                  label: "Dismiss",
+                  title: "Dismiss",
+                },
               }}
-              className="ml-1 text-emerald-100/50 hover:text-emerald-100/90"
-              aria-label="Dismiss"
-            >
-              <X size={11} weight="bold" />
-            </button>
+            />
           </div>
         ) : null}
     </Dialog>
