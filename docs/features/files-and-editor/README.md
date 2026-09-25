@@ -239,7 +239,8 @@ Renderer:
   chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the
   pure rule: full-contents diffs set `parseDiffOptions.ignoreWhitespace`,
   and pre-parsed patches drop `-`/`+` pairs equal after `trim()` and
-  recompute their `@@` counts. A file left with no hunks shows a
+  recompute their `@@` counts, advancing each start past any lines dropped
+  before the first retained line. A file left with no hunks shows a
   "whitespace-only changes hidden" state instead of an empty diff.
 - `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`

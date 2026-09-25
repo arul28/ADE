@@ -46,6 +46,14 @@ type FilteredHunk = {
   lines: string[];
   /** Number of addition/deletion lines kept; 0 means the hunk was whitespace-only. */
   changes: number;
+  /**
+   * Old-side lines dropped before the first retained line. The `@@` start is
+   * advanced by this so a surviving change keeps its real gutter line when a
+   * leading whitespace-only pair is removed.
+   */
+  leadingOldDropped: number;
+  /** New-side lines dropped before the first retained line. */
+  leadingNewDropped: number;
 };
 
 /**
@@ -60,10 +68,28 @@ function filterHunkBody(body: string[]): FilteredHunk {
   const out: string[] = [];
   let changes = 0;
   let index = 0;
+  let sawKeptLine = false;
+  let leadingOldDropped = 0;
+  let leadingNewDropped = 0;
+  let pendingOldDropped = 0;
+  let pendingNewDropped = 0;
+  const dropLine = (side: "old" | "new"): void => {
+    if (sawKeptLine) return;
+    if (side === "old") pendingOldDropped += 1;
+    else pendingNewDropped += 1;
+  };
+  const emit = (line: string): void => {
+    if (!sawKeptLine) {
+      sawKeptLine = true;
+      leadingOldDropped = pendingOldDropped;
+      leadingNewDropped = pendingNewDropped;
+    }
+    out.push(line);
+  };
   while (index < body.length) {
     const line = body[index]!;
     if (!isChangeLine(line)) {
-      out.push(line);
+      emit(line);
       index += 1;
       continue;
     }
@@ -93,31 +119,35 @@ function filterHunkBody(body: string[]): FilteredHunk {
       const deletionText = deletions[pair]!.slice(1);
       const additionText = additions[pair]!.slice(1);
       if (normalizeLineForWhitespaceCompare(deletionText) === normalizeLineForWhitespaceCompare(additionText)) {
+        dropLine("old");
+        dropLine("new");
         continue;
       }
-      out.push(deletions[pair]!);
-      if (deletionMarkers[pair]) out.push(deletionMarkers[pair]!);
-      out.push(additions[pair]!);
-      if (additionMarkers[pair]) out.push(additionMarkers[pair]!);
+      emit(deletions[pair]!);
+      if (deletionMarkers[pair]) emit(deletionMarkers[pair]!);
+      emit(additions[pair]!);
+      if (additionMarkers[pair]) emit(additionMarkers[pair]!);
       changes += 1;
     }
     for (let leftover = paired; leftover < deletions.length; leftover += 1) {
-      out.push(deletions[leftover]!);
-      if (deletionMarkers[leftover]) out.push(deletionMarkers[leftover]!);
+      emit(deletions[leftover]!);
+      if (deletionMarkers[leftover]) emit(deletionMarkers[leftover]!);
       changes += 1;
     }
     for (let leftover = paired; leftover < additions.length; leftover += 1) {
-      out.push(additions[leftover]!);
-      if (additionMarkers[leftover]) out.push(additionMarkers[leftover]!);
+      emit(additions[leftover]!);
+      if (additionMarkers[leftover]) emit(additionMarkers[leftover]!);
       changes += 1;
     }
   }
-  return { lines: out, changes };
+  return { lines: out, changes, leadingOldDropped, leadingNewDropped };
 }
 
-function rebuildHunkHeader(original: string, lines: string[]): string {
+function rebuildHunkHeader(original: string, lines: string[], leadingOldDropped = 0, leadingNewDropped = 0): string {
   const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(original);
   if (!match) return original;
+  const oldStart = Number(match[1]) + leadingOldDropped;
+  const newStart = Number(match[2]) + leadingNewDropped;
   let oldCount = 0;
   let newCount = 0;
   for (const line of lines) {
@@ -129,7 +159,7 @@ function rebuildHunkHeader(original: string, lines: string[]): string {
       newCount += 1;
     }
   }
-  return `@@ -${match[1]},${oldCount} +${match[2]},${newCount} @@${match[3] ?? ""}`;
+  return `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${match[3] ?? ""}`;
 }
 
 export type WhitespaceFilteredPatch = {
@@ -172,7 +202,7 @@ export function stripWhitespaceOnlyPatchChanges(patchText: string): WhitespaceFi
     }
     const filtered = filterHunkBody(lines.slice(index + 1, end));
     if (filtered.changes > 0) {
-      out.push(rebuildHunkHeader(line, filtered.lines));
+      out.push(rebuildHunkHeader(line, filtered.lines, filtered.leadingOldDropped, filtered.leadingNewDropped));
       out.push(...filtered.lines);
       sawKeptHunk = true;
     }
@@ -183,5 +213,3 @@ export function stripWhitespaceOnlyPatchChanges(patchText: string): WhitespaceFi
   }
   return { patch: "", whitespaceOnly: true };
 }
-
-export const _testing = { filterHunkBody, rebuildHunkHeader };

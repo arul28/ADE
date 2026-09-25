@@ -100,4 +100,21 @@ describe("stripWhitespaceOnlyPatchChanges", () => {
     expect(result.whitespaceOnly).toBe(false);
     expect(result.patch).toBe(patch);
   });
+
+  it("advances the hunk start past leading dropped whitespace-only lines", () => {
+    // The first change pair (trailing space) is whitespace-only and the hunk has
+    // no leading context, so the surviving change is really on line 2, not line 1.
+    const patch = `${header}
+@@ -1,2 +1,2 @@
+-const a = 1;
++const a = 1; 
+-const b = 2;
++const b = 3;`;
+    const result = stripWhitespaceOnlyPatchChanges(patch);
+    expect(result.whitespaceOnly).toBe(false);
+    expect(result.patch).toBe(`${header}
+@@ -2,1 +2,1 @@
+-const b = 2;
++const b = 3;`);
+  });
 });
