@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import {
   localArtifactMediaUrl,
@@ -131,11 +131,12 @@ const EMPTY_PREVIEW: PreviewState = {
   failure: null,
 };
 
-export function useArtifactPreview(
+/** `E` is the element the caller attaches `containerRef` to; a tile uses a div, an inline citation a span. */
+export function useArtifactPreview<E extends HTMLElement = HTMLDivElement>(
   artifact: ComputerUseArtifactView,
   allowLocalArtifactProtocol: boolean,
 ): {
-  containerRef: React.RefObject<HTMLDivElement>;
+  containerRef: RefObject<E>;
   preview: string | null;
   loading: boolean;
   failed: boolean;
@@ -143,7 +144,7 @@ export function useArtifactPreview(
   onMediaError: () => void;
 } {
   const scope = useChatRuntimeScope();
-  const containerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<E>(null);
   const [visible, setVisible] = useState(false);
   const [state, setState] = useState<PreviewState>(EMPTY_PREVIEW);
   // Set once a stream failed, so the retry takes the data URL read.

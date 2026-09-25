@@ -8277,6 +8277,9 @@ const adeBridge = {
         });
       return computerUseMediaBaseUrl;
     },
+    /** Saves a proof video from the media server; main shows the save dialog. */
+    saveMediaAs: (args: { url: string; fileName?: string }): Promise<{ saved: boolean; path?: string }> =>
+      ipcRenderer.invoke(IPC.computerUseSaveMediaAs, args),
     onEvent: subscribeComputerUseEvents,
   },
   iosSimulator: {

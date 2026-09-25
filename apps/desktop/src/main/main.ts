@@ -1402,6 +1402,33 @@ app.whenReady().then(async () => {
     onRefused: logArtifactServeRefusal,
   });
   ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
+  // Saves a proof video that plays from the media server. The renderer cannot
+  // read that server (a different origin with no CORS) and the whole-file
+  // preview read stops at 10 MB, so main asks where to save and streams the
+  // file there. Only URLs on this app's own media server are accepted.
+  ipcMain.handle(
+    IPC.computerUseSaveMediaAs,
+    async (event, arg: { url?: unknown; fileName?: unknown }): Promise<{ saved: boolean; path?: string }> => {
+      const url = typeof arg?.url === "string" ? arg.url : "";
+      const base = await artifactMediaServer.baseUrl();
+      if (!url || !url.startsWith(base.replace(/\/+$/, "") + "/")) {
+        throw new Error("Only proof media from ADE's media server can be saved this way.");
+      }
+      const fileName = typeof arg?.fileName === "string" && arg.fileName.trim()
+        ? path.basename(arg.fileName.trim())
+        : "ade-proof.mp4";
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options = { title: "Save proof", defaultPath: path.join(app.getPath("downloads"), fileName) };
+      const choice = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+      if (choice.canceled || !choice.filePath) return { saved: false };
+      const response = await fetch(url);
+      if (!response.ok || !response.body) throw new Error(`The media server answered ${response.status}.`);
+      const { Readable } = await import("node:stream");
+      const { pipeline } = await import("node:stream/promises");
+      await pipeline(Readable.fromWeb(response.body as import("node:stream/web").ReadableStream), fs.createWriteStream(choice.filePath));
+      return { saved: true, path: choice.filePath };
+    },
+  );
   app.on("will-quit", () => {
     void artifactMediaServer.close();
   });

@@ -121,7 +121,7 @@ function CitedProofMedia({
   compact?: boolean;
 }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
-  const { containerRef, preview, loading, failed, explanation, onMediaError } = useArtifactPreview(
+  const { containerRef, preview, loading, failed, explanation, onMediaError } = useArtifactPreview<HTMLSpanElement>(
     artifact,
     allowLocalArtifactProtocol,
   );
@@ -136,7 +136,7 @@ function CitedProofMedia({
 
   return (
     <span
-      ref={containerRef as unknown as React.RefObject<HTMLSpanElement>}
+      ref={containerRef}
       data-proof-citation={artifact.id}
       className="block min-w-0"
     >

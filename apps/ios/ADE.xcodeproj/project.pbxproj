@@ -145,6 +145,8 @@
 		E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F04 /* WorkContextUsageViews.swift */; };
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
 		E200000000000000000000B2 /* WorkProofSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B2 /* WorkProofSheet.swift */; };
+		E200000000000000000000B9 /* WorkProofDrawerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B9 /* WorkProofDrawerModel.swift */; };
+		E200000000000000000000B8 /* WorkProofCitation.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B8 /* WorkProofCitation.swift */; };
 		E200000000000000000000B3 /* MacDesktopLiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B3 /* MacDesktopLiveView.swift */; };
 		E2000000000000000000AC01 /* AppControlLiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AC01 /* AppControlLiveView.swift */; };
 		E200000000000000000000B4 /* MacDesktopViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B4 /* MacDesktopViewer.swift */; };
@@ -515,6 +517,8 @@
 		D10000000000000000000F04 /* WorkContextUsageViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkContextUsageViews.swift; path = ADE/Views/Work/WorkContextUsageViews.swift; sourceTree = "<group>"; };
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
 		D200000000000000000000B2 /* WorkProofSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofSheet.swift; path = ADE/Views/Work/WorkProofSheet.swift; sourceTree = "<group>"; };
+		D200000000000000000000B9 /* WorkProofDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofDrawerModel.swift; path = ADE/Views/Work/WorkProofDrawerModel.swift; sourceTree = "<group>"; };
+		D200000000000000000000B8 /* WorkProofCitation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofCitation.swift; path = ADE/Views/Work/WorkProofCitation.swift; sourceTree = "<group>"; };
 		D200000000000000000000B3 /* MacDesktopLiveView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopLiveView.swift; path = ADE/Views/Work/MacDesktopLiveView.swift; sourceTree = "<group>"; };
 		D2000000000000000000AC01 /* AppControlLiveView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppControlLiveView.swift; path = ADE/Views/Work/AppControlLiveView.swift; sourceTree = "<group>"; };
 		D200000000000000000000B4 /* MacDesktopViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopViewer.swift; path = ADE/Views/Work/MacDesktopViewer.swift; sourceTree = "<group>"; };
@@ -1100,6 +1104,8 @@
 				D10000000000000000000F04 /* WorkContextUsageViews.swift */,
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
 				D200000000000000000000B2 /* WorkProofSheet.swift */,
+				D200000000000000000000B9 /* WorkProofDrawerModel.swift */,
+				D200000000000000000000B8 /* WorkProofCitation.swift */,
 				D200000000000000000000B3 /* MacDesktopLiveView.swift */,
 				D2000000000000000000AC01 /* AppControlLiveView.swift */,
 				D200000000000000000000B4 /* MacDesktopViewer.swift */,
@@ -1935,6 +1941,8 @@
 				E10000000000000000000F04 /* WorkContextUsageViews.swift in Sources */,
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
 				E200000000000000000000B2 /* WorkProofSheet.swift in Sources */,
+				E200000000000000000000B9 /* WorkProofDrawerModel.swift in Sources */,
+				E200000000000000000000B8 /* WorkProofCitation.swift in Sources */,
 				E200000000000000000000B3 /* MacDesktopLiveView.swift in Sources */,
 				E2000000000000000000AC01 /* AppControlLiveView.swift in Sources */,
 				E200000000000000000000B4 /* MacDesktopViewer.swift in Sources */,

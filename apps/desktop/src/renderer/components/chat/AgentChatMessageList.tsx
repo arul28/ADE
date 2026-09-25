@@ -284,6 +284,12 @@ import {
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 const EMPTY_CITED_PROOF_IDS: ReadonlySet<string> = new Set();
+
+/** Cited proof ids in one turn's answer text; cheap for a turn with none. */
+function turnCitedProofIds(text: string): string[] {
+  if (!text.includes("ade-proof") && !text.includes(PROOF_COMPARE_FENCE_LANGUAGE)) return [];
+  return citedProofArtifactIds(text);
+}
 const EMPTY_WORK_LOG_ENTRIES: ChatWorkLogEntry[] = [];
 
 const NAVIGATION_SURFACES = new Set(["work", "lanes", "cto"]);
@@ -6379,18 +6385,38 @@ function AgentChatMessageListMain({
   /**
    * Proof an answer already shows inline. The turn's "N proof" chip and the
    * inline filmstrip skip it, so a picture never shows twice in one thread.
-   * Text streams in pieces; joining it first keeps a split citation whole.
+   *
+   * Text streams in pieces, so each turn's pieces are joined before reading
+   * citations, which keeps a split citation whole. Per turn, the result is
+   * kept with the turn's text size and piece count: a streaming delta only
+   * grows the live turn, so only that turn is joined and read again.
    */
+  const citedIdsByTurnRef = useRef(new Map<string, { pieces: number; chars: number; ids: string[] }>());
   const answerCitedProofIds = useMemo(() => {
     if (!proofArtifacts.length) return EMPTY_CITED_PROOF_IDS;
-    let answerText = "";
+    const piecesByTurn = new Map<string, string[]>();
     for (const envelope of events) {
-      if (envelope.event.type === "text") answerText += envelope.event.text;
+      if (envelope.event.type !== "text") continue;
+      const key = envelope.event.turnId ?? "";
+      const pieces = piecesByTurn.get(key);
+      if (pieces) pieces.push(envelope.event.text);
+      else piecesByTurn.set(key, [envelope.event.text]);
     }
-    if (!answerText.includes("ade-proof") && !answerText.includes(PROOF_COMPARE_FENCE_LANGUAGE)) {
-      return EMPTY_CITED_PROOF_IDS;
+    const previous = citedIdsByTurnRef.current;
+    const next = new Map<string, { pieces: number; chars: number; ids: string[] }>();
+    const cited = new Set<string>();
+    for (const [key, pieces] of piecesByTurn) {
+      let chars = 0;
+      for (const piece of pieces) chars += piece.length;
+      const cachedTurn = previous.get(key);
+      const entry = cachedTurn && cachedTurn.pieces === pieces.length && cachedTurn.chars === chars
+        ? cachedTurn
+        : { pieces: pieces.length, chars, ids: turnCitedProofIds(pieces.join("")) };
+      next.set(key, entry);
+      for (const id of entry.ids) cited.add(id);
     }
-    return new Set(citedProofArtifactIds(answerText));
+    citedIdsByTurnRef.current = next;
+    return cited.size ? cited : EMPTY_CITED_PROOF_IDS;
   }, [events, proofArtifacts.length]);
 
   const turnProofTimeline = useMemo(() => {

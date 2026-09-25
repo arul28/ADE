@@ -23,7 +23,8 @@ const SECTION_FLOOR_PX = 160;
 /**
  * One region per section. The region is as tall as its content until the
  * drawer is full; then the regions share the height and each one scrolls
- * inside. The drawer itself never scrolls.
+ * inside. The drawer itself scrolls only when even every section's floor
+ * does not fit, so a section is never cut off out of reach.
  *
  * Flexbox does the sharing: every region shrinks from its natural height in
  * proportion to it, so a long section gives up the most. The floor stops a
@@ -33,17 +34,19 @@ const SECTION_FLOOR_PX = 160;
  */
 function DrawerSectionRegion({
   children,
+  hidden,
   divided,
   onEmptyChange,
 }: {
   children: ReactNode;
+  /** The section rendered nothing; the drawer decides, from `onEmptyChange`. */
+  hidden: boolean;
   /** Draw the divider above: this is not the first section with content. */
   divided: boolean;
   onEmptyChange: (empty: boolean) => void;
 }) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const [floor, setFloor] = useState(0);
-  const [empty, setEmpty] = useState(false);
   const onEmptyChangeRef = useRef(onEmptyChange);
   onEmptyChangeRef.current = onEmptyChange;
   useLayoutEffect(() => {
@@ -51,9 +54,7 @@ function DrawerSectionRegion({
     if (!node) return;
     const measure = () => {
       // A section component that renders null leaves this wrapper empty.
-      const nextEmpty = node.childElementCount === 0;
-      setEmpty(nextEmpty);
-      onEmptyChangeRef.current(nextEmpty);
+      onEmptyChangeRef.current(node.childElementCount === 0);
       setFloor(Math.min(node.offsetHeight, SECTION_FLOOR_PX));
     };
     measure();
@@ -72,7 +73,7 @@ function DrawerSectionRegion({
       data-testid="chat-actions-drawer-region"
       className={cn(
         "flex min-h-0 shrink flex-col",
-        empty && "hidden",
+        hidden && "hidden",
         divided && "border-t border-white/[0.06]",
       )}
       style={{ flexBasis: "auto", minHeight: floor }}
@@ -114,11 +115,15 @@ export function ChatActionsDrawerPanel({
   const firstShownKey = shown[0]?.key ?? null;
   return (
     <div className="flex h-full min-h-0 flex-col bg-transparent">
-      <div data-testid="chat-actions-drawer-scroll" className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* Sections shrink before this scrolls: it moves only when even their
+          smallest heights do not fit (a short pane), so no section is ever cut
+          off out of reach. */}
+      <div data-testid="chat-actions-drawer-scroll" className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
         <div data-testid="chat-actions-drawer-sections" className="flex min-h-0 flex-1 flex-col">
           {present.map((section) => (
             <DrawerSectionRegion
               key={section.key}
+              hidden={emptyKeys.has(section.key)}
               divided={!emptyKeys.has(section.key) && section.key !== firstShownKey}
               onEmptyChange={(empty) => setSectionEmpty(section.key, empty)}
             >

@@ -2392,6 +2392,8 @@ declare global {
         ) => Promise<string | null>;
         /** `http://127.0.0.1:<port>/<token>` for proof videos, or null when main has none. */
         mediaBaseUrl: () => Promise<string | null>;
+        /** Desktop only; absent in the web client. */
+        saveMediaAs?: (args: { url: string; fileName?: string }) => Promise<{ saved: boolean; path?: string }>;
         onEvent: (
           cb: (ev: ComputerUseEventPayload) => void,
           pin?: OpenProjectBinding | null,
