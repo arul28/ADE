@@ -63,6 +63,8 @@ export type MockAcpAgent = {
   callClient<TResult = unknown>(method: string, params: unknown): Promise<TResult>;
   /** Write raw text to stdout. Used for malformed-frame tests. */
   writeRaw(text: string): void;
+  /** Write text to stderr, the way a CLI prints its own diagnosis. */
+  writeStderr(text: string): void;
   /** End the process with a code. */
   exit(code: number): void;
   /** Resolves after the agent has seen a request for `method`. */
@@ -128,6 +130,9 @@ export function createMockAcpAgent(options: MockAcpAgentOptions = {}): MockAcpAg
       }),
     writeRaw: (text) => {
       child.stdout.write(text);
+    },
+    writeStderr: (text) => {
+      child.stderr.write(text);
     },
     exit: (code) => {
       if (child.exitCode !== null) return;

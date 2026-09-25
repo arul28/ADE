@@ -946,6 +946,7 @@ import {
   ensureQwenAdeSkillDefaultsFile,
   openAcpSession,
   pendingPermissionToInputRequest,
+  readAcpStderrTailFromError,
   setAcpReasoningEffort,
   textPromptBlock,
   type AcpDialect,
@@ -4367,6 +4368,13 @@ type ManagedChatSession = {
    * persisted flag so the line stays once per chat across a runtime restart.
    */
   acpSupervisionNoticeShown?: boolean;
+  /**
+   * The last ACP agent process's captured stderr tail, kept so the next failed
+   * turn's card can lead with the line that actually explains it instead of the
+   * generic "closed session". In memory only; cleared when a runtime is created
+   * so a stale tail can never headline a later, unrelated failure.
+   */
+  acpLastExitStderrTail?: string;
 };
 
 type HandoffArtifacts = {
@@ -29141,7 +29149,18 @@ export function createAgentChatService(args: {
           adoptRuntimeSessionTitle(managed, info.title, "acp_session_info");
         },
         onProcessExit: (runtime, detail) => {
-          if (!runtime || managed.runtime !== runtime) return;
+          // A null runtime means the process died during open, before the
+          // coordinator could construct one — a startup crash is exactly when
+          // stderr is the only diagnosis, so capture it there too. A runtime
+          // that is no longer this chat's is a teardown and must be ignored.
+          const isCurrentRuntime = runtime !== null && managed.runtime === runtime;
+          if ((runtime === null || isCurrentRuntime) && detail.stderrTail.trim()) {
+            // Keep the agent's own last words for the failure card. The turn's
+            // throw only says "connection closed"; this is the line that names
+            // a bad flag, a missing config, or an unrunnable model.
+            managed.acpLastExitStderrTail = detail.stderrTail;
+          }
+          if (!isCurrentRuntime || !runtime) return;
           runtime.processFailed = true;
           runtime.interrupted = true;
           managed.runtimeInvalidated = true;
@@ -29161,6 +29180,9 @@ export function createAgentChatService(args: {
           managed.acpReasoningEffortInvalidated = false;
           managed.seededAcpSessionId = runtime.session.sessionId;
           managed.session.acpPermissionMode = permissionMode;
+          // A live runtime means the previous exit's stderr no longer explains
+          // this chat; drop it so it cannot headline a later failure.
+          managed.acpLastExitStderrTail = undefined;
         },
         onRuntimeSetupFailed: (runtime) => {
           if (managed.runtime !== runtime) return;
@@ -29187,6 +29209,35 @@ export function createAgentChatService(args: {
     return runtime;
   };
 
+  /**
+   * Emit the one visible failure for an ACP turn. When the agent process left a
+   * stderr tail, the card leads with its last meaningful line and keeps the
+   * full sanitized tail behind Copy; with no tail it stays the generic error,
+   * so a non-process failure is never decorated with invented text.
+   */
+  const emitAcpTurnFailure = (
+    managed: ManagedChatSession,
+    turnId: string,
+    message: string,
+    stderrTailOverride?: string | null,
+  ): void => {
+    const stderrTail = (stderrTailOverride ?? managed.acpLastExitStderrTail)?.trim() || null;
+    if (!stderrTail) {
+      emitChatEvent(managed, { type: "error", message, turnId });
+      return;
+    }
+    const provider = managed.session.provider;
+    const providerLabel = providerDisplayLabel(provider, String(provider));
+    const presented = presentChatFailure({ kind: "unknown", message, provider: providerLabel, stderrTail });
+    emitChatEvent(managed, {
+      type: "error",
+      message: presented.body,
+      ...(presented.technicalDetail ? { detail: presented.technicalDetail } : {}),
+      turnId,
+      errorInfo: { category: "unknown", provider: providerLabel, presentation: presented },
+    });
+  };
+
   const runAcpTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -29211,6 +29262,9 @@ export function createAgentChatService(args: {
       model: managed.session.model,
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
     };
+    // A tail from an earlier attempt must never headline this turn's failure.
+    // Anything captured below belongs to this attempt and is used immediately.
+    managed.acpLastExitStderrTail = undefined;
 
     let runtime: AcpRuntime;
     try {
@@ -29224,7 +29278,14 @@ export function createAgentChatService(args: {
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
       reportProviderRuntimeFailure(provider, message);
-      emitChatEvent(managed, { type: "error", message, turnId });
+      // A crash before the runtime existed (during the handshake) never fires
+      // onProcessExit, so the pool's rethrow is the only carrier of stderr.
+      emitAcpTurnFailure(
+        managed,
+        turnId,
+        message,
+        managed.acpLastExitStderrTail ?? readAcpStderrTailFromError(error),
+      );
       emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
       appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });
@@ -29330,7 +29391,7 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "done", turnId, status: "interrupted", ...doneModel });
       } else {
         reportProviderRuntimeFailure(provider, message);
-        emitChatEvent(managed, { type: "error", message, turnId });
+        emitAcpTurnFailure(managed, turnId, message);
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
         appendCtoTurnJournal(managed, { failureNote: `Turn failed: ${message}` });

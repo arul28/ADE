@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  ACP_STDERR_TAIL_LIMIT,
   isSandboxUnsupportedFailureText,
   presentChatFailure,
   readChatErrorPresentation,
+  sanitizeAcpStderrTail,
+  summarizeAcpStderrTail,
 } from "./chatErrorPresentation";
 
 describe("presentChatFailure", () => {
@@ -109,6 +112,136 @@ describe("presentChatFailure", () => {
     expect(presented.title).toBe("Usage limit reached");
     expect(presented.body).toBe("Cursor rate limited this request.");
     expect(presented.technicalDetail).toBe("rate_limited");
+  });
+});
+
+describe("summarizeAcpStderrTail", () => {
+  it("returns nothing for empty or noise-only tails", () => {
+    expect(summarizeAcpStderrTail("")).toEqual({ headline: null, technicalDetail: null });
+    expect(summarizeAcpStderrTail(null)).toEqual({ headline: null, technicalDetail: null });
+    expect(summarizeAcpStderrTail("   \n\n")).toEqual({ headline: null, technicalDetail: null });
+    expect(summarizeAcpStderrTail("----------\n==========").headline).toBeNull();
+  });
+
+  it("headlines the error line and skips the stack frames under it", () => {
+    const tail = [
+      "Error: Cannot find module 'foo'",
+      "    at Module._resolveFilename (node:internal/modules/cjs/loader:1234)",
+      "    at Module._load (node:internal/modules/cjs/loader:567)",
+    ].join("\n");
+    const summary = summarizeAcpStderrTail(tail);
+    expect(summary.headline).toBe("Error: Cannot find module 'foo'");
+    // The full tail stays available for Copy, frames included.
+    expect(summary.technicalDetail).toContain("at Module._resolveFilename");
+  });
+
+  it("strips ANSI escapes and normalizes CRLF before showing text", () => {
+    const tail = "\u001b[31munknown model 'gpt-x'\u001b[0m\r\ntry again\r\n";
+    const summary = summarizeAcpStderrTail(tail);
+    expect(summary.headline).toContain("try again");
+    expect(summary.headline).toContain("unknown model 'gpt-x'");
+    expect(summary.technicalDetail).not.toContain("\u001b");
+    expect(summary.technicalDetail).not.toContain("\r");
+  });
+
+  it("redacts token-shaped values so the copy button cannot leak a credential", () => {
+    // Assembled at runtime on purpose: a literal here would be a
+    // secret-shaped string in source and would trip the CI secret scanner,
+    // while the assembled value still exercises each redaction rule.
+    const syntheticJwt = [
+      "eyJ" + "hbGciOiJIUzI1NiJ9",
+      "eyJ" + "zdWIiOiIxIn0",
+      "abcdefghij",
+    ].join(".");
+    const tail = [
+      "config error: unknown model",
+      "sk-" + "liveFixture000",
+      "api_key: placeholder",
+      "Authorization: Bearer " + syntheticJwt,
+      "failed to start",
+    ].join("\n");
+    const summary = summarizeAcpStderrTail(tail);
+    const shown = summary.technicalDetail ?? "";
+    expect(summary.headline).toContain("failed to start");
+    expect(shown).not.toContain(syntheticJwt);
+    expect(shown).not.toContain("liveFixture000");
+    expect(shown).not.toContain("placeholder");
+    expect(shown).toContain("[redacted]");
+    expect(shown).toContain("failed to start");
+  });
+
+  it("bounds a very long line and the whole tail", () => {
+    const longLine = `error: ${"x".repeat(5_000)}`;
+    const bounded = sanitizeAcpStderrTail(longLine);
+    expect(bounded.length).toBeLessThanOrEqual(ACP_STDERR_TAIL_LIMIT);
+    const headline = summarizeAcpStderrTail(longLine).headline ?? "";
+    expect(headline.length).toBeLessThanOrEqual(401);
+    expect(headline.endsWith("…")).toBe(true);
+  });
+
+  it("redacts keyword-labelled values and opaque mixed-case tokens", () => {
+    // Assembled at runtime so the source holds no secret-shaped literal. The
+    // opaque token has digits, lower and upper case — the signature of a key.
+    const opaque = "Aa1".repeat(12);
+    const keywordTail = [
+      "authorization: " + opaque,
+      "diagnostic id 550e8400-e29b-41d4-a716-446655440000",
+      "failed to start",
+    ].join("\n");
+    const summary = summarizeAcpStderrTail(keywordTail);
+    const shown = summary.technicalDetail ?? "";
+    expect(shown).not.toContain(opaque);
+    // A lowercase UUID is an identifier worth keeping, not a credential.
+    expect(shown).toContain("550e8400-e29b-41d4-a716-446655440000");
+    expect(shown).toContain("failed to start");
+  });
+
+  it("stays inside the cap even when redaction replaces many short tokens", () => {
+    // Redacting `token=a` to `token=[redacted]` can grow the text, so the cap
+    // must be re-applied after redaction, not only before it.
+    const tail = "token=a ".repeat(2_000);
+    const cleaned = sanitizeAcpStderrTail(tail);
+    expect(cleaned.length).toBeLessThanOrEqual(ACP_STDERR_TAIL_LIMIT);
+    expect(cleaned).toContain("[redacted]");
+  });
+
+  it("keeps the newest bytes when the tail exceeds the capture cap", () => {
+    const tail = `oldest-line\n${"y".repeat(5_000)}\nnewest-line`;
+    const cleaned = sanitizeAcpStderrTail(tail);
+    expect(cleaned).toContain("newest-line");
+    expect(cleaned).not.toContain("oldest-line");
+  });
+});
+
+describe("presentChatFailure with an ACP stderr tail", () => {
+  const tail = [
+    "cursor-agent: error: unknown model 'gpt-x'",
+    "supported models: auto, sonnet",
+  ].join("\n");
+
+  it("leads with the last meaningful stderr line and keeps the tail behind Copy", () => {
+    const presented = presentChatFailure({
+      kind: "unknown",
+      message: "ACP connection closed: cursor exited (code 1, signal none)",
+      provider: "cursor",
+      stderrTail: tail,
+    });
+    expect(presented.body).toContain("unknown model 'gpt-x'");
+    expect(presented.body).toContain("supported models: auto, sonnet");
+    expect(presented.body).not.toContain("ACP connection closed");
+    expect(presented.technicalDetail).toContain("cursor-agent: error: unknown model");
+    expect(presented.technicalDetail).toContain("supported models: auto, sonnet");
+  });
+
+  it("falls back to the existing generic copy when the tail is empty", () => {
+    const presented = presentChatFailure({
+      kind: "unknown",
+      message: "ACP connection closed: cursor exited (code 1, signal none)",
+      provider: "cursor",
+      stderrTail: "   ",
+    });
+    expect(presented.body).toContain("ACP connection closed");
+    expect(presented.technicalDetail).toBeUndefined();
   });
 });
 

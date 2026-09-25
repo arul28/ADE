@@ -27,6 +27,119 @@ export type ChatErrorPresentationKind =
 
 const TITLE_COULDNT_START = "Couldn't start this turn";
 
+/** Matches the ACP host's capture cap, so a card can never show more than was kept. */
+export const ACP_STDERR_TAIL_LIMIT = 4_000;
+const ACP_STDERR_HEADLINE_MAX_LINES = 2;
+const ACP_STDERR_HEADLINE_LINE_LIMIT = 400;
+
+// Terminal control sequences an agent CLI writes to stderr. Stripped before any
+// of the text is shown or copied: a raw ANSI escape in a card is noise, and a
+// `\r`-driven progress redraw would otherwise collapse into one unreadable line.
+const ACP_ANSI_CSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
+const ACP_ANSI_OSC = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const ACP_ANSI_SIMPLE = /\x1b[@-Z\\-_]/g;
+// Keep `\n` and `\t`; drop every other C0/C1 control, including NUL.
+const ACP_CONTROL_CHARS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
+
+// Conservative secret redaction. stderr routinely echoes the argv or config an
+// agent was handed, so a token can land in the tail verbatim; because the tail
+// is persisted in the transcript and synced to every client, the card and its
+// Copy button must never be a way to lift a credential out of ADE.
+const ACP_SECRET_RULES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\b(bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]"],
+  [
+    /\b(api[_-]?key|apikey|api[_-]?secret|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|client[_-]?secret|private[_-]?key|password|passwd|passphrase|secret|token|authorization|cookie|set-cookie|x-api-key|signature)\b(\s*[:=]\s*)(["']?)[^\s"',;]+/gi,
+    "$1$2$3[redacted]",
+  ],
+  [/\b(sk-[A-Za-z0-9_-]{6,}|ghp_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|xox[baprs]-[A-Za-z0-9-]{6,}|AKIA[0-9A-Z]{16})\b/g, "[redacted]"],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}/g, "[redacted]"],
+];
+
+// An opaque token longer than a base64 run: mixed case plus digits is the
+// signature of a key, token, or hash that no keyword or prefix rule named. An
+// all-lowercase run (a UUID, a hex digest) is an identifier, not a credential,
+// so it is kept for diagnosis. `/` is excluded so a long path or URL is not
+// swallowed as if it were a token.
+const ACP_OPAQUE_TOKEN = /[A-Za-z0-9+=_-]{32,}/g;
+
+function redactOpaqueTokens(text: string): string {
+  return text.replace(ACP_OPAQUE_TOKEN, (run) => (
+    /[0-9]/.test(run) && /[a-z]/.test(run) && /[A-Z]/.test(run) ? "[redacted]" : run
+  ));
+}
+
+/**
+ * Last-line-of-defence cleaning for an agent process's captured stderr. ANSI
+ * escapes and control characters come out, secret-shaped values are redacted,
+ * the whole thing stays inside the host's 4 KB cap, and no single line is
+ * allowed to grow without bound. Returns `""` for input with nothing usable.
+ */
+export function sanitizeAcpStderrTail(tail: string | null | undefined): string {
+  if (typeof tail !== "string" || !tail) return "";
+  let text = tail
+    .replace(/\r\n?/g, "\n")
+    .replace(ACP_ANSI_CSI, "")
+    .replace(ACP_ANSI_OSC, "")
+    .replace(ACP_ANSI_SIMPLE, "")
+    .replace(ACP_CONTROL_CHARS, "");
+  if (text.length > ACP_STDERR_TAIL_LIMIT) text = text.slice(-ACP_STDERR_TAIL_LIMIT);
+  for (const [pattern, replacement] of ACP_SECRET_RULES) text = text.replace(pattern, replacement);
+  text = redactOpaqueTokens(text);
+  // A redaction can be longer than the value it replaces, so re-bound the
+  // result rather than trusting the pre-redaction cap to hold.
+  if (text.length > ACP_STDERR_TAIL_LIMIT) text = text.slice(-ACP_STDERR_TAIL_LIMIT);
+  return text.trim();
+}
+
+/** A line that is only decoration carries no diagnosis at all. */
+function isStderrDecorationLine(line: string): boolean {
+  return /^[=\-_*#~.·•\s]+$/.test(line);
+}
+
+/** A stack frame is real content but never the line that names the failure. */
+function isStderrStackFrameLine(line: string): boolean {
+  return /^at\s/.test(line) || /^\.{3}/.test(line);
+}
+
+function clampStderrHeadlineLine(line: string): string {
+  return line.length > ACP_STDERR_HEADLINE_LINE_LIMIT
+    ? `${line.slice(0, ACP_STDERR_HEADLINE_LINE_LIMIT)}…`
+    : line;
+}
+
+export type AcpStderrSummary = {
+  /** Last meaningful stderr line(s), one line, or null when there are none. */
+  headline: string | null;
+  /** Sanitized, bounded full tail for the technical fold; null when empty. */
+  technicalDetail: string | null;
+};
+
+/**
+ * Turn an ACP stderr tail into card-ready copy. The headline is the last
+ * meaningful line(s) — a trailing stack frame is skipped so a thrown error's
+ * own message survives — and the full sanitized tail rides along for the fold.
+ * Empty or noise-only input yields no headline, which is what keeps the generic
+ * card in place instead of inventing text from nothing.
+ */
+export function summarizeAcpStderrTail(tail: string | null | undefined): AcpStderrSummary {
+  const cleaned = sanitizeAcpStderrTail(tail);
+  if (!cleaned) return { headline: null, technicalDetail: null };
+  const lines = cleaned.split("\n").map((line) => line.trim()).filter((line) => line.length > 0);
+  // Decoration is dropped outright. If nothing but stack frames is left, a
+  // frame still beats an empty card, so fall back to those rather than null.
+  const contentLines = lines.filter((line) => !isStderrDecorationLine(line));
+  const meaningful = contentLines.filter((line) => !isStderrStackFrameLine(line));
+  const headlineSource = meaningful.length ? meaningful : contentLines;
+  const headline = headlineSource
+    .slice(-ACP_STDERR_HEADLINE_MAX_LINES)
+    .map(clampStderrHeadlineLine)
+    .join(" ");
+  return {
+    headline: headline || null,
+    technicalDetail: cleaned,
+  };
+}
+
 /**
  * Card copy for one failure kind. Every call site is provider-agnostic now
  * (Droid, Codex and the ACP dialects all land here), so no sentence may
@@ -151,11 +264,20 @@ export function presentChatFailure(args: {
   detail?: string | null;
   errorCode?: string | null;
   provider?: string | null;
+  /**
+   * A captured agent process stderr tail. Only the failure path that owns the
+   * process passes this, so it is already known to be related to the failure.
+   * When it yields a headline, that headline leads the card (the generic
+   * sentence was hiding the one line that explained the failure) and the full
+   * sanitized tail rides in `technicalDetail` behind Copy.
+   */
+  stderrTail?: string | null;
 }): ChatErrorPresentation {
   const provider = providerCardLabel(args.provider);
   const message = trimText(args.message);
   const detail = trimText(args.detail);
   const errorCode = trimText(args.errorCode);
+  const stderr = summarizeAcpStderrTail(args.stderrTail);
   const technical = uniqueTechnicalLines([
     message && !isFriendlyHostCopy(message) ? message : undefined,
     detail && detail !== message ? detail : undefined,
@@ -165,6 +287,7 @@ export function presentChatFailure(args: {
       && !message?.includes(errorCode)
       ? errorCode
       : undefined,
+    stderr.technicalDetail ?? undefined,
   ]);
   // Sandbox-unsupported text outranks any caller-supplied kind, which is how a
   // provider that reports the failure as a plain error still gets the card.
@@ -178,7 +301,8 @@ export function presentChatFailure(args: {
   const hostBody = kind === "configuration" ? undefined : message;
   return {
     title: copy.title,
-    body: hostBody && isFriendlyHostCopy(hostBody) ? hostBody : copy.fallbackBody,
+    body: stderr.headline
+      ?? (hostBody && isFriendlyHostCopy(hostBody) ? hostBody : copy.fallbackBody),
     nextAction: copy.nextAction,
     ...(technical ? { technicalDetail: technical } : {}),
   };
