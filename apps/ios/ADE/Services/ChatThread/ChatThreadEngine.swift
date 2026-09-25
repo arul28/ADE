@@ -696,7 +696,9 @@ func chatThreadWarmMarkdownCaches<S: Sequence>(_ entries: S) where S.Element == 
       for item in items { _ = markdownAttributedString(item.text, intermediate: intermediate) }
     case .blockquote(let lines):
       for line in lines { _ = markdownAttributedString(line, intermediate: intermediate) }
-    case .table, .code, .rule:
+    case .table, .code, .rule, .proofCitation, .proofCompare:
+      // Proof blocks draw their own artifact views; there is no markdown text
+      // here to pre-render.
       continue
     }
   }
