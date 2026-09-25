@@ -10507,7 +10507,7 @@ function buildProofPlan(args: string[]): CliPlan {
         {
           key: "list",
           method: "ade/actions/call",
-          params: { name: "list_computer_use_artifacts", arguments: { limit: 200 } },
+          params: { name: "list_computer_use_artifacts", arguments: { artifactIds: ids, limit: 200 } },
           unwrapToolResult: true,
         },
         {
@@ -10522,7 +10522,10 @@ function buildProofPlan(args: string[]): CliPlan {
             const byId = new Map(listed.map((artifact) => [asString(artifact.id) ?? "", artifact]));
             const missing = ids.filter((id) => !byId.has(id));
             if (missing.length) {
-              throw new CliToolError(`proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}`, { missing });
+              throw new CliToolError(
+                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or \`ade proof list --text\`.`,
+                { missing },
+              );
             }
             const roots = findProjectRoots(process.cwd());
             const projectRoot = process.env.ADE_PROJECT_ROOT?.trim() || roots.projectRoot;
@@ -11176,6 +11179,8 @@ function buildIosSimulatorPlan(
   }
   if (sub === "proof" || sub === "promote") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const title =
       readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
     const ownerBase = readProofOwnerBase(args);
@@ -11188,7 +11193,7 @@ function buildIosSimulatorPlan(
       kind: "execute",
       label: "iOS simulator proof",
       formatter: "proof-filed",
-      proofFiling: { command: "apple proof", verify: false },
+      proofFiling: { command: "apple proof", verify },
       steps: [
         iosStep("screenshot", "screenshot", screenshotArgs),
         {
@@ -11228,6 +11233,7 @@ function buildIosSimulatorPlan(
             };
           },
         },
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }
@@ -14066,6 +14072,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   if (isBrowserSubcommand(sub, "proof")) {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const title = readValue(args, ["--title", "--name"]) ?? caption ?? "ADE browser proof";
     const ownerBase = readProofOwnerBase(args);
     const includeHar = readFlag(args, ["--har", "--with-har"]);
@@ -14084,7 +14092,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       kind: "execute",
       label: "browser proof",
       formatter: "proof-filed",
-      proofFiling: { command: "browser proof", verify: false },
+      proofFiling: { command: "browser proof", verify },
       steps: [
         actionStep("observation", "built_in_browser", "observe", observeArgs),
         // The HAR rides the same proof: a screenshot says what the page looked
@@ -14147,6 +14155,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             };
           },
         },
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }

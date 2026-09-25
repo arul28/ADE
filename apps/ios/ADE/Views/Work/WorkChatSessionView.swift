@@ -1526,6 +1526,7 @@ struct WorkChatSessionView: View {
   private var proofCitationContext: WorkProofCitationContext {
     WorkProofCitationContext(
       artifactsById: Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+      lookup: { [syncService] id in syncService.fetchComputerUseArtifact(id: id) },
       content: artifactContent,
       load: onLoadArtifact
     )

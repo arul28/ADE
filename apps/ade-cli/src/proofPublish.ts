@@ -42,7 +42,17 @@ export type ProofPublishResult = {
   warnings: string[];
 };
 
+/** How long each `gh` call may run. An upload of up to 100 MB gets the longest. */
+export const GH_TIMEOUTS_MS = { quick: 30_000, upload: 10 * 60_000 } as const;
+
 export class ProofPublishError extends Error {}
+
+/** The reason a `gh` call failed, in one line, including a timeout. */
+function ghFailure(result: ReturnType<typeof spawnSync>, fallback: string): string {
+  const error = result.error as NodeJS.ErrnoException | undefined;
+  if (error?.code === "ETIMEDOUT") return "gh did not finish in time";
+  return String(result.stderr ?? "").trim() || fallback;
+}
 
 function parseVersion(text: string): number[] | null {
   const match = /gh version (\d+)\.(\d+)\.(\d+)/.exec(text);
@@ -60,7 +70,7 @@ function versionAtLeast(version: number[], minimum: readonly number[]): boolean 
 
 /** Refuses with a plain instruction when `gh` is missing or too old for `--attach`. */
 export function assertGhSupportsAttach(run: typeof spawnSync = spawnSync): void {
-  const result = run("gh", ["--version"], { encoding: "utf8" });
+  const result = run("gh", ["--version"], { encoding: "utf8", timeout: GH_TIMEOUTS_MS.quick });
   if (result.error || result.status !== 0) {
     throw new ProofPublishError("GitHub CLI (gh) is not installed. Install gh 2.99.0 or later, then run gh auth login.");
   }
@@ -85,13 +95,24 @@ function markdownCaption(text: string): string {
   return text.replace(/[[\]\r\n]+/g, " ").replace(/\s+/g, " ").trim();
 }
 
-/** The stored file for a proof record, inside the project's artifact store only. */
+/**
+ * The stored file for a proof record, inside the project's artifact store
+ * only. Both sides are resolved through symlinks first: the file goes to
+ * GitHub, so a link inside the store must not reach a file outside it.
+ */
 export function resolveStoredProofFile(projectRoot: string, uri: string): string | null {
   if (!uri || /^[a-z][a-z0-9+.-]*:\/\//i.test(uri)) return null;
-  const artifactsDir = path.resolve(projectRoot, ".ade", "artifacts");
-  const candidate = path.resolve(projectRoot, uri);
-  if (candidate !== artifactsDir && !candidate.startsWith(artifactsDir + path.sep)) return null;
-  return fs.existsSync(candidate) ? candidate : null;
+  let artifactsDir: string;
+  let candidate: string;
+  try {
+    artifactsDir = fs.realpathSync.native(path.resolve(projectRoot, ".ade", "artifacts"));
+    candidate = fs.realpathSync.native(path.resolve(projectRoot, uri));
+  } catch {
+    return null;
+  }
+  const relative = path.relative(artifactsDir, candidate);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+  return fs.statSync(candidate).isFile() ? candidate : null;
 }
 
 /**
@@ -114,10 +135,11 @@ export function publishProofToPullRequest(args: {
   const view = run("gh", ["pr", "view", args.pr, "--json", "url", "--jq", ".url"], {
     encoding: "utf8",
     cwd: args.cwd,
+    timeout: GH_TIMEOUTS_MS.quick,
   });
   const prUrl = String(view.stdout ?? "").trim();
   if (view.status !== 0 || !/\/pull\/\d+$/.test(prUrl)) {
-    throw new ProofPublishError(`gh could not find pull request ${args.pr}: ${String(view.stderr ?? "").trim() || "no URL returned"}`);
+    throw new ProofPublishError(`gh could not find pull request ${args.pr}: ${ghFailure(view, "no URL returned")}`);
   }
 
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-publish-"));
@@ -135,7 +157,13 @@ export function publishProofToPullRequest(args: {
       }
       const source = resolveStoredProofFile(args.projectRoot, artifact.uri);
       if (!source) {
-        skipped.push({ id: artifact.id, reason: "its stored file is missing" });
+        // The list comes from the brain; the file must be on this machine too.
+        // A brain on another machine keeps its proof there, so run the command
+        // on that machine (where its agents run) to post it.
+        skipped.push({
+          id: artifact.id,
+          reason: `its stored file is not on this machine under ${path.join(args.projectRoot, ".ade", "artifacts")}; if the ADE brain runs on another machine, run this command there`,
+        });
         continue;
       }
       const bytes = fs.statSync(source).size;
@@ -169,9 +197,10 @@ export function publishProofToPullRequest(args: {
     const comment = run("gh", ["pr", "comment", prUrl, "--body-file", "body.md", ...attachArgs], {
       encoding: "utf8",
       cwd: staging,
+      timeout: GH_TIMEOUTS_MS.upload,
     });
     if (comment.status !== 0) {
-      throw new ProofPublishError(`gh pr comment failed: ${String(comment.stderr ?? "").trim() || `exit ${comment.status}`}`);
+      throw new ProofPublishError(`gh pr comment failed: ${ghFailure(comment, `exit ${comment.status}`)}`);
     }
     const commentUrl = /https:\/\/\S+#issuecomment-\d+/.exec(String(comment.stdout ?? ""))?.[0] ?? null;
     return { prUrl, commentUrl, posted, skipped, warnings };

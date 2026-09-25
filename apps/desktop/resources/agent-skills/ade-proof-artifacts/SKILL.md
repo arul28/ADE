@@ -26,7 +26,8 @@ claim it proves. Every proof command prints a `cite:` line with the artifact id:
 cite: ![Preferences shows the new key](ade-proof://3f2c9a41-…)
 ```
 
-Paste that line into your final message. A picture shows inline, and a video
+Paste that line into your final message, on a line of its own (not inside a
+sentence or a list item: the phone shows a citation only on its own line). A picture shows inline, and a video
 plays inline, on the desktop, the web client and the phone.
 
 For a before/after, write a `proof-compare` block. The two pictures show side

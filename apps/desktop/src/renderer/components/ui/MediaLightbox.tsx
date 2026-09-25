@@ -25,6 +25,7 @@ export function MediaLightbox({
   title,
   fileName,
   readDataUrl,
+  saveToDisk,
   onMediaError,
   failureText = null,
   onClose,
@@ -36,6 +37,11 @@ export function MediaLightbox({
   /** The saved file's name. Defaults to the title plus an extension. */
   fileName?: string;
   readDataUrl?: () => Promise<string | null>;
+  /**
+   * Saves the media without reading it into the renderer. Download uses it
+   * when given: a proof video can be larger than any whole-file read.
+   */
+  saveToDisk?: () => Promise<void>;
   onMediaError?: () => void;
   /** Set once the media failed to load: shown in its place, with only Close. */
   failureText?: string | null;
@@ -46,6 +52,7 @@ export function MediaLightbox({
   const [busy, setBusy] = useState<"copy" | "download" | null>(null);
   const inlineBytes = /^(data|blob):/i.test(src);
   const canReadBytes = inlineBytes || Boolean(readDataUrl);
+  const canDownload = canReadBytes || Boolean(saveToDisk);
 
   const resolveBytes = useCallback(async (): Promise<string | null> => {
     if (inlineBytes) return src;
@@ -74,6 +81,10 @@ export function MediaLightbox({
   const download = useCallback(async () => {
     setBusy("download");
     try {
+      if (saveToDisk) {
+        await saveToDisk();
+        return;
+      }
       const bytes = await resolveBytes();
       if (!bytes) {
         throw new Error(kind === "video"
@@ -90,7 +101,7 @@ export function MediaLightbox({
     } finally {
       setBusy(null);
     }
-  }, [fileName, kind, resolveBytes, title]);
+  }, [fileName, kind, resolveBytes, saveToDisk, title]);
 
   return (
     <Dialog
@@ -160,7 +171,7 @@ export function MediaLightbox({
               {copied ? <Check size={14} weight="bold" /> : <Copy size={14} />}
             </LightboxTool>
           ) : null}
-          {canReadBytes && !failureText ? (
+          {canDownload && !failureText ? (
             <LightboxTool label="Download" disabled={busy !== null} onClick={() => void download()}>
               <DownloadSimple size={14} />
             </LightboxTool>

@@ -694,6 +694,7 @@ const TOOL_SPECS: ToolSpec[] = [
         ownerId: { type: "string" },
         kind: { type: "string", enum: ["screenshot", "video_recording", "browser_trace", "browser_verification", "console_logs"] },
         limit: { type: "number", minimum: 1, maximum: 200, default: 50 },
+        artifactIds: { type: "array", maxItems: 200, items: { type: "string", minLength: 1 } },
       }
     }
   },
@@ -6476,6 +6477,11 @@ async function runTool(args: {
     ) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "The requested proof owner is not authorized for this caller.");
     }
+    // Named ids are read one by one, so an old item is not lost behind the
+    // newest `limit` (`ade proof publish` posts the items the agent names).
+    const requestedIds = Array.isArray(toolArgs.artifactIds)
+      ? [...new Set(toolArgs.artifactIds.map((entry) => asOptionalTrimmedString(entry)).filter((entry): entry is string => Boolean(entry)))]
+      : [];
     if (!projectWideAuthorized) {
       const limit = Math.max(1, Math.min(200, Math.floor(asNumber(toolArgs.limit, 50))));
       const kind = asOptionalTrimmedString(toolArgs.kind) as any;
@@ -6484,17 +6490,20 @@ async function runTool(args: {
         ? [{ kind: requestedOwnerKind, id: requestedOwnerId }]
         : authorizedOwners;
       for (const owner of owners) {
-        for (const artifact of runtime.computerUseArtifactBrokerService.listArtifacts({
-          ownerKind: owner.kind,
-          ownerId: owner.id,
-          kind,
-          // Proof only. A scene still is the picture a generated view left
-          // behind and is already shown inline in the transcript that drew it;
-          // an agent reading this list is asking what evidence exists.
-          ...PROOF_LISTING_ARTIFACT_FILTER,
-          limit,
-        })) {
-          artifacts.set(artifact.id, artifact);
+        for (const artifactId of requestedIds.length ? requestedIds : [null]) {
+          for (const artifact of runtime.computerUseArtifactBrokerService.listArtifacts({
+            ownerKind: owner.kind,
+            ownerId: owner.id,
+            kind,
+            ...(artifactId ? { artifactId } : {}),
+            // Proof only. A scene still is the picture a generated view left
+            // behind and is already shown inline in the transcript that drew it;
+            // an agent reading this list is asking what evidence exists.
+            ...PROOF_LISTING_ARTIFACT_FILTER,
+            limit,
+          })) {
+            artifacts.set(artifact.id, artifact);
+          }
         }
       }
       return {
@@ -6513,14 +6522,16 @@ async function runTool(args: {
           ? [{ kind: requestedOwnerKind, id: requestedOwnerId }]
           : authorizedOwners.map((owner) => ({ kind: owner.kind, id: owner.id })),
       },
-      artifacts: runtime.computerUseArtifactBrokerService.listArtifacts({
-        ownerKind: requestedOwnerKind as any,
-        ownerId: requestedOwnerId,
-        kind: asOptionalTrimmedString(toolArgs.kind) as any,
-        // Same exclusion as the scoped branch above, for the same reason.
-        ...PROOF_LISTING_ARTIFACT_FILTER,
-        limit: asNumber(toolArgs.limit, 50),
-      }),
+      artifacts: (requestedIds.length ? requestedIds : [null]).flatMap((artifactId) =>
+        runtime.computerUseArtifactBrokerService.listArtifacts({
+          ownerKind: requestedOwnerKind as any,
+          ownerId: requestedOwnerId,
+          kind: asOptionalTrimmedString(toolArgs.kind) as any,
+          ...(artifactId ? { artifactId } : {}),
+          // Same exclusion as the scoped branch above, for the same reason.
+          ...PROOF_LISTING_ARTIFACT_FILTER,
+          limit: asNumber(toolArgs.limit, 50),
+        })),
     };
   }
 

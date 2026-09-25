@@ -13,7 +13,6 @@ import {
 } from "@phosphor-icons/react";
 import React, {
   useCallback,
-  useEffect,
   useMemo,
   useState,
 } from "react";
@@ -78,7 +77,6 @@ function assertArtifactDeletionSucceeded(result: ComputerUseArtifactDeleteResult
  */
 export function ProofProvenanceLines({ artifact, warningClassName }: {
   artifact: ComputerUseArtifactView;
-  className?: string;
   warningClassName: string;
 }) {
   const older = proofRecordedBeforeRequestLine(readProofProvenance(artifact.metadata));
@@ -185,12 +183,25 @@ export function ArtifactLightbox({
     () => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin),
     [artifact.uri, scope.pin],
   );
+  // A video that plays from main's media server is saved by main, which can
+  // stream it whole; the preview read stops at 10 MB.
+  const saveMediaAs = window.ade.computerUse.saveMediaAs;
+  const video = isVideoArtifact(artifact);
+  const saveToDisk = useMemo(() => (
+    video && saveMediaAs && /^https?:\/\/(127\.0\.0\.1|localhost)[:/]/i.test(preview)
+      ? async () => {
+        const extension = artifact.uri.match(/\.[a-z0-9]+$/i)?.[0] ?? ".mp4";
+        await saveMediaAs({ url: preview, fileName: `${artifact.title || "ade-proof"}${extension}` });
+      }
+      : undefined
+  ), [artifact.title, artifact.uri, preview, saveMediaAs, video]);
   return (
     <MediaLightbox
       src={preview}
       kind={isImageArtifact(artifact) ? "image" : "video"}
       title={artifact.description?.trim() || artifact.title}
       readDataUrl={externalArtifactUrl(artifact.uri) ? undefined : readDataUrl}
+      saveToDisk={saveToDisk}
       onMediaError={onMediaError}
       failureText={failed ? failureText : null}
       onClose={onClose}
@@ -251,7 +262,6 @@ export function ChatProofArtifactCard({
           </div>
           <ProofProvenanceLines
             artifact={artifact}
-            className="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-muted-fg/40"
             warningClassName="mt-0.5 font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-amber-200/60"
           />
         </div>
@@ -534,7 +544,6 @@ function DrawerProofTile({
         </div>
         <ProofProvenanceLines
           artifact={artifact}
-          className="font-sans text-[9px] leading-[13px] text-muted-fg/38"
           warningClassName="font-sans text-[9px] leading-[13px] text-amber-200/55"
         />
         {hasPreviewProblem ? (

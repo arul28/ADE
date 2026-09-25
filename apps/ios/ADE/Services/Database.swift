@@ -2207,13 +2207,31 @@ final class DatabaseService {
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
-    withLock { fetchComputerUseArtifactsLocked(ownerKind: ownerKind, ownerId: ownerId) }
+    withLock { fetchComputerUseArtifactsLocked(filter: .owner(kind: ownerKind, id: ownerId)) }
   }
 
-  private func fetchComputerUseArtifactsLocked(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
+  /// One proof record by id, from any owner in the current project. An answer
+  /// can cite proof another chat in the same project filed.
+  func fetchComputerUseArtifact(id artifactId: String) -> ComputerUseArtifactSummary? {
+    withLock { fetchComputerUseArtifactsLocked(filter: .artifact(id: artifactId)).first }
+  }
+
+  private enum ComputerUseArtifactFilter {
+    case owner(kind: String, id: String)
+    case artifact(id: String)
+  }
+
+  private func fetchComputerUseArtifactsLocked(filter: ComputerUseArtifactFilter) -> [ComputerUseArtifactSummary] {
     let projectIds = currentProjectScopeIds()
     guard !projectIds.isEmpty else { return [] }
     let projectPlaceholders = Array(repeating: "?", count: projectIds.count).joined(separator: ", ")
+    let filterClause: String
+    switch filter {
+    case .owner:
+      filterClause = "and l.owner_kind = ? and l.owner_id = ?"
+    case .artifact:
+      filterClause = "and a.id = ?"
+    }
 
     let sql = """
       select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name, a.original_type,
@@ -2223,8 +2241,7 @@ final class DatabaseService {
         inner join computer_use_artifact_links l on l.artifact_id = a.id
        where a.project_id in (\(projectPlaceholders))
          and l.project_id in (\(projectPlaceholders))
-         and l.owner_kind = ?
-         and l.owner_id = ?
+         \(filterClause)
        order by a.created_at asc
     """
 
@@ -2238,9 +2255,14 @@ final class DatabaseService {
         try self.bindText(projectId, to: statement, index: index)
         index += 1
       }
-      try self.bindText(ownerKind, to: statement, index: index)
-      index += 1
-      try self.bindText(ownerId, to: statement, index: index)
+      switch filter {
+      case .owner(let kind, let id):
+        try self.bindText(kind, to: statement, index: index)
+        index += 1
+        try self.bindText(id, to: statement, index: index)
+      case .artifact(let id):
+        try self.bindText(id, to: statement, index: index)
+      }
     }, map: { statement in
       ComputerUseArtifactRow(
         id: stringValue(statement, index: 0) ?? "",

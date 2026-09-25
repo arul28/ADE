@@ -10528,6 +10528,11 @@ final class SyncService: ObservableObject {
     database.fetchComputerUseArtifacts(ownerKind: ownerKind, ownerId: ownerId)
   }
 
+  /// A proof record by id from the replicated project database, whatever chat filed it.
+  func fetchComputerUseArtifact(id artifactId: String) -> ComputerUseArtifactSummary? {
+    database.fetchComputerUseArtifact(id: artifactId)
+  }
+
   func renameSession(sessionId: String, title: String) async throws {
     try database.updateSessionTitle(sessionId: sessionId, title: title)
   }
