@@ -1819,6 +1819,7 @@ struct WorkChatSessionView: View {
         .sheet(isPresented: $artifactDrawerPresented) {
           WorkProofSheet(
             artifacts: artifacts,
+            transcript: transcript,
             artifactContent: $artifactContent,
             isRefreshing: artifactRefreshInFlight,
             refreshError: artifactRefreshError,
