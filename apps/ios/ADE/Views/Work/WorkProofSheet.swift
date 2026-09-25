@@ -631,17 +631,6 @@ extension EnvironmentValues {
   }
 }
 
-/// ADE captured or recorded the bytes itself. Cited in an answer, that is
-/// "Verified". Mirrors `isAdeProvenance` in ChatProofCitation.tsx.
-func workProofIsAdeProvenance(_ metadataJson: String?) -> Bool {
-  guard let data = metadataJson?.data(using: .utf8),
-        let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-    return false
-  }
-  let source = object["proofSource"] as? String
-  return source == "ade-recorder" || source == "ade-capture"
-}
-
 /// `![caption](ade-proof://<id>)` in an answer: the picture or the video at a
 /// readable size, the caption under it, and where it came from.
 struct WorkProofCitationView: View {
@@ -750,24 +739,11 @@ struct WorkProofCitationView: View {
 
   @ViewBuilder
   private func captionRows(_ artifact: ComputerUseArtifactSummary) -> some View {
-    let lines = workProofProvenanceLines(artifact.metadataJson)
-    HStack(alignment: .firstTextBaseline, spacing: 6) {
-      if workProofIsAdeProvenance(artifact.metadataJson) {
-        Label("Verified", systemImage: "checkmark.seal.fill")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.success)
-          .accessibilityLabel("Verified: ADE captured this")
-      }
-      Text(captionText(artifact))
-        .font(.footnote)
-        .foregroundStyle(ADEColor.textSecondary)
-    }
-    if let source = lines.source {
-      Text(source)
-        .font(.caption2)
-        .foregroundStyle(ADEColor.textMuted)
-    }
-    if let older = lines.older {
+    Text(captionText(artifact))
+      .font(.footnote)
+      .foregroundStyle(ADEColor.textSecondary)
+    // The one provenance fact worth a line in an answer: a video older than the request.
+    if let older = workProofProvenanceLines(artifact.metadataJson).older {
       Text(older)
         .font(.caption2)
         .foregroundStyle(ADEColor.warning)

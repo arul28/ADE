@@ -1,14 +1,10 @@
-import { SealCheck, SpinnerGap, WarningCircle } from "@phosphor-icons/react";
+import { SpinnerGap, WarningCircle } from "@phosphor-icons/react";
 import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import type { ProofCompareBlock } from "../../../shared/proofCitation";
-import { readProofProvenance } from "../../../shared/proofProvenance";
+import { proofRecordedBeforeRequestLine, readProofProvenance } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
-import {
-  ArtifactLightbox,
-  ProofPreviewFailureNotice,
-  ProofProvenanceLines,
-} from "./ChatComputerUsePanel";
+import { ArtifactLightbox, ProofPreviewFailureNotice } from "./ChatComputerUsePanel";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
   externalArtifactUrl,
@@ -95,25 +91,6 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
   return fetched.artifact ? { status: "ready", artifact: fetched.artifact } : { status: "missing" };
 }
 
-/** ADE made these bytes itself, so the picture is what ADE saw. */
-function isAdeProvenance(artifact: ComputerUseArtifactView): boolean {
-  const source = readProofProvenance(artifact.metadata).source;
-  return source === "ade-recorder" || source === "ade-capture";
-}
-
-function VerifiedBadge() {
-  return (
-    <span
-      data-proof-verified=""
-      title="ADE captured this, and the answer cites it"
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border border-emerald-300/[0.16] bg-emerald-400/[0.07] px-1.5 py-px font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] font-medium not-italic text-emerald-200/80"
-    >
-      <SealCheck size={10} weight="fill" aria-hidden />
-      Verified
-    </span>
-  );
-}
-
 function CitationPlaceholder({ children, tone = "muted" }: { children: React.ReactNode; tone?: "muted" | "warning" }) {
   return (
     <span
@@ -154,7 +131,7 @@ function CitedProofMedia({
   const externalUrl = externalArtifactUrl(artifact.uri);
   const failureText = externalUrl ? "This proof lives at its source." : explanation;
   const text = caption?.trim() || artifact.description?.trim() || artifact.title;
-  const verified = isAdeProvenance(artifact);
+  const olderLine = proofRecordedBeforeRequestLine(readProofProvenance(artifact.metadata));
   const mediaHeight = compact ? "max-h-[300px]" : "max-h-[440px]";
 
   return (
@@ -196,25 +173,19 @@ function CitedProofMedia({
       ) : !image && !video ? (
         <CitationPlaceholder>{`${text} (${artifact.kind.replace(/_/g, " ")}) cannot show inline. It is in the proof drawer.`}</CitationPlaceholder>
       ) : null}
-      <span className="mt-1.5 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5">
-        {verified ? <VerifiedBadge /> : null}
-        <span className="min-w-0 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] not-italic leading-5 text-fg/70">
-          {text}
+      <span className="mt-1.5 block min-w-0 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] not-italic leading-5 text-fg/70">
+        {text}
+      </span>
+      {/* The one provenance fact worth a line in an answer: a video older than the request. */}
+      {olderLine ? (
+        <span className="block font-sans text-[length:calc(var(--chat-font-size)*10/14)] not-italic text-amber-200/65">
+          {olderLine}
         </span>
-      </span>
-      <span className="block">
-        <ProofProvenanceLines
-          artifact={artifact}
-          className="font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] not-italic text-muted-fg/40"
-          warningClassName="font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] not-italic text-amber-200/60"
-        />
-      </span>
+      ) : null}
       {lightboxOpen && preview ? (
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
-          failed={failed}
-          failureText={failureText}
           onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
