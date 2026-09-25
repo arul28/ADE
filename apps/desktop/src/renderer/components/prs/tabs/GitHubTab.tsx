@@ -57,6 +57,7 @@ import {
   upsertLaneSummary,
 } from "./GitHubTabCreateLaneDialog";
 import { GitHubTabView } from "./GitHubTabView";
+import { normalizeGitHubTabSort, type GitHubTabSort } from "./prBlockedSort";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
 import { useGitHubTabSelection } from "./useGitHubTabSelection";
 import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
@@ -72,6 +73,9 @@ export type GitHubTabProps = {
   onSelectPr: (id: string | null, target: PrRouteSelectionTarget | null) => void;
   selectedDetailTab?: PrDetailRouteTab | null;
   onDetailTabChange?: (tab: PrDetailRouteTab) => void;
+  /** Row sort from the route; GitHub tab state falls back to the warm cache. */
+  selectedSort?: GitHubTabSort | null;
+  onSortChange?: (sort: GitHubTabSort) => void;
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
 };
@@ -84,6 +88,8 @@ export function GitHubTab({
   onSelectPr,
   selectedDetailTab,
   onDetailTabChange,
+  selectedSort = null,
+  onSortChange,
   onRefreshAll,
   onOpenRebaseTab,
 }: GitHubTabProps) {
@@ -115,6 +121,9 @@ export function GitHubTab({
   const [loading, setLoading] = React.useState(() => !initialWarmCacheRef.current?.snapshot);
   const [error, setError] = React.useState<string | null>(null);
   const [filter, setFilter] = React.useState<GitHubFilter>(() => normalizeGitHubFilter(initialWarmCacheRef.current?.filter));
+  const [sort, setSort] = React.useState<GitHubTabSort>(
+    () => normalizeGitHubTabSort(selectedSort ?? initialWarmCacheRef.current?.sort),
+  );
   const [selectedItemId, setSelectedItemId] = React.useState<string | null>(
     () => initialWarmCacheRef.current?.selectedItemId ?? null,
   );
@@ -276,6 +285,7 @@ export function GitHubTab({
     setLoading(!warmCache?.snapshot);
     setError(null);
     setFilter(normalizeGitHubFilter(warmCache?.filter));
+    setSort(normalizeGitHubTabSort(warmCache?.sort));
     setSelectedItemId(warmCache?.selectedItemId ?? null);
     setSelectedItemIdsByFilter(initialGitHubFilterSelections(warmCache));
     setSearchQuery(warmCache?.searchQuery ?? "");
@@ -285,6 +295,16 @@ export function GitHubTab({
       void loadSnapshot({ silent: false });
     }
   }, [loadSnapshot, projectRoot]);
+
+  // The route is the durable source for a shared/deep-linked `sort=blocked`;
+  // when it changes (back/forward, a pasted link), follow it. Guarded by a ref
+  // so the mount-time value does not clobber the warm-cache preference.
+  const lastSelectedSortRef = React.useRef(selectedSort);
+  React.useEffect(() => {
+    if (selectedSort === lastSelectedSortRef.current) return;
+    lastSelectedSortRef.current = selectedSort;
+    setSort(normalizeGitHubTabSort(selectedSort));
+  }, [selectedSort]);
 
   React.useEffect(() => {
     if (snapshot?.viewerLogin) {
@@ -335,13 +355,14 @@ export function GitHubTab({
       projectRoot,
       snapshot,
       filter,
+      sort,
       selectedItemId,
       selectedItemIdsByFilter,
       searchQuery,
       externalHistoryLoaded,
       cachedAt: Date.now(),
     });
-  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, selectedItemIdsByFilter, snapshot]);
+  }, [externalHistoryLoaded, filter, projectRoot, searchQuery, selectedItemId, selectedItemIdsByFilter, snapshot, sort]);
 
   React.useEffect(() => {
     if (filter === "open" || externalHistoryLoaded) return;
@@ -414,6 +435,7 @@ export function GitHubTab({
     searchQuery,
     prsByIdMap,
     filter,
+    sort,
     renderedHydrationItems,
     lastSeenRowByCoordRef,
     currentHistoryPageLimit,
@@ -601,6 +623,11 @@ export function GitHubTab({
     pendingRestoredSelectedItemIdRef.current = null;
     onSelectPr(item.linkedPrId ?? null, selectionTargetForItem(item));
   }, [filter, onSelectPr]);
+
+  const handleSortChange = React.useCallback((next: GitHubTabSort) => {
+    setSort(next);
+    onSortChange?.(next);
+  }, [onSortChange]);
 
   const handleFilterChange = React.useCallback((state: GitHubFilter) => {
     pendingSelectedItemIdRef.current = null;
@@ -817,6 +844,7 @@ export function GitHubTab({
           onRowActionError: setError,
           filter,
           filterCounts,
+          sort,
           loading,
           loadingFilter,
           loadingOlderHistory,
@@ -828,6 +856,7 @@ export function GitHubTab({
           prsByIdMap,
           canLoadOlderHistory,
           onFilterChange: handleFilterChange,
+          onSortChange: handleSortChange,
           onSelect: handleSelectItem,
           onHydrationItemsChange: handleHydrationItemsChange,
           onLoadOlderHistory: () => { void handleLoadOlderHistory(); },

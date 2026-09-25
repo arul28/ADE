@@ -8,6 +8,7 @@ import { CreatePrModal, type CreatePrModalInitialValues } from "./CreatePrModal"
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import { GitHubTab } from "./tabs/GitHubTab";
+import type { GitHubTabSort } from "./tabs/prBlockedSort";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { PrsListHostProvider } from "./shared/PrsListHost";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
@@ -153,6 +154,13 @@ function PRsPageInner({ active }: { active: boolean }) {
       return null;
     }
   });
+  const [githubSort, setGithubSort] = React.useState<GitHubTabSort | null>(() => {
+    try {
+      return parsePrsRouteState({ search: window.location.search, hash: window.location.hash }).githubSort;
+    } catch {
+      return null;
+    }
+  });
   const visibleLanes = lanes;
 
   React.useEffect(() => {
@@ -181,6 +189,11 @@ function PRsPageInner({ active }: { active: boolean }) {
     setSelectedPrId(id);
     setSelectedPrTarget(target ? { ...target, prId: id ?? target.prId } : null);
   }, [setSelectedPrId]);
+
+  // Only "blocked" is a durable URL preference; the default (updated) clears it.
+  const handleGithubSortChange = React.useCallback((next: GitHubTabSort) => {
+    setGithubSort(next === "blocked" ? "blocked" : null);
+  }, []);
 
   const openCreatePr = React.useCallback((props?: Record<string, unknown>) => {
     setCreatePrInitialValues(createInitialValuesFromDialogProps(props));
@@ -260,6 +273,9 @@ function PRsPageInner({ active }: { active: boolean }) {
           if (hasExplicitPrSelection || locationChanged || routeState.detailTab) {
             setSelectedDetailTab(routeState.detailTab);
           }
+          if (hasExplicitPrSelection || locationChanged || routeState.githubSort) {
+            setGithubSort(routeState.githubSort);
+          }
         } else {
           setSelectedPrTarget((previous) => previous === null ? previous : null);
         }
@@ -334,6 +350,7 @@ function PRsPageInner({ active }: { active: boolean }) {
       repoName: hasCoordinates ? routeTarget?.repoName ?? null : null,
       selectedRebaseItemId,
       detailTab: activeTab === "normal" ? selectedDetailTab : null,
+      githubSort: activeTab === "normal" ? githubSort : null,
       ...deepLinks,
     });
     if (location.search === nextSearch) return;
@@ -346,6 +363,7 @@ function PRsPageInner({ active }: { active: boolean }) {
     selectedPrTarget,
     selectedRebaseItemId,
     selectedDetailTab,
+    githubSort,
     location.pathname,
     location.search,
     location.hash,
@@ -490,6 +508,8 @@ function PRsPageInner({ active }: { active: boolean }) {
               onSelectPr={handleSelectPr}
               selectedDetailTab={selectedDetailTab}
               onDetailTabChange={setSelectedDetailTab}
+              selectedSort={githubSort}
+              onSortChange={handleGithubSortChange}
               onRefreshAll={handleRefresh}
               onOpenRebaseTab={(laneId) => {
                 if (laneId) setSelectedRebaseItemId(laneId);
