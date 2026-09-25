@@ -1033,4 +1033,47 @@ describe("acp chat runtime", () => {
     const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
     expect(done?.status).toBe("failed");
   });
+
+  it("leads the card with the agent's stderr when the process dies during startup", async () => {
+    // The generic "connection closed" sentence hides the one line that explains
+    // the failure; the agent's own stderr must lead the card instead.
+    const agent = createMockAcpAgent();
+    agent.on("session/new", async () => {
+      // A misconfigured CLI prints its reason and dies. Let the stderr write
+      // reach the connection before the exit, as a draining OS pipe would.
+      agent.child.stderr.write("Error: unknown model 'gpt-x'\nsupported models: auto, qwen3-coder-plus\n");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      agent.exit(1);
+      return { error: { code: -32000, message: "agent exited" } };
+    });
+    const pool = createAcpSessionPool();
+    acpTeardown.push(() => pool.disposeAll("test teardown"));
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      acpSpawnOverride: () => agent.child,
+      acpSessionPool: pool,
+    });
+    acpTeardown.push(() => { void harness.service.disposeAll(); });
+    const session = await harness.service.createSession({
+      laneId: "lane-1",
+      provider: "qwen",
+      model: "qwen3-coder-plus",
+      modelId: "qwen/qwen3-coder-plus",
+    });
+
+    await harness.service.sendMessage({ sessionId: session.id, text: "hi" });
+    await vi.waitFor(() => {
+      expect(events.some((envelope) => envelope.event.type === "done")).toBe(true);
+    });
+
+    const errors = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "error");
+    expect(errors).toHaveLength(1);
+    const presentation = errors[0]?.errorInfo?.presentation;
+    expect(presentation?.body).toContain("unknown model 'gpt-x'");
+    expect(presentation?.body).not.toContain("connection closed");
+    expect(presentation?.technicalDetail).toContain("supported models: auto, qwen3-coder-plus");
+    const done = events.map((e) => e.event as Record<string, any>).filter((e) => e.type === "done").at(-1);
+    expect(done?.status).toBe("failed");
+  });
 });
