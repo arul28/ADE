@@ -372,6 +372,32 @@ export type AdeUsageStats = {
    * the UI then shows the single-machine numbers with no machine list.
    */
   machines?: AdeUsageMachineContribution[];
+  /**
+   * Per-machine live quota readings, for the pooled cross-environment limits.
+   *
+   * Optional and additive: a host that predates pooling omits it, and every
+   * client reads that as "no live limits to pool". These readings are the
+   * in-memory side channel from each machine's rollup; they never enter the
+   * CRR-replicated rollup store.
+   */
+  liveQuota?: { environments: AdeUsageLiveEnvironment[] };
+};
+
+/**
+ * One machine's live quota reading, for the pooled limits view.
+ *
+ * `windows` and `accounts` are exactly what that machine's `UsageSnapshot`
+ * carried — the accounts the windows are attributed to travel with them, so a
+ * reader can pool by account identity across machines.
+ */
+export type AdeUsageLiveEnvironment = {
+  machineKey: string;
+  label: string;
+  platform: string | null;
+  isLocal: boolean;
+  state: AdeUsageMachineState;
+  windows: UsageWindow[];
+  accounts: UsageAccount[];
 };
 
 // ---------------------------------------------------------------------------
@@ -464,6 +490,18 @@ export type AdeUsageRollup = {
   capturedAt: string;
   source: AdeUsageTranscriptSource;
   rows: AdeUsageRollupRow[];
+  /**
+   * Live quota windows and their accounts, for a peer's pooled cross-machine
+   * limits view.
+   *
+   * An **in-memory side channel only**: unlike `rows`, this is never written to
+   * the CRR-replicated `usage_machine_rollups` — it changes every poll, and
+   * storing it would churn the CRR clock and reopen the self-feeding refresh
+   * loop the store's no-op detection exists to prevent. `applyAccountRollups`
+   * strips it before `publish`.
+   */
+  windows?: UsageWindow[];
+  accounts?: UsageAccount[];
 };
 
 // ---------------------------------------------------------------------------

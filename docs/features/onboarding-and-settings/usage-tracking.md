@@ -299,11 +299,18 @@ Two rules shape the account scope:
   nothing else. Raw transcript records never leave the machine that scanned
   them, never enter the sync layer, and are never held in memory by the merge.
   A heavy year of use is a few thousand small rows.
-- **Historical only.** Cost, tokens, and code history merge; the live quota
-  windows do not. Provider rate limits are tied to the provider account rather
-  than the machine, so every machine already reports the same window, and
-  merging them would either double a shared limit or imply a per-machine
-  difference that does not exist.
+- **History merges; live quota pools.** Cost, tokens, and code history merge as
+  durable rows. Live quota windows also travel, but only as an in-memory side
+  channel on the same `usage.getUsageRollup` response — never stored. Provider
+  rate limits are tied to the provider account rather than the machine, so the
+  same login on two machines reports the same window; the pooled view counts
+  each account once (the freshest machine's reading per account + window label)
+  instead of double-counting a shared limit. `poolLiveQuota` in
+  `shared/usageLiveQuota.ts` is the one pooling rule, and the Usage page's
+  "All machines" scope renders it with an environment filter. The windows are
+  deliberately absent from the CRR-replicated `usage_machine_rollups`: they
+  change every poll, and storing them would churn the CRR clock and reopen the
+  self-feeding refresh loop the store's no-op detection prevents.
 
 GitHub metrics are excluded from the merge for the same reason in a different
 direction: they are repo-scoped, so three machines with the same clone each

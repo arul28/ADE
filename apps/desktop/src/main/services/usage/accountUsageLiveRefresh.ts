@@ -22,8 +22,11 @@ import type {
   AdeAccountMachinesResult,
   AdeUsageRollup,
   AdeUsageRollupRow,
+  UsageAccount,
+  UsageWindow,
 } from "../../../shared/types";
 import { getErrorMessage } from "../shared/utils";
+import { MAX_LIVE_QUOTA_ACCOUNTS, MAX_LIVE_QUOTA_WINDOWS } from "./accountUsageRollup";
 import { ROLLUP_RETAINED_DAYS } from "./accountUsageRollupStore";
 import { localDayKey } from "./localDay";
 
@@ -184,6 +187,76 @@ function isUsageRollup(value: unknown): value is AdeUsageRollup {
 }
 
 /**
+ * One peer live window, or null.
+ *
+ * The pooled limits view only reads a window's provider, label, fill and reset,
+ * so those are what travel; `pacing` and `modelBreakdown` are omitted rather
+ * than carried unbounded. `resetsInMs` is derived from `resetsAt` on the reader
+ * side anyway, so a peer's value is only a fallback.
+ */
+function boundPeerWindow(value: unknown): UsageWindow | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const provider = boundedString(record.provider, MAX_PEER_ID_LENGTH);
+  const windowType = boundedString(record.windowType, MAX_PEER_ID_LENGTH);
+  const resetsAt = boundedString(record.resetsAt, MAX_PEER_ID_LENGTH);
+  const percentUsed = finiteNumber(record.percentUsed);
+  if (!provider || !windowType || !resetsAt || percentUsed === null) return null;
+  const accountId = boundedString(record.accountId, MAX_PEER_ID_LENGTH);
+  const resetsInMs = finiteNumber(record.resetsInMs);
+  const windowDurationMs = finiteNumber(record.windowDurationMs);
+  return {
+    provider: provider as UsageWindow["provider"],
+    windowType: windowType as UsageWindow["windowType"],
+    percentUsed: Math.max(0, Math.min(100, percentUsed)),
+    resetsAt,
+    resetsInMs: resetsInMs === null ? 0 : Math.max(0, resetsInMs),
+    ...(accountId ? { accountId } : {}),
+    ...(windowDurationMs !== null && windowDurationMs > 0 ? { windowDurationMs } : {}),
+  };
+}
+
+/**
+ * One peer account, or null.
+ *
+ * `resetCredits` is deliberately dropped: a reset credit is a per-machine
+ * credential the local host redeems against its own account registry, so a
+ * peer's credit would render a "Use reset" the local host cannot spend.
+ */
+function boundPeerAccount(value: unknown): UsageAccount | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const id = boundedString(record.id, MAX_PEER_ID_LENGTH);
+  const provider = boundedString(record.provider, MAX_PEER_ID_LENGTH);
+  if (!id || !provider) return null;
+  const email = boundedString(record.email, MAX_PEER_ID_LENGTH);
+  const plan = boundedString(record.plan, MAX_PEER_ID_LENGTH);
+  const label = boundedString(record.label, MAX_PEER_ID_LENGTH);
+  const instanceId = boundedString(record.instanceId, MAX_PEER_ID_LENGTH);
+  const url = boundedString(record.url, MAX_PEER_ID_LENGTH);
+  const machines = Array.isArray(record.machines)
+    ? record.machines.slice(0, MAX_PEER_ROOTS).flatMap((raw) => {
+      if (!raw || typeof raw !== "object") return [];
+      const machine = raw as Record<string, unknown>;
+      const machineLabel = boundedString(machine.label, MAX_PEER_ID_LENGTH);
+      if (!machineLabel) return [];
+      const checkedAt = boundedString(machine.checkedAt, MAX_PEER_ID_LENGTH);
+      return [{ label: machineLabel, ...(checkedAt ? { checkedAt } : {}) }];
+    })
+    : [];
+  return {
+    id,
+    provider: provider as UsageAccount["provider"],
+    ...(email ? { email } : {}),
+    ...(plan ? { plan } : {}),
+    ...(instanceId ? { instanceId } : {}),
+    ...(label ? { label } : {}),
+    machines,
+    ...(url ? { url } : {}),
+  };
+}
+
+/**
  * Bound what a peer can put in the store.
  *
  * Nothing here rejects: a peer with an outsized payload should lose the excess,
@@ -215,6 +288,18 @@ function boundPeerRollup(rollup: AdeUsageRollup, fetchedAtIso: string): AdeUsage
   // honest answer — rather than shown as-is.
   const capturedAt = boundedString(rollup.capturedAt, MAX_PEER_ID_LENGTH);
   const capturedAtMs = capturedAt ? Date.parse(capturedAt) : Number.NaN;
+  const windows = (Array.isArray(rollup.windows) ? rollup.windows : [])
+    .slice(0, MAX_LIVE_QUOTA_WINDOWS)
+    .flatMap((raw) => {
+      const window = boundPeerWindow(raw);
+      return window ? [window] : [];
+    });
+  const accounts = (Array.isArray(rollup.accounts) ? rollup.accounts : [])
+    .slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
+    .flatMap((raw) => {
+      const account = boundPeerAccount(raw);
+      return account ? [account] : [];
+    });
   return {
     // Every field listed explicitly, and the peer object never spread: a peer
     // controls this payload, and a spread carries anything it invented straight
@@ -237,6 +322,8 @@ function boundPeerRollup(rollup: AdeUsageRollup, fetchedAtIso: string): AdeUsage
       sourceId: boundedString(source.sourceId, MAX_PEER_ID_LENGTH),
       roots,
     },
+    ...(windows.length > 0 ? { windows } : {}),
+    ...(accounts.length > 0 ? { accounts } : {}),
   };
 }
 
