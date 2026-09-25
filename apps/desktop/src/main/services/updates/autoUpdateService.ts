@@ -1821,6 +1821,7 @@ export function createAutoUpdateService({
           requestedAt: now(),
         },
         recentlyInstalledUpdate: undefined,
+        restoreUpdateWorkspaceOnLaunch: true,
       });
       logger.info("autoUpdate.quit_and_install", { version: snapshot.version ?? installVersion });
       patchSnapshot({

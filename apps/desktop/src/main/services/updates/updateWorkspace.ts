@@ -14,13 +14,13 @@ export type UpdateWorkspaceRestore = {
  * A normal launch leaves the snapshot unread.
  */
 export function selectUpdateWorkspaceRestore(args: {
-  recentlyInstalled: boolean;
+  restoreRequested: boolean;
   explicitLaunch: boolean;
   saved: UpdateWorkspaceState | null | undefined;
   normalizeProjectPath: (value: string) => string;
   isLikelyRepoRoot: (value: string) => boolean;
 }): UpdateWorkspaceRestore {
-  if (!args.recentlyInstalled || args.explicitLaunch) {
+  if (!args.restoreRequested || args.explicitLaunch) {
     return { localRoots: [], activeLocalRoot: null };
   }
   const localRoots: string[] = [];

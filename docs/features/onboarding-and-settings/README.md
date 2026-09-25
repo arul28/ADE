@@ -1499,10 +1499,12 @@ banner):
   `recentlyInstalled.releaseNotesUrl` (the docs changelog) and a "View
   on GitHub" button that opens `recentlyInstalled.githubReleaseUrl`
   (the GitHub release page). Each button is shown only when its URL is
-  present; opening either link also dismisses the notice. The same
-  relaunch reopens the local project tabs that were open when the update
-  quit, and each project comes back on the route and chat it already
-  remembered. A normal launch still opens on the welcome surface.
+  present; opening either link also dismisses the notice.   The update quit marks one relaunch to reopen the local project tabs
+  that were open, and each project comes back on the route and chat it
+  already remembered. That mark is consumed on the relaunch, so a later
+  ordinary launch still opens on the welcome surface. Closing a window
+  drops its tabs from the saved set. The first update into this version
+  has no saved set yet, because the previous build did not write one.
 - `apps/desktop/src/renderer/components/app/useAutoUpdateSnapshot.ts` — the
   shared subscription hook (initial `updateGetState()` read + live
   `onUpdateEvent`). Every truthful-version surface — the top-bar pill, the

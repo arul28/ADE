@@ -7850,6 +7850,7 @@ app.whenReady().then(async () => {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
       scheduleProjectContextRebalance();
+      persistUpdateWorkspace();
     });
   };
 
@@ -8921,13 +8922,21 @@ app.whenReady().then(async () => {
     }
   }
 
+  const savedUpdateState = readGlobalState(globalStatePath);
   const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
-    recentlyInstalled: autoUpdateService.getSnapshot().recentlyInstalled != null,
+    restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true,
     explicitLaunch: shouldOpenStartupProject,
-    saved: readGlobalState(globalStatePath).updateWorkspace,
+    saved: savedUpdateState.updateWorkspace,
     normalizeProjectPath: normalizeProjectRoot,
     isLikelyRepoRoot,
   });
+  if (savedUpdateState.restoreUpdateWorkspaceOnLaunch) {
+    const cleared = readGlobalState(globalStatePath);
+    writeGlobalState(globalStatePath, {
+      ...cleared,
+      restoreUpdateWorkspaceOnLaunch: false,
+    });
+  }
   if (updateWorkspaceRestore.localRoots.length > 0) {
     const warmOrder = [
       ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),

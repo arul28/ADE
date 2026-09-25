@@ -93,6 +93,11 @@ export type GlobalState = {
    * that just finished installing an update.
    */
   updateWorkspace?: UpdateWorkspaceState;
+  /**
+   * Set only by the update quit. The next launch reopens `updateWorkspace`
+   * once, then clears this so a later ordinary launch stays on welcome.
+   */
+  restoreUpdateWorkspaceOnLaunch?: boolean;
   failedInstallAttempts?: FailedInstallAttempts;
   autoUpdatePreferences?: AutoUpdatePreferences;
   /** Whether ADE may hold this machine awake while agents run. Default: never. */
