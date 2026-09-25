@@ -52,6 +52,9 @@ export function useAppControlRecording({
 }) {
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
+  /** The lane on screen now: an answer for a lane the pane has left is dropped. */
+  const laneIdRef = useRef(laneId);
+  laneIdRef.current = laneId;
   const pinKey = runtimePin?.key ?? null;
   const [recording, setRecording] = useState<AppControlRecordingStatus | null>(null);
   const [busy, setBusy] = useState(false);
@@ -131,12 +134,14 @@ export function useAppControlRecording({
         chatSessionId,
         caption: caption?.trim() || null,
       }, pinRef.current);
+      if (laneIdRef.current !== laneId) return;
       setRecording(next);
       const missing = appControlRecordingMissingPermissions(next.permissions);
       setPermissions(missing.length > 0 ? next.permissions ?? null : null);
       // A missing grant is the permission card's to say, with its fix.
       if (!next.running && next.lastError && missing.length === 0) setError(errorText(next.lastError));
     } catch (cause) {
+      if (laneIdRef.current !== laneId) return;
       const withPermissions = cause as { permissions?: MacDesktopPermissions | null };
       const missing = appControlRecordingMissingPermissions(withPermissions?.permissions);
       if (missing.length > 0) setPermissions(withPermissions.permissions ?? null);
@@ -153,6 +158,7 @@ export function useAppControlRecording({
     setError(null);
     try {
       const next = await api.stopRecording({ laneId, chatSessionId }, pinRef.current);
+      if (laneIdRef.current !== laneId) return;
       setRecording(next);
       if (next.proofArtifactId) {
         setReceipt({
@@ -167,6 +173,7 @@ export function useAppControlRecording({
         setError(errorText(next.lastError));
       }
     } catch (cause) {
+      if (laneIdRef.current !== laneId) return;
       setError(errorText(cause));
     } finally {
       setBusy(false);
@@ -185,8 +192,10 @@ export function useAppControlRecording({
         chatSessionId,
         caption: caption?.trim() || null,
       }, pinRef.current);
+      if (laneIdRef.current !== laneId) return;
       setReceipt({ artifactId: filed.artifactId, durationMs: null, bytes: null, filePath: filed.filePath });
     } catch (cause) {
+      if (laneIdRef.current !== laneId) return;
       setError(errorText(cause));
     } finally {
       setProofBusy(false);

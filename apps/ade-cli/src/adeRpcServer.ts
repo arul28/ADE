@@ -3548,6 +3548,56 @@ export function scopeMacDesktopAdeActionArgs(
 }
 
 /**
+ * Places an `ade` process with no chat identity by the lane worktree it stands
+ * in — the rule shared by `mac_desktop`, `app_control` and `ios_simulator`:
+ *
+ * - `callerRoot`, when given, must be absolute.
+ * - A `callerRoot` inside a non-primary lane worktree binds the call to that
+ *   lane; a different requested lane is refused, naming both lanes. The
+ *   primary lane does not bind: its worktree is the project root, where a
+ *   person runs `ade` to reach any lane.
+ * - Otherwise the requested lane (if any) is used.
+ * - With no lane and `missingLaneMessage` set, the call is refused with that
+ *   domain's wording; `null` means the action works without a lane.
+ */
+async function resolveUnboundCallerLane(
+  runtime: AdeRuntime,
+  session: SessionState,
+  options: {
+    method: string;
+    callerRoot: unknown;
+    requestedLaneId: string | null | undefined;
+    missingLaneMessage: string | null;
+  },
+): Promise<string | null> {
+  const callerRoot = asOptionalTrimmedString(options.callerRoot);
+  if (callerRoot && !path.isAbsolute(callerRoot)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
+  }
+  const standing = await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null, { logMiss: false });
+  const standingLaneId = standing && !standing.primary ? standing.laneId : null;
+  const requestedLaneId = options.requestedLaneId ?? null;
+  if (standingLaneId && requestedLaneId && requestedLaneId !== standingLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `This shell is inside lane ${standingLaneId}'s worktree (${callerRoot}); --lane ${requestedLaneId} was refused. `
+        + `Run ade from lane ${requestedLaneId}'s worktree or from the project root.`,
+      {
+        kind: "lane_bound",
+        method: options.method,
+        callerLaneId: standingLaneId,
+        requestedLaneId,
+      },
+    );
+  }
+  const laneId = standingLaneId ?? requestedLaneId;
+  if (!laneId && options.missingLaneMessage !== null) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, options.missingLaneMessage);
+  }
+  return laneId;
+}
+
+/**
  * `mac_desktop` for an `ade` process with no chat identity (`ade-cli:<pid>`).
  *
  * That caller is either a person in a terminal or an agent whose shell carries
@@ -3598,33 +3648,14 @@ export async function scopeUnboundMacDesktopAdeActionArgs(
     holderId: _callerHolder,
     ...rest
   } = macDesktopArgs;
-  const callerRoot = asOptionalTrimmedString(callerRootRaw);
-  if (callerRoot && !path.isAbsolute(callerRoot)) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
-  }
-  const standing = await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null, { logMiss: false });
-  const standingLaneId = standing && !standing.primary ? standing.laneId : null;
-  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
-  if (standingLaneId && requestedLaneId && requestedLaneId !== standingLaneId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.policyDenied,
-      `This shell is inside lane ${standingLaneId}'s worktree (${callerRoot}); --lane ${requestedLaneId} was refused. `
-        + `Run ade from lane ${requestedLaneId}'s worktree or from the project root.`,
-      {
-        kind: "lane_bound",
-        method,
-        callerLaneId: standingLaneId,
-        requestedLaneId,
-      },
-    );
-  }
-  const laneId = standingLaneId ?? requestedLaneId;
-  if (!laneId && MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `mac_desktop.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`,
-    );
-  }
+  const laneId = await resolveUnboundCallerLane(runtime, session, {
+    method,
+    callerRoot: callerRootRaw,
+    requestedLaneId: asOptionalTrimmedString(rest.laneId),
+    missingLaneMessage: MAC_DESKTOP_LANE_BOUND_ACTIONS.has(action)
+      ? `mac_desktop.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`
+      : null,
+  });
   return { ...rest, ...(laneId ? { laneId } : {}) };
 }
 
@@ -3636,6 +3667,25 @@ const APPLE_LANE_FREE_ACTIONS = new Set<string>([
   "deviceList",
   "getStreamStatus",
 ]);
+
+function appleMissingLaneMessage(action: string): string | null {
+  return APPLE_LANE_FREE_ACTIONS.has(action)
+    ? null
+    : `ios_simulator.${action} needs a lane: run ade from a lane worktree, or pass --lane <lane-id>.`;
+}
+
+function withAppleAgentCaller(
+  rest: Record<string, unknown>,
+  laneId: string | null,
+  callerChatSessionId: string | null,
+): Record<string, unknown> {
+  return {
+    ...rest,
+    ...(laneId ? { laneId } : {}),
+    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
+    agentCaller: true,
+  };
+}
 
 /**
  * `ios_simulator` for an agent caller: a bound agent (chat, run, step) or an
@@ -3659,61 +3709,60 @@ const APPLE_LANE_FREE_ACTIONS = new Set<string>([
  *   names who holds the device's single-owner claim, so a caller-supplied one
  *   would let an agent act as another chat.
  *
+ * This function is the bound-agent entry point;
+ * `scopeUnboundAppleAdeActionArgs` is the one for an `ade` process with no
+ * chat identity.
+ *
  * User clients (desktop, and the web and phone clients through `apple.*`
  * sync commands) never reach this: the picker keeps attach and takeover.
  */
-export async function scopeAppleAdeActionArgs(
+export function scopeAppleAdeActionArgs(
   runtime: AdeRuntime,
   session: SessionState,
   action: string,
   appleArgs: Record<string, unknown>,
-  options: { unbound: boolean; callerRoot: unknown },
-): Promise<Record<string, unknown>> {
+): Record<string, unknown> {
   const method = `run_ade_action:ios_simulator.${action}`;
   const { agentCaller: _callerSupplied, chatSessionId: _callerChat, ...rest } = appleArgs;
   // An agent speaks only for its own chat: the chat id is who holds the
   // device's single-owner claim, so a foreign one would act as that chat.
-  const callerChatSessionId = options.unbound ? null : asOptionalTrimmedString(session.identity.chatSessionId);
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const requestedLaneId = asOptionalTrimmedString(rest.laneId);
-  let boundLaneId: string | null = null;
-  if (options.unbound) {
-    const callerRoot = asOptionalTrimmedString(options.callerRoot);
-    if (callerRoot && !path.isAbsolute(callerRoot)) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
-    }
-    const standing = await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null, { logMiss: false });
-    boundLaneId = standing && !standing.primary ? standing.laneId : null;
-    if (boundLaneId && requestedLaneId && requestedLaneId !== boundLaneId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `This shell is inside lane ${boundLaneId}'s worktree (${callerRoot}); --lane ${requestedLaneId} was refused. `
-          + `Run ade from lane ${requestedLaneId}'s worktree or from the project root.`,
-        { kind: "lane_bound", method, callerLaneId: boundLaneId, requestedLaneId },
-      );
-    }
-  } else {
-    boundLaneId = resolveChatSessionLaneId(runtime, session);
-    if (boundLaneId && requestedLaneId && requestedLaneId !== boundLaneId) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.policyDenied,
-        `This chat is bound to lane ${boundLaneId}; --lane ${requestedLaneId} was refused. An agent uses only its own lane's Apple device.`,
-        { kind: "lane_bound", method, callerLaneId: boundLaneId, requestedLaneId },
-      );
-    }
-  }
-  const laneId = boundLaneId ?? requestedLaneId;
-  if (!laneId && !APPLE_LANE_FREE_ACTIONS.has(action)) {
+  const boundLaneId = resolveChatSessionLaneId(runtime, session);
+  if (boundLaneId && requestedLaneId && requestedLaneId !== boundLaneId) {
     throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `ios_simulator.${action} needs a lane: run ade from a lane worktree, or pass --lane <lane-id>.`,
+      JsonRpcErrorCode.policyDenied,
+      `This chat is bound to lane ${boundLaneId}; --lane ${requestedLaneId} was refused. An agent uses only its own lane's Apple device.`,
+      { kind: "lane_bound", method, callerLaneId: boundLaneId, requestedLaneId },
     );
   }
-  return {
-    ...rest,
-    ...(laneId ? { laneId } : {}),
-    ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}),
-    agentCaller: true,
-  };
+  const laneId = boundLaneId ?? requestedLaneId;
+  const missingLaneMessage = appleMissingLaneMessage(action);
+  if (!laneId && missingLaneMessage !== null) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, missingLaneMessage);
+  }
+  return withAppleAgentCaller(rest, laneId ?? null, callerChatSessionId ?? null);
+}
+
+/**
+ * `ios_simulator` for an `ade` process with no chat identity: it speaks for no
+ * chat, and is placed by the lane worktree it stands in (`callerRoot`).
+ */
+export async function scopeUnboundAppleAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  appleArgs: Record<string, unknown>,
+  callerRootRaw: unknown,
+): Promise<Record<string, unknown>> {
+  const { agentCaller: _callerSupplied, chatSessionId: _callerChat, ...rest } = appleArgs;
+  const laneId = await resolveUnboundCallerLane(runtime, session, {
+    method: `run_ade_action:ios_simulator.${action}`,
+    callerRoot: callerRootRaw,
+    requestedLaneId: asOptionalTrimmedString(rest.laneId),
+    missingLaneMessage: appleMissingLaneMessage(action),
+  });
+  return withAppleAgentCaller(rest, laneId, null);
 }
 
 /**
@@ -3839,29 +3888,14 @@ export async function scopeUnboundAppControlAdeActionArgs(
     agentCaller: _callerAgent,
     ...rest
   } = appControlArgs;
-  const callerRoot = asOptionalTrimmedString(callerRootRaw);
-  if (callerRoot && !path.isAbsolute(callerRoot)) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "callerRoot must be an absolute path");
-  }
-  const standing = await inferUnboundCallerLaneId(runtime, session, callerRoot ?? null, { logMiss: false });
-  const standingLaneId = standing && !standing.primary ? standing.laneId : null;
-  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
-  if (standingLaneId && requestedLaneId && requestedLaneId !== standingLaneId) {
-    throw appControlLaneBoundError(
-      method,
-      standingLaneId,
-      requestedLaneId,
-      `This shell is inside lane ${standingLaneId}'s worktree (${callerRoot}); --lane ${requestedLaneId} was refused. `
-        + `Run ade from lane ${requestedLaneId}'s worktree or from the project root.`,
-    );
-  }
-  const laneId = standingLaneId ?? requestedLaneId;
-  if (!laneId && APP_CONTROL_LANE_BOUND_ACTIONS.has(action)) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      `app_control.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`,
-    );
-  }
+  const laneId = await resolveUnboundCallerLane(runtime, session, {
+    method,
+    callerRoot: callerRootRaw,
+    requestedLaneId: asOptionalTrimmedString(rest.laneId),
+    missingLaneMessage: APP_CONTROL_LANE_BOUND_ACTIONS.has(action)
+      ? `app_control.${action} needs a lane: pass --lane <lane-id>, or run ade from inside a lane worktree.`
+      : null,
+  });
   return { ...rest, ...(laneId ? { laneId } : {}), agentCaller: true };
 }
 
@@ -5302,13 +5336,10 @@ async function runTool(args: {
       );
     } else if (domain === "ios_simulator" && (!isUserClient || isUnboundAdeCliCaller(session))) {
       // Agent callers use only their own lane's device; see the function.
-      scopedObjectArgs = await scopeAppleAdeActionArgs(
-        runtime,
-        session,
-        action,
-        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
-        { unbound: isUserClient, callerRoot: toolArgs.callerRoot },
-      );
+      const appleArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      scopedObjectArgs = isUserClient
+        ? await scopeUnboundAppleAdeActionArgs(runtime, session, action, appleArgs, toolArgs.callerRoot)
+        : scopeAppleAdeActionArgs(runtime, session, action, appleArgs);
     } else if (
       domain === "work_tools"
       && (!callerIsCto || WORK_TOOLS_ALWAYS_SCOPED_ACTIONS.has(action))

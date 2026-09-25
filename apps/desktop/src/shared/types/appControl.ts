@@ -558,7 +558,8 @@ export type AppControlSwitchWindowArgs = AppControlSessionTargetArgs & {
  */
 export type AppControlRecordingEngine = "window-capture" | "screencast";
 
-export type AppControlRecordingStopReason = "requested" | "cap" | "app-closed";
+/** `chat-ended`: the chat that started the recording ended; it files itself like `cap`. */
+export type AppControlRecordingStopReason = "requested" | "cap" | "app-closed" | "chat-ended";
 
 /** Field names mirror `MacDesktopRecordingStatus`. */
 export type AppControlRecordingStatus = {

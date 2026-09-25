@@ -36,6 +36,10 @@ import {
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
+import { pathComparisonKey } from "../shared/pathCompare";
+
+/** Per connection: the App Control recordings it started, cancelled when it closes. */
+type BridgeConnectionState = { recorderKeys: Set<string>; closed: boolean };
 
 /**
  * Side-channel JSON-RPC server that exposes the desktop's
@@ -115,6 +119,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   const server = net.createServer((conn) => {
     activeSockets.add(conn);
+    const connection: BridgeConnectionState = { recorderKeys: new Set(), closed: false };
     const transport: JsonRpcTransport = {
       onData(callback) {
         conn.on("data", callback);
@@ -126,7 +131,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         if (!conn.destroyed) conn.destroy();
       },
     };
-    const stop = startJsonRpcServer(handleRequest, transport, {
+    const stop = startJsonRpcServer((request) => handleRequest(request, connection), transport, {
       nonFatal: true,
       onError(error: unknown, context: JsonRpcServerErrorContext) {
         logger.warn("built_in_browser_bridge.contained_rpc_error", {
@@ -140,6 +145,10 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       activeSockets.delete(conn);
       activeServerHandles.delete(stop);
       stop();
+      // A runtime that exited or crashed mid-recording never sends its stop.
+      // Drop what it started, or the lane's key stays taken and the hidden
+      // encoder window, file handle and drain timer live on.
+      releaseConnectionRecordings(connection);
     });
     conn.on("error", () => {
       // ignore per-connection errors; they are surfaced via the JSON-RPC frame.
@@ -215,7 +224,23 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     throw error;
   }
 
-  async function handleRequest(request: JsonRpcRequest): Promise<unknown> {
+  function releaseConnectionRecordings(connection: BridgeConnectionState): void {
+    const recorder = args.appControlScreencastRecorder ?? null;
+    connection.closed = true;
+    const keys = [...connection.recorderKeys];
+    connection.recorderKeys.clear();
+    if (!recorder || !keys.length) return;
+    for (const key of keys) {
+      try {
+        recorder.cancel?.(key);
+      } catch {
+        // best effort: the next start for the lane reports what is left
+      }
+    }
+    logger.info("built_in_browser_bridge.recordings_released_on_close", { count: keys.length });
+  }
+
+  async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
     const method = request.method ?? "";
     const isRecorderMethod = method.startsWith(APP_CONTROL_RECORDER_BRIDGE_PREFIX);
     if (!method.startsWith("built_in_browser.") && !isRecorderMethod) {
@@ -236,7 +261,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       );
     }
     if (isRecorderMethod) {
-      return await handleAppControlRecorder(name, rawParams);
+      return await handleAppControlRecorder(name, rawParams, connection);
     }
     if (name === "authenticate") {
       return { authenticated: true };
@@ -459,7 +484,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * is the only gate, as for the Work-tools mirror: the caller is the daemon,
    * which decides which lane records. Recordings are keyed per lane.
    */
-  async function handleAppControlRecorder(name: string, params: Record<string, unknown>): Promise<unknown> {
+  async function handleAppControlRecorder(
+    name: string,
+    params: Record<string, unknown>,
+    connection: BridgeConnectionState,
+  ): Promise<unknown> {
     const recorder = args.appControlScreencastRecorder ?? null;
     if (!recorder || !isAppControlRecorderBridgeMethod(name)) {
       throw new JsonRpcError(
@@ -473,16 +502,16 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
     try {
       if (name === "start") {
-        const filePath = normalizedString(params.filePath);
-        // The recorder writes this file, so only an absolute video path is taken.
-        if (!filePath || !path.isAbsolute(filePath) || !/\.(mp4|webm)$/i.test(filePath)) {
-          throw new JsonRpcError(
-            JsonRpcErrorCode.invalidParams,
-            "App Control recorder start needs an absolute .mp4 or .webm file path.",
-          );
-        }
+        const filePath = await resolveRecorderTargetPath(normalizedString(params.filePath));
         const fps = typeof params.fps === "number" && Number.isFinite(params.fps) ? params.fps : 10;
-        return await recorder.start({ key, filePath, fps, keepIdle: params.keepIdle === true });
+        const started = await recorder.start({ key, filePath, fps, keepIdle: params.keepIdle === true });
+        // The caller went away while the recorder was starting; nobody will stop it.
+        if (connection.closed) {
+          recorder.cancel?.(key);
+          return started;
+        }
+        connection.recorderKeys.add(key);
+        return started;
       }
       if (name === "pushFrame") {
         const frame = isRecord(params.frame) ? params.frame : null;
@@ -491,7 +520,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         }
         return { ok: true };
       }
-      if (name === "stop") return await recorder.stop(key);
+      if (name === "stop") {
+        connection.recorderKeys.delete(key);
+        return await recorder.stop(key);
+      }
+      connection.recorderKeys.delete(key);
       recorder.cancel?.(key);
       return { ok: true };
     } catch (error) {
@@ -537,6 +570,32 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
     },
   };
+}
+
+/**
+ * The file an App Control recording may write. The recorder opens it for
+ * writing, so a bridge caller must not be able to name any file it likes: the
+ * runtime reserves recordings under a project's `.ade/artifacts/computer-use`
+ * (`createComputerUseArtifactPath`), and that is the only place taken. The
+ * directory is resolved through symlinks before the check, and the file is
+ * rebuilt from that real directory so a link swapped in later cannot redirect it.
+ */
+async function resolveRecorderTargetPath(filePath: string | null): Promise<string> {
+  const refuse = (): never => {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "App Control recorder start needs an absolute .mp4 or .webm path under a project's .ade/artifacts/computer-use directory.",
+    );
+  };
+  if (!filePath || !path.isAbsolute(filePath) || !/\.(mp4|webm)$/i.test(filePath)) return refuse();
+  const realDir = await fs.promises.realpath(path.dirname(filePath)).catch(() => null);
+  if (!realDir) return refuse();
+  const segments = realDir.split(/[\\/]+/).filter(Boolean).map((segment) => pathComparisonKey(segment));
+  const tail = segments.slice(-3);
+  if (tail.length !== 3 || tail[0] !== ".ade" || tail[1] !== "artifacts" || tail[2] !== "computer-use") {
+    return refuse();
+  }
+  return path.join(realDir, path.basename(filePath));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -61,6 +61,7 @@ import {
   type SyncRosterProvider,
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
+  type SyncHostRemoteCommandExecutor,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
@@ -217,7 +218,7 @@ type SyncServiceArgs = {
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
-  remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop and the TUI; the
@@ -1867,6 +1868,28 @@ export function createSyncService(args: SyncServiceArgs) {
 
     getRemoteCommandDescriptor(action: string) {
       return remoteCommandService.getDescriptor(action);
+    },
+
+    /**
+     * Ends every Mac Desktop and App Control viewer a closed sync socket held
+     * on this project, and gives back the Mac Desktop input leases it took
+     * here. The socket may belong to another project's host, which routed
+     * commands here, so its close handler fans this out to every booted
+     * project scope.
+     */
+    releaseStreamConnection(connectionId: string): void {
+      // Idempotent: the host project also releases its own leases directly.
+      remoteCommandService.releaseMacDesktopConnection(connectionId);
+      for (const stream of [macDesktopSyncStream, appControlSyncStream]) {
+        try {
+          stream?.releaseConnection(connectionId);
+        } catch (error) {
+          args.logger.warn("sync.stream_release_connection_failed", {
+            connectionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
     },
 
     async executeRemoteCommand(

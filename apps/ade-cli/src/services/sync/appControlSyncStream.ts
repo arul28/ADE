@@ -45,6 +45,8 @@ export const APP_CONTROL_SYNC_STREAM_PENDING_LIMIT_BYTES = 1024 * 1024;
 export const APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTION_ID_LENGTH = 128;
 /** One viewer, plus one reconnect that has not released the first yet. */
 export const APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE = 2;
+/** Across every lane: enough for a grid of lane previews, not an unbounded fan-out. */
+export const APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION = 8;
 /** A lane counts as live while its newest frame is younger than this. */
 export const APP_CONTROL_SYNC_STREAM_LIVE_WINDOW_MS = 5_000;
 
@@ -219,6 +221,12 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
   const pendingLimitBytes = Math.max(0, deps.pendingLimitBytes ?? APP_CONTROL_SYNC_STREAM_PENDING_LIMIT_BYTES);
 
   const subscriptions = new Map<string, Subscription>();
+  /**
+   * Subscribe calls still awaiting the status read. An unsubscribe or a
+   * socket close that lands meanwhile marks the entry cancelled, so the call
+   * does not register a subscription nobody will ever release.
+   */
+  const pendingSubscribes = new Set<{ key: string; connectionId: string; laneId: string; cancelled: boolean }>();
   /** sessionId → laneId, learned from session events and status reads. */
   const sessionLanes = new Map<string, string>();
   /** laneId → newest frame, kept by reference. */
@@ -396,12 +404,48 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
     });
   }
 
-  function connectionLaneCount(connectionId: string, laneId: string): number {
+  /**
+   * Live subscriptions this connection holds, on one lane or (laneId null)
+   * across all lanes. With `includePending`, in-flight subscribe calls count
+   * too; the re-check after the await leaves them out, since each one
+   * re-checks for itself when it lands.
+   */
+  function connectionSubscriptionCount(
+    connectionId: string,
+    laneId: string | null,
+    options: { includePending: boolean },
+  ): number {
     let count = 0;
     for (const subscription of subscriptions.values()) {
-      if (subscription.connectionId === connectionId && subscription.laneId === laneId) count += 1;
+      if (subscription.connectionId !== connectionId) continue;
+      if (laneId === null || subscription.laneId === laneId) count += 1;
+    }
+    if (options.includePending) {
+      for (const entry of pendingSubscribes) {
+        if (entry.cancelled || entry.connectionId !== connectionId) continue;
+        if (laneId === null || entry.laneId === laneId) count += 1;
+      }
     }
     return count;
+  }
+
+  function assertUnderSubscriptionLimits(
+    connectionId: string,
+    laneId: string,
+    options: { includePending: boolean },
+  ): void {
+    if (connectionSubscriptionCount(connectionId, laneId, options) >= APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE) {
+      throw new AppControlSyncStreamError(
+        APP_CONTROL_STREAM_SUBSCRIPTION_LIMIT_CODE,
+        `appControl.streamSubscribe allows ${APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE} live subscriptions per connection per lane.`,
+      );
+    }
+    if (connectionSubscriptionCount(connectionId, null, options) >= APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION) {
+      throw new AppControlSyncStreamError(
+        APP_CONTROL_STREAM_SUBSCRIPTION_LIMIT_CODE,
+        `appControl.streamSubscribe allows ${APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION} live subscriptions per connection.`,
+      );
+    }
   }
 
   async function readStatus(
@@ -452,7 +496,6 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
         platform: status?.platform ?? process.platform,
         supported: status?.supported ?? false,
         session: toSyncAppControlSession(session),
-        sessions: [],
         stream: {
           live: Boolean(latestIsCurrent && latest && now() - latest.receivedAtMs < APP_CONTROL_SYNC_STREAM_LIVE_WINDOW_MS),
           lastFrameAt: latestIsCurrent && latest ? latest.frame.capturedAt : null,
@@ -488,13 +531,16 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
         if (existing.laneId === laneId) return existing.result;
         endSubscription(existing, "connection_closed", undefined, { notify: false });
       }
-      if (connectionLaneCount(args.connectionId, laneId) >= APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE) {
-        throw new AppControlSyncStreamError(
-          APP_CONTROL_STREAM_SUBSCRIPTION_LIMIT_CODE,
-          `appControl.streamSubscribe allows ${APP_CONTROL_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE} live subscriptions per connection per lane.`,
-        );
+      assertUnderSubscriptionLimits(args.connectionId, laneId, { includePending: true });
+      if (sink.isClosed?.()) throw new Error("The sync connection closed before appControl.streamSubscribe finished.");
+      const pendingEntry = { key, connectionId: args.connectionId, laneId, cancelled: false };
+      pendingSubscribes.add(pendingEntry);
+      let status: AppControlSyncStatusSource | null;
+      try {
+        status = await readStatus(laneId);
+      } finally {
+        pendingSubscribes.delete(pendingEntry);
       }
-      const status = await readStatus(laneId);
       if (disposed) throw new Error("The App Control sync stream has been disposed.");
       const session = laneSession(status, laneId);
       const latest = latestFrames.get(laneId) ?? null;
@@ -512,6 +558,11 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       const raced = subscriptions.get(key);
       if (raced && raced.laneId === laneId) return raced.result;
       if (raced) endSubscription(raced, "connection_closed", undefined, { notify: false });
+      // An unsubscribe or a socket close landed while the status read was in
+      // flight, or the socket is already gone: registering now would leak a
+      // subscription nothing will ever release.
+      if (pendingEntry.cancelled || sink.isClosed?.()) return result;
+      assertUnderSubscriptionLimits(args.connectionId, laneId, { includePending: false });
       const subscription: Subscription = {
         key,
         subscriptionId,
@@ -574,11 +625,20 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       const id = cleanId(subscriptionId);
       const subscription = id && connectionId ? subscriptions.get(subscriptionKey(connectionId, id)) : undefined;
       if (subscription) endSubscription(subscription, "unsubscribed", undefined, { notify: true });
+      if (id && connectionId) {
+        const key = subscriptionKey(connectionId, id);
+        for (const entry of pendingSubscribes) {
+          if (entry.key === key) entry.cancelled = true;
+        }
+      }
       return { ok: true };
     },
 
     /** Every subscription this sync connection owns is gone. */
     releaseConnection(connectionId: string): void {
+      for (const entry of pendingSubscribes) {
+        if (entry.connectionId === connectionId) entry.cancelled = true;
+      }
       for (const subscription of [...subscriptions.values()]) {
         if (subscription.connectionId !== connectionId) continue;
         endSubscription(subscription, "connection_closed", undefined, { notify: false });
@@ -596,6 +656,8 @@ export function createAppControlSyncStream(deps: AppControlSyncStreamDeps) {
       for (const subscription of [...subscriptions.values()]) {
         endSubscription(subscription, "stopped", undefined, { notify: true });
       }
+      for (const entry of pendingSubscribes) entry.cancelled = true;
+      pendingSubscribes.clear();
       latestFrames.clear();
       sessionLanes.clear();
       try {

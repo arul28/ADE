@@ -70,6 +70,27 @@ The most common defect class in this repo is a change that works on the path you
 - For computer-use changes, treat policy enforcement and artifact ownership as hard requirements, not prompt guidance.
 - `ade search "<query>" --text` searches everything in ADE (chats, terminal scrollback, PRs, commits, branches, lanes, files, Linear) instead of grepping `.ade/` internals; see the ade-search skill.
 
+## Subagents
+
+Agents cost the user real usage, and one agent that starts more agents turns
+into a tree nobody asked for. These rules apply to every agent in this repo,
+including agents started by a skill.
+
+1. **Do the work yourself first.** Start a subagent only when the task is
+   large, truly parallel, or needs an independent second opinion. Batch
+   related work into one agent instead of one agent per item.
+2. **Subagents do not start subagents.** An agent you start is a leaf: it does
+   its own work and returns. It starts another agent only when that is
+   absolutely necessary, and then only one, and it says so in its report.
+3. **Say it in the brief.** Every prompt you give a subagent includes: "Do not
+   start subagents or parallel reviewers; do all the work yourself."
+4. **Tell the user before you start one.** Name the agent, its model and why,
+   in the same message. When the user has asked you to limit agents, a skill
+   that says "spawn one agent per track" means: run the tracks yourself, in
+   order.
+5. **Pick the cheapest model that can do the job.** Leave the most capable
+   model for work that needs it.
+
 ## UI primitives
 
 The desktop renderer has exactly one of each notice and overlay. Read `docs/design/notices.md` before adding any banner, toast, dialog, or popover-like surface. Never invent a new style.

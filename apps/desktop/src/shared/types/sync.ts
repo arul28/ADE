@@ -2081,14 +2081,12 @@ export type SyncAppControlSession = {
 
 /** The `appControl.status` reply. */
 export type SyncAppControlStatus = {
-  /** The lane the caller asked about, or null for a project-wide read. */
+  /** The lane the caller asked about (or the chat's lane); null when neither named one. */
   laneId: string | null;
   platform: string;
   supported: boolean;
-  /** The lane's session. For a project-wide read, the host's active session. */
+  /** The lane's session. Null with no lane: a viewer never falls back to another lane's app. */
   session: SyncAppControlSession | null;
-  /** Every session the host knows about. Filled only for a project-wide read. */
-  sessions: SyncAppControlSession[];
   stream: {
     /** A frame for this lane arrived in the last few seconds. */
     live: boolean;

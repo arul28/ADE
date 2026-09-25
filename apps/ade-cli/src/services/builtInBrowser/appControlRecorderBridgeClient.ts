@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
+import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AppControlScreencastFrame } from "../../../../desktop/src/shared/types/appControl";
 import type {
@@ -34,6 +34,8 @@ const CONNECT_TIMEOUT_MS = 3_000;
 const CALL_TIMEOUT_MS = 30_000;
 /** Stop finalises the file in the renderer and drains the last chunks. */
 const STOP_TIMEOUT_MS = 60_000;
+/** How long dispose lets a last cancel or stop reach the desktop before it closes the socket. */
+const DISPOSE_DRAIN_MS = 2_000;
 
 export function createAppControlRecorderBridgeClient(args: {
   socketPath: string;
@@ -47,10 +49,12 @@ export function createAppControlRecorderBridgeClient(args: {
   let disposed = false;
   const framesInFlight = new Set<string>();
   const pendingFrames = new Map<string, AppControlScreencastFrame>();
+  /** Calls not yet answered, so dispose can let a shutdown's cancels land first. */
+  const inFlight = new Set<Promise<unknown>>();
 
   const ensureClient = async (): Promise<JsonRpcClient> => {
-    if (disposed) throw new Error("The App Control recorder bridge was disposed.");
     if (client) return client;
+    if (disposed) throw new Error("The App Control recorder bridge was disposed.");
     if (!connecting) {
       connecting = (async () => {
         if (!isNamedPipe && !fs.existsSync(socketPath)) {
@@ -79,7 +83,18 @@ export function createAppControlRecorderBridgeClient(args: {
     return await connecting;
   };
 
-  const call = async <T,>(method: AppControlRecorderBridgeMethod, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> => {
+  const call = <T,>(method: AppControlRecorderBridgeMethod, params: Record<string, unknown>, timeoutMs = CALL_TIMEOUT_MS): Promise<T> => {
+    if (disposed) return Promise.reject(new Error("The App Control recorder bridge was disposed."));
+    const run = callNow<T>(method, params, timeoutMs);
+    inFlight.add(run);
+    const forget = (): void => {
+      inFlight.delete(run);
+    };
+    run.then(forget, forget);
+    return run;
+  };
+
+  const callNow = async <T,>(method: AppControlRecorderBridgeMethod, params: Record<string, unknown>, timeoutMs: number): Promise<T> => {
     const token = args.getAuthToken()?.trim();
     if (!token) throw new Error("App Control recording needs the ADE desktop app on this machine, and none is attached.");
     const c = await ensureClient();
@@ -90,7 +105,10 @@ export function createAppControlRecorderBridgeClient(args: {
         { timeoutMs },
       );
     } catch (error) {
-      if (client === c) {
+      // The desktop cancels every recording a connection started when that
+      // connection closes, so an error answer (a stop that captured nothing)
+      // must not drop the socket other lanes' recordings run on.
+      if (client === c && !(error instanceof JsonRpcResponseError)) {
         client = null;
         try { c.close(); } catch { /* ignore */ }
       }
@@ -140,10 +158,30 @@ export function createAppControlRecorderBridgeClient(args: {
     dispose() {
       disposed = true;
       pendingFrames.clear();
-      if (client) {
-        try { client.close(); } catch { /* ignore */ }
+      // Shutdown cancels the running recordings just before this runs; let
+      // those calls reach the desktop, then close. The desktop also cancels a
+      // closed connection's recordings, so a cut-short drain still cleans up.
+      const close = (): void => {
+        const c = client;
         client = null;
+        if (c) {
+          try { c.close(); } catch { /* ignore */ }
+        }
+      };
+      if (!inFlight.size) {
+        close();
+        return;
       }
+      let timer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        timer = null;
+        close();
+      }, DISPOSE_DRAIN_MS);
+      (timer as unknown as { unref?: () => void }).unref?.();
+      void Promise.allSettled([...inFlight]).then(() => {
+        if (timer) clearTimeout(timer);
+        timer = null;
+        close();
+      });
     },
   };
 }

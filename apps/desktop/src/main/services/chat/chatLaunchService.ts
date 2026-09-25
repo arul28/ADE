@@ -180,10 +180,16 @@ function shortFetchError(error: string | null | undefined): string | null {
   return cleaned.length > 120 ? `${cleaned.slice(0, 119)}…` : cleaned;
 }
 
+/** "47 days ago", or "just now" under a minute (never "just now ago"). */
+function laneBaseAgo(ms: number): string {
+  const age = formatLaneBaseAge(ms);
+  return age === "just now" ? age : `${age} ago`;
+}
+
 /** "Fetching latest main (last fetched 47 days ago)" — shown while a stale base waits for the fetch. */
 export function describeStaleFetchWait(remoteRef: string, lastFetchedAtMs: number | null, nowMs: number): string {
   const branch = remoteRef.replace(/^[^/]+\//, "") || remoteRef;
-  const last = lastFetchedAtMs == null ? "never fetched before" : `last fetched ${formatLaneBaseAge(nowMs - lastFetchedAtMs)} ago`;
+  const last = lastFetchedAtMs == null ? "never fetched before" : `last fetched ${laneBaseAgo(nowMs - lastFetchedAtMs)}`;
   return `Fetching latest ${branch} (${last})`;
 }
 
@@ -202,7 +208,7 @@ export function describeUnfetchedBase(args: {
 }): { detail: string; warning: string | null } {
   const { resolution, baseRef, at, nowMs } = args;
   const fetchedAgo = resolution.lastFetchedAtMs != null
-    ? ` (fetched ${formatLaneBaseAge(nowMs - resolution.lastFetchedAtMs)} ago)`
+    ? ` (fetched ${laneBaseAgo(nowMs - resolution.lastFetchedAtMs)})`
     : "";
   let detail: string;
   if (resolution.fetch === "timeout") {
@@ -216,10 +222,11 @@ export function describeUnfetchedBase(args: {
   if (!resolution.stale) return { detail, warning: null };
   const age: string[] = [];
   if (resolution.baseCommittedAtMs != null) {
-    age.push(`its latest commit is ${formatLaneBaseAge(nowMs - resolution.baseCommittedAtMs)} old`);
+    const commitAge = formatLaneBaseAge(nowMs - resolution.baseCommittedAtMs);
+    age.push(commitAge === "just now" ? "its latest commit is from just now" : `its latest commit is ${commitAge} old`);
   }
   age.push(resolution.lastFetchedAtMs != null
-    ? `it was last fetched ${formatLaneBaseAge(nowMs - resolution.lastFetchedAtMs)} ago`
+    ? `it was last fetched ${laneBaseAgo(nowMs - resolution.lastFetchedAtMs)}`
     : "it was never fetched");
   if (resolution.behindLocal != null && resolution.behindLocal > 0) {
     age.push(`it is at least ${resolution.behindLocal} commit${resolution.behindLocal === 1 ? "" : "s"} behind your local ${baseRef.replace(/^[^/]+\//, "")}`);

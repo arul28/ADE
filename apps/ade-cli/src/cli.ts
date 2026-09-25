@@ -2529,8 +2529,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   is cut unless --keep-idle. record stop reports durationMs (video),
   wallDurationMs (real time) and idleCutMs. A captioned video is filed as
   proof under the lane, the chat that started it and the lane's PR. A
-  recording stops itself at its cap (stopReason "cap") or when the app closes
-  (stopReason "app-closed"), and is filed the same way.
+  recording stops itself at its cap (stopReason "cap"), when the app closes
+  (stopReason "app-closed") or when the chat that started it ends (stopReason
+  "chat-ended"), and is filed the same way.
 
   Terminal:
     $ ade app-control logs --text                  Read the launch terminal
@@ -10980,7 +10981,7 @@ function buildIosSimulatorPlan(
   /**
    * One `ios_simulator` action step. `callerRoot` rides beside the args, as
    * for `ade mac-desktop`, so a shell with no chat identity is placed in the
-   * lane whose worktree it stands in (`scopeAppleAdeActionArgs`).
+   * lane whose worktree it stands in (`scopeUnboundAppleAdeActionArgs`).
    */
   const iosStep = (key: string, method: string, payload: JsonObject): InvocationStep =>
     actionStep(key, "ios_simulator", method, payload, proofCallerRootArgs());
@@ -25484,7 +25485,9 @@ function formatAppControlRecording(value: unknown): string {
       ? `at its ${formatProofDuration(maxDurationMs)} cap`
       : status.stopReason === "app-closed"
         ? "the app closed"
-        : null],
+        : status.stopReason === "chat-ended"
+          ? "the chat that started it ended"
+          : null],
     ["caption", status.caption],
     ["screen recording", permissions?.screenRecording],
     [

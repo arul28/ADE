@@ -1621,6 +1621,16 @@ export async function createAdeRuntime(args: {
           isPrimaryLane: async (id) => (await laneService.getSummary(id, { includeStatus: false }))?.laneType === "primary",
         }),
       });
+    // Teardown runs last-in first-out. The recorder bridge client is created
+    // further down, but its release is registered here so it runs AFTER
+    // appControlService.dispose: the service cancels its running recordings
+    // through that client, and a client disposed first drops the cancels,
+    // orphaning the desktop's encoder window for the lane.
+    teardown.push(() => {
+      const bridge = appControlRecorderBridgeHolder.current;
+      appControlRecorderBridgeHolder.current = null;
+      bridge?.dispose();
+    });
     teardown.push(() => appControlService?.dispose());
     if (appControlService) {
       // An archived or deleted lane takes its App Control session with it.
@@ -1720,10 +1730,7 @@ export async function createAdeRuntime(args: {
       });
       appControlRecorderBridgeHolder.current = appControlRecorderBridge;
       appControlRecorderBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
-      teardown.push(() => {
-        appControlRecorderBridgeHolder.current = null;
-        appControlRecorderBridge.dispose();
-      });
+      // Released by the teardown step registered before appControlService's.
     }
     teardown.push(() => {
       builtInBrowserBridgeForCapabilities = null;

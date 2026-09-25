@@ -136,6 +136,8 @@ import {
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import type { ZLayer } from "../ui/zLayers";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -825,7 +827,8 @@ function ComposerIdleSendButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
+        ? (
+          <ComposerMenuLayer layer="popover">
             <div
               data-idle-send-menu
               role="menu"
@@ -834,7 +837,7 @@ function ComposerIdleSendButton({
                 setMenuOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {rows.map((row, index) => (
@@ -867,8 +870,8 @@ function ComposerIdleSendButton({
                   </span>
                 </button>
               ))}
-            </div>,
-            document.body,
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -997,7 +1000,8 @@ function ComposerOverflowMenu({
         </button>
       </SmartTooltip>
       {open && caretRef.current
-        ? createPortal(
+        ? (
+          <ComposerMenuLayer layer="popover">
             <div
               data-composer-overflow-menu
               role="menu"
@@ -1006,7 +1010,7 @@ function ComposerOverflowMenu({
                 setOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
                 {items.map((item) => (
@@ -1040,8 +1044,8 @@ function ComposerOverflowMenu({
                     ) : null}
                   </button>
                 ))}
-            </div>,
-            document.body,
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -1363,6 +1367,15 @@ function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperti
   });
 }
 
+/**
+ * Portal a composer menu into a viewport overlay layer. The layer is the
+ * viewport, so the menu's `absolute` left/top are viewport coordinates, the
+ * same numbers `fixedMenuAboveAnchorStyle` computes for a fixed element.
+ */
+function ComposerMenuLayer({ layer, children }: { layer: ZLayer; children: React.ReactNode }) {
+  return createPortal(<ViewportOverlayHost layer={layer}>{children}</ViewportOverlayHost>, document.body);
+}
+
 function ActiveTurnSendButton({
   enabled,
   mode,
@@ -1448,64 +1461,61 @@ function ActiveTurnSendButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
-            (() => {
-              return (
-                <div
-                  data-active-send-menu
-                  role="menu"
-                  aria-label="Send options"
-                  className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={composerSplitMenuPosition(caretRef.current)}
-                >
-                  {offeredModes.map((option, index) => {
-                    const copy = activeTurnSendCopy(option, capability);
-                    const selected = option === mode;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        onClick={() => {
-                          onModeChange(option);
-                          setMenuOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
-                          index > 0 && "border-t border-white/[0.05]",
-                          option === "interrupt" && "hover:bg-amber-500/[0.08]",
-                        )}
-                      >
-                        <span className={cn(
-                          "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45",
-                          option === "interrupt" && "text-amber-400/80",
-                        )}>
-                          <ActiveTurnSendIcon mode={option} size={13} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
-                            {copy.label}
-                          </span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
-                            {copy.description}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
-                          {selected ? <Check size={11} weight="bold" /> : null}
-                        </span>
-                      </button>
-                    );
-                  })}
-                  {inlineBlockedReason ? (
-                    <div className="border-t border-white/[0.05] px-2.5 py-2 text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
-                      {inlineBlockedReason}
-                    </div>
-                  ) : null}
+        ? (
+          <ComposerMenuLayer layer="popover">
+            <div
+              data-active-send-menu
+              role="menu"
+              aria-label="Send options"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+              {offeredModes.map((option, index) => {
+                const copy = activeTurnSendCopy(option, capability);
+                const selected = option === mode;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      onModeChange(option);
+                      setMenuOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
+                      index > 0 && "border-t border-white/[0.05]",
+                      option === "interrupt" && "hover:bg-amber-500/[0.08]",
+                    )}
+                  >
+                    <span className={cn(
+                      "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45",
+                      option === "interrupt" && "text-amber-400/80",
+                    )}>
+                      <ActiveTurnSendIcon mode={option} size={13} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
+                        {copy.label}
+                      </span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                        {copy.description}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
+                      {selected ? <Check size={11} weight="bold" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+              {inlineBlockedReason ? (
+                <div className="border-t border-white/[0.05] px-2.5 py-2 text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                  {inlineBlockedReason}
                 </div>
-              );
-            })(),
-            document.body,
+              ) : null}
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -1573,51 +1583,48 @@ function ActiveTurnStopButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
-            (() => {
-              return (
-                <div
-                  data-active-stop-menu
-                  role="menu"
-                  aria-label="Stop options"
-                  className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={composerSplitMenuPosition(caretRef.current)}
-                >
-                  {ACTIVE_TURN_STOP_MODES.map((option, index) => {
-                    const copy = chatStopModeCopy(option, backgroundJobCount);
-                    const selected = option === mode;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        onClick={() => {
-                          onModeChange(option);
-                          setMenuOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
-                          index > 0 && "border-t border-white/[0.05]",
-                        )}
-                      >
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
-                          {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
-                        </span>
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
-                          {selected ? <Check size={11} weight="bold" /> : null}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })(),
-            document.body,
+        ? (
+          <ComposerMenuLayer layer="popover">
+            <div
+              data-active-stop-menu
+              role="menu"
+              aria-label="Stop options"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+              {ACTIVE_TURN_STOP_MODES.map((option, index) => {
+                const copy = chatStopModeCopy(option, backgroundJobCount);
+                const selected = option === mode;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      onModeChange(option);
+                      setMenuOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
+                      index > 0 && "border-t border-white/[0.05]",
+                    )}
+                  >
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
+                      {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
+                    </span>
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
+                      {selected ? <Check size={11} weight="bold" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -5302,45 +5309,24 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? createPortal(
-    <div
-      className="fixed z-[1000] overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
-      data-issue-context-menu="true"
-      role="menu"
-      aria-label="Attach issue context"
-      style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
-        width: ISSUE_CONTEXT_MENU_WIDTH,
-        gap: ISSUE_CONTEXT_MENU_GAP,
-        gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
-        align: "end",
-      })}
-    >
-      <div className="border-b border-white/[0.04] px-3 py-2">
-        <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
-      </div>
-      <div className="p-1">
-        <button
-          type="button"
-          className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
-          disabled={!canAttachIssueContext}
-          onClick={() => {
-            if (!canAttachIssueContext) return;
-            setIssueContextMenuOpen(false);
-            setLinearIssuePickerMode("attach");
-            setLinearIssuePickerOpen(true);
-          }}
-        >
-          <span
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-            style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-          >
-            <LinearMark size={11} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">Linear issue</span>
-          </span>
-        </button>
-        {githubRepo ? (
+  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
+    <ComposerMenuLayer layer="contextMenu">
+      <div
+        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
+        data-issue-context-menu="true"
+        role="menu"
+        aria-label="Attach issue context"
+        style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
+          width: ISSUE_CONTEXT_MENU_WIDTH,
+          gap: ISSUE_CONTEXT_MENU_GAP,
+          gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+          align: "end",
+        })}
+      >
+        <div className="border-b border-white/[0.04] px-3 py-2">
+          <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
+        </div>
+        <div className="p-1">
           <button
             type="button"
             className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
@@ -5348,24 +5334,46 @@ export function AgentChatComposer({
             onClick={() => {
               if (!canAttachIssueContext) return;
               setIssueContextMenuOpen(false);
-              setGitHubIssuePickerMode("attach");
-              setGitHubIssuePickerOpen(true);
+              setLinearIssuePickerMode("attach");
+              setLinearIssuePickerOpen(true);
             }}
           >
             <span
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-              style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
             >
-              <GithubLogo size={13} weight="fill" />
+              <LinearMark size={11} />
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block font-medium">GitHub issue</span>
+              <span className="block font-medium">Linear issue</span>
             </span>
           </button>
-        ) : null}
+          {githubRepo ? (
+            <button
+              type="button"
+              className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+              disabled={!canAttachIssueContext}
+              onClick={() => {
+                if (!canAttachIssueContext) return;
+                setIssueContextMenuOpen(false);
+                setGitHubIssuePickerMode("attach");
+                setGitHubIssuePickerOpen(true);
+              }}
+            >
+              <span
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+                style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+              >
+                <GithubLogo size={13} weight="fill" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">GitHub issue</span>
+              </span>
+            </button>
+          ) : null}
+        </div>
       </div>
-    </div>,
-    document.body,
+    </ComposerMenuLayer>
   ) : null;
 
   const selectedLinearContextIssue = (

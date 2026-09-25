@@ -101,8 +101,22 @@ export function gitOwnershipReason(problem: GitOwnershipProblem): string {
   return `Git does not trust ${problem.path} because it belongs to ${who}, not to you.`;
 }
 
+/**
+ * Quote one shell argument so the suggested command survives a paste. Windows:
+ * double quotes, which PowerShell and cmd both accept (an embedded `"` is
+ * doubled; paths cannot contain one anyway). POSIX: single quotes, with the
+ * standard `'\''` escape for an embedded `'`.
+ */
+function quoteShellArg(value: string, platform: NodeJS.Platform): string {
+  if (platform === "win32") return `"${value.replace(/"/g, '""')}"`;
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
 /** The human sentence ADE shows in place of git's refusal, wherever it surfaces. */
-export function gitOwnershipMessage(problem: GitOwnershipProblem): string {
+export function gitOwnershipMessage(
+  problem: GitOwnershipProblem,
+  platform: NodeJS.Platform = process.platform,
+): string {
   return `${gitOwnershipReason(problem)} Open the folder in ADE to trust it, or run: `
-    + `git config --global --add safe.directory ${gitSafeDirectorySpec(problem.path)}`;
+    + `git config --global --add safe.directory ${quoteShellArg(gitSafeDirectorySpec(problem.path), platform)}`;
 }

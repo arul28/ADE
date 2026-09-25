@@ -92,6 +92,12 @@ function secondsToMs(value: string | null): number | null {
   return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
 }
 
+/** `origin/main@{1727000000}` (from `--date=unix --format=%gd`) → epoch ms. */
+function reflogSelectorToMs(value: string | null): number | null {
+  const match = value?.trim().match(/@\{(\d+)\}\s*$/);
+  return match ? secondsToMs(match[1] ?? null) : null;
+}
+
 /**
  * FETCH_HEAD's mtime (path from `git rev-parse --git-path`, so worktrees and
  * Windows resolve it), or the remote ref's newest reflog entry — whichever is
@@ -115,7 +121,9 @@ export async function readGitLaneBaseFreshness(args: {
   };
   const [fetchHeadAt, reflogAt, committedAt, behind] = await Promise.all([
     fetchHeadStat(),
-    gitOutput(["log", "-g", "-1", "--format=%ct", `refs/remotes/${ref}`, "--"], cwd).then(secondsToMs),
+    // `%gd` with `--date=unix` is the reflog entry's own time
+    // (`origin/main@{1727000000}`); `%ct` would be the commit's committer date.
+    gitOutput(["log", "-g", "-1", "--date=unix", "--format=%gd", `refs/remotes/${ref}`, "--"], cwd).then(reflogSelectorToMs),
     gitOutput(["log", "-1", "--format=%ct", `${ref}^{commit}`, "--"], cwd).then(secondsToMs),
     localBranch
       ? gitOutput(["rev-list", "--count", `${ref}..refs/heads/${localBranch}`, "--"], cwd)
@@ -194,15 +202,13 @@ export async function resolveLaneCreateRemoteBaseDetailed(
     const localBranch = remoteCandidate ? defaultBranch : null;
 
     // How old the base was before this fetch — "last fetched" as the user
-    // knew it. Read only once the fast wait runs out (git writes FETCH_HEAD and
-    // the ref at the end of a fetch), so a quick fetch costs nothing extra.
-    let freshnessBeforeRead: Promise<LaneBaseFreshness> | null = null;
-    const freshnessBefore = (): Promise<LaneBaseFreshness> => {
-      freshnessBeforeRead ??= cwd && remoteCandidate
-        ? readFreshness({ ref: remoteCandidate, cwd, localBranch }).catch(() => UNKNOWN_FRESHNESS)
-        : Promise.resolve(UNKNOWN_FRESHNESS);
-      return freshnessBeforeRead;
-    };
+    // knew it. Started before the fetch: a fetch re-stamps FETCH_HEAD and the
+    // ref's reflog, so reading afterwards would always look fresh. The catch
+    // is attached now, so a fetch that fails first leaves no unhandled rejection.
+    const freshnessBeforeRead: Promise<LaneBaseFreshness> = cwd && remoteCandidate
+      ? readFreshness({ ref: remoteCandidate, cwd, localBranch }).catch(() => UNKNOWN_FRESHNESS)
+      : Promise.resolve(UNKNOWN_FRESHNESS);
+    const freshnessBefore = (): Promise<LaneBaseFreshness> => freshnessBeforeRead;
     const fetchResult: Promise<{ outcome: LaneBaseFetchOutcome; error: string | null }> = gitService
       .fetch({ laneId: primary.id })
       .then(() => ({ outcome: "ok" as const, error: null }))

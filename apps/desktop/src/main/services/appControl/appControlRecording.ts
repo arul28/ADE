@@ -12,8 +12,8 @@
  *    `wallDurationMs` the real time it covers, `idleCutMs` the difference.
  * 4. A caption files the video as proof: owners are the lane, the chat and the
  *    lane's pull request. With no caption it stays a scratch file, except when
- *    the cap or the app closing ended a chat's recording — then it files itself
- *    with a default caption, as Mac Desktop's cap does.
+ *    the cap, the app closing or the chat ending stopped a chat's recording —
+ *    then it files itself with a default caption, as Mac Desktop's cap does.
  *
  * Two engines make the video:
  *
@@ -221,6 +221,7 @@ function recordingProofDescription(lead: string, status: AppControlRecordingStat
       ? `Stopped at its ${formatProofDuration(status.maxDurationMs)} cap.`
       : null,
     status.stopReason === "app-closed" ? "Stopped when the app's window closed." : null,
+    status.stopReason === "chat-ended" ? "Stopped when the chat that started it ended." : null,
   ].filter(Boolean).join(" ");
 }
 
@@ -234,6 +235,10 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
   const recordingAppTitles = new Map<string, string>();
   const capTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const stopping = new Map<string, Promise<AppControlRecordingStatus>>();
+  /** laneId → the start in flight, so a second start joins it instead of racing the engine. */
+  const starting = new Map<string, Promise<AppControlRecordingStatus>>();
+  /** laneId → bumped by forgetLane, so a start that was in flight when the lane went away discards itself. */
+  const laneEpochs = new Map<string, number>();
   /** laneId → the screencast backend a running recording feeds. */
   const screencastBackends = new Map<string, AppControlScreencastRecorderBackend>();
 
@@ -386,12 +391,47 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     return started.filePath;
   };
 
-  const startRecording = async (
+  /** Drops what an engine started for a start that no longer has a lane or session to belong to. */
+  const discardStartedEngine = async (laneId: string, engine: AppControlRecordingEngine): Promise<void> => {
+    const key = appControlRecordingKey(laneId);
+    try {
+      if (engine === "window-capture") {
+        await deps.windowRecorder?.stop(key);
+      } else {
+        const backend = screencastBackends.get(laneId);
+        screencastBackends.delete(laneId);
+        backend?.cancel?.(key);
+      }
+    } catch (error) {
+      deps.logger.debug("app_control.recording.discard_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const startRecording = (
     laneId: string,
     args: AppControlRecordStartArgs,
   ): Promise<AppControlRecordingStatus> => {
     const existing = recordings.get(laneId);
-    if (existing?.running) return existing;
+    if (existing?.running) return Promise.resolve(existing);
+    const pending = starting.get(laneId);
+    if (pending) return pending;
+    const run = beginRecording(laneId, args);
+    starting.set(laneId, run);
+    const forget = (): void => {
+      if (starting.get(laneId) === run) starting.delete(laneId);
+    };
+    run.then(forget, forget);
+    return run;
+  };
+
+  const beginRecording = async (
+    laneId: string,
+    args: AppControlRecordStartArgs,
+  ): Promise<AppControlRecordingStatus> => {
+    const epoch = laneEpochs.get(laneId) ?? 0;
     const inFlight = stopping.get(laneId);
     if (inFlight) await inFlight.catch(() => null);
     const session = deps.getSession(laneId);
@@ -416,6 +456,23 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     const filePath = engine === "window-capture"
       ? await startWindowCapture(laneId, session, request)
       : await startScreencast(laneId, request);
+    // The awaits above leave room for the lane to close or its session to
+    // change. A recording that outlived its session would run uncapped with
+    // nothing to stop it, so drop it here instead.
+    const current = deps.getSession(laneId);
+    if (
+      (laneEpochs.get(laneId) ?? 0) !== epoch
+      || !current
+      || current.id !== session.id
+      || !["connected", "running", "starting"].includes(current.status)
+    ) {
+      await discardStartedEngine(laneId, engine);
+      deps.logger.info("app_control.recording.start_discarded", { laneId, engine });
+      throw new AppControlRecordingError(
+        APP_CONTROL_RECORDING_NOT_RUNNING_CODE,
+        "The lane's App Control app stopped while the recording was starting, so nothing is being recorded.",
+      );
+    }
     recordingPaths.set(laneId, filePath);
     const maxDurationMs = capFromSeconds(args.maxSeconds ?? null)
       ?? (chatSessionId ? MAC_DESKTOP_RECORDING_MAX_MS : null);
@@ -667,10 +724,21 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       const lanes = [...recordings.values()]
         .filter((status) => status.running && status.chatSessionId === chatId)
         .map((status) => status.laneId);
-      await Promise.all(lanes.map((laneId) => stopRecording(laneId, chatId, "requested").catch(() => null)));
+      await Promise.all(lanes.map((laneId) => stopRecording(laneId, chatId, "chat-ended").catch(() => null)));
     },
 
+    /** Waits for a start in flight on the lane, so a caller reads the settled recording state. Never throws. */
+    async settleStart(laneId: string): Promise<void> {
+      await starting.get(laneId)?.catch(() => null);
+    },
+
+    /**
+     * Drops the lane's recording state. A start still in flight sees the lane
+     * went away when its engine answers, and discards what it started.
+     */
     forgetLane(laneId: string): void {
+      laneEpochs.set(laneId, (laneEpochs.get(laneId) ?? 0) + 1);
+      starting.delete(laneId);
       clearCap(laneId);
       recordings.delete(laneId);
       recordingPaths.delete(laneId);

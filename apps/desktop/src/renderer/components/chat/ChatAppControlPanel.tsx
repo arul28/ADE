@@ -68,10 +68,9 @@ import { AppControlOffCard } from "./AppControlOffCard";
 import { AppControlStatusStrip, type AppControlStripMessage } from "./AppControlStatusStrip";
 import { AppControlStopConfirm, appControlStopQuitsApp } from "./AppControlStopConfirm";
 import { MacDesktopStateCard, MAC_DESKTOP_SECONDARY_BUTTON } from "./MacDesktopStateCard";
-import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
 import { RecordingSavedRow } from "../shared/RecordingReceipt";
 import { formatRecordingElapsed } from "../shared/recordingFormat";
-import { useAppControlRecording } from "./useAppControlRecording";
+import { AppControlCaptionForm, AppControlRecordingPermissionCard, useAppControlCapture } from "./AppControlCapture";
 import { appControlProofCaption } from "../../../shared/proofProvenance";
 import {
   CURSOR_TRACE_ACTIONS,
@@ -433,10 +432,6 @@ export function ChatAppControlPanel({
   const [agentCursor, setAgentCursor] = useState<AgentCursorState | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
-  /** The caption a Record or Proof press asks for, or null when not asking. */
-  const [captionDraft, setCaptionDraft] = useState<string | null>(null);
-  /** Which button the caption prompt belongs to. */
-  const [captionFor, setCaptionFor] = useState<"record" | "proof">("record");
   const [agentDrivingAt, setAgentDrivingAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const lastTraceIdRef = useRef<string | null>(null);
@@ -1346,43 +1341,16 @@ export function ChatAppControlPanel({
     setWorkViewState(projectStateKey, { workSidebarOpen: false });
   }, [maximize, projectStateKey, sessionId, setWorkViewState]);
 
-  const recorder = useAppControlRecording({
+  const closeStopConfirm = useCallback(() => setConfirmStop(false), []);
+  const capture = useAppControlCapture({
     laneId: eventLaneId,
     chatSessionId: sessionId,
     runtimePin,
     enabled: hasActiveSession,
+    defaultCaption: appControlProofCaption(appName, laneName),
+    onCaptionOpen: closeStopConfirm,
   });
-  // The app's page title and the lane; the service files the same default.
-  const defaultCaption = appControlProofCaption(appName, laneName);
-  const toggleRecording = useCallback(() => {
-    if (recorder.running) {
-      void recorder.stop();
-      return;
-    }
-    // A person pressing Record wants the file kept, and a caption is what
-    // files it as proof. So Record asks for one, prefilled.
-    setConfirmStop(false);
-    setCaptionDraft((current) => (current != null && captionFor === "record" ? null : defaultCaption));
-    setCaptionFor("record");
-  }, [captionFor, defaultCaption, recorder]);
-  // Proof: one still of the app, filed as proof. Like Record, it asks for a
-  // caption, prefilled, because the caption is what a reviewer judges it on.
-  const toggleProof = useCallback(() => {
-    setConfirmStop(false);
-    setCaptionDraft((current) => (current != null && captionFor === "proof" ? null : defaultCaption));
-    setCaptionFor("proof");
-  }, [captionFor, defaultCaption]);
-  const submitCaption = useCallback(() => {
-    if (captionFor === "proof") {
-      const caption = captionDraft?.trim() || defaultCaption;
-      setCaptionDraft(null);
-      void recorder.captureProof(caption);
-      return;
-    }
-    const caption = captionDraft?.trim() || defaultCaption;
-    setCaptionDraft(null);
-    void recorder.start(caption);
-  }, [captionDraft, captionFor, defaultCaption, recorder]);
+  const { recorder, captionDraft, captionFor, toggleRecording, toggleProof, closeCaption } = capture;
 
   // "The agent is driving" fades a few seconds after its last action. One
   // timer per action, never a poll.
@@ -1396,7 +1364,6 @@ export function ChatAppControlPanel({
   useEffect(() => {
     if (hasActiveSession) return;
     setConfirmStop(false);
-    setCaptionDraft(null);
   }, [hasActiveSession]);
 
   /**
@@ -1617,7 +1584,7 @@ export function ChatAppControlPanel({
         disabled={!canStop || Boolean(busy)}
         disabledReason="No session to stop."
         onSelect={() => {
-          setCaptionDraft(null);
+          closeCaption();
           setConfirmStop(true);
           close();
         }}
@@ -1644,8 +1611,8 @@ export function ChatAppControlPanel({
       )}
     </>
   ), [
-    activeDriver, activeSession, attachSelection, busy, canFloat, canSendToChat, canStop, controlsDisabled,
-    drivers, focusWindow, hasActiveSession, minimizeWindow, observeMapOn, onAddAttachment, onAddContext,
+    activeDriver, activeSession, attachSelection, busy, canFloat, canSendToChat, canStop, closeCaption,
+    controlsDisabled, drivers, focusWindow, hasActiveSession, minimizeWindow, observeMapOn, onAddAttachment, onAddContext,
     onShowTerminal, refreshSnapshot, runBusy, runObserve, screenshotToChat, selectedPoint, sessionConnected,
     showFloating, traceOpen,
   ]);
@@ -1699,7 +1666,7 @@ export function ChatAppControlPanel({
       <WorkToolChromeButton
         label={appControlStopQuitsApp(activeSession) ? "Stop app" : "Detach from app"}
         onClick={() => {
-          setCaptionDraft(null);
+          closeCaption();
           setConfirmStop((current) => !current);
         }}
         disabled={!canStop || busy === "stop"}
@@ -2019,84 +1986,9 @@ export function ChatAppControlPanel({
         />
       ) : null}
 
-      {captionDraft != null && hasActiveSession ? (
-        <form
-          role="dialog"
-          aria-label={captionFor === "proof" ? "Save screenshot to proof" : "Record this app"}
-          data-testid="app-control-caption-prompt"
-          className="mx-2 mt-1.5 flex min-w-0 shrink-0 flex-wrap items-center gap-2 rounded-[10px] border border-border bg-surface px-3 py-2 font-sans text-[12px] text-fg"
-          onSubmit={(event) => {
-            event.preventDefault();
-            submitCaption();
-          }}
-          onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
-            event.stopPropagation();
-            setCaptionDraft(null);
-          }}
-        >
-          <label className="flex min-w-0 flex-1 basis-[180px] flex-col gap-1">
-            <span className="text-muted-fg">
-              {captionFor === "proof" ? "Caption. It files the screenshot as proof." : "Caption. It files the video as proof."}
-            </span>
-            <input
-              autoFocus
-              value={captionDraft}
-              onChange={(event) => setCaptionDraft(event.target.value)}
-              aria-label={captionFor === "proof" ? "Proof caption" : "Recording caption"}
-              className="h-7 min-w-0 rounded-[7px] border border-border/70 bg-[color-mix(in_srgb,var(--color-bg)_55%,transparent)] px-2 text-[12px] text-fg outline-none focus:border-[color-mix(in_srgb,var(--color-accent)_45%,transparent)]"
-            />
-          </label>
-          <div className="flex shrink-0 items-center gap-2 self-end">
-            <button type="button" className={cn(MAC_DESKTOP_SECONDARY_BUTTON, "h-7")} onClick={() => setCaptionDraft(null)}>
-              Cancel
-            </button>
-            {captionFor === "proof" ? (
-              <button
-                type="submit"
-                data-testid="app-control-proof-save"
-                disabled={recorder.proofBusy}
-                className={cn(MAC_DESKTOP_SECONDARY_BUTTON, "h-7")}
-              >
-                <SealCheck size={12} />
-                Save to proof
-              </button>
-            ) : (
-              <button
-                type="submit"
-                data-testid="app-control-record-start"
-                disabled={recorder.busy}
-                className={cn(
-                  MAC_DESKTOP_SECONDARY_BUTTON,
-                  "h-7 border-[color-mix(in_srgb,var(--color-error)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-error)_14%,transparent)] hover:bg-[color-mix(in_srgb,var(--color-error)_22%,transparent)]",
-                )}
-              >
-                <Record size={12} weight="fill" className="text-[var(--color-error)]" />
-                Record
-              </button>
-            )}
-          </div>
-        </form>
-      ) : null}
+      {hasActiveSession ? <AppControlCaptionForm capture={capture} /> : null}
 
-      {recorder.missingPermissions.length > 0 && recorder.permissions ? (
-        <div className="mx-2 mt-1.5 shrink-0">
-          <MacDesktopPermissionCard
-            variant="inline"
-            productName="App Control"
-            purposes={{ screenRecording: "Records the app's window. Driving the app does not need it." }}
-            permissions={{ screenRecording: recorder.permissions.screenRecording, accessibility: "granted" }}
-            appName="ADE"
-            signing="unknown"
-            hostIsLocal={recorder.hostIsLocal}
-            machineName={remoteLabel}
-            checking={recorder.checkingPermissions}
-            lastCheck={recorder.permissionCheck}
-            onOpenSettings={recorder.openSettings}
-            onCheckAgain={() => void recorder.checkPermissionsAgain()}
-          />
-        </div>
-      ) : null}
+      <AppControlRecordingPermissionCard capture={capture} machineName={remoteLabel} />
 
       {renderBody()}
 

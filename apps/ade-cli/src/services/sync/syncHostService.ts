@@ -1266,7 +1266,7 @@ type SyncHostServiceArgs = {
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
-  remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -1584,6 +1584,15 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
   "chat_history",
   "chat_tool_result",
 ]);
+
+/**
+ * Runs a command in the project it names. `releaseStreamConnection` ends the
+ * live viewers a closed socket held in every booted project, since commands
+ * routed to another project subscribed on that project's streams.
+ */
+export type SyncHostRemoteCommandExecutor = Pick<SyncRemoteCommandService, "execute"> & {
+  releaseStreamConnection?(connectionId: string): void;
+};
 
 type SyncHostProjectScopeResolution =
   | {
@@ -3839,6 +3848,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       macDesktopSyncStream?.releaseConnection(peer.macDesktopConnectionId);
       // Same for App Control viewers on this socket.
       args.appControlSyncStream?.releaseConnection(peer.macDesktopConnectionId);
+      // Commands this socket sent to other projects subscribed on those
+      // projects' streams; release it in every booted project scope too.
+      try {
+        args.remoteCommandExecutor?.releaseStreamConnection?.(peer.macDesktopConnectionId);
+      } catch (error) {
+        args.logger.warn("sync_host.release_stream_connection_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       // A socket that was driving a lane's display gives the input lease back
       // now rather than at the TTL. Fire and forget: the lease's own deadline
       // is still the guarantee, and a return that loses a race with a new

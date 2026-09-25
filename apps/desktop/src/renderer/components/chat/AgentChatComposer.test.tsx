@@ -3000,9 +3000,11 @@ describe("AgentChatComposer", () => {
     const menu = document.body.querySelector("[data-issue-context-menu]");
     const composerShell = container.querySelector("[data-chat-composer-mode]");
     expect(menu).toBeTruthy();
-    expect(menu?.parentElement).toBe(document.body);
+    // Portalled into a viewport-fixed overlay layer on <body>, not inside the shell.
+    const layer = menu?.parentElement as HTMLElement | null;
+    expect(layer?.parentElement).toBe(document.body);
+    expect(layer?.style.position).toBe("fixed");
     expect(composerShell?.contains(menu)).toBe(false);
-    expect((menu as HTMLElement).className).toContain("fixed");
   });
 
   it("offers Linear settings when issue search needs a connection", async () => {

@@ -6745,22 +6745,45 @@ app.whenReady().then(async () => {
    * `trustGitOwnership`, and only then is that one folder added to their
    * global safe.directory list. Nothing else — background scans, agents, the
    * CLI, mobile — ever trusts a folder.
+   *
+   * The flag alone is not enough: main records which renderer it asked, about
+   * which folder, and honours `trustGitOwnership` once, only from that
+   * renderer and only for that folder. A renderer that sends the flag on a
+   * first call, or for a folder it was never asked about, gets the prompt.
    */
+  /** webContents id → the folder main asked that renderer to trust. Spent on the next answer. */
+  const pendingGitTrustPrompts = new Map<number, { gitPath: string; expiresAt: number }>();
+  const GIT_TRUST_PROMPT_TTL_MS = 10 * 60_000;
+
   const resolveRepoRootForUserOpen = async (
     selectedPath: string,
     trustGitOwnership: boolean,
+    webContentsId: number | null,
   ): Promise<string> => {
+    // A trust answer is spent by the call that carries it, whatever happens.
+    const asked = trustGitOwnership && webContentsId != null ? pendingGitTrustPrompts.get(webContentsId) ?? null : null;
+    if (trustGitOwnership && webContentsId != null) pendingGitTrustPrompts.delete(webContentsId);
     try {
       return await resolveRepoRoot(selectedPath);
     } catch (error) {
       const problem = gitUntrustedFolderProblem(error);
       if (!problem) throw error;
-      if (!trustGitOwnership) {
+      const answered = Boolean(
+        asked && asked.expiresAt > Date.now() && pathsEqual(asked.gitPath, problem.path),
+      );
+      if (!answered) {
         projectOpenLogger.info("project.open.git_untrusted_folder", {
           selectedPath,
           gitPath: problem.path,
           owner: problem.owner ?? null,
+          ...(trustGitOwnership ? { unaskedTrust: true } : {}),
         });
+        if (webContentsId != null) {
+          pendingGitTrustPrompts.set(webContentsId, {
+            gitPath: problem.path,
+            expiresAt: Date.now() + GIT_TRUST_PROMPT_TTL_MS,
+          });
+        }
         throw codedError(gitOwnershipReason(problem), GIT_UNTRUSTED_FOLDER_CODE);
       }
       const trusted = await trustGitSafeDirectory(problem.path);
@@ -6782,7 +6805,7 @@ app.whenReady().then(async () => {
 
   const switchProjectFromDialog = async (
     selectedPath: string,
-    options: { trustGitOwnership?: boolean } = {},
+    options: { trustGitOwnership?: boolean; webContentsId?: number | null } = {},
   ): Promise<ProjectInfo> => {
     const startedAt = Date.now();
     const windowId = currentIpcWindowId();
@@ -6840,7 +6863,11 @@ app.whenReady().then(async () => {
     try {
       const resolveStartedAt = Date.now();
       repoRoot = normalizeProjectRoot(
-        await resolveRepoRootForUserOpen(selectedPath, options.trustGitOwnership === true),
+        await resolveRepoRootForUserOpen(
+          selectedPath,
+          options.trustGitOwnership === true,
+          options.webContentsId ?? null,
+        ),
       ); // require a real git repo for onboarding.
       // INVARIANT: a root is recorded as "attempted" only once it has been
       // proven to be a real git repository on disk — `resolveRepoRoot` throws

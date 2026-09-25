@@ -1805,7 +1805,10 @@ export function registerIpc({
   injectedProjectRecoveryService?: ProjectRecoveryService | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
-  switchProjectFromDialog: (selectedPath: string, options?: { trustGitOwnership?: boolean }) => Promise<ProjectInfo>;
+  switchProjectFromDialog: (
+    selectedPath: string,
+    options?: { trustGitOwnership?: boolean; webContentsId?: number | null },
+  ) => Promise<ProjectInfo>;
   /**
    * Roots main has tried to open. Read-only here: main.ts is the single
    * writer (it records a root only after resolving it to a real repository),
@@ -4253,9 +4256,11 @@ export function registerIpc({
       if (requestedRoot) {
         chosenRoot = requestedRoot;
         // `trustGitOwnership` is the user's "Trust" answer to the
-        // git_untrusted_folder prompt for this same folder.
+        // git_untrusted_folder prompt for this same folder. Main honours it
+        // only when it asked this renderer about this folder.
         return await switchProjectFromDialog(requestedRoot, {
           trustGitOwnership: args.trustGitOwnership === true,
+          webContentsId: event.sender.id,
         });
       }
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
@@ -4269,7 +4274,7 @@ export function registerIpc({
       }
       const selected = result.filePaths[0]!;
       chosenRoot = selected;
-      return await switchProjectFromDialog(selected);
+      return await switchProjectFromDialog(selected, { webContentsId: event.sender.id });
     } catch (error) {
       return surfaceCodedError(error, chosenRoot ? { rootPath: chosenRoot } : undefined);
     }
@@ -4696,13 +4701,13 @@ export function registerIpc({
     return listRecentProjectSummaries({ force: true });
   });
 
-  ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
+  ipcMain.handle(IPC.projectSwitchToPath, async (event, arg: { rootPath: string }): Promise<ProjectInfo> => {
     try {
       const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       if (!rootPath) return getCtx().project;
       const ctx = getCtx();
       if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
-      return await switchProjectFromDialog(rootPath);
+      return await switchProjectFromDialog(rootPath, { webContentsId: event.sender.id });
     } catch (error) {
       return surfaceCodedError(error);
     }

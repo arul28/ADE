@@ -205,6 +205,12 @@ export function createAppControlScreencastRecorderHost(deps: { logger: Logger })
   dispose(): void;
 } {
   const entries = new Map<string, Entry>();
+  /**
+   * Keys whose start is still loading its window. Reserved before the first
+   * await so a second start for the key is refused instead of building a
+   * second hidden window; `true` once a cancel asked the start to give up.
+   */
+  const reserved = new Map<string, boolean>();
 
   const call = <T,>(entry: Entry, source: string, label: string): Promise<T> =>
     withTimeout(entry.window.webContents.executeJavaScript(source, true) as Promise<T>, label);
@@ -255,7 +261,11 @@ export function createAppControlScreencastRecorderHost(deps: { logger: Logger })
 
   return {
     async start(args) {
-      if (entries.has(args.key)) throw new Error(`A recording for ${args.key} is already running.`);
+      if (entries.has(args.key) || reserved.has(args.key)) {
+        throw new Error(`A recording for ${args.key} is already running.`);
+      }
+      reserved.set(args.key, false);
+      let file: fs.promises.FileHandle | null = null;
       const window = new BrowserWindow({
         show: false,
         width: 64,
@@ -285,7 +295,14 @@ export function createAppControlScreencastRecorderHost(deps: { logger: Logger })
         const extension = mime.startsWith("video/mp4") ? ".mp4" : ".webm";
         const filePath = `${args.filePath.slice(0, args.filePath.length - path.extname(args.filePath).length)}${extension}`;
         await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-        const file = await fs.promises.open(filePath, "w");
+        // "wx": the path is freshly reserved, so an existing file is never someone else's to overwrite.
+        file = await fs.promises.open(filePath, "wx");
+        if (reserved.get(args.key) === true) {
+          await file.close().catch(() => {});
+          file = null;
+          await fs.promises.rm(filePath, { force: true }).catch(() => {});
+          throw new Error(`The recording for ${args.key} was cancelled while it was starting.`);
+        }
         const entry: Entry = {
           window,
           filePath,
@@ -304,6 +321,7 @@ export function createAppControlScreencastRecorderHost(deps: { logger: Logger })
             });
           });
         }, DRAIN_INTERVAL_MS);
+        reserved.delete(args.key);
         entries.set(args.key, entry);
         // A closed renderer (crash, GPU loss) ends the recording's source;
         // the stop that follows reports what was written.
@@ -313,6 +331,8 @@ export function createAppControlScreencastRecorderHost(deps: { logger: Logger })
         deps.logger.info("app_control.screencast_recorder.started", { key: args.key, mime, keepIdle: args.keepIdle });
         return { filePath };
       } catch (error) {
+        reserved.delete(args.key);
+        await file?.close().catch(() => {});
         if (!window.isDestroyed()) window.destroy();
         throw error;
       }
@@ -366,6 +386,7 @@ export function createAppControlScreencastRecorderHost(deps: { logger: Logger })
     },
 
     cancel(key) {
+      if (reserved.has(key)) reserved.set(key, true);
       const entry = entries.get(key);
       if (!entry) return;
       entry.stopping = true;
@@ -373,6 +394,7 @@ export function createAppControlScreencastRecorderHost(deps: { logger: Logger })
     },
 
     dispose() {
+      for (const key of reserved.keys()) reserved.set(key, true);
       for (const [key, entry] of [...entries]) {
         entry.stopping = true;
         void teardown(key, entry, false);
