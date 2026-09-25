@@ -231,6 +231,181 @@ describe("createAgentChatService", () => {
       await sendPromise;
     });
 
+    it("re-emits an OpenCode tool part when its input arrives before completion", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let releaseStream!: () => void;
+      const streamGate = new Promise<void>((resolve) => { releaseStream = () => resolve(); });
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          await streamGate;
+          yield { type: "finish", usage: {} };
+        })(),
+      }) as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        modelId: "opencode/openai/gpt-5.4",
+      });
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "Run the test suite." });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope => event.event.type === "status" && event.event.turnStatus === "started",
+      );
+      const state = [...mockState.openCodeSessions.values()][0]!;
+      const pushEvents = (...nextEvents: any[]): void => {
+        state.events.push(...nextEvents);
+        state.waiters.splice(0).forEach((waiter) => waiter());
+      };
+      pushEvents(
+        {
+          type: "message.updated",
+          properties: { info: { id: "assistant-tool-msg", sessionID: "opencode-session-1", role: "assistant" } },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part-late-input",
+              sessionID: "opencode-session-1",
+              messageID: "assistant-tool-msg",
+              type: "tool",
+              callID: "tool-call-late-input",
+              tool: "bash",
+              state: { status: "pending" },
+            },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part-late-input",
+              sessionID: "opencode-session-1",
+              messageID: "assistant-tool-msg",
+              type: "tool",
+              callID: "tool-call-late-input",
+              tool: "bash",
+              state: { status: "pending", input: { command: "npm" } },
+            },
+          },
+        },
+      );
+
+      const withInput = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> } =>
+          event.event.type === "tool_call"
+          && event.event.itemId === "tool-call-late-input"
+          && (event.event.args as { command?: string })?.command === "npm",
+      );
+      pushEvents({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "tool-part-late-input",
+            sessionID: "opencode-session-1",
+            messageID: "assistant-tool-msg",
+            type: "tool",
+            callID: "tool-call-late-input",
+            tool: "bash",
+            state: { status: "pending", input: { command: "npm test" } },
+          },
+        },
+      });
+      const refinedInput = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> } =>
+          event.event.type === "tool_call"
+          && event.event.itemId === "tool-call-late-input"
+          && (event.event.args as { command?: string })?.command === "npm test",
+      );
+      const toolCalls = events.filter((entry) =>
+        entry.event.type === "tool_call" && entry.event.itemId === "tool-call-late-input");
+      expect(toolCalls).toHaveLength(3);
+      expect(toolCalls[0]?.event).not.toMatchObject({ args: { command: "npm test" } });
+      expect(withInput.event.args).toEqual({ command: "npm" });
+      expect(refinedInput.event.args).toEqual({ command: "npm test" });
+      expect(events.some((entry) => entry.event.type === "tool_result" && entry.event.itemId === "tool-call-late-input"))
+        .toBe(false);
+      pushEvents({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "tool-part-late-input",
+            sessionID: "opencode-session-1",
+            messageID: "assistant-tool-msg",
+            type: "tool",
+            callID: "tool-call-late-input",
+            tool: "bash",
+            state: { status: "completed", input: { command: "npm test" }, output: "passed" },
+          },
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_result" }> } =>
+          event.event.type === "tool_result" && event.event.itemId === "tool-call-late-input",
+      );
+      expect(events.filter((entry) =>
+        entry.event.type === "tool_call" && entry.event.itemId === "tool-call-late-input")).toHaveLength(3);
+
+      pushEvents(
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part-late-completed-input",
+              sessionID: "opencode-session-1",
+              messageID: "assistant-tool-msg",
+              type: "tool",
+              callID: "tool-call-late-completed-input",
+              tool: "bash",
+              state: { status: "completed", output: "passed" },
+            },
+          },
+        },
+        {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: "tool-part-late-completed-input",
+              sessionID: "opencode-session-1",
+              messageID: "assistant-tool-msg",
+              type: "tool",
+              callID: "tool-call-late-completed-input",
+              tool: "bash",
+              state: { status: "completed", input: { command: "npm test" }, output: "passed" },
+            },
+          },
+        },
+      );
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> } =>
+          event.event.type === "tool_call"
+          && event.event.itemId === "tool-call-late-completed-input"
+          && Boolean((event.event.args as { command?: string })?.command),
+      );
+      const completedPartEvents = events.filter((entry) =>
+        (entry.event.type === "tool_call" || entry.event.type === "tool_result")
+        && entry.event.itemId === "tool-call-late-completed-input");
+      expect(completedPartEvents.map((entry) => entry.event.type)).toEqual([
+        "tool_call",
+        "tool_result",
+        "tool_call",
+        "tool_result",
+      ]);
+      expect(completedPartEvents.slice(-2)).toMatchObject([
+        { event: { type: "tool_call", args: { command: "npm test" } } },
+        { event: { type: "tool_result", status: "completed" } },
+      ]);
+
+      releaseStream();
+      await sendPromise;
+    });
+
     it("keeps an OpenCode turn active until child sessions become idle", async () => {
       const events: AgentChatEventEnvelope[] = [];
       let releaseStream!: () => void;

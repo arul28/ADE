@@ -1,6 +1,7 @@
 import React from "react";
 import {
   Alarm,
+  Binoculars,
   Bug,
   CheckCircle,
   Circle,
@@ -12,6 +13,7 @@ import {
   MagnifyingGlass,
   NotePencil,
   Moon,
+  RocketLaunch,
 } from "@phosphor-icons/react";
 import {
   SESSION_TONE_TEXT_CLASS,
@@ -30,6 +32,8 @@ function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
       return <CircleDashed size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "planning":
       return <NotePencil size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "exploring":
+      return <Binoculars size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "implementing":
       return <Code size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "testing":
@@ -38,6 +42,8 @@ function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
       return <MagnifyingGlass size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "debugging":
       return <Bug size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "shipping":
+      return <RocketLaunch size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "monitoring":
       return <Eye size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "waiting":
@@ -139,11 +145,13 @@ export function SessionStatusLabel({
       : undefined;
   }, [futureAt, waiting]);
   const activityReportTitle = React.useMemo(() => {
-    if (presentation?.activitySource !== "agent" || !presentation.activityUpdatedAt) return undefined;
-    const updatedAt = Date.parse(presentation.activityUpdatedAt);
-    return Number.isFinite(updatedAt)
-      ? `Agent-reported activity · updated ${new Date(updatedAt).toLocaleString()}`
-      : "Agent-reported activity";
+    const source = presentation?.activitySource;
+    if (!source) return undefined;
+    const origin = source === "agent" ? "Reported by the agent" : "Detected from tool calls";
+    const since = presentation.activityUpdatedAt ? Date.parse(presentation.activityUpdatedAt) : Number.NaN;
+    return Number.isFinite(since)
+      ? `${origin} · since ${new Date(since).toLocaleTimeString()}`
+      : origin;
   }, [presentation?.activitySource, presentation?.activityUpdatedAt]);
 
   if (!presentation) {

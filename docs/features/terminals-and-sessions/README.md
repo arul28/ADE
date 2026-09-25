@@ -386,7 +386,10 @@ Shared types and IPC:
   Parent phases use the same host lifecycle rules for every provider. Provider
   adapters contribute **Needs you** only from structured input/permission
   requests; tracked PTY CLIs also get explicit `ade chat ask`. PTY text is never
-  parsed into a status. Agent-reported activity requires both the
+  parsed into a status. For every chat provider in the table, ADE **detects**
+  the activity detail from the turn's normalized tool calls (see
+  [Activity detection](./pty-and-sessions.md#activity-detection)); an agent
+  report only corrects or refines it. Agent-reported activity requires both the
   runtime-resolved ADE CLI executable and this runtime's RPC socket, and is
   disabled for embedded runtimes. Each provider path is advertised only when
   its command/tool and permission route is verified. Native Plan and
@@ -474,10 +477,12 @@ Shared types and IPC:
   map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
   is the nested-compact filter: the status word is painted only for Needs you
   or a red Failed tone.
-- `apps/desktop/src/shared/types/sessions.ts` — the fixed six-value activity
-  vocabulary. `apps/desktop/src/shared/sessionActivity.ts` imports it and
-  normalizes one host-timestamped agent report at the boundary.
-  The report refines a card's single status slot without moving its parent phase;
+- `apps/desktop/src/shared/types/sessions.ts` — the fixed eight-value activity
+  vocabulary and its two sources (`detected`, `agent`).
+  `apps/desktop/src/shared/sessionActivity.ts` imports it, normalizes one
+  host-timestamped activity at the boundary, and owns the precedence between a
+  detected activity and an agent report (`nextDetectedActivityReport`).
+  The activity refines a card's single status slot without moving its parent phase;
   `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane

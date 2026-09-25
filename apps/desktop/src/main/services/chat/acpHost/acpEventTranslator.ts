@@ -16,6 +16,7 @@
  * session and feed every update for that session through it in arrival order.
  */
 
+import { hasNonEmptyRecord } from "../../../../shared/agentObservationNormalizers";
 import type { AgentChatEvent, AgentChatPlanStep, ChatSourceRef } from "../../../../shared/types";
 import { boundChatSourceRefs } from "../../../../shared/chatSources";
 import { acpResourceLinkSourceRef, acpToolSourceRefs } from "../chatSourceAdapters";
@@ -59,10 +60,21 @@ type TrackedToolCall = {
   status: AcpToolCallStatus;
   /** Set once a `tool_call` (or `command`/`file_change`) row was emitted. */
   opened: boolean;
+  /**
+   * The command text an execute row opened with. The close reuses it: the
+   * transcript keys command rows by their text, so a close that fell back to
+   * the title split one command into a stuck "running" row and a finished one.
+   */
+  command?: string;
+  /** Whether a `tool_call` row has gone out with a non-empty `rawInput`. */
+  emittedArgsJson?: string;
   /** Working directory reported for an execute tool, when it reported one. */
   cwd: string;
   /** Text collected from tool content, newest wins for terminal output. */
   lastOutput: string;
+  /** Latest structured result, retained when a later update omits rawOutput. */
+  rawOutput?: unknown;
+  hasRawOutput: boolean;
   /** Paths already announced for an edit tool, to keep row ids stable. */
   diffIndexByPath: Map<string, number>;
   /** Latest `rawInput` / `locations`, read when the row closes to find web sources. */
@@ -319,6 +331,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
             status: toolStatusToAde(status),
           }),
         );
+        tracked.opened = true;
         continue;
       }
       assertNever(item, "acp tool call content");
@@ -326,39 +339,49 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
     return events;
   };
 
+  const commandRow = (tracked: TrackedToolCall, toolCallId: string): AgentChatEvent => withTurn({
+    type: "command" as const,
+    command: tracked.command ?? tracked.title,
+    cwd: tracked.cwd,
+    output: tracked.lastOutput,
+    itemId: toolCallId,
+    status: toolStatusToAde(tracked.status),
+  });
+
   const openRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent[] => {
-    tracked.opened = true;
     switch (tracked.rowKind) {
       case "command": {
-        const command = readRawInputString(rawInput, ["command", "cmd", "script", "input"]) || tracked.title;
+        const inputCommand = readRawInputString(rawInput, ["command", "cmd", "script", "input"]);
+        // `pending` means the input is still streaming or awaiting approval
+        // (ACP tool-calls spec). Opening now would fix the row's text to the
+        // title ("bash") before the real command arrives on an update.
+        if (!inputCommand && tracked.status !== "completed" && tracked.status !== "failed") return [];
+        tracked.opened = true;
+        tracked.command = inputCommand || tracked.title;
         tracked.cwd = readRawInputString(rawInput, ["cwd", "workdir", "directory"]) || tracked.cwd;
-        return [
-          withTurn({
-            type: "command" as const,
-            command,
-            cwd: tracked.cwd,
-            output: tracked.lastOutput,
-            itemId: toolCallId,
-            status: toolStatusToAde(tracked.status),
-          }),
-        ];
+        return [commandRow(tracked, toolCallId)];
       }
       case "file_change":
         // The edit row cannot open until a diff arrives; the diff carries the
         // path. `emitToolContent` opens it.
         return [];
       case "tool":
-        return [
-          withTurn({
-            type: "tool_call" as const,
-            tool: tracked.toolName,
-            args: rawInput ?? {},
-            itemId: toolCallId,
-          }),
-        ];
+        tracked.opened = true;
+        return [toolCallRow(tracked, toolCallId, rawInput)];
       default:
         return assertNever(tracked.rowKind, "acp tool row kind");
     }
+  };
+
+  const toolCallRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent => {
+    if (hasNonEmptyRecord(rawInput)) tracked.emittedArgsJson = JSON.stringify(rawInput);
+    return withTurn({
+      type: "tool_call" as const,
+      tool: tracked.toolName,
+      args: rawInput ?? {},
+      toolKind: tracked.kind,
+      itemId: toolCallId,
+    });
   };
 
   const closeRow = (
@@ -368,16 +391,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
   ): AgentChatEvent[] => {
     switch (tracked.rowKind) {
       case "command":
-        return [
-          withTurn({
-            type: "command" as const,
-            command: tracked.title,
-            cwd: tracked.cwd,
-            output: tracked.lastOutput,
-            itemId: toolCallId,
-            status: toolStatusToAde(tracked.status),
-          }),
-        ];
+        return [commandRow(tracked, toolCallId)];
       case "file_change":
         // Every file row already carries its own status from the diff pass.
         return [];
@@ -449,6 +463,8 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
           opened: false,
           cwd: "",
           lastOutput: "",
+          rawOutput: update.rawOutput,
+          hasRawOutput: Object.prototype.hasOwnProperty.call(update, "rawOutput"),
           diffIndexByPath: new Map(),
           rawInput: update.rawInput,
           locations: update.locations,
@@ -457,7 +473,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         const events = openRow(tracked, update.toolCallId, update.rawInput);
         events.push(...emitToolContent(tracked, update.toolCallId, update.content ?? [], tracked.status));
         if (tracked.status === "completed" || tracked.status === "failed") {
-          events.push(...closeRow(tracked, update.toolCallId, update.rawOutput));
+          events.push(...closeRow(tracked, update.toolCallId, tracked.hasRawOutput ? tracked.rawOutput : undefined));
         }
         return events;
       }
@@ -477,6 +493,8 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
             opened: false,
             cwd: "",
             lastOutput: "",
+            rawOutput: update.rawOutput,
+            hasRawOutput: Object.prototype.hasOwnProperty.call(update, "rawOutput"),
             diffIndexByPath: new Map(),
             rawInput: update.rawInput ?? undefined,
             locations: update.locations ?? undefined,
@@ -487,7 +505,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
             ...emitToolContent(adopted, update.toolCallId, update.content ?? [], adopted.status),
           );
           if (adopted.status === "completed" || adopted.status === "failed") {
-            adoptedEvents.push(...closeRow(adopted, update.toolCallId, update.rawOutput));
+            adoptedEvents.push(...closeRow(adopted, update.toolCallId, adopted.hasRawOutput ? adopted.rawOutput : undefined));
           }
           return adoptedEvents;
         }
@@ -495,17 +513,57 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         if (update.title?.length) tracked.title = update.title;
         if (update.name?.length) tracked.toolName = update.name;
         if (update.rawInput != null) tracked.rawInput = update.rawInput;
+        if (Object.prototype.hasOwnProperty.call(update, "rawOutput")) {
+          tracked.rawOutput = update.rawOutput;
+          tracked.hasRawOutput = true;
+        }
         if (update.locations != null) tracked.locations = update.locations;
+        // The row type is fixed once a row is out; before that, a late `kind`
+        // still decides it.
+        if (update.kind && !tracked.opened) {
+          tracked.kind = update.kind;
+          tracked.rowKind = classifyRowKind(update.kind);
+        }
         const previousStatus = tracked.status;
         if (update.status) tracked.status = update.status;
 
+        const terminalStatus = tracked.status === "completed" || tracked.status === "failed";
+        let commandDetailsChanged = false;
+        if (tracked.opened && tracked.rowKind === "command" && update.rawInput != null) {
+          const previousCommand = tracked.command;
+          const previousCwd = tracked.cwd;
+          const inputCommand = readRawInputString(update.rawInput, ["command", "cmd", "script", "input"]);
+          if (inputCommand) tracked.command = inputCommand;
+          tracked.cwd = readRawInputString(update.rawInput, ["cwd", "workdir", "directory"]) || tracked.cwd;
+          commandDetailsChanged = previousCommand !== tracked.command || previousCwd !== tracked.cwd;
+        }
+        const toolInputChanged = tracked.opened
+          && tracked.rowKind === "tool"
+          && hasNonEmptyRecord(update.rawInput)
+          && JSON.stringify(update.rawInput) !== tracked.emittedArgsJson;
+
         const events: AgentChatEvent[] = [];
-        if (!tracked.opened) events.push(...openRow(tracked, update.toolCallId, update.rawInput));
+        if (!tracked.opened) {
+          events.push(...openRow(tracked, update.toolCallId, tracked.rawInput));
+        } else if (toolInputChanged) {
+          // Input that arrived after the opening frame. Same item id, so the
+          // row merges. A terminal result follows below when this update arrives
+          // after completion, so the final transcript state stays closed.
+          events.push(toolCallRow(tracked, update.toolCallId, update.rawInput));
+        } else if (tracked.rowKind === "command" && commandDetailsChanged && !terminalStatus) {
+          // Execute tools may refine their partial command after the row opens.
+          events.push(commandRow(tracked, update.toolCallId));
+        }
         events.push(...emitToolContent(tracked, update.toolCallId, update.content ?? [], tracked.status));
         const becameTerminal =
           (tracked.status === "completed" || tracked.status === "failed")
           && previousStatus !== tracked.status;
-        if (becameTerminal) events.push(...closeRow(tracked, update.toolCallId, update.rawOutput));
+        if (
+          becameTerminal
+          || (terminalStatus && (toolInputChanged || commandDetailsChanged))
+        ) {
+          events.push(...closeRow(tracked, update.toolCallId, tracked.hasRawOutput ? tracked.rawOutput : undefined));
+        }
         return events;
       }
 

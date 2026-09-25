@@ -5268,3 +5268,33 @@ describe("row keys are position-independent", () => {
     expectContainsAll(buildTranscriptEventRowKeys(events), rowKeys);
   });
 });
+
+describe("command row identity", () => {
+  it("keeps a refined command and its terminal update in one row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-command-identity",
+        timestamp: "2026-09-25T10:00:00.000Z",
+        event: { type: "command", command: "npm", cwd: "/repo", output: "", itemId: "exec-1", turnId: "turn-1", status: "running" },
+      },
+      {
+        sessionId: "session-command-identity",
+        timestamp: "2026-09-25T10:00:01.000Z",
+        event: { type: "command", command: "npm test", cwd: "/repo", output: "passed", itemId: "exec-1", turnId: "turn-1", status: "completed" },
+      },
+    ];
+
+    const { rows } = collapseChatTranscriptEventsWithContext(events);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toMatchObject({
+      type: "work_log_entry",
+      entry: {
+        command: "npm test",
+        output: "passed",
+        status: "completed",
+        itemId: "exec-1",
+      },
+    });
+  });
+});

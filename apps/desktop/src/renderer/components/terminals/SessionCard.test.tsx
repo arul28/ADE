@@ -535,8 +535,9 @@ describe("SessionCard lineage", () => {
     const statusRow = screen.getByTestId("session-hover-status");
     const hoveredStatus = statusRow.querySelector("[data-session-status]");
     expect(hoveredStatus?.getAttribute("data-session-status")).toBe("Testing");
-    expect(hoveredStatus?.getAttribute("title")).toContain("Agent-reported activity");
-    expect(hoveredStatus?.getAttribute("title")).toContain(new Date(reportUpdatedAt).toLocaleString());
+    expect(hoveredStatus?.getAttribute("title")).toContain("Reported by the agent");
+    expect(hoveredStatus?.getAttribute("title")).toContain("since ");
+    expect(hoveredStatus?.getAttribute("title")).toContain(new Date(reportUpdatedAt).toLocaleTimeString());
   });
 
   it("keeps the status word on the row face by default", () => {

@@ -1476,7 +1476,10 @@ function buildCommandWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "command" }>,
   timestamp: string,
 ): WorkLogRenderEvent {
-  const collapseKey = buildCollapseKey("command", event, event.command);
+  // A provider may refine a partial command while keeping the same item id.
+  // Use the command text only as a fallback when the event has no stable id.
+  const hasStableItemId = Boolean(event.logicalItemId ?? event.itemId);
+  const collapseKey = buildCollapseKey("command", event, hasStableItemId ? undefined : event.command);
   return {
     type: "work_log_entry",
     collapseKey,
