@@ -38,6 +38,7 @@ import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
 import { DiffFileTree, type DiffFileTreeEntry } from "../../shared/DiffFileTree";
+import { readPersistedFlag, writePersistedFlag } from "../../shared/persistedFlag";
 import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
@@ -1533,21 +1534,11 @@ export function PrDetailPane({
 const FILE_TREE_STORAGE_PREFIX = "ade:diff:fileTree:";
 
 function readPersistedFileTree(key: string | undefined): boolean {
-  if (!key || typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(`${FILE_TREE_STORAGE_PREFIX}${key}`) === "1";
-  } catch {
-    return false;
-  }
+  return readPersistedFlag(FILE_TREE_STORAGE_PREFIX, key);
 }
 
 function writePersistedFileTree(key: string | undefined, value: boolean): void {
-  if (!key || typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(`${FILE_TREE_STORAGE_PREFIX}${key}`, value ? "1" : "0");
-  } catch {
-    // A blocked storage write is not worth failing the toggle over.
-  }
+  writePersistedFlag(FILE_TREE_STORAGE_PREFIX, key, value);
 }
 
 function FilesTab({

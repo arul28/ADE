@@ -7,6 +7,7 @@ import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { cn } from "../ui/cn";
 import { isWhitespaceOnlyTextDiff, stripWhitespaceOnlyPatchChanges } from "./diffWhitespace";
+import { readPersistedFlag, writePersistedFlag } from "./persistedFlag";
 
 export type AdeDiffViewerHandle = MonacoDiffHandle;
 
@@ -32,21 +33,11 @@ type AdeDiffViewerProps = {
 const IGNORE_WHITESPACE_STORAGE_PREFIX = "ade:diff:ignoreWhitespace:";
 
 function readPersistedIgnoreWhitespace(key: string | undefined): boolean {
-  if (!key || typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(`${IGNORE_WHITESPACE_STORAGE_PREFIX}${key}`) === "1";
-  } catch {
-    return false;
-  }
+  return readPersistedFlag(IGNORE_WHITESPACE_STORAGE_PREFIX, key);
 }
 
 function writePersistedIgnoreWhitespace(key: string | undefined, value: boolean): void {
-  if (!key || typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(`${IGNORE_WHITESPACE_STORAGE_PREFIX}${key}`, value ? "1" : "0");
-  } catch {
-    // A blocked storage write is not worth failing the toggle over.
-  }
+  writePersistedFlag(IGNORE_WHITESPACE_STORAGE_PREFIX, key, value);
 }
 
 const DIFF_UNSAFE_CSS = `
