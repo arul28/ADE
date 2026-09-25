@@ -14,6 +14,7 @@ import type {
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
+  APPLE_DEVICE_NOT_LANE_OWNED_CODE,
   APPLE_DEVICE_OWNED_BY_LANE_CODE,
   APPLE_TEMPLATE_BOOTED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
@@ -72,11 +73,43 @@ export class AppleDeviceOwnedByLaneError extends Error {
   }
 }
 
+/** How the refused simulator is in use, which decides the refusal's reason. */
+export type AppleDeviceNotLaneOwnedReason =
+  | { kind: "other-lane"; laneLabel: string }
+  | { kind: "running" }
+  | { kind: "not-created" };
+
+/**
+ * An agent asked to attach a simulator its lane did not get from ADE.
+ *
+ * Agents use only their lane's own device. A booted simulator may be another
+ * lane's live view, an `xcodebuild test` run, or the user's; a stopped one may
+ * be the user's and gets booted by the next test run that names it. A clone is
+ * the lane's alone, so the refusal always points at creating one.
+ */
+export class AppleDeviceNotLaneOwnedError extends Error {
+  readonly code = APPLE_DEVICE_NOT_LANE_OWNED_CODE;
+
+  constructor(readonly simulator: { udid: string; name: string }, readonly reason: AppleDeviceNotLaneOwnedReason) {
+    const why = reason.kind === "other-lane"
+      ? `belongs to lane ${reason.laneLabel}`
+      : reason.kind === "running"
+        ? "is not this lane's device and it is already running; another lane, a test run or the user may be using it"
+        : "is not this lane's device, and agents only use a device ADE created for their lane";
+    super(
+      `${APPLE_DEVICE_NOT_LANE_OWNED_CODE}: Simulator ${simulator.name} (${simulator.udid}) ${why}. `
+        + "Create this lane's own device with `ade apple device-create` "
+        + "(or `ade apple start --create <udid>` to clone a specific one).",
+    );
+    this.name = "AppleDeviceNotLaneOwnedError";
+  }
+}
+
 export class AppleTemplateBootedError extends Error {
   readonly code = APPLE_TEMPLATE_BOOTED_CODE;
 
   constructor(readonly template: AppleInstalledSimulator) {
-    super(`${APPLE_TEMPLATE_BOOTED_CODE}: ${template.name} (${template.udid}) is running, and simctl cannot clone a booted device. Power it off, or name a stopped simulator to copy from.`);
+    super(`${APPLE_TEMPLATE_BOOTED_CODE}: ${template.name} (${template.udid}) is running, and simctl cannot clone a booted device. Name a stopped simulator to copy from, or power this one off if nobody is using it.`);
     this.name = "AppleTemplateBootedError";
   }
 }
@@ -147,8 +180,11 @@ export type LaneDeviceRegistry = {
    * Three outcomes, and exactly one lane owns the device after all of them:
    * the lane already holds it (answered as-is), nobody holds it (a plain
    * attach), or another lane holds it (the binding MOVES — see `rebind`).
+   *
+   * With `agentCaller`, only the first: an agent may not take a simulator its
+   * lane does not already hold (`AppleDeviceNotLaneOwnedError`).
    */
-  deviceAttach(args: { laneId: string; simulator: string }): Promise<AppleLaneDevice>;
+  deviceAttach(args: { laneId: string; simulator: string; agentCaller?: boolean | null }): Promise<AppleLaneDevice>;
   deviceList(args?: {
     installed?: boolean | null;
     laneId?: string | null;
@@ -651,7 +687,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     return device;
   };
 
-  const attach = async (args: { laneId: string; simulator: string }): Promise<AppleLaneDevice> => {
+  const attach = async (args: { laneId: string; simulator: string; agentCaller?: boolean | null }): Promise<AppleLaneDevice> => {
     const laneId = requireLaneId(args.laneId);
     const wanted = args.simulator?.trim();
     if (!wanted) throw new Error("device-attach needs a simulator udid or name.");
@@ -682,6 +718,29 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
      * powers it off under the other.
      */
     const holders = readAll().filter((device) => device.udid === match.udid && device.laneId !== laneId);
+    /*
+     * An agent never attaches a simulator it did not get from ADE, running or
+     * not. A running one may be another lane's view, a test run or the user's;
+     * a stopped one may be the user's own, and the next test run that names it
+     * boots it under the agent. A clone costs one simulator's disk and cannot
+     * collide with anyone, so that is what the refusal offers. The user keeps
+     * attach and takeover through the picker, which never sets this.
+     */
+    if (args.agentCaller) {
+      const holder = holders[0] ?? null;
+      const reason: AppleDeviceNotLaneOwnedReason = holder
+        ? { kind: "other-lane", laneLabel: laneNameFor(holder.laneId) ?? holder.laneId }
+        : match.state === "Booted"
+          ? { kind: "running" }
+          : { kind: "not-created" };
+      deps.logger.info("apple.lane_device_attach_refused_agent", {
+        laneId,
+        udid: match.udid,
+        reason: reason.kind,
+        ...(holder ? { holderLaneId: holder.laneId } : {}),
+      });
+      throw new AppleDeviceNotLaneOwnedError(match, reason);
+    }
     if (holders.length > 1) {
       // Impossible by construction, so say so rather than repairing in silence.
       deps.logger.warn?.("apple.lane_device_multiple_holders", {

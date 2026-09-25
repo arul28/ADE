@@ -61,6 +61,7 @@ import {
   type SyncRosterProvider,
   type SyncForeignChatTranscriptResolver,
   type SyncRuntimeKind,
+  type SyncHostRemoteCommandExecutor,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { isValidDpopPublicKey } from "./syncPairingStore";
@@ -78,6 +79,7 @@ import { createSyncRemoteCommandService, type ExternalSessionsRemoteService, typ
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { MacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import { createAppControlSyncStream, type AppControlSyncSource } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import {
   buildAddressCandidates,
@@ -183,6 +185,12 @@ type SyncServiceArgs = {
    */
   macDesktopService?: MacDesktopService | null;
   /**
+   * App Control, for the live view on phones and the hosted web client. Only
+   * the status read and the event stream are used; the host never drives the
+   * app from here. Absent on a chat-only runtime.
+   */
+  appControl?: AppControlSyncSource | null;
+  /**
    * Brain-level websocket listener shared across hosted-project switches.
    * When provided, the embedded sync host attaches to it instead of binding
    * its own WebSocketServer, so connected phones survive host swaps. The
@@ -210,7 +218,7 @@ type SyncServiceArgs = {
   projectCatalogProvider?: SyncProjectCatalogProvider;
   rosterProvider?: SyncRosterProvider;
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
-  remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
    * sync commands to share favorites + recents with desktop and the TUI; the
@@ -765,6 +773,12 @@ export function createSyncService(args: SyncServiceArgs) {
       })
     : null;
 
+  // One App Control frame fan-out for the whole host, shared by the command
+  // handlers and the host's connection-close cleanup, like the one above.
+  const appControlSyncStream = args.appControl
+    ? createAppControlSyncStream({ logger: args.logger, source: args.appControl })
+    : null;
+
   const remoteCommandService = createSyncRemoteCommandService({
     db: args.db,
     usageTrackingService: args.usageTrackingService,
@@ -800,6 +814,7 @@ export function createSyncService(args: SyncServiceArgs) {
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
     macDesktopSyncStream,
+    appControlSyncStream,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -954,6 +969,7 @@ export function createSyncService(args: SyncServiceArgs) {
       workToolsStateService: args.workToolsStateService,
       macDesktopService,
       macDesktopSyncStream,
+      appControlSyncStream,
       appleDeviceService: args.appleDeviceService,
       appleStreamRelay: args.appleStreamRelay,
       getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -1854,6 +1870,28 @@ export function createSyncService(args: SyncServiceArgs) {
       return remoteCommandService.getDescriptor(action);
     },
 
+    /**
+     * Ends every Mac Desktop and App Control viewer a closed sync socket held
+     * on this project, and gives back the Mac Desktop input leases it took
+     * here. The socket may belong to another project's host, which routed
+     * commands here, so its close handler fans this out to every booted
+     * project scope.
+     */
+    releaseStreamConnection(connectionId: string): void {
+      // Idempotent: the host project also releases its own leases directly.
+      remoteCommandService.releaseMacDesktopConnection(connectionId);
+      for (const stream of [macDesktopSyncStream, appControlSyncStream]) {
+        try {
+          stream?.releaseConnection(connectionId);
+        } catch (error) {
+          args.logger.warn("sync.stream_release_connection_failed", {
+            connectionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    },
+
     async executeRemoteCommand(
       payload: Parameters<SyncRemoteCommandService["execute"]>[0],
       context?: Parameters<SyncRemoteCommandService["execute"]>[1],
@@ -1877,6 +1915,7 @@ export function createSyncService(args: SyncServiceArgs) {
       await stopHostIfRunning();
       // After the host stops, so no pushed record can outlive its socket.
       macDesktopSyncStream?.dispose();
+      appControlSyncStream?.dispose();
       await syncPeerService.dispose();
     },
   };

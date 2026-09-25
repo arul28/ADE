@@ -123,7 +123,7 @@ required.
 | `apps/ios/ADE/Views/Work/MacDesktopCard.swift` | The phone's tools-sheet card, including the Off row and its Start button. |
 | `apps/ios/ADE/Views/Work/MacDesktopLiveMount.swift` | The one live-subscription mount the card and the full-screen viewer share, plus the shared Start helper. |
 | `apps/ios/ADE/Views/Work/MacDesktopStreamMath.swift` | Annex-B to AVCC, letterbox hit testing, and watch-mode zoom (1×–4×, double-tap 2.5×). |
-| `apps/desktop/resources/agent-skills/ade-desktop/SKILL.md` | The bundled agent skill. |
+| `apps/desktop/resources/agent-skills/ade-computer-use/SKILL.md` | The bundled agent skill: the one computer-use entry point, which picks the surface and then covers Mac Desktop. `ade-desktop/SKILL.md` is a deprecated alias that points to it. |
 
 ## Where this runs
 
@@ -239,12 +239,16 @@ display.
 A window joins the lane's display in one of two ways.
 
 1. **ADE launched it.** `ade mac-desktop open <app|path|url>` starts the app, and
-   the driver watches that pid for new windows and parks each one. An
-   App Control session and an iOS Simulator session owned by a chat in the lane
-   park the same way.
+   the driver watches that pid for new windows and parks each one.
 2. **Somebody claimed it.** `ade mac-desktop claim --window <id>` moves an existing
    window onto the lane's display. `ade mac-desktop release --window <id>` puts it
    back where it came from.
+
+App Control and iOS Simulator windows do not move to the lane's display on
+their own. App Control captures its own window, and the Apple device streams
+its own framebuffer, so neither needs the display. To keep an App Control
+window fully off the user's screen, claim it with `ade mac-desktop claim
+--window <id>`. This is optional.
 
 Release gives the window to the user. For a window of an app the lane launched,
 the user gets the whole app instance: all its windows move to the main screen,
@@ -377,6 +381,15 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   session record is gone is refused every acting command rather than passed
   through naming someone else's lane. `getStatus` and `listWindows` still
   answer, because `getStatus` is the domain's capability probe.
+- **An `ade` process with no chat identity speaks for nobody.** It connects
+  as `ade-cli:<pid>`: a person's terminal, or an agent whose shell has no chat
+  environment (every OpenCode agent). `scopeUnboundMacDesktopAdeActionArgs`
+  strips `chatSessionId`, `controllerId` and `holderId` from its calls, so its
+  accessibility input works and its real input is refused, and it refuses
+  `requestInputLease` because there is no chat to ask in. When the call's
+  `callerRoot` (sent by `ade mac-desktop` on every call) is inside a lane
+  worktree, the call is bound to that lane and a different `--lane` is refused;
+  from the project root or outside every worktree it may name any lane.
 
 ## Streaming
 
@@ -475,16 +488,19 @@ the lane's desktop; a chat that is neither a viewer nor the lease holder does
 not get the lane's screen as a corner card.
 
 The corner card is itself a viewer, not a picture someone else happens to
-leave on screen. On the driver side a real event is delivered to the
-PROCESS under the point (`WindowHitTest` in Core, `postToPid` in
-`RealInput`), not to the HID tap: a tap post moves the one system cursor to
-the event's coordinate, which on the Mac that hosts the display is the user's
-own mouse being yanked onto a screen they cannot see on every click, and the
-restore warp only softened that. A process post lands at the same coordinate
-and leaves the cursor alone; keys go to the lane's frontmost window's process
-for the same reason (the tap would type into whatever is frontmost on the
-user's own screen). Only empty desktop, which has no process, still takes the
-tap and the restore. Pointer, wheel and key input are bound to the surface as
+leave on screen. On the driver side (`RealInput.swift`), real pointer and
+wheel events go through the HID tap (`.cghidEventTap`). The window server
+hit-tests the point and fills in the target window number. A `postToPid`
+mouse event carries window number 0, so AppKit drops it and the click does
+nothing. The cost of the HID tap is that it moves the one system cursor, which
+on the host Mac is the user's own pointer. A takeover therefore saves the
+pointer's position once, leaves the cursor on the lane's display for the
+session, and warps it back once when control returns. A single agent `--real`
+action can ask the driver to warp the pointer back right after it posts. Key events are
+different. They name no window, so the driver posts them with `postToPid` to
+the lane's frontmost process, which keeps keystrokes off whatever is frontmost
+on the user's own screen. With no lane process to target, keys fall back to the
+HID tap. Pointer, wheel and key input are bound to the surface as
 native DOM listeners, never React props: the decoder's canvas is a React portal
 into a host node parked inside the surface, and a portal's synthetic events
 bubble to the portal's owner, not to the surface that is its DOM parent, which
@@ -835,8 +851,9 @@ one. Where it does not — a canvas, a terminal view, some Electron text areas �
 it falls back to `CGEvent` keyboard events posted with **`CGEventPostToPid`**.
 That is process-targeted: the event goes to one application's event queue and
 never enters the window server's global stream, so it cannot land in the user's
-window. This is why it is allowed without the input lease, while every post in
-`RealInput.swift` (`CGEvent.post(tap:)`, global) is not. Turning one of those
+window. This is why it is allowed without the input lease. Every post in
+`RealInput.swift` needs the lease, because its pointer events go through the
+global `CGEvent.post(tap:)`. Turning one of those
 `postToPid` calls into a `post(tap:)` would silently hand every accessibility
 caller the user's keyboard.
 

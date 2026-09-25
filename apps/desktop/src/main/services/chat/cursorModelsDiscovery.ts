@@ -439,6 +439,47 @@ export function normalizeCursorServiceTierValue(value: unknown): string | null {
   return null;
 }
 
+function cursorBooleanParameterValue(value: unknown): boolean | null {
+  const normalized = normalizeCursorMetadataText(value);
+  if (["true", "on", "yes", "1"].includes(normalized)) return true;
+  if (["false", "off", "no", "0"].includes(normalized)) return false;
+  return null;
+}
+
+/**
+ * Whether a parameter is Cursor's on/off Fast toggle: a parameter named for
+ * "fast" (`fast`, `fast_mode`) whose values are true/false. Cursor declares
+ * Fast this way for models such as grok-4.7, rather than as a speed tier with
+ * `fast`/`standard` values, so the toggle is the model's service tier.
+ */
+function isCursorFastToggleParameterName(
+  parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">,
+): boolean {
+  return /\bfast\b/.test(cursorParameterClassifierHaystack(parameter));
+}
+
+function isCursorFastToggleParameter(parameter: CursorModelParameterDefinition): boolean {
+  return isCursorFastToggleParameterName(parameter)
+    && parameter.values.length > 0
+    && parameter.values.every((entry) => cursorBooleanParameterValue(entry.value) != null);
+}
+
+/**
+ * The service tier one value of a parameter selects, or null when it selects
+ * none. A tier value (`fast`, `standard`, ...) names itself; on the Fast
+ * toggle, `true` is Fast and `false` is standard.
+ */
+export function cursorServiceTierOfParameterValue(
+  parameter: Pick<CursorModelParameterDefinition, "id" | "displayName">,
+  value: unknown,
+): "fast" | "standard" | null {
+  const direct = normalizeCursorServiceTierValue(value);
+  if (direct === "fast" || direct === "standard") return direct;
+  if (!isCursorFastToggleParameterName(parameter)) return null;
+  const toggle = cursorBooleanParameterValue(value);
+  return toggle == null ? null : toggle ? "fast" : "standard";
+}
+
 function normalizeCursorParameterDefinitions(value: unknown): CursorModelParameterDefinition[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const out: CursorModelParameterDefinition[] = [];
@@ -509,13 +550,15 @@ export function cursorControlParameterIds(row: Pick<CursorCliModelRow, "paramete
     (row.parameters ?? []).filter(isReasoningParameterLike).map((entry) => entry.id),
   );
   const serviceTierParameterIds = new Set(
-    (row.parameters ?? []).filter(isServiceTierParameterLike).map((entry) => entry.id),
+    (row.parameters ?? [])
+      .filter((entry) => isServiceTierParameterLike(entry) || isCursorFastToggleParameter(entry))
+      .map((entry) => entry.id),
   );
   for (const variant of row.variants ?? []) {
     for (const param of variant.params) {
       if (
         isServiceTierParameterLike({ id: param.id, displayName: variant.displayName })
-        || normalizeCursorServiceTierValue(param.value) != null
+        || cursorServiceTierOfParameterValue({ id: param.id }, param.value) != null
       ) {
         serviceTierParameterIds.add(param.id);
       }
@@ -538,8 +581,18 @@ function deriveCursorRuntimeTiers(row: Pick<CursorCliModelRow, "parameters" | "v
       }
     }
     if (serviceTierParameterIds.has(parameter.id)) {
+      if (isCursorFastToggleParameter(parameter)) {
+        // An on/off toggle offers both tiers, whichever order it lists them in.
+        addUnique(serviceTiers, "fast");
+        addUnique(serviceTiers, "standard");
+        continue;
+      }
       for (const value of parameter.values) {
-        addUnique(serviceTiers, normalizeCursorServiceTierValue(value.value) ?? normalizeCursorServiceTierValue(value.displayName));
+        addUnique(
+          serviceTiers,
+          cursorServiceTierOfParameterValue(parameter, value.value)
+            ?? cursorServiceTierOfParameterValue(parameter, value.displayName),
+        );
       }
     }
   }
@@ -552,10 +605,13 @@ function deriveCursorRuntimeTiers(row: Pick<CursorCliModelRow, "parameters" | "v
       }
       if (
         serviceTierParameterIds.has(param.id)
-        || normalizeCursorServiceTierValue(param.value) != null
+        || cursorServiceTierOfParameterValue({ id: param.id }, param.value) != null
         || /\b(fast|standard|default|regular|base|normal|slow)\b/i.test(label)
       ) {
-        addUnique(serviceTiers, normalizeCursorServiceTierValue(param.value) ?? normalizeCursorServiceTierValue(label));
+        addUnique(
+          serviceTiers,
+          cursorServiceTierOfParameterValue({ id: param.id }, param.value) ?? normalizeCursorServiceTierValue(label),
+        );
       }
     }
   }

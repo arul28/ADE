@@ -3440,9 +3440,56 @@ describe("iosSimulatorService boot contract", () => {
   it("deviceStart refuses a lane with no device and nothing to attach", async () => {
     const { service, phases, dispose } = setup();
     try {
-      await expect(service.deviceStart({ laneId: "lane-d" })).rejects.toThrow(/no Apple device yet/);
+      // Names the CLI command that fixes it, not the JSON arg shape.
+      await expect(service.deviceStart({ laneId: "lane-d" })).rejects.toThrow(/no Apple device yet\. Run `ade apple device-create`/);
       expect(phases()).toEqual([]);
       await expect(service.deviceStart({})).rejects.toThrow(/belong to a lane/);
+    } finally {
+      dispose();
+    }
+  });
+
+  it("an agent's deviceStart never takes a simulator its lane does not own", async () => {
+    const { service, calls, phases, helper, dispose } = setup();
+    try {
+      // Before the lane has a device, driving verbs refuse instead of falling
+      // back to the first booted iPhone (device-1), and a foreign udid is refused.
+      await expect(service.tap({ laneId: "lane-f", x: 1, y: 1, agentCaller: true } as never))
+        .rejects.toThrow(/no Apple device yet\. Run `ade apple start`/);
+      await expect(service.screenshot({ laneId: "lane-f", deviceUdid: "device-1", agentCaller: true } as never))
+        .rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED: .*already running/);
+      expect(helper.sent.filter((command) => command.type === "touch")).toEqual([]);
+      // device-1 is booted and no lane holds it: another session's test run.
+      for (const refused of [
+        () => service.deviceStart({ laneId: "lane-f", udid: "device-1", agentCaller: true }),
+        () => service.deviceAttach({ laneId: "lane-f", simulator: "device-1", agentCaller: true }),
+      ]) {
+        await expect(refused()).rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED: .*already running/);
+      }
+      expect((await service.deviceList({ laneId: "lane-f", installed: false })).lane).toBeNull();
+      expect(phases()).toEqual([]);
+      expect(calls.some((call) => call.startsWith("xcrun simctl boot"))).toBe(false);
+
+      // With no udid the lane gets its own clone of a STOPPED simulator, and
+      // only the clone is booted.
+      const status = await service.deviceStart({ laneId: "lane-f", agentCaller: true });
+      expect(status.deviceUdid).toBe("device-clone");
+      expect(calls.some((call) => call.startsWith("xcrun simctl clone device-2 "))).toBe(true);
+      expect(calls.filter((call) => call.startsWith("xcrun simctl boot "))).toEqual(["xcrun simctl boot device-clone"]);
+
+      // Its own device, by udid, is fine.
+      const again = await service.deviceStart({ laneId: "lane-f", udid: "device-clone", agentCaller: true });
+      expect(again.deviceUdid).toBe("device-clone");
+
+      // Once it has one, an agent's input lands on it and only on it.
+      await service.tap({ laneId: "lane-f", x: 1, y: 1, agentCaller: true } as never);
+      expect(helper.sent.filter((command) => command.type === "touch").map((command) => command.udid))
+        .toEqual(["device-clone", "device-clone"]);
+      await expect(service.tap({ laneId: "lane-f", deviceUdid: "device-1", x: 1, y: 1, agentCaller: true } as never))
+        .rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED/);
+      await expect(service.deviceStop({ laneId: "lane-f", udid: "device-1", agentCaller: true } as never))
+        .rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED/);
+      expect(calls).not.toContain("xcrun simctl shutdown device-1");
     } finally {
       dispose();
     }

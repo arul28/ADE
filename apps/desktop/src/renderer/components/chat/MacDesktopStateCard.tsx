@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Monitor } from "@phosphor-icons/react";
+import { Monitor, type Icon } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
 
@@ -46,6 +46,8 @@ export function MacDesktopStateCard({
   detail,
   actions,
   footer,
+  icon: StateIcon = Monitor,
+  children,
 }: {
   testId: string;
   tone: MacDesktopStateCardTone;
@@ -55,6 +57,10 @@ export function MacDesktopStateCard({
   actions?: ReactNode;
   /** Short notes under the actions, such as the apps a stop left open. */
   footer?: ReactNode;
+  /** The tool's own glyph. App Control uses this card too. */
+  icon?: Icon;
+  /** A form between the detail and the actions (App Control's Launch). */
+  children?: ReactNode;
 }) {
   const busy = tone === "busy";
   const failed = tone === "error";
@@ -67,7 +73,7 @@ export function MacDesktopStateCard({
       className="ade-tool-picker-static relative flex size-full min-h-0 items-center justify-center overflow-auto rounded-[10px] px-6 py-10"
     >
       <div className="ade-tool-card flex w-full min-w-0 max-w-sm flex-col items-center gap-3 p-6 text-center">
-        <Monitor
+        <StateIcon
           size={40}
           weight="duotone"
           aria-hidden="true"
@@ -91,6 +97,7 @@ export function MacDesktopStateCard({
             <p className="min-w-0 break-words font-sans text-xs leading-5 text-muted-fg">{detail}</p>
           ) : null}
         </div>
+        {children}
         {actions ? <div className="flex flex-wrap items-center justify-center gap-2">{actions}</div> : null}
         {footer}
       </div>

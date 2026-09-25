@@ -13,11 +13,18 @@
  * browser and the headless-daemon App Control service can both import it.
  */
 
-import { formatObservationElementHandle } from "./agentObservation";
+import {
+  agentEffectElementKey,
+  compareAgentEffectFingerprints,
+  formatObservationElementHandle,
+  notCheckedEffect,
+  type AgentEffectFingerprint,
+} from "./agentObservation";
 import type {
   AgentDomSnapshot,
   AgentElementSnapshot,
   AgentFrame,
+  ComputerUseActionEffect,
 } from "./types/agentObservation";
 
 /** Structural subset of both surfaces' element-target argument bags. */
@@ -133,7 +140,111 @@ export function normalizeAgentDomSnapshot(value: unknown): AgentDomSnapshot | nu
     scroll: { x: finiteNumber(scrollRecord.x), y: finiteNumber(scrollRecord.y) },
     elementCount: normalizePositiveInteger(value.elementCount) ?? elements.length,
     elements,
+    ...(typeof value.focusKey === "string" || value.focusKey === null
+      ? { focusKey: value.focusKey as string | null }
+      : {}),
+    ...(typeof value.textKey === "string" ? { textKey: value.textKey } : {}),
   };
+}
+
+/* ── Action effect ─────────────────────────────────────────────────────── */
+
+/** A DOM snapshot as an effect fingerprint. Handles and indexes are not part of it. */
+export function agentDomEffectFingerprint(
+  snapshot: AgentDomSnapshot | null | undefined,
+): AgentEffectFingerprint | null {
+  if (!snapshot) return null;
+  return {
+    url: snapshot.url,
+    title: snapshot.title,
+    // Undefined for a snapshot an older collector wrote: unknown, not "none".
+    focus: snapshot.focusKey,
+    text: snapshot.textKey,
+    scroll: `${Math.round(snapshot.scroll.x)},${Math.round(snapshot.scroll.y)}`,
+    elementCount: snapshot.elementCount,
+    elements: snapshot.elements.map((element) =>
+      agentEffectElementKey({
+        role: element.role ?? element.tagName,
+        label: element.label,
+        value: element.value,
+        text: element.text,
+        disabled: element.disabled,
+        frame: element.frame,
+      })),
+    truncated: snapshot.elements.length < snapshot.elementCount,
+  };
+}
+
+/**
+ * What one browser / App Control action learned before it sent input.
+ *
+ * The first locate wins both fields, so a drag reports its source element and
+ * the state before the drag, not the state between its two locates.
+ */
+export type AgentActionEffectTracker = {
+  resolved: AgentElementSnapshot | null;
+  before: AgentEffectFingerprint | null;
+  /** ADE scrolled the target into view itself, so layout is not the action's effect. */
+  ignoreLayout: boolean;
+};
+
+export function createAgentActionEffectTracker(): AgentActionEffectTracker {
+  return { resolved: null, before: null, ignoreLayout: false };
+}
+
+/**
+ * Record a raw collector answer as the pre-action state.
+ *
+ * The collector snapshots the page before its locate runs, which is the state
+ * before the action. The locate may then focus the target and scroll it into
+ * view; neither is the action's effect, so the focus it left behind replaces
+ * the snapshot's, and a scroll turns layout off for this comparison.
+ */
+export function noteAgentActionBaseline(
+  tracker: AgentActionEffectTracker | null | undefined,
+  collectorResult: unknown,
+): void {
+  if (!tracker || tracker.before) return;
+  const record = isRecord(collectorResult) ? collectorResult : {};
+  const fingerprint = agentDomEffectFingerprint(normalizeAgentDomSnapshot(record.snapshot));
+  if (!fingerprint) return;
+  if (typeof record.focusKeyAfterLocate === "string" || record.focusKeyAfterLocate === null) {
+    fingerprint.focus = record.focusKeyAfterLocate as string | null;
+  }
+  if (record.scrolledIntoView === true) tracker.ignoreLayout = true;
+  tracker.before = fingerprint;
+}
+
+/**
+ * Record the element the target resolved to. A located element carries no
+ * handle of its own, so the caller's `obs-…:e:N` handle, when it targeted by
+ * one, is stamped back on — that is the name the agent already knows it by.
+ */
+export function noteAgentActionResolved(
+  tracker: AgentActionEffectTracker | null | undefined,
+  element: AgentElementSnapshot | null,
+  handle?: string | null,
+): void {
+  if (!tracker || tracker.resolved || !element) return;
+  const knownHandle = stringOrNull(handle);
+  tracker.resolved = knownHandle ? { ...element, handle: knownHandle } : element;
+}
+
+/**
+ * The effect of one browser / App Control action: the tracked pre-action
+ * state against the post-action observation's element list.
+ */
+export function agentActionEffect(
+  tracker: AgentActionEffectTracker,
+  input: { action: string; observed: boolean; after: AgentDomSnapshot | null | undefined },
+): ComputerUseActionEffect {
+  if (input.action === "wait") return notCheckedEffect("a wait checks a condition; it does not act");
+  if (!input.observed) return notCheckedEffect("no observation was taken after the action");
+  if (!input.after) return notCheckedEffect("the observation after the action had no element list");
+  return compareAgentEffectFingerprints(tracker.before, agentDomEffectFingerprint(input.after), {
+    ignoreLayout: tracker.ignoreLayout,
+    missingReason: "ADE could not read the page before the action",
+  });
 }
 
 /** Stamp `obs-…:e:N` handles onto every element of a fresh DOM snapshot. */

@@ -161,7 +161,7 @@ describe("macDesktopSyncStream", () => {
     });
 
     expect(result).toEqual({ ok: true, width: 2560, height: 1440, codec: "avc1.640032" });
-    expect(harness.startStream).toHaveBeenCalledWith({ laneId: "lane-1", ownerId: "sub-1" });
+    expect(harness.startStream).toHaveBeenCalledWith({ laneId: "lane-1", ownerId: "conn-1\u0000sub-1" });
 
     const keyframe = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x65, 0x88]);
     const delta = Buffer.from([0x00, 0x00, 0x00, 0x01, 0x41, 0x9a]);
@@ -229,10 +229,10 @@ describe("macDesktopSyncStream", () => {
       sink: sink.sink,
     });
 
-    harness.stream.unsubscribe("sub-1");
+    harness.stream.unsubscribe("sub-1", "conn-1");
 
     expect(harness.reader.state.closed).toBe(true);
-    expect(harness.releaseOwner).toHaveBeenCalledWith("sub-1");
+    expect(harness.releaseOwner).toHaveBeenCalledWith("conn-1\u0000sub-1");
     expect(sink.ended).toEqual([{ subscriptionId: "sub-1", reason: "unsubscribed" }]);
     expect(harness.stream.subscriptionCount()).toBe(0);
   });
@@ -250,7 +250,7 @@ describe("macDesktopSyncStream", () => {
     harness.stream.releaseConnection("conn-2");
 
     expect(harness.reader.state.closed).toBe(true);
-    expect(harness.releaseOwner).toHaveBeenCalledWith("sub-2");
+    expect(harness.releaseOwner).toHaveBeenCalledWith("conn-2\u0000sub-2");
     // The socket is gone; an ended notice has nowhere to go.
     expect(sink.ended).toHaveLength(0);
     expect(harness.stream.subscriptionCount()).toBe(0);
@@ -268,7 +268,7 @@ describe("macDesktopSyncStream", () => {
 
     harness.emitEvent({ type: "display-destroyed", laneId: "lane-1", reason: "idle" });
     expect(sink.ended).toEqual([{ subscriptionId: "sub-1", reason: "display_destroyed" }]);
-    expect(harness.releaseOwner).toHaveBeenCalledWith("sub-1");
+    expect(harness.releaseOwner).toHaveBeenCalledWith("conn-1\u0000sub-1");
     expect(harness.reader.state.closed).toBe(true);
 
     harness.emitEvent({
@@ -299,11 +299,11 @@ describe("macDesktopSyncStream", () => {
       connectionId: "conn-1",
       sink: sink.sink,
     });
-    harness.stream.unsubscribe("sub-race");
+    harness.stream.unsubscribe("sub-race", "conn-1");
     resolveStart!({ url: "http://127.0.0.1:9/stream", width: null, height: null, codec: null });
     await starting;
 
-    expect(harness.releaseOwner).toHaveBeenCalledWith("sub-race");
+    expect(harness.releaseOwner).toHaveBeenCalledWith("conn-1\u0000sub-race");
     expect(harness.stream.subscriptionCount()).toBe(0);
     expect(harness.reader.state.closed).toBe(false);
   });
@@ -323,7 +323,7 @@ describe("macDesktopSyncStream", () => {
     expect(sink.ended).toHaveLength(1);
     expect(sink.ended[0]!.reason).toBe("error");
     expect(sink.ended[0]!.message).toContain("not framed as expected");
-    expect(harness.releaseOwner).toHaveBeenCalledWith("sub-1");
+    expect(harness.releaseOwner).toHaveBeenCalledWith("conn-1\u0000sub-1");
   });
 
   it("cleans up on dispose and refuses later subscribes", async () => {
@@ -339,7 +339,7 @@ describe("macDesktopSyncStream", () => {
     harness.stream.dispose();
 
     expect(sink.ended).toHaveLength(0);
-    expect(harness.releaseOwner).toHaveBeenCalledWith("sub-1");
+    expect(harness.releaseOwner).toHaveBeenCalledWith("conn-1\u0000sub-1");
     await expect(harness.stream.subscribe({
       laneId: "lane-1",
       subscriptionId: "sub-2",

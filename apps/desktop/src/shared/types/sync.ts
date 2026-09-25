@@ -2048,6 +2048,101 @@ export type SyncMacDesktopInputCall =
  */
 export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & { recording: null };
 
+// ---------------------------------------------------------------------------
+// App Control live frames over the sync socket
+//
+// App Control already has a CDP screencast: JPEG frames the brain receives for
+// the desktop's own live view. The brain forwards those frames to a phone or
+// hosted web client that subscribes by lane. There is no video encoder here.
+// Each subscription is throttled on the brain: at most `maxFps` frames a
+// second, a byte budget per second, and only the newest frame is kept. A frame
+// that cannot go out is replaced by the next one, never queued.
+// ---------------------------------------------------------------------------
+
+/**
+ * An App Control session as a sync client may read it. The launch command, the
+ * CDP websocket endpoint, the pid, and the terminal ids are host-only state, so
+ * they are always null here.
+ */
+export type SyncAppControlSession = {
+  id: string;
+  appKind: string;
+  label: string;
+  laneId: string | null;
+  chatSessionId: string | null;
+  provider: string;
+  driver: string;
+  status: string;
+  cdpTargetId: string | null;
+  startedAt: string;
+  connectedAt: string | null;
+  lastError: string | null;
+};
+
+/** The `appControl.status` reply. */
+export type SyncAppControlStatus = {
+  /** The lane the caller asked about (or the chat's lane); null when neither named one. */
+  laneId: string | null;
+  platform: string;
+  supported: boolean;
+  /** The lane's session. Null with no lane: a viewer never falls back to another lane's app. */
+  session: SyncAppControlSession | null;
+  stream: {
+    /** A frame for this lane arrived in the last few seconds. */
+    live: boolean;
+    lastFrameAt: string | null;
+    width: number | null;
+    height: number | null;
+    /** Live sync subscriptions on this lane, from every connection. */
+    viewerCount: number;
+  };
+};
+
+/**
+ * One pushed App Control frame. The fields after `seq` match
+ * `AppControlScreencastFrame`, so a web client can hand the frame to the same
+ * renderer code the desktop uses. `seq` counts frames the brain sent on this
+ * subscription; a gap is normal (frames are dropped, not queued).
+ */
+export type SyncAppControlStreamFramePayload = {
+  subscriptionId: string;
+  laneId: string;
+  seq: number;
+  sessionId: string;
+  cdpTargetId: string | null;
+  mimeType: "image/jpeg" | "image/png";
+  /** Base64 image bytes, no `data:` prefix. */
+  data: string;
+  width: number;
+  height: number;
+  scale: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  devicePixelRatio?: number;
+  scaleX?: number;
+  scaleY?: number;
+  capturedAt: string;
+};
+
+export type SyncAppControlStreamEndedPayload = {
+  subscriptionId: string;
+  reason: "unsubscribed" | "connection_closed" | "stopped" | "error";
+  message?: string;
+};
+
+/** The `appControl.streamSubscribe` reply. */
+export type SyncAppControlStreamSubscribeResult = {
+  ok: true;
+  laneId: string;
+  /** The frame rate the brain will not exceed for this subscription. */
+  maxFps: number;
+  /** The lane's session when the subscription started, or null. */
+  session: SyncAppControlSession | null;
+  /** Size of the newest frame the brain holds, if any. It is sent right away. */
+  width: number | null;
+  height: number | null;
+};
+
 export type SyncRunQuickCommandArgs = {
   laneId: string;
   title: string;
@@ -2554,6 +2649,12 @@ export type SyncRemoteCommandAction =
   | "macDesktop.returnControl"
   | "macDesktop.renewLease"
   | "macDesktop.input"
+  // App Control live view. All three are read-only and viewer-allowed. Frames
+  // and the end notice are pushed back on `appControl.streamFrame` /
+  // `appControl.streamEnded` envelopes.
+  | "appControl.status"
+  | "appControl.streamSubscribe"
+  | "appControl.streamUnsubscribe"
   // Apple device environment. `apple.status` and `apple.streamTicket` are
   // viewer-allowed (the phone is view-only); everything that drives or
   // provisions a device is controller-only, so a viewer role cannot tap.
@@ -2707,6 +2808,15 @@ export type SyncMacDesktopStreamEndedEnvelope = SyncEnvelopeWithPayload<
   "macDesktop.streamEnded",
   SyncMacDesktopStreamEndedPayload
 >;
+/** Host→client push for an App Control frame subscription. */
+export type SyncAppControlStreamFrameEnvelope = SyncEnvelopeWithPayload<
+  "appControl.streamFrame",
+  SyncAppControlStreamFramePayload
+>;
+export type SyncAppControlStreamEndedEnvelope = SyncEnvelopeWithPayload<
+  "appControl.streamEnded",
+  SyncAppControlStreamEndedPayload
+>;
 export type SyncChatToolResultEnvelope = SyncEnvelopeWithPayload<
   "chat_tool_result",
   SyncChatToolResultRequestPayload | SyncChatToolResultResponsePayload
@@ -2801,6 +2911,8 @@ export type SyncEnvelope =
   | SyncChatEventEnvelope
   | SyncMacDesktopStreamRecordEnvelope
   | SyncMacDesktopStreamEndedEnvelope
+  | SyncAppControlStreamFrameEnvelope
+  | SyncAppControlStreamEndedEnvelope
   | SyncChatHistoryEnvelope
   | SyncChatToolResultEnvelope
   | SyncBrainStatusEnvelope

@@ -27,6 +27,10 @@ export const WORK_TOOL_SHOW_SURFACES = [
   "mac-desktop",
   /** The floating Mac Desktop card over the chat. */
   "floating-mac-desktop",
+  /** The lane's App Control tool in the Work tools pane. */
+  "app-control",
+  /** The floating App Control card over the chat. */
+  "floating-app-control",
 ] as const;
 
 export type WorkToolShowSurface = (typeof WORK_TOOL_SHOW_SURFACES)[number];
@@ -44,8 +48,8 @@ export type WorkToolShowRequest = {
   chatSessionId: string;
   laneId: string | null;
   /**
-   * True when nobody asked: an agent drove the chat's Apple device or Mac
-   * Desktop, and the floating player or card may come up by itself. An auto request is never acked or
+   * True when nobody asked: an agent drove the chat's Apple device, Mac
+   * Desktop or App Control app, and the floating player or card may come up by itself. An auto request is never acked or
    * held, and the per-chat "Show preview when minimized" choice can refuse it.
    */
   auto: boolean;

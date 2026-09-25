@@ -1512,7 +1512,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         six subscriptions, and two `offline` values that disagreed. The provider
         is the single owner; both children read `useNativeToolFeeds()`.
       */
-      <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin}>
+      <NativeToolFeedsProvider active={active} runtimePin={activeWorkSessionRuntimePin} laneId={activeLaneId}>
         <div
           className="relative flex h-full min-h-0 min-w-0 overflow-hidden"
           data-work-tools-maximized={workToolsMaximized ? "true" : undefined}

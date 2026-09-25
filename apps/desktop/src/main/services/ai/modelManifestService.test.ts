@@ -81,8 +81,9 @@ describe("modelManifestService", () => {
     );
     fetchMock.mockReturnValue(new Promise(() => {}));
     initializeModelManifestService({ adeVersion: "1.2.80" });
-    await settle();
-    expect(getActiveModelManifest()?.manifest.updatedAt).toBe("2099-01-01T00:00:00Z");
+    await vi.waitFor(() => {
+      expect(getActiveModelManifest()?.manifest.updatedAt).toBe("2099-01-01T00:00:00Z");
+    });
   });
 
   it("ignores a remote manifest older than the one this build shipped", async () => {

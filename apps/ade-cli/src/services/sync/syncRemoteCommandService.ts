@@ -262,6 +262,7 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import type { MacDesktopSyncStream, MacDesktopSyncStreamSink } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
 import {
   createAppleRemoteCommandHandlers,
   type AppleDeviceRemoteService,
@@ -435,6 +436,12 @@ type SyncRemoteCommandServiceArgs = {
    */
   macDesktopSyncStream?: MacDesktopSyncStream | null;
   /**
+   * App Control live frames for remote viewers. Absent on a runtime without an
+   * App Control service (chat-only), in which case `appControl.*` is not
+   * registered.
+   */
+  appControlSyncStream?: AppControlSyncStream | null;
+  /**
    * The Apple device environment. Absent on Windows/Linux and on a chat-only
    * runtime, in which case `apple.*` is simply not registered and the phone /
    * web client feature-detect its absence instead of seeing every call fail.
@@ -512,6 +519,11 @@ export type SyncRemoteCommandExecutionContext = {
    * the stream over the command reply.
    */
   macDesktopStream?: MacDesktopSyncStreamSink;
+  /**
+   * The invoking peer's transport for `appControl.streamSubscribe`, for the
+   * same reason as `macDesktopStream`.
+   */
+  appControlStream?: AppControlSyncStreamSink;
   /**
    * The invoking socket's stable id. Every `macDesktop.*` command receives it
    * (the host sets it for that action prefix alone), because the takeover
@@ -5642,11 +5654,53 @@ function registerMacDesktopRemoteCommands({
         sink,
       });
     });
-    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload) =>
+    // Only the connection that subscribed may end its stream.
+    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
       macDesktopSyncStream.unsubscribe(
         requireString(payload.subscriptionId, "macDesktop.streamUnsubscribe requires subscriptionId."),
+        context.macDesktopStream?.connectionId ?? null,
       ));
   }
+}
+
+/**
+ * App Control live view over the sync socket.
+ *
+ * All three are read-only and viewer-allowed, like the rest of the Work tools
+ * mirror: the phone and the web client watch the lane's app, they do not drive
+ * it. `status` answers for one lane (or project-wide without a lane);
+ * `streamSubscribe` forwards the lane's throttled JPEG frames as
+ * `appControl.streamFrame` pushes until `streamUnsubscribe` or the socket
+ * closes.
+ */
+function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const stream = args.appControlSyncStream;
+  if (!stream) return;
+  register("appControl.status", { viewerAllowed: true }, async (payload) =>
+    await stream.getStatus({
+      laneId: asTrimmedString(payload.laneId) ?? null,
+      chatSessionId: asTrimmedString(payload.chatSessionId) ?? null,
+    }));
+  register("appControl.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {
+    const sink = context.appControlStream;
+    if (!sink) throw new Error("appControl.streamSubscribe requires a live sync connection.");
+    const viewerLabel = asTrimmedString(payload.viewerLabel);
+    const maxFps = typeof payload.maxFps === "number" && Number.isFinite(payload.maxFps) ? payload.maxFps : null;
+    return await stream.subscribe({
+      laneId: requireString(payload.laneId, "appControl.streamSubscribe requires laneId."),
+      subscriptionId: requireString(payload.subscriptionId, "appControl.streamSubscribe requires subscriptionId."),
+      connectionId: sink.connectionId,
+      ...(viewerLabel ? { viewerLabel } : {}),
+      ...(maxFps != null ? { maxFps } : {}),
+      sink,
+    });
+  });
+  // Only the connection that subscribed may end its stream.
+  register("appControl.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
+    stream.unsubscribe(
+      requireString(payload.subscriptionId, "appControl.streamUnsubscribe requires subscriptionId."),
+      context.appControlStream?.connectionId ?? null,
+    ));
 }
 
 /**
@@ -6712,6 +6766,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
+  registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });

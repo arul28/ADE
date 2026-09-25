@@ -20,7 +20,7 @@
  * it cannot host a display by *reading*, and a read that throws cannot tell it.
  */
 
-import type { AgentActionTraceEntry, AgentFrame } from "./agentObservation";
+import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -525,6 +525,11 @@ export type MacDesktopActionResult = {
   resolved: MacDesktopElement | null;
   observation: MacDesktopObservation;
   trace: AgentActionTraceEntry;
+  /**
+   * Whether the accessibility tree changed between the observation the target
+   * was resolved against and the one taken after the action.
+   */
+  effect: ComputerUseActionEffect;
 };
 
 /**

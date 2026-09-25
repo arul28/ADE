@@ -2569,14 +2569,20 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(shouldStickToBottomAfterScroll({
       distanceFromBottom: 80,
       wasStuckToBottom: true,
+      scrolledDown: false,
+      repinHeld: false,
     })).toBe(true);
     expect(shouldStickToBottomAfterScroll({
       distanceFromBottom: 80,
       wasStuckToBottom: false,
+      scrolledDown: true,
+      repinHeld: false,
     })).toBe(false);
     expect(shouldStickToBottomAfterScroll({
       distanceFromBottom: 12,
       wasStuckToBottom: false,
+      scrolledDown: true,
+      repinHeld: false,
     })).toBe(true);
   });
 

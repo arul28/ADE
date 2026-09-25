@@ -50,6 +50,7 @@ vi.mock("../settings/PrChatTranscriptsSection", () => ({ PrChatTranscriptsSectio
 vi.mock("../settings/KeepAwakeSection", () => ({ KeepAwakeSection: stubSection(["keep-awake"]) }));
 vi.mock("../settings/CaptureGestureSection", () => ({ CaptureGestureSection: stubSection(["capture-gesture"]) }));
 vi.mock("../settings/BrowserLinksSection", () => ({ BrowserLinksSection: stubSection(["link-open-mode"]) }));
+vi.mock("../settings/BrowserAgentAccessSection", () => ({ BrowserAgentAccessSection: stubSection(["browser-agent-access"]) }));
 vi.mock("../settings/GitHubIntegrationSection", () => ({ GitHubIntegrationSection: stubSection(["github-connection"]) }));
 vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSection: stubSection(["linear-connection"]) }));
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));

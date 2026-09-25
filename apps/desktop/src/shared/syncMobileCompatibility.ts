@@ -128,6 +128,12 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "macDesktop.returnControl",
   "macDesktop.renewLease",
   "macDesktop.input",
+  // App Control live view. Read-only and viewer-allowed. Optional because a
+  // chat-only runtime builds no App Control service; the phone then keeps the
+  // App Control card's text-only state.
+  "appControl.status",
+  "appControl.streamSubscribe",
+  "appControl.streamUnsubscribe",
   // Apple device environment. Optional in both directions: an older brain
   // simply omits them and the phone's Simulator card says the Mac needs an
   // update, rather than a version mismatch flipping the phone to "limited".

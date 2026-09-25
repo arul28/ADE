@@ -5,6 +5,9 @@ description: Use this skill when you need to see an iOS or SwiftUI change actual
 
 # ADE Apple Development
 
+This skill is for iOS and SwiftUI apps. For a macOS app, a dev Electron app or
+a web page, the **ade-computer-use** skill picks the right surface.
+
 Drive the lane's Apple simulator with `"$ADE_CLI_PATH" apple <command>`.
 `$ADE_CLI_PATH` is the CLI of the ADE that launched you and already targets
 its brain, so your calls and the desktop's Apple Development tool share one
@@ -96,15 +99,23 @@ when you must choose between several targets, then pass `--target <id>`.
 Use `--no-build` when the app is already installed and you only want it in
 front. Use `relaunch` or `terminate` for an app that is already there.
 
-## A busy device is not a blocker
+## Use this lane's own device
 
-**Reuse before you create.** `start` with no arguments already does this: it
-binds a free installed device, boots it if it is off, and streams it. Reach for
-a new one only when every installed device is owned by another lane.
+**Use this lane's own device. Never attach a simulator you did not create;
+`ade apple device-create` (or `start --create`) gives the lane its own.**
 
-**And when the device you find is owned by another chat or lane, do not ask a
-human for it. Make your own** with `start --create <sourceUdid>`. It takes
-seconds (see "The lane's device" for why).
+`start` with no arguments does this for you: when the lane has no device it
+clones the project's last-used simulator (never a running one), boots the
+clone, and streams it. Other booted simulators in `apple devices` belong to
+someone else: another lane, an `xcodebuild test` run, or the user. ADE refuses
+`start --udid` and `device-attach` from an agent for any simulator this lane
+does not already hold, with `APPLE_DEVICE_NOT_LANE_OWNED`. The same goes for
+`--device <udid>` on any other command: every command runs on this lane's
+device, and with no device yet it tells you to run `ade apple start`.
+
+**A busy device is not a blocker, and it is not a reason to ask a human.**
+Make your own with `start` or `start --create <sourceUdid>`. It takes seconds
+(see "The lane's device" for why).
 
 This is worth saying plainly because the failure looks reasonable from the
 inside: you find a booted simulator, the guard tells you another chat owns it,
@@ -137,14 +148,14 @@ devices, and a new one is a folder of app data, not another copy of iOS.
 ```bash
 "$ADE_CLI_PATH" apple device-list --installed --text   # what a picker shows
 "$ADE_CLI_PATH" apple device-list --text               # the one this lane owns ($ADE_LANE_ID)
-"$ADE_CLI_PATH" apple start --text                     # attach or clone, boot, stream
-"$ADE_CLI_PATH" apple start --udid <udid> --text       # bind a specific installed one
-"$ADE_CLI_PATH" apple start --create <sourceUdid> --text
+"$ADE_CLI_PATH" apple start --text                     # clone one if the lane has none, boot, stream
+"$ADE_CLI_PATH" apple start --create <sourceUdid> --text   # clone a specific (stopped) simulator
 "$ADE_CLI_PATH" apple stop --text                      # power the device OFF
 ```
 
-- `start` is the one-step bring-up: bind or clone when the lane has no device,
-  boot it if it is off, wait for the boot, then stream. Prefer it.
+- `start` is the one-step bring-up: clone when the lane has no device, boot it
+  if it is off, wait for the boot, then stream. Prefer it. `start --udid` works
+  only for the device this lane already holds.
 - `stop` powers the device **off**. `shutdown` only ends this chat's session
   and leaves the simulator running — the two are not the same, and a verb named
   `stop` that left a booted device behind was a real bug.
@@ -390,6 +401,9 @@ One chat owns a simulator session at a time. A second launch fails with
   an attached simulator. `--force` detaches; it does not delete.
 - `APPLE_DEVICE_EXISTS` — this lane already owns a device. Use it, or remove it
   first.
+- `APPLE_DEVICE_NOT_LANE_OWNED` — you named a simulator this lane does not
+  hold. Do not look for a way around it. Run `ade apple device-create` or
+  `ade apple start` to get the lane's own.
 - `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` — re-run `"$ADE_CLI_PATH" apple apps --text`.
 - `IOS_SIMULATOR_NO_BUILDABLE_TARGET` — pass `--target-id` or `--bundle-id`
   only when you deliberately want the installed app.

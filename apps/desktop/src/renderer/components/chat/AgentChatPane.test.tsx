@@ -12581,7 +12581,7 @@ describe("AgentChatPane per-chat runtime routing", () => {
     renderPane(session);
 
     // Support is asked of the chat's machine, not the tab's.
-    await waitFor(() => expect(window.ade.appControl.getStatus).toHaveBeenCalledWith(machineB));
+    await waitFor(() => expect(window.ade.appControl.getStatus).toHaveBeenCalledWith({ laneId: "lane-b" }, machineB));
 
     const appControlButton = (await screen.findAllByRole("button", { name: "Open App Control drawer" }))[0]!;
     fireEvent.click(appControlButton);

@@ -1,6 +1,10 @@
 import { mergeReasoningTextFragments } from "../../../shared/chatActivityPhase";
 import { isInlineCardSpawnNotice } from "../../../shared/chatSubagents";
+import { CLAUDE_SESSION_QUOTA_CARD_VARIANT } from "../../../shared/claudeSessionQuota";
+import { isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
+import { isLegacyProviderRetryNotice } from "../../../shared/providerRetryPresentation";
 import { parseTimestampMs } from "../../../shared/timestamps";
+import type { AgentChatEvent } from "../../../shared/types/chat";
 import type { ChatTranscriptGroupedEnvelope, RenderReasoningEvent } from "./chatTranscriptRows";
 
 // Thought runs: Thought rows that end up next to each other on screen drawn as
@@ -17,30 +21,83 @@ function isReasoningRow(row: ChatTranscriptGroupedEnvelope): row is ReasoningEnv
   return row.event.type === "reasoning";
 }
 
+/** Identity of a stop receipt, shared with the list's stale-receipt tracking. */
+export function interruptReceiptIdentity(
+  event: Extract<AgentChatEvent, { type: "interrupt_receipt" }>,
+): string {
+  return `${event.turnId ?? ""}:${(event.stillQueuedUuids ?? []).join(",")}`;
+}
+
+/** List state a row's "draws nothing" answer depends on. */
+export type TranscriptRowDrawContext = {
+  /** Interrupt-receipt identities whose queued messages already ran. */
+  staleInterruptReceipts?: ReadonlySet<string>;
+  /** A usage limit is live: the composer pill owns the quota card's story. */
+  usageLimitResumeActive?: boolean;
+};
+
+const SYSTEM_NOTICE_STATUSES_WITH_OWN_ROW = new Set([
+  "model_switched",
+  "spawn_takeover",
+  "spawn_parent_gone",
+  "spawn_completed",
+]);
+
 /**
- * Rows the timeline keeps in the list but renders as nothing, so they must not
- * split a run: the `subagent_spawned` notice an inline card already carries,
- * the "Promoted to Cursor Cloud" marker, a queued-command lifecycle that did
- * not cancel, a conversation reset, and an empty non-failure status.
+ * THE rule for an event the timeline keeps in the list but renders as nothing.
+ * `renderEvent` returns null exactly when this is true, and Thought runs step
+ * over exactly these rows, so the two can never drift. `done` is not here: its
+ * row draws the end-of-turn divider.
  */
-export function drawsNothingBetweenThoughts(row: ChatTranscriptGroupedEnvelope): boolean {
-  const event = row.event;
+export function transcriptEventDrawsNothing(
+  // Raw events too: `renderEvent` also draws events the row pipeline drops.
+  event: ChatTranscriptGroupedEnvelope["event"] | AgentChatEvent,
+  context?: TranscriptRowDrawContext,
+): boolean {
   switch (event.type) {
-    case "system_notice": {
-      if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") return true;
-      return isInlineCardSpawnNotice(event);
-    }
+    case "user_message":
+      // Queued steers live in the composer's staging area only.
+      return event.deliveryState === "queued" && Boolean(event.steerId);
+    case "codex_moderation_metadata":
+    case "conversation_reset":
+    case "api_retry":
+    case "step_boundary":
+      return true;
+    case "interrupt_receipt":
+      return Boolean(context?.staleInterruptReceipts?.has(interruptReceiptIdentity(event)))
+        || (event.stillQueuedUuids ?? []).length === 0;
+    case "queue_recovery":
+      return event.state === "expired" || event.state === "restored";
     case "command_lifecycle":
       return event.status !== "cancelled" && event.status !== "discarded";
-    case "conversation_reset":
-      return true;
+    case "ade_card":
+      return event.variant === CLAUDE_SESSION_QUOTA_CARD_VARIANT && context?.usageLimitResumeActive === true;
     case "status":
       return event.turnStatus !== "failed"
         && event.turnStatus !== "interrupted"
         && !(event.message ?? "").trim().length;
+    case "system_notice": {
+      if (event.noticeKind === "info" && event.status === "subagent_spawned") return isInlineCardSpawnNotice(event);
+      if (event.status === "model_switched") return false;
+      if (event.noticeKind === "info" && SYSTEM_NOTICE_STATUSES_WITH_OWN_ROW.has(event.status ?? "")) return false;
+      if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") return true;
+      if (isHostSleepNoticeEvent(event)) return false;
+      if (event.detail && typeof event.detail === "object" && (event.detail as { kind?: unknown }).kind === "continuity_recovery") {
+        return false;
+      }
+      return isLegacyProviderRetryNotice(event);
+    }
     default:
       return false;
   }
+}
+
+/** Rows that draw nothing never split a Thought run (see `transcriptEventDrawsNothing`). */
+export function drawsNothingBetweenThoughts(
+  row: ChatTranscriptGroupedEnvelope,
+  context?: TranscriptRowDrawContext,
+): boolean {
+  return transcriptEventDrawsNothing(row.event, context);
 }
 
 /**
@@ -103,6 +160,7 @@ function sameMergedRow(previous: ChatTranscriptGroupedEnvelope, next: ReasoningE
   if (
     a.text !== b.text
     || a.startTimestamp !== b.startTimestamp
+    || a.latestStartTimestamp !== b.latestStartTimestamp
     || a.thoughtRunDurationSeconds !== b.thoughtRunDurationSeconds
     || a.turnId !== b.turnId
     || a.thoughtMemberKeys?.length !== b.thoughtMemberKeys?.length
@@ -121,6 +179,9 @@ function buildMergedRow(members: readonly ReasoningEnvelope[]): ReasoningEnvelop
       ...firstEvent,
       text: mergeReasoningTextFragments(members.map((member) => member.event.text ?? "")),
       startTimestamp: first.event.startTimestamp ?? first.timestamp,
+      // When the last member started: a run whose last member is still
+      // streaming times the live thought, not the tool work before it.
+      latestStartTimestamp: last.event.latestStartTimestamp ?? last.event.startTimestamp ?? last.timestamp,
       thoughtMemberKeys: members.map((member) => member.key),
       thoughtRunDurationSeconds: sumMemberDurations(members),
     },
@@ -132,9 +193,13 @@ function buildMergedRow(members: readonly ReasoningEnvelope[]): ReasoningEnvelop
  * screen into ONE Thought row keyed by its first member. A drawn row of any
  * kind (text, a card, a divider, a fold row) ends a run.
  *
- * `liveRowKey` — the reasoning row that is still streaming — never joins an
- * earlier run: that would hand the live row the earlier row's key and remount
- * it mid-stream. Once it stops being live it joins like any other thought.
+ * The reasoning row that is still streaming joins the run above it like any
+ * other thought. The run keeps its FIRST member's key, so the drawn row the
+ * reader already sees simply becomes the live preview: the streaming content
+ * never mounts as a separate row and nothing remounts when it settles. The
+ * list passes `liveThinking` to the run whose members include the live row.
+ *
+ * `context` feeds the "draws nothing" rule (`transcriptEventDrawsNothing`).
  *
  * `previous` (the last pass's merged rows by key) lets an unchanged merged row
  * keep its envelope identity across streaming deltas elsewhere, so the row
@@ -142,14 +207,14 @@ function buildMergedRow(members: readonly ReasoningEnvelope[]): ReasoningEnvelop
  */
 export function mergeAdjacentThoughtRows(
   rows: ChatTranscriptGroupedEnvelope[],
-  liveRowKey: string | null = null,
   previous?: ReadonlyMap<string, ChatTranscriptGroupedEnvelope>,
+  context?: TranscriptRowDrawContext,
 ): ChatTranscriptGroupedEnvelope[] {
   let result: ChatTranscriptGroupedEnvelope[] | null = null;
   let index = 0;
   while (index < rows.length) {
     const row = rows[index]!;
-    if (!isReasoningRow(row) || row.key === liveRowKey) {
+    if (!isReasoningRow(row)) {
       result?.push(row);
       index += 1;
       continue;
@@ -161,12 +226,12 @@ export function mergeAdjacentThoughtRows(
     let end = index + 1;
     while (end < rows.length) {
       const candidate = rows[end]!;
-      if (drawsNothingBetweenThoughts(candidate)) {
+      if (drawsNothingBetweenThoughts(candidate, context)) {
         pendingSkipped.push(candidate);
         end += 1;
         continue;
       }
-      if (!isReasoningRow(candidate) || candidate.key === liveRowKey) break;
+      if (!isReasoningRow(candidate)) break;
       if (turnIdOf(candidate) !== turnId) break;
       skipped.push(...pendingSkipped);
       pendingSkipped = [];

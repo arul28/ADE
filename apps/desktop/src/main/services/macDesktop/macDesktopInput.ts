@@ -35,6 +35,12 @@ import {
   type MacDesktopWaitArgs,
   type MacDesktopWaitResult,
 } from "../../../shared/types/macDesktop";
+import {
+  agentEffectElementKey,
+  compareAgentEffectFingerprints,
+  type AgentEffectFingerprint,
+} from "../../../shared/agentObservation";
+import type { ComputerUseActionEffect } from "../../../shared/types/agentObservation";
 import { sleep } from "../shared/utils";
 import { MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE } from "./macDesktopDriverClient";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
@@ -60,6 +66,54 @@ const isGestureInFlight = (error: unknown): boolean =>
 
 const DEFAULT_WAIT_TIMEOUT_MS = 10_000;
 const MAX_WAIT_TIMEOUT_MS = 120_000;
+
+/**
+ * An observation as an action-effect fingerprint: the parked windows, the
+ * focused element, and every listed element's role, name, value and rounded
+ * frame. Handles and indexes are left out — they are new in every observation.
+ */
+export function macDesktopEffectFingerprint(observation: MacDesktopObservation): AgentEffectFingerprint {
+  const focused = observation.elements.find((element) => element.focused) ?? null;
+  return {
+    windows: observation.windows
+      .map((window) => `${window.id}:${window.title ?? ""}:${window.minimized ? "min" : ""}`)
+      .sort()
+      .join("|"),
+    focus: focused
+      ? [focused.role, focused.title ?? "", focused.label ?? "", focused.identifier ?? "", focused.windowId ?? ""].join("|")
+      : null,
+    elementCount: observation.elementCount,
+    elements: observation.elements.map((element) =>
+      agentEffectElementKey({
+        role: element.subrole ? `${element.role}/${element.subrole}` : element.role,
+        label: element.title ?? element.label,
+        value: element.value,
+        text: element.identifier,
+        disabled: !element.enabled,
+        frame: element.frame,
+      })),
+    truncated: observation.truncated,
+  };
+}
+
+/**
+ * Did the action change the accessibility tree?
+ *
+ * The comparison is against the observation the target was resolved against,
+ * which is the newest one this process holds for the lane. That is the right
+ * "before" for an agent that observes, then acts. It is not a fresh read, so a
+ * lane with no observation yet answers `not_checked` instead of guessing.
+ */
+export function macDesktopActionEffect(
+  before: MacDesktopObservation | null,
+  after: MacDesktopObservation,
+): ComputerUseActionEffect {
+  return compareAgentEffectFingerprints(
+    before ? macDesktopEffectFingerprint(before) : null,
+    macDesktopEffectFingerprint(after),
+    { missingReason: "there was no earlier observation of this lane to compare with" },
+  );
+}
 
 export type MacDesktopInputDeps = {
   now: () => number;
@@ -332,6 +386,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       mode: args.mode,
       resolved,
       observation,
+      effect: macDesktopActionEffect(resolvedAgainst, observation),
       trace: {
         id: `${observation.id}:${args.action}`,
         sessionId: args.chatSessionId?.trim() || null,

@@ -718,6 +718,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { piSdkToolPolicyForPermissionMode, piThinkingLevel } from "../../../shared/cliLaunch";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
+import { stripHostRuntimeEnv, userProcessEnv } from "../shared/hostRuntimeEnv";
 import { isProviderDisabled } from "../../../shared/providerEnablement";
 import {
   buildProviderGroupBlocks,
@@ -1127,7 +1128,11 @@ import {
 } from "./cursorSdkSystemPrompt";
 import { promises as fsPromises } from "node:fs";
 import { mapStopReasonToTerminalEvents } from "./stopReasonEvents";
-import { CURSOR_AVAILABLE_MODE_IDS, legacyPermissionModeToCursorModeId } from "../../../shared/cursorModes";
+import {
+  CURSOR_AVAILABLE_MODE_IDS,
+  foldLegacyCursorFastConfigValue,
+  legacyPermissionModeToCursorModeId,
+} from "../../../shared/cursorModes";
 import { getApiKey } from "../ai/apiKeyStore";
 import {
   CALLER_MCP_CAPABLE_PROVIDERS,
@@ -7771,9 +7776,10 @@ export function buildComputerUseDirective(
       "The user's own screen, apps and windows are not yours to change. Never close, quit, hide, minimize or reset an app or window you did not open for this task, even to get a clean starting state — open a new window instead, or use the lane's own screen. Act on the user's real screen only when the user explicitly asks you to.",
       options.macDesktopAvailable
         ? "`mcp__computer_use` (and any Codex or OpenAI computer-use plugin) drives the user's real screen and apps. This lane has its own screen, so do not use it for task work; use it only when the user explicitly asks you to operate their own screen. When you do, start with `list_apps` or `get_app_state`, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute."
-        : "When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
+        : "Read the **ade-computer-use** skill to pick an ADE surface (`ade app-control`, `ade browser`, `ade apple`). When the `mcp__computer_use` tools are present, use that direct signed Computer Use MCP surface. Start with `list_apps` or `get_app_state` as appropriate, honor its per-app approval prompts, and do not bootstrap `@oai/sky` through `node_repl` as a substitute.",
       "If `get_computer_use_backend_status` is exposed in your current tool list, call it to check available backends before attempting computer use. If it is not exposed, do not stall; use the available computer-use, browser, app-control, or ADE CLI status tools and clearly report any missing backend-status visibility.",
       "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
+      "App Control (`ade app-control`, the **ade-app-control** skill) drives a dev Electron app, one session per lane: `launch`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
     ].join("\n"),
   );
@@ -7783,8 +7789,10 @@ export function buildComputerUseDirective(
     sections.push(
       [
         "### Mac Desktop — this lane's own screen (use it for desktop apps)",
-        "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-desktop** skill before your first action.",
+        "For anything that needs a macOS app or a screen — opening an app, clicking, typing, checking a UI, recording a video — use this lane's private Mac Desktop with `ade mac-desktop`. It runs apps on a separate virtual display, so it never touches the user's screen, windows or pointer, and the user can watch it live from any of their devices. Read the **ade-computer-use** skill before your first action.",
+        "Pick the surface: an iOS/SwiftUI app → `ade apple`; any macOS app → `ade mac-desktop`; a dev Electron app you launch or attach to → `ade app-control` (it records and proves its own window; `ade mac-desktop claim` can move it onto the lane screen, optional); a web page or localhost → `ade browser`.",
         "For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default. Open Safari or another browser on the Mac Desktop only when the user names that app or asks for the Mac Desktop.",
+        "Every acting command reports `hit:` (the element it hit) and `effect:` (observed / unconfirmed / not_checked); when the effect is `unconfirmed`, observe again before you act or report.",
         "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened, unsaved work included; `release` gives an app the lane opened to the user, whole.",
         "The loop: `ade mac-desktop start` (viewing the screen does not start it), `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`. To show the screen to the user, run `ade mac-desktop show`.",
         "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade mac-desktop observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
@@ -7845,8 +7853,8 @@ export function buildComputerUseDirective(
     [
       "### Proof Capture",
       options.macDesktopAvailable
-        ? "Proof is intentional. For work on the lane's Mac Desktop, record with `ade mac-desktop record` or file a still with `ade mac-desktop proof`. `ade proof capture` and `ade proof record` capture the user's whole real screen — use them only when the proof is of that screen. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
-        : "Proof is intentional. Use `ade proof capture` for a reviewer-facing checkpoint, or `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them.",
+        ? "Proof is intentional. For work on the lane's Mac Desktop, file a still with `ade mac-desktop proof` or `ade proof capture`, and a video with `ade mac-desktop record` or `ade proof record`; all of them capture the lane's screen, never the user's, and `ade proof capture/record` are refused until the lane screen is started. `--real-screen` captures the user's whole real screen — use it only when the user asks. Use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. Add logs only as secondary context unless the user explicitly asks for them."
+        : "Proof is intentional. File proof from the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`), or use `ade proof attach` / `ingest_computer_use_artifacts` for an existing screenshot, image, video, or trace. `ade proof capture` and `ade proof record` are refused here unless you pass `--real-screen`, which captures the user's whole real screen — use it only when the user asks. Add logs only as secondary context unless the user explicitly asks for them.",
     ].join("\n"),
   );
 
@@ -8996,6 +9004,32 @@ function persistedPiRouteIds(
   return out;
 }
 
+/**
+ * Why a message could not join the live Cursor run. Only attachments are named
+ * to the user; every other refusal reads the same (see
+ * `emitInlineSteerFallbackNotice`).
+ */
+type CursorInlineSteerRefusal =
+  | { kind: "attachments"; imagesOnly: boolean }
+  | { kind: "refused" };
+
+/** The attachment refusal for a message `Run.steer(text)` cannot carry, if any. */
+function cursorInlineSteerRefusalFor(row: {
+  attachments: readonly { type: string }[];
+  contextAttachments: readonly unknown[];
+  resolvedAttachments: readonly unknown[];
+}): CursorInlineSteerRefusal {
+  if (!row.attachments.length && !row.contextAttachments.length && !row.resolvedAttachments.length) {
+    return { kind: "refused" };
+  }
+  return {
+    kind: "attachments",
+    imagesOnly: row.contextAttachments.length === 0
+      && row.attachments.length > 0
+      && row.attachments.every((attachment) => attachment.type !== "file"),
+  };
+}
+
 function buildCursorModeSnapshotFromRuntime(runtime: CursorRuntime): AgentChatCursorModeSnapshot | undefined {
   const hasData =
     Boolean(runtime.modeConfigId)
@@ -9990,7 +10024,7 @@ export function createAgentChatService(args: {
    */
   const sessionProviderLookupEnv = (managed: ManagedChatSession): NodeJS.ProcessEnv => {
     const patch = providerInstanceEnvPatch(resolveSessionInstance(managed));
-    return Object.keys(patch).length ? { ...process.env, ...patch } : process.env;
+    return { ...userProcessEnv(), ...patch };
   };
 
   /**
@@ -16565,7 +16599,7 @@ export function createAgentChatService(args: {
       const modelHandoffHistory = normalizeModelHandoffHistory(record.modelHandoffHistory);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
-      const fastMode = readLegacyFastMode(record as Record<string, unknown>);
+      const storedFastMode = readLegacyFastMode(record as Record<string, unknown>);
       const cursorCloudServiceTier = normalizeCursorCloudServiceTier(record.cursorCloudServiceTier);
       const cursorCloudPendingRequest = normalizeCursorCloudPendingRequest(record.cursorCloudPendingRequest);
       const autoContinueAtUsageLimit = record.autoContinueAtUsageLimit === false ? false : undefined;
@@ -16604,7 +16638,14 @@ export function createAgentChatService(args: {
         : record.cursorModeId === null
           ? null
           : undefined;
-      const cursorConfigValues = normalizeCursorConfigValueRecord(record.cursorConfigValues);
+      // Older builds stored Cursor's Fast toggle as a model option; it is the
+      // chat's Fast tier now, so a saved choice carries over to the Fast chip.
+      const foldedCursorFast = foldLegacyCursorFastConfigValue(
+        storedFastMode,
+        normalizeCursorConfigValueRecord(record.cursorConfigValues),
+      );
+      const fastMode = foldedCursorFast.fastMode === true;
+      const cursorConfigValues = foldedCursorFast.configValues ?? undefined;
       const callerMcpServers = normalizeCallerMcpServers(record.mcpServers);
       const strictMcpConfig = typeof record.strictMcpConfig === "boolean"
         ? record.strictMcpConfig
@@ -37170,11 +37211,11 @@ export function createAgentChatService(args: {
       // this asserts ADE's map is self-consistent, NOT that the SDK keeps every
       // core tool eagerly loaded. If a CTO is ever seen failing to find a core
       // tool, put this ternary back — it is a one-line revert.
-      opts.env = {
+      opts.env = stripHostRuntimeEnv({
         ...process.env as Record<string, string>,
         ...opts.env as Record<string, string> | undefined,
         ENABLE_TOOL_SEARCH: "auto",
-      };
+      });
     }
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
@@ -39414,7 +39455,13 @@ export function createAgentChatService(args: {
     spawnKind: requestedSpawnKind,
     idempotencyKey,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
-    const requestedFastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
+    // A client that still sends Cursor's Fast toggle as a model option gets it
+    // as the chat's Fast tier, the one control that now carries it.
+    const foldedRequestedCursorFast = foldLegacyCursorFastConfigValue(
+      requestedFastModeArg ?? requestedLegacyFastModeArg,
+      requestedCursorConfigValues,
+    );
+    const requestedFastMode = foldedRequestedCursorFast.fastMode;
     const normalizedParentSessionId = requestedOrchestrationParentSessionId?.trim() || null;
     if (normalizedParentSessionId && requestedSpawnKind !== "subagent" && requestedSpawnKind !== "peer") {
       throw new Error(
@@ -39615,7 +39662,7 @@ export function createAgentChatService(args: {
       : requestedCursorModeId === null
         ? null
         : undefined;
-    const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(requestedCursorConfigValues);
+    const normalizedCursorConfigValues = normalizeCursorConfigValueRecord(foldedRequestedCursorFast.configValues);
     // Caller-injected MCP servers arrive only from an external embedder (the
     // ADE SDK). A chat that asks for none keeps its persisted state and every
     // provider option byte-for-byte identical to before this feature existed.
@@ -45396,19 +45443,24 @@ export function createAgentChatService(args: {
    * `/cancelled|delivering/i` test (`AgentChatPane.tsx`), which this wording
    * fails either way — the message is still queued and its chip must stay.
    *
-   * The wording names no culprit on purpose. Most refusals are ADE's own —
-   * attachments, per-message overrides, a cloud run, no live turn — and the
-   * steer channel is never even consulted for them. The consequence is
-   * identical either way, so the line states only that.
+   * Attachments are the one refusal the user can act on, so that one says why:
+   * pressing Steer again can never work, and "Interrupt & continue" can. The
+   * other refusals — per-message overrides, a cloud run, no live turn, the run
+   * declining — have the same consequence and nothing to act on, so their line
+   * states only that.
    */
   const emitInlineSteerFallbackNotice = (
     managed: ManagedChatSession,
     runtime: { activeTurnId: string | null },
+    refusal?: CursorInlineSteerRefusal,
   ): void => {
+    const message = refusal?.kind === "attachments"
+      ? `${refusal.imagesOnly ? "Images" : "Attachments"} can't join the running turn, so this message will send as a new message after it ends.`
+      : "This message couldn't go into the running turn, so it will send as a new message.";
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "info",
-      message: "This message couldn't go into the running turn, so it will send as a new message.",
+      message,
       turnId: runtime.activeTurnId ?? undefined,
     });
   };
@@ -45568,6 +45620,7 @@ export function createAgentChatService(args: {
     row: QueuedSteer,
     onDelivered?: () => void,
   ): Promise<CursorInlineSteerResult> => {
+    // `Run.steer(text)` is text-only (`activeTurnInlineCarriesAttachments`).
     if (row.attachments.length || row.contextAttachments.length || row.resolvedAttachments.length) {
       return "declined";
     }
@@ -49534,7 +49587,7 @@ export function createAgentChatService(args: {
         }
         // Emitted only once the message is genuinely going to be queued. Above
         // the queue-full guard it would promise a delivery that never happens.
-        if (inlineRefused) emitInlineSteerFallbackNotice(managed, rt);
+        if (inlineRefused) emitInlineSteerFallbackNotice(managed, rt, cursorInlineSteerRefusalFor(queuedRow));
         rt.pendingSteers.push(queuedRow);
         emitQueuedCursorSteerRow(managed, rt, queuedRow);
         emitChatEvent(managed, {
@@ -50650,7 +50703,7 @@ export function createAgentChatService(args: {
           // Still staged: the row reads queued again, so its chip returns.
           emitQueuedCursorSteerRow(managed, live, stillStaged);
         }
-        emitInlineSteerFallbackNotice(managed, runtime);
+        emitInlineSteerFallbackNotice(managed, runtime, cursorInlineSteerRefusalFor(staged));
         persistChatState(managed);
         // The row is still staged and Cursor only drains at a turn boundary. If
         // that boundary already passed while the steer was in flight, nothing
@@ -56198,14 +56251,23 @@ export function createAgentChatService(args: {
     opencodePermissionMode,
     droidPermissionMode,
     cursorModeId,
-    cursorConfigValues,
+    cursorConfigValues: requestedCursorConfigValuesArg,
     acpPermissionMode: requestedAcpPermissionMode,
     permissionMode,
     spawnKind: requestedSpawnKind,
     subagentTakeoverPromptShown,
     autoContinueAtUsageLimit: requestedAutoContinueAtUsageLimit,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
-    const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
+    // Cursor's Fast toggle sent as a model option by an older client becomes
+    // the chat's Fast tier; an option record left empty by the fold clears.
+    const foldedCursorFast = foldLegacyCursorFastConfigValue(
+      requestedFastModeArg ?? requestedLegacyFastModeArg,
+      requestedCursorConfigValuesArg,
+    );
+    const fastMode = foldedCursorFast.fastMode;
+    const cursorConfigValues = foldedCursorFast.folded
+      ? foldedCursorFast.configValues ?? null
+      : requestedCursorConfigValuesArg;
     const managed = ensureManagedSession(sessionId);
     if (cursorOwnsSessionName(managed.session.cursorCloudAgentId) && (title !== undefined || manuallyNamed !== undefined)) {
       throw new Error(CURSOR_CLOUD_RENAME_BLOCKED_MESSAGE);

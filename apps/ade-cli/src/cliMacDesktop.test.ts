@@ -90,11 +90,23 @@ describe("ade mac-desktop dispatch", () => {
       .toMatchObject({ laneId: "lane-9" });
   });
 
-  it("refuses a lane-scoped subcommand with no lane anywhere", () => {
+  it("sends where the shell stands when no lane is named, so the runtime can place it", () => {
+    // An OpenCode agent's shell has no ADE_LANE_ID. The runtime binds a call
+    // with no chat identity to the lane worktree its callerRoot is inside, and
+    // refuses the call anywhere else, so the CLI no longer refuses it first.
     delete process.env.ADE_LANE_ID;
-    expect(() => buildCliPlan(["mac-desktop", "observe"])).toThrow(/requires --lane/);
-    // `status` is the capability read and must answer without a lane.
-    expect(plan(["mac-desktop", "status"]).label).toBe("mac-desktop status");
+    const previousWorkspace = process.env.ADE_WORKSPACE_ROOT;
+    delete process.env.ADE_WORKSPACE_ROOT;
+    try {
+      const built = plan(["mac-desktop", "observe"]);
+      expect(actionArgs(built)).not.toHaveProperty("laneId");
+      const envelope = (built.steps[0]?.params as { arguments?: Record<string, unknown> }).arguments;
+      expect(envelope).toMatchObject({ callerRoot: process.cwd(), callerRootSource: "cwd" });
+      // `status` is the capability read and must answer without a lane.
+      expect(plan(["mac-desktop", "status"]).label).toBe("mac-desktop status");
+    } finally {
+      if (previousWorkspace !== undefined) process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
+    }
   });
 
   it("maps every subcommand to its action", () => {
@@ -166,6 +178,8 @@ describe("ade mac-desktop dispatch", () => {
     expect(actionArgs(plan(["mac-desktop", "type", "--submit", "reddit"])))
       .toMatchObject({ text: "reddit", submit: true });
     expect(actionArgs(plan(["mac-desktop", "type", "hi"])).submit).toBeUndefined();
+    // Typed text is sent as given: a leading space is part of what to type.
+    expect(actionArgs(plan(["mac-desktop", "type", " - done "])).text).toBe(" - done ");
     expect(actionArgs(plan(["mac-desktop", "key", "tab"]))).toMatchObject({ key: "tab" });
     expect(actionArgs(plan(["mac-desktop", "observe", "--map", "--limit", "50"])))
       .toMatchObject({ map: true, limit: 50 });
@@ -393,12 +407,13 @@ describe("ade mac-desktop text output", () => {
     expect(observation({ truncatedReason: "timeout", stalledApps: [] })).toContain("ran out of time after 0 elements");
   });
 
-  it("prints an action result as what it resolved plus the state that followed", () => {
+  it("prints an action result as what it hit, whether it changed anything, and the state that followed", () => {
     const text = formatOutput(
       {
         ok: true,
         action: "click",
         mode: "accessibility",
+        effect: { status: "unconfirmed", reason: "nothing on screen changed" },
         resolved: {
           index: 3,
           handle: "obs-a1:e:3",
@@ -421,7 +436,10 @@ describe("ade mac-desktop text output", () => {
       "mac-desktop-action",
     );
     expect(text).toContain("ADE Mac Desktop action");
-    expect(text).toContain('[3] AXButton "Sign in" (912,430)');
+    expect(text.split("\n").slice(0, 2)).toEqual([
+      'hit: AXButton "Sign in" (obs-a1:e:3)',
+      "effect: unconfirmed — nothing on screen changed; observe again before you continue",
+    ]);
     // The follow-up observation rides along, so no second round trip is needed.
     expect(text).toContain('[0] AXStaticText "Welcome" (10,10)');
     expect(text).toContain("windows  (none parked)");

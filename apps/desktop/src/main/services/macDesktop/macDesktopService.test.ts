@@ -729,6 +729,33 @@ describe("macDesktopService real input and the lease", () => {
 
     expect(result.resolved).toMatchObject({ handle: "obs-before:e:3", title: "New Document" });
     expect(result.observation?.id).toContain("after");
+    // The same pair of trees answers whether the click changed anything.
+    expect(result.ok && "effect" in result ? result.effect : null)
+      .toEqual({
+        status: "observed",
+        reason: '1 element appeared (AXTextArea); 1 element went away (AXButton "New Document")',
+      });
+    service.dispose();
+  });
+
+  it("answers unconfirmed when the tree after an action matches the one it resolved against", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.observe]: () => ({
+        id: `o-${Math.random()}`,
+        elements: [{ index: 1, handle: "obs-o:e:1", role: "AXButton", title: "Save", pid: 42 }],
+      }),
+      [MAC_DESKTOP_DRIVER_OPS.input]: () => ({ ok: true, resolvedIndex: 1 }),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+
+    // No earlier observation: nothing to compare with, and it says so.
+    const first = await service.click({ laneId: "lane-1", text: "Save", chatSessionId: "chat-1" });
+    expect("effect" in first ? first.effect.status : null).toBe("not_checked");
+
+    const second = await service.click({ laneId: "lane-1", text: "Save", chatSessionId: "chat-1" });
+    expect("effect" in second ? second.effect : null)
+      .toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
     service.dispose();
   });
 

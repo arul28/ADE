@@ -19,6 +19,7 @@ import {
   setWorkLivePreviewEnabledForChat,
 } from "../chat/chatCompanionUiState";
 import { MAC_DESKTOP_CARD_ON_SCREEN_KEY, grantMacDesktopCardForChat } from "../work/macDesktopCardGrants";
+import { APP_CONTROL_CARD_ON_SCREEN_KEY, grantAppControlCardForChat } from "../work/appControlCardGrants";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "apple",
@@ -26,6 +27,8 @@ const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "browser",
   "mac-desktop",
   "floating-mac-desktop",
+  "app-control",
+  "floating-app-control",
 ];
 
 function showPaneTool({
@@ -36,7 +39,7 @@ function showPaneTool({
   setWorkSidebarTool,
 }: {
   chatSessionId: string;
-  tool: "ios" | "mac-desktop";
+  tool: "ios" | "mac-desktop" | "app-control";
   scopeKey: string;
   activeLaneId: string | null;
   setWorkSidebarTool: (tool: WorkSidebarTab) => void;
@@ -63,6 +66,10 @@ function showPaneTool({
  * The Mac Desktop follows the same rule with its floating card: an agent
  * driving the lane's display grants this chat the card on that lane (see
  * `macDesktopCardGrants`), and the card floats once a frame arrives.
+ *
+ * App Control follows it too, with its own floating player and grants
+ * (`appControlCardGrants`): the lane's app floats over the chat whose agent
+ * drives it, unless the chat turned its preview off.
  */
 export function useWorkShowRequests({
   active,
@@ -104,10 +111,23 @@ export function useWorkShowRequests({
   const scopeKey = workRuntimeScopeKey(runtimePin, projectBinding);
   const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
   const macDesktopToolOpening = workSidebarVisible && workSidebarTool === "mac-desktop";
+  const appControlToolOpening = workSidebarVisible && workSidebarTool === "app-control";
   const showWorkSurface = useCallback((
     request: WorkToolShowRequest,
   ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
     if (!activeWorkSession || request.chatSessionId !== activeWorkSession.id) return "declined";
+    /*
+     * A floating card shows one lane's screen or app, so it floats only when
+     * the chat's own lane is the lane the pane grants it on, and the request
+     * (when it names a lane) names that same lane. A lane-less chat, whose
+     * tools borrow the pane's fallback lane, gets none.
+     */
+    const chatLaneId = activeWorkSession.laneId || null;
+    const floatsOnChatLane = Boolean(
+      chatLaneId
+        && chatLaneId === activeLaneId
+        && (!request.laneId || request.laneId === chatLaneId),
+    );
     /*
      * One lane for every surface: `activeLaneId`, the one the pane mounts its
      * tools under. Writing the tool into the store is a request, not a result:
@@ -141,7 +161,7 @@ export function useWorkShowRequests({
     }
     if (request.surface === "floating-mac-desktop") {
       // Like the floating device: only over a chat of the card's own lane.
-      if (!activeWorkSession.laneId) return "declined";
+      if (!floatsOnChatLane) return "declined";
       if (isWorkSurfaceOnScreen(workSurfaceKey("mac-desktop", scopeKey, activeLaneId))) return "shown";
       if (request.auto) {
         if (macDesktopToolOpening) return "declined";
@@ -155,6 +175,32 @@ export function useWorkShowRequests({
       floatWorkLiveCardForChat(request.chatSessionId, "mac-desktop");
       grantMacDesktopCardForChat(activeLaneId, request.chatSessionId);
       return showOutcomeWhenOnScreen(workSurfaceKey(MAC_DESKTOP_CARD_ON_SCREEN_KEY, scopeKey, activeLaneId));
+    }
+    if (request.surface === "app-control") {
+      return showPaneTool({
+        chatSessionId: request.chatSessionId,
+        tool: "app-control",
+        scopeKey,
+        activeLaneId,
+        setWorkSidebarTool,
+      });
+    }
+    if (request.surface === "floating-app-control") {
+      // Like the floating Mac Desktop: only over a chat of the app's own lane,
+      // and never beside the pane already showing it.
+      if (!floatsOnChatLane) return "declined";
+      if (isWorkSurfaceOnScreen(workSurfaceKey("app-control", scopeKey, activeLaneId))) return "shown";
+      if (request.auto) {
+        if (appControlToolOpening) return "declined";
+        if (!isWorkLivePreviewEnabled(readChatCompanionUiState(request.chatSessionId), "app-control")) {
+          return "declined";
+        }
+        return grantAppControlCardForChat(activeLaneId, request.chatSessionId) ? "shown" : "declined";
+      }
+      // Asked for by name: undo an earlier × and float the player now.
+      floatWorkLiveCardForChat(request.chatSessionId, "app-control");
+      grantAppControlCardForChat(activeLaneId, request.chatSessionId);
+      return showOutcomeWhenOnScreen(workSurfaceKey(APP_CONTROL_CARD_ON_SCREEN_KEY, scopeKey, activeLaneId));
     }
     if (request.surface !== "floating-apple") return "declined";
     // The Apple tool is already on screen in the pane.
@@ -177,6 +223,7 @@ export function useWorkShowRequests({
   }, [
     activeLaneId,
     activeWorkSession,
+    appControlToolOpening,
     appleToolOpening,
     macDesktopToolOpening,
     runtimePin,

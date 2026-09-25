@@ -23,6 +23,11 @@ import {
   type BuiltInBrowserRuntimeStatus,
 } from "../../../shared/types/builtInBrowserRuntimeStatus";
 import type { Logger } from "../logging/logger";
+import type { AppControlScreencastRecorderBackend } from "../appControl/appControlRecording";
+import {
+  APP_CONTROL_RECORDER_BRIDGE_PREFIX,
+  isAppControlRecorderBridgeMethod,
+} from "../../../../../ade-cli/src/services/builtInBrowser/appControlRecorderBridgeClient";
 import {
   issueBuiltInBrowserActorCapability,
   resolveBuiltInBrowserActorCapability,
@@ -31,6 +36,10 @@ import {
 import { builtInBrowserAgentPresence } from "./builtInBrowserPresence";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
+import { pathComparisonKey } from "../shared/pathCompare";
+
+/** Per connection: the App Control recordings it started, cancelled when it closes. */
+type BridgeConnectionState = { recorderKeys: Set<string>; closed: boolean };
 
 /**
  * Side-channel JSON-RPC server that exposes the desktop's
@@ -74,6 +83,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   socketPath: string;
   service: BuiltInBrowserService;
   logger: Logger;
+  /**
+   * The App Control screencast recorder (Windows/Linux), served to the runtime
+   * daemon as `app_control_recorder.*`. Absent: those methods are not found.
+   */
+  appControlScreencastRecorder?: AppControlScreencastRecorderBackend | null;
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -105,6 +119,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   const server = net.createServer((conn) => {
     activeSockets.add(conn);
+    const connection: BridgeConnectionState = { recorderKeys: new Set(), closed: false };
     const transport: JsonRpcTransport = {
       onData(callback) {
         conn.on("data", callback);
@@ -116,7 +131,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         if (!conn.destroyed) conn.destroy();
       },
     };
-    const stop = startJsonRpcServer(handleRequest, transport, {
+    const stop = startJsonRpcServer((request) => handleRequest(request, connection), transport, {
       nonFatal: true,
       onError(error: unknown, context: JsonRpcServerErrorContext) {
         logger.warn("built_in_browser_bridge.contained_rpc_error", {
@@ -130,6 +145,10 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       activeSockets.delete(conn);
       activeServerHandles.delete(stop);
       stop();
+      // A runtime that exited or crashed mid-recording never sends its stop.
+      // Drop what it started, or the lane's key stays taken and the hidden
+      // encoder window, file handle and drain timer live on.
+      releaseConnectionRecordings(connection);
     });
     conn.on("error", () => {
       // ignore per-connection errors; they are surfaced via the JSON-RPC frame.
@@ -205,15 +224,32 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     throw error;
   }
 
-  async function handleRequest(request: JsonRpcRequest): Promise<unknown> {
+  function releaseConnectionRecordings(connection: BridgeConnectionState): void {
+    const recorder = args.appControlScreencastRecorder ?? null;
+    connection.closed = true;
+    const keys = [...connection.recorderKeys];
+    connection.recorderKeys.clear();
+    if (!recorder || !keys.length) return;
+    for (const key of keys) {
+      try {
+        recorder.cancel?.(key);
+      } catch {
+        // best effort: the next start for the lane reports what is left
+      }
+    }
+    logger.info("built_in_browser_bridge.recordings_released_on_close", { count: keys.length });
+  }
+
+  async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
     const method = request.method ?? "";
-    if (!method.startsWith("built_in_browser.")) {
+    const isRecorderMethod = method.startsWith(APP_CONTROL_RECORDER_BRIDGE_PREFIX);
+    if (!method.startsWith("built_in_browser.") && !isRecorderMethod) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*`,
+        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.* and app_control_recorder.*`,
       );
     }
-    const name = method.slice("built_in_browser.".length);
+    const name = method.slice(isRecorderMethod ? APP_CONTROL_RECORDER_BRIDGE_PREFIX.length : "built_in_browser.".length);
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
     const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
       ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
@@ -223,6 +259,9 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         JsonRpcErrorCode.policyDenied,
         "Built-in browser bridge authentication failed.",
       );
+    }
+    if (isRecorderMethod) {
+      return await handleAppControlRecorder(name, rawParams, connection);
     }
     if (name === "authenticate") {
       return { authenticated: true };
@@ -440,6 +479,63 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
   }
 
+  /**
+   * The App Control screencast recorder, for the runtime daemon. Bridge auth
+   * is the only gate, as for the Work-tools mirror: the caller is the daemon,
+   * which decides which lane records. Recordings are keyed per lane.
+   */
+  async function handleAppControlRecorder(
+    name: string,
+    params: Record<string, unknown>,
+    connection: BridgeConnectionState,
+  ): Promise<unknown> {
+    const recorder = args.appControlScreencastRecorder ?? null;
+    if (!recorder || !isAppControlRecorderBridgeMethod(name)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Action '${APP_CONTROL_RECORDER_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`,
+      );
+    }
+    const key = normalizedString(params.key);
+    if (!key) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "App Control recorder calls need a recording key.");
+    }
+    try {
+      if (name === "start") {
+        const filePath = await resolveRecorderTargetPath(normalizedString(params.filePath));
+        const fps = typeof params.fps === "number" && Number.isFinite(params.fps) ? params.fps : 10;
+        const started = await recorder.start({ key, filePath, fps, keepIdle: params.keepIdle === true });
+        // The caller went away while the recorder was starting; nobody will stop it.
+        if (connection.closed) {
+          recorder.cancel?.(key);
+          return started;
+        }
+        connection.recorderKeys.add(key);
+        return started;
+      }
+      if (name === "pushFrame") {
+        const frame = isRecord(params.frame) ? params.frame : null;
+        if (frame && typeof frame.data === "string" && frame.data) {
+          recorder.pushFrame(key, frame as unknown as Parameters<AppControlScreencastRecorderBackend["pushFrame"]>[1]);
+        }
+        return { ok: true };
+      }
+      if (name === "stop") {
+        connection.recorderKeys.delete(key);
+        return await recorder.stop(key);
+      }
+      connection.recorderKeys.delete(key);
+      recorder.cancel?.(key);
+      return { ok: true };
+    } catch (error) {
+      if (error instanceof JsonRpcError) throw error;
+      throw new JsonRpcError(
+        JsonRpcErrorCode.internalError,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }
+
   return {
     socketPath,
     authToken: bridgeAuthToken,
@@ -474,6 +570,32 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
       }
     },
   };
+}
+
+/**
+ * The file an App Control recording may write. The recorder opens it for
+ * writing, so a bridge caller must not be able to name any file it likes: the
+ * runtime reserves recordings under a project's `.ade/artifacts/computer-use`
+ * (`createComputerUseArtifactPath`), and that is the only place taken. The
+ * directory is resolved through symlinks before the check, and the file is
+ * rebuilt from that real directory so a link swapped in later cannot redirect it.
+ */
+async function resolveRecorderTargetPath(filePath: string | null): Promise<string> {
+  const refuse = (): never => {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "App Control recorder start needs an absolute .mp4 or .webm path under a project's .ade/artifacts/computer-use directory.",
+    );
+  };
+  if (!filePath || !path.isAbsolute(filePath) || !/\.(mp4|webm)$/i.test(filePath)) return refuse();
+  const realDir = await fs.promises.realpath(path.dirname(filePath)).catch(() => null);
+  if (!realDir) return refuse();
+  const segments = realDir.split(/[\\/]+/).filter(Boolean).map((segment) => pathComparisonKey(segment));
+  const tail = segments.slice(-3);
+  if (tail.length !== 3 || tail[0] !== ".ade" || tail[1] !== "artifacts" || tail[2] !== "computer-use") {
+    return refuse();
+  }
+  return path.join(realDir, path.basename(filePath));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -34,6 +34,7 @@ import { LinearIntegrationSection } from "../settings/LinearIntegrationSection";
 import { NotificationsSection } from "../settings/NotificationsSection";
 import { PrChatTranscriptsSection } from "../settings/PrChatTranscriptsSection";
 import { BrowserLinksSection } from "../settings/BrowserLinksSection";
+import { BrowserAgentAccessSection } from "../settings/BrowserAgentAccessSection";
 import { ProductAnalyticsSection } from "../settings/ProductAnalyticsSection";
 import { DiagnosticsSharingSection } from "../settings/DiagnosticsSharingSection";
 import { ProjectSection } from "../settings/ProjectSection";
@@ -303,6 +304,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection /> },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection /> },
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection /> },
+    { entryIds: ["general.browser-agent-access"], render: () => <BrowserAgentAccessSection /> },
     { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection /> },
     { entryIds: ["general.diagnostics-sharing"], render: () => <DiagnosticsSharingSection /> },
   ],

@@ -124,6 +124,8 @@ The gate applies even when the branch's main purpose is unrelated to analytics. 
 
 Run end-to-end without user interaction. Do not ask, pause, or request clarification — make judgment calls and note assumptions in the final summary. Stop only on a fatal blocker (e.g. cannot determine the changed feature at all).
 
+**Subagent limits:** follow the **Subagents** rules in `AGENTS.md`. The parity passes below that say "Spawn a general-purpose agent" start one leaf agent each, never in parallel; add "Do not start subagents or parallel reviewers; do all the work yourself." to each prompt, and do a pass yourself when it is small or the user asked to limit agents.
+
 **Do all the work yourself in the main loop.** Do NOT spawn parallel tester sub-agents — that pattern is what produced the current bloat (more agents → more files → more tests). One agent, one judgment.
 
 **Arguments:** `$ARGUMENTS` — optional feature hint plus optional

@@ -21,6 +21,18 @@ type JsonRpcResponse = {
   params?: unknown;
 };
 
+/**
+ * The peer answered with a JSON-RPC error. The socket is fine; only this
+ * request failed. Transport failures (closed socket, timeout, bad frame) stay
+ * plain `Error`s.
+ */
+export class JsonRpcResponseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "JsonRpcResponseError";
+  }
+}
+
 export class JsonRpcClient {
   private nextId = 1;
   private readonly buffer = new RpcByteQueue();
@@ -277,7 +289,7 @@ export class JsonRpcClient {
     this.pending.delete(pendingKey);
     clearTimeout(pending.timer);
     if (response.error) {
-      pending.reject(new Error(response.error.message));
+      pending.reject(new JsonRpcResponseError(response.error.message));
       return;
     }
     pending.resolve(response.result);

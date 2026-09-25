@@ -24,16 +24,33 @@ export function shouldAbsorbProgrammaticScrollEvent({
   return programmaticTarget != null && Math.abs(scrollTop - programmaticTarget) < 1;
 }
 
+/** How long a reader's scroll-up keeps the list from re-pinning to the bottom. */
+export const USER_SCROLL_UP_REPIN_HOLD_MS = 300;
+
+/**
+ * Whether the list follows the bottom after a scroll event it did not author.
+ *
+ * A pinned list stays pinned inside the wide threshold. A detached list re-pins
+ * only when the reader moved the view DOWN into the narrow resume zone, and
+ * never while `repinHeld` (a scroll-up gesture just happened): Windows
+ * animated wheel notches, a clamp from a virtual-window switch, or a late
+ * bottom snap all land near the bottom without the reader heading there.
+ */
 export function shouldStickToBottomAfterScroll({
   distanceFromBottom,
   wasStuckToBottom,
+  scrolledDown,
+  repinHeld,
 }: {
   distanceFromBottom: number;
   wasStuckToBottom: boolean;
+  /** scrollTop grew since the previous scroll event. */
+  scrolledDown: boolean;
+  /** Within `USER_SCROLL_UP_REPIN_HOLD_MS` of a reader scroll-up gesture. */
+  repinHeld: boolean;
 }): boolean {
-  return wasStuckToBottom
-    ? distanceFromBottom < STICK_THRESHOLD_PX
-    : distanceFromBottom <= STICK_RESUME_THRESHOLD_PX;
+  if (wasStuckToBottom) return distanceFromBottom < STICK_THRESHOLD_PX;
+  return scrolledDown && !repinHeld && distanceFromBottom <= STICK_RESUME_THRESHOLD_PX;
 }
 
 export function shouldKeepPinnedThroughViewportShrink({

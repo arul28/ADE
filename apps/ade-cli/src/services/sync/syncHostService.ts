@@ -262,6 +262,7 @@ import {
   type MacDesktopSyncStream,
   type MacDesktopSyncStreamSink,
 } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
@@ -1199,6 +1200,12 @@ type SyncHostServiceArgs = {
    * share one instance. When absent, the fallback path creates its own.
    */
   macDesktopSyncStream?: MacDesktopSyncStream | null;
+  /**
+   * App Control live-frame fan-out. Production (`syncService.ts`) builds it
+   * and injects it here so the command handlers and connection-close cleanup
+   * share one instance. Absent means no `appControl.*` commands.
+   */
+  appControlSyncStream?: AppControlSyncStream | null;
   appleDeviceService?: AppleDeviceRemoteService | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
@@ -1259,7 +1266,7 @@ type SyncHostServiceArgs = {
   foreignChatProvider?: SyncForeignChatTranscriptResolver;
   onStateChanged?: () => void;
   remoteCommandService?: SyncRemoteCommandService;
-  remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
+  remoteCommandExecutor?: SyncHostRemoteCommandExecutor;
   productAnalyticsService?: ProductAnalyticsService | null;
   /**
    * When true, paired hellos from devices WITHOUT a registered DPoP key are
@@ -1577,6 +1584,15 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
   "chat_history",
   "chat_tool_result",
 ]);
+
+/**
+ * Runs a command in the project it names. `releaseStreamConnection` ends the
+ * live viewers a closed socket held in every booted project, since commands
+ * routed to another project subscribed on that project's streams.
+ */
+export type SyncHostRemoteCommandExecutor = Pick<SyncRemoteCommandService, "execute"> & {
+  releaseStreamConnection?(connectionId: string): void;
+};
 
 type SyncHostProjectScopeResolution =
   | {
@@ -2420,6 +2436,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     workToolsStateService: args.workToolsStateService,
     macDesktopService,
     macDesktopSyncStream,
+    appControlSyncStream: args.appControlSyncStream ?? null,
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
@@ -3829,6 +3846,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Every Mac Desktop viewer this socket owned is gone. The release stops
       // the encoder when the set empties, same as a closing chat.
       macDesktopSyncStream?.releaseConnection(peer.macDesktopConnectionId);
+      // Same for App Control viewers on this socket.
+      args.appControlSyncStream?.releaseConnection(peer.macDesktopConnectionId);
+      // Commands this socket sent to other projects subscribed on those
+      // projects' streams; release it in every booted project scope too.
+      try {
+        args.remoteCommandExecutor?.releaseStreamConnection?.(peer.macDesktopConnectionId);
+      } catch (error) {
+        args.logger.warn("sync_host.release_stream_connection_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       // A socket that was driving a lane's display gives the input lease back
       // now rather than at the TTL. Fire and forget: the lease's own deadline
       // is still the guarantee, and a return that loses a race with a new
@@ -7013,6 +7041,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               pendingBytes: () => peer.ws.bufferedAmount,
             }
           : undefined;
+      // App Control frames ride the same per-socket id. The subscribe handler
+      // pushes frames through the sink; unsubscribe reads only its connection
+      // id, so a connection can end its own streams and never another's.
+      const appControlStreamSink: AppControlSyncStreamSink | undefined =
+        args.appControlSyncStream
+        && peer.authenticated
+        && (payload.action === "appControl.streamSubscribe" || payload.action === "appControl.streamUnsubscribe")
+          ? {
+              connectionId: peer.macDesktopConnectionId,
+              sendFrame: (frame) => send(peer, "appControl.streamFrame", frame),
+              sendEnded: (ended) => {
+                send(peer, "appControl.streamEnded", ended);
+              },
+              pendingBytes: () => peer.ws.bufferedAmount,
+              isClosed: () => peer.ws.readyState !== WebSocket.OPEN,
+            }
+          : undefined;
       let created: unknown;
       try {
         created = preparedAnalytics.captureDisabled
@@ -7021,6 +7066,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               signal,
               ...(macDesktopConnectionId ? { connectionId: macDesktopConnectionId } : {}),
               ...(macDesktopStreamSink ? { macDesktopStream: macDesktopStreamSink } : {}),
+              ...(appControlStreamSink ? { appControlStream: appControlStreamSink } : {}),
             });
       } finally {
         stopTrackingCommand();

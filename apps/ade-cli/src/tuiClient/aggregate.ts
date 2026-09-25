@@ -6,6 +6,7 @@ import {
 import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
+  AgentChatFileRef,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { normalizeSubagentLifecycleEvent } from "../../../desktop/src/shared/chatSubagents";
@@ -88,6 +89,9 @@ export type PlanStep = {
 export type PendingSteer = {
   steerId: string;
   text: string;
+  /** What the staged message carries, so `/steer send` can refuse what the live turn cannot take. */
+  attachments?: AgentChatFileRef[];
+  contextAttachmentCount?: number;
 };
 
 export type AggregatedBlock =
@@ -886,7 +890,12 @@ export function derivePendingSteers(events: AgentChatEventEnvelope[]): PendingSt
     if (event.type === "user_message" && event.steerId) {
       if (event.deliveryState === "queued") {
         if (!resolvedSteerIds.has(event.steerId)) {
-          steerMap.set(event.steerId, { steerId: event.steerId, text: event.displayText ?? event.text });
+          steerMap.set(event.steerId, {
+            steerId: event.steerId,
+            text: event.displayText ?? event.text,
+            ...(event.attachments?.length ? { attachments: event.attachments } : {}),
+            ...(event.contextAttachments?.length ? { contextAttachmentCount: event.contextAttachments.length } : {}),
+          });
         }
       } else {
         steerMap.delete(event.steerId);

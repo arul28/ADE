@@ -65,7 +65,6 @@ function props(): WorkToolPanelProps {
     toolContext: {} as WorkToolPanelProps["toolContext"],
     pinnedMachineOffline: false,
     pinnedMachineName: null,
-    warningReason: null,
     canInsertContext: false,
     shouldPersistPanelAttachment: false,
     resumingSession: false,

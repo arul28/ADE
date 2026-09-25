@@ -30,6 +30,8 @@ vi.mock("../../desktop/src/main/services/computerUse/localComputerUse", async (i
   };
 });
 
+const spawnSyncCalls = vi.hoisted(() => [] as Array<{ command: string; args: string[] }>);
+
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   const nodeFs = await import("node:fs");
@@ -38,7 +40,8 @@ vi.mock("node:child_process", async (importOriginal) => {
     default: actual,
     // Stand in for `screencapture`: write the bytes the real binary would to the
     // output path (always the last argument) without touching the display.
-    spawnSync: (_command: string, args: string[]) => {
+    spawnSync: (command: string, args: string[]) => {
+      spawnSyncCalls.push({ command, args });
       const target = args[args.length - 1]!;
       nodeFs.default.writeFileSync(target, "fake-capture-bytes");
       return { status: 0, stdout: "", stderr: "" };
@@ -46,7 +49,12 @@ vi.mock("node:child_process", async (importOriginal) => {
   };
 });
 
-const { createAdeRpcRequestHandler, isExplicitProofCall, resolveIngestProvenance } = await import("./adeRpcServer");
+const {
+  createAdeRpcRequestHandler,
+  describeLaneDisplayProofRefusal,
+  isExplicitProofCall,
+  resolveIngestProvenance,
+} = await import("./adeRpcServer");
 const { createAdeCaptureRegistry } = await import("./services/proof/adeCaptureRegistry");
 
 let projectRoot = "";
@@ -98,9 +106,14 @@ const previousRole = process.env.ADE_DEFAULT_ROLE;
 
 beforeEach(() => {
   process.env.ADE_DEFAULT_ROLE = "agent";
+  // An agent shell running these tests carries its own chat identity; the
+  // server would read it as the caller's.
+  vi.stubEnv("ADE_CHAT_SESSION_ID", "");
+  spawnSyncCalls.length = 0;
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
   else process.env.ADE_DEFAULT_ROLE = previousRole;
   while (createdRoots.length) fs.rmSync(createdRoots.pop()!, { recursive: true, force: true });
@@ -141,9 +154,10 @@ describe("explicit proof capture", () => {
     const handler = await handlerFor(fixture);
 
     // Exactly the arguments buildCliPlan emits for
-    // `ade proof capture --caption "logged in as admin"`.
+    // `ade proof capture --real-screen --caption "logged in as admin"`.
     const result = await callTool(handler, "screenshot_environment", {
       proof: true,
+      realScreen: true,
       name: "logged in as admin",
     });
 
@@ -178,6 +192,7 @@ describe("explicit proof capture", () => {
 
     const result = await callTool(handler, "screenshot_environment", {
       proof: true,
+      realScreen: true,
       name: "capture from a lane worktree",
       callerRoot: laneRoot,
     });
@@ -201,7 +216,7 @@ describe("explicit proof capture", () => {
 
     const proof = createRuntime();
     const proofHandler = await handlerFor(proof);
-    const proofResult = await callTool(proofHandler, "record_environment", { durationSec: 1, proof: true });
+    const proofResult = await callTool(proofHandler, "record_environment", { durationSec: 1, proof: true, realScreen: true });
     expect(proofResult.isError).toBeFalsy();
     expect(proof.ingest).toHaveBeenCalledTimes(1);
     expect(proofResult.structuredContent.proof).toBe(true);
@@ -331,11 +346,11 @@ describe("explicit proof capture", () => {
       inputs: [{ kind: "screenshot", title: "Screen", path: shotPath }],
     });
 
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     await ingestShot();
     const capturedSha = sha256Of(shotPath);
     // Same path, other bytes: no longer the capture.
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     fs.writeFileSync(shotPath, "an older screenshot");
     await ingestShot();
 
@@ -393,7 +408,7 @@ describe("explicit proof capture", () => {
         return { filePath: shotPath, deviceUdid: "SIM-1" };
       }),
     };
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     for (let attempt = 0; attempt < 2; attempt += 1) {
       await callTool(handler, "ingest_computer_use_artifacts", {
         backendStyle: "manual",
@@ -421,7 +436,7 @@ describe("explicit proof capture", () => {
     fixture.ingest.mockImplementationOnce(() => {
       throw new Error("disk full");
     });
-    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    await callTool(handler, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {}, callerRoot: laneRoot });
     const outcomes: boolean[] = [];
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await callTool(handler, "ingest_computer_use_artifacts", {
@@ -497,6 +512,114 @@ describe("explicit proof capture", () => {
     }
   });
 
+  function stubLaneDisplay(fixture: ReturnType<typeof createRuntime>, options: { hasDisplay: boolean }) {
+    const shotPath = path.join(projectRoot, "display.png");
+    const clipPath = path.join(projectRoot, "display.mp4");
+    const service = {
+      hasDisplaySync: vi.fn((laneId: string) => options.hasDisplay && laneId === "lane-1"),
+      getDisplay: vi.fn(async () => ({ laneId: "lane-1", displayId: 7, name: "ADE · lane-1", width: 1440, height: 900 })),
+      getStatus: vi.fn(async () => ({ supported: true, recording: null })),
+      screenshot: vi.fn(async () => {
+        fs.writeFileSync(shotPath, "display pixels");
+        return { laneId: "lane-1", filePath: shotPath, width: 1440, height: 900, proofArtifactId: "artifact-display" };
+      }),
+      startRecording: vi.fn(async () => ({ laneId: "lane-1", running: true })),
+      stopRecording: vi.fn(async () => {
+        fs.writeFileSync(clipPath, "display video");
+        return { laneId: "lane-1", running: false, filePath: clipPath, durationMs: 800, proofArtifactId: "artifact-clip" };
+      }),
+    };
+    fixture.runtime.macDesktopService = service;
+    fixture.runtime.computerUseArtifactBrokerService.listArtifacts = vi.fn(({ artifactId }: { artifactId: string }) => [{
+      id: artifactId,
+      kind: "screenshot",
+      title: "t",
+      uri: "u",
+      laneId: "lane-1",
+      links: [{ ownerKind: "lane", ownerId: "lane-1" }, { ownerKind: "chat_session", ownerId: "chat-1" }],
+    }]);
+    return service;
+  }
+
+  it("files `ade proof capture` from the lane's Mac Desktop display, never the real screen", async () => {
+    const fixture = createRuntime();
+    const service = stubLaneDisplay(fixture, { hasDisplay: true });
+    const handler = await handlerFor(fixture);
+
+    const result = await callTool(handler, "screenshot_environment", { proof: true, name: "checkout done" });
+
+    expect(result.isError).toBeFalsy();
+    expect(spawnSyncCalls).toEqual([]);
+    // The service's own proof path files it (caption = proof), under the chat's lane and chat.
+    expect(service.screenshot).toHaveBeenCalledWith({ laneId: "lane-1", caption: "checkout done", chatSessionId: "chat-1" });
+    expect(fixture.ingest).not.toHaveBeenCalled();
+    expect(result.structuredContent.artifacts.map((artifact: any) => artifact.id)).toEqual(["artifact-display"]);
+    expect(result.structuredContent.capturedFrom).toMatchObject({ kind: "mac_desktop", laneId: "lane-1", displayName: "ADE · lane-1" });
+  });
+
+  it("records `ade proof record` on the lane's display: start, wait, stop, filed by the recorder", async () => {
+    const fixture = createRuntime();
+    const service = stubLaneDisplay(fixture, { hasDisplay: true });
+    const handler = await handlerFor(fixture);
+
+    const result = await callTool(handler, "record_environment", { proof: true, durationSec: 1, name: "flow" });
+
+    expect(result.isError).toBeFalsy();
+    expect(spawnSyncCalls).toEqual([]);
+    expect(service.startRecording).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      caption: "flow",
+      chatSessionId: "chat-1",
+    }));
+    expect(service.stopRecording).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" });
+    expect(result.structuredContent.artifacts.map((artifact: any) => artifact.id)).toEqual(["artifact-clip"]);
+  });
+
+  it("refuses a proof capture or recording when the lane has no display, and captures nothing", async () => {
+    for (const service of ["none", "no-display"] as const) {
+      const fixture = createRuntime();
+      if (service === "no-display") stubLaneDisplay(fixture, { hasDisplay: false });
+      const handler = await handlerFor(fixture);
+
+      const shot = await callTool(handler, "screenshot_environment", { proof: true, name: "x" });
+      const clip = await callTool(handler, "record_environment", { proof: true, durationSec: 1 });
+
+      expect(JSON.stringify(shot.error)).toContain("refused");
+      expect(JSON.stringify(clip.error)).toContain("refused");
+      if (process.platform === "darwin") {
+        expect(JSON.stringify(shot.error)).toContain("--real-screen");
+      } else {
+        expect(JSON.stringify(shot.error)).not.toContain("--real-screen");
+      }
+      expect(spawnSyncCalls).toEqual([]);
+      expect(fixture.ingest).not.toHaveBeenCalled();
+    }
+  });
+
+  it("`--real-screen` keeps the old whole-screen path even when the lane has a display", async () => {
+    const fixture = createRuntime();
+    const service = stubLaneDisplay(fixture, { hasDisplay: true });
+    const handler = await handlerFor(fixture);
+
+    const result = await callTool(handler, "screenshot_environment", { proof: true, realScreen: true, name: "whole screen" });
+
+    expect(result.isError).toBeFalsy();
+    expect(service.screenshot).not.toHaveBeenCalled();
+    expect(spawnSyncCalls.map((call) => call.command)).toEqual(["screencapture"]);
+    expect(fixture.ingest.mock.calls[0]).toEqual([expect.objectContaining({ provenance: { source: "ade-capture" } })]);
+  });
+
+  it("words the refusal for the host it runs on", () => {
+    expect(describeLaneDisplayProofRefusal("screenshot", "darwin")).toMatch(
+      /^refused: this lane has no Mac Desktop display, and ADE does not capture your real screen by default\. Use `ade mac-desktop proof`.*pass --real-screen/,
+    );
+    // Off macOS no lane can have a display and --real-screen cannot help.
+    const windows = describeLaneDisplayProofRefusal("video_recording", "win32");
+    expect(windows).toContain("refused");
+    expect(windows).not.toContain("--real-screen");
+    expect(windows).toContain("ade browser proof");
+  });
+
   it("advertises the proof flag on both capture tools so the model can tell them apart", async () => {
     const fixture = createRuntime();
     const handler = await handlerFor(fixture);
@@ -508,6 +631,7 @@ describe("explicit proof capture", () => {
       const spec = byName.get(name);
       expect(spec, name).toBeTruthy();
       expect(spec.inputSchema.properties.proof).toMatchObject({ type: "boolean", default: false });
+      expect(spec.inputSchema.properties.realScreen).toMatchObject({ type: "boolean", default: false });
       expect(spec.description).toContain("proof drawer");
     }
   });
