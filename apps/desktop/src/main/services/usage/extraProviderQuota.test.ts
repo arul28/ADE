@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +17,7 @@ import {
   readGrokBearer,
   readKimiAccessToken,
   readOpenCodeApiKey,
+  readOpenCodeConsoleAccountFromDisk,
   resetQuotaIdentityCacheForTests,
 } from "./extraProviderQuota";
 
@@ -434,6 +436,77 @@ describe("extra provider quota polls", () => {
     expect(String(openCodeFetch.mock.calls[0]?.[0])).toBe("https://opencode.ai/zen/go/v1/usage");
   });
 
+  it("falls back to the OpenCode console login for OpenCode Go when no API key exists", async () => {
+    const fetchImpl = fetchMock({
+      product: "go",
+      access: {
+        endsAt: "2026-10-25T18:37:51.000Z",
+        meters: {
+          fiveHour: { resetsAt: "2026-09-26T00:18:07.400Z", limitMicroCents: "1200000000", usedMicroCents: "600000000" },
+          week: { resetsAt: "2026-09-28T00:00:00.000Z", limitMicroCents: "3000000000", usedMicroCents: "300000000" },
+          month: { limitMicroCents: "6000000000", usedMicroCents: "1200000000" },
+        },
+      },
+    });
+    const result = await pollOpenCodeQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env,
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+      readText: async () => null,
+      readOpenCodeConsoleAccount: async () => ({
+        accessToken: "st_console-token",
+        orgId: "org_123",
+        email: "ada@example.com",
+      }),
+    });
+    expect(result.windows.map((window) => window.percentUsed)).toEqual([50, 10, 20]);
+    expect(result.windows[0]?.accountId).toBe("opencode:ada@example.com");
+    expect(result.accountEmail).toBe("ada@example.com");
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe("https://opencode.ai/console/api/go/status");
+    expect(JSON.stringify(init?.headers)).toContain("Bearer st_console-token");
+    expect(JSON.stringify(init?.headers)).toContain("org_123");
+  });
+
+  it("treats an OpenCode console account without a Go plan as signed out, not an error", async () => {
+    const fetchImpl = fetchMock({ access: null });
+    const result = await pollOpenCodeQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env,
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+      readText: async () => null,
+      readOpenCodeConsoleAccount: async () => ({
+        accessToken: "st_console-token",
+        orgId: "org_123",
+        email: "ada@example.com",
+      }),
+    });
+    expect(result).toEqual({ disposition: "not_signed_in", windows: [], errors: [] });
+  });
+
+  it("keeps a malformed OpenCode console 200 from clearing existing limits", async () => {
+    const fetchImpl = fetchMock({ unexpected: true });
+    const result = await pollOpenCodeQuota({ reason: "automatic" }, {
+      nowMs: NOW,
+      env,
+      homeDir: home,
+      platform: "darwin",
+      fetchImpl,
+      readText: async () => null,
+      readOpenCodeConsoleAccount: async () => ({
+        accessToken: "st_console-token",
+        orgId: "org_123",
+        email: "ada@example.com",
+      }),
+    });
+    expect(result.disposition).toBeUndefined();
+    expect(result.errorKind).toBe("invalid_response");
+  });
+
   it("fetches a Droid session's Factory credits, without treating a missing key as an error", async () => {
     const fetchImpl = vi.fn(async (_url: string) => new Response(JSON.stringify({ tokenUsage: { factoryCredits: 3.5 } })));
     const io = {
@@ -485,5 +558,69 @@ describe("extra provider quota polls", () => {
       platform: "win32",
       env: { APPDATA: "C:\\Users\\ada\\AppData\\Roaming" },
     })).toContain("Cursor");
+  });
+});
+
+describe("OpenCode console account reader", () => {
+  const requireForTest = createRequire(path.join(process.cwd(), "extra-quota-test.cjs"));
+
+  /** A minimal `opencode.db`: the two tables the console account lives in. */
+  function writeOpenCodeDb(
+    dbPath: string,
+    accounts: Array<{ id: string; email: string; token: string; expiry: number; updated: number }>,
+    activeId: string,
+    orgId: string,
+  ): void {
+    const { DatabaseSync } = requireForTest("node:sqlite") as {
+      DatabaseSync: new (dbPath: string, options?: Record<string, unknown>) => {
+        exec: (sql: string) => void;
+        prepare: (sql: string) => { run: (...args: unknown[]) => void };
+        close: () => void;
+      };
+    };
+    const db = new DatabaseSync(dbPath);
+    db.exec("create table account (id text, email text, access_token text, refresh_token text, token_expiry integer, time_created integer, time_updated integer);");
+    db.exec("create table account_state (id integer, active_account_id text, active_org_id text);");
+    const insert = db.prepare("insert into account values (?, ?, ?, ?, ?, ?, ?)");
+    for (const account of accounts) {
+      insert.run(account.id, account.email, account.token, "rt", account.expiry, account.updated, account.updated);
+    }
+    db.prepare("insert into account_state values (1, ?, ?)").run(activeId, orgId);
+    db.close();
+  }
+
+  it("prefers the active OpenCode account over a more recently updated inactive one", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ade-oc-console-"));
+    try {
+      const dbPath = path.join(dir, "opencode.db");
+      writeOpenCodeDb(dbPath, [
+        { id: "user_a", email: "active@example.com", token: "st_active", expiry: NOW + 86_400_000, updated: 1 },
+        { id: "user_b", email: "inactive@example.com", token: "st_inactive", expiry: NOW + 86_400_000, updated: 99 },
+      ], "user_a", "org_a");
+      await expect(readOpenCodeConsoleAccountFromDisk(dbPath, NOW)).resolves.toEqual({
+        accessToken: "st_active",
+        orgId: "org_a",
+        email: "active@example.com",
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores an expired console token instead of sending it", async () => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "ade-oc-console-"));
+    try {
+      const dbPath = path.join(dir, "opencode.db");
+      writeOpenCodeDb(dbPath, [
+        { id: "user_a", email: "active@example.com", token: "st_expired", expiry: NOW - 1_000, updated: 99 },
+      ], "user_a", "org_a");
+      await expect(readOpenCodeConsoleAccountFromDisk(dbPath, NOW)).resolves.toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads no account from a missing database", async () => {
+    await expect(readOpenCodeConsoleAccountFromDisk("/tmp/ade-oc-missing-dir/opencode.db", NOW)).resolves.toBeNull();
   });
 });

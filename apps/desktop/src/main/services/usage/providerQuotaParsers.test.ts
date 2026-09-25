@@ -10,6 +10,7 @@ import {
   parseGrokCredits,
   parseKimiIdentity,
   parseKimiUsage,
+  parseOpenCodeConsoleGoStatus,
   parseOpenCodeGoUsage,
   shouldEmitCodexApproachingPlanLimit,
   wholePercent,
@@ -193,6 +194,51 @@ describe("extra provider quota parsers", () => {
       ["monthly", 0],
     ]);
     expect(windows[0]?.resetsAt).toBe(new Date(NOW + 3_600_000).toISOString());
+  });
+
+  it("turns the OpenCode Go console micro-cent meters into three windows", () => {
+    const windows = parseOpenCodeConsoleGoStatus({
+      subscriberUserId: "user_1",
+      product: "go",
+      access: {
+        startsAt: "2026-09-25T18:37:51.000Z",
+        endsAt: "2026-10-25T18:37:51.000Z",
+        meters: {
+          fiveHour: { resetsAt: "2026-09-26T00:18:07.400Z", limitMicroCents: "1200000000", usedMicroCents: "600000000" },
+          week: { resetsAt: "2026-09-28T00:00:00.000Z", limitMicroCents: "3000000000", usedMicroCents: "300000000" },
+          month: { limitMicroCents: "6000000000", usedMicroCents: "1200000000" },
+        },
+      },
+    }, NOW, "Ada@Example.com");
+    expect(windows.map((window) => [window.windowType, window.percentUsed])).toEqual([
+      ["five_hour", 50],
+      ["weekly", 10],
+      ["monthly", 20],
+    ]);
+    expect(windows.map((window) => window.accountId)).toEqual([
+      "opencode:ada@example.com",
+      "opencode:ada@example.com",
+      "opencode:ada@example.com",
+    ]);
+    // The month meter has no reset of its own, so the subscription end stands in.
+    expect(windows[0]?.resetsAt).toBe("2026-09-26T00:18:07.400Z");
+    expect(windows[1]?.resetsAt).toBe("2026-09-28T00:00:00.000Z");
+    expect(windows[2]?.resetsAt).toBe("2026-10-25T18:37:51.000Z");
+  });
+
+  it("reports no OpenCode windows for an account without a Go plan", () => {
+    expect(parseOpenCodeConsoleGoStatus({ access: null }, NOW, "ada@example.com")).toEqual([]);
+    expect(parseOpenCodeConsoleGoStatus({
+      access: { meters: { fiveHour: { limitMicroCents: 0, usedMicroCents: 0 } } },
+    }, NOW)).toEqual([]);
+  });
+
+  it("clamps a console meter already past its limit instead of dropping the window", () => {
+    const windows = parseOpenCodeConsoleGoStatus({
+      access: { meters: { fiveHour: { limitMicroCents: "100", usedMicroCents: "250" } } },
+    }, NOW);
+    expect(windows).toHaveLength(1);
+    expect(windows[0]).toMatchObject({ windowType: "five_hour", percentUsed: 100 });
   });
 
   it("reads Cursor plan percent and the billing-cycle reset", () => {
