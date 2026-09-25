@@ -85,7 +85,7 @@ import { isProviderInstanceProvider } from "../../../shared/types/providerInstan
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
-import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
+import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -615,6 +615,7 @@ import type {
   AiFeatureKey,
   AiProviderConnections,
   AcpProviderDiagnostics,
+  AcpProviderUpdateResult,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -5295,6 +5296,22 @@ export function registerIpc({
         // and a lane worktree would key a second, emptier cache entry.
         cwd: ctx.project.rootPath,
         ...(arg.runDoctor === true ? { runDoctor: true } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiAcpProviderUpdate,
+    async (
+      _event,
+      arg: { provider: AcpChatProvider },
+    ): Promise<AcpProviderUpdateResult> => {
+      const ctx = getCtx();
+      // Same reasoning as diagnostics: this updates the CLI on the machine the
+      // main process runs on, never a remote host's.
+      return await runAcpProviderUpdate({
+        provider: arg.provider,
+        cwd: ctx.project.rootPath,
       });
     },
   );

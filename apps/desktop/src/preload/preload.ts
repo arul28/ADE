@@ -200,6 +200,7 @@ import type {
   AdeCliInstallResult,
   AdeCliStatus,
   AcpProviderDiagnostics,
+  AcpProviderUpdateResult,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -5115,6 +5116,12 @@ const adeBridge = {
       // on the CLIs installed on the machine the main process runs on, and a
       // remote host's answer would describe the wrong computer.
       ipcRenderer.invoke(IPC.aiAcpProviderDiagnostics, args),
+    acpProviderUpdate: async (args: {
+      provider: "qwen" | "kimi" | "grok" | "copilot";
+    }): Promise<AcpProviderUpdateResult> =>
+      // Machine-local for the same reason diagnostics are: it updates the CLI
+      // installed on the machine this window is attached to.
+      ipcRenderer.invoke(IPC.aiAcpProviderUpdate, args),
     opencodeAuthMethods: async (): Promise<{ methods: OpenCodeProviderAuthMethods }> =>
       callProjectRuntimeActionOr("ai", "opencodeAuthMethods", {}, () =>
         ipcRenderer.invoke(IPC.aiOpencodeAuthMethods),

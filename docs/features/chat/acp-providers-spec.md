@@ -722,11 +722,13 @@ From the internal audit (all file:line refs verified 2026-08-30):
   Needs attention / Not installed / Checking / Disabled) · model count ·
   version · Preview chip (grok/copilot) · one-line error when unhealthy.
   "Checking" is a first-class state distinct from "Not detected".
-- Detail page: two-column. Left rail: identity, status, version (pinned — NO
-  update-available surface), auth actions (sign in/out), diagnostics entry,
-  disable toggle. Right: models (curated ★default + discovered, search),
-  permission defaults, default model, usage bars where the provider reports
-  them (Kimi's appear once Kimi reports usage).
+- Detail page: two-column. Left rail: identity, status, version, auth actions
+  (sign in/out), diagnostics entry, disable toggle. Grok adds one update
+  surface the others do not have: an update advisory plus a one-click **Update
+  now** when ADE resolved the binary to a known installer. Right: models
+  (curated ★default + discovered, search), permission defaults, default model,
+  usage bars where the provider reports them (Kimi's appear once Kimi reports
+  usage).
 - Architecture: descriptor-driven. One `ProviderCard`/`ProviderDetailPage`
   parameterized by a per-provider descriptor + an auth-body slot for the
   genuinely bespoke flows (Pi catalog, OpenCode catalog, Cursor OAuth). Do not
@@ -750,7 +752,29 @@ From the internal audit (all file:line refs verified 2026-08-30):
    stopped.").
 
 Rejected: env-var provenance surfacing, authenticating pulse animation,
-update-available UI, picker overhaul beyond greying.
+update-available UI for providers other than Grok (only `@xai-official/grok`
+publishes a npm `latest` an ADE monitor reads, and Grok is the one ADE launches
+with `--no-auto-update`), picker overhaul beyond greying.
+
+## Grok version monitor and update
+
+Grok is launched with `--no-auto-update`, so without a monitor an outdated CLI
+shows nothing anywhere. When a Grok detail page opens, `grokUpdate.ts` resolves
+the binary's installer from the same resolution diagnostics uses (a native
+binary, or an npm `.cmd`/Node-shebang install), reads
+`https://registry.npmjs.org/@xai-official/grok/latest` (cached 30 minutes), and
+compares it to the `--version` line. `AcpProviderUpdateInfo` carries the verdict
+on `AcpProviderDiagnostics.update`.
+
+One-click **Update now** appears only when the installer resolved
+(`canUpdate`). It runs `<resolved binary> update` with the instance
+environment, including `GROK_HOME`, so a custom home updates that home, then
+re-reads `--version` to confirm and refreshes the diagnostics. An unresolvable
+binary skips the registry read entirely and shows a manual note with no button —
+ADE never runs a guessed command. The updater spawns through
+`resolveCliSpawnInvocation`, so a Windows npm `.cmd` shim works. There is no
+network call in the unit tests; the registry fetch and install-kind probes are
+injected.
 
 ## 7. Test contract
 
