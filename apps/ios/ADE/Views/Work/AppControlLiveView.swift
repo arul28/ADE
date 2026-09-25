@@ -194,6 +194,20 @@ func appControlIsLive(_ appControl: WorkToolsAppControlState?) -> Bool {
 
 // MARK: - Picture
 
+/// Clips the card's picture to its rounded slot; the viewer's picture is
+/// left unclipped so it can zoom across the whole stage.
+private struct AppControlCardClip: ViewModifier {
+  var enabled: Bool
+
+  func body(content: Content) -> some View {
+    if enabled {
+      content.clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    } else {
+      content
+    }
+  }
+}
+
 /// The live picture: the newest frame, aspect fit, with an optional pinch,
 /// pan and double-tap zoom (the macOS picture's `livePictureZoom`).
 struct AppControlLivePicture: View {
@@ -223,7 +237,9 @@ struct AppControlLivePicture: View {
       Color.black.opacity(inCard ? 0.12 : 0),
       in: RoundedRectangle(cornerRadius: inCard ? 12 : 0, style: .continuous)
     )
-    .clipShape(RoundedRectangle(cornerRadius: inCard ? 12 : 0, style: .continuous))
+    // The card clips to its rounded slot. The viewer does not: a zoomed
+    // picture may fill the stage, and the stage clips it.
+    .modifier(AppControlCardClip(enabled: inCard))
     .overlay(alignment: .topTrailing) {
       if inCard {
         AppControlLiveTag(live: live && session.phase != .idle)
@@ -529,9 +545,11 @@ struct AppControlViewer: View {
       Color.black.ignoresSafeArea()
       VStack(spacing: 0) {
         controls
-        Spacer(minLength: 0)
+        // The stage fills the space between the controls and the footer, and
+        // a zoomed picture may use all of it.
         stage
-        Spacer(minLength: 0)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .livePictureViewport()
         if !compactHeight {
           footer
         }
