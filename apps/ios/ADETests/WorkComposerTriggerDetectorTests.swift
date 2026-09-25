@@ -987,3 +987,82 @@ private final class FocusRecordingTextView: UITextView {
     fakeIsFirstResponder = firstResponder
   }
 }
+
+/// Coverage for mapping the host's discovered slash-command registry
+/// (`chat.getSlashCommands`) onto composer rows, and for the static fallback
+/// that keeps the `/` trigger usable on an older host or offline.
+final class WorkComposerSlashRegistryTests: XCTestCase {
+  private func command(
+    _ name: String,
+    description: String? = nil,
+    argumentHint: String? = nil,
+    source: String? = "sdk"
+  ) -> HostSlashCommand {
+    HostSlashCommand(name: name, description: description, argumentHint: argumentHint, source: source)
+  }
+
+  func testMapsNameDescriptionAndArgumentHint() {
+    let suggestion = WorkComposerSlashRegistry.suggestion(
+      for: command("/review", description: "Review the current diff.", argumentHint: "<path>")
+    )
+    XCTAssertEqual(suggestion?.title, "/review")
+    XCTAssertEqual(suggestion?.kind, .slash)
+    XCTAssertEqual(suggestion?.subtitle, "Review the current diff. · <path>")
+  }
+
+  func testAddsALeadingSlashWhenTheHostOmitsIt() {
+    let suggestions = WorkComposerSlashRegistry.suggestions(
+      from: [command("compact", description: "Free tokens.")],
+      query: ""
+    )
+    XCTAssertEqual(suggestions.map(\.title), ["/compact"])
+  }
+
+  func testACommandWithNoDescriptionStillRenders() {
+    let suggestion = WorkComposerSlashRegistry.suggestion(for: command("/bare"))
+    XCTAssertEqual(suggestion?.title, "/bare")
+    XCTAssertNil(suggestion?.subtitle)
+  }
+
+  func testFiltersByTypedQuery() {
+    let registry = [
+      command("/review", description: "Review."),
+      command("/refactor", description: "Refactor."),
+      command("/plan", description: "Plan."),
+    ]
+    let suggestions = WorkComposerSlashRegistry.suggestions(from: registry, query: "re")
+    XCTAssertEqual(suggestions.map(\.title), ["/review", "/refactor"])
+  }
+
+  func testEmptyQueryReturnsEveryCommand() {
+    let registry = [command("/a"), command("/b")]
+    XCTAssertEqual(WorkComposerSlashRegistry.suggestions(from: registry, query: "").count, 2)
+  }
+
+  func testFallsBackToTheStaticCatalogWhenTheHostHasNoRegistry() {
+    let suggestions = WorkComposerSlashRegistry.suggestions(host: nil, provider: "claude", query: "")
+    XCTAssertEqual(suggestions.map(\.title), ["/clear", "/compact", "/plan", "/review"])
+  }
+
+  func testFallsBackWhenTheHostRegistryIsEmpty() {
+    let suggestions = WorkComposerSlashRegistry.suggestions(host: [], provider: "codex", query: "")
+    XCTAssertEqual(suggestions.map(\.title), ["/compact", "/explain", "/refactor", "/tests", "/review"])
+  }
+
+  func testUsesTheHostRegistryWhenPresent() {
+    let suggestions = WorkComposerSlashRegistry.suggestions(
+      host: [command("/host-only", description: "From the host.")],
+      provider: "claude",
+      query: ""
+    )
+    XCTAssertEqual(suggestions.map(\.title), ["/host-only"])
+  }
+
+  func testBoundsTheRegistry() {
+    let registry = (0..<(WorkComposerSlashRegistry.maxCommands + 50)).map { command("/cmd\($0)") }
+    XCTAssertEqual(
+      WorkComposerSlashRegistry.suggestions(from: registry, query: "").count,
+      WorkComposerSlashRegistry.maxCommands
+    )
+  }
+}

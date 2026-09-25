@@ -4658,10 +4658,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // to public HTTPS hosts; see chat/sourceFaviconService.ts.
   register("chat.resolveSourceFavicons", { viewerAllowed: true }, async (payload) =>
     getSourceFaviconService().resolve(payload), "runtime");
+  // Bound the registry sent to a phone: a project can discover hundreds of
+  // skill/command files, and the composer only ever renders a prefix list.
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),
-    ));
+    ).slice(0, 200));
   register("chat.getParallelLaunchState", { viewerAllowed: true }, async (payload) => {
     const db = requireService(args.db, "Database not available.");
     const parsed = parseAgentChatParallelLaunchStateArgs(payload);
