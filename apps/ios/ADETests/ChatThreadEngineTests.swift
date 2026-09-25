@@ -1480,17 +1480,14 @@ private func chatThreadFramePresentationMismatch(
   let steers = mergeWorkPendingSteers(optimistic: overlays.optimisticPendingSteers, canonical: full.pendingSteers)
   if frame.pendingSteers != steers { return "frame.pendingSteers" }
 
-  let presented = workPresentedTimelineEntries(full.timeline, provider: summary.effectiveProvider, toolActivity: toolActivity)
+  let presented = workPresentedTimelineEntries(full.timeline, provider: summary.effectiveProvider, toolActivity: toolActivity, isStreaming: isStreaming)
   let presentation = makeWorkTimelinePresentation(
     timeline: presented,
     visibleCount: frame.visibleTimelineCount,
-    provider: summary.provider,
-    model: summary.model,
-    modelId: summary.modelId,
-    transcript: frame.transcript,
     assistantPreviewCache: WorkAssistantPreviewCache(),
     streamingAssistantMessageId: streamingId,
-    expandedTurnIds: overlays.expandedTurnIds
+    expandedTurnIds: overlays.expandedTurnIds,
+    toolActivity: toolActivity
   )
   let gotPresentation = frame.presentation
   if gotPresentation.visibleEntries != presentation.visibleEntries { return "presentation.visibleEntries" }

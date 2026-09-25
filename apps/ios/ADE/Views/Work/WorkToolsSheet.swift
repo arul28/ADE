@@ -1,16 +1,13 @@
 import SwiftUI
 import UIKit
 
-/// Read-only view of the Work tools pane running on the user's Mac.
+/// Read-only view of one Work tool running on the user's Mac: the browser, App
+/// Control, or the lane's Mac Desktop. Each lane tool chip opens its own tool;
+/// the Apple device has its own full-screen viewer and no sheet.
 ///
-/// Five cards, in the order a user actually asks about them: what the desktop
-/// has open right now (with the last frame it captured), the two screens the
-/// phone can watch — the lane's Apple device (view only) and, when this Mac can
-/// host one, the lane's own private screen — then what the browser has in it
-/// and what App Control is driving. The browser is a `WebContentsView` in ADE
-/// Desktop and App Control is a CDP socket to a local process; neither can be
-/// reached from a phone, so those cards stay read-only. The Apple card offers
-/// only a view-only `Watch` button. Mac Desktop is the exception: when the host
+/// The browser is a `WebContentsView` in ADE Desktop and App Control is a CDP
+/// socket to a local process; neither can be reached from a phone, so those
+/// sheets stay read-only. Mac Desktop is the exception: when the host
 /// advertises takeover, the picture takes a finger, inline or full screen.
 ///
 /// Refresh is a poll, not a subscription. The brain has no generic named-event
@@ -18,7 +15,23 @@ import UIKit
 /// state is deliberately not table-backed (see `workToolsStateService`) — so
 /// the sheet polls while it is open and stops the moment it closes.
 struct WorkToolsSheet: View {
+  /// The one tool the sheet shows.
+  enum Tool: Equatable {
+    case browser
+    case appControl
+    case macDesktop
+
+    var title: String {
+      switch self {
+      case .browser: return "Browser"
+      case .appControl: return "App Control"
+      case .macDesktop: return "macOS"
+      }
+    }
+  }
+
   let laneId: String
+  let tool: Tool
 
   /// Poll cadence while the sheet is visible. Slow enough to be free on a
   /// cellular link, fast enough that switching tools on the Mac reads as live.
@@ -71,7 +84,7 @@ struct WorkToolsSheet: View {
         }
       }
       .adeScreenBackground()
-      .navigationTitle("Tools")
+      .navigationTitle(tool.title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {
@@ -101,34 +114,32 @@ struct WorkToolsSheet: View {
   private var content: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: 14) {
-        activeToolCard
-        // Above the browser because it is live: the browser and App Control
-        // cards describe what the Mac has open, this one can be watched. Gated on the host advertising `apple.status` so an older
-        // Mac shows the sheet it always showed rather than a new card that
-        // only ever says "update".
-        if syncService.supportsAppleDeviceStatus {
-          AppleDeviceCard(laneId: laneId)
+        switch tool {
+        case .browser:
+          browserCard
+          lastFrameCard
+        case .appControl:
+          appControlCard
+          lastFrameCard
+        case .macDesktop:
+          MacDesktopCard(
+            laneId: laneId,
+            macDesktop: state?.macDesktop,
+            refreshTick: macDesktopRefreshTick,
+            refreshLane: { await refresh() },
+            macDesktopViewerPresented: $macDesktopViewerPresented,
+            macDesktopFrame: $macDesktopFrame,
+            loadedMacDesktopFramePath: $loadedMacDesktopFramePath,
+            isLiveMacDesktopMounted: $isLiveMacDesktopMounted
+          )
         }
-        // The other screen the phone can watch, so it sits with the Apple one.
-        MacDesktopCard(
-          laneId: laneId,
-          macDesktop: state?.macDesktop,
-          refreshTick: macDesktopRefreshTick,
-          refreshLane: { await refresh() },
-          macDesktopViewerPresented: $macDesktopViewerPresented,
-          macDesktopFrame: $macDesktopFrame,
-          loadedMacDesktopFramePath: $loadedMacDesktopFramePath,
-          isLiveMacDesktopMounted: $isLiveMacDesktopMounted
-        )
-        browserCard
-        appControlCard
-        Text(syncService.supportsMacDesktopControl
-          ? "Browser and App Control stay on the desktop."
-          : "Control from the desktop")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .frame(maxWidth: .infinity, alignment: .center)
-          .padding(.top, 2)
+        if tool != .macDesktop {
+          Text("Control from the desktop")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.top, 2)
+        }
       }
       .padding(.horizontal, 16)
       .padding(.vertical, 16)
@@ -138,76 +149,39 @@ struct WorkToolsSheet: View {
 
   // MARK: - Cards
 
+  /// The last frame this tool captured, when it has one. The Mac Desktop sheet
+  /// has its own picture in `MacDesktopCard`.
   @ViewBuilder
-  private var activeToolCard: some View {
-    let toolLabel = workToolsDisplayName(state?.activeTool)
-    ADEGlassSection(
-      title: toolLabel.map { "\($0) is open" } ?? "No tool is open",
-      subtitle: latestObservation?.caption
-    ) {
-      // The desktop's tab strip, mirrored read-only: the active tool is filled,
-      // the rest are outlined. Shown only when there is more than one tab —
-      // with a single tab the section title already names it.
-      if openTools.count > 1 {
-        // Six capsules at `.caption` overflow a 320 pt phone; without this the
-        // strip truncates every name to an unreadable stub. Indicator hidden so
-        // a strip that happens to fit still looks like the desktop's.
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 6) {
-            ForEach(openTools, id: \.self) { tool in
-              let isActive = tool == state?.activeTool
-              Text(workToolsDisplayName(tool) ?? tool)
-                .font(.caption.weight(isActive ? .semibold : .regular))
-                .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                  Capsule().fill(isActive ? ADEColor.textPrimary.opacity(0.12) : Color.clear)
-                )
-                .overlay(
-                  Capsule().stroke(ADEColor.textMuted.opacity(isActive ? 0 : 0.35), lineWidth: 1)
-                )
-                .accessibilityLabel(
-                  isActive
-                    ? "\(workToolsDisplayName(tool) ?? tool), open and showing"
-                    : "\(workToolsDisplayName(tool) ?? tool), open"
-                )
-                .accessibilityHint(workToolsAccessibilityHint(tool) ?? "")
-            }
+  private var lastFrameCard: some View {
+    if latestObservation != nil {
+      ADEGlassSection(title: "Last frame", subtitle: latestObservation?.caption) {
+        switch frameState {
+        case .image:
+          if let frame {
+            Image(uiImage: frame)
+              .resizable()
+              .scaledToFit()
+              .frame(maxWidth: .infinity)
+              .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+              .accessibilityLabel(latestObservation?.caption ?? "Latest captured frame")
           }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.bottom, 4)
-      }
-      switch frameState {
-      case .image:
-        if let frame {
-          Image(uiImage: frame)
-            .resizable()
-            .scaledToFit()
-            .frame(maxWidth: .infinity)
-            .background(Color.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .accessibilityLabel(latestObservation?.caption ?? "Latest captured frame")
-        }
-      case .loading:
-        HStack(spacing: 10) {
-          ProgressView()
-          Text("Loading the last frame…")
-            .font(.caption)
+        case .loading:
+          HStack(spacing: 10) {
+            ProgressView()
+            Text("Loading the last frame…")
+              .font(.caption)
+              .foregroundStyle(ADEColor.textSecondary)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+        case .unavailable(let message):
+          Text(message)
+            .font(.footnote)
             .foregroundStyle(ADEColor.textSecondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        case .empty:
+          EmptyView()
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-      case .unavailable(let message):
-        Text(message)
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      case .empty:
-        Text("Nothing has been captured in this lane yet.")
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
   }
@@ -315,14 +289,6 @@ struct WorkToolsSheet: View {
 
   // MARK: - Data
 
-  /// The desktop's tab strip. A desktop older than the strip publishes none, so
-  /// its one active tool stands in for the one tab that build had.
-  private var openTools: [String] {
-    guard let state else { return [] }
-    if let published = state.openTools { return published }
-    return state.activeTool.map { [$0] } ?? []
-  }
-
   /// The first open login handoff in this lane, if any.
   private var handoffReason: String? {
     state?.browser?.tabs.compactMap(\.handoffReason).first
@@ -343,20 +309,13 @@ struct WorkToolsSheet: View {
     return tabs.count == 1 ? "1 tab" : "\(tabs.count) tabs"
   }
 
-  /// The frame to show above the fold: the pane the desktop has open wins, and
-  /// otherwise whichever tool captured something.
+  /// The last frame of the sheet's tool. The Mac Desktop sheet draws its own.
   private var latestObservation: WorkToolsObservation? {
-    guard let state else { return nil }
-    let macDesktop = state.macDesktop?.lastObservation.map {
-      WorkToolsObservation(path: $0.screenshotPath, caption: $0.caption)
+    switch tool {
+    case .browser: return state?.browser?.latestObservation
+    case .appControl: return state?.appControl?.latestObservation
+    case .macDesktop: return nil
     }
-    if state.activeTool == "mac-desktop" {
-      return macDesktop ?? state.browser?.latestObservation ?? state.appControl?.latestObservation
-    }
-    if state.activeTool == "app-control" {
-      return state.appControl?.latestObservation ?? state.browser?.latestObservation ?? macDesktop
-    }
-    return state.browser?.latestObservation ?? state.appControl?.latestObservation ?? macDesktop
   }
 
   /// What the frame slot renders. Split out of the view so the one case that

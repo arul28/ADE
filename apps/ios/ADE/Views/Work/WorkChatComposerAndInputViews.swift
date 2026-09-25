@@ -162,62 +162,6 @@ struct WorkChatGlassCircleLabel: View {
   }
 }
 
-struct WorkTurnUsageSummaryBanner: View {
-  let summary: WorkUsageSummary
-  /// Retained for call-site compatibility. Model is shown in usage and composer, not the turn line.
-  /// Kept as optional params in case future rows need provider context.
-  var provider: String? = nil
-  var modelLabel: String? = nil
-
-  var body: some View {
-    HStack(spacing: 8) {
-      Text("USAGE")
-        .font(.caption2.weight(.bold))
-        .tracking(0.6)
-        .foregroundStyle(ADEColor.textMuted)
-
-      Spacer(minLength: 4)
-
-      usagePill("In", workAbbreviateCount(summary.inputTokens))
-      usagePill("Out", workAbbreviateCount(summary.outputTokens))
-
-      if summary.cacheReadTokens > 0 {
-        usagePill("Cache", workAbbreviateCount(summary.cacheReadTokens))
-      }
-      if summary.cacheCreationTokens > 0 {
-        usagePill("New cache", workAbbreviateCount(summary.cacheCreationTokens))
-      }
-
-      if summary.costUsd > 0 {
-        Text(formatUsageCost(summary.costUsd))
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 7)
-    .background(ADEColor.surfaceBackground.opacity(0.55), in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
-    )
-  }
-
-  private func usagePill(_ label: String, _ value: String) -> some View {
-    Text("\(label) \(value)")
-      .font(.caption2.monospacedDigit())
-      .foregroundStyle(ADEColor.textMuted)
-      .lineLimit(1)
-  }
-
-  private func formatUsageCost(_ cost: Double) -> String {
-    // Mirror desktop: two decimals when above one cent so "$0.06" reads
-    // cleanly; fall back to four decimals for sub-cent costs.
-    if cost >= 0.01 { return String(format: "$%.2f", cost) }
-    return String(format: "$%.4f", cost)
-  }
-}
-
 /// Abbreviate a token count the way the desktop usage row does: 1100 -> "1.1k",
 /// 19,246 -> "19.2k", 1_500_000 -> "1.5M". Counts under 1k stay literal.
 func workAbbreviateCount(_ count: Int) -> String {

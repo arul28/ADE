@@ -38,36 +38,122 @@ struct WorkToolStatusGlyph: View {
   }
 }
 
+/// The one row a finished turn's intermediate work folds into (desktop
+/// `TurnFoldRow`): a plain inline caption, no box —
+/// `Worked for 4m 12s · 🔧 18 tools · ± 3 files · 🤖 2 subagents · $ 5 jobs (1 failed) · 🌐 4 sources ›`.
+/// Opening it reveals the folded rows below in their original order and a
+/// `🔧 18 tools ›  ± 3 files ›` line that opens the turn's activity sheet.
 struct WorkTurnFoldRow: View {
   let model: WorkTurnFoldModel
+  var fileStat: (count: Int, additions: Int, deletions: Int)? = nil
+  var onOpenActivity: (() -> Void)? = nil
   let onToggle: () -> Void
 
+  private struct Count: Identifiable {
+    let id: String
+    let icon: String
+    let iconTint: Color
+    let text: String
+    var tone: Color? = nil
+  }
+
+  private var counts: [Count] {
+    var result: [Count] = []
+    if model.toolCount > 0 {
+      result.append(Count(id: "tools", icon: "wrench.fill", iconTint: Color(red: 0.49, green: 0.83, blue: 0.99).opacity(0.7), text: workPluralCount(model.toolCount, "tool")))
+    }
+    if model.fileCount > 0 {
+      result.append(Count(id: "files", icon: "plusminus", iconTint: ADEColor.success.opacity(0.75), text: workPluralCount(model.fileCount, "file")))
+    }
+    if model.subagentCount > 0 {
+      result.append(Count(id: "subagents", icon: "cpu", iconTint: ADEColor.purpleAccent.opacity(0.7), text: workPluralCount(model.subagentCount, "subagent")))
+    }
+    if model.jobCount > 0 {
+      let failed = model.failedJobCount > 0
+      result.append(Count(
+        id: "jobs",
+        icon: "terminal",
+        iconTint: failed ? ADEColor.danger.opacity(0.85) : ADEColor.warning.opacity(0.7),
+        text: model.jobLabel,
+        tone: failed ? ADEColor.danger.opacity(0.85) : nil
+      ))
+    }
+    if model.sourceCount > 0 {
+      result.append(Count(id: "sources", icon: "globe", iconTint: Color(red: 0.4, green: 0.91, blue: 0.98).opacity(0.7), text: workPluralCount(model.sourceCount, "source")))
+    }
+    return result
+  }
+
+  private var showsWorkLine: Bool {
+    model.isExpanded && onOpenActivity != nil && (model.toolCount > 0 || (fileStat?.count ?? 0) > 0)
+  }
+
   var body: some View {
-    Button(action: onToggle) {
-      HStack(spacing: 8) {
-        Image(systemName: "clock.arrow.circlepath")
-          .font(.system(size: 12, weight: .semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(width: 16)
-        Text(model.label)
-          .font(.footnote.weight(.medium))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        Spacer(minLength: 6)
-        Image(systemName: model.isExpanded ? "chevron.down" : "chevron.right")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(ADEColor.textMuted)
+    VStack(alignment: .leading, spacing: 0) {
+      Button(action: onToggle) {
+        HStack(spacing: 5) {
+          Text(model.head).layoutPriority(1)
+          ForEach(counts) { count in
+            HStack(spacing: 3) {
+              Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
+              Image(systemName: count.icon)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(count.iconTint)
+              Text(count.text)
+                .foregroundStyle(count.tone ?? ADEColor.textMuted)
+            }
+          }
+          Image(systemName: model.isExpanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 7, weight: .bold))
+          Spacer(minLength: 0)
+        }
+        .font(.caption.monospacedDigit())
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .truncationMode(.tail)
+        .frame(minHeight: 44)
+        .contentShape(Rectangle())
       }
-      .padding(.horizontal, 12)
-      .frame(minHeight: 42)
+      .buttonStyle(.plain)
+      .accessibilityLabel(model.label)
+      .accessibilityHint(model.isExpanded ? "Hides the work from this turn." : "Shows the work from this turn.")
+      if showsWorkLine, let onOpenActivity {
+        HStack(spacing: 12) {
+          if model.toolCount > 0 {
+            workToggle(onOpenActivity) {
+              Image(systemName: "wrench.fill").font(.system(size: 9, weight: .bold))
+              Text("\(model.toolCount)").monospacedDigit()
+              Text(model.toolCount == 1 ? "tool" : "tools")
+            }
+          }
+          if let fileStat, fileStat.count > 0 {
+            workToggle(onOpenActivity) {
+              Image(systemName: "plusminus").font(.system(size: 9, weight: .bold))
+              Text("\(fileStat.count) \(fileStat.count == 1 ? "file" : "files") changed")
+              if fileStat.additions > 0 { Text("+\(fileStat.additions)").monospacedDigit().foregroundStyle(ADEColor.success.opacity(0.85)) }
+              if fileStat.deletions > 0 { Text("−\(fileStat.deletions)").monospacedDigit().foregroundStyle(ADEColor.danger.opacity(0.85)) }
+            }
+          }
+        }
+        .padding(.leading, 4)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func workToggle<Label: View>(_ action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
+    Button(action: action) {
+      HStack(spacing: 3) {
+        label()
+        Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold)).opacity(0.7)
+      }
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textSecondary)
+      .lineLimit(1)
+      .frame(minHeight: 44)
       .contentShape(Rectangle())
-      .background(ADEColor.cardBackground.opacity(0.32), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
     }
     .buttonStyle(.plain)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(model.label)
-    .accessibilityHint(model.isExpanded ? "Double tap to hide turn details." : "Double tap to show turn details.")
   }
 }
 
@@ -4142,30 +4228,6 @@ func workScheduledWorkIsPaused(_ status: String) -> Bool {
   status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "paused"
 }
 
-private struct WorkSubagentStatusChip: View {
-  let status: WorkSubagentSnapshot.Status
-
-  var body: some View {
-    Text(workSubagentStatusLabel(status))
-      .font(.caption2.weight(.semibold))
-      .foregroundStyle(tint)
-      .lineLimit(1)
-      .fixedSize(horizontal: true, vertical: false)
-      .padding(.horizontal, 7)
-      .padding(.vertical, 3)
-      .background(tint.opacity(0.13), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(tint.opacity(0.28), lineWidth: 0.75)
-      )
-      .accessibilityLabel(workSubagentStatusLabel(status))
-  }
-
-  private var tint: Color {
-    workSubagentStatusTint(status)
-  }
-}
-
 private struct WorkSubagentGlyph: View {
   let id: String
   let status: WorkSubagentSnapshot.Status
@@ -4211,15 +4273,6 @@ private func workStableSubagentHash(_ value: String) -> Int {
 private func workSubagentGlyphBit(id: String, index: Int) -> Bool {
   let hash = UInt(bitPattern: workStableSubagentHash("\(id):\(index)"))
   return hash % 3 != 0
-}
-
-private func workSubagentStatusLabel(_ status: WorkSubagentSnapshot.Status) -> String {
-  switch status {
-  case .running: return "Running"
-  case .succeeded: return "Done"
-  case .failed: return "Failed"
-  case .stopped: return "Stopped"
-  }
 }
 
 private func workSubagentStatusTint(_ status: WorkSubagentSnapshot.Status) -> Color {
@@ -4276,26 +4329,19 @@ struct WorkSubagentTimelineRowView: View {
     switch row.kind {
     case .backgroundCommand:
       WorkSubagentBackgroundChipRow(row: row)
-    case .spawn:
-      // The stop button is a layout sibling inside the row's own HStack, not a
-      // trailing overlay: an overlay takes no space and landed on top of the
-      // status capsule the row already put at the trailing edge.
-      WorkSubagentSpawnRow(row: row, stopAction: spawnStopAction)
-    case .result:
-      WorkSubagentResultRow(row: row)
+    case .spawn, .result:
+      // A lone card is a grid of one (desktop `SubagentCardGrid`), so a card
+      // joining it keeps the first one where it was.
+      WorkSubagentTimelineGridView(model: WorkSubagentTimelineGrid(id: row.id, rows: [row]), onStop: onStop)
     }
-  }
-
-  private var spawnStopAction: (() -> Void)? {
-    guard let onStop, workSubagentCanStopTask(row.snapshot) else { return nil }
-    return { Task { await onStop(row.snapshot) } }
   }
 }
 
-/// Mobile counterpart to the desktop card grid: two tiles per line on a
-/// phone, three on a regular-width screen. A short final line after a full
-/// one spreads its tiles across the full width, like the desktop grid. Lines are laid out
-/// lazily so long-running chats stay cheap.
+/// Mobile counterpart to the desktop card grid (`SubagentCardGrid`): up to
+/// three tiles per line, at desktop's width breakpoints — one column on a
+/// phone (desktop goes to two only from 472px), three on a regular-width
+/// screen. A short last line stretches its tiles across the full width. Lines
+/// are laid out lazily so long-running chats stay cheap.
 ///
 /// Built from lines of equal-width tiles rather than `LazyVGrid` +
 /// `gridCellColumns`: `LazyVGrid` ignores `gridCellColumns` (it only applies
@@ -4319,13 +4365,6 @@ struct WorkSubagentTimelineGridView: View {
             WorkSubagentTimelineGridTile(row: row, onStop: onStop)
               .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
           }
-          // A grid that is one short line keeps normal tile widths; only a short
-          // line after a full one stretches (desktop parity).
-          if lines.count == 1 {
-            ForEach(0..<(columnsPerRow - line.count), id: \.self) { _ in
-              Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
-            }
-          }
         }
       }
     }
@@ -4333,7 +4372,7 @@ struct WorkSubagentTimelineGridView: View {
 }
 
 func workSubagentGridColumnsPerRow(isCompactWidth: Bool) -> Int {
-  isCompactWidth ? 2 : 3
+  isCompactWidth ? 1 : 3
 }
 
 /// Index ranges of the grid's lines: `columnsPerRow` tiles each, the last
@@ -4544,133 +4583,6 @@ struct WorkSubagentStoppedGroupCardView: View {
         }
         .joined(separator: ", ")
     )
-  }
-}
-
-/// Glyph · name · status, and nothing else. A phone row has roughly 60pt left
-/// after the fixed-width chips desktop can afford, which collapsed the name to a
-/// bare "…". The agent-type and `background` chips live in the Chat Info roster
-/// row instead, which has a second line and no width pressure; background-ness
-/// is already carried here by the glyph tint.
-private struct WorkSubagentSpawnRow: View {
-  let row: WorkSubagentTimelineRow
-  /// Non-nil only while the task is running and stoppable. It replaces the
-  /// status capsule rather than sitting on top of it — desktop's
-  /// open / stop / jump-to-result ladder (SubagentActivityCards.tsx).
-  var stopAction: (() -> Void)? = nil
-
-  private var snapshot: WorkSubagentSnapshot { row.snapshot }
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 10) {
-      WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
-      if let provider = workTrimmedSubagentProvider(snapshot.provider) {
-        WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 18)
-          .accessibilityLabel("\(workChatSurfaceProviderName(provider)) child")
-      }
-      Text(workSubagentMeaningfulName(snapshot))
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .truncationMode(.tail)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      if let stopAction {
-        WorkSquareStopButton(label: workSubagentStopLabel(snapshot), action: stopAction)
-      } else {
-        WorkSubagentStatusChip(status: snapshot.status)
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .adeGlassCard(cornerRadius: 12, padding: 0)
-    .contentShape(Rectangle())
-  }
-}
-
-private struct WorkSubagentResultRow: View {
-  let row: WorkSubagentTimelineRow
-
-  private var snapshot: WorkSubagentSnapshot { row.snapshot }
-
-  private var tint: Color {
-    switch snapshot.status {
-    case .running: return ADEColor.accent
-    case .succeeded: return ADEColor.success
-    case .failed: return ADEColor.danger
-    // Stopped is an interruption, not a hard failure — amber, never a red block.
-    case .stopped: return ADEColor.warning
-    }
-  }
-
-  private var statusLine: String {
-    switch snapshot.status {
-    case .stopped: return workSubagentStoppedStatusLine(snapshot)
-    case .failed: return "failed"
-    case .succeeded: return "completed"
-    case .running: return "running"
-    }
-  }
-
-  private var durationLabel: String? {
-    workSubagentDurationLabel(snapshot)
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 10) {
-        WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
-        if let provider = workTrimmedSubagentProvider(snapshot.provider) {
-          WorkProviderBareLogo(provider: provider, fallbackSymbol: providerIcon(provider), tint: ADEColor.textSecondary, size: 18)
-            .accessibilityLabel("\(workChatSurfaceProviderName(provider)) child")
-        }
-        Text(workSubagentMeaningfulName(snapshot))
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        Spacer(minLength: 6)
-        WorkSubagentStatusChip(status: snapshot.status)
-      }
-      HStack(spacing: 6) {
-        Text(statusLine)
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(tint)
-        if let durationLabel {
-          Text("· \(durationLabel)")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
-      if let summary = workSubagentResultSummaryText(row) {
-        Text(summary)
-          .font(.caption)
-          .foregroundStyle(snapshot.status == .failed ? ADEColor.danger : ADEColor.textSecondary)
-          .lineLimit(2)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      if snapshot.status == .stopped {
-        VStack(alignment: .leading, spacing: 2) {
-          if let lastActivity = snapshot.lastActivity?.trimmingCharacters(in: .whitespacesAndNewlines), !lastActivity.isEmpty {
-            Text(lastActivity)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-              .truncationMode(.tail)
-          }
-          Text(workSubagentStoppedOutcomeLabel(snapshot))
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(snapshot.resultLanded ? ADEColor.success : ADEColor.warning)
-        }
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .adeGlassCard(cornerRadius: 12, padding: 0)
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .stroke(tint.opacity(0.16), lineWidth: 0.8)
-    )
-    .contentShape(Rectangle())
   }
 }
 

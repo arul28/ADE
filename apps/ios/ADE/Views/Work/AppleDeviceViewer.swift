@@ -455,3 +455,11 @@ final class AppleStreamLayerHostView: UIView {
     CATransaction.commit()
   }
 }
+
+/// Bitrate as the stream stats say it. Sub-megabit reads in kb/s because "0.8 Mb/s"
+/// is a worse answer than "800 kb/s" for the number people are watching drop.
+func appleStreamBitrateLabel(kbps: Double) -> String {
+  guard kbps > 0 else { return "0 kb/s" }
+  if kbps < 1000 { return "\(Int(kbps.rounded())) kb/s" }
+  return String(format: "%.1f Mb/s", kbps / 1000)
+}

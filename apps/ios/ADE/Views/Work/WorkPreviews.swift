@@ -582,12 +582,9 @@ func workPreviewThreadModel(
   let presentation = makeWorkTimelinePresentation(
     timeline: workPresentedTimelineEntries(snapshot.timeline, provider: provider, toolActivity: toolActivity),
     visibleCount: workTimelinePageSize,
-    provider: provider,
-    model: "",
-    modelId: nil,
-    transcript: transcript,
     assistantPreviewCache: WorkAssistantPreviewCache(),
-    streamingAssistantMessageId: nil
+    streamingAssistantMessageId: nil,
+    toolActivity: toolActivity
   )
   let pending = snapshot.pendingInputQueue.resolved(hostPendingInputItemId: nil)
   model.receive(ChatThreadFrame(
@@ -1340,6 +1337,7 @@ struct ADEPreviewScreenHost: View {
     case .tools:
       WorkToolsSheet(
         laneId: WorkProofPreviewData.laneId,
+        tool: .browser,
         previewState: WorkProofPreviewData.toolsState,
         previewFrame: WorkProofPreviewData.toolsFrame
       )

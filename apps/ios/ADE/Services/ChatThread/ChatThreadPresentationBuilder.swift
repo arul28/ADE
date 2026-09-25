@@ -1,14 +1,11 @@
 import SwiftUI
 import UIKit
 
-// Timeline presentation builders (visible window, turn separators, assistant
+// Timeline presentation builders (turn folds, visible window, assistant
 // previews, render-entry split, row revisions).
 //
-// Moved verbatim out of `WorkChatSessionView.swift` so `ChatThreadEngine` can
-// build the presentation off the main actor with the same code the legacy view
-// path uses. `makeWorkTimelinePresentation` was widened from `private` and
-// gained a provider/model overload that does not need the view's summary
-// context.
+// Moved out of `WorkChatSessionView.swift` so `ChatThreadEngine` can build the
+// presentation off the main actor.
 
 struct WorkTimelinePresentation: Equatable {
   let visibleEntries: [WorkTimelineEntry]
@@ -34,54 +31,22 @@ struct WorkTimelinePresentation: Equatable {
   }
 }
 
+/// The presentation `ChatThreadEngine` builds off the main actor.
 func makeWorkTimelinePresentation(
   timeline: [WorkTimelineEntry],
   visibleCount: Int,
-  chatSummary: WorkChatSummaryRenderContext,
-  transcript: [WorkChatEnvelope],
-  assistantPreviewCache: WorkAssistantPreviewCache,
-  streamingAssistantMessageId: String?,
-  expandedTurnIds: Set<String> = []
-) -> WorkTimelinePresentation {
-  makeWorkTimelinePresentation(
-    timeline: timeline,
-    visibleCount: visibleCount,
-    provider: chatSummary.provider,
-    model: chatSummary.model,
-    modelId: chatSummary.modelId,
-    transcript: transcript,
-    assistantPreviewCache: assistantPreviewCache,
-    streamingAssistantMessageId: streamingAssistantMessageId,
-    expandedTurnIds: expandedTurnIds
-  )
-}
-
-/// Summary-context-free form used by `ChatThreadEngine`. Only the provider and
-/// model fields ever reached the builder, so the engine passes those directly.
-func makeWorkTimelinePresentation(
-  timeline: [WorkTimelineEntry],
-  visibleCount: Int,
-  provider: String,
-  model: String,
-  modelId: String?,
-  transcript: [WorkChatEnvelope],
   assistantPreviewCache: WorkAssistantPreviewCache,
   streamingAssistantMessageId: String?,
   /// Finished turns the reader opened (`turn-fold:<turnId>` card expansion).
   /// Every other finished turn folds into one "Worked for …" row.
-  expandedTurnIds: Set<String> = []
+  expandedTurnIds: Set<String> = [],
+  /// The per-turn tool and file lists the fold rows count.
+  toolActivity: WorkTurnToolActivityIndex? = nil
 ) -> WorkTimelinePresentation {
-  let timeline = workApplyingTurnFolds(timeline, expandedTurnIds: expandedTurnIds)
+  let timeline = workApplyingTurnFolds(timeline, expandedTurnIds: expandedTurnIds, toolActivity: toolActivity)
   let rawVisibleEntries = visibleWorkTimelineEntries(from: timeline, visibleCount: visibleCount)
-  let visibleEntriesWithSeparators = injectWorkTurnSeparators(
-    into: rawVisibleEntries,
-    provider: provider,
-    model: model,
-    modelId: modelId,
-    transcript: transcript
-  )
   let visibleEntries = workTimelineEntriesWithAssistantPreviews(
-    visibleEntriesWithSeparators,
+    rawVisibleEntries,
     cache: assistantPreviewCache
   )
   let renderEntries = workTimelineRenderEntries(

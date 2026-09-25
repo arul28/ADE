@@ -941,35 +941,6 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     )
   }
 
-  func testUsageRowMovesOffTheTimelineForALimitedTurn() {
-    let transcript = [doneEnvelope(turnId: "turn-1", apiErrorStatus: 429, sequence: 1)]
-    let snapshot = buildWorkChatTimelineSnapshot(
-      transcript: transcript,
-      fallbackEntries: [],
-      artifacts: [],
-      localEchoMessages: []
-    )
-    let standaloneUsageRows = snapshot.timeline.filter {
-      if case .usageSummary = $0.payload { return true }
-      return false
-    }
-    XCTAssertTrue(standaloneUsageRows.isEmpty, "the USAGE row folds into the footer's details")
-
-    let plain = buildWorkChatTimelineSnapshot(
-      transcript: [doneEnvelope(turnId: "turn-1", apiErrorStatus: nil, sequence: 1)],
-      fallbackEntries: [],
-      artifacts: [],
-      localEchoMessages: []
-    )
-    XCTAssertFalse(
-      plain.timeline.filter {
-        if case .usageSummary = $0.payload { return true }
-        return false
-      }.isEmpty,
-      "an ordinary turn keeps its usage row exactly where it was"
-    )
-  }
-
   /// `WorkChatTimelineSnapshot.==` compares nothing but the signature, so the
   /// anchor has to be IN the signature: a rebuild driven purely by the summary's
   /// resume row would otherwise compare equal to the stale snapshot and the

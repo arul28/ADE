@@ -145,7 +145,6 @@
 		E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */; };
 		E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB01 /* AppleDeviceStream.swift */; };
 		E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB02 /* AppleDeviceViewer.swift */; };
-		E1000000000000000000AB03 /* AppleDeviceCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB03 /* AppleDeviceCard.swift */; };
 		E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */; };
 		E10000000000000000000052 /* LaneDeeplinkHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000052 /* LaneDeeplinkHelpers.swift */; };
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
@@ -516,7 +515,6 @@
 		D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkChatAttachmentPreviewSheets.swift; path = ADE/Views/Work/WorkChatAttachmentPreviewSheets.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB01 /* AppleDeviceStream.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceStream.swift; path = ADE/Views/Work/AppleDeviceStream.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB02 /* AppleDeviceViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewer.swift; path = ADE/Views/Work/AppleDeviceViewer.swift; sourceTree = "<group>"; };
-		D1000000000000000000AB03 /* AppleDeviceCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceCard.swift; path = ADE/Views/Work/AppleDeviceCard.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkQueuedSteerDetailSheet.swift; path = ADE/Views/Work/WorkQueuedSteerDetailSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000052 /* LaneDeeplinkHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDeeplinkHelpers.swift; path = ADE/Views/Lanes/LaneDeeplinkHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
@@ -1116,7 +1114,6 @@
 				D1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift */,
 				D1000000000000000000AB01 /* AppleDeviceStream.swift */,
 				D1000000000000000000AB02 /* AppleDeviceViewer.swift */,
-				D1000000000000000000AB03 /* AppleDeviceCard.swift */,
 				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
 				D10000000000000000000F03 /* WorkPromptStash.swift */,
@@ -1978,7 +1975,6 @@
 				E1000000000000000000AA02 /* WorkChatAttachmentPreviewSheets.swift in Sources */,
 				E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */,
 				E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */,
-				E1000000000000000000AB03 /* AppleDeviceCard.swift in Sources */,
 				E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,

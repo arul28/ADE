@@ -926,18 +926,16 @@ actor ChatThreadEngine {
     let presented = workPresentedTimelineEntries(
       snapshot.timeline,
       provider: summary.effectiveProvider,
-      toolActivity: toolActivity
+      toolActivity: toolActivity,
+      isStreaming: isStreaming
     )
     var next = makeWorkTimelinePresentation(
       timeline: presented,
       visibleCount: visibleTimelineCount,
-      provider: summary.provider,
-      model: summary.model,
-      modelId: summary.modelId,
-      transcript: transcript,
       assistantPreviewCache: assistantPreviewCache,
       streamingAssistantMessageId: streamingAssistantMessageId,
-      expandedTurnIds: overlays.expandedTurnIds
+      expandedTurnIds: overlays.expandedTurnIds,
+      toolActivity: toolActivity
     )
     // Older history landed above the window: grow the window by what was
     // prepended so the rows on screen stay the rows on screen.
@@ -956,13 +954,10 @@ actor ChatThreadEngine {
       next = makeWorkTimelinePresentation(
         timeline: presented,
         visibleCount: visibleTimelineCount,
-        provider: summary.provider,
-        model: summary.model,
-        modelId: summary.modelId,
-        transcript: transcript,
         assistantPreviewCache: assistantPreviewCache,
         streamingAssistantMessageId: streamingAssistantMessageId,
-        expandedTurnIds: overlays.expandedTurnIds
+        expandedTurnIds: overlays.expandedTurnIds,
+        toolActivity: toolActivity
       )
     }
     presentation = next

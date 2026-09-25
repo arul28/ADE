@@ -21,8 +21,8 @@ import Foundation
 ///   every source-carrying row and of every assistant text row by turn, and
 ///   the source builder runs over just those rows (source rows plus the text
 ///   of turns that have any).
-/// - The task-list card is anchored to the whole transcript's session id and
-///   latest timestamp, which the fold passes in.
+/// - The task-list card is keyed by the whole transcript's session id, which
+///   the fold passes in.
 /// - Pending inputs and the activity indicator read dense kinds and stay whole-
 ///   transcript passes (cheap single scans).
 /// - Ranks, sort, id dedupe and the collapse passes run through the same
@@ -272,9 +272,7 @@ struct ChatThreadTimelineFold {
       from: reasoning.rows,
       suppressedItemIds: suppressedItemIds,
       taskList: taskList,
-      // `transcript.map(\.timestamp).max()`: empty timestamps sort first, so
-      // it is the latest non-empty one, or "" when every one is empty.
-      taskListAnchor: (transcript.last?.sessionId, latestTimestamp ?? (count > 0 ? "" : nil))
+      taskListSessionId: transcript.last?.sessionId
     )
       .filter { $0.kind != "toolUseSummary" }
     let sourceList = sourceList(
@@ -295,7 +293,6 @@ struct ChatThreadTimelineFold {
       eventCards: eventCards,
       adeCards: buildWorkAdeCards(from: sparse),
       turnEndMarkers: turnEnds.markers(sourceCountsByTurn: sourceList.countsByTurn),
-      doneEnvelopes: sparse,
       artifacts: artifacts,
       localEchoMessages: localEchoMessages
     )
