@@ -12,6 +12,7 @@
  * error-hint table are local, so they can be built at module scope.
  */
 import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
+import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
@@ -988,6 +989,9 @@ export function formatMacDesktopRecording(value: unknown): string {
           ? "yes — a captioned recording goes to the proof drawer"
           : "no — add --caption to file it as proof",
     ],
+    ["cite", typeof status.proofArtifactId === "string" && status.proofArtifactId
+      ? proofCitationMarkdown(status.proofArtifactId, asString(status.caption))
+      : null],
   ]);
 }
 
@@ -1018,6 +1022,8 @@ export function formatMacDesktopProofFiled(value: unknown): string {
       ["caption", artifact.description ?? artifact.title],
       ["path", artifact.uri ?? artifact.path],
       ["owners", ownersFor(artifact.id)],
+      // Pasted into the answer, this shows the proof next to the claim.
+      ["cite", typeof artifact.id === "string" ? proofCitationMarkdown(artifact.id, asString(artifact.description) ?? asString(artifact.title)) : null],
     ]),
   );
   const confirmation = asString(record.confirmation);

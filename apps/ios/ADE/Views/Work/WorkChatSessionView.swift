@@ -1170,9 +1170,28 @@ struct WorkChatSessionView: View {
   /// Card expansion is per-row (`transcriptRowInputs.cardExpansion`), and the
   /// host/action state rows draw as enabled or disabled is the separate
   /// `transcriptInteractionRevision`, which never touches a height key.
+  ///
+  /// The chat's proof list is here because an answer's `ade-proof://` citation
+  /// renders once its artifact arrives: a new artifact must reconfigure the
+  /// rows that draw citations.
+  var artifactsRenderSignature: Int {
+    var hasher = Hasher()
+    hasher.combine(artifacts.count)
+    for artifact in artifacts {
+      hasher.combine(artifact.id)
+      hasher.combine(artifact.artifactKind)
+      hasher.combine(artifact.title)
+      hasher.combine(artifact.uri)
+      hasher.combine(artifact.createdAt)
+    }
+    return hasher.finalize()
+  }
+
   var transcriptContentRevision: Int {
     var hasher = Hasher()
     hasher.combine(artifactContentRenderSignature)
+    // An answer's proof citation shows once its artifact is in the list.
+    hasher.combine(artifactsRenderSignature)
     hasher.combine(maxUserBubbleWidth ?? 0)
     hasher.combine(chatSummaryContext.provider)
     hasher.combine(chatSummaryContext.usageLimitResume != nil)
@@ -1503,6 +1522,15 @@ struct WorkChatSessionView: View {
   /// `ScrollView` + `LazyVStack`: UIKit compensates its own content offset
   /// when a cell self-sizes away from its estimate, so a row re-measuring
   /// above the viewport does not move the row the reader is looking at.
+  /// The chat's proof, for `ade-proof://` citations in its answers.
+  private var proofCitationContext: WorkProofCitationContext {
+    WorkProofCitationContext(
+      artifactsById: Dictionary(artifacts.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+      content: artifactContent,
+      load: onLoadArtifact
+    )
+  }
+
   @ViewBuilder
   private var transcriptView: some View {
     WorkChatTranscriptCollectionView(
@@ -1541,6 +1569,7 @@ struct WorkChatSessionView: View {
             .environment(\.workSyncService, WorkSyncServiceReference(syncServiceReference.service))
             .modifier(WorkOptionalSyncServiceObject(service: syncServiceReference.service))
             .environment(\.workOutputViewer, outputViewer)
+            .environment(\.workProofCitations, proofCitationContext)
             .modifier(
               WorkChatTranscriptEnvironmentModifier(
                 provider: chatSummaryContext.provider,

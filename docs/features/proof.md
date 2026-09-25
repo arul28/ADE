@@ -393,6 +393,45 @@ listed with an unavailable-preview state.
 
 ---
 
+## Proof in the answer
+
+The agent puts proof inside its own answer, directly under the claim it
+proves. Two plain-markdown forms (`apps/desktop/src/shared/proofCitation.ts`):
+
+- **Citation:** `![caption](ade-proof://<artifactId>)`. A picture shows inline
+  at a readable size; a video plays inline. The caption goes under it, with the
+  provenance line.
+- **Comparison:** a fenced `proof-compare` block with `before: <id> <label>`,
+  `after: <id> <label>` and an optional `caption: <sentence>`. The two sides
+  show side by side.
+
+Every proof command prints the id and a ready snippet (`cite: ![…](ade-proof://…)`),
+and its JSON result carries `artifacts[].citation`. There is no limit on how
+many items an answer cites. An agent can also compose its own picture (a crop,
+a side-by-side), attach it, and cite it.
+
+**Verified** = the bytes came from an ADE recorder or capture (`proofSource`
+`ade-recorder` / `ade-capture`) and the answer cites it. A cited attached file
+shows "Attached by the agent" and no badge.
+
+Each new artifact that a chat owns stores `metadata.turnId`: the id of the
+chat's latest turn when it was filed, the same id the transcript's `done` row
+carries. The broker stamps it; callers cannot set it.
+
+Renderers:
+
+- **Desktop and web client:** `chatMarkdownBlock.tsx` renders the image
+  override and the fence through `ChatProofCitation.tsx`. The figure finds the
+  artifact in the chat's proof list, else reads it by id through the chat's
+  runtime (`computerUse.listArtifacts({ artifactId })`), and loads bytes with
+  `useArtifactPreview` like the drawer.
+- **iOS:** `WorkMarkdownParsing.swift` makes a `proofCitation` block from a
+  line that holds only a citation, and a `proofCompare` block from the fence.
+  `WorkProofCitationView` reads the chat's proof list and loads bytes with the
+  proof sheet's loader. An id outside the chat's list shows "This chat has no
+  proof with the id …".
+- A client that predates this shows the alt text or the code fence.
+
 ## For agents
 
 When an agent session starts inside ADE, the system prompt includes a short priming directive:

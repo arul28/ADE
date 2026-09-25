@@ -4596,6 +4596,9 @@ app.whenReady().then(async () => {
     computerUseArtifactBrokerService.setChatTurnStartResolver(
       (sessionId) => agentChatService.getTurnStartedAt(sessionId),
     );
+    computerUseArtifactBrokerService.setChatTurnIdResolver(
+      (sessionId) => agentChatService.getTurnId(sessionId),
+    );
 
     // Backfill starts well past the boot window so index writes never compete
     // with project startup.

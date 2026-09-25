@@ -23,6 +23,7 @@ export const PROOF_PROVENANCE_METADATA_KEYS = [
   "contentBytes",
   "mediaCreatedAt",
   "recordedBeforeRequest",
+  "turnId",
 ] as const;
 
 export const PROOF_DUPLICATE_CODE = "PROOF_DUPLICATE" as const;

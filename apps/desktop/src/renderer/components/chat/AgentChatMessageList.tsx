@@ -72,6 +72,7 @@ import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/
 import { ChipText } from "./ChipText";
 import { normalizePath } from "../../lib/pathUtils";
 import { artifactImageSrc } from "../../../shared/artifactStreamUrl";
+import { ProofCitationProvider } from "./ChatProofCitation";
 import { useStreamSmoothnessSampler } from "../../perf/streamSmoothness";
 import { AssistantTextBody } from "./AssistantTextBody";
 import { MarkdownBlock, type MosaicRenderContext } from "./chatMarkdownBlock";
@@ -5426,7 +5427,7 @@ function AgentChatMessageListMain({
   mosaic,
   scrollToRowKeyRequest,
   scrollToPromptHistoryRequest,
-  proofArtifacts = [],
+  proofArtifacts = EMPTY_PROOF_ARTIFACTS,
   allowLocalProofArtifactProtocol = false,
   onOpenProofDrawer,
   onOpenTurnSources,
@@ -7829,6 +7830,7 @@ function AgentChatMessageListMain({
 
   return (
     <ChatWorkspacePathProvider value={workspacePaths}>
+    <ProofCitationProvider artifacts={proofArtifacts} allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}>
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
@@ -7942,6 +7944,7 @@ function AgentChatMessageListMain({
       ) : null}
       <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} />
     </div>
+    </ProofCitationProvider>
     </ChatWorkspacePathProvider>
   );
 }

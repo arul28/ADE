@@ -67,6 +67,7 @@ import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { isUuid } from "../../desktop/src/shared/uuid";
+import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
@@ -11102,6 +11103,8 @@ function buildIosSimulatorPlan(
     return {
       kind: "execute",
       label: "iOS simulator proof",
+      formatter: "proof-filed",
+      proofFiling: { command: "apple proof", verify: false },
       steps: [
         iosStep("screenshot", "screenshot", screenshotArgs),
         {
@@ -13996,6 +13999,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     return {
       kind: "execute",
       label: "browser proof",
+      formatter: "proof-filed",
+      proofFiling: { command: "browser proof", verify: false },
       steps: [
         actionStep("observation", "built_in_browser", "observe", observeArgs),
         // The HAR rides the same proof: a screenshot says what the page looked
@@ -25069,6 +25074,18 @@ function formatProofList(value: unknown): string {
  * an agent that reads only the tail of the output still sees whether a record
  * landed and which lane/chat it landed in.
  */
+/**
+ * The markdown an agent pastes into its answer to show this artifact there.
+ * The caption is the one the agent filed (`description`), else the title.
+ */
+function proofArtifactCitation(artifact: JsonObject): string | null {
+  const id = asString(artifact.id);
+  // Only a picture or a video can show in an answer; a trace cannot.
+  const kind = asString(artifact.kind);
+  if (!id || (kind !== "screenshot" && kind !== "video_recording")) return null;
+  return proofCitationMarkdown(id, asString(artifact.description) ?? asString(artifact.title));
+}
+
 function formatProofFiled(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const artifacts = firstArray(record, ["artifacts"]);
@@ -25091,6 +25108,10 @@ function formatProofFiled(value: unknown): string {
       : "verified: skipped (--no-verify)",
     ...warnings.map((warning) => `warning: ${warning}`),
     ...(asString(record.capturedFrom) ? [`captured from: ${asString(record.capturedFrom)}`] : []),
+    ...artifacts.flatMap((artifact) => {
+      const citation = asString(artifact.citation);
+      return citation ? [`cite: ${citation}`] : [];
+    }),
     "",
     confirmation,
   ].join("\n");
@@ -25534,6 +25555,7 @@ function formatAppControlRecording(value: unknown): string {
             ? "not filed"
             : "not filed — start with --caption to file it as proof",
     ],
+    ["cite", proofArtifactId ? proofCitationMarkdown(proofArtifactId, asString(status.caption)) : null],
   ]);
 }
 
@@ -27377,6 +27399,7 @@ function summarizeProofFiling(
       kind: artifact.kind,
       title: artifact.title,
       uri: artifact.uri,
+      citation: proofArtifactCitation(artifact),
     })),
     ...(warnings.length ? { warnings } : {}),
     ...(capturedFrom ? { capturedFrom } : {}),
