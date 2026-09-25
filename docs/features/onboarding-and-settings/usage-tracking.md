@@ -253,6 +253,13 @@ Mechanics:
   01:00–04:00 and 06:00–10:00); models.dev lists the off-peak price. Chinese
   public holidays are not modelled. OpenCode entries carry OpenCode's own cost
   figure, which uses the off-peak price, so the peak rule does not reach them.
+- Claude Code's fast mode bills at 2× the model's standard rate (Opus 5.5,
+  Opus 5, Opus 4.8). The transcript scan reads the flag from `usage.speed`, and
+  the multiplier is `FAST_MODE_PRICE_MULTIPLIER` — models.dev carries no fast
+  rate, so it is a constant, the same number t3code reads from LiteLLM's
+  `provider_specific_entry.fast`. It composes with a long-context tier rather
+  than replacing it. `USAGE_SNAPSHOT_CACHE_VERSION` is bumped when the rule
+  changes so cached snapshots re-price once.
 - lookup tries the provider-prefixed name, then the canonical name, then an
   alias, then the longest key the canonical name extends — so a dated model id
   resolves to its family without a per-release table edit.

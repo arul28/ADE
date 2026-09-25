@@ -293,6 +293,10 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
           cacheWriteTokens: cacheCreation.total,
           oneHourCacheWriteTokens: cacheCreation.oneHour,
           webSearchRequests,
+          // Claude Code marks a fast-mode request `usage.speed: "fast"`; it
+          // bills at a multiple of the standard rate, so the flag has to reach
+          // the pricer or every fast request is under-reported by half.
+          ...(usage.speed === "fast" ? { fast: true } : {}),
           // One Claude JSONL record is one API request, so its input side is
           // that request's context (Anthropic is flat-priced today; the field
           // keeps tier pricing correct if that changes).

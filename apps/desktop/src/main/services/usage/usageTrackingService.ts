@@ -230,8 +230,12 @@ const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
  * v4: Codex token accounting was corrected (lifetime Codex tokens moved from
  * 251.3B to ~91.7B, cross-checked against an independent counter), so every v3
  * snapshot on disk carries obsolete totals and must be discarded.
+ *
+ * v5: Claude fast-mode requests now price at the fast multiple, which the
+ * transcript scan reads from `usage.speed`. A v4 snapshot's costs were computed
+ * without the flag, so they must be re-derived once.
  */
-const USAGE_SNAPSHOT_CACHE_VERSION = 4;
+const USAGE_SNAPSHOT_CACHE_VERSION = 5;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
@@ -1907,6 +1911,7 @@ function calculateTokenEntryCost(entry: TokenEntry): number {
   const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
     contextTokens: entry.requestContextTokens,
     timestampMs: entry.timestamp,
+    fast: entry.fast === true,
   });
   const tokensUsd = priceTokenSplit(rates, {
     input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),

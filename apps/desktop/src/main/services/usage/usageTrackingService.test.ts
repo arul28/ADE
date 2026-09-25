@@ -3808,6 +3808,38 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
     }
   });
 
+  it("marks a Claude fast-mode request and prices it at the fast multiple", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      const line = (speed?: string) => JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-29T12:00:00.000Z",
+        cwd: "/repo",
+        message: {
+          id: speed ? "msg-fast" : "msg-std",
+          model: "claude-opus-4-6",
+          usage: { input_tokens: 1_000_000, output_tokens: 0, ...(speed ? { speed } : {}) },
+        },
+      });
+      fs.writeFileSync(path.join(projectDir, "standard.jsonl"), `${line()}\n`);
+      fs.writeFileSync(path.join(projectDir, "fast.jsonl"), `${line("fast")}\n`);
+
+      const entries = await scanClaudeLogs([projectDir]);
+      const byId = new Map(entries.map((entry) => [entry.messageId, entry]));
+      expect(byId.get("msg-fast")?.fast).toBe(true);
+      expect(byId.get("msg-std")?.fast).toBeUndefined();
+
+      // Fast mode is a 2× multiple on the model's standard rate.
+      const standardCost = aggregateCosts([byId.get("msg-std")!], "claude").last30dCostUsd;
+      const fastCost = aggregateCosts([byId.get("msg-fast")!], "claude").last30dCostUsd;
+      expect(fastCost).toBeCloseTo(standardCost * 2, 1);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("deduplicates Claude message ids across files", async () => {
     const tmpDir = makeTmpDir();
     const projectDir = path.join(tmpDir, "projects", "-repo");
