@@ -9493,6 +9493,8 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "getAvailableModels",
+          // No provider filter returns the complete inventory; `--provider`
+          // narrows it.
           collectGenericObjectArgs(args, provider ? { provider } : {}),
         ),
       ],
@@ -24510,6 +24512,7 @@ function formatExternalSessions(value: unknown): string {
       session.title ?? session.preview,
     ]),
     "ADE external sessions\n(no sessions)",
+    { fullColumns: ["id"] },
   );
 }
 
@@ -24672,6 +24675,7 @@ function formatChatList(value: unknown): string {
         session.title,
       ]),
       "ADE chats\n(no sessions)",
+      { fullColumns: ["session"] },
     );
   }
   // A tracked CLI child reads its terminal status (and exit code) in place of
@@ -24691,6 +24695,7 @@ function formatChatList(value: unknown): string {
       ];
     }),
     "ADE chats\n(no sessions)",
+    { fullColumns: ["session", "parent"] },
   );
 }
 
@@ -24726,6 +24731,7 @@ const CHAT_MODEL_FAMILY_PROVIDERS: Record<string, string> = {
   google: "gemini",
   cursor: "cursor",
   factory: "droid",
+  opencode: "opencode",
   qwen: "qwen",
   moonshot: "kimi",
   xai: "grok",
@@ -24735,12 +24741,29 @@ const CHAT_MODEL_FAMILY_PROVIDERS: Record<string, string> = {
 function chatModelProvider(model: JsonObject): string | null {
   const declared = asString(model.provider) ?? asString(model.providerKey);
   if (declared) return declared;
-  const family = asString(model.family);
-  if (family && CHAT_MODEL_FAMILY_PROVIDERS[family]) return CHAT_MODEL_FAMILY_PROVIDERS[family];
+  // The model-id prefix is checked before the family: a routed id such as
+  // `opencode/anthropic/…` names the provider that serves it in its first
+  // segment, while the family (`anthropic`) only names the model's lineage. A
+  // plain `anthropic/…` id resolves the same either way. When neither is a
+  // known key the raw fallback prefers the family, because a slashless id makes
+  // the "prefix" the entire id rather than a provider label.
   const modelId = asString(model.modelId) ?? asString(model.id);
   const prefix = modelId?.split("/")[0]?.trim();
   if (prefix && CHAT_MODEL_FAMILY_PROVIDERS[prefix]) return CHAT_MODEL_FAMILY_PROVIDERS[prefix];
+  const family = asString(model.family);
+  if (family && CHAT_MODEL_FAMILY_PROVIDERS[family]) return CHAT_MODEL_FAMILY_PROVIDERS[family];
   return family ?? prefix ?? null;
+}
+
+/**
+ * The rows behind the `ade chat models` table and JSON output.
+ *
+ * Both outputs read this one projection so `--text` and `--json` can never
+ * disagree about which models are listed or which provider each belongs to.
+ */
+function chatModelRows(value: unknown): JsonObject[] {
+  const models = firstArray(value, ["models", "availableModels"]);
+  return models.map((model) => ({ ...model, provider: chatModelProvider(model) }));
 }
 
 /**
@@ -24751,18 +24774,17 @@ function chatModelProvider(model: JsonObject): string | null {
  * is deliberately absent until provider accounts land; it goes beside PROVIDER.
  */
 function formatChatModels(value: unknown): string {
-  const models = Array.isArray(value)
-    ? value.filter(isRecord)
-    : firstArray(value, ["models", "availableModels"]);
+  const models = chatModelRows(value);
   return renderTable(
     ["PROVIDER", "MODEL ID", "LABEL", "FAMILY"],
     models.map((model) => [
-      chatModelProvider(model),
+      model.provider,
       asString(model.modelId) ?? asString(model.id),
       model.displayName,
       asString(model.family),
     ]),
     "ADE chat models\n(no models)",
+    { fullColumns: ["MODEL ID"] },
   );
 }
 
@@ -25062,6 +25084,7 @@ function formatProofFiled(value: unknown): string {
         artifact.uri,
       ]),
       "(no artifact rows returned)",
+      { fullColumns: ["artifact"] },
     ),
     record.verified === true
       ? "verified: re-read through ade proof list"
@@ -26097,6 +26120,7 @@ function formatHistoryList(value: unknown): string {
       operation.postHeadSha,
     ]),
     "ADE operation history\n(no operations found)",
+    { fullColumns: ["id"] },
   );
 }
 
@@ -26151,6 +26175,7 @@ function formatTerminalList(value: unknown): string {
       terminal.title,
     ]),
     "ADE attached terminals\n(no terminals found)",
+    { fullColumns: ["terminal", "pty", "chat"] },
   );
 }
 
@@ -26318,6 +26343,7 @@ function formatProviderAccounts(value: unknown): string {
       instance.configHome,
     ]),
     "ADE provider accounts\n(no provider accounts found)",
+    { fullColumns: ["id"] },
   );
 }
 
@@ -26340,6 +26366,7 @@ function formatProjectsList(value: unknown): string {
         : "",
     ]),
     "ADE projects\n(no projects registered)",
+    { fullColumns: ["project"] },
   );
 }
 
@@ -26395,7 +26422,7 @@ function formatLinearQuickView(value: unknown): string {
     ),
     "",
     "Issues",
-    renderTable(["id", "title", "state", "area"], issueRows, "(no issues)"),
+    renderTable(["id", "title", "state", "area"], issueRows, "(no issues)", { fullColumns: ["id"] }),
   ].join("\n");
 }
 
@@ -27448,6 +27475,13 @@ function summarizeExecution(args: {
       ...(values.attach !== undefined ? { attach: unwrapActionEnvelope(values.attach) } : {}),
       ...(values.result !== undefined ? { kickoff: unwrapActionEnvelope(values.result) } : {}),
     };
+  }
+
+  if (plan.label === "chat models" || plan.label === "personal chat models") {
+    // `--text` and `--json` both read these provider-annotated rows, so the
+    // JSON contract carries the provider beside the raw model fields instead of
+    // leaving a caller to guess it from the family.
+    return chatModelRows(unwrapActionEnvelope(values.result));
   }
 
   if (plan.label === "chat list" && values.cli !== undefined) {
