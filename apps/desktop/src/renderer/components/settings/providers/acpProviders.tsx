@@ -324,6 +324,62 @@ function KimiBody() {
   );
 }
 
+/**
+ * Grok's update advisory.
+ *
+ * ADE launches Grok with `--no-auto-update`, so nothing else surfaces a stale
+ * install. The one-click button exists only when the host resolved the binary
+ * to a known installer (`update.canUpdate`); otherwise the note says how to
+ * update by hand, and there is no button to run the wrong command.
+ */
+function GrokUpdateBody({ ctx }: { ctx: ProvidersViewContext }) {
+  const diagnostics = ctx.acpDiagnostics.grok ?? null;
+  const update = diagnostics?.update ?? null;
+  if (!diagnostics || !update) return null;
+  const busy = ctx.acpUpdateBusy === "grok";
+  const error = ctx.acpDiagnosticsError.grok ?? null;
+  const statusLine = update.updateAvailable
+    ? `Update available: Grok ${diagnostics.version ?? "installed"} → ${update.latestVersion ?? "latest"}.`
+    : update.latestVersion
+      ? `Up to date (${diagnostics.version ?? "unknown"} · latest ${update.latestVersion}).`
+      : "Latest version unknown.";
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <SubsectionTitle>Updates</SubsectionTitle>
+      <div
+        style={{
+          fontSize: 11,
+          fontFamily: SANS_FONT,
+          lineHeight: 1.5,
+          color: update.updateAvailable ? COLORS.warning : COLORS.textMuted,
+        }}
+      >
+        {statusLine}
+      </div>
+      {update.note ? (
+        <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+          {update.note}
+        </div>
+      ) : null}
+      {update.canUpdate ? (
+        <button
+          type="button"
+          style={outlineButton({ height: 28 })}
+          disabled={busy}
+          onClick={() => void ctx.actions.updateAcpProvider("grok")}
+        >
+          {busy ? "Updating…" : "Update now"}
+        </button>
+      ) : null}
+      {error ? (
+        <div style={{ fontSize: 11, fontFamily: SANS_FONT, lineHeight: 1.5, color: COLORS.danger, overflowWrap: "anywhere" }}>
+          {error}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
   return {
     id: spec.id,
@@ -346,6 +402,9 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
       ? { Diagnostics: ({ ctx }: { ctx: ProvidersViewContext }) => <AcpDiagnostics ctx={ctx} id={spec.id} /> }
       : {}),
     ...(spec.id === "kimi" ? { Body: KimiBody } : {}),
+    ...(spec.id === "grok"
+      ? { Body: ({ ctx }: { ctx: ProvidersViewContext }) => <GrokUpdateBody ctx={ctx} /> }
+      : {}),
   };
 }
 

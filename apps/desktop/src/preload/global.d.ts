@@ -338,6 +338,7 @@ import type {
   BudgetCapProvider,
   BudgetCapConfig,
   AcpProviderDiagnostics,
+  AcpProviderUpdateResult,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -1344,6 +1345,13 @@ declare global {
           provider: "qwen" | "kimi" | "grok" | "copilot";
           runDoctor?: boolean;
         }) => Promise<AcpProviderDiagnostics>;
+        /**
+         * Runs the provider's one-click updater on this machine. Optional: an
+         * older host that predates it leaves this undefined.
+         */
+        acpProviderUpdate?: (args: {
+          provider: "qwen" | "kimi" | "grok" | "copilot";
+        }) => Promise<AcpProviderUpdateResult>;
         opencodeAuthMethods: () => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
           providerId: string;

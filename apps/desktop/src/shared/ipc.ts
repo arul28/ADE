@@ -800,6 +800,7 @@ export const IPC = {
    * provider's settings page opens — never on a status refresh.
    */
   aiAcpProviderDiagnostics: "ade.ai.acpProviderDiagnostics",
+  aiAcpProviderUpdate: "ade.ai.acpProviderUpdate",
   aiOpencodeAuthMethods: "ade.ai.opencodeAuthMethods",
   aiOpencodeOAuthStart: "ade.ai.opencodeOAuthStart",
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",

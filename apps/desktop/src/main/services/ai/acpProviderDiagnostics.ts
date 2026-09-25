@@ -13,11 +13,18 @@
  */
 
 import type { AcpChatProvider } from "../../../shared/types/chat";
-import type { AcpProviderDiagnostics } from "../../../shared/types/config";
+import type { AcpProviderDiagnostics, AcpProviderUpdateResult } from "../../../shared/types/config";
 import { spawnAsync } from "../shared/utils";
 import { grokConfigHome } from "../shared/providerConfigHomes";
 import { acpProbeConfigHome, getCachedAcpAuthProbe } from "./acpAuthProbe";
 import { resolveAcpExecutable } from "./acpExecutables";
+import {
+  collectGrokUpdateInfo,
+  resolveGrokInstaller,
+  runGrokUpdate,
+  type GrokInstallerIo,
+  type GrokSpawn,
+} from "./grokUpdate";
 
 const VERSION_TIMEOUT_MS = 6_000;
 const DOCTOR_TIMEOUT_MS = 25_000;
@@ -68,6 +75,18 @@ export type CollectAcpProviderDiagnosticsArgs = {
   env?: NodeJS.ProcessEnv;
   /** Test seam. Same contract as `spawnAsync`: resolves, never rejects. */
   run?: typeof spawnAsync;
+  /** Test seam for Grok's install-kind detection. */
+  installerIo?: GrokInstallerIo;
+  /** Test seam for the npm registry read; never used in unit tests by default. */
+  fetchImpl?: typeof fetch;
+};
+
+const EMPTY_UPDATE_INFO: NonNullable<AcpProviderDiagnostics["update"]> = {
+  latestVersion: null,
+  updateAvailable: false,
+  installer: null,
+  canUpdate: false,
+  note: null,
 };
 
 export async function collectAcpProviderDiagnostics(
@@ -104,12 +123,21 @@ export async function collectAcpProviderDiagnostics(
     cwd: args.cwd,
   });
   const versionLine = version.status === 0 ? firstVersionLine(version.stdout, version.stderr) : null;
+  const update = args.provider === "grok"
+    ? await collectGrokUpdateInfo({
+      binaryPath,
+      currentVersion: versionLine,
+      ...(args.installerIo ? { installerIo: args.installerIo } : {}),
+      ...(args.fetchImpl ? { fetchImpl: args.fetchImpl } : {}),
+    }).catch(() => EMPTY_UPDATE_INFO)
+    : undefined;
   const result: AcpProviderDiagnostics = {
     ...base,
     version: versionLine,
     versionError: versionLine
       ? null
       : firstVersionLine(version.stderr, version.stdout) ?? "The CLI did not report a version.",
+    ...(update ? { update } : {}),
   };
 
   const doctorArgs = DOCTOR_COMMANDS[args.provider];
@@ -136,6 +164,45 @@ export async function collectAcpProviderDiagnostics(
 }
 
 /**
+ * Run one provider's one-click updater.
+ *
+ * Currently Grok only. It re-resolves the binary and refuses when the installer
+ * is unknown, so the renderer's button can never run a guess. The update runs
+ * with the provider's config home in `GROK_HOME`, so a custom home updates
+ * itself rather than the default `~/.grok`.
+ */
+export async function runAcpProviderUpdate(args: {
+  provider: AcpChatProvider;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  /** Test seam, same contract as `GrokSpawn`. */
+  run?: GrokSpawn;
+}): Promise<AcpProviderUpdateResult> {
+  if (args.provider !== "grok") {
+    return { ok: false, message: `Updates are not supported for ${args.provider}.`, version: null };
+  }
+  const env = args.env ?? process.env;
+  const executable = resolveAcpExecutable("grok", { env });
+  if (executable.source === "fallback-command") {
+    return { ok: false, message: "Grok was not found on this machine.", version: null };
+  }
+  if (!resolveGrokInstaller(executable.path).installer) {
+    return {
+      ok: false,
+      message: "ADE could not tell how this Grok was installed. Update it with the installer you used.",
+      version: null,
+    };
+  }
+  return runGrokUpdate({
+    binaryPath: executable.path,
+    configHome: configHomeFor("grok", env) || null,
+    env,
+    cwd: args.cwd,
+    ...(args.run ? { run: args.run } : {}),
+  });
+}
+
+/**
  * The copyable diagnostic report for one provider.
  *
  * Plain text on purpose: it is pasted into a GitHub issue, and every line has
@@ -157,6 +224,13 @@ export function formatAcpProviderDiagnosticsReport(
       : "not run"}`,
     `checked at: ${diagnostics.checkedAt}`,
   ];
+  if (diagnostics.update) {
+    const versionIndex = lines.findIndex((line) => line.startsWith("version:"));
+    const updateLine = `latest: ${diagnostics.update.latestVersion ?? "unknown"}`
+      + ` (update available: ${diagnostics.update.updateAvailable ? "yes" : "no"},`
+      + ` installer: ${diagnostics.update.installer ?? "unknown"})`;
+    lines.splice(versionIndex + 1, 0, updateLine);
+  }
   if (diagnostics.doctor) {
     lines.push(
       "",

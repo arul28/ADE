@@ -382,6 +382,7 @@ export function ProvidersSection({
   const [acpDiagnostics, setAcpDiagnostics] = useState<Partial<Record<AcpSettingsProviderId, AcpProviderDiagnostics>>>({});
   const [acpDiagnosticsBusy, setAcpDiagnosticsBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDoctorBusy, setAcpDoctorBusy] = useState<AcpSettingsProviderId | null>(null);
+  const [acpUpdateBusy, setAcpUpdateBusy] = useState<AcpSettingsProviderId | null>(null);
   const [acpDiagnosticsError, setAcpDiagnosticsError] = useState<Partial<Record<AcpSettingsProviderId, string>>>({});
   const [signInProvider, setSignInProvider] = useState<SettingsProviderId | null>(null);
   // Which provider's page is open. Seeded and re-seeded from `?provider=`, but
@@ -1022,6 +1023,43 @@ export function ProvidersSection({
     }
   }, []);
 
+  const updateAcpProvider = useCallback(async (provider: AcpSettingsProviderId) => {
+    const run = window.ade.ai.acpProviderUpdate;
+    if (!run) {
+      setAcpDiagnosticsError((prev) => ({ ...prev, [provider]: "This window cannot update providers." }));
+      return;
+    }
+    setAcpUpdateBusy(provider);
+    setAcpDiagnosticsError((prev) => {
+      const next = { ...prev };
+      delete next[provider];
+      return next;
+    });
+    try {
+      const result = await run({ provider });
+      if (!result.ok) throw new Error(result.message);
+      setNotice(result.message);
+      // Re-read the diagnostics so the advisory reflects the version the
+      // updater just wrote, not the pre-update snapshot.
+      const read = window.ade.ai.acpProviderDiagnostics;
+      if (read) {
+        try {
+          const diagnostics = await read({ provider });
+          setAcpDiagnostics((prev) => ({ ...prev, [provider]: diagnostics }));
+        } catch {
+          // The update succeeded; a failed re-read does not undo it.
+        }
+      }
+    } catch (err) {
+      setAcpDiagnosticsError((prev) => ({
+        ...prev,
+        [provider]: err instanceof Error ? err.message : String(err),
+      }));
+    } finally {
+      setAcpUpdateBusy((current) => (current === provider ? null : current));
+    }
+  }, []);
+
   const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
     const command = acpLoginCommand(provider);
     if (!command) return;
@@ -1061,6 +1099,7 @@ export function ProvidersSection({
     acpDiagnostics,
     acpDiagnosticsBusy,
     acpDoctorBusy,
+    acpUpdateBusy,
     acpDiagnosticsError,
     actions: {
       refreshStatus,
@@ -1085,6 +1124,7 @@ export function ProvidersSection({
       setProviderDisabled,
       loadAcpDiagnostics,
       runAcpDoctor,
+      updateAcpProvider,
       openSignInTerminal,
     },
   }), [
@@ -1100,7 +1140,8 @@ export function ProvidersSection({
     status, statusLoadError, storedProviders, updateLocalProviderDraft,
     verificationByProvider, verifyApiKey, verifyingProvider, revealClaudeLoginTerminalInWork,
     disabledProviders, savingDisabledFor, setProviderDisabled, acpDiagnostics, acpDiagnosticsBusy,
-    acpDoctorBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor, openSignInTerminal,
+    acpDoctorBusy, acpUpdateBusy, acpDiagnosticsError, loadAcpDiagnostics, runAcpDoctor,
+    updateAcpProvider, openSignInTerminal,
   ]);
 
   const descriptors = useMemo(() => availableProviderDescriptors(), []);
