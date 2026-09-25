@@ -1733,6 +1733,65 @@ export function createComputerUseArtifactBrokerService(args: {
       return deleteArtifacts({ artifactIds: ids });
     },
 
+    /**
+     * Records that these artifacts were posted to a pull request: one
+     * `github_pr` owner link each, relation `published_to`, keyed by the PR's
+     * URL. Posting again adds nothing; the link from the first post stays.
+     * The caller has already checked that it owns every artifact.
+     */
+    linkArtifactsToPullRequest(args: {
+      artifactIds: string[];
+      prUrl: string;
+      commentUrl?: string | null;
+    }): ComputerUseArtifactView[] {
+      const prUrl = String(args.prUrl ?? "").trim();
+      if (!/^https:\/\/[^/\s]+\/[^/\s]+\/[^/\s]+\/pull\/\d+\/?$/.test(prUrl)) {
+        throw new Error("prUrl must be a pull request URL, such as https://github.com/owner/repo/pull/12.");
+      }
+      const commentUrl = toOptionalString(args.commentUrl);
+      const ids = [...new Set(args.artifactIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
+      const missing = ids.filter((id) => !readArtifactById(id));
+      if (missing.length) throw new Error(`Computer-use artifact not found: ${missing.join(", ")}`);
+      const at = nowIso();
+      // A savepoint, like ingest: one call links all or none, and it nests.
+      db.run("savepoint computer_use_publish");
+      try {
+        for (const artifactId of ids) {
+          const existing = readLinkRows([artifactId])
+            .some((link) => link.ownerKind === "github_pr" && link.ownerId === prUrl);
+          if (existing) continue;
+          insertLink(artifactId, {
+            kind: "github_pr",
+            id: prUrl,
+            relation: "published_to",
+            metadata: { publishedAt: at, ...(commentUrl ? { commentUrl } : {}) },
+          });
+        }
+        db.run("release computer_use_publish");
+      } catch (error) {
+        try {
+          db.run("rollback to computer_use_publish");
+          db.run("release computer_use_publish");
+        } catch {
+          // The original error is the one worth reporting.
+        }
+        throw error;
+      }
+      const views = ids.map((artifactId) => {
+        const record = readArtifactById(artifactId)!;
+        return toArtifactView(record, readLinkRows([artifactId]));
+      });
+      for (const view of views) {
+        emit({
+          type: "artifact-linked",
+          artifactId: view.id,
+          at,
+          owner: { kind: "github_pr", id: prUrl, relation: "published_to" },
+        });
+      }
+      return views;
+    },
+
     updateArtifactReview(args: ComputerUseArtifactReviewArgs): ComputerUseArtifactView {
       const artifactId = String(args.artifactId ?? "").trim();
       if (!artifactId.length) throw new Error("artifactId is required.");

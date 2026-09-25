@@ -710,6 +710,20 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "link_computer_use_artifacts_to_pr",
+    description: "Record that proof artifacts were posted to a GitHub pull request. `ade proof publish` calls this after it posts them; the drawer then shows the PR on each item.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["artifactIds", "prUrl"],
+      properties: {
+        artifactIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        prUrl: { type: "string", minLength: 1 },
+        commentUrl: { type: "string" },
+      }
+    }
+  },
+  {
     name: "list_broken_computer_use_artifacts",
     description: "List proof records whose stored file is missing or was never imported, with the path each can be recovered from when one survives.",
     inputSchema: {
@@ -1476,6 +1490,7 @@ const MUTATION_TOOLS = new Set([
   "saveMemory",
   "create_lane",
   "delete_computer_use_artifacts",
+  "link_computer_use_artifacts_to_pr",
   "prune_broken_computer_use_artifacts",
   "recover_computer_use_artifact",
   "run_ade_action",
@@ -6507,6 +6522,40 @@ async function runTool(args: {
         limit: asNumber(toolArgs.limit, 50),
       }),
     };
+  }
+
+  if (name === "link_computer_use_artifacts_to_pr") {
+    const ids = Array.isArray(toolArgs.artifactIds)
+      ? toolArgs.artifactIds.map((entry) => asOptionalTrimmedString(entry)).filter((entry): entry is string => Boolean(entry))
+      : [];
+    const prUrl = asOptionalTrimmedString(toolArgs.prUrl);
+    if (!ids.length || !prUrl) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide artifactIds and prUrl.");
+    }
+    // The same owner rule as deletion: a caller links only its own proof.
+    if (!isProjectWideProofMaintenanceAuthorized(session)) {
+      const authorizedOwners = resolveAuthorizedProofOwners(runtime, session);
+      if (!authorizedOwners.length) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Linking proof to a PR requires an authenticated owner scope.");
+      }
+      for (const artifactId of ids) {
+        const artifact = runtime.computerUseArtifactBrokerService.listArtifacts({ artifactId })[0] ?? null;
+        if (artifact && !artifactMatchesAuthorizedOwners(artifact, authorizedOwners)) {
+          throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Artifact is not owned by this caller.");
+        }
+      }
+    }
+    try {
+      return {
+        artifacts: runtime.computerUseArtifactBrokerService.linkArtifactsToPullRequest({
+          artifactIds: ids,
+          prUrl,
+          commentUrl: asOptionalTrimmedString(toolArgs.commentUrl),
+        }),
+      };
+    } catch (error) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error instanceof Error ? error.message : String(error));
+    }
   }
 
   if (name === "delete_computer_use_artifacts") {
