@@ -4759,13 +4759,15 @@ struct FilesSearchTextMatch: Codable, Identifiable, Equatable {
   var preview: String
 }
 
-/// Agent-authored structured activity, kept separate from the parent session phase.
-/// String fields keep newer host values forward-compatible; presentation only
-/// displays the six ADE-supported values and the `agent` source.
+/// Host-authored structured activity (detected from tool calls, or reported by
+/// the agent), kept separate from the parent session phase. String fields keep
+/// newer host values forward-compatible; presentation only displays the values
+/// in `workSessionActivityValues` and the `detected` / `agent` sources.
 struct SessionActivityReport: Codable, Equatable {
   var value: String
   var source: String
   var updatedAt: String
+  var reportedAt: String? = nil
 }
 
 struct TerminalSessionSummary: Codable, Identifiable, Equatable {

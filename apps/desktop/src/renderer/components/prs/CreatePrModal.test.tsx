@@ -142,6 +142,7 @@ describe("CreatePrModal", () => {
       },
       git: {
         getSyncStatus: vi.fn().mockResolvedValue(null),
+        getSyncStatuses: vi.fn().mockResolvedValue({}),
         listBranches: vi.fn().mockResolvedValue([
           { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
           { name: "develop", isCurrent: false, isRemote: false, upstream: "origin/develop" },
@@ -154,6 +155,17 @@ describe("CreatePrModal", () => {
   afterEach(() => {
     globalThis.window.ade = originalAde;
     cleanup();
+  });
+
+  it("loads lane sync statuses through one batched getSyncStatuses call", async () => {
+    const { git } = globalThis.window.ade;
+    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
+
+    await waitFor(() => expect(git.getSyncStatuses).toHaveBeenCalledTimes(1));
+    expect(git.getSyncStatuses).toHaveBeenCalledWith({
+      laneIds: ["lane-1", "lane-2", "lane-linear"],
+    });
+    expect(git.getSyncStatus).not.toHaveBeenCalled();
   });
 
   it("lets single-PR creation target a different branch than Primary's current branch", async () => {

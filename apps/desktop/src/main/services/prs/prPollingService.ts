@@ -33,6 +33,58 @@ function isMergeReady(pr: PrSummary): boolean {
     && Math.max(0, pr.behindBaseBy ?? 0) === 0;
 }
 
+function normalizeHeadSha(headSha: string | null | undefined): string | null {
+  const trimmed = headSha?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+type ChecksFailureMemory = {
+  headSha: string | null;
+  /** True after this head has been announced red, until checks pass or the head changes. */
+  announced: boolean;
+};
+
+/**
+ * One "checks failing" toast per red stretch.
+ *
+ * A newer attempt of the same check drops the rollup to `pending` and then
+ * back to `failing` within seconds. That is the same failure, so `pending`,
+ * `none`, and `not_run` do not re-arm the toast. It arms again when checks
+ * actually pass, or when the head commit changes.
+ *
+ * The first observation of a PR (startup, or a row that just appeared) never
+ * announces: `previous === null`. If that observation is already failing, it
+ * is remembered so a later pending dip cannot announce a failure the user
+ * was not shown entering.
+ */
+function rememberChecksFailure(
+  previous: ChecksFailureMemory | null,
+  pr: PrSummary,
+): { memory: ChecksFailureMemory; announce: boolean } {
+  // A poll that omits the SHA must not forget the commit we already had.
+  // Otherwise A → (missing) → B looks like no change and a new red commit stays quiet.
+  const headSha = normalizeHeadSha(pr.headSha) ?? previous?.headSha ?? null;
+  const headChanged = previous != null
+    && previous.headSha != null
+    && headSha !== previous.headSha;
+  let announced = previous?.announced ?? false;
+  if (pr.checksStatus === "passing") announced = false;
+  // The first poll of a new head can still be carrying the previous commit's
+  // rollup: a webhook writes the SHA before checks are read, and a failed
+  // checks fetch keeps the old red. Announcing there attributes the old
+  // failure to the new commit, then suppresses the real one. Wait until a
+  // later poll still sees that same head failing.
+  if (headChanged) announced = false;
+  const open = pr.state === "open" || pr.state === "draft";
+  const announce = open
+    && previous != null
+    && !headChanged
+    && pr.checksStatus === "failing"
+    && !announced;
+  if (pr.checksStatus === "failing" && !headChanged) announced = true;
+  return { memory: { headSha, announced }, announce };
+}
+
 function summarizeNotification(kind: PrNotificationKind): { title: string; message: string } {
   switch (kind) {
     case "opened":
@@ -206,6 +258,8 @@ export function createPrPollingService({
       mergeReady: boolean;
       mergeConflicts: boolean | null;
       behindBaseBy: number | null;
+      headSha: string | null;
+      checksFailureAnnounced: boolean;
     }
   >();
 
@@ -337,6 +391,7 @@ export function createPrPollingService({
         lastByPrId.clear();
         lastFingerprintByPrId.clear();
         for (const pr of prs) {
+          const failure = rememberChecksFailure(null, pr);
           lastByPrId.set(pr.id, {
             checksStatus: pr.checksStatus,
             reviewStatus: pr.reviewStatus,
@@ -344,6 +399,8 @@ export function createPrPollingService({
             mergeReady: isMergeReady(pr),
             mergeConflicts: pr.mergeConflicts ?? null,
             behindBaseBy: pr.behindBaseBy ?? null,
+            headSha: failure.memory.headSha,
+            checksFailureAnnounced: failure.memory.announced,
           });
           lastFingerprintByPrId.set(pr.id, getPrFingerprint(pr));
         }
@@ -384,10 +441,16 @@ export function createPrPollingService({
           });
         }
 
+        const failure = rememberChecksFailure(
+          prev
+            ? { headSha: prev.headSha, announced: prev.checksFailureAnnounced }
+            : null,
+          pr,
+        );
         const shouldNotifyStatusKind = (kind: PrNotificationKind): boolean => {
           if (pr.state !== "open" && pr.state !== "draft") return false;
           if (!prev) return false;
-          if (kind === "checks_failing") return prev.checksStatus !== "failing" && pr.checksStatus === "failing";
+          if (kind === "checks_failing") return failure.announce;
           if (kind === "review_requested") return prev.reviewStatus !== "requested" && pr.reviewStatus === "requested";
           if (kind === "changes_requested") return prev.reviewStatus !== "changes_requested" && pr.reviewStatus === "changes_requested";
           if (kind === "merge_ready") return prev.mergeReady !== true && mergeReady === true && pr.state === "open";
@@ -433,6 +496,8 @@ export function createPrPollingService({
           mergeReady,
           mergeConflicts: pr.mergeConflicts ?? null,
           behindBaseBy: pr.behindBaseBy ?? null,
+          headSha: failure.memory.headSha,
+          checksFailureAnnounced: failure.memory.announced,
         });
         lastFingerprintByPrId.set(pr.id, nextFingerprint);
       }

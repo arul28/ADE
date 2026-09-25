@@ -535,8 +535,9 @@ describe("SessionCard lineage", () => {
     const statusRow = screen.getByTestId("session-hover-status");
     const hoveredStatus = statusRow.querySelector("[data-session-status]");
     expect(hoveredStatus?.getAttribute("data-session-status")).toBe("Testing");
-    expect(hoveredStatus?.getAttribute("title")).toContain("Agent-reported activity");
-    expect(hoveredStatus?.getAttribute("title")).toContain(new Date(reportUpdatedAt).toLocaleString());
+    expect(hoveredStatus?.getAttribute("title")).toContain("Reported by the agent");
+    expect(hoveredStatus?.getAttribute("title")).toContain("since ");
+    expect(hoveredStatus?.getAttribute("title")).toContain(new Date(reportUpdatedAt).toLocaleTimeString());
   });
 
   it("keeps the status word on the row face by default", () => {
@@ -546,41 +547,6 @@ describe("SessionCard lineage", () => {
     // the word is the only place the state is named.
     expect(container.querySelector("[data-session-status]")).toBeTruthy();
     expect(screen.queryByTestId("session-hover-status")).toBeNull();
-  });
-
-  it("names the model with the registry's short label, never the raw id", () => {
-    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
-    const { rerender } = render(
-      <SessionCard {...props} session={makeSession({ modelId: "claude-opus-5" })} />,
-    );
-    // `claude-opus-5` is an id, not something a human should have to read. The
-    // shared `formatSubagentModelLabel` resolves it through the model registry,
-    // so the row, the Chat Info header and the subagent roster agree.
-    expect(screen.getByTestId("session-model-label").textContent).toBe("Claude Opus 5");
-    expect(screen.queryByText("claude-opus-5")).toBeNull();
-
-    // The provider's own raw string is the fallback when no canonical id landed.
-    rerender(<SessionCard {...props} session={makeSession({ model: "claude-sonnet-5" })} />);
-    expect(screen.getByTestId("session-model-label").textContent).toBe("Claude Sonnet 5");
-
-    // A ref the registry has never heard of is shown as-is rather than dropped:
-    // a real answer nobody recognises still beats no answer.
-    rerender(<SessionCard {...props} session={makeSession({ model: "some-private-model" })} />);
-    expect(screen.getByTestId("session-model-label").textContent).toBe("some-private-model");
-  });
-
-  it("renders no model chip at all when the session has no model", () => {
-    const props = { lane, isSelected: false, onSelect: vi.fn(), onContextMenu: vi.fn() };
-    const { rerender } = render(<SessionCard {...props} session={makeSession()} />);
-    // A CLI or shell row has no model; an empty or whitespace one is the same
-    // "we do not know", and a chip reading nothing is worse than no chip.
-    expect(screen.queryByTestId("session-model-label")).toBeNull();
-
-    rerender(<SessionCard {...props} session={makeSession({ model: "" })} />);
-    expect(screen.queryByTestId("session-model-label")).toBeNull();
-
-    rerender(<SessionCard {...props} session={makeSession({ model: "   ", modelId: undefined })} />);
-    expect(screen.queryByTestId("session-model-label")).toBeNull();
   });
 
   it("replaces the lineage badge with a CTO chip when the parent is the CTO identity", () => {

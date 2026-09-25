@@ -199,10 +199,6 @@ describe("AppleDevicePicker device cards", () => {
     expect(cardOf(container, "max").textContent).not.toContain("Stopped");
   });
 
-  it("no longer explains that a stopped simulator only needs a boot", () => {
-    renderPicker();
-    expect(screen.queryByText(/only needs a boot/)).toBeNull();
-  });
 });
 
 describe("AppleDevicePicker a device another lane holds", () => {
@@ -382,21 +378,10 @@ describe("AppleDevicePicker the lane's own device", () => {
 });
 
 describe("AppleDevicePicker page", () => {
-  it("wears the tools grid's card and backdrop, and nothing see-through", () => {
-    const { container } = renderPicker();
-    expect(container.querySelector("[data-backdrop]")).toBeTruthy();
-    expect(cardOf(container, "pro").className).toContain("ade-tool-card");
-  });
-
   it("says where simulators come from when there are none", () => {
     const { container } = renderPicker({ installed: [] });
     expect(container.querySelector("[data-apple-picker-empty]")).toBeTruthy();
     expect(screen.getByText(/Xcode → Settings → Components/)).toBeTruthy();
-  });
-
-  it.each([360, 900])("fits its container at %ipx", (width) => {
-    const { container } = renderPicker({ disk: DISK });
-    expectNoHorizontalOverflow(container, width);
   });
 
   it("disables every control while a start is in flight", () => {

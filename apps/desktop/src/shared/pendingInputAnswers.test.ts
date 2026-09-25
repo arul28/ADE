@@ -90,7 +90,7 @@ describe("buildAnswers", () => {
 
   // The bug this contract exists to kill: on the TUI a typed note used to
   // REPLACE the selection. Both must travel, on every surface.
-  it("regression: a note never replaces the selection", () => {
+  it("a note never replaces the selection", () => {
     const built = buildAnswers(questions, { one: ["alpha"] }, { one: "actually beta-ish" });
     expect(built.one).toEqual(["alpha", "actually beta-ish"]);
     expect(built.one).not.toBe("actually beta-ish");
@@ -177,7 +177,7 @@ describe("sanitizeAnswersForTranscript", () => {
   // `pending_input_resolved` is durable AND synced to every paired device (and
   // the widget App Group). A credential typed into an isSecret question must
   // never reach it.
-  it("regression: never persists an isSecret question's answer", () => {
+  it("never persists an isSecret question's answer", () => {
     const questions = [
       question({ id: "token", isSecret: true }),
       question({ id: "scope" }),
@@ -195,7 +195,7 @@ describe("sanitizeAnswersForTranscript", () => {
     expect(sanitizeAnswersForTranscript(questions, { token: "hunter2" })).toBeUndefined();
   });
 
-  it("regression: an unknown answer key cannot bypass a secret question id", () => {
+  it("an unknown answer key cannot bypass a secret question id", () => {
     const questions = [question({ id: "token", isSecret: true })];
     expect(sanitizeAnswersForTranscript(questions, {
       response: "sk-live-under-the-wrong-key",
@@ -219,7 +219,7 @@ describe("sanitizeAnswersForTranscript", () => {
     expect(String(sanitized?.essay)).toContain(TRUNCATED_ANSWER_MARKER);
   });
 
-  it("regression: caps multi-byte answers by bytes, not code units", () => {
+  it("caps multi-byte answers by bytes, not code units", () => {
     for (const [label, filler] of [["CJK", "中"], ["emoji", "🙂"], ["accented", "é"]] as const) {
       const sanitized = sanitizeAnswersForTranscript(
         [question({ id: "essay" })],
@@ -229,28 +229,32 @@ describe("sanitizeAnswersForTranscript", () => {
     }
   });
 
-  it("regression: never splits a surrogate pair when truncating", () => {
+  it("preserves complete Unicode code points when truncating", () => {
     const sanitized = sanitizeAnswersForTranscript(
       [question({ id: "essay" })],
       { essay: "🙂".repeat(5_000) },
     );
     const value = String(sanitized?.essay);
-    // A lone surrogate would survive this round trip as U+FFFD.
-    expect(value).not.toContain("\uFFFD");
-    expect(JSON.parse(JSON.stringify(value))).toBe(value);
+    expect(value).toContain(TRUNCATED_ANSWER_MARKER);
+    const codePoints = [...value].map((character) => character.codePointAt(0)!);
+    expect(codePoints.some((codePoint) => codePoint >= 0xd800 && codePoint <= 0xdfff)).toBe(false);
   });
 
-  it("regression: a pathological question id cannot blow the budget", () => {
-    const id = "x".repeat(50_000);
-    const sanitized = sanitizeAnswersForTranscript([question({ id })], { [id]: "short" });
-    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
-  });
-
-  it("regression: many answers stay under the cap in aggregate", () => {
-    const questions = Array.from({ length: 400 }, (_, index) => question({ id: `q${index}` }));
-    const answers = Object.fromEntries(questions.map((entry) => [entry.id, "an answer of some length"]));
+  const byteBudgetCases = [
+    ["a pathological question ID", () => {
+      const id = "x".repeat(50_000);
+      return { questions: [question({ id })], answers: { [id]: "short" } };
+    }],
+    ["many aggregate answers", () => {
+      const questions = Array.from({ length: 400 }, (_, index) => question({ id: `q${index}` }));
+      const answers = Object.fromEntries(questions.map((entry) => [entry.id, "an answer of some length"]));
+      return { questions, answers };
+    }],
+  ] as const;
+  it.each(byteBudgetCases)("keeps %s within the serialized answer limit", (_label, makeCase) => {
+    const { questions, answers } = makeCase();
     const sanitized = sanitizeAnswersForTranscript(questions, answers);
-    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
+    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(2_048);
   });
 
   it("keeps a key for every question when several are oversized", () => {
@@ -296,7 +300,7 @@ describe("normalizePendingInputAnswers", () => {
   // key whenever more than one question was asked. Claude's `question.reply`
   // takes one array per ASKED question, so that key matched nothing and the
   // user's actual reply never reached the model.
-  it("regression: shared response text joins the last answered question, not a 'response' key", () => {
+  it("shared response text joins the last answered question, not a 'response' key", () => {
     const normalized = normalizePendingInputAnswers(
       { questions },
       { one: "alpha", two: "beta" },

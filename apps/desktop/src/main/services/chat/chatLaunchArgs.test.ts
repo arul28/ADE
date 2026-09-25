@@ -4,6 +4,7 @@ import {
   parseChatLaunchArgs,
   parseChatLaunchCompleteClientArgs,
   parseChatLaunchIdArgs,
+  parseChatLaunchLaneConfig,
   parseChatLaunchQueueMessageArgs,
 } from "./chatLaunchArgs";
 
@@ -58,6 +59,42 @@ describe("chatLaunchArgs (desktop action + sync host share this parser)", () => 
       .toEqual({ launchId: LAUNCH_ID, text: "", displayText: "shown", attachments: [{ path: "/f", type: "file" }] });
     expect(parseChatLaunchCompleteClientArgs({ launchId: LAUNCH_ID, sessionId: " pty-1 ", error: "" }))
       .toEqual({ launchId: LAUNCH_ID, sessionId: "pty-1" });
+  });
+});
+
+describe("parseChatLaunchLaneConfig (composer's configured new lane)", () => {
+  it("keeps a valid recipe, trimming strings and dropping empty ones", () => {
+    expect(parseChatLaunchLaneConfig({
+      mode: "child",
+      parentLaneId: " lane-1 ",
+      templateId: " tpl-1 ",
+      color: "#abcdef",
+      branchRef: "   ",
+    })).toEqual({ mode: "child", parentLaneId: "lane-1", templateId: "tpl-1", color: "#abcdef" });
+  });
+
+  it("keeps a well-formed Linear issue but drops a malformed one", () => {
+    const validIssue = {
+      id: "issue-1",
+      identifier: "ADE-1",
+      title: "Ship it",
+      teamId: "team-1",
+      teamKey: "ADE",
+      stateId: "state-1",
+      stateName: "In Progress",
+      stateType: "started",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    };
+    expect(parseChatLaunchLaneConfig({ mode: "root", linearIssue: validIssue })?.linearIssue)
+      .toMatchObject({ id: "issue-1", identifier: "ADE-1", title: "Ship it" });
+    // Only an id: the canonical parser rejects it, so it never reaches lane creation.
+    expect(parseChatLaunchLaneConfig({ mode: "root", linearIssue: { id: "issue-1" } })).toEqual({ mode: "root" });
+  });
+
+  it("rejects an unknown mode", () => {
+    expect(parseChatLaunchLaneConfig({ mode: "nope", parentLaneId: "lane-1" })).toBeUndefined();
+    expect(parseChatLaunchLaneConfig("not-an-object")).toBeUndefined();
   });
 });
 

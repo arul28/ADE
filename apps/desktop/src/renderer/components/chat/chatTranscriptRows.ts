@@ -405,7 +405,7 @@ export type ScheduledWakeDividerRenderEvent = {
  * Header row rendered above a completion message delivered when a spawned
  * `subagent` finished (`user_message.metadata.spawnCompletion`). Carries the
  * child session id so the row's `[open ›]` affordance navigates to the child.
- * Row key: `spawn-wake:${childSessionId}:${turnId}`.
+ * Row key: `spawn-wake:${childSessionId}:${childTurnId || steerId || turnId || sequence}`.
  */
 export type SpawnWakeDividerRenderEvent = {
   type: "spawn_wake_divider";
@@ -1476,7 +1476,10 @@ function buildCommandWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "command" }>,
   timestamp: string,
 ): WorkLogRenderEvent {
-  const collapseKey = buildCollapseKey("command", event, event.command);
+  // A provider may refine a partial command while keeping the same item id.
+  // Use the command text only as a fallback when the event has no stable id.
+  const hasStableItemId = Boolean(event.logicalItemId ?? event.itemId);
+  const collapseKey = buildCollapseKey("command", event, hasStableItemId ? undefined : event.command);
   return {
     type: "work_log_entry",
     collapseKey,
@@ -2567,9 +2570,17 @@ export function appendCollapsedChatTranscriptEvent(
       const status = completion.status === "completed" || completion.status === "failed" || completion.status === "stopped"
         ? completion.status
         : null;
-      if (childSessionId && spawnKind && status) {
+      // Key per delivered completion, not per parent turn: several wakes from
+      // one child can steer into the same parent turn, and a shared key makes
+      // the virtualized list render ghost rows. The early return above covers a
+      // re-delivered message on the same `steerId`. The `rows.some` scan covers
+      // older transcripts that already hold the same child turn's report twice,
+      // under different steerIds: the second would repeat this key.
+      const deliveryId = completion.childTurnId?.trim() || steerId || event.turnId || rowKey;
+      const key = `spawn-wake:${childSessionId}:${deliveryId}`;
+      if (childSessionId && spawnKind && status && !rows.some((row) => row.key === key)) {
         rows.push({
-          key: `spawn-wake:${childSessionId}:${event.turnId ?? rowKey}`,
+          key,
           timestamp: envelope.timestamp,
           event: {
             type: "spawn_wake_divider",

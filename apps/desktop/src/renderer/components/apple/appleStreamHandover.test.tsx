@@ -229,7 +229,7 @@ describe("the pane and the floating player name the same machine two ways", () =
     gitOriginUrl: null,
   } as unknown as OpenProjectBinding;
 
-  it("regression: opening the pane over the floating player never stops the capture", async () => {
+  it("opening the pane over the floating player never stops the capture", async () => {
     useAppStore.setState({ projectBinding: LOCAL });
     act(() => {
       openAppleMiniPlayer({

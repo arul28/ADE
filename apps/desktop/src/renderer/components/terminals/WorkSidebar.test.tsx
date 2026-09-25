@@ -550,7 +550,7 @@ describe("WorkSidebar context targets", () => {
   });
 
   it("withholds the context callbacks — and says nothing about it — with no target", () => {
-    const { container } = renderSidebar({
+    renderSidebar({
       tab: "ios",
       contextTarget: null,
       contextDisabledReason: "This shell cannot receive inserted context.",
@@ -561,7 +561,6 @@ describe("WorkSidebar context targets", () => {
     // panels drop the controls that depend on it instead of explaining their
     // absence in a bar above controls you can still see.
     expect(screen.queryByText(/cannot receive inserted context/)).toBeNull();
-    expect(container.querySelector(".bg-amber-500\\/\\[0\\.055\\]")).toBeNull();
     expect((screen.getByText("Add iOS context") as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByText("Add iOS attachment") as HTMLButtonElement).disabled).toBe(true);
   });

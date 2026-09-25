@@ -1309,7 +1309,7 @@ Agent-CLI-agnostic guidance. Pick the right primitive for the harness:
 - **Claude Code CLI** maps this to `ScheduleWakeup` (CLI scheduler re-invokes the command later).
 - **Claude Agent SDK in ADE Work chats** runs through the SDK `query()` stream and advances when ADE feeds a fresh user turn into its async input pump. Background task notifications are surfaced in the stream, but they are still not a durable scheduler by themselves. In an SDK chat, either poll synchronously inside the current turn (foreground bash with one bounded `until ... ; do sleep N; done`) or stop with `status: running` written to the state file and ask the user or an external runner to re-invoke the playbook.
 - **Codex in a terminal** should usually use shell `sleep ... && <one-shot checks>`.
-- **Other CLIs** map this to their native sleep/resume.
+- **Any other ADE Work chat** has no scheduler of its own that starts a later turn. Before ending the turn while CI or review is still in flight, arm ADE's scheduler: `ade chat scheduled-work create --in 12m --prompt "/ship"` (4m just after a push, 12m while CI or review is running, 30m when only a person is left). Pass the same `/ship` arguments this run was given. Ending the turn without that command, or without an in-turn sleep, leaves the lane idle.
 
 Cadence (applies once you've picked a primitive):
 
@@ -1320,7 +1320,7 @@ Cadence (applies once you've picked a primitive):
 
 **Do not re-wake at 270s after the initial push-settled poll.** 270s is only useful to confirm CI started; after that, bump to 720s so review bots can post. Re-entering every 270s before Greptile finishes is exactly how you end up pushing a CI-only fix and wasting the next review cycle.
 
-The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. Each model or CLI may expose a different way to sleep, checkpoint, or resume; use the native one when it exists. If no native scheduler exists but shell commands can run, start a shell sleep followed by one bounded poll command, then let the shell wait without model activity. If neither scheduler nor shell sleep is available, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. Do not emulate scheduling with an active model loop.
+The cadence is a hint, not a live polling budget. Prefer longer sleeps over frequent checks. Each model or CLI may expose a different way to sleep, checkpoint, or resume; use the native one when it exists. If no native scheduler exists but shell commands can run, start a shell sleep followed by one bounded poll command, then let the shell wait without model activity. If the harness has no native scheduler and is not an ADE Work chat, write the updated state file and stop with a summary that names the next intended wake time; an external runner or human can re-invoke the playbook later. An ADE Work chat uses `ade chat scheduled-work` instead of stopping. Do not emulate scheduling with an active model loop.
 
 ---
 

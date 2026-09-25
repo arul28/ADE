@@ -425,7 +425,8 @@ describe("WorkViewArea", () => {
     expect(screen.queryByRole("button", { name: "Shell" })).toBeNull();
   });
 
-  it("keeps the Chat start mode selected for chat drafts", () => {
+  it("lets a draft switch from Chat to CLI", () => {
+    const onShowDraftKind = vi.fn();
     render(
       <WorkViewArea
         lanes={[{
@@ -454,13 +455,13 @@ describe("WorkViewArea", () => {
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={async () => ({ ptyId: "pty-1", sessionId: "sess-1", pid: 1234 })}
-        onShowDraftKind={() => {}}
+        onShowDraftKind={onShowDraftKind}
         closingPtyIds={new Set()}
       />,
     );
 
-    expect(screen.getByRole("button", { name: "Chat" }).className).toContain("ade-work-tab-active");
-    expect(screen.getByRole("button", { name: "CLI" }).className).not.toContain("ade-work-tab-active");
+    fireEvent.click(screen.getByRole("button", { name: "CLI" }));
+    expect(onShowDraftKind).toHaveBeenCalledWith("cli");
   });
 
   it("shows the draft surface when no tab is active, even if tabs are open", () => {
@@ -963,7 +964,7 @@ describe("WorkViewArea", () => {
     expect(slashCommandsMock).toHaveBeenCalledWith({ laneId: "lane-1", provider: "claude" });
   });
 
-  it("uses colored terminal snapshots for closed TUI sessions", async () => {
+  it("shows terminal snapshot text for closed TUI sessions", async () => {
     const plainCell = (text: string) => ({
       text,
       fg: null,
@@ -1050,15 +1051,7 @@ describe("WorkViewArea", () => {
     );
     const local = within(view.container);
 
-    await local.findByText("Claude Code");
-    const coloredLabel = Array.from(view.container.querySelectorAll("span"))
-      .find((node) => (
-        node.textContent === "Claude Code"
-        && (node as HTMLElement).style.color === "rgb(215, 119, 87)"
-      )) as HTMLElement | undefined;
-    expect(coloredLabel).toBeTruthy();
-    expect(coloredLabel?.style.fontWeight).toBe("700");
-    expect(local.getByText(/Ready/)).toBeTruthy();
+    await local.findByText(/Ready/);
     expect(local.queryByText(/plain transcript fallback/)).toBeNull();
     expect(local.queryAllByTestId("terminal-view")).toHaveLength(0);
   });

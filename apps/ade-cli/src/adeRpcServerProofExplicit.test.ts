@@ -169,7 +169,7 @@ describe("explicit proof capture", () => {
     expect(capturePath.startsWith(path.join(projectRoot, ".ade", "artifacts", "computer-use"))).toBe(true);
   });
 
-  it("regression: an unbound caller's proof capture is owned by the lane it stands in", async () => {
+  it("an unbound caller's proof capture is owned by the lane it stands in", async () => {
     // `ade proof capture` and `ade proof record` file through a door that had
     // no lane inference of its own, so a caller with no chat session produced
     // an artifact with an EMPTY owner list — stored, and reachable by no
@@ -276,7 +276,7 @@ describe("explicit proof capture", () => {
     return { handler, laneRoot };
   }
 
-  it("regression: an ADE capture label on an old file does not make it ADE's", async () => {
+  it("an ADE capture label on an old file does not make it ADE's", async () => {
     const fixture = createRuntime();
     const { handler, laneRoot } = await laneAgentHandler(fixture);
     const clip = path.join(laneRoot, "old.mp4");
@@ -398,7 +398,7 @@ describe("explicit proof capture", () => {
     ]);
   });
 
-  it("regression: a capture files as ADE's once; attaching it again is an attach", async () => {
+  it("a capture files as ADE's once; attaching it again is an attach", async () => {
     const fixture = createRuntime();
     const { handler, laneRoot } = await laneAgentHandler(fixture);
     const shotPath = path.join(laneRoot, "screen.png");
@@ -423,7 +423,7 @@ describe("explicit proof capture", () => {
     expect(requests.map(([request]) => request?.provenance?.source)).toEqual(["ade-capture", "attached"]);
   });
 
-  it("regression: a failed ingest leaves the capture ADE's for the retry, once", async () => {
+  it("a failed ingest leaves the capture ADE's for the retry, once", async () => {
     const fixture = createRuntime();
     const { handler, laneRoot } = await laneAgentHandler(fixture);
     const shotPath = path.join(laneRoot, "screen.png");
@@ -454,7 +454,7 @@ describe("explicit proof capture", () => {
     expect(requests.map(([request]) => request?.provenance?.source)).toEqual(["ade-capture", "ade-capture", "attached"]);
   });
 
-  it("regression: refuses an ownerless ingest before storing it, so a retry with an owner is not a duplicate", async () => {
+  it("refuses an ownerless ingest before storing it, so a retry with an owner is not a duplicate", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     // A CTO user client standing outside every lane.
@@ -480,7 +480,7 @@ describe("explicit proof capture", () => {
     expect(fixture.ingest).not.toHaveBeenCalled();
   });
 
-  it("regression: stores an ingest whose only owner is a PR, an issue or an automation run", async () => {
+  it("stores an ingest whose only owner is a PR, an issue or an automation run", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     // A CTO user client standing outside every lane, so no lane or chat owner is implied.
@@ -690,7 +690,7 @@ describe("resolveIngestProvenance", () => {
     ], dir)).provenance).toEqual({ source: "attached" });
   });
 
-  it("regression: bytes swapped in after the capture are an attach", async () => {
+  it("bytes swapped in after the capture are an attach", async () => {
     const registry = createAdeCaptureRegistry();
     const still = path.join(dir, "shot.png");
     fs.writeFileSync(still, "fresh");
@@ -710,7 +710,7 @@ describe("resolveIngestProvenance", () => {
     expect(await registry.match(still)).toBeNull();
   });
 
-  it("regression: matches a capture once, then forgets it", async () => {
+  it("matches a capture once, then forgets it", async () => {
     const registry = createAdeCaptureRegistry();
     const still = path.join(dir, "shot.png");
     fs.writeFileSync(still, "png");
@@ -727,7 +727,7 @@ describe("resolveIngestProvenance", () => {
     expect(await registry.match(still)).toBeNull();
   });
 
-  it("regression: a failed or mixed filing leaves the capture matchable once", async () => {
+  it("a failed or mixed filing leaves the capture matchable once", async () => {
     const registry = createAdeCaptureRegistry();
     const still = path.join(dir, "shot.png");
     const other = path.join(dir, "other.png");

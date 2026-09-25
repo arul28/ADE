@@ -2,7 +2,7 @@ import type React from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "motion/react";
-import { CaretUpDown, Check, DesktopTower, MagnifyingGlass } from "@phosphor-icons/react";
+import { CaretUpDown, Check, DesktopTower, MagnifyingGlass, Plus } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LaneLogoMark, laneDisplayColor } from "./LaneChip";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
@@ -103,9 +103,9 @@ const POPOVER_GAP = 4;
 const VIEWPORT_PAD = 10;
 const POPOVER_PREFERRED_MAX_HEIGHT = 320;
 const POPOVER_MIN_HEIGHT = 160;
-const POPOVER_MIN_WIDTH = 240;
+const POPOVER_MIN_WIDTH = 264;
 /** Matches the `.ade-lane-popover` stylesheet cap so the two can't disagree. */
-const POPOVER_MAX_WIDTH = 280;
+const POPOVER_MAX_WIDTH = 344;
 
 function resolveBranchLabel(ref: string | null | undefined): string | null {
   if (!ref) return null;
@@ -315,6 +315,13 @@ type LaneComboboxProps = {
   placeholder?: string;
   compact?: boolean;
   /**
+   * When provided, the popover search row gains a trailing borderless "+" that
+   * opens the full create-lane dialog. The lane is configured there and only
+   * created when the chat is sent, so this callback opens the form — it does not
+   * create anything itself.
+   */
+  onCreateLane?: (() => void) | null;
+  /**
    * Rounded-full trigger; matches chat empty-state lane control styling.
    */
   variant?: "default" | "pill";
@@ -332,6 +339,7 @@ export function LaneCombobox({
   allDetail = null,
   placeholder = "Select lane...",
   compact = false,
+  onCreateLane = null,
   variant = "default",
   fullWidth = false,
   "aria-label": ariaLabel = "Select lane",
@@ -608,6 +616,23 @@ export function LaneCombobox({
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                 />
+                {onCreateLane ? (
+                  <button
+                    type="button"
+                    className="ade-lane-popover-create"
+                    aria-label="Create new lane"
+                    title="Create new lane"
+                    data-testid="lane-popover-create"
+                    // Configure a lane now; it is created when the chat is sent,
+                    // so this opens the form rather than creating anything.
+                    onClick={() => {
+                      close();
+                      onCreateLane();
+                    }}
+                  >
+                    <Plus size={13} weight="bold" />
+                  </button>
+                ) : null}
               </div>
               <div ref={listRef} className="ade-lane-popover-list">
                 {items.length === 0 ? (

@@ -2608,8 +2608,8 @@ describe("laneService delete outside .ade/worktrees", () => {
     }
   });
 
-  it("refuses to remove an external lane folder reached through a symlink", async () => {
-    const { db, service, repoRoot, worktreePath } = await setup({
+  it("drops an unregistered external symlink without following it", async () => {
+    const { db, service, repoRoot, worktreePath, events } = await setup({
       projectId: "proj-delete-symlink",
       prefix: "ade-lane-delete-symlink-",
       createDirectory: false,
@@ -2621,22 +2621,24 @@ describe("laneService delete outside .ade/worktrees", () => {
       fs.symlinkSync(realDirectory, worktreePath, "dir");
       stubGitForDelete({ worktreePath });
 
-      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
-        "ADE will not remove a lane folder through a symbolic link.",
-      );
+      const result = await service.delete({ laneId: "lane-external", deleteBranch: false });
 
+      expect(result.leftoverWorktree).toMatchObject({ path: worktreePath, canDelete: false });
       expect(fs.existsSync(path.join(realDirectory, "work.txt"))).toBe(true);
       expect(fs.existsSync(worktreePath)).toBe(true);
       expect(vi.mocked(runGit).mock.calls.some(([gitArgs]) => gitArgs[0] === "worktree" && gitArgs[1] === "remove")).toBe(false);
-      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+      expect(events.at(-1).progress.leftoverWorktree).toMatchObject({ canDelete: false });
+      await expect(service.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/symbolic link/i);
+      expect(fs.existsSync(path.join(realDirectory, "work.txt"))).toBe(true);
     } finally {
       db.close();
       fs.rmSync(realDirectory, { recursive: true, force: true });
     }
   });
 
-  it("refuses to delete an external folder that is not a git worktree root", async () => {
-    const { db, service, worktreePath } = await setup({
+  it("deletes the lane row and leaves an external folder Git no longer recognizes", async () => {
+    const { db, service, worktreePath, events } = await setup({
       projectId: "proj-delete-unverified",
       prefix: "ade-lane-delete-unverified-",
     });
@@ -2644,12 +2646,85 @@ describe("laneService delete outside .ade/worktrees", () => {
       fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
       stubGitForDelete({ worktreePath, topLevel: null });
 
-      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
-        /no longer points at its Git worktree root/i,
-      );
+      const result = await service.delete({ laneId: "lane-external", deleteBranch: false });
 
+      expect(result.leftoverWorktree).toMatchObject({
+        path: worktreePath,
+        canDelete: true,
+        laneName: "External",
+      });
       expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
-      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+      expect(events.at(-1).progress.overallStatus).toBe("completed");
+      expect(events.at(-1).progress.leftoverWorktree.path).toBe(worktreePath);
+
+      await service.deleteLeftoverWorktree("lane-external");
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      await expect(service.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/no longer waiting/i);
+    } finally {
+      db.close();
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it("asks about an external directory Git unregistered but did not remove", async () => {
+    const { db, service, worktreePath } = await setup({
+      projectId: "proj-delete-left-files",
+      prefix: "ade-lane-delete-left-files-",
+    });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      stubGitForDelete({ worktreePath });
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (gitArgs[0] === "rev-parse") {
+          return { exitCode: 0, stdout: `${opts?.cwd ?? worktreePath}\n`, stderr: "" };
+        }
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "remove") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (gitArgs[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+
+      const result = await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      expect(result.leftoverWorktree).toMatchObject({ path: worktreePath, canDelete: true });
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+    } finally {
+      db.close();
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to delete a folder that replaced the leftover directory", async () => {
+    const { db, service, repoRoot, worktreePath } = await setup({
+      projectId: "proj-delete-replaced",
+      prefix: "ade-lane-delete-replaced-",
+    });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      stubGitForDelete({ worktreePath, topLevel: null });
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+      fs.mkdirSync(worktreePath, { recursive: true });
+      fs.writeFileSync(path.join(worktreePath, "new.txt"), "replacement\n", "utf8");
+
+      const restarted = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-delete-replaced",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, ".ade", "worktrees"),
+      });
+      expect(restarted.getLeftoverWorktree("lane-external")).toMatchObject({
+        path: worktreePath,
+        canDelete: true,
+      });
+      await expect(restarted.deleteLeftoverWorktree("lane-external")).rejects.toThrow(/replaced/i);
+      expect(fs.existsSync(path.join(worktreePath, "new.txt"))).toBe(true);
     } finally {
       db.close();
       fs.rmSync(worktreePath, { recursive: true, force: true });
@@ -7427,7 +7502,7 @@ describe("laneService branch drift", () => {
     });
   });
 
-  it("rejects a resolution whose expected HEAD no longer matches the worktree", async () => {
+  it("rejects branch resolution when expected HEAD differs from the worktree", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-drift-stale-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-stale", repoRoot });

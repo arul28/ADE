@@ -13,6 +13,7 @@ import {
   resetChatLaunchStoreForTests,
 } from "../../../state/chatLaunchStore";
 import { isChatLaunchUnsupportedError, queueChatLaunchMessage, startChatLaunch } from "./chatLaunchActions";
+import { selectKnownLaunchSessionIds } from "./chatLaunchSynthetic";
 
 describe("isChatLaunchUnsupportedError", () => {
   it("recognises the rejections an older runtime actually sends", () => {
@@ -125,5 +126,44 @@ describe("queueChatLaunchMessage", () => {
     removeChatLaunch("launch-q");
     await expect(pending).rejects.toThrow(/cancelled before the message could be sent/);
     expect(api.queueMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe("selectKnownLaunchSessionIds", () => {
+  const source = (bindingKey: string, overrides: Partial<ChatLaunchSnapshot> = {}) => ({
+    bindingKey,
+    binding: null,
+    snapshot: {
+      ...buildOptimisticChatLaunchSnapshot({
+        launch: { kind: "chat", mode: "foreground", launchId: `launch-${bindingKey}`, laneId: "lane-1", laneName: "L", prompt: "p" },
+        includeFetch: false,
+      }),
+      ...overrides,
+    } as ChatLaunchSnapshot,
+  });
+
+  it("keeps a live chat launch's session id after its roster row has delisted", () => {
+    const live = source("local:/p");
+    // `agentStarted` makes shouldListChatLaunchRow false; the id must survive the hand-off.
+    const completed = source("local:/p", { phase: "completed", agentStarted: true });
+    const ids = selectKnownLaunchSessionIds([live, completed], "local:/p", new Set());
+    expect(ids.has(live.snapshot.sessionId!)).toBe(true);
+    expect(ids.has(completed.snapshot.sessionId!)).toBe(true);
+  });
+
+  it("drops cancelled launches and non-chat launches", () => {
+    const cancelled = source("local:/p", { phase: "cancelled" });
+    const cli = source("local:/p", { kind: "cli" });
+    expect(selectKnownLaunchSessionIds([cancelled, cli], "local:/p", new Set()).size).toBe(0);
+  });
+
+  it("scopes to the active binding and the same project's other bindings", () => {
+    const mine = source("local:/p");
+    const sameProject = source("remote:studio:p");
+    const other = source("local:/other");
+    const ids = selectKnownLaunchSessionIds([mine, sameProject, other], "local:/p", new Set(["remote:studio:p"]));
+    expect(ids.has(mine.snapshot.sessionId!)).toBe(true);
+    expect(ids.has(sameProject.snapshot.sessionId!)).toBe(true);
+    expect(ids.has(other.snapshot.sessionId!)).toBe(false);
   });
 });

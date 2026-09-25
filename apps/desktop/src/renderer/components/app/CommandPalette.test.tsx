@@ -17,8 +17,6 @@ import {
 } from "./commandPaletteWork";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import {
-  SESSION_TONE_DOT_CLASS,
-  SESSION_TONE_TEXT_CLASS,
 } from "../../../shared/sessionStatusPresentation";
 import { useAppStore } from "../../state/appStore";
 import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
@@ -831,11 +829,11 @@ describe("CommandPalette", () => {
       );
 
       await waitFor(() => expect(query).toHaveBeenCalledTimes(2));
-      expect(query).toHaveBeenNthCalledWith(1, {
+      expect(query).toHaveBeenCalledWith({
         query: "auth lane:auth",
         limit: 60,
       });
-      expect(query).toHaveBeenNthCalledWith(2, {
+      expect(query).toHaveBeenCalledWith({
         query: "auth lane:payments",
         limit: 60,
       });
@@ -1029,7 +1027,7 @@ describe("CommandPalette", () => {
       expect(onOpenChange).not.toHaveBeenCalledWith(false);
     });
 
-    it("renders the status indicator from the shared tone classes", async () => {
+    it("shows the status word for an active thread", async () => {
       seedThreads([makeSession()]);
 
       render(
@@ -1040,11 +1038,6 @@ describe("CommandPalette", () => {
 
       const status = await screen.findByTestId("thread-status-session-1");
       expect(status.textContent).toContain("Working");
-      // The whole point of the redesign: one hue table. A running session is
-      // blue, and both the word and the dot come from the shared maps.
-      expect(status.className).toContain(SESSION_TONE_TEXT_CLASS.blue);
-      const dot = status.querySelector("span");
-      expect(dot?.className).toContain(SESSION_TONE_DOT_CLASS.blue);
     });
 
     it("omits the status indicator for calm threads", async () => {

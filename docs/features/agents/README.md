@@ -77,11 +77,14 @@ into the Work list:
 - `ade chat note "testing desktop auth fallback"` updates the row's quiet
   status line, trimmed to at most 72 characters (agents aim for 6 words or fewer);
   an empty note clears it.
-- `ade chat activity planning|implementing|testing|reviewing|debugging|monitoring`
-  sets one fixed activity detail on the session card; `clear` removes it. It
-  never changes the parent board phase, **Needs you** takes priority, and a new
-  user turn clears the old report. Provider guidance exposes this only when ADE
-  can make a session-scoped CLI call reliably.
+- `ade chat activity planning|exploring|implementing|testing|debugging|reviewing|shipping|monitoring`
+  names the session card's activity detail; `clear` removes it. ADE detects the
+  activity of a chat turn from its tool calls on its own, so agents use this to
+  correct or refine it (for example **Debugging**, which detection cannot tell
+  from testing). The report stands until the detected activity moves somewhere
+  it does not cover. It never changes the parent board phase, **Needs you**
+  takes priority, and a new user turn clears it. Provider guidance exposes this
+  only when ADE can make a session-scoped CLI call reliably.
 - `ade chat ask "Which account should I use?"` creates a loud, persisted
   `Needs you` state, clears settle, and sends a time-sensitive push. The next
   user turn clears the ask.

@@ -5710,7 +5710,9 @@ export function createPrService({
 
     // Keep `head_sha` in sync so downstream features (AI summary cache, deployments)
     // can reliably reference the latest commit on the PR head branch.
-    if (headSha) {
+    // A failed checks fetch kept the previous rollup on purpose. Writing the
+    // new SHA anyway would pair that old red with the new commit.
+    if (headSha && !checkRunsFetchFailed) {
       try {
         db.run("update pull_requests set head_sha = ? where id = ? and project_id = ?", [headSha, row.id, projectId]);
       } catch (err) {

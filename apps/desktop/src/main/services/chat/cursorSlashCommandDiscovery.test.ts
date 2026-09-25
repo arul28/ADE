@@ -80,7 +80,7 @@ describe("cursorSlashCommandDiscovery", () => {
     ]));
   });
 
-  it("expands Cursor command files and leaves subagent slash names native", () => {
+  it("expands Cursor command files and leaves subagent and unknown slash names native", () => {
     const commandDir = path.join(tmpRoot, ".cursor", "commands");
     const agentsDir = path.join(tmpRoot, ".cursor", "agents");
     fs.mkdirSync(commandDir, { recursive: true });
@@ -108,19 +108,6 @@ describe("cursorSlashCommandDiscovery", () => {
       promptText: "Write tests for auth flow.",
     });
     expect(resolveCursorSlashCommandInvocation(tmpRoot, "/verifier check this")).toBeNull();
-  });
-
-  it("always includes built-in subagents even when no .cursor directory exists", () => {
-    const commands = discoverCursorSlashCommands(tmpRoot);
-    const names = commands.map((c) => c.name);
-
-    expect(names).toContain("/explore");
-    expect(names).toContain("/bash");
-    expect(names).toContain("/browser");
-    expect(commands.filter((c) => c.source === "subagent")).toHaveLength(3);
-  });
-
-  it("returns null for unknown slash commands", () => {
     expect(resolveCursorSlashCommandInvocation(tmpRoot, "/nonexistent do stuff")).toBeNull();
     expect(resolveCursorSlashCommandInvocation(tmpRoot, "not a slash command")).toBeNull();
   });

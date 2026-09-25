@@ -5868,7 +5868,7 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledWith({ udid: "SIM-1" });
   });
 
-  it("regression: refuses user-only verbs to a CLI process with no chat, and never lists them to it", async () => {
+  it("refuses user-only verbs to a CLI process with no chat, and never lists them to it", async () => {
     const fixture = createRuntime();
     const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
     const deviceDelete = vi.fn(async () => ({ ok: true }));
@@ -5905,7 +5905,7 @@ describe("adeRpcServer", () => {
     expect(deviceDeleteInstalled).toHaveBeenCalledTimes(1);
   });
 
-  it("regression: user-only verbs go to the desktop's own client names and to no other caller", async () => {
+  it("user-only verbs go to the desktop's own client names and to no other caller", async () => {
     const fixture = createRuntime();
     const deviceDeleteInstalled = vi.fn(async () => ({ ok: true }));
     fixture.runtime.iosSimulatorService = { deviceDeleteInstalled };
@@ -8254,7 +8254,7 @@ describe("adeRpcServer", () => {
       expect((caught as JsonRpcError).code).toBe(JsonRpcErrorCode.invalidParams);
     });
 
-    it("regression: never owns proof by a synthetic <client>:<pid> caller id", () => {
+    it("never owns proof by a synthetic <client>:<pid> caller id", () => {
       // The shape of a real incident. An agent whose shell carried no chat
       // session filed two screenshots; the only owner written was
       // `chat_session: ade-cli:56056`, so no lane resolved and no drawer could

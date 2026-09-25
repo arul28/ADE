@@ -12930,9 +12930,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         // refusals are ADE's own (attachments, a cloud run, no live turn) and the
         // agent is never asked.
         const notDispatched = dispatched?.dispatchedAt == null;
-        const inlineNotice = notDispatched
-          ? "The message couldn't go into the running turn; it is still queued."
-          : `Sent staged message into the active ${agentLabel} turn.`;
+        // `dropped`: the refused message is gone, not back on the queue.
+        const dropped = notDispatched && dispatched?.reason === "dropped";
+        let inlineNotice = `Sent staged message into the active ${agentLabel} turn.`;
+        if (dropped) inlineNotice = "The message couldn't go into the running turn and was dropped.";
+        else if (notDispatched) inlineNotice = "The message couldn't go into the running turn; it is still queued.";
         const interruptNotice = notDispatched
           ? "The staged message couldn't be promoted into the running turn; it is still queued."
           : interruptContinues
@@ -13178,7 +13180,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         title: "Delete lane",
         body: `Deleting ${lane.name}...\nScope: ${scope.replace("_", " ")}\nForce: ${deleteArgs.force ? "yes" : "no"}`,
       });
-      await conn.action("lane", "delete", deleteArgs);
+      const deleted = await conn.action("lane", "delete", deleteArgs) as {
+        leftoverWorktree?: { path?: string } | null;
+      };
       setFormDiscardArmed(false);
       setFormValues({});
       setFormFieldIndex(0);
@@ -13193,7 +13197,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setSelectedDrawerLaneId(fallbackLane?.id ?? null);
       setSelectedDrawerChatId(null);
       focusAfterDetails();
-      addNotice(`Deleted lane ${lane.name}.`, "success");
+      const leftoverPath = deleted?.leftoverWorktree?.path;
+      addNotice(
+        leftoverPath
+          ? `Deleted lane ${lane.name}. Folder left at ${leftoverPath}.`
+          : `Deleted lane ${lane.name}.`,
+        leftoverPath ? "info" : "success",
+      );
       await refreshState();
       return;
     }

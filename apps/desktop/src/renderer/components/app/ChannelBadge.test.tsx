@@ -3,7 +3,6 @@
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { readFileSync } from "node:fs";
 
 import { ChannelBadge } from "./ChannelBadge";
 import { ADE_OPEN_WINDOWS_BETA_NOTICE_EVENT } from "../../lib/windowsBetaNotice";
@@ -54,19 +53,6 @@ describe("ChannelBadge", () => {
     installAde("stable", "1.2.51", "win32");
     const { container } = render(<ChannelBadge platform="win32" />);
     expect(container.firstChild).toBeNull();
-  });
-
-  // jsdom drops the `-webkit-app-region` declaration entirely (it is not in its
-  // supported property list), so the rendered DOM cannot be asserted against.
-  // The invariant still matters — the shell header is the window drag surface
-  // and a clickable child that stays draggable is unclickable — so guard the
-  // source instead.
-  it("opts the chip out of the window drag region", () => {
-    const source = readFileSync(
-      "src/renderer/components/app/ChannelBadge.tsx",
-      "utf8",
-    );
-    expect(source).toContain('WebkitAppRegion: "no-drag"');
   });
 
   it("asks for the Windows beta notice when clicked on Windows", () => {

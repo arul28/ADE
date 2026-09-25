@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { openKvDb, type AdeDb } from "../state/kvDb";
 import {
   createPromptStash,
@@ -53,13 +53,19 @@ describe("promptStashService", () => {
   let root: string;
   let db: AdeDb;
 
-  beforeEach(async () => {
+  // Opening the database is the slow part (~1 s each), so the suite shares one
+  // and empties the table between tests.
+  beforeAll(async () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-prompt-stash-"));
     fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
     db = await openKvDb(path.join(root, ".ade", "ade.db"), createLogger() as never);
   });
 
-  afterEach(() => {
+  beforeEach(() => {
+    db.run("delete from prompt_stashes");
+  });
+
+  afterAll(() => {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -79,82 +85,45 @@ describe("promptStashService", () => {
     expect(listPromptStashes(db)).toEqual([created]);
   });
 
-  it("persists runtime-owned attachments for connected desktops", () => {
-    const attachments = [
-      { path: "/project/.ade/attachments/design.png", type: "image" as const },
-      { path: "https://example.com/reference.png", type: "image-url" as const, url: "https://example.com/reference.png" },
-    ];
+  const localImage = { path: "/source/.ade/attachments/design.png", type: "image" as const };
+  const portableImage = {
+    path: "https://example.com/reference.png",
+    type: "image-url" as const,
+    url: "https://example.com/reference.png",
+  };
 
-    const created = createPromptStash(db, { text: "", attachments });
-
-    expect(created.attachments).toEqual(attachments);
-    expect(listPromptStashes(db)).toEqual([created]);
-    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set([attachments[0]!.path]));
-  });
-
-  it("does not expose or consume machine-bound image paths on another synced runtime", () => {
-    const image = { path: "/source/.ade/attachments/design.png", type: "image" as const };
-    const created = createPromptStash(db, { text: "Use this design", attachments: [image] });
-    db.run(
-      "update prompt_stashes set attachment_origin_site_id = ? where id = ?",
-      ["different-runtime", created.id],
-    );
-
-    expect(listPromptStashes(db)).toEqual([
-      expect.objectContaining({
-        id: created.id,
-        attachments: [],
-        attachmentCount: 1,
-        attachmentsAvailable: false,
-      }),
-    ]);
-    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set());
-  });
-
-  it("normalizes site ids before deciding whether machine-bound images are local", () => {
-    const image = { path: "/source/.ade/attachments/design.png", type: "image" as const };
-    const created = createPromptStash(db, { text: "Use this design", attachments: [image] });
-    db.run(
-      "update prompt_stashes set attachment_origin_site_id = ? where id = ?",
-      [` \n${db.sync.getSiteId().toUpperCase()}\t `, created.id],
-    );
-
-    expect(listPromptStashes(db)).toEqual([
-      expect.objectContaining({
-        id: created.id,
-        attachments: [image],
-        attachmentCount: 1,
-        attachmentsAvailable: true,
-      }),
-    ]);
-    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set([image.path]));
-  });
-
-  it("keeps portable image URLs while withholding cross-site image paths", () => {
-    const localImage = { path: "/source/.ade/attachments/design.png", type: "image" as const };
-    const portableImage = {
-      path: "https://example.com/reference.png",
-      type: "image-url" as const,
-      url: "https://example.com/reference.png",
-    };
+  // A machine-bound image path is only usable on the runtime that stashed it;
+  // portable image URLs travel with the synced row.
+  it.each([
+    ["the stashing runtime", null, [localImage, portableImage], true],
+    ["a site id differing only in case and whitespace", "local-padded", [localImage, portableImage], true],
+    ["another synced runtime", "different-runtime", [portableImage], false],
+  ] as const)("exposes machine-bound images only to %s", (_label, originOverride, visible, available) => {
     const created = createPromptStash(db, {
       text: "Compare these designs",
       attachments: [localImage, portableImage],
     });
-    db.run(
-      "update prompt_stashes set attachment_origin_site_id = ? where id = ?",
-      ["different-runtime", created.id],
-    );
+    if (originOverride) {
+      db.run(
+        "update prompt_stashes set attachment_origin_site_id = ? where id = ?",
+        [
+          originOverride === "local-padded" ? ` \n${db.sync.getSiteId().toUpperCase()}\t ` : originOverride,
+          created.id,
+        ],
+      );
+    }
 
     expect(listPromptStashes(db)).toEqual([
       expect.objectContaining({
         id: created.id,
-        attachments: [portableImage],
+        attachments: visible,
         attachmentCount: 2,
-        attachmentsAvailable: false,
+        attachmentsAvailable: available,
       }),
     ]);
-    expect(listPromptStashAttachmentPaths(db)).toEqual(new Set());
+    expect(listPromptStashAttachmentPaths(db)).toEqual(
+      new Set(available ? [localImage.path] : []),
+    );
   });
 
   it("rejects empty, excessively large, and malformed stashes", () => {
@@ -180,11 +149,8 @@ describe("promptStashService", () => {
     const created = Array.from({ length: MAX_PROMPT_STASHES + 3 }, (_, index) =>
       createPromptStash(db, { text: `prompt ${index}` }));
 
-    const listed = listPromptStashes(db);
-    expect(listed).toHaveLength(MAX_PROMPT_STASHES);
-    expect(listed.map((entry) => entry.id)).not.toContain(created[0]?.id);
-    expect(listed.map((entry) => entry.id)).not.toContain(created[1]?.id);
-    expect(listed.map((entry) => entry.id)).not.toContain(created[2]?.id);
+    expect(listPromptStashes(db).map((entry) => entry.id))
+      .toEqual(created.slice(3).map((entry) => entry.id).reverse());
   });
 
   it("prunes synchronized overflow before returning a bounded list", () => {
@@ -204,9 +170,9 @@ describe("promptStashService", () => {
 
     expect(listed.map((entry) => entry.id)).toEqual(retainedIds.slice(0, 5));
     expect(retainedIds).toHaveLength(MAX_PROMPT_STASHES);
-    expect(retainedIds).not.toContain("synced-00");
-    expect(retainedIds).not.toContain("synced-01");
-    expect(retainedIds).not.toContain("synced-02");
+    expect(retainedIds.filter((id) => ["synced-00", "synced-01", "synced-02"].includes(id))).toEqual([]);
+    // A non-finite limit falls back to the bounded default.
+    expect(listPromptStashes(db, Number.NaN)).toHaveLength(MAX_PROMPT_STASHES);
   });
 
   it("prunes synchronized overflow before protecting live attachment paths", () => {
@@ -229,9 +195,6 @@ describe("promptStashService", () => {
     expect(protectedPaths).toEqual(new Set(
       inserted.slice(-MAX_PROMPT_STASHES).map((entry) => entry.attachmentPath),
     ));
-    expect(protectedPaths.has(inserted[0]!.attachmentPath)).toBe(false);
-    expect(protectedPaths.has(inserted[1]!.attachmentPath)).toBe(false);
-    expect(protectedPaths.has(inserted[2]!.attachmentPath)).toBe(false);
   });
 
   it("deletes atomically and reports already-consumed stashes", () => {
@@ -240,11 +203,6 @@ describe("promptStashService", () => {
     expect(deletePromptStash(db, created.id)).toBe(true);
     expect(deletePromptStash(db, created.id)).toBe(false);
     expect(listPromptStashes(db)).toEqual([]);
-  });
-
-  it("falls back to the bounded default for a non-finite limit", () => {
-    createPromptStash(db, { text: "one" });
-    expect(listPromptStashes(db, Number.NaN)).toHaveLength(1);
   });
 
   it("keeps the synced table compatible with CRR conversion", () => {

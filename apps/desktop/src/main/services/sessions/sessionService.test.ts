@@ -1648,6 +1648,24 @@ describe("sessionService resume metadata", () => {
       activityStatusChangedAt: activityReport?.updatedAt,
     });
     expect(changedEvents).toEqual(["meta-updated:session-markers"]);
+    expect(service.setDetectedSessionActivity(
+      "session-markers",
+      "reviewing",
+      "2026-03-17T00:29:00.000Z",
+    )).toBe(true);
+    const detectedReport = service.get("session-markers")?.activityStatus;
+    expect(detectedReport).toMatchObject({ value: "reviewing", source: "detected" });
+    expect(changedEvents).toEqual([
+      "meta-updated:session-markers",
+      "meta-updated:session-markers",
+    ]);
+
+    vi.setSystemTime(new Date("2026-03-17T00:30:01.000Z"));
+    expect(service.setDetectedSessionActivity("session-markers", "reviewing", null)).toBe(true);
+    expect(service.setDetectedSessionActivity("session-markers", "shipping", null, { onlyIfEmpty: true })).toBe(true);
+    expect(service.get("session-markers")?.activityStatus).toEqual(detectedReport);
+    expect(changedEvents).toHaveLength(2);
+
     expect(() => service.setSessionActivity("session-markers", "inventing"))
       .toThrow(/supported activity value or null/i);
 
@@ -1688,10 +1706,10 @@ describe("sessionService resume metadata", () => {
       attentionRequestedAt: null,
       attentionMessage: null,
       lastTurnFailedAt: null,
-      activityStatus: expect.objectContaining({ value: "testing" }),
+      activityStatus: expect.objectContaining({ value: "reviewing", source: "detected" }),
     }));
     const eventCountBeforeActivityClear = changedEvents.length;
-    vi.setSystemTime(new Date("2026-03-17T00:30:01.000Z"));
+    vi.setSystemTime(new Date("2026-03-17T00:30:02.000Z"));
     service.clearSessionActivity("session-markers");
     expect(service.get("session-markers")?.activityStatus).toBeNull();
     const clearChangedAt = service.get("session-markers")?.activityStatusChangedAt;

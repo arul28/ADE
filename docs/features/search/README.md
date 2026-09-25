@@ -35,7 +35,7 @@ Main-process service (`apps/desktop/src/main/services/search/`):
   `notifyLaneActivity`), `processPendingNow` (tests/rebuild), `dispose`.
 - `searchIndexDb.ts` — opens/creates the disposable index DB. Owns the DDL
   (`docs`, `docs_fts` FTS5 virtual table, `sources`, `meta`), the
-  `SEARCH_INDEX_SCHEMA_VERSION = 4` constant and the drop-and-recreate on schema
+  `SEARCH_INDEX_SCHEMA_VERSION = 5` constant and the drop-and-recreate on schema
   mismatch or corruption, WAL + `busy_timeout` pragmas, `clearSearchIndex`
   (wipe rows, keep schema), and the `createRequire`-anchored `node:sqlite`
   resolver (same pattern as `kvDb.ts`).
@@ -178,10 +178,12 @@ re-derive their docs wholesale each run. `startBackfill` runs once, well past
 the host boot window, enqueues every session/PR/lane, and reconciles docs whose
 sessions were deleted while the service was down.
 
-For chat, the accepted user-message event owns the searchable message body.
-Later processed/unprocessed lifecycle snapshots update delivery state but do
-not create another searchable document, so reconnect replay and resolution
-events cannot duplicate one message in search.
+For chat, a steer indexes once. Its rows share one document id,
+`chat:<session>:steer:<steerId>`, and the first row indexed keeps it. Later
+lifecycle rows of the same steer (`inline`, `delivered`, `failed`, Codex
+`processed`/`unprocessed`) do not create another document, so a steer that
+shows as "Steering…" and then "Steered", reconnect replay, and resolution
+events cannot duplicate one message in search. `queued` rows are not indexed, and a steer the turn refuses back to `queued` loses its hit until the row that sends it is indexed, because its bubble is hidden while it waits in the staging strip.
 
 A chat's **meta** document also carries the identifiers of every pull request
 linked to it — `#1237`, `owner/repo#1237`, the PR URL, and the PR title — so

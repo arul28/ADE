@@ -114,7 +114,7 @@ describe("grok self-attestation", () => {
     });
   });
 
-  it("fails when the hatch is removed entirely, which is the regression it detects", () => {
+  it("rejects attestation logs without the disabled-feature hatch", () => {
     const noHatch = LOG_NEUTRALIZED.replace(/.*Claude compat disabled.*\n/, "");
     expect(classifyGrokAttestLog(noHatch, "1.0.13").ok).toBe(false);
   });

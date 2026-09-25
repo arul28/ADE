@@ -2,6 +2,19 @@
 // Agent chat types
 // ---------------------------------------------------------------------------
 
+/** ACP's `ToolKind` (agentclientprotocol.com, tool calls). */
+export type AcpToolKind =
+  | "read"
+  | "edit"
+  | "delete"
+  | "move"
+  | "search"
+  | "execute"
+  | "think"
+  | "fetch"
+  | "switch_mode"
+  | "other";
+
 import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
@@ -1056,6 +1069,30 @@ export type AgentChatWorkflowProgress = {
   failedCount: number;
 };
 
+/**
+ * Durable lifecycle of a user message. A steer writes one row per state on
+ * the same `steerId`; the newest row is its state.
+ *
+ * - `queued`: staged, or put back on the queue.
+ * - Codex: `accepted` = the server took it into the live turn, then
+ *   `processed` (the model read it) or `unprocessed` (the turn ended first).
+ * - Cursor local, OpenCode, Pi: `accepted` = offered to the running turn
+ *   ("Steering…"), then `inline` (the turn took it), `queued` (refused and
+ *   staged), `delivered` (sent as its own turn), or `failed` (went nowhere).
+ * - Claude: `inline` only.
+ *
+ * `queued` and `accepted` are the only unsettled states; see
+ * `isSettledSteerDeliveryState` in `shared/chatTranscript.ts`.
+ */
+export type AgentChatUserMessageDeliveryState =
+  | "queued"
+  | "accepted"
+  | "processed"
+  | "unprocessed"
+  | "delivered"
+  | "inline"
+  | "failed";
+
 export type AgentChatEvent =
   | {
       type: "user_message";
@@ -1067,11 +1104,7 @@ export type AgentChatEvent =
       contextAttachments?: AgentChatContextAttachment[];
       turnId?: string;
       steerId?: string;
-      /**
-       * Durable user-message lifecycle. `delivered` and `inline` remain
-       * accepted legacy values for older transcripts and clients.
-       */
-      deliveryState?: "queued" | "accepted" | "processed" | "unprocessed" | "delivered" | "inline" | "failed";
+      deliveryState?: AgentChatUserMessageDeliveryState;
       processed?: boolean;
       runtime?: AgentChatRuntime;
     }
@@ -1109,6 +1142,12 @@ export type AgentChatEvent =
       type: "tool_call";
       tool: string;
       args: unknown;
+      /**
+       * The provider's own category for this tool, when its protocol has one
+       * (ACP `ToolKind`). Lets activity detection read tools whose names are
+       * free text.
+       */
+      toolKind?: AcpToolKind;
       mcp?: AgentChatMcpToolSource;
       itemId: string;
       logicalItemId?: string;
@@ -4395,6 +4434,11 @@ export type AgentChatDispatchSteerArgs = {
 
 export type AgentChatDispatchSteerResult = {
   dispatchedAt: number | null;
+  /**
+   * Set with `dispatchedAt: null` when the message is gone rather than still
+   * queued: the live turn refused it and nothing is left to send it.
+   */
+  reason?: "dropped";
 };
 
 export type AgentChatCancelDispatchedSteerArgs = {

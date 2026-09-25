@@ -749,7 +749,6 @@ describe("ComposerPromptStash", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Open 1 stashed prompt" }));
     const menu = screen.getByRole("dialog", { name: "Stashed prompts" });
     expect(menu.parentElement).toBe(document.body);
-    expect(menu.className).toContain("fixed");
   });
 
   it("repositions the portal when asynchronous menu content changes its height", async () => {

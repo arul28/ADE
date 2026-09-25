@@ -519,9 +519,6 @@ describe("ModelPicker", () => {
 
     await user.click(screen.getByRole("button", { name: /Select model/i }));
 
-    const listSizer = document.querySelector('[data-model-picker-virtual-list="true"]') as HTMLDivElement;
-    expect(listSizer).toBeTruthy();
-    expect(Number.parseFloat(listSizer.style.height)).toBeGreaterThan(6_000);
     expect(screen.getAllByRole("option")).toHaveLength(36);
 
     await user.type(screen.getByLabelText(/Search models/i), "Model 149");

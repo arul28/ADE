@@ -134,7 +134,7 @@ describe("sidecar orphan prevention", () => {
     expect(spawnedAgain).toBe(orphanPid);
   });
 
-  it("kills a recorded runtime that is alive but no longer serving", async () => {
+  it("reclaims an alive runtime with an unusable endpoint", async () => {
     const home = makeHome();
     const client = await createAdeChat({
       home,

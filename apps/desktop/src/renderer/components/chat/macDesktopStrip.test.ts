@@ -184,11 +184,6 @@ describe("macDesktopStripControls", () => {
     }
   });
 
-  it("no longer carries a windows control", () => {
-    const pane = macDesktopStripControls({ expanded: false, hostIsLocal: true, ownedCount: 1, parkedCount: 1 });
-    expect(Object.keys(pane)).not.toContain("windows");
-  });
-
   it("spells the exit out in full screen and keeps the pane's icon tooltip", () => {
     const args = { hostIsLocal: false, ownedCount: 0, parkedCount: 0 };
     expect(macDesktopStripControls({ ...args, expanded: true }).fullscreen)

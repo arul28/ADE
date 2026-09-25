@@ -21,9 +21,16 @@ import type {
   TerminalToolType,
   ListSessionsArgs,
   UpdateSessionMetaArgs,
+  SessionActivityReport,
+  SessionActivityValue,
 } from "../../../shared/types";
 import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
-import { isSessionActivityValue, normalizeSessionActivityReport } from "../../../shared/sessionActivity";
+import {
+  isSessionActivityValue,
+  nextAgentActivityReport,
+  nextDetectedActivityReport,
+  normalizeSessionActivityReport,
+} from "../../../shared/sessionActivity";
 import {
   isTrackedAgentCliToolType,
   parseSessionSettleOverride,
@@ -486,24 +493,45 @@ export function createSessionService({
     return true;
   };
 
+  /**
+   * The one writer for `activity_status_json`. Skips the write (and the change
+   * broadcast) when the row already holds exactly this report, so a detector
+   * re-confirming its state or a turn-start clear on an empty row costs a PK
+   * read and nothing else.
+   */
+  const writeSessionActivityRow = (
+    sessionId: string,
+    next: (current: SessionActivityReport | null, nowIso: string) => SessionActivityReport | null | undefined,
+  ): boolean => {
+    const trimmed = sessionId.trim();
+    if (!trimmed) return false;
+    const existing = db.get<{ activityStatusJson: string | null }>(
+      "select activity_status_json as activityStatusJson from terminal_sessions where id = ? limit 1",
+      [trimmed],
+    );
+    if (!existing) return false;
+    const current = normalizeSessionActivityReport(existing.activityStatusJson);
+    const nowIso = new Date().toISOString();
+    const report = next(current, nowIso);
+    // `undefined` means "leave the row as it is"; `null` clears it.
+    if (report === undefined) return true;
+    const json = report ? JSON.stringify(report) : null;
+    if (json === (current ? JSON.stringify(current) : null)) return true;
+    db.run(
+      "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
+      [json, nowIso, trimmed],
+    );
+    emitChanged({ sessionId: trimmed, reason: "meta-updated" });
+    return true;
+  };
+
   const writeSessionActivity = (sessionId: string, value: unknown): boolean => {
     if (value !== null && !isSessionActivityValue(value)) {
       throw new Error("setSessionActivity requires a supported activity value or null.");
     }
-    return mutateSessionMeta(sessionId, (id) => {
-      const changedAt = new Date().toISOString();
-      const report = value === null
-        ? null
-        : {
-            value,
-            source: "agent" as const,
-            updatedAt: changedAt,
-          };
-      db.run(
-        "update terminal_sessions set activity_status_json = ?, activity_status_changed_at = ? where id = ?",
-        [report ? JSON.stringify(report) : null, changedAt, id],
-      );
-    });
+    return writeSessionActivityRow(sessionId, (current, nowIso) => (
+      value === null ? null : nextAgentActivityReport(current, value, nowIso)
+    ));
   };
 
   /**
@@ -2298,9 +2326,28 @@ export function createSessionService({
       });
     },
 
-    /** Clear an agent activity report at a real turn boundary, not on PTY keystrokes. */
+    /** Clear the activity at a real turn boundary, not on PTY keystrokes. */
     clearSessionActivity(sessionId: string): boolean {
       return writeSessionActivity(sessionId, null);
+    },
+
+    /**
+     * Store what ADE's tool-call detector sees for a live chat turn. The
+     * detector is the primary source; an agent report from this turn survives
+     * only while it still covers the detected activity (see
+     * `nextDetectedActivityReport`).
+     */
+    setDetectedSessionActivity(
+      sessionId: string,
+      value: SessionActivityValue,
+      turnStartedAt: string | null,
+      options: { onlyIfEmpty?: boolean } = {},
+    ): boolean {
+      return writeSessionActivityRow(sessionId, (current, nowIso) => (
+        options.onlyIfEmpty && current
+          ? undefined
+          : nextDetectedActivityReport(current, value, { turnStartedAt, nowIso })
+      ));
     },
 
     clearTurnStartMarkers(sessionId: string): boolean {

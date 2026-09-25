@@ -2,6 +2,7 @@
 
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isInaccessible } from "@testing-library/dom";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { SettingsPage } from "./SettingsPage";
@@ -83,7 +84,7 @@ function renderSettings(initialEntry: string) {
 const searchBox = () => screen.getByPlaceholderText("Search all settings");
 const visibleAnchors = (container: HTMLElement) =>
   [...container.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
-    .filter((node) => node.style.display !== "none")
+    .filter((node) => !isInaccessible(node))
     .map((node) => node.dataset.settingsAnchor);
 
 afterEach(() => cleanup());

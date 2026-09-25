@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { WorkToolPickerBackdrop } from "./WorkToolPickerBackdrop";
@@ -61,6 +61,7 @@ export function WorkToolPicker({
   statuses,
   loading,
   onPick,
+  cardActions,
   playing = true,
 }: {
   activeTool: WorkSidebarTab | null;
@@ -68,6 +69,17 @@ export function WorkToolPicker({
   statuses: WorkToolStatusMap;
   loading: boolean;
   onPick: (tool: WorkSidebarTab) => void;
+  /**
+   * Optional per-tool action rendered as a small control in the card's corner,
+   * revealed on hover or keyboard focus.
+   *
+   * The card itself stays one button — the action is a SIBLING inside the grid
+   * cell, never nested (a button in a button is neither valid HTML nor
+   * focusable). Only the Apple card uses this today: the claim is invisible
+   * without it, so booting or releasing a device needs a target on the card
+   * rather than only inside the pane.
+   */
+  cardActions?: Partial<Record<WorkSidebarTab, ReactNode>>;
   /** False pauses the mesh loop without dropping the last frame. */
   playing?: boolean;
 }) {
@@ -92,6 +104,10 @@ export function WorkToolPicker({
   useEffect(() => {
     if (!playing) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      // A card action's own Radix menu (the Apple `⋯`) consumes the arrow that
+      // opened it; without this the picker ALSO moved the highlight and pulled
+      // focus off the open menu.
+      if (event.defaultPrevented) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       const step = event.key === "ArrowRight" || event.key === "ArrowDown"
         ? 1
@@ -168,70 +184,89 @@ export function WorkToolPicker({
               // span the full width finishes the block instead of orphaning it;
               // with one column every card already spans, so this is a no-op there.
               const spansRow = cardCount % 2 === 1 && index === cardCount - 1;
+              const cardAction = cardActions?.[definition.id] ?? null;
               return (
-                <PaneTooltip
+                <div
                   key={definition.id}
-                  // Only when the card actually cut something off. A tooltip that
-                  // repeats a line you can already read is a panel over the NEXT
-                  // card for no reason; a tooltip over a truncated one is the rest
-                  // of the sentence.
-                  label={tooltipLabel}
-                  side="bottom"
-                  onlyWhenClipped
-                  disabled={showSkeleton}
-                  className="min-w-0"
+                  // The grid item is this wrapper, not the tooltip span, so the
+                  // action can sit BESIDE the card button instead of inside it.
+                  // `group/card` is named so it never collides with the card
+                  // button's own `group` (which drives the glyph tint and the
+                  // highlighted state).
+                  className="group/card relative flex min-w-0"
                   style={spansRow ? { gridColumn: "1 / -1" } : undefined}
                 >
-                  <button
-                    type="button"
-                    disabled={!availability.available}
-                    aria-current={isActive ? "true" : undefined}
-                    aria-describedby={availability.available ? undefined : reasonId}
-                    onClick={() => onPick(definition.id)}
-                    data-tool-id={definition.id}
-                    data-highlighted={highlight === index ? "true" : undefined}
-                    className={cn(
-                      "ade-tool-card group flex w-full flex-col items-start p-4 text-left",
-                      !availability.available && "cursor-not-allowed opacity-40",
-                    )}
+                  <PaneTooltip
+                    // Only when the card actually cut something off. A tooltip that
+                    // repeats a line you can already read is a panel over the NEXT
+                    // card for no reason; a tooltip over a truncated one is the rest
+                    // of the sentence.
+                    label={tooltipLabel}
+                    side="bottom"
+                    onlyWhenClipped
+                    disabled={showSkeleton}
+                    className="min-w-0 w-full"
                   >
-                    <span className="flex w-full min-w-0 items-center gap-2">
-                      <Icon
-                        size={16}
-                        weight="regular"
-                        aria-hidden="true"
-                        // Tinted at rest, not only on hover: the glyph is the
-                        // one mark on the card, and a muted-grey one on a
-                        // violet/green gradient reads as switched off.
-                        className="ade-tool-card-icon shrink-0 transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
-                      />
-                      <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
-                        {definition.label}
-                      </span>
-                      {hasError ? (
-                        <span
-                          role="img"
-                          aria-label={`${definition.label} · errors`}
-                          data-tool-error-dot={definition.id}
-                          className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-error)]"
+                    <button
+                      type="button"
+                      disabled={!availability.available}
+                      aria-current={isActive ? "true" : undefined}
+                      aria-describedby={availability.available ? undefined : reasonId}
+                      onClick={() => onPick(definition.id)}
+                      data-tool-id={definition.id}
+                      data-highlighted={highlight === index ? "true" : undefined}
+                      className={cn(
+                        "ade-tool-card group flex w-full flex-col items-start p-4 text-left",
+                        !availability.available && "cursor-not-allowed opacity-40",
+                      )}
+                    >
+                      <span className="flex w-full min-w-0 items-center gap-2">
+                        <Icon
+                          size={16}
+                          weight="regular"
+                          aria-hidden="true"
+                          // Tinted at rest, not only on hover: the glyph is the
+                          // one mark on the card, and a muted-grey one on a
+                          // violet/green gradient reads as switched off.
+                          className="ade-tool-card-icon shrink-0 transition-colors duration-[160ms] ease-out group-hover:text-accent group-data-[highlighted=true]:text-accent"
                         />
-                      ) : null}
-                    </span>
-                    {showSkeleton ? (
-                      <span
-                        aria-hidden="true"
-                        className="ade-tool-skeleton mt-1.5 h-[10px] w-3/5 rounded-full"
-                      />
-                    ) : detail ? (
-                      <span
-                        id={availability.available ? undefined : reasonId}
-                        className="mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg"
-                      >
-                        {detail}
+                        <span className="min-w-0 flex-1 truncate text-[14px] font-medium leading-5 text-fg">
+                          {definition.label}
+                        </span>
+                        {hasError ? (
+                          <span
+                            role="img"
+                            aria-label={`${definition.label} · errors`}
+                            data-tool-error-dot={definition.id}
+                            className="h-[6px] w-[6px] shrink-0 rounded-full bg-[var(--color-error)]"
+                          />
+                        ) : null}
                       </span>
-                    ) : null}
-                  </button>
-                </PaneTooltip>
+                      {showSkeleton ? (
+                        <span
+                          aria-hidden="true"
+                          className="ade-tool-skeleton mt-1.5 h-[10px] w-3/5 rounded-full"
+                        />
+                      ) : detail ? (
+                        <span
+                          id={availability.available ? undefined : reasonId}
+                          className="mt-1.5 w-full truncate text-[12px] leading-4 text-muted-fg"
+                        >
+                          {detail}
+                        </span>
+                      ) : null}
+                    </button>
+                  </PaneTooltip>
+                  {cardAction ? (
+                    // Hidden until the card is hovered or something in it is
+                    // focused (which includes the trigger itself, so Tab reaches
+                    // it and it stays put). `pointer-events-none` while hidden
+                    // keeps the invisible control from eating the card's click.
+                    <div className="pointer-events-none absolute right-1.5 top-1.5 opacity-0 transition-opacity duration-[120ms] ease-out group-hover/card:pointer-events-auto group-hover/card:opacity-100 group-focus-within/card:pointer-events-auto group-focus-within/card:opacity-100">
+                      {cardAction}
+                    </div>
+                  ) : null}
+                </div>
               );
             })}
           </div>

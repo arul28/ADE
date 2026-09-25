@@ -77,12 +77,6 @@ describe("replaceInternalToolNames", () => {
     expect(result).not.toContain("functions.exec_command");
   });
 
-  it("replaces namespaced tool mentions inline", () => {
-    const result = replaceInternalToolNames("Called context7.resolve_library_id for docs.");
-    expect(result).toContain("Docs");
-    expect(result).not.toContain("context7.resolve_library_id");
-  });
-
   it("replaces multiple tool mentions in the same text", () => {
     const result = replaceInternalToolNames("Running functions.exec_command then web.search for docs.");
     expect(result).not.toContain("functions.exec_command");

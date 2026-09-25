@@ -270,7 +270,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.statusLabel = row.status?.label
     self.statusGlyph = row.status?.glyph
     self.statusElapsedSince = row.status?.showsElapsed == true
-      ? (chatSummary?.currentTurnStartedAt ?? row.status?.activityReportUpdatedAt ?? self.activityTimestamp)
+      // An activity ("Testing") counts from when the session entered it, not
+      // from the turn start; mirrors `sessionElapsedAnchor` on desktop.
+      ? (row.status?.activityReportUpdatedAt ?? chatSummary?.currentTurnStartedAt ?? self.activityTimestamp)
       : nil
     self.showsElapsed = row.status?.showsElapsed ?? false
     // Settled resolves to a nil presentation, so it is not prominent and recedes.
@@ -1118,10 +1120,11 @@ struct WorkSessionRowStatusSlot: View {
   let tone: ActivityTone
   let glyph: ActivityGlyph?
   let showsElapsed: Bool
-  /// Elapsed time uses the chat summary's `currentTurnStartedAt` when present,
-  /// matching desktop. When that anchor is absent, iOS falls back to the
-  /// activity report's update time and then the row's activity timestamp;
-  /// desktop and CLI fall back directly to last activity.
+  /// Elapsed counts from when the session entered its activity ("Testing")
+  /// when the row shows one, else from the chat summary's
+  /// `currentTurnStartedAt`, matching desktop's `sessionElapsedAnchor`. Without
+  /// either, iOS falls back to the row's activity timestamp; desktop and CLI
+  /// fall back directly to last activity.
   let elapsedSince: Date?
   /// Accessibility sizes let the slot wrap instead of holding one line.
   var wraps: Bool = false

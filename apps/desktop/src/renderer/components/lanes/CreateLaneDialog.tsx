@@ -119,6 +119,8 @@ export function CreateLaneDialog({
   laneCreated,
   setupStatus,
   setupSteps = [],
+  /** Overrides the primary CTA label (e.g. "Use this setup" when configuring a draft). */
+  submitLabelOverride,
   templates,
   selectedTemplateId,
   setSelectedTemplateId,
@@ -166,6 +168,8 @@ export function CreateLaneDialog({
   laneCreated?: boolean;
   setupStatus?: string | null;
   setupSteps?: CreateLaneSetupStep[];
+  /** Overrides the primary CTA label (e.g. "Use this setup" when configuring a draft). */
+  submitLabelOverride?: string | null;
   templates: LaneTemplate[];
   selectedTemplateId: string;
   setSelectedTemplateId: (id: string) => void;
@@ -344,7 +348,7 @@ export function CreateLaneDialog({
               Cancel
             </Button>
             <Button variant="primary" data-tour="lanes.createDialog.create" disabled={isSubmitDisabled} onClick={onSubmit}>
-              {submitLabel(busy, createMode, createBaseBranch, laneCreated)}
+              {submitLabelOverride ?? submitLabel(busy, createMode, createBaseBranch, laneCreated)}
             </Button>
           </div>
         </div>

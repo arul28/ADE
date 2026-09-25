@@ -441,6 +441,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -1730,7 +1732,7 @@ declare global {
         createFromUnstaged: (
           args: CreateLaneFromUnstagedArgs,
         ) => Promise<LaneSummary>;
-        importBranch: (args: ImportBranchLaneArgs) => Promise<LaneSummary>;
+        importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         previewBranchSwitch: (
           args: LaneBranchSwitchArgs,
         ) => Promise<LaneBranchSwitchPreview>;
@@ -1760,6 +1762,9 @@ declare global {
         ) => Promise<ArchiveAndReclaimLaneResult>;
         unarchive: (args: ArchiveLaneArgs) => Promise<RestoreLaneResult>;
         delete: (args: DeleteLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        revealWorktree: (args: { laneId: string }) => Promise<void>;
+        revealLeftoverWorktree: (args: { laneId: string }) => Promise<void>;
+        deleteLeftoverWorktree: (args: { laneId: string }) => Promise<{ removed: boolean }>;
         cancelDelete: (args: {
           laneId: string;
         }) => Promise<{ cancelled: boolean; reason?: string }>;
@@ -1838,6 +1843,7 @@ declare global {
         setDefaultTemplate: (args: SetDefaultLaneTemplateArgs) => Promise<void>;
         applyTemplate: (
           args: ApplyLaneTemplateArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LaneEnvInitProgress>;
         saveTemplate: (args: SaveLaneTemplateArgs) => Promise<void>;
         deleteTemplate: (args: DeleteLaneTemplateArgs) => Promise<void>;
@@ -3563,6 +3569,10 @@ declare global {
           args: { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitUpstreamSyncStatus>;
+        getSyncStatuses: (
+          args: GitSyncStatusesArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitSyncStatuses>;
         getOriginRemote: (
           args: { laneId: string },
           pin?: OpenProjectBinding | null,

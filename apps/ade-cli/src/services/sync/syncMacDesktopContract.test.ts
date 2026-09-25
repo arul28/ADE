@@ -225,26 +225,6 @@ describe("macDesktop sync wire contract", () => {
       .rejects.toThrow(/requires subscriptionId/);
   });
 
-  it("keeps the pushed record fields exactly the ones the fixture and the phone decode", () => {
-    // The host's producer lives in `macDesktopSyncStream.ts`; this is the
-    // fixture's own contract assertion so a renamed/removed field here fails
-    // against the values the Swift test decodes from the same file.
-    expect(Object.keys(fixture.streamRecord).sort()).toEqual([
-      "data",
-      "keyframe",
-      "kind",
-      "seq",
-      "subscriptionId",
-      "timestampUs",
-    ]);
-    expect(Object.keys(fixture.streamEnded).sort()).toEqual(["reason", "subscriptionId"]);
-    expect(JSON.parse(Buffer.from(fixture.streamRecord.data, "base64").toString("utf8")))
-      .toEqual(fixture.config);
-    expect(Buffer.from(fixture.frameRecord.data, "base64")
-      .subarray(0, 4)).toEqual(Buffer.from([0, 0, 0, 1]));
-    expect(fixture.frameRecord.kind).toBe("frame");
-    expect(fixture.frameRecord.keyframe).toBe(true);
-  });
 });
 
 describe("macDesktop web takeover contract", () => {

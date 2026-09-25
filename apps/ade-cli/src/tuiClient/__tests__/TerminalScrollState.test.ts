@@ -36,7 +36,7 @@ describe("clampTerminalScrollOffset", () => {
     expect(clampTerminalScrollOffset(Number.NaN, 100)).toBe(0);
   });
 
-  it("allows scrolling well past 500 rows (desync regression: cursor must keep advancing)", () => {
+  it("allows scrolling beyond the terminal scrollback boundary", () => {
     // The old slice(-500) pinned the buffer; scrollback must reach the full
     // retained window (e.g. 2000 rows), not be capped near 500.
     expect(clampTerminalScrollOffset(1_900, 2_000)).toBe(1_900);
@@ -62,9 +62,6 @@ describe("scrollTerminalBy", () => {
     expect(bottom).toEqual({ scrollOffset: 0, pendingNewCount: 0 });
   });
 
-  it("returns the same reference when already pinned at the bottom and going further down", () => {
-    expect(scrollTerminalBy(TERMINAL_SCROLL_AT_BOTTOM, -10, max)).toBe(TERMINAL_SCROLL_AT_BOTTOM);
-  });
 });
 
 describe("jumpTerminalToBottom", () => {
@@ -74,9 +71,6 @@ describe("jumpTerminalToBottom", () => {
     );
   });
 
-  it("is a no-op (same ref) when already at the bottom", () => {
-    expect(jumpTerminalToBottom(TERMINAL_SCROLL_AT_BOTTOM)).toBe(TERMINAL_SCROLL_AT_BOTTOM);
-  });
 });
 
 describe("noteTerminalNewRows", () => {

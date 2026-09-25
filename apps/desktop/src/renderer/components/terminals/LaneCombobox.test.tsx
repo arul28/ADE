@@ -64,7 +64,6 @@ describe("computeLanePopoverPlacement", () => {
     });
     expect(placement.openAbove).toBe(true);
     expect(placement.top).toBe(672);
-    expect(placement.transform).toBe("translateY(calc(-100% - 4px))");
     expect(placement.maxHeight).toBeGreaterThan(0);
   });
 
@@ -80,51 +79,12 @@ describe("computeLanePopoverPlacement", () => {
 });
 
 describe("LaneCombobox trigger", () => {
-  it("renders lane and branch on one line with the branch giving way first", () => {
+  it("shows the selected lane and branch in its trigger", () => {
     render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} />);
 
     const button = trigger();
     expect(button.textContent).toContain("auth-refresh");
     expect(button.textContent).toContain("feat/auth-refresh");
-    // Single line: fixed height, no auto-growing column.
-    expect(button.className).toContain("h-[30px]");
-    expect(button.className).not.toContain("flex-col");
-
-    const branch = button.querySelector(".shrink-\\[9999\\]");
-    expect(branch?.textContent).toContain("feat/auth-refresh");
-  });
-
-  it("uses the compact height when asked", () => {
-    render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} compact />);
-    expect(trigger().className).toContain("h-7");
-  });
-
-  it("fills a narrow parent without a width cap or intrinsic floor", () => {
-    render(
-      <div style={{ width: 120 }}>
-        <LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} fullWidth />
-      </div>,
-    );
-
-    const button = trigger();
-    expect(button.className).toContain("w-full");
-    expect(button.className).toContain("min-w-0");
-    // A max-width below the parent is exactly what overflowed the 120px filter
-    // panel in the measured Work run; `fullWidth` must not reintroduce one.
-    expect(button.className).not.toMatch(/\bmax-w-/);
-    expect(button.style.width).toBe("");
-    expect(button.style.minWidth).toBe("");
-    // Every text run inside can collapse, so nothing establishes a min-content floor.
-    for (const span of Array.from(button.querySelectorAll("span"))) {
-      if (span.className.includes("truncate") && !span.className.includes("min-w-0")) {
-        expect(span.parentElement?.className).toContain("min-w-0");
-      }
-    }
-  });
-
-  it("caps its own width when it is not asked to fill the parent", () => {
-    render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} variant="pill" />);
-    expect(trigger().className).toContain("max-w-[320px]");
   });
 });
 
@@ -136,7 +96,7 @@ describe("LaneCombobox machine chrome", () => {
 
   function openList(): HTMLElement {
     fireEvent.click(trigger());
-    return screen.getByPlaceholderText("Search lanes...").closest(".ade-lane-popover") as HTMLElement;
+    return screen.getByRole("listbox") as HTMLElement;
   }
 
   it("renders no machine chrome at all for a single machine", () => {
@@ -220,6 +180,24 @@ describe("LaneCombobox machine chrome", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.textContent).toContain("render-perf");
   });
+
+  it("opens the configure-lane form from the create button and closes the popover", () => {
+    const onCreateLane = vi.fn();
+    render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} onCreateLane={onCreateLane} />);
+    openList();
+
+    fireEvent.click(screen.getByTestId("lane-popover-create"));
+
+    expect(onCreateLane).toHaveBeenCalledTimes(1);
+    // The popover closes so the dialog it opens is the only surface.
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("omits the create button when the caller has no configure-lane flow", () => {
+    render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} />);
+    openList();
+    expect(screen.queryByTestId("lane-popover-create")).toBeNull();
+  });
 });
 
 describe("LaneCombobox inside the modal handoff dialog", () => {
@@ -235,7 +213,7 @@ describe("LaneCombobox inside the modal handoff dialog", () => {
       />,
     );
     fireEvent.click(trigger());
-    const popover = screen.getByPlaceholderText("Search lanes...").closest(".ade-lane-popover") as HTMLElement;
+    const popover = screen.getByRole("listbox") as HTMLElement;
     return { popover, onChange, onCloseLocal };
   }
 

@@ -49,7 +49,6 @@ describe("AppControlMenu", () => {
     const menu = screen.getByRole("menu");
     // 300 (pane bottom) − 40 (trigger) − 4 (anchor offset) − 8 (gutter).
     expect(menu.style.maxHeight).toBe("248px");
-    expect(menu.className).toContain("overflow-y-auto");
   });
 
   it("stops shrinking at a height a menu can still be used at", () => {

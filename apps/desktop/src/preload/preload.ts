@@ -7,6 +7,7 @@ import {
 import { createMacDesktopBridge } from "./macDesktopPreload";
 import { IPC } from "../shared/ipc";
 import { isUnsupportedAdeActionError } from "../shared/codedError";
+import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../shared/gitSyncStatuses";
 import { settlePrDetailBundle } from "../shared/prDetailBundle";
 import type {
   CtoVoiceBridge,
@@ -356,6 +357,8 @@ import type {
   GitStashPushArgs,
   GitStashRefArgs,
   GitStashSummary,
+  GitSyncStatuses,
+  GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
   GitHubAppDeviceAuthPollResult,
@@ -2158,6 +2161,21 @@ function callChatLaunchAction<T>(
 ): Promise<T> {
   return callPinnedOrBoundRuntimeActionOr<T>(pin, "chat", action, request, () =>
     Promise.reject(new Error("New-lane launches need a connected ADE runtime. Reconnect the machine and try again.")));
+}
+
+async function readLegacySyncStatuses(
+  laneIds: string[],
+  pin?: OpenProjectBinding | null,
+): Promise<GitSyncStatuses> {
+  return settleLaneSyncStatuses(laneIds, (laneId) =>
+    callPinnedOrBoundRuntimeActionOr<GitUpstreamSyncStatus>(
+      pin,
+      "git",
+      "getSyncStatus",
+      { args: { laneId } },
+      () => ipcRenderer.invoke(IPC.gitGetSyncStatus, { laneId }),
+    ),
+  );
 }
 
 function readLegacyPrDetailBundle(prId: string): Promise<PrDetailBundle> {
@@ -6017,9 +6035,13 @@ const adeBridge = {
       clearGitReadCaches();
       return lane as LaneSummary;
     },
-    importBranch: async (args: ImportBranchLaneArgs): Promise<LaneSummary> => {
+    importBranch: async (
+      args: ImportBranchLaneArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<LaneSummary> => {
       clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
+      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
+        pin,
         "lane",
         "importBranch",
         { args },
@@ -6384,6 +6406,28 @@ const adeBridge = {
       }
       await ipcRenderer.invoke(IPC.lanesOpenFolder, args);
     },
+    revealWorktree: async (args: { laneId: string }): Promise<void> => {
+      const binding = await getRemoteProjectBinding();
+      if (binding) {
+        throw new Error(
+          "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
+        );
+      }
+      await ipcRenderer.invoke(IPC.lanesRevealWorktree, args);
+    },
+    revealLeftoverWorktree: async (args: { laneId: string }): Promise<void> => {
+      const binding = await getRemoteProjectBinding();
+      if (binding) {
+        throw new Error(
+          "Remote lane folders cannot be revealed on this machine. Copy the remote path instead.",
+        );
+      }
+      await ipcRenderer.invoke(IPC.lanesRevealLeftoverWorktree, args);
+    },
+    deleteLeftoverWorktree: async (args: { laneId: string }): Promise<{ removed: boolean }> =>
+      callProjectRuntimeActionOr("lane", "deleteLeftoverWorktree", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesDeleteLeftoverWorktree, args),
+      ),
     initEnv: async (args: InitLaneEnvArgs): Promise<LaneEnvInitProgress> =>
       callProjectRuntimeActionOr("lane", "initEnv", { args }, () =>
         ipcRenderer.invoke(IPC.lanesInitEnv, args),
@@ -6438,9 +6482,14 @@ const adeBridge = {
     },
     applyTemplate: async (
       args: ApplyLaneTemplateArgs,
+      pin?: OpenProjectBinding | null,
     ): Promise<LaneEnvInitProgress> =>
-      callProjectRuntimeActionOr("lane", "applyTemplate", { args }, () =>
-        ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
+      callPinnedOrBoundRuntimeActionOr<LaneEnvInitProgress>(
+        pin,
+        "lane",
+        "applyTemplate",
+        { args },
+        () => ipcRenderer.invoke(IPC.lanesApplyTemplate, args),
       ),
     saveTemplate: async (args: SaveLaneTemplateArgs): Promise<void> => {
       await callProjectRuntimeActionOr("lane", "saveTemplate", { args }, () =>
@@ -10629,6 +10678,25 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.gitGetSyncStatus, args),
       ),
+    getSyncStatuses: async (
+      args: GitSyncStatusesArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitSyncStatuses> => {
+      const laneIds = normalizeSyncStatusLaneIds(args);
+      if (laneIds.length === 0) return {};
+      try {
+        return await callPinnedOrBoundRuntimeActionOr<GitSyncStatuses>(
+          pin,
+          "git",
+          "getSyncStatuses",
+          { args: { laneIds } },
+          () => ipcRenderer.invoke(IPC.gitGetSyncStatuses, { laneIds }),
+        );
+      } catch (error) {
+        if (!isUnsupportedAdeActionError(error)) throw error;
+        return await readLegacySyncStatuses(laneIds, pin);
+      }
+    },
     getOriginRemote: async (
       args: { laneId: string },
       pin?: OpenProjectBinding | null,

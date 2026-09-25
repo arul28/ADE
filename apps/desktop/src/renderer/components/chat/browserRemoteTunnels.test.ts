@@ -53,7 +53,7 @@ describe("reconcileTabTunnels", () => {
       [{ id: "tab-1", url: "http://127.0.0.1:52413/settings" }],
       SETTLED,
     );
-    expect(next["tab-1"]).toBeTruthy();
+    expect(next["tab-1"]).toEqual(armed()["tab-1"]);
   });
 
   it("drops a tab that left the tunnel for a real site", () => {
@@ -77,12 +77,12 @@ describe("reconcileTabTunnels", () => {
       [{ id: "tab-1", url: "https://example.test/" }],
       NOW + 10,
     );
-    expect(next["tab-1"]).toBeTruthy();
+    expect(next["tab-1"]).toEqual(armed()["tab-1"]);
   });
 
   it("keeps a tab that has not reported a URL yet", () => {
     const next = reconcileTabTunnels(armed(), [{ id: "tab-1", url: null }], SETTLED);
-    expect(next["tab-1"]).toBeTruthy();
+    expect(next["tab-1"]).toEqual(armed()["tab-1"]);
   });
 
   it("returns the same object when nothing changed, so React does not re-render", () => {

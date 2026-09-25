@@ -6,9 +6,7 @@ import {
   allowCursorHook,
   buildCursorSdkLocalRunOptions,
   cursorProjectSlugForPath,
-  cursorSdkLocalAgentMode,
   CURSOR_SDK_ONESHOT_POLICY,
-  CURSOR_SDK_READONLY_TOOLS,
   denyCursorHook,
   evaluateCursorSdkHook,
   resolveCursorSdkPolicy,
@@ -16,172 +14,87 @@ import {
 } from "./cursorSdkPolicy";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 
+const LANE = "/tmp/ade-lane";
+const READONLY_TOOLS = ["read", "grep", "glob", "ls"];
+
+type HookContext = Omit<Parameters<typeof evaluateCursorSdkHook>[0], "request" | "policy" | "laneRoot"> & {
+  laneRoot?: string;
+};
+
+/** Summarize one raw Cursor hook payload and evaluate it under a Cursor mode. */
+function decide(modeId: string, toolName: string, toolInput: unknown, context: HookContext = {}) {
+  const laneRoot = context.laneRoot ?? LANE;
+  const request = summarizeCursorHook({ toolName, toolInput }, laneRoot);
+  const decision = evaluateCursorSdkHook({
+    ...context,
+    request,
+    policy: resolveCursorSdkPolicy({ cursorModeId: modeId }),
+    laneRoot,
+  });
+  return { decision, reason: request.reason };
+}
+
+function withTempRoot(prefix: string, run: (root: string) => void): void {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  try {
+    run(root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+}
+
 describe("Cursor SDK policy", () => {
   it("runs every one-shot with an empty tool allowlist so the SDK does not advertise tools", () => {
-    expect(CURSOR_SDK_ONESHOT_POLICY).toMatchObject({
-      chatMode: "ask",
-      approvalPolicy: "read-only",
-      fullAuto: false,
-      autoReview: false,
+    expect(CURSOR_SDK_ONESHOT_POLICY).toMatchObject({ approvalPolicy: "read-only", fullAuto: false });
+    expect(buildCursorSdkLocalRunOptions(CURSOR_SDK_ONESHOT_POLICY)).toEqual({
+      mode: "plan",
       tools: [],
-    });
-    expect(buildCursorSdkLocalRunOptions(CURSOR_SDK_ONESHOT_POLICY).tools).toEqual([]);
-    expect(cursorSdkLocalAgentMode(CURSOR_SDK_ONESHOT_POLICY)).toBe("plan");
-  });
-
-  it("passes an empty tools allowlist through instead of dropping it", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "ask" });
-    expect(buildCursorSdkLocalRunOptions({ ...policy, tools: [] }).tools).toEqual([]);
-  });
-
-  it("maps Cursor modes to ADE permission policies", () => {
-    expect(resolveCursorSdkPolicy({ cursorModeId: "ask" })).toMatchObject({
-      chatMode: "ask",
-      approvalPolicy: "read-only",
-      fullAuto: false,
-      autoReview: false,
-      tools: [...CURSOR_SDK_READONLY_TOOLS],
-    });
-    expect(resolveCursorSdkPolicy({ cursorModeId: "plan" })).toMatchObject({
-      chatMode: "plan",
-      approvalPolicy: "read-only",
-      fullAuto: false,
-      autoReview: false,
-      tools: [...CURSOR_SDK_READONLY_TOOLS],
-    });
-    expect(resolveCursorSdkPolicy({ cursorModeId: "agent" })).toMatchObject({
-      chatMode: "agent",
-      approvalPolicy: "on-request",
-      fullAuto: false,
-      autoReview: true,
-    });
-    expect(resolveCursorSdkPolicy({ cursorModeId: "agent" }).tools).toBeUndefined();
-    expect(resolveCursorSdkPolicy({ cursorModeId: "agent" }).disallowedTools).toBeUndefined();
-    expect(resolveCursorSdkPolicy({ cursorModeId: "ask" }).disallowedTools).toBeUndefined();
-    expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" })).toMatchObject({
-      chatMode: "agent",
-      approvalPolicy: "never",
-      fullAuto: true,
       autoReview: false,
     });
-    expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" }).tools).toBeUndefined();
-    expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" }).disallowedTools).toBeUndefined();
   });
 
-  it("does not resurrect an OpenCode full-auto value after Cursor is explicitly cleared", () => {
-    expect(resolveCursorSdkPolicy({
-      cursorModeId: null,
-      permissionMode: "default",
-      opencodePermissionMode: "full-auto",
-    })).toMatchObject({
-      chatMode: "agent",
-      approvalPolicy: "on-request",
-      fullAuto: false,
-    });
-  });
-
-  it("maps ADE modes onto SDK agent/plan + local tools/autoReview and never names a mode auto", () => {
-    const expected: Record<string, {
-      mode: "agent" | "plan";
-      tools?: string[];
-      autoReview: boolean;
-    }> = {
-      agent: { mode: "agent", autoReview: true },
-      ask: { mode: "plan", tools: ["read", "grep", "glob", "ls"], autoReview: false },
-      plan: { mode: "plan", tools: ["read", "grep", "glob", "ls"], autoReview: false },
-      "full-auto": { mode: "agent", autoReview: false },
-    };
-    for (const modeId of ["agent", "ask", "plan", "full-auto"] as const) {
-      const policy = resolveCursorSdkPolicy({ cursorModeId: modeId });
-      const local = buildCursorSdkLocalRunOptions(policy);
-      expect(cursorSdkLocalAgentMode(policy)).toBe(expected[modeId]!.mode);
-      expect(cursorSdkLocalAgentMode(policy)).not.toBe("auto");
-      expect(local.mode).toBe(expected[modeId]!.mode);
-      expect(local.mode).not.toBe("auto");
-      expect(local.autoReview).toBe(expected[modeId]!.autoReview);
-      if (expected[modeId]!.tools) {
-        expect(local.tools).toEqual(expected[modeId]!.tools);
-      } else {
-        expect(local.tools).toBeUndefined();
-      }
-      expect(local.disallowedTools).toBeUndefined();
-    }
+  // Exact `toEqual` on both objects: a policy must never grow an SDK `force`
+  // (run expiry) or `disallowedTools` key, and a mode is never named "auto".
+  it.each([
+    [
+      { cursorModeId: "ask" },
+      { chatMode: "ask", approvalPolicy: "read-only", fullAuto: false, hardGuards: true, autoReview: false, tools: READONLY_TOOLS },
+      { mode: "plan", tools: READONLY_TOOLS, autoReview: false },
+    ],
+    [
+      { cursorModeId: "plan" },
+      { chatMode: "plan", approvalPolicy: "read-only", fullAuto: false, hardGuards: true, autoReview: false, tools: READONLY_TOOLS },
+      { mode: "plan", tools: READONLY_TOOLS, autoReview: false },
+    ],
+    [
+      { cursorModeId: "agent" },
+      { chatMode: "agent", approvalPolicy: "on-request", fullAuto: false, hardGuards: true, autoReview: true },
+      { mode: "agent", autoReview: true },
+    ],
+    [
+      { cursorModeId: "full-auto" },
+      { chatMode: "agent", approvalPolicy: "never", fullAuto: true, hardGuards: true, autoReview: false },
+      { mode: "agent", autoReview: false },
+    ],
+    // An explicit Cursor clear must not resurrect an OpenCode full-auto value.
+    [
+      { cursorModeId: null, permissionMode: "default", opencodePermissionMode: "full-auto" },
+      { chatMode: "agent", approvalPolicy: "on-request", fullAuto: false, hardGuards: true, autoReview: true },
+      { mode: "agent", autoReview: true },
+    ],
+  ] as const)("maps Cursor mode %j to an ADE policy and SDK local run options", (session, policy, local) => {
+    const resolved = resolveCursorSdkPolicy(session as Parameters<typeof resolveCursorSdkPolicy>[0]);
+    expect(resolved).toEqual(policy);
+    expect(buildCursorSdkLocalRunOptions(resolved)).toEqual(local);
   });
 
   it("copies disallowedTools onto local run options when the policy sets them", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "ask" });
     const local = buildCursorSdkLocalRunOptions({
-      ...policy,
+      ...resolveCursorSdkPolicy({ cursorModeId: "ask" }),
       disallowedTools: ["shell", "edit", "task"],
     });
-    expect(local.tools).toEqual(["read", "grep", "glob", "ls"]);
+    expect(local.tools).toEqual(READONLY_TOOLS);
     expect(local.disallowedTools).toEqual(["shell", "edit", "task"]);
-  });
-
-  it("keeps the full-auto permission mode off the SDK's run-expiry option", () => {
-    // `fullAuto` is a permission level. The Cursor SDK's `local.force` expires
-    // an active run, which is a recovery action — mapping one onto the other
-    // made every full-auto send silently kill a turn that was still working.
-    for (const modeId of ["ask", "plan", "agent", "full-auto"]) {
-      expect(resolveCursorSdkPolicy({ cursorModeId: modeId })).not.toHaveProperty("force");
-    }
-    expect(resolveCursorSdkPolicy({ cursorModeId: "full-auto" }).fullAuto).toBe(true);
-  });
-
-  it("allows reads, asks for risky tools, and denies protected paths", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "agent" });
-    const laneRoot = "/tmp/ade-lane";
-
-    const read = summarizeCursorHook({
-      toolName: "read",
-      toolInput: { path: "src/app.ts" },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: read, policy, laneRoot })).toBe("allow");
-
-    const shell = summarizeCursorHook({
-      toolName: "shell",
-      toolInput: { command: "npm test" },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: shell, policy, laneRoot })).toBe("ask");
-
-    const secret = summarizeCursorHook({
-      toolName: "write",
-      toolInput: { path: ".ade/secrets/key.json" },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: secret, policy, laneRoot })).toBe("deny");
-    expect(secret.reason).toContain("protected");
-  });
-
-  it("blocks side effects in read-only policy", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "plan" });
-    const request = summarizeCursorHook({
-      toolName: "write",
-      toolInput: { path: "src/app.ts", content: "x" },
-    }, "/tmp/ade-lane");
-    expect(evaluateCursorSdkHook({ request, policy, laneRoot: "/tmp/ade-lane" })).toBe("deny");
-  });
-
-  it("does not special-case model-visible planning tools in read-only Cursor plan mode", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "plan" });
-    const laneRoot = "/tmp/ade-lane";
-
-    const planTool = summarizeCursorHook({
-      toolName: "TodoWrite",
-      toolInput: {
-        todos: [{ content: "Inspect wiring", status: "in_progress" }],
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: planTool, policy, laneRoot })).toBe("deny");
-
-    const mcpRequest = summarizeCursorHook({
-      toolName: "mcp",
-      toolInput: {
-        serverName: "stale-planning-tools",
-        toolName: "update_plan",
-        arguments: { steps: [{ text: "Plan via ADE", status: "pending" }] },
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: mcpRequest, policy, laneRoot })).toBe("deny");
   });
 
   it("formats hook decisions for Cursor hooks", () => {
@@ -193,28 +106,25 @@ describe("Cursor SDK policy", () => {
     });
   });
 
-  it("denies any path-traversal escape from the lane root regardless of approval policy", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = "/tmp/ade-lane";
-
-    const escape = summarizeCursorHook({
-      toolName: "read",
-      toolInput: { path: "/etc/passwd" },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: escape, policy, laneRoot })).toBe("deny");
-
-    const traversal = summarizeCursorHook({
-      toolName: "read",
-      toolInput: { path: "../../etc/passwd" },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: traversal, policy, laneRoot })).toBe("deny");
+  it.each([
+    ["agent", "read", { path: "src/app.ts" }, "allow", null],
+    ["agent", "shell", { command: "npm test" }, "ask", null],
+    ["agent", "write", { path: ".ade/secrets/key.json" }, "deny", "protected"],
+    ["full-auto", "shell", { command: "npm install", cwd: LANE }, "allow", null],
+    // Read-only modes deny side effects, and do not special-case model-visible planning tools.
+    ["plan", "write", { path: "src/app.ts", content: "x" }, "deny", null],
+    ["plan", "TodoWrite", { todos: [{ content: "Inspect wiring", status: "in_progress" }] }, "deny", null],
+    ["plan", "mcp", { serverName: "stale-planning-tools", toolName: "update_plan", arguments: { steps: [] } }, "deny", null],
+  ] as const)("%s mode: %s %j -> %s", (modeId, toolName, toolInput, expected, reason) => {
+    const result = decide(modeId, toolName, toolInput);
+    expect(result.decision).toBe(expected);
+    if (reason) expect(result.reason).toContain(reason);
   });
 
-  it("denies shell path escapes even in full-auto mode", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = "/tmp/ade-lane";
-
-    for (const command of [
+  it.each([
+    ["read", { path: "/etc/passwd" }],
+    ["read", { path: "../../etc/passwd" }],
+    ...[
       "cat /etc/passwd",
       "git -C /tmp status",
       "npm --prefix ../other test",
@@ -226,41 +136,47 @@ describe("Cursor SDK policy", () => {
       "echo ok > /tmp/ade-outside.txt",
       "cat ~/.aws/credentials",
       "cat $HOME/.aws/credentials",
-    ]) {
-      const request = summarizeCursorHook({
-        toolName: "shell",
-        toolInput: { command },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request,
-        policy,
-        laneRoot,
-        userHomeDir: "/Users/admin",
-      })).toBe("deny");
-    }
+    ].map((command) => ["shell", { command }] as const),
+    // Hook payloads whose input is a raw command string.
+    ["shell", "cd /etc && cat /etc/passwd"],
+    // A shell cwd outside the lane, with otherwise safe command text.
+    ["shell", { command: "npm test", cwd: "/tmp/outside-lane" }],
+  ] as const)("denies lane escapes even in full-auto: %s %j", (toolName, toolInput) => {
+    expect(decide("full-auto", toolName, toolInput, { userHomeDir: "/Users/admin" }).decision).toBe("deny");
   });
 
-  it("denies shell path escapes when hook payload input is a raw string", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = "/tmp/ade-lane";
-    const request = summarizeCursorHook({
-      toolName: "shell",
-      toolInput: "cd /etc && cat /etc/passwd",
-    }, laneRoot);
+  it.each([
+    'ade chat note "/ship"',
+    "ade chat note --text /ship",
+    "ade chat note --session abc /quality",
+    'ade chat scheduled-work create --in 12m --prompt "/ship" --reason "ci"',
+    'ade chat scheduled-work create --prompt "/ship review 1308"',
+    "ade chat scheduled-work create --prompt=/test",
+    "FOO=bar ade chat scheduled-work create --prompt /ship",
+    "date\nade chat note /ship",
+  ])("allows a slash command in an ade prompt: %s", (command) => {
+    expect(decide("full-auto", "shell", { command }).decision).toBe("allow");
+  });
 
-    expect(evaluateCursorSdkHook({
-      request,
-      policy,
-      laneRoot,
-    })).toBe("deny");
-    expect(request.reason).toContain("/etc");
+  it.each([
+    'ade chat note "/etc/passwd"',
+    'ade chat scheduled-work create --prompt "/etc/passwd"',
+    'ade chat note "/ship" && cat /etc/passwd',
+    "ade chat note -- && /outside",
+    "ls ade chat note /tmp",
+    "ade chat note --text /ship > /tmp",
+    "ade chat note > /ship",
+    "ade chat note /ship > /tmp",
+    'ade chat note "/ship $(cat /etc/passwd)"',
+    'ade chat scheduled-work create --prompt "/ship /etc/passwd"',
+  ])("still denies a real path inside an ade prompt: %s", (command) => {
+    expect(decide("full-auto", "shell", { command }).decision).toBe("deny");
   });
 
   // The guard deliberately leaves backslash tokens alone on POSIX, where `\` is
   // a legal filename character, so these escape shapes have no POSIX analogue.
   // WINDOWS-GATE: Windows-only shell path syntax; verified green on a native Windows host.
   it.runIf(process.platform === "win32")("denies Windows-shell lane escapes written with backslashes or %VAR% expansion", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
     const laneRoot = path.join(path.parse(path.resolve("/")).root, "Users", "admin", "lane");
     const userHomeDir = path.join(path.parse(path.resolve("/")).root, "Users", "admin");
     const cases: Array<[string, string]> = [
@@ -271,34 +187,13 @@ describe("Cursor SDK policy", () => {
       ["type .ade\\secrets\\token", "protected by ADE"],
     ];
     for (const [command, reason] of cases) {
-      const request = summarizeCursorHook({ toolName: "shell", toolInput: { command } }, laneRoot);
-      expect(evaluateCursorSdkHook({ request, policy, laneRoot, userHomeDir })).toBe("deny");
-      expect(request.reason).toContain(reason);
+      const result = decide("full-auto", "shell", { command }, { laneRoot, userHomeDir });
+      expect(result.decision).toBe("deny");
+      expect(result.reason).toContain(reason);
     }
   });
 
-  it("keeps POSIX-style backslash filenames out of the Windows path heuristics", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = path.join(path.parse(path.resolve("/")).root, "tmp", "ade-lane");
-    const request = summarizeCursorHook({
-      toolName: "shell",
-      toolInput: { command: "echo hello" },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request, policy, laneRoot })).toBe("allow");
-  });
-
-  it("denies shell cwd escapes even when the command text is otherwise safe", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = "/tmp/ade-lane";
-    const request = summarizeCursorHook({
-      toolName: "shell",
-      toolInput: { command: "npm test", cwd: "/tmp/outside-lane" },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request, policy, laneRoot })).toBe("deny");
-  });
-
   it("allows Cursor SDK transcript and terminal reads for the active lane only", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
     // Build the lane root from the platform's own filesystem root: on Windows
     // `path.resolve` prefixes the current drive, so a hard-coded POSIX path
     // yields a different (drive-prefixed) slug there.
@@ -312,317 +207,112 @@ describe("Cursor SDK policy", () => {
     expect(slug).toBe(cursorProjectSlug(path.resolve(laneRoot)));
     expect(slug).toMatch(/Users-admin-Projects-Versic-ade-worktrees-private-sharing-5d14c47a$/u);
 
-    const transcript = summarizeCursorHook({
-      toolName: "read",
-      toolInput: {
-        path: path.join(userHomeDir, ".cursor", "projects", slug, "agent-transcripts", "run.jsonl"),
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: transcript, policy, laneRoot, userHomeDir })).toBe("allow");
-
-    const terminalGlob = summarizeCursorHook({
-      toolName: "glob",
-      toolInput: {
-        pattern: "*.json",
-        targetDirectory: path.join(userHomeDir, ".cursor", "projects", slug, "terminals"),
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: terminalGlob, policy, laneRoot, userHomeDir })).toBe("allow");
-
-    const writeTranscript = summarizeCursorHook({
-      toolName: "write",
-      toolInput: {
-        path: path.join(userHomeDir, ".cursor", "projects", slug, "agent-transcripts", "run.jsonl"),
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: writeTranscript, policy, laneRoot, userHomeDir })).toBe("deny");
-
-    const asset = summarizeCursorHook({
-      toolName: "read",
-      toolInput: {
-        path: path.join(userHomeDir, ".cursor", "projects", slug, "assets", "shot.png"),
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: asset, policy, laneRoot, userHomeDir })).toBe("allow");
-
-    const writeAsset = summarizeCursorHook({
-      toolName: "write",
-      toolInput: {
-        path: path.join(userHomeDir, ".cursor", "projects", slug, "assets", "shot.png"),
-        contents: "x",
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: writeAsset, policy, laneRoot, userHomeDir })).toBe("deny");
-
-    const otherSlug = `${slug}-other`;
-    const otherAsset = summarizeCursorHook({
-      toolName: "read",
-      toolInput: {
-        path: path.join(userHomeDir, ".cursor", "projects", otherSlug, "assets", "shot.png"),
-      },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: otherAsset, policy, laneRoot, userHomeDir })).toBe("deny");
+    const support = (...parts: string[]) => path.join(userHomeDir, ".cursor", "projects", ...parts);
+    const run = (toolName: string, toolInput: unknown) =>
+      decide("full-auto", toolName, toolInput, { laneRoot, userHomeDir }).decision;
+    expect(run("read", { path: support(slug, "agent-transcripts", "run.jsonl") })).toBe("allow");
+    expect(run("glob", { pattern: "*.json", targetDirectory: support(slug, "terminals") })).toBe("allow");
+    expect(run("write", { path: support(slug, "agent-transcripts", "run.jsonl") })).toBe("deny");
+    expect(run("read", { path: support(slug, "assets", "shot.png") })).toBe("allow");
+    expect(run("write", { path: support(slug, "assets", "shot.png"), contents: "x" })).toBe("deny");
+    expect(run("read", { path: support(`${slug}-other`, "assets", "shot.png") })).toBe("deny");
   });
 
   it("allows read-only access to the ADE-owned Cursor skill shim, and nothing more", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-skill-dirs-"));
-    const laneRoot = path.join(root, "repo");
-    const shimRoot = path.join(root, "ade-home", "agent-skill-shims", "cursor");
-    const skillFile = path.join(shimRoot, ".agents", "skills", "ade-browser", "SKILL.md");
-    const outside = path.join(root, "elsewhere", "secret.txt");
-    fs.mkdirSync(laneRoot, { recursive: true });
-    fs.mkdirSync(path.dirname(skillFile), { recursive: true });
-    fs.mkdirSync(path.dirname(outside), { recursive: true });
-    fs.writeFileSync(skillFile, "skill");
-    fs.writeFileSync(outside, "secret");
+    withTempRoot("ade-cursor-skill-dirs-", (root) => {
+      const laneRoot = path.join(root, "repo");
+      const shimRoot = path.join(root, "ade-home", "agent-skill-shims", "cursor");
+      const skillFile = path.join(shimRoot, ".agents", "skills", "ade-browser", "SKILL.md");
+      const outside = path.join(root, "elsewhere", "secret.txt");
+      fs.mkdirSync(laneRoot, { recursive: true });
+      fs.mkdirSync(path.dirname(skillFile), { recursive: true });
+      fs.mkdirSync(path.dirname(outside), { recursive: true });
+      fs.writeFileSync(skillFile, "skill");
+      fs.writeFileSync(outside, "secret");
 
-    try {
-      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-      const readSkill = () => summarizeCursorHook({
-        toolName: "read",
-        toolInput: { path: skillFile },
-      }, laneRoot);
-
-      expect(evaluateCursorSdkHook({
-        request: readSkill(),
-        policy,
-        laneRoot,
-        agentSkillDirs: [shimRoot],
-      })).toBe("allow");
-
+      const withShim = { laneRoot, agentSkillDirs: [shimRoot] };
+      expect(decide("full-auto", "read", { path: skillFile }, withShim).decision).toBe("allow");
       // A session that was never given the shim keeps the old denial.
-      expect(evaluateCursorSdkHook({
-        request: readSkill(),
-        policy,
-        laneRoot,
-      })).toBe("deny");
-
+      expect(decide("full-auto", "read", { path: skillFile }, { laneRoot }).decision).toBe("deny");
       // Read-only: the shim is ADE's copy, not a scratch directory.
-      expect(evaluateCursorSdkHook({
-        request: summarizeCursorHook({
-          toolName: "write",
-          toolInput: { path: skillFile, contents: "x" },
-        }, laneRoot),
-        policy,
-        laneRoot,
-        agentSkillDirs: [shimRoot],
-      })).toBe("deny");
-
+      expect(decide("full-auto", "write", { path: skillFile, contents: "x" }, withShim).decision).toBe("deny");
       // The grant does not widen past the shim root.
-      expect(evaluateCursorSdkHook({
-        request: summarizeCursorHook({
-          toolName: "read",
-          toolInput: { path: outside },
-        }, laneRoot),
-        policy,
-        laneRoot,
-        agentSkillDirs: [shimRoot],
-      })).toBe("deny");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+      expect(decide("full-auto", "read", { path: outside }, withShim).decision).toBe("deny");
+    });
   });
 
   it("allows read-only access to staged project attachments from a lane worktree", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-attach-"));
-    const projectRoot = path.join(root, "repo");
-    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
-    const attachmentsDir = path.join(projectRoot, ".ade", "attachments");
-    const secretsDir = path.join(projectRoot, ".ade", "secrets");
-    const imagePath = path.join(attachmentsDir, "00000000-0000-4000-8000-000000000001.png");
-    const otherProject = path.join(root, "other-repo");
-    const otherImage = path.join(otherProject, ".ade", "attachments", "shot.png");
-    fs.mkdirSync(laneRoot, { recursive: true });
-    fs.mkdirSync(attachmentsDir, { recursive: true });
-    fs.mkdirSync(secretsDir, { recursive: true });
-    fs.mkdirSync(path.dirname(otherImage), { recursive: true });
-    fs.writeFileSync(imagePath, "png");
-    fs.writeFileSync(path.join(secretsDir, "token"), "secret");
-    fs.writeFileSync(otherImage, "png");
+    withTempRoot("ade-cursor-attach-", (root) => {
+      const projectRoot = path.join(root, "repo");
+      const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
+      const attachmentsDir = path.join(projectRoot, ".ade", "attachments");
+      const secretsDir = path.join(projectRoot, ".ade", "secrets");
+      const imagePath = path.join(attachmentsDir, "00000000-0000-4000-8000-000000000001.png");
+      const otherImage = path.join(root, "other-repo", ".ade", "attachments", "shot.png");
+      fs.mkdirSync(laneRoot, { recursive: true });
+      fs.mkdirSync(attachmentsDir, { recursive: true });
+      fs.mkdirSync(secretsDir, { recursive: true });
+      fs.mkdirSync(path.dirname(otherImage), { recursive: true });
+      fs.writeFileSync(imagePath, "png");
+      fs.writeFileSync(path.join(secretsDir, "token"), "secret");
+      fs.writeFileSync(otherImage, "png");
 
-    try {
-      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-      const read = summarizeCursorHook({
-        toolName: "read",
-        toolInput: { path: imagePath },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request: read,
-        policy,
-        laneRoot,
-        projectRoot,
-      })).toBe("allow");
-      expect(evaluateCursorSdkHook({
-        request: summarizeCursorHook({
-          toolName: "read",
-          toolInput: { path: imagePath },
-        }, laneRoot),
-        policy,
-        laneRoot,
-      })).toBe("deny");
-
-      const write = summarizeCursorHook({
-        toolName: "write",
-        toolInput: { path: imagePath, contents: "x" },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request: write,
-        policy,
-        laneRoot,
-        projectRoot,
-      })).toBe("deny");
-
-      const secret = summarizeCursorHook({
-        toolName: "read",
-        toolInput: { path: path.join(secretsDir, "token") },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request: secret,
-        policy,
-        laneRoot,
-        projectRoot,
-      })).toBe("deny");
-
-      const foreign = summarizeCursorHook({
-        toolName: "read",
-        toolInput: { path: otherImage },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request: foreign,
-        policy,
-        laneRoot,
-        projectRoot,
-      })).toBe("deny");
-
-      const shell = summarizeCursorHook({
-        toolName: "shell",
-        toolInput: { command: `cat ${imagePath}`, cwd: laneRoot },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request: shell,
-        policy,
-        laneRoot,
-        projectRoot,
-      })).toBe("deny");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+      const withProject = { laneRoot, projectRoot };
+      expect(decide("full-auto", "read", { path: imagePath }, withProject).decision).toBe("allow");
+      expect(decide("full-auto", "read", { path: imagePath }, { laneRoot }).decision).toBe("deny");
+      expect(decide("full-auto", "write", { path: imagePath, contents: "x" }, withProject).decision).toBe("deny");
+      expect(decide("full-auto", "read", { path: path.join(secretsDir, "token") }, withProject).decision).toBe("deny");
+      expect(decide("full-auto", "read", { path: otherImage }, withProject).decision).toBe("deny");
+      expect(decide("full-auto", "shell", { command: `cat ${imagePath}`, cwd: laneRoot }, withProject).decision)
+        .toBe("deny");
+    });
   });
 
-  it.skipIf(process.platform === "win32")("denies project attachment reads when attachments is symlinked onto secrets", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-attach-secrets-"));
-    const projectRoot = path.join(root, "repo");
-    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
-    const secretsDir = path.join(projectRoot, ".ade", "secrets");
-    const attachmentsLink = path.join(projectRoot, ".ade", "attachments");
-    fs.mkdirSync(laneRoot, { recursive: true });
-    fs.mkdirSync(secretsDir, { recursive: true });
-    fs.writeFileSync(path.join(secretsDir, "token"), "secret");
-    fs.symlinkSync(secretsDir, attachmentsLink, "dir");
+  it.skipIf(process.platform === "win32").each([
+    ["onto secrets", "token"],
+    ["outside the project", "shot.png"],
+  ])("denies project attachment reads when attachments is symlinked %s", (target, fileName) => {
+    withTempRoot("ade-cursor-attach-link-", (root) => {
+      const projectRoot = path.join(root, "repo");
+      const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
+      const linkTarget = target === "onto secrets" ? path.join(projectRoot, ".ade", "secrets") : path.join(root, "outside");
+      const attachmentsLink = path.join(projectRoot, ".ade", "attachments");
+      fs.mkdirSync(laneRoot, { recursive: true });
+      fs.mkdirSync(linkTarget, { recursive: true });
+      fs.writeFileSync(path.join(linkTarget, fileName), "secret");
+      fs.symlinkSync(linkTarget, attachmentsLink, "dir");
 
-    try {
-      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-      const request = summarizeCursorHook({
-        toolName: "read",
-        toolInput: { path: path.join(attachmentsLink, "token") },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request,
-        policy,
-        laneRoot,
-        projectRoot,
-      })).toBe("deny");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it.skipIf(process.platform === "win32")("denies project attachment reads when attachments is symlinked outside the project", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-attach-link-"));
-    const projectRoot = path.join(root, "repo");
-    const laneRoot = path.join(projectRoot, ".ade", "worktrees", "lane");
-    const outside = path.join(root, "outside");
-    const attachmentsLink = path.join(projectRoot, ".ade", "attachments");
-    fs.mkdirSync(laneRoot, { recursive: true });
-    fs.mkdirSync(outside, { recursive: true });
-    fs.writeFileSync(path.join(outside, "shot.png"), "png");
-    fs.symlinkSync(outside, attachmentsLink, "dir");
-
-    try {
-      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-      const request = summarizeCursorHook({
-        toolName: "read",
-        toolInput: { path: path.join(attachmentsLink, "shot.png") },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request,
-        policy,
-        laneRoot,
-        projectRoot,
-      })).toBe("deny");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+      expect(decide("full-auto", "read", { path: path.join(attachmentsLink, fileName) }, { laneRoot, projectRoot }).decision)
+        .toBe("deny");
+    });
   });
 
   it.skipIf(process.platform === "win32")("denies Cursor support reads when the active project support root is symlinked outside Cursor projects", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-support-"));
-    const home = path.join(root, "home");
-    const laneRoot = path.join(root, "repo", ".ade", "worktrees", "lane");
-    const outside = path.join(root, "outside");
-    const slug = cursorProjectSlugForPath(laneRoot);
-    fs.mkdirSync(path.join(home, ".cursor", "projects"), { recursive: true });
-    fs.mkdirSync(laneRoot, { recursive: true });
-    fs.mkdirSync(outside, { recursive: true });
-    fs.symlinkSync(outside, path.join(home, ".cursor", "projects", slug), "dir");
+    withTempRoot("ade-cursor-support-", (root) => {
+      const home = path.join(root, "home");
+      const laneRoot = path.join(root, "repo", ".ade", "worktrees", "lane");
+      const outside = path.join(root, "outside");
+      const slug = cursorProjectSlugForPath(laneRoot);
+      fs.mkdirSync(path.join(home, ".cursor", "projects"), { recursive: true });
+      fs.mkdirSync(laneRoot, { recursive: true });
+      fs.mkdirSync(outside, { recursive: true });
+      fs.symlinkSync(outside, path.join(home, ".cursor", "projects", slug), "dir");
 
-    try {
-      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-      const request = summarizeCursorHook({
-        toolName: "read",
-        toolInput: {
-          path: path.join(home, ".cursor", "projects", slug, "agent-transcripts", "run.jsonl"),
-        },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({
-        request,
-        policy,
-        laneRoot,
-        userHomeDir: home,
-      })).toBe("deny");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
+      const transcript = path.join(home, ".cursor", "projects", slug, "agent-transcripts", "run.jsonl");
+      expect(decide("full-auto", "read", { path: transcript }, { laneRoot, userHomeDir: home }).decision).toBe("deny");
+    });
   });
 
   it.skipIf(process.platform === "win32")("denies symlink escapes through paths that appear to be inside the lane", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-policy-"));
-    const laneRoot = path.join(root, "lane");
-    const outside = path.join(root, "outside");
-    fs.mkdirSync(laneRoot, { recursive: true });
-    fs.mkdirSync(outside, { recursive: true });
-    fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
-    fs.symlinkSync(outside, path.join(laneRoot, "linked-outside"), "dir");
+    withTempRoot("ade-cursor-policy-", (root) => {
+      const laneRoot = path.join(root, "lane");
+      const outside = path.join(root, "outside");
+      fs.mkdirSync(laneRoot, { recursive: true });
+      fs.mkdirSync(outside, { recursive: true });
+      fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
+      fs.symlinkSync(outside, path.join(laneRoot, "linked-outside"), "dir");
 
-    try {
-      const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-      const request = summarizeCursorHook({
-        toolName: "read",
-        toolInput: { path: "linked-outside/secret.txt" },
-      }, laneRoot);
-      expect(evaluateCursorSdkHook({ request, policy, laneRoot })).toBe("deny");
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  it("allows shells in full-auto without prompting", () => {
-    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = "/tmp/ade-lane";
-    const shell = summarizeCursorHook({
-      toolName: "shell",
-      toolInput: { command: "npm install", cwd: laneRoot },
-    }, laneRoot);
-    expect(evaluateCursorSdkHook({ request: shell, policy, laneRoot })).toBe("allow");
+      expect(decide("full-auto", "read", { path: "linked-outside/secret.txt" }, { laneRoot }).decision).toBe("deny");
+    });
   });
 });

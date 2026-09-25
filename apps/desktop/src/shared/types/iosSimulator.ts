@@ -1603,6 +1603,15 @@ export type AppleDeviceListResult = {
 export type AppleDeviceDeleteArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /**
+   * The device the caller believes it is deleting.
+   *
+   * Optional: the lane-scoped default (delete whatever this lane holds) is what
+   * the CLI and the pane use. A UI that read a specific device — the tools-card
+   * menu — passes its udid so a device that changed between the read and the
+   * click is refused instead of silently deleted.
+   */
+  udid?: string | null;
   /** Detach an attached device instead of refusing it. */
   force?: boolean | null;
   /** Delete for whoever is running, without claiming to be them (the Work pane). */
@@ -1617,6 +1626,15 @@ export type AppleDeviceDeleteArgs = {
 export type AppleDeviceDetachArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /**
+   * The device the caller believes it is releasing.
+   *
+   * Optional: the lane-scoped default (release whatever this lane holds) is
+   * what the CLI and the pane use. The tools-card menu passes the udid it
+   * displayed so a device that changed since the read is refused rather than
+   * released.
+   */
+  udid?: string | null;
   /** Detach a device another chat is driving as well. */
   force?: boolean | null;
   /** Detach for whoever is running, without claiming to be them (the Work pane). */

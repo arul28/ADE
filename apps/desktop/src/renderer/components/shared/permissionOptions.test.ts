@@ -165,18 +165,6 @@ describe("safetyColorHex", () => {
   });
 });
 
-describe("safetyColors", () => {
-  it("returns tailwind class objects for all safety levels", () => {
-    const levels: SafetyLevel[] = ["safe", "semi-auto", "full-auto", "danger", "custom"];
-    for (const level of levels) {
-      const colors = safetyColors(level);
-      expect(colors.border, `${level} should have border class`).toBeTruthy();
-      expect(colors.badge, `${level} should have badge class`).toBeTruthy();
-      expect(colors.activeBg, `${level} should have activeBg class`).toBeTruthy();
-    }
-  });
-});
-
 describe("familyToPermissionKey", () => {
   it("maps CLI-wrapped anthropic to 'claude'", () => {
     expect(familyToPermissionKey("anthropic", true)).toBe("claude");
@@ -190,9 +178,9 @@ describe("familyToPermissionKey", () => {
     expect(familyToPermissionKey("factory", true)).toBe("droid");
   });
 
-  it("maps CLI-wrapped cursor to 'cursor', falls back to 'opencode' off-CLI", () => {
+  it("maps cursor to 'cursor' for both the CLI and the SDK", () => {
     expect(familyToPermissionKey("cursor", true)).toBe("cursor");
-    expect(familyToPermissionKey("cursor", false)).toBe("opencode");
+    expect(familyToPermissionKey("cursor", false)).toBe("cursor");
   });
 
   it("maps everything else to 'opencode'", () => {

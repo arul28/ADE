@@ -386,7 +386,10 @@ Shared types and IPC:
   Parent phases use the same host lifecycle rules for every provider. Provider
   adapters contribute **Needs you** only from structured input/permission
   requests; tracked PTY CLIs also get explicit `ade chat ask`. PTY text is never
-  parsed into a status. Agent-reported activity requires both the
+  parsed into a status. For every chat provider in the table, ADE **detects**
+  the activity detail from the turn's normalized tool calls (see
+  [Activity detection](./pty-and-sessions.md#activity-detection)); an agent
+  report only corrects or refines it. Agent-reported activity requires both the
   runtime-resolved ADE CLI executable and this runtime's RPC socket, and is
   disabled for embedded runtimes. Each provider path is advertised only when
   its command/tool and permission route is verified. Native Plan and
@@ -474,10 +477,12 @@ Shared types and IPC:
   map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
   is the nested-compact filter: the status word is painted only for Needs you
   or a red Failed tone.
-- `apps/desktop/src/shared/types/sessions.ts` — the fixed six-value activity
-  vocabulary. `apps/desktop/src/shared/sessionActivity.ts` imports it and
-  normalizes one host-timestamped agent report at the boundary.
-  The report refines a card's single status slot without moving its parent phase;
+- `apps/desktop/src/shared/types/sessions.ts` — the fixed eight-value activity
+  vocabulary and its two sources (`detected`, `agent`).
+  `apps/desktop/src/shared/sessionActivity.ts` imports it, normalizes one
+  host-timestamped activity at the boundary, and owns the precedence between a
+  detected activity and an agent report (`nextDetectedActivityReport`).
+  The activity refines a card's single status slot without moving its parent phase;
   `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
@@ -2177,9 +2182,14 @@ partitions rather than re-deriving from the raw roster, and assembles Waiting
 predicates that have to agree. The PR half is `lanePrWaitingReason`: only
 `open`/`draft` PRs count, a pending checks status is `"ci"`, a requested review
 is `"review"`, and `none`/`not_run` deliberately are not a wait (nobody has
-looked yet) while `failing` is the agent's problem rather than a wait. The lane's
-PRs are read from the **bound** machine's set, so a foreign lane's CI cannot
-park a local row in Waiting. The reason surfaces as the card's chip.
+looked yet) while `failing` is the agent's problem rather than a wait. The hook's PR lookup is the **bound** machine's set, so a foreign lane's CI
+cannot park a local row in Waiting. The board the pane paints is the sidebar's
+union: those bound-machine columns, then every other connected machine's chats,
+each filed with that machine's own PR wait. A foreign card carries the same
+machine glyph and runtime pin as its sidebar row, and a drag moves it on that
+machine. The reason surfaces as the card's chip. New chat leaves the board and
+opens the list-mode draft, because the board occupies the surface the draft
+draws on.
 
 The host keeps its own, deliberately narrower derivation in
 `deriveWorkBoardColumn`: snooze alone puts a row in Waiting there, because the

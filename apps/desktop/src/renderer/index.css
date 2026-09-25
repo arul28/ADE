@@ -1389,8 +1389,8 @@ body.ade-project-sidebar-resizing {
 .ade-lane-popover {
   position: relative;
   z-index: 9999;
-  min-width: 200px;
-  max-width: 280px;
+  min-width: 264px;
+  max-width: 344px;
   max-height: 320px;
   background: var(--work-popover-bg);
   border: 1px solid var(--work-popover-border);
@@ -1422,10 +1422,38 @@ body.ade-project-sidebar-resizing {
   color: var(--color-fg);
   outline: none;
   box-shadow: none;
-  width: 100%;
+  flex: 1 1 0%;
+  width: auto;
   min-width: 0;
   appearance: none;
   -webkit-appearance: none;
+}
+
+/* Trailing borderless action in the search row (e.g. "create new lane"). */
+.ade-lane-popover-create {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  margin-right: -4px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.ade-lane-popover-create:hover {
+  background: var(--work-popover-item-active);
+  color: var(--color-fg);
+}
+
+.ade-lane-popover-create:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-accent) 45%, transparent);
 }
 
 .ade-lane-popover-search:focus,

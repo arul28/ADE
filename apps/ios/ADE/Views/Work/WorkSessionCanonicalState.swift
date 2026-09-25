@@ -581,7 +581,10 @@ private func workSessionStatusSlot(
     ), true)
   }
 
-  if let activityPresentation = workSessionActivityDetailPresentation(
+  let detectedExplorationDuringPlanning = resolved.kind == .planning
+    && session.activityStatus?.source == "detected"
+    && session.activityStatus?.value == "exploring"
+  if !detectedExplorationDuringPlanning, let activityPresentation = workSessionActivityDetailPresentation(
     session: session,
     phase: phase,
     currentTurnStartedAt: currentTurnStartedAt

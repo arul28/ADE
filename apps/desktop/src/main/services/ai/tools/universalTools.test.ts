@@ -519,25 +519,27 @@ describe("createUniversalToolSet", () => {
     const cwd = makeTmpDir("ade-tools-keys-");
     const tools = createUniversalToolSet(cwd, { permissionMode: "full-auto" });
 
-    expect(tools.readFile).toBeDefined();
-    expect(tools.grep).toBeDefined();
-    expect(tools.glob).toBeDefined();
-    expect(tools.listDir).toBeDefined();
-    expect(tools.findRoutingFiles).toBeDefined();
-    expect(tools.findPageComponents).toBeDefined();
-    expect(tools.findAppEntryPoints).toBeDefined();
-    expect(tools.summarizeFrontendStructure).toBeDefined();
-    expect(tools.TodoWrite).toBeDefined();
-    expect(tools.TodoRead).toBeDefined();
-    expect(tools.gitStatus).toBeDefined();
-    expect(tools.gitDiff).toBeDefined();
-    expect(tools.gitLog).toBeDefined();
-    expect(tools.webFetch).toBeDefined();
-    expect(tools.webSearch).toBeDefined();
-    expect(tools.editFile).toBeDefined();
-    expect(tools.writeFile).toBeDefined();
-    expect(tools.bash).toBeDefined();
-    expect(tools.askUser).toBeDefined();
+    expect(Object.keys(tools)).toEqual(expect.arrayContaining([
+      "readFile",
+      "grep",
+      "glob",
+      "listDir",
+      "findRoutingFiles",
+      "findPageComponents",
+      "findAppEntryPoints",
+      "summarizeFrontendStructure",
+      "TodoWrite",
+      "TodoRead",
+      "gitStatus",
+      "gitDiff",
+      "gitLog",
+      "webFetch",
+      "webSearch",
+      "editFile",
+      "writeFile",
+      "bash",
+      "askUser",
+    ]));
   });
 
   it("finds routing files with repo-aware filesystem heuristics", async () => {

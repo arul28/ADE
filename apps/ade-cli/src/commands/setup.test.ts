@@ -929,17 +929,14 @@ describe("installer shell portability (regression)", () => {
 // Connections pane concatenates them into user-facing copy verbatim, which is
 // how "No active sync scope is available." reached a real user's screen.
 describe("describeUnpublishedMachine", () => {
-  it("no longer tells the user to open a project -- that case now publishes", async () => {
+  it("explains when another ADE app owns the machine sync host", async () => {
     const { describeUnpublishedMachine } = await import("./setup");
     const described = describeUnpublishedMachine(
       "no_active_sync_scope",
       "No active sync scope is available.",
     );
-    // A projectless brain publishes on its own now, so the only way to reach
-    // this state is another ADE process owning the machine sync-host lease.
-    expect(described.detail).not.toContain("sync scope");
-    expect(described.detail).not.toContain("open a project");
-    expect(described.detail).toContain("another ADE app on this computer");
+    // The diagnostic points to the process that holds the machine-wide lease.
+    expect(described.detail).toMatch(/another ADE app on this computer/i);
   });
 
   it("never renders the publisher's skipReason, for any state", async () => {

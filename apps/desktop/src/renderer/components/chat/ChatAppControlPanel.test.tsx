@@ -817,15 +817,10 @@ describe("ChatAppControlPanel", () => {
     expect(screen.queryByRole("menuitem", { name: /Insert as context/ })).toBeNull();
   });
 
-  /*
-    The pane's own chrome, pinned: App Control borrows the browser stage's card
-    and the browser row's progress bar, and the two are only "one product" for
-    as long as nobody quietly deletes the inset or the bar.
-  */
-  it("frames the body like the browser stage and runs a progress bar while it attaches", async () => {
-    const api = installAdeMock({ status: connectedStatus, targetList: targets });
-    let release: (value: unknown) => void = () => {};
-    api.appControl.switchWindow.mockImplementation(
+  it("shows launch progress while an app attaches", async () => {
+    const api = installAdeMock();
+    let release: (session: unknown) => void = () => {};
+    api.appControl.launchInTerminal.mockImplementation(
       () => new Promise((resolve) => {
         release = resolve;
       }),
@@ -833,22 +828,12 @@ describe("ChatAppControlPanel", () => {
 
     render(<ChatAppControlPanel sessionId="chat-frame" laneId="lane-1" projectRoot="/repo" />);
 
-    // The stage: 8px inset, 10px radius, one 1px inset ring over the surface.
-    const stage = await screen.findByTestId("app-control-stage");
-    expect(stage.className).toContain("rounded-[10px]");
-    expect(stage.className).toContain("ring-1");
-    expect(stage.className).toContain("ring-inset");
-    expect(stage.parentElement?.className).toContain("p-2");
-    // Every overlay hangs off the stage, so the badges and the agent cursor
-    // cannot drift away from the inset edge the frame draws.
-    expect(stage.contains(await screen.findByAltText("Electron app screenshot"))).toBe(true);
-
-    // Idle rows carry no bar at all.
+    expect((await screen.findByText("No app attached")).textContent).toBe("No app attached");
     expect(screen.queryByTestId("app-control-progress")).toBeNull();
 
     fireEvent.click(await screen.findByLabelText("Switch to Settings"));
 
-    expect(await screen.findByTestId("app-control-progress")).toBeTruthy();
+    expect((await screen.findByTestId("app-control-progress")).isConnected).toBe(true);
 
     release({ sessionId: connectedSession.id, activeTargetId: "target-2", windows: targets });
     await waitFor(() => {

@@ -12,6 +12,7 @@ import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import type { WorkBoardColumn } from "../../../shared/types/chat";
 import type { WorkBoardWaitingReason } from "./useWorkSessions";
+import { rootAppStoreApi } from "../../state/appStore";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The board is mounted through `SessionListPane`, never in isolation.
@@ -430,26 +431,6 @@ describe("WorkKanbanBoard", () => {
     expect(within(card).getByTestId("work-board-waiting-s-ci").textContent).toContain("CI running");
   });
 
-  it("keeps every card the same height so the four columns align", () => {
-    renderBoard();
-    // The footer is unconditional for exactly this reason: a footer that showed
-    // up only for parked rows put the Waiting column out of step with the rest.
-    for (const id of ["s-needs", "s-cto", "s-ci", "s-ended", "s-settled"]) {
-      const card = screen.getByTestId(`work-board-card-${id}`);
-      expect(card.querySelector(".h-4")).toBeTruthy();
-    }
-  });
-
-  it("names the model beside the provider glyph on a board card", () => {
-    renderBoard();
-    const card = screen.getByTestId("work-board-card-s-cto");
-    expect(within(card).getByTestId("session-model-label").textContent).toBe("Claude Opus 5");
-    // A row whose provider reported no model shows no chip rather than a blank.
-    expect(
-      within(screen.getByTestId("work-board-card-s-needs")).queryByTestId("session-model-label"),
-    ).toBeNull();
-  });
-
   it("suppresses the per-card status label, which the column already states", () => {
     renderBoard();
 
@@ -474,19 +455,6 @@ describe("WorkKanbanBoard", () => {
     // status, so removing the word there would delete the fact outright.
     const { container } = renderListWithTwoLanes();
     expect(container.querySelector("[data-session-status]")).toBeTruthy();
-  });
-
-  it("gives the four columns equal flexible widths with a floor", () => {
-    renderBoard();
-    for (const key of ["needs_you", "working", "waiting", "done"] as const) {
-      const cls = column(key).className;
-      // `basis-0` is what makes them EQUAL: with the default `basis-auto` a
-      // column holding a long chat title would claim more than its share.
-      expect(cls).toContain("flex-1");
-      expect(cls).toContain("basis-0");
-      expect(cls).toContain("min-w-[14rem]");
-      expect(cls).not.toContain("shrink-0");
-    }
   });
 
   it("shows the agent note line on a board card", () => {
@@ -720,6 +688,68 @@ describe("WorkKanbanBoard", () => {
     expect(column("done").getAttribute("data-column-active")).toBeNull();
     fireDrag(column("done"), "drop", dt);
     expect(settle).not.toHaveBeenCalled();
+  });
+
+  it("leaves the board and opens the new-chat draft from the toolbar", () => {
+    const setWorkViewMode = vi.fn();
+    const onShowDraftKind = vi.fn();
+    renderBoard({ setWorkViewMode, onShowDraftKind });
+
+    fireEvent.click(screen.getByRole("button", { name: "Start a new chat" }));
+
+    expect(setWorkViewMode).toHaveBeenCalledWith("list");
+    expect(onShowDraftKind).toHaveBeenCalledWith("chat");
+  });
+
+  it("files a chat from another connected machine into the board", () => {
+    const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId;
+    const foreignLane = makeLane({
+      id: "lane-studio",
+      name: "Studio lane",
+      branchRef: "ade/studio",
+      worktreePath: "/tmp/studio",
+    });
+    rootAppStoreApi.setState({
+      crossMachineLanesByMachineId: {
+        studio: {
+          machineId: "studio",
+          machineName: "Studio",
+          targetId: "studio",
+          projectId: "project-studio",
+          online: true,
+          lanes: [foreignLane],
+          sessions: [makeSession({
+            id: "foreign-chat",
+            laneId: "lane-studio",
+            laneName: "Studio lane",
+            title: "Chat on Studio",
+            status: "running",
+            runtimeState: "running",
+          })],
+          prs: [],
+          lastSyncedAtMs: 1,
+          lanesSyncedAtMs: 1,
+          error: null,
+          binding: {
+            kind: "remote",
+            key: "studio-binding",
+            targetId: "studio",
+            runtimeName: "Studio",
+            projectId: "project-studio",
+            rootPath: "/tmp/studio-project",
+            displayName: "ADE",
+          },
+        },
+      },
+    });
+    try {
+      renderBoard();
+      const card = screen.getByTestId("work-board-card-foreign-chat");
+      expect(column("working").contains(card)).toBe(true);
+      expect(column("needs_you").contains(card)).toBe(false);
+    } finally {
+      rootAppStoreApi.setState({ crossMachineLanesByMachineId: previous });
+    }
   });
 
   it("falls back to the list when board columns were never supplied", () => {

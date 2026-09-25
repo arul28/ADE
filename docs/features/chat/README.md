@@ -1879,7 +1879,20 @@ not chained by the client. The client picks the chat's session id (the
 `launchId`) and the lane id, calls `chat.startLaunch`, and opens the chat
 immediately; the call returns as soon as the launch is reserved. The brain's
 `chatLaunchService` then walks the stages and publishes a full
-`ChatLaunchSnapshot` after every change:
+`ChatLaunchSnapshot` after every change.
+
+The same flow backs a **configured** new lane: the lane picker's `+` opens the
+full create-lane dialog and defers creation. The dialog hands back a recipe
+(`ChatLaunchArgs.laneConfig`: `root` / `child` / `import` mode, plus parent or
+branch ref, lane template, accent color, and Linear issue) that the picker shows
+as the pending lane; nothing is created until the chat is sent. The launch then
+builds it through the stages below — a `child` recipe passes `parentLaneId`
+(with the chosen base as the start point, since `create` honors `baseBranch`
+only for a primary parent), an `import` recipe adopts an existing branch with
+`laneService.importBranch` on the launch's reserved lane id (Cancel deletes the
+lane it made but never that pre-existing branch), and a `root` recipe branches
+from the chosen base. A configured lane keeps the name the user gave it — it is
+never AI-renamed — and its branch derives from that name.
 
 1. **Fetch base branch** — the same remote-first base resolution every
    base-less lane create uses (`resolveLaneCreateRemoteBaseDetailed`, which
@@ -2391,10 +2404,10 @@ meets the bubble's hover actions (time, undo, copy). The line reads:
 | `deliveryState` | Line | Tone and glyph |
 |---|---|---|
 | `inline` (Claude, Cursor, OpenCode, Pi steer into the live turn) | Steered | muted, steering wheel |
-| `accepted` (Codex took the steer, the model has not read it) | Steering… | muted, steering wheel |
+| `accepted` (Codex, Cursor, OpenCode, or Pi took the steer; the model has not read it yet) | Steering… | muted, steering wheel |
 | `processed` (Codex model read the steer) | Steered | muted, steering wheel |
 | `unprocessed` (the turn ended before the model read it) | Not steered — turn ended first, then Run next / Edit / Dismiss | amber, steering wheel |
-| `delivered` with a `steerId` (a staged message sent at the turn boundary) | Sent after turn | muted, clock |
+| `delivered` with a `steerId` (a staged message sent at the turn boundary, or a refused inline steer sent as its own turn) | Sent after turn | muted, clock |
 | `failed` with a `steerId` | Steer failed | red, steering wheel |
 | `failed` on a new-lane launch message | Couldn't send — retrying (reason on hover) | amber, warning |
 | `failed` otherwise | Couldn't send | red, warning |
