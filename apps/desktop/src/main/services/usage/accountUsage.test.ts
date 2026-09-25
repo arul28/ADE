@@ -227,7 +227,10 @@ describe("account usage merge", () => {
     const merged = mergeAccountUsageStats({
       localStats,
       contributions: [
-        contribution(makeRollup("local", []), {
+        // A machine whose first ledger scan is still running has no historical
+        // rollup yet, but it does have live quota — and that must still show.
+        contribution(null, {
+          machineKey: "local",
           label: "Mac",
           isLocal: true,
           origin: "live",

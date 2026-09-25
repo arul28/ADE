@@ -544,12 +544,15 @@ export function mergeAccountUsageStats({
   stats.scope = "account";
   stats.machines = machines;
 
-  // Live quota pools across the accepted machines (local first, then freshest).
-  // A deduped machine shares the winner's transcripts but reports its own live
-  // windows; excluding it keeps the shared login from counting twice. A failed
-  // machine is listed with no windows so the filter can select it and say so.
+  // Live quota pools across every machine that reported it, local first. Live
+  // readings do not depend on the historical rollup being ready, so this reads
+  // the raw contributions rather than the accepted set — a fresh machine whose
+  // first ledger scan is still running still has live quota to show. A deduped
+  // machine is excluded: it shares the winner's transcripts and its live
+  // windows are the same login, so including it would count the login twice. A
+  // failed machine is listed with no windows so the filter can select it.
   const liveByKey = new Map<string, AccountUsageContribution>();
-  for (const contribution of accepted) liveByKey.set(contribution.machineKey, contribution);
+  for (const contribution of contributions) liveByKey.set(contribution.machineKey, contribution);
   const environments: AdeUsageLiveEnvironment[] = machines
     .filter((machine) => machine.state !== "deduped")
     .map((machine) => {
