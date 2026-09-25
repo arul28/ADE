@@ -58,11 +58,16 @@ function DrawerSectionRegion({
       setFloor(Math.min(node.offsetHeight, SECTION_FLOOR_PX));
     };
     measure();
-    if (typeof ResizeObserver === "undefined") return;
-    const resize = new ResizeObserver(measure);
-    resize.observe(node);
+    // The child-list observer is what un-hides a section that gains content
+    // after mount (tasks or proof arrive mid-chat); it must not depend on
+    // ResizeObserver being available.
     const children = new MutationObserver(measure);
     children.observe(node, { childList: true });
+    if (typeof ResizeObserver === "undefined") {
+      return () => children.disconnect();
+    }
+    const resize = new ResizeObserver(measure);
+    resize.observe(node);
     return () => {
       resize.disconnect();
       children.disconnect();
