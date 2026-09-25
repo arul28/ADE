@@ -2145,17 +2145,17 @@ app.whenReady().then(async () => {
 
   const persistUpdateWorkspace = (): void => {
     const localRoots: string[] = [];
-    let activeLocalRoot: string | null = null;
+    let fallbackActiveRoot: string | null = null;
     for (const [windowId, tabRoots] of windowProjectTabRoots) {
       for (const root of tabRoots) {
         if (!localRoots.some((existing) => pathsEqual(existing, root))) localRoots.push(root);
       }
       const bound = windowProjectRoots.get(windowId) ?? null;
-      if (bound) activeLocalRoot = bound;
+      if (bound && localRoots.some((root) => pathsEqual(root, bound))) fallbackActiveRoot = bound;
     }
-    if (!activeLocalRoot && activeProjectRoot && localRoots.some((root) => pathsEqual(root, activeProjectRoot))) {
-      activeLocalRoot = activeProjectRoot;
-    }
+    const activeLocalRoot = activeProjectRoot && localRoots.some((root) => pathsEqual(root, activeProjectRoot))
+      ? activeProjectRoot
+      : fallbackActiveRoot;
     const current = readGlobalState(globalStatePath);
     writeGlobalState(globalStatePath, {
       ...current,
@@ -2744,6 +2744,9 @@ app.whenReady().then(async () => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
     });
+    // Windows are still open here. The quit that follows closes them, and each
+    // closed handler would otherwise save an empty tab list over this snapshot.
+    persistUpdateWorkspace();
     // From here until the app quits, the missing (or old) background service
     // is the update working. The pool must not answer it with a repair that
     // reinstalls what this function is about to remove.
@@ -7850,7 +7853,7 @@ app.whenReady().then(async () => {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
       scheduleProjectContextRebalance();
-      persistUpdateWorkspace();
+      if (!autoUpdateService.isInstallQuitArmed()) persistUpdateWorkspace();
     });
   };
 
