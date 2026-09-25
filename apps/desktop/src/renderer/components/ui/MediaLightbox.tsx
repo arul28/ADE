@@ -8,8 +8,9 @@ import { Dialog } from "./dialog";
  * ADE's one full-size viewer for a picture or a video.
  *
  * The media is the whole view: it fits the window at its own aspect, with no
- * header and no frame around it. A small toolbar floats on its top edge with
- * the tools every opened picture needs: copy (pictures), download, close.
+ * header, frame or rounded corners, so nothing of it is cut. A small toolbar
+ * shows on hover over its top edge with the tools every opened picture needs:
+ * copy (pictures), download, close.
  *
  * `readDataUrl` gives the bytes for copy and download. The renderer's CSP
  * blocks `fetch` of `ade-artifact:` and loopback URLs, so a caller whose
@@ -111,7 +112,7 @@ export function MediaLightbox({
         background: "transparent",
         border: "none",
         boxShadow: "none",
-        borderRadius: 12,
+        borderRadius: 0,
         overflow: "visible",
       }}
       initialFocusRef={closeRef}
@@ -125,18 +126,20 @@ export function MediaLightbox({
             playsInline
             onError={onMediaError}
             aria-label={title}
-            className="block h-auto max-h-[calc(100vh-32px)] w-auto max-w-[calc(100vw-32px)] rounded-xl bg-black object-contain"
+            className="block h-auto max-h-[calc(100vh-32px)] w-auto max-w-[calc(100vw-32px)] bg-black object-contain"
           />
         ) : (
           <img
             src={src}
             alt={title}
             onError={onMediaError}
-            className="block h-auto max-h-[calc(100vh-32px)] w-auto max-w-[calc(100vw-32px)] rounded-xl object-contain"
+            className="block h-auto max-h-[calc(100vh-32px)] w-auto max-w-[calc(100vw-32px)] object-contain"
           />
         )}
         <div
-          className="absolute right-2.5 top-2.5 flex items-center gap-0.5 rounded-lg border border-white/[0.12] bg-black/60 p-0.5 text-white/80 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md"
+          // Hidden until the pointer is over the media or a tool has keyboard focus, so
+          // the picture shows whole and unobstructed.
+          className="absolute right-2.5 top-2.5 flex items-center gap-0.5 rounded-lg border border-white/[0.12] bg-black/60 p-0.5 text-white/80 opacity-0 shadow-[0_6px_24px_rgba(0,0,0,0.45)] backdrop-blur-md transition-opacity duration-150 has-[:focus-visible]:opacity-100 group-hover/lightbox:opacity-100"
         >
           {kind === "image" && canReadBytes ? (
             <LightboxTool
