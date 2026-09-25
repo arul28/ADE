@@ -619,6 +619,7 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
   "ADE_ENABLE_HEAD_WATCHER",
+  "ADE_ENABLE_AUTO_PULL_DEFAULT",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_PR_POLLING",
   // reconcile-on-focus is the default catch-up safety net (the brain has no PR
@@ -5356,8 +5357,7 @@ app.whenReady().then(async () => {
         });
       },
       15_000,
-  "ADE_ENABLE_HEAD_WATCHER",
-  "ADE_ENABLE_AUTO_PULL_DEFAULT",
+      "ADE_ENABLE_HEAD_WATCHER",
     );
 
     // Local-runtime only: a remote-bound desktop must never mutate a checkout
