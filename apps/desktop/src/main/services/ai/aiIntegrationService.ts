@@ -1592,6 +1592,19 @@ export function createAiIntegrationService(args: {
     return orgId || null;
   };
 
+  /**
+   * Optional `create_as_user_id` / `message_as_user_id` — the human every
+   * ADE-created session and message is attributed to. Required when the
+   * credential is a service user, whose sessions otherwise land on the service
+   * user instead of a person.
+   */
+  const readDevinCloudAsUserId = (): string | null => {
+    const snapshot = projectConfigService.get();
+    const aiConfig = extractAiConfig(snapshot);
+    const userId = typeof aiConfig.devinCloudAsUserId === "string" ? aiConfig.devinCloudAsUserId.trim() : "";
+    return userId || null;
+  };
+
   const persistDevinCloudOrgId = (orgId: string | null): void => {
     try {
       const snapshot = projectConfigService.get();
@@ -1602,6 +1615,21 @@ export function createAiIntegrationService(args: {
       });
     } catch (error) {
       logger.warn("ai.devin_cloud.org_id_persist_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const persistDevinCloudAsUserId = (asUserId: string | null): void => {
+    try {
+      const snapshot = projectConfigService.get();
+      const localAi = { ...(snapshot.local?.ai ?? {}), devinCloudAsUserId: asUserId };
+      projectConfigService.save({
+        shared: snapshot.shared,
+        local: { ...(snapshot.local ?? {}), ai: localAi },
+      });
+    } catch (error) {
+      logger.warn("ai.devin_cloud.as_user_id_persist_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -1662,7 +1690,7 @@ export function createAiIntegrationService(args: {
   const getDevinCloudAuthStatus = async (): Promise<DevinCloudAuthStatus> => {
     const apiKey = getStoredApiKey("devin");
     if (!apiKey) {
-      return { configured: false, authMode: null, orgId: null, orgName: null, error: null };
+      return { configured: false, authMode: null, orgId: null, orgName: null, asUserId: null, error: null };
     }
     return {
       configured: true,
@@ -1673,6 +1701,7 @@ export function createAiIntegrationService(args: {
       orgId: readDevinCloudOrgId()
         ?? (devinCloudClientCache?.apiKey === apiKey ? devinCloudClientCache.orgId : null),
       orgName: null,
+      asUserId: readDevinCloudAsUserId(),
       error: null,
     };
   };
@@ -1684,6 +1713,7 @@ export function createAiIntegrationService(args: {
     if (!key) {
       deleteStoredApiKey("devin");
       persistDevinCloudOrgId(null);
+      persistDevinCloudAsUserId(null);
       devinCloudClientCache = null;
       devinCloudCaller = null;
       // Report the EFFECTIVE state: a DEVIN_API_KEY process env var still
@@ -1700,12 +1730,15 @@ export function createAiIntegrationService(args: {
     // The org id only applies to v3 keys — persisting a stale one would make a
     // later v3 key verify against the previous org.
     persistDevinCloudOrgId(detectDevinAuthMode(key) === "v3" ? resolvedOrgId : null);
+    const asUserId = args.asUserId?.trim() || null;
+    persistDevinCloudAsUserId(asUserId);
     devinCloudClientCache = { apiKey: key, orgId: resolvedOrgId, client };
     return {
       configured: true,
       authMode: detectDevinAuthMode(key),
       orgId: resolvedOrgId,
       orgName,
+      asUserId,
       error: null,
     };
   };
@@ -1732,7 +1765,26 @@ export function createAiIntegrationService(args: {
     args: DevinCloudCreateSessionRequest,
   ): Promise<DevinCloudSessionSummary> => {
     const client = await devinCloudClient();
-    const result = await client.createSession(args);
+    // The configured impersonation target fills in only when the caller did
+    // not name one — a per-launch value always wins over the project default.
+    const createAsUserId = args.createAsUserId?.trim() || readDevinCloudAsUserId();
+    const result = await client.createSession(
+      createAsUserId ? { ...args, createAsUserId } : args,
+    );
+    rememberDiscoveredDevinOrg(client);
+    return result;
+  };
+
+  const listDevinCloudPlaybooks = async () => {
+    const client = await devinCloudClient();
+    const result = await client.listPlaybooks();
+    rememberDiscoveredDevinOrg(client);
+    return result;
+  };
+
+  const listDevinCloudKnowledge = async () => {
+    const client = await devinCloudClient();
+    const result = await client.listKnowledge();
     rememberDiscoveredDevinOrg(client);
     return result;
   };
@@ -1777,9 +1829,11 @@ export function createAiIntegrationService(args: {
   ): Promise<DevinCloudSendMessageResult> => {
     const client = await devinCloudClient();
     const id = normalizeDevinSessionId(args.devinSessionId);
+    const messageAsUserId = args.messageAsUserId?.trim() || readDevinCloudAsUserId();
     await client.sendMessage(id, {
       message: args.message,
       ...(args.attachmentUrls?.length ? { attachmentUrls: args.attachmentUrls } : {}),
+      ...(messageAsUserId ? { messageAsUserId } : {}),
     });
     return { delivered: true };
   };
@@ -2612,6 +2666,8 @@ export function createAiIntegrationService(args: {
     listDevinCloudSessions,
     getDevinCloudSession,
     createDevinCloudSession,
+    listDevinCloudPlaybooks,
+    listDevinCloudKnowledge,
     listDevinCloudMessages,
     listDevinCloudAttachments,
     downloadDevinCloudAttachment,

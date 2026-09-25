@@ -233,6 +233,7 @@ import type {
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
   DevinCloudAuthStatus,
+  DevinCloudCatalog,
   DevinCloudCreateSessionForLaneRequest,
   DevinCloudCreateSessionForLaneResult,
   DevinCloudFleetResult,
@@ -5427,6 +5428,10 @@ const adeBridge = {
     ): Promise<void> =>
       callProjectRuntimeActionOr("ai", "watchDevinCloudMirror", { args }, () =>
         ipcRenderer.invoke(IPC.aiDevinCloudWatchMirror, args),
+      ),
+    devinCloudCatalog: async (): Promise<DevinCloudCatalog> =>
+      callProjectRuntimeActionOr("ai", "getDevinCloudCatalog", {}, () =>
+        ipcRenderer.invoke(IPC.aiDevinCloudCatalog),
       ),
   },
   transcription: {

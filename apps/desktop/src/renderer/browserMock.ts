@@ -4534,6 +4534,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       devinCloudOpenChat: resolvedArg({ sessionId: "", session: null } as any),
       devinCloudCreateSession: resolvedArg({ sessionId: "", session: null, devinSessionId: "demo-new" } as any),
       devinCloudWatchMirror: resolvedArg(undefined),
+      devinCloudCatalog: resolvedArg({ playbooks: [], knowledge: [] } as any),
     },
     agentTools: {
       detect: resolved([]),

@@ -38,6 +38,7 @@ import {
 } from "./shared";
 import { readDevinAccount } from "./acpAccounts";
 import { getApiCredentialKey } from "../../../ai/apiKeyStore";
+import { resolveDevinCliModelForLaunch } from "../../../../../shared/cliLaunch";
 
 /**
  * A Windsurf API key saved on the Devin provider page files under the
@@ -55,9 +56,14 @@ function storedDevinCliApiKey(baseEnv: NodeJS.ProcessEnv): string | null {
 }
 
 function buildSpawnPlan(context: AcpSpawnContext): AcpSpawnPlan {
+  // `devin acp --model <name>` sets the default model for every ACP session the
+  // server opens; the per-session `setModel` request still overrides it. The
+  // CLI accepts the same fuzzy family names ADE's registry rows carry.
+  const model = resolveDevinCliModelForLaunch(context.modelId);
+  const args = ["acp", ...(model ? ["--model", model] : [])];
   return {
     command: context.binaryPath,
-    args: ["acp"],
+    args,
     cwd: context.cwd,
     env: withOptionalEnv(context.baseEnv, {
       WINDSURF_API_KEY: storedDevinCliApiKey(context.baseEnv),

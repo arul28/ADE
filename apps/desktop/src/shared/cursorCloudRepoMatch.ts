@@ -43,3 +43,35 @@ export function devinCloudRepoMatchKey(repo: string | null | undefined): string 
   const first = key.split("/")[0] ?? "";
   return first.includes(".") ? key : `github.com/${key}`;
 }
+
+/**
+ * Extract the repository path (`owner/repo`, or `group/subgroup/repo` for
+ * self-hosted SCMs) from any git remote spelling, without the host. Devin's
+ * create `repos` field and list `repo_names` filter take repository
+ * identifiers in this `owner/name` shape — clone URLs are for the prompt
+ * binding, not the API field. `owner/repo` case is preserved because Devin's
+ * integration is case-sensitive about the configured repository name.
+ * Returns "" when the remote carries no usable repo path.
+ */
+export function gitRemoteRepoSlug(url: string | null | undefined): string {
+  if (!url) return "";
+  let s = url.trim();
+  if (!s) return "";
+  // SSH form: git@host:owner/repo(.git) — everything after `host:` is the path.
+  const sshMatch = s.match(/^[^@]+@([^:]+):(.+)$/);
+  if (sshMatch) {
+    // `ssh://git@host:443/owner/repo` reaches here too; drop the explicit port.
+    const portMatch = sshMatch[2].match(/^\d+\/(.+)$/);
+    s = portMatch ? portMatch[1] : sshMatch[2];
+  } else {
+    s = s.replace(/^[a-z+]+:\/\//i, "");
+    s = s.replace(/^[^/@]+@/, "");
+    s = s.replace(/^([^/:]+):\d+\//, "$1/");
+    // URL form: drop the host (first segment) and keep the repo path.
+    const slash = s.indexOf("/");
+    s = slash === -1 ? "" : s.slice(slash + 1);
+  }
+  s = s.replace(/\/+$/, "").replace(/\.git$/i, "");
+  const parts = s.split("/").filter(Boolean);
+  return parts.length >= 2 ? parts.join("/") : "";
+}

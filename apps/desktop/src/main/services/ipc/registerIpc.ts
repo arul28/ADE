@@ -702,6 +702,7 @@ import type {
   CursorCloudFleetEvent,
   CursorCloudPullIntoLaneResult,
   DevinCloudAuthStatus,
+  DevinCloudCatalog,
   DevinCloudCreateSessionForLaneRequest,
   DevinCloudCreateSessionForLaneResult,
   DevinCloudFleetResult,
@@ -5847,6 +5848,19 @@ export function registerIpc({
       const status = await ctx.aiIntegrationService.setDevinCloudCredentials(arg);
       ctx.devinCloudFleetService?.invalidateCache();
       return status;
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiDevinCloudCatalog,
+    async (): Promise<DevinCloudCatalog> => {
+      const ctx = getCtx();
+      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
+      const [playbooks, knowledge] = await Promise.all([
+        ctx.aiIntegrationService.listDevinCloudPlaybooks(),
+        ctx.aiIntegrationService.listDevinCloudKnowledge(),
+      ]);
+      return { playbooks, knowledge };
     },
   );
 

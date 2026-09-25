@@ -6354,9 +6354,13 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     if (typeof payload.orgId === "string" && payload.orgId.length > 256) {
       throw new Error("ai.setDevinCloudCredentials orgId is too long.");
     }
+    if (typeof payload.asUserId === "string" && payload.asUserId.length > 256) {
+      throw new Error("ai.setDevinCloudCredentials asUserId is too long.");
+    }
     const status = await requireService(args.aiIntegrationService, "AI integration service not available.").setDevinCloudCredentials({
       apiKey: payload.apiKey,
       ...(typeof payload.orgId === "string" ? { orgId: payload.orgId } : {}),
+      ...(typeof payload.asUserId === "string" ? { asUserId: payload.asUserId } : {}),
     });
     args.devinCloudFleetService?.invalidateCache();
     return status;
@@ -6437,12 +6441,24 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     const title = asTrimmedString(payload.title);
     const projectId = asTrimmedString(payload.projectId);
     const platform = asTrimmedString(payload.platform);
+    const playbookId = asTrimmedString(payload.playbookId);
+    const createAsUserId = asTrimmedString(payload.createAsUserId);
+    const knowledgeIds = asStringArray(payload.knowledgeIds).filter((id) => id.trim().length > 0);
+    const maxAcuLimit = typeof payload.maxAcuLimit === "number" && Number.isFinite(payload.maxAcuLimit)
+      ? Math.floor(payload.maxAcuLimit)
+      : undefined;
     const prompt = requireString(payload.prompt, "ai.createDevinCloudSession requires prompt.");
     // Bounds matching the credential caps above: identifiers are short and a
     // prompt past 100 KB is abuse, not a task.
     if (prompt.length > 100_000) throw new Error("ai.createDevinCloudSession prompt is too long.");
-    for (const [name, value] of [["sessionId", sessionId], ["title", title], ["projectId", projectId], ["platform", platform]] as const) {
+    for (const [name, value] of [["sessionId", sessionId], ["title", title], ["projectId", projectId], ["platform", platform], ["playbookId", playbookId], ["createAsUserId", createAsUserId]] as const) {
       if (value && value.length > 256) throw new Error(`ai.createDevinCloudSession ${name} is too long.`);
+    }
+    if (knowledgeIds.length > 100 || knowledgeIds.some((id) => id.length > 256)) {
+      throw new Error("ai.createDevinCloudSession knowledgeIds is too large.");
+    }
+    if (maxAcuLimit !== undefined && (maxAcuLimit <= 0 || maxAcuLimit > 1_000_000)) {
+      throw new Error("ai.createDevinCloudSession maxAcuLimit is out of range.");
     }
     const laneId = requireString(payload.laneId, "ai.createDevinCloudSession requires laneId.");
     const attachments = parseAgentChatFileRefs(payload.attachments);
@@ -6477,11 +6493,23 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       ...(devinMode !== undefined ? { devinMode } : {}),
       ...(projectId ? { projectId } : {}),
       ...(platform ? { platform } : {}),
+      ...(playbookId ? { playbookId } : {}),
+      ...(knowledgeIds.length ? { knowledgeIds } : {}),
+      ...(maxAcuLimit !== undefined ? { maxAcuLimit } : {}),
+      ...(createAsUserId ? { createAsUserId } : {}),
       ...(attachments?.length ? { attachments } : {}),
       ...(typeof payload.bypassApproval === "boolean" ? { bypassApproval: payload.bypassApproval } : {}),
     });
     args.devinCloudFleetService?.invalidateCache();
     return result;
+  });
+  register("ai.getDevinCloudCatalog", { viewerAllowed: true, queueable: false }, async () => {
+    const ai = requireService(args.aiIntegrationService, "AI integration service not available.");
+    const [playbooks, knowledge] = await Promise.all([
+      ai.listDevinCloudPlaybooks(),
+      ai.listDevinCloudKnowledge(),
+    ]);
+    return { playbooks, knowledge };
   });
 }
 

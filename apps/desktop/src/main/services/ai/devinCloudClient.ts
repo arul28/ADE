@@ -18,12 +18,15 @@ import type {
   DevinCloudAttachment,
   DevinCloudAuthMode,
   DevinCloudCreateSessionRequest,
+  DevinCloudKnowledgeSummary,
   DevinCloudListMessagesResult,
   DevinCloudMessage,
   DevinCloudMode,
+  DevinCloudPlaybookSummary,
   DevinCloudSessionStatus,
   DevinCloudSessionSummary,
 } from "../../../shared/types/config";
+import { gitRemoteRepoSlug } from "../../../shared/cursorCloudRepoMatch";
 import type { Logger } from "../logging/logger";
 
 const DEFAULT_TIMEOUT_MS = 20_000;
@@ -221,6 +224,7 @@ function normalizeV3Session(record: Record<string, unknown>): DevinCloudSessionS
     devinMode: (mode ?? null) as DevinCloudMode | null,
     acusConsumed: readNumber(record.acus_consumed),
     userId: readString(record.user_id),
+    serviceUserId: readString(record.service_user_id),
     parentSessionId: readString(record.parent_session_id),
     origin: readString(record.origin),
   };
@@ -245,6 +249,7 @@ function normalizeV1SessionSummary(record: Record<string, unknown>): DevinCloudS
     devinMode: null,
     acusConsumed: null,
     userId: readString(record.requesting_user_email),
+    serviceUserId: null,
     parentSessionId: null,
     origin: "api",
   };
@@ -394,9 +399,11 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     let cursor: string | null = null;
     try {
       for (;;) {
-        const qs = { first: 50, ...(cursor ? { after: cursor } : {}) };
+        // Same as sessions: top-level `first`/`after`, not a `qs` blob.
+        const params = new URLSearchParams({ first: "50" });
+        if (cursor) params.set("after", cursor);
         const page = await request<unknown>(
-          "/v3/enterprise/organizations?qs=" + encodeURIComponent(JSON.stringify(qs)),
+          `/v3/enterprise/organizations?${params.toString()}`,
         );
         if (!isRecord(page) || !Array.isArray(page.items)) {
           throw new Error("Devin rejected this token — the organizations endpoint did not answer as expected.");
@@ -447,19 +454,36 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     );
 
   /**
-   * Probes an org-scoped endpoint: true when the token can read the org. Used
-   * when enterprise org listing is unavailable (non-enterprise accounts).
+   * Probes an org-scoped endpoint. Used when enterprise org listing is
+   * unavailable (non-enterprise accounts). On failure it carries the API error
+   * so the caller can say *why*: a 403 here is usually the token's role lacking
+   * `UseDevinSessions`, not a wrong org id, and conflating the two sends users
+   * hunting for the wrong fix.
    */
-  const probeOrg = async (orgId: string): Promise<boolean> => {
+  const probeOrg = async (
+    orgId: string,
+  ): Promise<{ ok: true } | { ok: false; error: unknown }> => {
     try {
       await request<unknown>(
         `/v3/organizations/${encodeURIComponent(orgId)}/sessions?qs=` +
           encodeURIComponent(JSON.stringify({ first: 1 })),
       );
-      return true;
-    } catch {
-      return false;
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error };
     }
+  };
+
+  /** Human-readable reason a token could not read a named org. */
+  const orgUnreadableError = (orgId: string, error: unknown): Error => {
+    const detail = error instanceof DevinCloudApiError
+      ? error.body.trim() || `HTTP ${error.status}`
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    return new Error(
+      `Could not read Devin org '${orgId}'. Confirm the org id in Settings > Devin, and that this token's role grants Devin-session access (a service user needs the UseDevinSessions permission). ${detail.slice(0, 200)}`,
+    );
   };
 
   const resolveOrgId = async (): Promise<string> => {
@@ -517,18 +541,29 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       const next = items.length >= Math.min(first, 100) ? String(offset + items.length) : null;
       return { items, endCursor: next, offset: offset + items.length };
     }
-    const qs = {
-      first,
-      ...(listArgs.after ? { after: listArgs.after } : {}),
-      ...(listArgs.repoNames?.length ? { repo_names: listArgs.repoNames } : {}),
-      ...(listArgs.tags?.length ? { tags: listArgs.tags } : {}),
-      ...(listArgs.sessionIds?.length ? { session_ids: listArgs.sessionIds } : {}),
-      ...(listArgs.isArchived !== undefined ? { is_archived: listArgs.isArchived } : {}),
-      ...(listArgs.createdAfter ? { created_after: listArgs.createdAfter } : {}),
-      ...(listArgs.updatedAfter ? { updated_after: listArgs.updatedAfter } : {}),
-    };
+    // The OpenAPI documents one `qs` object param, but the live server only
+    // honors the fields as individual top-level query params — a `?qs=<json>`
+    // blob is silently ignored, dropping every filter AND the `after` cursor
+    // (verified against api.devin.ai). Send them top-level; arrays repeat the
+    // key, which is what FastAPI query parsing expects.
+    const params = new URLSearchParams({ first: String(first) });
+    if (listArgs.after) params.set("after", listArgs.after);
+    for (const repo of listArgs.repoNames ?? []) {
+      if (repo.trim()) params.append("repo_names", repo.trim());
+    }
+    for (const tag of listArgs.tags ?? []) {
+      if (tag.trim()) params.append("tags", tag.trim());
+    }
+    for (const sessionId of listArgs.sessionIds ?? []) {
+      if (sessionId.trim()) params.append("session_ids", sessionId.trim());
+    }
+    if (listArgs.isArchived !== undefined) {
+      params.set("is_archived", listArgs.isArchived ? "true" : "false");
+    }
+    if (listArgs.createdAfter) params.set("created_after", String(Math.floor(listArgs.createdAfter)));
+    if (listArgs.updatedAfter) params.set("updated_after", String(Math.floor(listArgs.updatedAfter)));
     const page = await request<unknown>(
-      `${await orgPath("/sessions")}?qs=${encodeURIComponent(JSON.stringify(qs))}`,
+      `${await orgPath("/sessions")}?${params.toString()}`,
     );
     if (!isRecord(page) || !Array.isArray(page.items)) {
       throw new DevinCloudResponseError("/v3/organizations/{org}/sessions");
@@ -580,18 +615,53 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
         devinMode: null,
         acusConsumed: null,
         userId: null,
+        serviceUserId: null,
         parentSessionId: null,
         origin: "api",
       };
     }
     const body: Record<string, unknown> = {
       prompt,
-      ...(input.repoUrls?.length ? { repos: input.repoUrls } : {}),
+      // v3 `repos` takes `owner/repo` identifiers, not clone URLs. Callers pass
+      // the slug explicitly; fall back to deriving it from a URL when absent.
+      ...(() => {
+        const repoNames = (input.repoNames ?? [])
+          .map((name) => name.trim())
+          .filter(Boolean);
+        const derived = repoNames.length
+          ? repoNames
+          : (input.repoUrls ?? []).map((url) => gitRemoteRepoSlug(url)).filter(Boolean);
+        return derived.length ? { repos: derived } : {};
+      })(),
       ...(input.tags?.length ? { tags: input.tags } : {}),
       ...(input.title?.trim() ? { title: input.title.trim() } : {}),
       ...(input.devinMode ? { devin_mode: input.devinMode } : {}),
       ...(input.resumable !== undefined ? { resumable: input.resumable } : {}),
+      ...(input.playbookId?.trim() ? { playbook_id: input.playbookId.trim() } : {}),
+      ...(input.knowledgeIds?.length
+        ? { knowledge_ids: input.knowledgeIds.map((id) => id.trim()).filter(Boolean) }
+        : {}),
+      ...(typeof input.maxAcuLimit === "number" && Number.isFinite(input.maxAcuLimit)
+        ? { max_acu_limit: Math.floor(input.maxAcuLimit) }
+        : {}),
       ...(input.bypassApproval !== undefined ? { bypass_approval: input.bypassApproval } : {}),
+      ...(input.attachmentUrls?.length ? { attachment_urls: input.attachmentUrls } : {}),
+      ...(input.secretIds?.length ? { secret_ids: input.secretIds.map((id) => id.trim()).filter(Boolean) } : {}),
+      ...(input.sessionSecrets?.length
+        ? {
+            session_secrets: input.sessionSecrets
+              .filter((secret) => secret.key.trim())
+              .map((secret) => ({
+                key: secret.key.trim(),
+                value: secret.value,
+                sensitive: secret.sensitive !== false,
+              })),
+          }
+        : {}),
+      ...(input.securityProfileId?.trim()
+        ? { security_profile: { profile_id: input.securityProfileId.trim() } }
+        : {}),
+      ...(input.createAsUserId?.trim() ? { create_as_user_id: input.createAsUserId.trim() } : {}),
       ...(input.platform?.trim() ? { platform: input.platform.trim() } : {}),
     };
     const record = await request<unknown>(await orgPath("/sessions"), { method: "POST", body });
@@ -830,7 +900,7 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
 
   const sendMessage = async (
     devinSessionId: string,
-    input: { message: string; attachmentUrls?: string[] },
+    input: { message: string; attachmentUrls?: string[]; messageAsUserId?: string | null },
   ): Promise<void> => {
     const id = normalizeDevinSessionId(devinSessionId);
     const message = input.message.trim();
@@ -852,6 +922,9 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       body: {
         message,
         ...(input.attachmentUrls?.length ? { attachment_urls: input.attachmentUrls } : {}),
+        ...(input.messageAsUserId?.trim()
+          ? { message_as_user_id: input.messageAsUserId.trim() }
+          : {}),
       },
     });
   };
@@ -894,6 +967,74 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     });
   };
 
+  /**
+   * Org playbooks (`GET .../playbooks`) — reusable prompts a launch binds with
+   * `playbook_id`. v1 keys have no playbook surface.
+   */
+  const listPlaybooks = async (): Promise<DevinCloudPlaybookSummary[]> => {
+    if (authMode === "v1") return [];
+    const items: DevinCloudPlaybookSummary[] = [];
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (;;) {
+      const params = new URLSearchParams({ first: "100" });
+      if (cursor) params.set("after", cursor);
+      const page = await request<unknown>(`${await orgPath("/playbooks")}?${params.toString()}`);
+      if (!isRecord(page) || !Array.isArray(page.items)) {
+        throw new DevinCloudResponseError("/v3/organizations/{org}/playbooks");
+      }
+      for (const row of page.items) {
+        if (!isRecord(row)) continue;
+        const id = readString(row.playbook_id);
+        if (!id) continue;
+        items.push({
+          playbookId: id,
+          title: readString(row.title) ?? id,
+          macro: readString(row.macro),
+          accessType: readString(row.access_type) === "enterprise" ? "enterprise" : "org",
+        });
+      }
+      const next = readString(page.end_cursor);
+      if (!next || seen.has(next)) break;
+      seen.add(next);
+      cursor = next;
+    }
+    return items;
+  };
+
+  /** Org knowledge notes (`GET .../knowledge/notes`) for `knowledge_ids`. */
+  const listKnowledge = async (): Promise<DevinCloudKnowledgeSummary[]> => {
+    if (authMode === "v1") return [];
+    const items: DevinCloudKnowledgeSummary[] = [];
+    const seen = new Set<string>();
+    let cursor: string | null = null;
+    for (;;) {
+      const params = new URLSearchParams({ first: "100" });
+      if (cursor) params.set("after", cursor);
+      const page = await request<unknown>(`${await orgPath("/knowledge/notes")}?${params.toString()}`);
+      if (!isRecord(page) || !Array.isArray(page.items)) {
+        throw new DevinCloudResponseError("/v3/organizations/{org}/knowledge/notes");
+      }
+      for (const row of page.items) {
+        if (!isRecord(row)) continue;
+        const id = readString(row.note_id);
+        if (!id) continue;
+        items.push({
+          noteId: id,
+          name: readString(row.name) ?? id,
+          macro: readString(row.macro),
+          isEnabled: row.is_enabled !== false,
+          folderPath: readString(row.folder_path),
+        });
+      }
+      const next = readString(page.end_cursor);
+      if (!next || seen.has(next)) break;
+      seen.add(next);
+      cursor = next;
+    }
+    return items;
+  };
+
   /** Verify the credential: v3 lists orgs, v1 lists one session page. */
   const verify = async (): Promise<{ orgName: string | null }> => {
     if (authMode === "v1") {
@@ -910,10 +1051,9 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
       // probing an org-scoped endpoint.
       const orgId = cachedOrgId ?? (await getSelf())?.orgId ?? null;
       if (!orgId) throw noOrgIdError();
-      if (!(await probeOrg(orgId))) {
-        throw new Error(
-          `Org '${orgId}' is not visible to this Devin token. Check the org id in Settings > Devin.`,
-        );
+      const probe = await probeOrg(orgId);
+      if (!probe.ok) {
+        throw orgUnreadableError(orgId, probe.error);
       }
       cachedOrgId = orgId;
       return { orgName: null };
@@ -957,6 +1097,8 @@ export function createDevinCloudClient(args: DevinCloudClientArgs) {
     terminateSession,
     archiveSession,
     unarchiveSession,
+    listPlaybooks,
+    listKnowledge,
     verify,
     /** `GET /v3/self` — caller identity (userId/orgId) for PATs and service users. */
     getSelf,

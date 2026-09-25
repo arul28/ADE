@@ -30,6 +30,7 @@ function session(overrides: Partial<DevinCloudSessionSummary> & { sessionId: str
     devinMode: null,
     acusConsumed: null,
     userId: null,
+    serviceUserId: null,
     parentSessionId: null,
     origin: null,
     ...overrides,

@@ -10,6 +10,7 @@ import type {
   DevinCloudFleetStatus,
   DevinCloudMode,
   DevinCloudOpenChatResult,
+  DevinCloudPlaybookSummary,
 } from "../../../shared/types";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import {
@@ -18,7 +19,6 @@ import {
   devinCloudRepoLabel,
   devinCloudStatusToneClass,
   formatDevinCloudAge,
-  devinCloudRepoMatchKey,
   repoMatchKey,
 } from "../../lib/devinCloudUtils";
 import { cn } from "../ui/cn";
@@ -60,6 +60,13 @@ type ChatDevinCloudPanelProps = {
   onPlatformChange: (value: string) => void;
   bypassApproval: boolean;
   onBypassApprovalChange: (value: boolean) => void;
+  /** Selected org playbook id, "" for none. */
+  playbookId: string;
+  playbooks: DevinCloudPlaybookSummary[];
+  onPlaybookChange: (value: string) => void;
+  /** ACU ceiling as typed text; "" for org default. */
+  acuLimit: string;
+  onAcuLimitChange: (value: string) => void;
   onLaunched?: (devinSessionId: string) => void;
   onClose: () => void;
   onOpened?: (result: DevinCloudOpenChatResult) => void;
@@ -84,6 +91,11 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
   onPlatformChange,
   bypassApproval,
   onBypassApprovalChange,
+  playbookId,
+  playbooks,
+  onPlaybookChange,
+  acuLimit,
+  onAcuLimitChange,
   onLaunched,
   onClose,
   onOpened,
@@ -122,18 +134,20 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
   }, []);
 
   /** Sessions touching this lane's repo — the fleet already covers the org.
-   *  The chat's own linked session always stays: v1 listings carry no repo
-   *  binding at all, so a repo filter alone would hide it. */
-  const repoEntries = useMemo(() => {
-    if (!repoKey) return entries;
-    return entries.filter((entry) =>
+   *  The fleet resolves `matchedBy` against the project origin (via the
+   *  session's PR repo, since a v3 session never echoes its `repos` binding),
+   *  so this panel filters on that rather than on `session.repos`, which is
+   *  always empty and previously let every org session through. The chat's own
+   *  linked session always stays. */
+  const repoEntries = useMemo(
+    () => entries.filter((entry) =>
       entry.session.sessionId === devinSessionId
-      // v1 entries carry no repo binding (the v1 API does not expose one) —
-      // an unknown binding must not be read as a mismatch.
-      || entry.session.repos.length === 0
-      || entry.session.repos.some((repo) => devinCloudRepoMatchKey(repo) === repoKey),
-    );
-  }, [devinSessionId, entries, repoKey]);
+      || entry.matchedBy === "session"
+      || entry.matchedBy === "repo"
+      || entry.ownership.laneId != null,
+    ),
+    [devinSessionId, entries],
+  );
 
   const sessionEntry = useMemo(() => {
     if (!devinSessionId) return null;
@@ -171,6 +185,10 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
         devinMode,
         bypassApproval,
         platform: platform.trim() || null,
+        ...(playbookId.trim() ? { playbookId: playbookId.trim() } : {}),
+        ...(acuLimit.trim() && Number.isFinite(Number(acuLimit))
+          ? { maxAcuLimit: Math.floor(Number(acuLimit)) }
+          : {}),
       });
       onLaunched?.(created.devinSessionId);
       onOpened?.({ sessionId: created.sessionId, session: created.session });
@@ -182,7 +200,7 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
     } finally {
       setLoading(false);
     }
-  }, [bypassApproval, devinMode, laneId, onLaunched, onMissingFields, onOpened, platform, refresh]);
+  }, [acuLimit, bypassApproval, devinMode, laneId, onLaunched, onMissingFields, onOpened, platform, playbookId, refresh]);
 
   useImperativeHandle(ref, () => ({
     launchWithPrompt,
@@ -310,6 +328,36 @@ export const ChatDevinCloudPanel = forwardRef<ChatDevinCloudPanelHandle, ChatDev
                   <option value="macos" />
                   <option value="windows" />
                 </datalist>
+              </div>
+              {playbooks.length > 0 ? (
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-sans text-[10.5px] text-fg/45">Playbook</span>
+                  <select
+                    value={playbookId}
+                    onChange={(event) => onPlaybookChange(event.target.value)}
+                    aria-label="Devin playbook"
+                    className="h-6 max-w-40 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-[10.5px] text-fg/75 outline-none hover:border-white/[0.16]"
+                  >
+                    <option value="">None</option>
+                    {playbooks.map((playbook) => (
+                      <option key={playbook.playbookId} value={playbook.playbookId}>
+                        {playbook.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : null}
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-sans text-[10.5px] text-fg/45">ACU cap</span>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  value={acuLimit}
+                  onChange={(event) => onAcuLimitChange(event.target.value.replace(/[^0-9]/g, ""))}
+                  placeholder="org default"
+                  aria-label="Devin ACU cap"
+                  className="h-6 w-24 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 text-right font-mono text-[10.5px] text-fg/75 outline-none placeholder:text-fg/30 hover:border-white/[0.16]"
+                />
               </div>
               <label className="flex items-center justify-between gap-3">
                 <span className="font-sans text-[10.5px] text-fg/45">

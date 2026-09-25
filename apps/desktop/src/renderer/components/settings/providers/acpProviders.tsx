@@ -344,6 +344,7 @@ function DevinBody() {
   const [auth, setAuth] = useState<Awaited<ReturnType<typeof window.ade.ai.devinCloudGetAuthStatus>> | null>(null);
   const [keyInput, setKeyInput] = useState("");
   const [orgInput, setOrgInput] = useState("");
+  const [asUserInput, setAsUserInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -364,18 +365,20 @@ function DevinBody() {
       const status = await window.ade.ai.devinCloudSetCredentials({
         apiKey,
         orgId: orgInput.trim() || null,
+        asUserId: asUserInput.trim() || null,
       });
       setAuth(status);
       if (status.configured) {
         setKeyInput("");
         setOrgInput("");
+        setAsUserInput("");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
-  }, [busy, keyInput, orgInput]);
+  }, [asUserInput, busy, keyInput, orgInput]);
 
   const clear = useCallback(async () => {
     if (busy) return;
@@ -385,6 +388,7 @@ function DevinBody() {
       setAuth(await window.ade.ai.devinCloudSetCredentials({ apiKey: "" }));
       setKeyInput("");
       setOrgInput("");
+      setAsUserInput("");
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -399,9 +403,13 @@ function DevinBody() {
         The API token that powers the Devin fleet, mirrored chats, and sending
         work to Devin's cloud VMs. Paste a Personal Access Token
         (<span style={{ fontFamily: MONO_FONT }}>cog_…</span>) from
-        app.devin.ai → Settings → API, or a legacy personal key
-        (<span style={{ fontFamily: MONO_FONT }}>apk_user_…</span>) where PATs
-        are unavailable.
+        app.devin.ai → Settings → API, which acts as you; a service-user key
+        (<span style={{ fontFamily: MONO_FONT }}>cog_…</span>, Settings →
+        Devin API → Service users) for automation, ideally with an "Act as
+        user" id below; or a legacy personal key
+        (<span style={{ fontFamily: MONO_FONT }}>apk_user_…</span>) where v3 is
+        unavailable. On Enterprise plans PATs are off by default — use a service
+        user there.
       </div>
       {auth?.configured ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -412,6 +420,11 @@ function DevinBody() {
           {auth.orgId ? (
             <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
               {auth.orgId}
+            </span>
+          ) : null}
+          {auth.asUserId ? (
+            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
+              as {auth.asUserId}
             </span>
           ) : null}
           <button type="button" style={outlineButton({ height: 28 })} disabled={busy} onClick={() => void clear()}>
@@ -444,10 +457,21 @@ function DevinBody() {
             onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
             style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
           />
+          <input
+            aria-label="Devin act-as user id (optional)"
+            value={asUserInput}
+            onChange={(event) => setAsUserInput(event.target.value)}
+            placeholder="user-... (optional — attribute sessions to a person)"
+            disabled={busy}
+            onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
+            style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
+          />
           <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.4 }}>
-            Org id is auto-discovered on enterprise accounts; personal/team
-            accounts must paste it — visible in your Devin settings and session
-            URLs (or in the CLI via devin auth status).
+            Org id is auto-discovered for Personal Access Tokens; service users
+            and personal/team accounts must paste it — visible in your Devin
+            settings and session URLs (or via devin auth status). The act-as
+            user id is only needed on a service-user key so sessions land in
+            that person's list and usage.
           </div>
         </div>
       )}

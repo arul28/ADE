@@ -61,7 +61,7 @@ import {
   type AgentChatSendArgs,
   type ChatLaunchChatArgs,
 } from "../../../shared/types";
-import type { CursorCloudServiceTier, DevinCloudMode } from "../../../shared/types/config";
+import type { CursorCloudServiceTier, DevinCloudCatalog, DevinCloudMode } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import {
   isUnsupportedAgentChatRecoveryActionError,
@@ -4023,6 +4023,9 @@ export function AgentChatPane({
   const [devinCloudModeSel, setDevinCloudModeSel] = useState<DevinCloudMode | null>(null);
   const [devinCloudPlatformSel, setDevinCloudPlatformSel] = useState("");
   const [devinBypassApproval, setDevinBypassApproval] = useState(false);
+  const [devinCloudPlaybookSel, setDevinCloudPlaybookSel] = useState("");
+  const [devinAcuLimitSel, setDevinAcuLimitSel] = useState("");
+  const [devinCloudCatalog, setDevinCloudCatalog] = useState<DevinCloudCatalog>({ playbooks: [], knowledge: [] });
   const [devinCloudAuthConfigured, setDevinCloudAuthConfigured] = useState<boolean | null>(null);
   const [cloudOverlayArmed, setCloudOverlayArmed] = useState(false);
   const [cloudHydrateFailed, setCloudHydrateFailed] = useState(false);
@@ -6402,6 +6405,17 @@ export function AgentChatPane({
   useEffect(() => {
     if (!devinCloudCanLaunch && devinCloudMode) setDevinCloudMode(false);
   }, [devinCloudCanLaunch, devinCloudMode, setDevinCloudMode]);
+  // Playbooks/Knowledge are org-level and change rarely — load them once when
+  // cloud mode is first armed, not on every keystroke. A failed read leaves the
+  // picker empty; a launch without a playbook is still valid.
+  useEffect(() => {
+    if (!devinCloudMode || !devinCloudAuthConfigured) return;
+    let alive = true;
+    void window.ade.ai.devinCloudCatalog()
+      .then((catalog) => { if (alive) setDevinCloudCatalog(catalog); })
+      .catch(() => undefined);
+    return () => { alive = false; };
+  }, [devinCloudAuthConfigured, devinCloudMode]);
   const applyCursorCloudModelSwitch = useCallback((nextModelId: string) => {
     setModelId(nextModelId);
     setReasoningEffort(null);
@@ -11427,6 +11441,10 @@ export function AgentChatPane({
         devinMode: devinCloudModeSel,
         bypassApproval: devinBypassApproval,
         platform: devinCloudPlatformSel.trim() || null,
+        ...(devinCloudPlaybookSel.trim() ? { playbookId: devinCloudPlaybookSel.trim() } : {}),
+        ...(Number.isFinite(Number(devinAcuLimitSel)) && devinAcuLimitSel.trim()
+          ? { maxAcuLimit: Math.floor(Number(devinAcuLimitSel)) }
+          : {}),
         ...(snapshot.attachments.length ? { attachments: snapshot.attachments } : {}),
       });
       createdDevinSessionId = created.devinSessionId;
@@ -11493,9 +11511,11 @@ export function AgentChatPane({
     buildDraftLaunchSnapshotForCurrentState,
     currentNativeControls,
     cursorCloudServiceTier,
+    devinAcuLimitSel,
     devinBypassApproval,
     devinCloudModeSel,
     devinCloudPlatformSel,
+    devinCloudPlaybookSel,
     devinCloudUnavailableReason,
     draftLaunchTargetIsAutoCreate,
     executionMode,
@@ -14063,6 +14083,11 @@ export function AgentChatPane({
       onPlatformChange={setDevinCloudPlatformSel}
       bypassApproval={devinBypassApproval}
       onBypassApprovalChange={setDevinBypassApproval}
+      playbookId={devinCloudPlaybookSel}
+      playbooks={devinCloudCatalog.playbooks}
+      onPlaybookChange={setDevinCloudPlaybookSel}
+      acuLimit={devinAcuLimitSel}
+      onAcuLimitChange={setDevinAcuLimitSel}
       onLaunched={() => setDevinCloudPaneOpen(false)}
       onClose={() => setDevinCloudPaneOpen(false)}
       onOpened={(result) => {
@@ -15927,6 +15952,43 @@ export function AgentChatPane({
                                       <option value="macos" />
                                       <option value="windows" />
                                     </datalist>
+                                  </label>
+                                  {devinCloudCatalog.playbooks.length > 0 ? (
+                                    <label
+                                      className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/55"
+                                      title="Attach one of your Devin org playbooks to the session"
+                                    >
+                                      <span>Playbook</span>
+                                      <select
+                                        value={devinCloudPlaybookSel}
+                                        onChange={(event) => setDevinCloudPlaybookSel(event.target.value)}
+                                        className="max-w-28 bg-transparent text-[10px] font-medium text-fg/75 outline-none"
+                                      >
+                                        <option value="">None</option>
+                                        {devinCloudCatalog.playbooks.map((playbook) => (
+                                          <option key={playbook.playbookId} value={playbook.playbookId}>
+                                            {playbook.title}
+                                          </option>
+                                        ))}
+                                      </select>
+                                    </label>
+                                  ) : null}
+                                  <label
+                                    className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/55"
+                                    title="Hard ACU ceiling for this session (blank uses the org default)"
+                                  >
+                                    <span>ACU cap</span>
+                                    <input
+                                      type="text"
+                                      inputMode="numeric"
+                                      value={devinAcuLimitSel}
+                                      onChange={(event) => {
+                                        const next = event.target.value.replace(/[^0-9]/g, "");
+                                        setDevinAcuLimitSel(next);
+                                      }}
+                                      placeholder="none"
+                                      className="w-10 bg-transparent font-mono text-[10px] font-medium text-fg/75 outline-none placeholder:text-fg/30"
+                                    />
                                   </label>
                                   <button
                                     type="button"

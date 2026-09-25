@@ -1443,9 +1443,20 @@ export type DevinCloudSessionSummary = {
   updatedAt: number | null;
   devinMode: DevinCloudMode | null;
   acusConsumed: number | null;
+  /**
+   * `user_id` of the human a session is attributed to. Null when the session
+   * was created by a service user without `create_as_user_id`.
+   */
   userId: string | null;
+  /**
+   * `service_user_id` when the session was created by (or as) a service user.
+   * The fleet treats a session as "Mine" when either id matches the
+   * credential's principal — a service-user principal has no `user_id` of its
+   * own, so comparing only `userId` would hide every session it creates.
+   */
+  serviceUserId: string | null;
   parentSessionId: string | null;
-  /** "mine" when the API caller created it, when the API reports it. */
+  /** Session origin (webapp, slack, api, cli, desktop, automation, …). */
   origin: string | null;
 };
 
@@ -1475,14 +1486,46 @@ export type DevinCloudListMessagesResult = {
 
 export type DevinCloudCreateSessionRequest = {
   prompt: string;
-  /** Remote repo URLs bound to the session (e.g. the lane's origin). */
+  /**
+   * Remote repo URLs bound to the session. Used for the prompt's `Repo:` line
+   * and to derive `repoNames` (the API's `repos` field takes `owner/repo`
+   * identifiers, not clone URLs).
+   */
   repoUrls?: string[];
+  /** `owner/repo` identifiers sent as the API `repos` field (v3 only). */
+  repoNames?: string[];
   /** Extra tags beyond ADE's provenance tags. */
   tags?: string[];
   title?: string | null;
   devinMode?: DevinCloudMode | null;
   /** Resume-able session (Devin keeps the VM snapshot warm). */
   resumable?: boolean;
+  /** Attach an org playbook to the session (`playbook_id`, v3 only). */
+  playbookId?: string | null;
+  /** Attach org knowledge notes (`knowledge_ids`, v3 only). */
+  knowledgeIds?: string[];
+  /** Hard ACU ceiling for the session (`max_acu_limit`, v3 only). */
+  maxAcuLimit?: number | null;
+  /** Skip Devin's approval gate (maps to `bypass_approval`). */
+  bypassApproval?: boolean;
+  /**
+   * Files uploaded to Devin's store and referenced by URL at create
+   * (`attachment_urls`, v3 only) — avoids a second message round-trip.
+   */
+  attachmentUrls?: string[];
+  /** Org secret ids to mount (`secret_ids`, v3 only). */
+  secretIds?: string[];
+  /** Inline per-session secrets (`session_secrets`, v3 only). */
+  sessionSecrets?: Array<{ key: string; value: string; sensitive?: boolean }>;
+  /** Security profile id to attach (`security_profile`, v3 only). */
+  securityProfileId?: string | null;
+  /**
+   * Attribute the session to a human user (`create_as_user_id`, v3 only).
+   * Requires the credential's principal to hold `ImpersonateOrgSessions`;
+   * needed so sessions created by a service user appear in that person's
+   * session list and count toward their usage.
+   */
+  createAsUserId?: string | null;
   /** ADE chat session id to mirror into; not sent to Devin. */
   sessionId?: string | null;
   /** ADE lane id used for provenance tags + mirror ownership. */
@@ -1491,14 +1534,35 @@ export type DevinCloudCreateSessionRequest = {
   projectId?: string | null;
   /** Linear identifier such as ADE-12. Kept on the ADE session. */
   linearIssueId?: string | null;
-  /** Skip Devin's approval gate (maps to `bypass_approval`). */
-  bypassApproval?: boolean;
   /**
    * VM platform label for the session (`platform`, v3 only) — org-defined
    * values such as linux/macos/windows or an outpost pool name; unset uses
    * the org default.
    */
   platform?: string | null;
+};
+
+/** One org playbook, for the composer's launch picker. */
+export type DevinCloudPlaybookSummary = {
+  playbookId: string;
+  title: string;
+  macro: string | null;
+  accessType: "enterprise" | "org" | null;
+};
+
+/** One org knowledge note, for the composer's launch picker. */
+export type DevinCloudKnowledgeSummary = {
+  noteId: string;
+  name: string;
+  macro: string | null;
+  isEnabled: boolean;
+  folderPath: string | null;
+};
+
+/** Org playbooks + knowledge notes a launch can bind (v3 only). */
+export type DevinCloudCatalog = {
+  playbooks: DevinCloudPlaybookSummary[];
+  knowledge: DevinCloudKnowledgeSummary[];
 };
 
 export type DevinCloudCreateSessionResult = {
@@ -1509,6 +1573,8 @@ export type DevinCloudSendMessageRequest = {
   devinSessionId: string;
   message: string;
   attachmentUrls?: string[];
+  /** Attribute the message to a human user (`message_as_user_id`, v3 only). */
+  messageAsUserId?: string | null;
 };
 
 export type DevinCloudSendMessageResult = {
@@ -1597,14 +1663,21 @@ export type DevinCloudAuthStatus = {
   orgId: string | null;
   /** Devin account/org label for the settings page, when verified. */
   orgName: string | null;
+  /** `create_as_user_id` target, when configured. */
+  asUserId: string | null;
   error: string | null;
 };
 
 export type DevinCloudSetCredentialsRequest = {
-  /** PAT (`cog_...`) or legacy personal key (`apk_user_...`). Empty clears. */
+  /**
+   * v3 credential (`cog_...`) — a Personal Access Token (acts as you) or a
+   * service-user key — or a legacy personal key (`apk_user_...`). Empty clears.
+   */
   apiKey: string;
-  /** `org-...` id for v3 PATs; auto-discovered when omitted. */
+  /** `org-...` id for v3 keys; auto-discovered when omitted (PATs only). */
   orgId?: string | null;
+  /** Optional `user_...` id every created session/message is attributed to. */
+  asUserId?: string | null;
 };
 
 export type DevinCloudWatchMirrorRequest = {
@@ -1632,6 +1705,12 @@ export type DevinCloudCreateSessionForLaneRequest = {
   bypassApproval?: boolean;
   /** VM platform label (v3 only); unset uses the org default. */
   platform?: string | null;
+  /** Attach an org playbook (`playbook_id`, v3 only). */
+  playbookId?: string | null;
+  /** Attach org knowledge notes (`knowledge_ids`, v3 only). */
+  knowledgeIds?: string[];
+  /** Hard ACU ceiling (`max_acu_limit`, v3 only). */
+  maxAcuLimit?: number | null;
   /**
    * Composer attachments to deliver with the first prompt. Local files are
    * uploaded to Devin's attachment store and referenced in the prompt by URL;
@@ -2145,6 +2224,13 @@ export type AiConfig = {
    * `GET /v3/enterprise/organizations` when unset; not a secret.
    */
   devinCloudOrgId?: string | null;
+  /**
+   * Optional Devin user id (`user_...`) every cloud session/message ADE creates
+   * is attributed to via `create_as_user_id` / `message_as_user_id`. Needed on
+   * service-user credentials so sessions land in a human's list and usage.
+   * Blank uses the credential's own identity.
+   */
+  devinCloudAsUserId?: string | null;
   localProviders?: AiLocalProviderConfigs;
   /** User-defined OpenAI-compatible providers injected into the OpenCode server config. */
   customProviders?: AiCustomProviderConfig[];

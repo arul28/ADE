@@ -727,6 +727,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "stopCursorCloudAgentRun",
     "getDevinCloudAuthStatus",
     "setDevinCloudCredentials",
+    "getDevinCloudCatalog",
     "getDevinCloudFleet",
     "pullDevinCloudSessionIntoLane",
     "terminateDevinCloudSession",

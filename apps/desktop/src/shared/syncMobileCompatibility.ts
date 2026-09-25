@@ -97,6 +97,7 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.pullDevinCloudSessionIntoLane",
   "ai.openDevinCloudChat",
   "ai.getDevinCloudAuthStatus",
+  "ai.getDevinCloudCatalog",
   // Per-project prompt stash. iOS gates the overflow-menu items on these
   // descriptors so an older brain simply omits stash instead of going limited.
   "chat.listPromptStashes",

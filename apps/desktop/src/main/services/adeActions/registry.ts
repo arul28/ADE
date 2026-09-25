@@ -2369,6 +2369,13 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         watching: args.watching,
       });
     },
+    getDevinCloudCatalog: async () => {
+      const [playbooks, knowledge] = await Promise.all([
+        aiIntegrationService.listDevinCloudPlaybooks(),
+        aiIntegrationService.listDevinCloudKnowledge(),
+      ]);
+      return { playbooks, knowledge };
+    },
     createDevinCloudSession: (args?: {
       laneId?: string;
       prompt?: string;
@@ -2378,6 +2385,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       projectId?: string | null;
       platform?: string | null;
       bypassApproval?: boolean;
+      playbookId?: string | null;
+      knowledgeIds?: string[];
+      maxAcuLimit?: number | null;
+      createAsUserId?: string | null;
       attachments?: AgentChatFileRef[];
     }) =>
       requireService(runtime.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
@@ -2389,6 +2400,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
         ...(args?.projectId ? { projectId: args.projectId } : {}),
         ...(args?.platform !== undefined ? { platform: args.platform } : {}),
         ...(args?.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
+        ...(args?.playbookId ? { playbookId: args.playbookId } : {}),
+        ...(args?.knowledgeIds?.length ? { knowledgeIds: args.knowledgeIds } : {}),
+        ...(args?.maxAcuLimit !== undefined ? { maxAcuLimit: args.maxAcuLimit } : {}),
+        ...(args?.createAsUserId ? { createAsUserId: args.createAsUserId } : {}),
         ...(args?.attachments?.length ? { attachments: args.attachments } : {}),
       }).then((result) => {
         runtime.devinCloudFleetService?.invalidateCache();

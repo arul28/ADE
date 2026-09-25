@@ -846,6 +846,7 @@ export const IPC = {
   aiDevinCloudUnarchiveSession: "ade.ai.devinCloud.unarchiveSession",
   aiDevinCloudGetAuthStatus: "ade.ai.devinCloud.getAuthStatus",
   aiDevinCloudSetCredentials: "ade.ai.devinCloud.setCredentials",
+  aiDevinCloudCatalog: "ade.ai.devinCloud.catalog",
   syncGetStatus: "ade.sync.getStatus",
   syncGetLocalStatus: "ade.sync.getLocalStatus",
   syncRefreshDiscovery: "ade.sync.refreshDiscovery",

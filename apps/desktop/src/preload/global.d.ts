@@ -372,6 +372,7 @@ import type {
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
   DevinCloudAuthStatus,
+  DevinCloudCatalog,
   DevinCloudCreateSessionForLaneRequest,
   DevinCloudCreateSessionForLaneResult,
   DevinCloudFleetResult,
@@ -1462,6 +1463,7 @@ declare global {
         devinCloudWatchMirror: (
           args: DevinCloudWatchMirrorRequest,
         ) => Promise<void>;
+        devinCloudCatalog: () => Promise<DevinCloudCatalog>;
       };
       transcription: {
         transcribe: (

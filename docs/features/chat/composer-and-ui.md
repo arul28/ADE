@@ -2582,13 +2582,17 @@ prompt linking Settings → AI connections instead of an empty list.
 
 Devin is a single provider id covering local (`devin acp` chats and the tracked
 `devin` CLI) and cloud (the session fleet); capability gates decide which parts
-light up per surface. Cloud auth is a pasted token in Settings → AI connections:
-a v3 Personal Access Token (`cog_`, primary — self-serve on every Devin account)
-or a legacy v1 personal key (`apk_user_`) for enterprises where PATs are
-admin-disabled. The org id is collected once and auto-discovered from the token
-when possible; on non-enterprise accounts (where `/v3/enterprise/organizations`
-is gated) the org id must be entered in Settings — it is shown in the Devin
-webapp's settings and session URLs.
+light up per surface. Cloud auth is a pasted v3 credential (`cog_`) in
+Settings → AI connections: a Personal Access Token (acts as you, self-serve on
+every Devin account) or a service-user key (`Settings → Devin API → Service
+users`) for automation — the recommended choice on Enterprise plans, where PATs
+are disabled by default. A legacy v1 personal key (`apk_user_`) remains as a
+fallback. The org id is collected once; a PAT auto-discovers it from `/v3/self`
+(the enterprise org list is gated), while a service user has no self org and
+must paste it — it is shown in the Devin webapp's settings and session URLs. On
+a service-user credential an optional **act-as user id** (`user_...`) is sent as
+`create_as_user_id` / `message_as_user_id`, so sessions and messages land in
+that person's list and usage instead of the service user's.
 
 The top bar carries an auth-gated Devin quick-view button
 (`DevinCloudQuickViewButton`, mounted beside the Cursor quick-view). It renders
@@ -2596,7 +2600,13 @@ only while `devinCloudGetAuthStatus().configured` is true and opens
 `DevinCloudFleetModal`, an org-wide fleet surface listing Devin sessions.
 Provenance chips (**Mine / From ADE / All**) sit beside the status and lane
 filters; ADE-created sessions carry `ade` + `ade:lane:<id>` tags at launch and
-show a "via ADE" badge. Status derives once in `shared/devinCloudFleetStatus.ts`
+show a "via ADE" badge. "Mine" matches the credential's `/v3/self` principal
+against either the session's `user_id` or its `service_user_id`, so a
+service-user credential still recognizes the sessions it created. Repo
+attribution (`matchedBy: "repo"`) compares the project origin against the
+session's **pull-request repo** — the v3 `SessionResponse` carries no `repos`
+field, so the PR URL is the reliable signal — with `session.repos` kept only as
+a fallback. Status derives once in `shared/devinCloudFleetStatus.ts`
 (archived → archived, error → error, exit/finished → finished, suspended →
 suspended, waiting_for_user/waiting_for_approval → needs_you, running →
 working, else starting), so the modal, rows, and the attention mapping cannot
@@ -2628,11 +2638,15 @@ the selected lane's repository: target repo and base branch come from the lane,
 **Agent mode** maps to `devin_mode` (Devin default / normal / fast / lite /
 ultra / fusion), **VM platform** maps to the v3 `platform` label
 (org-defined — linux, macos, windows, or an outpost pool name; blank uses the
-org default, and it is ignored on the v1 fallback path), and **Skip Devin's
-approval gate** sets `bypass_approval`.
-Sending from the composer launches the session with the provenance tags. From
-any non-cloud chat, the attach menu's **Hand off to Devin Cloud** packages the
-lane context into a prompt and launches the same path.
+org default, and it is ignored on the v1 fallback path), **Playbook** binds an
+org playbook (`playbook_id`), **ACU cap** sets a hard `max_acu_limit`, and
+**Skip Devin's approval gate** sets `bypass_approval`.
+The session's repo is sent as `owner/repo` in the API `repos` field (derived
+from the lane remote; clone URLs are for the prompt line, not the API field),
+with the pushed lane branch named in the prompt the way Devin's own handoff
+flow does. Sending from the composer launches the session with the provenance
+tags. From any non-cloud chat, the attach menu's **Hand off to Devin Cloud**
+packages the lane context into a prompt and launches the same path.
 
 Cloud sessions join ADE's attention system: `waiting_for_user` /
 `waiting_for_approval` raise a "Needs you" marker

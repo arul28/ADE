@@ -49,7 +49,9 @@ describe("devinCloudClient verify on non-enterprise accounts", () => {
     }) as unknown as FetchImpl;
 
     const client = createDevinCloudClient({ apiKey: "cog_test", orgId: "org-bad", fetchImpl, logger });
-    await expect(client.verify()).rejects.toThrow(/not visible to this Devin token/);
+    // The error keeps the API's own reason and points at both causes — org id
+    // and the token's role — since a 403 here is not always a wrong org.
+    await expect(client.verify()).rejects.toThrow(/Could not read Devin org 'org-bad'/);
   });
 
   it("asks for an org id when enterprise listing 403s and none is configured", async () => {

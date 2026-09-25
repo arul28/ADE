@@ -1000,6 +1000,7 @@ import {
   devinCloudFleetStatus,
   normalizeDevinCloudMode,
 } from "../../../shared/devinCloudFleetStatus";
+import { gitRemoteRepoSlug } from "../../../shared/cursorCloudRepoMatch";
 import {
   acquireDroidSdkConnection,
   releaseDroidSdkConnection,
@@ -48575,6 +48576,10 @@ export function createAgentChatService(args: {
     projectId?: string | null;
     bypassApproval?: boolean;
     platform?: string | null;
+    playbookId?: string | null;
+    knowledgeIds?: string[];
+    maxAcuLimit?: number | null;
+    createAsUserId?: string | null;
     attachments?: AgentChatFileRef[];
   }): Promise<{ sessionId: string; session: AgentChatSession; devinSessionId: string }> => {
     const trimmedLane = args.laneId.trim();
@@ -48694,14 +48699,22 @@ export function createAgentChatService(args: {
         contentType: inferAttachmentMediaType(attachment) ?? undefined,
       })}"`);
     }
+    // v3 `repos` takes `owner/repo` identifiers, not the clone URL that rides
+    // the prompt. Derive the slug so Devin actually binds the session's repo.
+    const repoName = gitRemoteRepoSlug(repoUrl);
     const created = await aiIntegrationService.createDevinCloudSession({
       prompt: attachmentRefs.length ? `${cloudPrompt}\n${attachmentRefs.join("\n")}` : cloudPrompt,
       repoUrls: [repoUrl],
+      ...(repoName ? { repoNames: [repoName] } : {}),
       tags,
       ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       ...(args.devinMode ? { devinMode: args.devinMode } : {}),
+      ...(args.playbookId?.trim() ? { playbookId: args.playbookId.trim() } : {}),
+      ...(args.knowledgeIds?.length ? { knowledgeIds: args.knowledgeIds } : {}),
+      ...(typeof args.maxAcuLimit === "number" ? { maxAcuLimit: args.maxAcuLimit } : {}),
       ...(args.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
       ...(args.platform?.trim() ? { platform: args.platform.trim() } : {}),
+      ...(args.createAsUserId?.trim() ? { createAsUserId: args.createAsUserId.trim() } : {}),
     });
     try {
       const opened = await openDevinCloudChat({

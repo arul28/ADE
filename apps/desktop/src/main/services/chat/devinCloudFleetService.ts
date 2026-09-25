@@ -173,9 +173,20 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
         (link ? laneById.get(link.laneId) : undefined)
         ?? (laneIdFromTag ? laneById.get(laneIdFromTag) : undefined)
         ?? null;
+      // Devin's v3 `SessionResponse` carries no `repos` field (the create
+      // `repos` binding is never echoed back), so the reliable repo signal is
+      // the pull request a session opened. A session that touched this
+      // project's repo but was not created via ADE still counts as
+      // repo-matched when its PR URL points at the origin; `session.repos`
+      // stays as a harmless fallback for any response shape that does carry it.
       const repoHit =
         Boolean(originKey)
-        && (session.repos ?? []).some((repo) => devinCloudRepoMatchKey(repo) === originKey);
+        && (
+          (session.repos ?? []).some((repo) => devinCloudRepoMatchKey(repo) === originKey)
+          || session.pullRequests.some(
+            (pr) => repoMatchKey(githubPullRepo(pr.prUrl)) === originKey,
+          )
+        );
       const createdViaAde = devinCloudCreatedViaAde(session.tags) || Boolean(link);
       const matchedBy: DevinCloudFleetEntry["matchedBy"] = link
         ? "session"
@@ -200,7 +211,12 @@ export function createDevinCloudFleetService(deps: FleetServiceDeps) {
         matchedBy,
         isMine: Boolean(
           listingIsPersonalScope
-          || (callerUserId && session.userId && session.userId === callerUserId),
+          || (callerUserId
+            && ((session.userId != null && session.userId === callerUserId)
+              // A service-user principal has no `user_id` of its own, so a
+              // session it created is attributed to `service_user_id` — match
+              // that too or every service-user session reads as "not mine".
+              || (session.serviceUserId != null && session.serviceUserId === callerUserId))),
         ),
       };
     });
