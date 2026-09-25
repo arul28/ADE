@@ -71,16 +71,18 @@ const SKILL_TOOLS = new Set(["skill"]);
 // the command line (see `commandSegments`). Matching anywhere read
 // `rg availableModels` as the `ava` runner and `cat vitest.config.ts` as a test
 // run, and one strong false hit relabels the row.
+/** An executable named by path or with a Windows extension: `./node_modules/.bin/vitest`, `npm.cmd`. */
+const bin = (names: string) => `(?:\\S*[\\\\/])?(?:${names})(?:\\.cmd|\\.exe)?`;
 const TEST_RUNNER = new RegExp(
-  "^(?:vitest|jest|pytest|mocha|ava|rspec|phpunit|make\\s+test"
+  `^(?:${bin("vitest|jest|pytest|mocha|ava|rspec|phpunit")}|make\\s+test`
     + "|node\\b.*\\s--test\\b|playwright\\s+test|go\\s+test|cargo\\s+(?:test|nextest)|swift\\s+test"
     + "|deno\\s+test|bun\\s+test|dotnet\\s+test|(?:\\S*/)?mvnw?\\b.*\\btest\\b"
     + "|(?:\\S*[\\\\/])?gradlew?(?:\\.bat)?\\b.*\\btest\\b|xcodebuild\\b.*\\btest\\b"
-    + "|(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?test(?::\\S*)?)(?:\\s|$)",
+    + `|${bin("npm|pnpm|yarn|bun")}\\s+(?:run\\s+)?test(?::\\S*)?)(?:\\s|$)`,
 );
 const STATIC_CHECK = new RegExp(
   "^(?:tsc|eslint|ruff|mypy|biome\\s+(?:check|lint)|cargo\\s+(?:check|clippy|build)|swift\\s+build"
-    + "|xcodebuild|(?:npm|pnpm|yarn|bun)\\s+(?:run\\s+)?(?:typecheck|type-check|lint|build|check)(?::\\S*)?)(?:\\s|$)",
+    + `|xcodebuild|${bin("npm|pnpm|yarn|bun")}\\s+(?:run\\s+)?(?:typecheck|type-check|lint|build|check)(?::\\S*)?)(?:\\s|$)`,
 );
 const SHIP = new RegExp(
   "^(?:git\\s+(?:commit|push|rebase|cherry-pick|merge(?![-\\w]))|gh\\s+pr\\s+(?:create|merge|ready)"
@@ -90,12 +92,12 @@ const CHECK_STATUS = /^gh\s+(?:pr\s+checks|run\s+(?:view|list)|pr\s+view\b.*(?:c
 const WATCH_SEGMENT = /^(?:gh\s+(?:pr\s+checks\b.*--watch|run\s+watch)|ADE\s+chat\s+wait|watch\s+-n)\b/;
 const DRIVE_APP = /^(?:ADE\s+(?:app-control|browser|mac-desktop|apple|ios-sim|proof)|agent-browser)\b/;
 const REVIEW_READ = /^gh\s+(?:pr\s+diff|api\s+\S*(?:comments|reviews))/;
-/** The agent reporting its own status is not evidence of anything. */
+/** The agent reporting its own status (`ade chat activity|note|ask`). */
 const ADE_STATUS_COMMAND = /^ADE\s+chat\s+(?:activity|note|ask)\b/;
 
 /** Prefixes that run the real command after them: `sudo -E`, `npx --yes`, `FOO=1`, `python -m`. */
 const COMMAND_PREFIX = new RegExp(
-  "^(?:\\w+=\\S*\\s+|(?:sudo|time|exec|env|command|nohup|npx|bunx|pnpx|uvx|npm\\s+exec|pnpm\\s+(?:exec|dlx)"
+  "^(?:\\w+=\\S*\\s+|(?:sudo|time|exec|env|command|nohup|(?:npx|bunx|pnpx|uvx)(?:\\.cmd|\\.exe)?|npm\\s+exec|pnpm\\s+(?:exec|dlx)"
     + "|yarn\\s+dlx|uv\\s+run|poetry\\s+run|python3?\\s+-m)(?:\\s+-\\S+)*\\s+)+",
 );
 /** A package manager naming a runner directly: `pnpm vitest`, `yarn jest`. */
@@ -113,7 +115,9 @@ const SHELL_WRAPPERS: RegExp[] = [
 /** A heredoc body is data, not commands: `cat <<'EOF' … EOF`. */
 const HEREDOC_BODY = /<<-?\s*(['"]?)(\w+)\1[\s\S]*?\n\2\b/g;
 /** The ADE CLI named through its environment variable, in any shell's spelling. */
-const ADE_CLI_VARIABLE = /"?\$(?:\{ADE_CLI_PATH\}|ADE_CLI_PATH\b|env:ADE_CLI_PATH\b)"?/g;
+const ADE_CLI_VARIABLE = /"\$(?:\{ADE_CLI_PATH\}|ADE_CLI_PATH|env:ADE_CLI_PATH)"|\$(?:\{ADE_CLI_PATH\}|ADE_CLI_PATH\b|env:ADE_CLI_PATH\b)/g;
+/** A quoted executable at command position keeps its name: `"C:\Program Files\nodejs\npm.cmd" test`. */
+const QUOTED_COMMAND = /(^|&&|\|\||[;|&(\n{])(\s*)"(?:[^"\n]*[\\/])?([^"\\/\s]+)"/g;
 /** A quoted span is an argument (a commit message, an `echo`), never a command. */
 const QUOTED_SPAN = /'[^']*'|"(?:[^"\\]|\\.)*"/g;
 /** The ADE CLI named by path at command position: `ade`, `/usr/local/bin/ade`, `C:\tools\ade.exe`. */
@@ -141,7 +145,10 @@ function isWatchLoop(text: string): boolean {
   const rest = text.slice(loop);
   if (/\bStart-Sleep\b/i.test(rest)) return true;
   const body = rest.search(/\bdo\b/);
-  return body >= 0 && /\bsleep\b/.test(rest.slice(body));
+  if (body < 0) return false;
+  const loopBody = rest.slice(body);
+  const end = loopBody.search(/\bdone\b/);
+  return /\bsleep\b/.test(end < 0 ? loopBody : loopBody.slice(0, end));
 }
 
 /** The command line with its data (heredoc bodies, quoted arguments) blanked out. */
@@ -149,6 +156,7 @@ function commandCode(text: string): string {
   return text
     .replace(HEREDOC_BODY, "")
     .replace(ADE_CLI_VARIABLE, "ADE")
+    .replace(QUOTED_COMMAND, "$1$2$3")
     .replace(QUOTED_SPAN, "Q");
 }
 
@@ -174,9 +182,11 @@ const MAX_CLASSIFIED_COMMAND_CHARS = 4_000;
 
 /** Classify one shell command line. Unknown commands read as reading. */
 function classifyShellCommand(command: string): SessionActivitySignal {
-  const code = commandCode(unwrapShell(command.slice(0, MAX_CLASSIFIED_COMMAND_CHARS)));
-  const segments = commandSegments(code);
-  if (segments.some((segment) => ADE_STATUS_COMMAND.test(segment))) return READ;
+  // Unwrapped before the cap, so a long wrapped line keeps its closing quote.
+  const code = commandCode(unwrapShell(command).slice(0, MAX_CLASSIFIED_COMMAND_CHARS));
+  // The agent reporting its own status is not evidence; the commands chained
+  // after it (`ade chat note …; npm test`) still are.
+  const segments = commandSegments(code).filter((segment) => !ADE_STATUS_COMMAND.test(segment));
   const any = (pattern: RegExp) => segments.some((segment) => pattern.test(segment));
   // Shipping first: `git commit -m "fix jest flake"` is a commit, not a test run.
   if (any(SHIP)) return weak("shipping");

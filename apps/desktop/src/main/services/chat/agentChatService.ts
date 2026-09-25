@@ -4170,6 +4170,8 @@ type ManagedChatSession = {
    * next detection must be written even when its value did not change.
    */
   activityRowNeedsWrite?: boolean;
+  /** The last detected write failed; the next failure is not logged again. */
+  activityWriteFailing?: boolean;
   /**
    * `ade_card` identity cache: cardId → last emitted content fingerprint and the
    * card's original `createdAt`. Lets `emitAdeCard` answer "is this a no-op
@@ -18810,9 +18812,13 @@ export function createAgentChatService(args: {
         managed.session.currentTurnStartedAt ?? null,
         { onlyIfEmpty: !changed },
       );
+      managed.activityWriteFailing = false;
     } catch (error) {
-      // The detector has already moved on; retry the row on the next event.
+      // The detector has already moved on; retry the row on the next event,
+      // and log once per failure streak, not once per streamed frame.
       managed.activityRowNeedsWrite = true;
+      if (managed.activityWriteFailing) return;
+      managed.activityWriteFailing = true;
       logger.warn("agent_chat.activity_detect_write_failed", {
         sessionId: managed.session.id,
         activity: detected,
