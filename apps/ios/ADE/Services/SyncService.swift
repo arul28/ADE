@@ -289,11 +289,44 @@ func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
   if let conflict = error?["conflict"] {
     userInfo["ADEHostConflict"] = conflict
   }
+  if let bytes = error?["bytes"] as? NSNumber {
+    userInfo["ADEResultBytes"] = bytes.intValue
+  }
+  if let limitBytes = error?["limitBytes"] as? NSNumber {
+    userInfo["ADEResultLimitBytes"] = limitBytes.intValue
+  }
   throw NSError(
     domain: "ADE",
     code: 17,
     userInfo: userInfo
   )
+}
+
+/// The host refused to send a reply because it was too large. The request
+/// failed; the connection is fine. Never retry the same request in a loop.
+let syncResultTooLargeErrorCode = "result_too_large"
+
+func isSyncResultTooLargeError(_ error: Error) -> Bool {
+  (error as NSError).userInfo["ADEErrorCode"] as? String == syncResultTooLargeErrorCode
+}
+
+func syncResultTooLargeMessage(for error: Error) -> String {
+  let bytes = (error as NSError).userInfo["ADEResultBytes"] as? Int
+  let size = bytes.map { String(format: " (%.1f MB)", Double($0) / 1_048_576) } ?? ""
+  return "This was too large to send to your phone\(size). Open one item at a time instead."
+}
+
+/// Same rule as the host's `prs.refresh` "active" default: open or draft PRs,
+/// and PRs whose lane is still live. Order follows the list.
+func syncActivePullRequestIds(_ prs: [PrSummary], liveLaneIds: Set<String>) -> [String] {
+  prs.filter { $0.state == "open" || $0.state == "draft" || liveLaneIds.contains($0.laneId) }.map(\.id)
+}
+
+let syncPullRequestRefreshBatchSize = 25
+
+func syncPullRequestRefreshBatches(_ ids: [String], size: Int = syncPullRequestRefreshBatchSize) -> [[String]] {
+  guard size > 0, !ids.isEmpty else { return [] }
+  return stride(from: 0, to: ids.count, by: size).map { Array(ids[$0..<min($0 + size, ids.count)]) }
 }
 
 func isRemoteCommandApplicationError(_ error: Error) -> Bool {
@@ -2838,6 +2871,9 @@ enum SyncUserFacingError {
     if syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String) {
       return "This phone is no longer paired with this machine. Pair again from Settings."
     }
+    if isSyncResultTooLargeError(error) {
+      return syncResultTooLargeMessage(for: error)
+    }
     if let friendly = syncHelloErrorFriendlyMessage(
       code: nsError.userInfo["ADEErrorCode"] as? String,
       respondingHostName: nsError.userInfo[syncRespondingHostNameKey] as? String
@@ -4404,6 +4440,9 @@ final class SyncService: ObservableObject {
   private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
+  /// Spots a connection that keeps closing right after hello for the same
+  /// reason, which the stability reset above would otherwise retry forever.
+  private var reconnectFlapTracker = SyncReconnectFlapTracker()
   /// Uptime when the app last went to the background, used to classify the
   /// resume. Deliberately monotonic (`systemUptime`), not wall clock: a device
   /// whose clock moves backward during a long suspension would otherwise report
@@ -10098,30 +10137,87 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func refreshPullRequestSnapshots(prId: String? = nil) async throws {
-    let scope = try captureHydrationProjectScope()
+  /// PR hydration that stays small on every brain, including ones that
+  /// ignore `includeSnapshots` and answer an argument-less `prs.refresh` with
+  /// every stored snapshot (17 MB on a real project, which the host refused
+  /// and closed the socket over):
+  ///   1. `prs.list` — the PR list only.
+  ///   2. Active ids computed here: open/draft, or on a lane that is not archived.
+  ///   3. `prs.refresh { prIds, includeSnapshots: "active" }` in batches.
+  /// An empty active set skips step 3: an old brain reads empty `prIds` as "all".
+  private func hydratePullRequestsBounded(scope: SyncHydrationProjectScope) async throws {
+    let listRaw = try await sendCommand(
+      action: "prs.list",
+      args: [:],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      fallbackToActiveProjectScope: false
+    )
     try requireCurrentHydrationProjectScope(scope)
-    let statusAttempt = beginDomainHydrationAttempt([.prs])
-    var args: [String: Any] = [:]
-    if let prId {
-      args["prId"] = prId
-    }
-    do {
+    let prs = try decodeHydrationPayload(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+    try requireCurrentHydrationProjectScope(scope)
+    // List only: "none" tells hydration it carries no snapshot information,
+    // so no cached snapshot is cleared here.
+    try database.replacePullRequestHydration(
+      PullRequestRefreshPayload(refreshedCount: prs.count, prs: prs, snapshots: [], snapshotScope: "none"),
+      pruneStale: true,
+      expectedProjectId: scope.projectId
+    )
+    let liveLaneIds = Set(database.fetchLanes(includeArchived: false).map(\.id))
+    let activeIds = syncActivePullRequestIds(prs, liveLaneIds: liveLaneIds)
+    for batch in syncPullRequestRefreshBatches(activeIds) {
       let raw = try await sendCommand(
         action: "prs.refresh",
-        args: args,
+        args: ["prIds": batch, "includeSnapshots": "active"],
         targetProjectId: scope.projectId,
         targetProjectRootPath: scope.rootPath,
         fallbackToActiveProjectScope: false
       )
       try requireCurrentHydrationProjectScope(scope)
-      let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+      var payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
       try requireCurrentHydrationProjectScope(scope)
-      try database.replacePullRequestHydration(
-        payload,
-        pruneStale: prId == nil,
-        expectedProjectId: scope.projectId
-      )
+      // Hydrate exactly what was asked for, whatever the brain sent back.
+      let batchIds = Set(batch)
+      payload.prs = payload.prs.filter { batchIds.contains($0.id) }
+      payload.snapshots = payload.snapshots.filter { batchIds.contains($0.prId) }
+      payload.snapshotScope = "requested"
+      payload.omittedSnapshotPrIds = nil
+      try database.replacePullRequestHydration(payload, pruneStale: false, expectedProjectId: scope.projectId)
+    }
+  }
+
+  func refreshPullRequestSnapshots(prId: String? = nil) async throws {
+    let scope = try captureHydrationProjectScope()
+    try requireCurrentHydrationProjectScope(scope)
+    let statusAttempt = beginDomainHydrationAttempt([.prs])
+    do {
+      if prId == nil, supportsRemoteAction("prs.list") {
+        try await hydratePullRequestsBounded(scope: scope)
+      } else {
+        var args: [String: Any] = [:]
+        if let prId {
+          args["prId"] = prId
+        } else {
+          // Host without `prs.list`: the single call is all there is. New
+          // brains honor the bounded default; very old ones send everything.
+          args["includeSnapshots"] = "active"
+        }
+        let raw = try await sendCommand(
+          action: "prs.refresh",
+          args: args,
+          targetProjectId: scope.projectId,
+          targetProjectRootPath: scope.rootPath,
+          fallbackToActiveProjectScope: false
+        )
+        try requireCurrentHydrationProjectScope(scope)
+        let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+        try requireCurrentHydrationProjectScope(scope)
+        try database.replacePullRequestHydration(
+          payload,
+          pruneStale: prId == nil,
+          expectedProjectId: scope.projectId
+        )
+      }
       scheduleWorkspaceSnapshotWrite()
       finishDomainHydrationAttempt(statusAttempt, phase: .ready)
     } catch is CancellationError {
@@ -18976,6 +19072,30 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Runs the live-close path's flap bookkeeping with an explicit connection
+  /// age, and applies the banner copy the way `handleSocketFailure` does.
+  func noteLiveConnectionClosedForTesting(
+    closeCode: Int,
+    reason: String,
+    connectionAgeSeconds: TimeInterval,
+    now: TimeInterval
+  ) -> UInt64? {
+    connectionEstablishedUptime = now - connectionAgeSeconds
+    guard let backoff = noteLiveConnectionClosed(closeCodeRawValue: closeCode, closeReason: reason, now: now) else {
+      return nil
+    }
+    lastError = backoff.message
+    return backoff.delayNanoseconds
+  }
+
+  func setRemoteCommandDescriptorsForTesting(_ descriptors: [SyncRemoteCommandDescriptor]) {
+    remoteCommandDescriptors = descriptors
+  }
+
+  func capturedCommandArgsForTesting(requestId: String) -> [String: Any]? {
+    capturedCommandPayloadsForTesting[requestId]?["args"] as? [String: Any]
+  }
+
   func reconnectAttemptsAreExhaustedForTesting() -> Bool {
     reconnectState.isExhausted
   }
@@ -19130,7 +19250,7 @@ final class SyncService: ObservableObject {
         "lanes": [Any](),
         "snapshots": [Any](),
       ] as [String: Any]
-    case "work.listSessions":
+    case "work.listSessions", "prs.list":
       result = [Any]()
     case "prs.refresh":
       result = [
@@ -19510,6 +19630,14 @@ final class SyncService: ObservableObject {
             // stale frame must not mutate the new connection's state.
             guard self.socket === task else { break }
             if let preprocessed {
+              let handleStart = CACurrentMediaTime()
+              defer {
+                ScrollDiagnostics.shared.noteFrame(
+                  type: preprocessed.type,
+                  bytes: frame?.count ?? text.utf8.count,
+                  handleMs: (CACurrentMediaTime() - handleStart) * 1000
+                )
+              }
               try await self.handleIncoming(preprocessed)
             }
           } catch {
@@ -19558,6 +19686,11 @@ final class SyncService: ObservableObject {
     syncConnectLog.error(
       "incoming message failed type=\(type, privacy: .public) error=\(String(describing: error), privacy: .public)"
     )
+    ScrollDiagnostics.shared.event("sync.incomingFailure", [
+      "type": type,
+      "error": String(String(describing: error).prefix(400)),
+      "bytes": text.utf8.count,
+    ])
     handleSocketFailure(task, error: error)
   }
 
@@ -20440,6 +20573,12 @@ final class SyncService: ObservableObject {
     completedWhileOpening: Bool = false,
     closeCodeRawValue: Int? = nil
   ) {
+    ScrollDiagnostics.shared.event("sync.socketFailure", [
+      "error": String(String(describing: error).prefix(400)),
+      "closeCode": closeCodeRawValue ?? -1,
+      "whileOpening": completedWhileOpening,
+      "closeReason": task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? "",
+    ])
     let action = syncSocketCompletionAction(
       isCurrentSocket: shouldHandleSocketSendCompletionError(currentSocket: socket, callbackSocket: task),
       completedWhileOpening: completedWhileOpening,
@@ -20450,10 +20589,19 @@ final class SyncService: ObservableObject {
     case .ignore, .failOpening:
       return
     case .recoverTransport(let closeCodeRawValue):
+      let closeReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+      let flapBackoff = noteLiveConnectionClosed(
+        closeCodeRawValue: closeCodeRawValue ?? task.closeCode.rawValue,
+        closeReason: closeReason
+      )
       beginAutomaticTransportRecovery(
         error,
-        reconnectDelayNanoseconds: reconnectDelay(forCloseCodeRawValue: closeCodeRawValue)
+        reconnectDelayNanoseconds: flapBackoff?.delayNanoseconds
+          ?? reconnectDelay(forCloseCodeRawValue: closeCodeRawValue)
       )
+      if let flapBackoff {
+        lastError = flapBackoff.message
+      }
     case .failHandshake:
       // The WebSocket opened but died during hello. Fail the hello request so
       // the existing route walker can try its next ranked candidate; scheduling
@@ -20462,7 +20610,43 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Feeds one close of a live connection to the flap tracker. Must run before
+  /// teardown, which clears the connection's age. Returns the backoff and the
+  /// banner copy when the same close keeps happening right after connect.
+  private func noteLiveConnectionClosed(
+    closeCodeRawValue: Int?,
+    closeReason: String?,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> (delayNanoseconds: UInt64, message: String)? {
+    let connectionAgeSeconds = connectionEstablishedUptime.map { max(0, now - $0) }
+    let signature = "\(closeCodeRawValue ?? -1):\(closeReason ?? "")"
+    guard let backoffSeconds = reconnectFlapTracker.recordClose(
+      signature: signature,
+      connectionAgeSeconds: connectionAgeSeconds,
+      now: now
+    ) else { return nil }
+    let machineName = syncTrimmedNonEmptyName(hostName)
+      ?? syncTrimmedNonEmptyName(activeHostProfile?.hostName)
+      ?? "This machine"
+    syncConnectLog.error(
+      "connection flapping signature=\(signature, privacy: .public) backoffSeconds=\(backoffSeconds, privacy: .public)"
+    )
+    return (
+      delayNanoseconds: UInt64(backoffSeconds * 1_000_000_000),
+      message: syncReconnectFlapMessage(
+        machineName: machineName,
+        closeReason: closeReason,
+        retryInSeconds: backoffSeconds
+      )
+    )
+  }
+
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
+    ScrollDiagnostics.shared.event("sync.teardown", [
+      "reason": reason ?? "",
+      "hadSocket": socket != nil,
+      "caller": Thread.callStackSymbols.dropFirst(1).prefix(3).joined(separator: " | ").prefix(500).description,
+    ])
     let retiringConnectionGeneration = connectionGeneration
     // The connection age gates roam upgrades; it must not outlive its socket.
     connectionEstablishedUptime = nil
@@ -21171,6 +21355,7 @@ final class SyncService: ObservableObject {
     }
     let requestId = commandId ?? makeRequestId()
     let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
+    ScrollDiagnostics.shared.event("sync.command", ["id": requestId, "action": action])
     // `targetProjectId` lets a command create-in-place in a NON-active project
     // (mobile hub composer): the host routes the command to that project's scope
     // via the command-payload projectId without switching the phone's active

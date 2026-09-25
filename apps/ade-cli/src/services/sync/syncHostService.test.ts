@@ -10005,6 +10005,107 @@ describe("sync host reliability guards", () => {
     }
 	  });
 
+  // The incident: one `prs.refresh` reply was 17 MB on its own, the host closed
+  // the socket with 4001, the phone reconnected and asked again, forever.
+  it("answers an oversized command result with result_too_large and keeps the peer open", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    const hugeTitle = "x".repeat(13 * 1024 * 1024);
+    const listAll = vi.fn()
+      .mockResolvedValueOnce([{ id: "pr-1", title: hugeTitle }])
+      .mockResolvedValue([{ id: "pr-1", title: "small" }]);
+    const base = createHostArgs(projectRoot, []);
+    const host = createReliabilityHost(projectRoot, { logger, prService: { ...base.prService, listAll } } as never);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-oversized-result");
+      const sendList = (id: string) => peer!.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: id,
+        projectId: "project-1",
+        payload: { commandId: id, projectId: "project-1", action: "prs.list", args: {} } satisfies SyncCommandPayload,
+      }));
+
+      sendList("oversized-list");
+      const failed = await waitForEnvelope(peer.envelopes, "command_result", "oversized-list");
+      expect(failed.payload).toMatchObject({
+        commandId: "oversized-list",
+        ok: false,
+        error: {
+          code: "result_too_large",
+          limitBytes: 12 * 1024 * 1024,
+          bytes: expect.any(Number),
+          message: expect.stringContaining("prs.list"),
+        },
+      });
+
+      sendList("follow-up-list");
+      const ok = await waitForEnvelope(peer.envelopes, "command_result", "follow-up-list");
+      expect(ok.payload).toMatchObject({ ok: true, result: [{ id: "pr-1", title: "small" }] });
+      expect(peer.closeEvents).toEqual([]);
+      expect(peer.ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("fails a reply that does not fit the send budget without closing the peer", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    const listAll = vi.fn().mockResolvedValue([{ id: "pr-1", title: "y".repeat(2 * 1024 * 1024) }]);
+    const base = createHostArgs(projectRoot, []);
+    const host = createReliabilityHost(projectRoot, { logger, prService: { ...base.prService, listAll } } as never);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-reply-does-not-fit");
+      // The client is draining (not backpressured for long), but 15 MiB is
+      // already queued, so a 2 MiB reply cannot fit the 16 MiB budget.
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(15 * 1024 * 1024);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "does-not-fit",
+        projectId: "project-1",
+        payload: { commandId: "does-not-fit", projectId: "project-1", action: "prs.list", args: {} } satisfies SyncCommandPayload,
+      }));
+
+      const failed = await waitForEnvelope(peer.envelopes, "command_result", "does-not-fit");
+      expect(failed.payload).toMatchObject({
+        commandId: "does-not-fit",
+        ok: false,
+        error: { code: "result_too_large", limitBytes: 1024 * 1024 },
+      });
+      expect(logger.warn).toHaveBeenCalledWith("sync_host.required_send_oversized", expect.objectContaining({
+        type: "command_result",
+        action: "prs.list",
+        requestId: "does-not-fit",
+        repliedWithError: true,
+      }));
+      expect(logger.warn).not.toHaveBeenCalledWith("sync_host.required_send_backpressured", expect.anything());
+      expect(peer.closeEvents).toEqual([]);
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("closes peers instead of dropping project catalog chunks under backpressure", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const host = createReliabilityHost(projectRoot);

@@ -4167,7 +4167,8 @@ feature is merged or because a deliberately isolated-port host is running.
   clearest case: 11.2 MB of a 28.1 MB synced project DB (39.7%), and iOS reads it in
   exactly one query (the per-PR detail behind `fetchPullRequestSnapshot(prId:)`)
   which it populates on demand through `prs.refresh` →
-  `replacePullRequestHydration`. That works for every paired build, however old,
+  `replacePullRequestHydration` (the argument-less form carries only open PRs
+  and PRs on live lanes, capped at 6 MiB; see `remote-commands.md`). That works for every paired build, however old,
   because `prs.refresh` and `prs.getMobileSnapshot` are both in the **required**
   remote-command set. Lists and badges are unaffected — the slim `pull_requests`
   rows still replicate. Devices paired before an exclusion keep the rows they

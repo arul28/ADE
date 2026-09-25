@@ -7092,11 +7092,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           ]),
         ),
       listWithConflicts: resolved(ALL_PRS),
-      listSnapshots: async (args?: { prId?: string }) => {
+      listSnapshots: async (args?: { prId?: string; prIds?: string[] }) => {
         let snapshots = ADE_DB_PR_SNAPSHOTS;
         const prId = args?.prId?.trim();
         if (prId) {
           snapshots = snapshots.filter((snapshot) => snapshot.prId === prId);
+        } else if (Array.isArray(args?.prIds)) {
+          const wanted = new Set(args.prIds);
+          snapshots = snapshots.filter((snapshot) => wanted.has(snapshot.prId));
         }
         return snapshots;
       },

@@ -1393,14 +1393,20 @@ final class DatabaseService {
       }
       let hydratablePrs = payload.prs.filter { availableLaneIds.contains($0.laneId) }
       let hydratablePrIds = Set(hydratablePrs.map(\.id))
+      // A bounded refresh (open PRs and live lanes only) says nothing about
+      // the snapshots it left out; clearing those would wipe every merged PR's
+      // cached detail on each hydration.
+      let snapshotClearPrIds = payload.coversEveryListedSnapshot
+        ? hydratablePrIds
+        : hydratablePrIds.intersection(payload.snapshots.map(\.prId))
 
-      if !hydratablePrIds.isEmpty {
-        let placeholders = Array(repeating: "?", count: hydratablePrIds.count).joined(separator: ", ")
+      if !snapshotClearPrIds.isEmpty {
+        let placeholders = Array(repeating: "?", count: snapshotClearPrIds.count).joined(separator: ", ")
         _ = try execute("""
           delete from pull_request_snapshots
            where pr_id in (\(placeholders))
         """) { statement in
-          for (index, prId) in hydratablePrIds.sorted().enumerated() {
+          for (index, prId) in snapshotClearPrIds.sorted().enumerated() {
             try bindText(prId, to: statement, index: Int32(index + 1))
           }
         }

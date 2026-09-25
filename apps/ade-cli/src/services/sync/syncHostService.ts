@@ -254,6 +254,8 @@ import {
   SyncProtocolVersionMismatchError,
   SYNC_RUNTIME_ONLY_CAPABILITY,
   wsDataToText,
+  buildSyncOversizedReplyPayload,
+  buildSyncResultTooLargeError,
   type ParsedSyncEnvelope,
 } from "./syncProtocol";
 // One parser for both ingress paths (this host and the brain's projectless
@@ -263,7 +265,11 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
-import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  createSyncRemoteCommandService,
+  SyncRemoteCommandResultTooLargeError,
+  type SyncRemoteCommandService,
+} from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import {
@@ -4721,24 +4727,53 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return true;
   }
 
-  function sendRequired<TPayload>(peer: PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
+  function sendRequired<TPayload>(
+    peer: PeerState,
+    type: SyncEnvelope["type"],
+    payload: TPayload,
+    requestId?: string | null,
+    context?: { action?: string | null },
+  ): boolean {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
     const frames = encodeFramesFor(peer, type, payload, requestId);
     const frameBytes = frames.reduce((sum, frame) => sum + syncFrameByteLength(frame), 0);
-    const backpressured = isPeerBackpressured(peer);
-    if (
-      ws.bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES ||
-      (backpressured && isPeerBackpressuredTooLong(peer))
-    ) {
-      args.logger.warn("sync_host.required_send_backpressured", {
-        type,
-        requestId: requestId ?? null,
-        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
-        bufferedAmount: ws.bufferedAmount,
-        frameBytes,
-      });
+    const bufferedAmount = ws.bufferedAmount;
+    const logFields = {
+      type,
+      action: context?.action ?? null,
+      requestId: requestId ?? null,
+      peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+      bufferedAmount,
+      frameBytes,
+    };
+    // Genuine backpressure: the client is not draining what is already queued.
+    // Only that closes the connection; a reconnect is the way to recover it.
+    if (bufferedAmount >= REQUIRED_SEND_MAX_BUFFERED_BYTES || isPeerBackpressuredTooLong(peer)) {
+      args.logger.warn("sync_host.required_send_backpressured", logFields);
       closeBackpressuredPeer(peer, "Required sync response backpressured");
+      return false;
+    }
+    // This one reply does not fit. That is a property of the reply, not of the
+    // connection: closing here made the client reconnect, re-ask, and loop.
+    // Fail the request with a small typed error and keep the socket open.
+    if (bufferedAmount + frameBytes > REQUIRED_SEND_MAX_BUFFERED_BYTES) {
+      const limitBytes = REQUIRED_SEND_MAX_BUFFERED_BYTES - bufferedAmount;
+      args.logger.warn("sync_host.required_send_oversized", {
+        ...logFields,
+        limitBytes,
+        repliedWithError: Boolean(requestId),
+      });
+      if (requestId) {
+        const error = buildSyncResultTooLargeError({
+          label: context?.action ?? type,
+          bytes: frameBytes,
+          limitBytes,
+        });
+        for (const frame of encodeFramesFor(peer, type, buildSyncOversizedReplyPayload(payload, error), requestId)) {
+          ws.send(frame);
+        }
+      }
       return false;
     }
     let reported = false;
@@ -6772,7 +6807,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   async function handleFileRequest(peer: PeerState, requestId: string | null, payload: SyncFileRequest): Promise<void> {
     const respond = (response: SyncFileResponsePayload) => {
-      sendRequired(peer, "file_response", response, requestId);
+      sendRequired(peer, "file_response", response, requestId, { action: `files.${payload.action}` });
     };
 
     try {
@@ -6892,7 +6927,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
     const sendResult = (record: CachedMobileCommand | null, result: SyncCommandResultPayload) => {
       if (!record) {
-        sendRequired(peer, "command_result", result, requestId);
+        sendRequired(peer, "command_result", result, requestId, { action: payload.action });
         return;
       }
       record.result = result;
@@ -6900,7 +6935,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       lastCommandResultLatencyMs = Math.max(0, record.completedAtMs - record.acceptedAtMs);
       const waiters = record.waiters.splice(0);
       for (const waiter of waiters) {
-        sendRequired(waiter.peer, "command_result", result, waiter.requestId);
+        sendRequired(waiter.peer, "command_result", result, waiter.requestId, { action: payload.action });
       }
       pruneMobileCommandResultCache();
       try {
@@ -6912,7 +6947,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
     };
     const startCommandRecord = (ack: SyncCommandAckPayload): CachedMobileCommand | null => {
-      sendRequired(peer, "command_ack", ack, requestId);
+      sendRequired(peer, "command_ack", ack, requestId, { action: payload.action });
       if (!commandCacheKey) return null;
       const record: CachedMobileCommand = {
         commandId,
@@ -6946,13 +6981,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           status: "rejected",
           message: mismatchResult.error?.message ?? null,
         }, requestId);
-        sendRequired(peer, "command_result", mismatchResult, requestId);
+        sendRequired(peer, "command_result", mismatchResult, requestId, { action: payload.action });
         return;
       }
       commandReplayCount += 1;
       sendRequired(peer, "command_ack", existingCommand.ack, requestId);
       if (existingCommand.result) {
-        sendRequired(peer, "command_result", existingCommand.result, requestId);
+        sendRequired(peer, "command_result", existingCommand.result, requestId, { action: existingCommand.action });
       } else {
         addMobileCommandWaiter(existingCommand, peer, requestId);
       }
@@ -7169,6 +7204,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // the message alone would also mangle legit prefixes like git's "fatal:".
       const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
       const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
+      if (error instanceof SyncRemoteCommandResultTooLargeError) {
+        sendResult(acceptedRecord, { commandId, ok: false, error: error.details });
+        return;
+      }
       sendResult(acceptedRecord, {
         commandId,
         ok: false,

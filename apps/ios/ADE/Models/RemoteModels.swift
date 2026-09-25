@@ -5687,6 +5687,25 @@ struct PullRequestRefreshPayload: Codable, Equatable {
   var refreshedCount: Int
   var prs: [PrSummary]
   var snapshots: [PullRequestSnapshotHydration]
+  /// Which snapshots the host sent: "requested" (the prId/prIds asked for),
+  /// "active", "all", or "none". Nil from brains that always sent every one.
+  var snapshotScope: String? = nil
+  /// PRs whose snapshot the host left out to stay under its reply budget.
+  var omittedSnapshotPrIds: [String]? = nil
+
+  /// True when a listed PR with no snapshot here really has none on the host,
+  /// so a cached one is stale. False for bounded replies, where a missing
+  /// snapshot only means it was not asked for.
+  var coversEveryListedSnapshot: Bool {
+    switch snapshotScope {
+    case nil, "requested":
+      return true
+    case "all":
+      return (omittedSnapshotPrIds ?? []).isEmpty
+    default:
+      return false
+    }
+  }
 }
 
 struct IntegrationConflictFile: Codable, Identifiable, Equatable {

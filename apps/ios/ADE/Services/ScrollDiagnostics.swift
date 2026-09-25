@@ -202,6 +202,48 @@ final class ScrollDiagnostics {
 
   var isRunning: Bool { displayLink != nil }
 
+  private var frameLog: [String: (count: Int, bytes: Int, handleMs: Double, maxMs: Double)] = [:]
+  private var frameLogStartedAt: CFTimeInterval = 0
+
+  /// Incoming sync frames by type: count, bytes and time the phone spent
+  /// handling them before reading the next frame. Flushed every 2 s as one
+  /// line, so a host that closes on backpressure shows what the phone was
+  /// slow on.
+  func noteFrame(type: String, bytes: Int, handleMs: Double) {
+    guard displayLink != nil else { return }
+    let now = CACurrentMediaTime()
+    if frameLogStartedAt == 0 { frameLogStartedAt = now }
+    var entry = frameLog[type] ?? (0, 0, 0, 0)
+    entry.count += 1
+    entry.bytes += bytes
+    entry.handleMs += handleMs
+    entry.maxMs = max(entry.maxMs, handleMs)
+    frameLog[type] = entry
+    guard now - frameLogStartedAt >= 2 else { return }
+    var fields: [String: Any] = [:]
+    for (key, value) in frameLog {
+      fields[key] = [
+        "n": value.count,
+        "kb": value.bytes / 1024,
+        "ms": Int(value.handleMs.rounded()),
+        "max": Int(value.maxMs.rounded()),
+      ]
+    }
+    event("sync.frames", ["byType": fields])
+    frameLog.removeAll()
+    frameLogStartedAt = now
+  }
+
+  /// A one-off event line (connection failures and the like), written at once.
+  func event(_ name: String, _ fields: [String: Any] = [:]) {
+    guard displayLink != nil else { return }
+    var line = fields
+    line["event"] = name
+    line["t"] = Date().timeIntervalSince1970
+    line["surface"] = nil
+    write(line)
+  }
+
   private func record(_ probe: Probe, ms: Double) {
     Self.accumulate(&probes, probe, ms: ms)
     if scrollingViews > 0 {

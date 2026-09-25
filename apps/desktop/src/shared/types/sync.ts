@@ -2682,6 +2682,10 @@ export type SyncCommandResultPayload = {
     conflict?: SyncHostConflictPublic | null;
     recoveryEligible?: boolean;
     snapshot?: SyncHostReadinessSnapshot;
+    /** `result_too_large` only: size of the reply that was refused, in bytes. */
+    bytes?: number;
+    /** `result_too_large` only: the limit it went over, in bytes. */
+    limitBytes?: number;
   };
 };
 

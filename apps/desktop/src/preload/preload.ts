@@ -11355,7 +11355,7 @@ const adeBridge = {
       callPrReadRuntimeActionOr(null, "listWithConflicts", { args }, () =>
         ipcRenderer.invoke(IPC.prsListWithConflicts, args),
       ),
-    listSnapshots: (args: { prId?: string } = {}): Promise<PrSnapshotHydration[]> =>
+    listSnapshots: (args: { prId?: string; prIds?: string[] } = {}): Promise<PrSnapshotHydration[]> =>
       callPrReadRuntimeActionOr(
         null,
         "listSnapshots",

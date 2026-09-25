@@ -1605,7 +1605,21 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    and the composer reports that the draft is safe. Exhausting the burst moves
    the UI to `unreachable`, but an indefinite quiet 30-40 s heartbeat keeps
    trying one route budget at a time. A paired machine that comes back minutes
-   later therefore reconnects without navigation or a user tap. A successful
+   later therefore reconnects without navigation or a user tap. A connection
+   that keeps closing within 30 s of hello for the same close code and reason
+   (three times in two minutes; `SyncReconnectFlapTracker`) is not retried on
+   that fast path — the 10 s stability reset would re-arm it forever — but
+   backs off 15 s -> 30 s -> ... -> 5 min, and the connection banner says
+   "<machine> keeps closing the connection right after connecting (<reason>).
+   Retrying in N s." A command that fails with `result_too_large` fails only
+   that call (never queued, never retried, never a reconnect) with "This was
+   too large to send to your phone". PR hydration is two-step and bounded on old
+   brains too: `prs.list`, then `prs.refresh { prIds, includeSnapshots:
+   "active" }` in batches of 25 for open/draft PRs and PRs on live lanes
+   (skipped when none; an old brain reads empty `prIds` as "all"). Hosts
+   without `prs.list` get one `prs.refresh { includeSnapshots: "active" }`; snapshots for other PRs load when a PR is
+   opened (`prs.refresh { prId }`), and a bounded refresh never prunes cached
+   snapshots it did not ask for. A successful
    hello restores the active project, chat and terminal subscriptions, tracked
    lane presence, and pending safe operations without rebuilding the current
    navigation stack. A user-initiated machine transition from Settings
