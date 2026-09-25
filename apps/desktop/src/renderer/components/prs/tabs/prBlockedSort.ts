@@ -58,6 +58,9 @@ export function resolveGitHubRowNextStepKind(args: {
 }): PrNextStepKind {
   if (args.state === "merged") return "merged";
   if (args.state === "closed") return "closed";
+  // A GitHub draft can arrive as `open` + `isDraft`; it is not ready for any
+  // merge-blocking action until it is marked ready.
+  if (args.isDraft || args.state === "draft") return "draft";
   const source = args.source;
   const step = resolvePrNextStep({
     state: args.state,

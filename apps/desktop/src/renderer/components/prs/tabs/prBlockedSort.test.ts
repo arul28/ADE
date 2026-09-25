@@ -77,6 +77,8 @@ describe("prBlockedSort", () => {
     expect(kindFor("open", { checksStatus: "pending" })).toBe("checks_pending");
     expect(kindFor("open", { reviewStatus: "changes_requested" })).toBe("changes_requested");
     expect(kindFor("open", { reviewStatus: "requested" })).toBe("review_required");
+    // A draft arrives as `open` + `isDraft`; draft wins over a failing check.
+    expect(kindFor("open", { checksStatus: "failing" }, true)).toBe("draft");
   });
 
   it("treats a host that reports no status as nothing outstanding", () => {
