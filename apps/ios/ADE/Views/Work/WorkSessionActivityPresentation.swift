@@ -89,9 +89,10 @@ func workSessionActivityDetailPresentation(
         let updatedAt = workParsedDate(activityStatus.updatedAt)
   else { return nil }
 
+  let reportAt = activityStatus.reportedAt ?? activityStatus.updatedAt
   let isStaleForTurn = activityStatus.source == "agent" && (currentTurnStartedAt
     .flatMap(workParsedDate)
-    .map { updatedAt < $0 } ?? false)
+    .map { (workParsedDate(reportAt) ?? updatedAt) < $0 } ?? false)
   guard !isStaleForTurn else { return nil }
 
   let isPlanning = activityStatus.value == "planning"

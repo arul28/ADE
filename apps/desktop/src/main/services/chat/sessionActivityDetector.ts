@@ -74,7 +74,7 @@ const SKILL_TOOLS = new Set(["skill"]);
 /** An executable named by path or with a Windows extension: `./node_modules/.bin/vitest`, `npm.cmd`. */
 const bin = (names: string) => `(?:\\S*[\\\\/])?(?:${names})(?:\\.cmd|\\.exe)?`;
 const TEST_RUNNER = new RegExp(
-  `^(?:${bin("vitest|jest|pytest|mocha|ava|rspec|phpunit")}|make\\s+test`
+  `^(?:${bin("vitest|jest|pytest|mocha|ava|rspec|phpunit")}\\b|make\\s+test`
     + "|node\\b.*\\s--test\\b|playwright\\s+test|go\\s+test|cargo\\s+(?:test|nextest)|swift\\s+test"
     + "|deno\\s+test|bun\\s+test|dotnet\\s+test|(?:\\S*/)?mvnw?\\b.*\\btest\\b"
     + "|(?:\\S*[\\\\/])?gradlew?(?:\\.bat)?\\b.*\\btest\\b|xcodebuild\\b.*\\btest\\b"
@@ -249,6 +249,19 @@ function stringField(record: unknown, keys: string[]): string {
   return "";
 }
 
+/** Return null until a named shell argument actually carries command text. */
+function shellCommandField(record: unknown, keys: string[]): string | null {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  const values = record as Record<string, unknown>;
+  for (const key of keys) {
+    if (!Object.hasOwn(values, key)) continue;
+    const value = values[key];
+    if (typeof value === "string") return value;
+    if (Array.isArray(value) && value.every((part) => typeof part === "string")) return value.join(" ");
+  }
+  return null;
+}
+
 function normalizeToolName(tool: string): string {
   // MCP tools arrive as `mcp__server__tool`; the bare tool name is what matters.
   const bare = tool.includes("__") ? tool.slice(tool.lastIndexOf("__") + 2) : tool;
@@ -302,8 +315,8 @@ function classifySessionActivityEvent(event: AgentChatEvent): SessionActivitySig
       if (PLAN_TOOLS.has(name)) return strong("planning");
       if (MONITOR_TOOLS.has(name)) return strong("monitoring");
       if (SHELL_TOOLS.has(name)) {
-        if (!hasNonEmptyRecord(args)) return null;
-        return classifyShellCommand(stringField(args, ["command", "cmd", "script", "shellCommand", "fullCommand", "input"]));
+        const shellCommand = shellCommandField(args, ["command", "cmd", "script", "shellCommand", "fullCommand", "input"]);
+        return shellCommand == null ? null : classifyShellCommand(shellCommand);
       }
       if (SUBAGENT_TOOLS.has(name)) {
         if (!hasNonEmptyRecord(args)) return null;
@@ -317,7 +330,10 @@ function classifySessionActivityEvent(event: AgentChatEvent): SessionActivitySig
         if (!hasNonEmptyRecord(args)) return null;
         return classifyDelegationParts(stringField(args, ["skill", "name", "command"]), "");
       }
-      return classifyAcpToolKind(event.toolKind) ?? READ;
+      const acpKind = classifyAcpToolKind(event.toolKind);
+      if (acpKind) return acpKind;
+      if (event.toolKind === "execute") return null;
+      return READ;
     }
     default:
       return null;

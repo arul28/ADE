@@ -138,7 +138,7 @@ export function buildAdeSessionActivityGuidance(args: {
   };
   return [
     "- ADE shows this chat's activity on its Work row, detected from your tool calls. You do not need to report it.",
-    `  When the detected state is wrong or too coarse (debugging looks like testing to it), name the real one with \`${command("debugging")}\`; clear it with \`${command("clear")}\`.`,
+    `  When the detected state is wrong or too coarse (debugging looks like testing to it), name the real one with \`${command("debugging")}\` (replace debugging with the real value); clear it with \`${command("clear")}\`.`,
     `  Values: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
   ].join("\n");
 }

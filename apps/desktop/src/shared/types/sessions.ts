@@ -50,6 +50,8 @@ export type SessionActivityReport = {
   value: SessionActivityValue;
   source: SessionActivitySource;
   updatedAt: string;
+  /** When this value was reported in the current turn; `updatedAt` remains the entry-time anchor. */
+  reportedAt?: string;
 };
 
 /**

@@ -714,7 +714,7 @@ describe("tracked CLI activity guidance", () => {
     (provider) => {
       const guidance = buildTrackedCliSessionActivityGuidance({ provider, permissionMode: "default" });
       expect(guidance).toContain('"$ADE_CLI_PATH" chat activity testing');
-      expect(guidance).toContain("planning, implementing, testing, reviewing, debugging, monitoring");
+      expect(guidance).toContain("planning, exploring, implementing, testing, debugging, reviewing, shipping, monitoring");
       expect(guidance).toContain("ADE_ACTIVITY_SESSION_ID");
       expect(guidance).toContain("tracked terminal row");
       expect(buildTrackedCliSessionActivityGuidance({ provider, permissionMode: "plan" })).toBeNull();

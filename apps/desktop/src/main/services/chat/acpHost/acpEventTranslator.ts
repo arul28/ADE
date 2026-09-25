@@ -67,7 +67,7 @@ type TrackedToolCall = {
    */
   command?: string;
   /** Whether a `tool_call` row has gone out with a non-empty `rawInput`. */
-  argsEmitted?: boolean;
+  emittedArgsJson?: string;
   /** Working directory reported for an execute tool, when it reported one. */
   cwd: string;
   /** Text collected from tool content, newest wins for terminal output. */
@@ -328,6 +328,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
             status: toolStatusToAde(status),
           }),
         );
+        tracked.opened = true;
         continue;
       }
       assertNever(item, "acp tool call content");
@@ -342,7 +343,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         // `pending` means the input is still streaming or awaiting approval
         // (ACP tool-calls spec). Opening now would fix the row's text to the
         // title ("bash") before the real command arrives on an update.
-        if (!inputCommand && tracked.status === "pending") return [];
+        if (!inputCommand && tracked.status !== "completed" && tracked.status !== "failed") return [];
         tracked.opened = true;
         tracked.command = inputCommand || tracked.title;
         tracked.cwd = readRawInputString(rawInput, ["cwd", "workdir", "directory"]) || tracked.cwd;
@@ -360,7 +361,6 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
       case "file_change":
         // The edit row cannot open until a diff arrives; the diff carries the
         // path. `emitToolContent` opens it.
-        tracked.opened = true;
         return [];
       case "tool":
         tracked.opened = true;
@@ -371,7 +371,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
   };
 
   const toolCallRow = (tracked: TrackedToolCall, toolCallId: string, rawInput: unknown): AgentChatEvent => {
-    if (hasNonEmptyRecord(rawInput)) tracked.argsEmitted = true;
+    if (hasNonEmptyRecord(rawInput)) tracked.emittedArgsJson = JSON.stringify(rawInput);
     return withTurn({
       type: "tool_call" as const,
       tool: tracked.toolName,
@@ -528,7 +528,11 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         const events: AgentChatEvent[] = [];
         if (!tracked.opened) {
           events.push(...openRow(tracked, update.toolCallId, tracked.rawInput));
-        } else if (tracked.rowKind === "tool" && !tracked.argsEmitted && hasNonEmptyRecord(update.rawInput)) {
+        } else if (
+          tracked.rowKind === "tool"
+          && hasNonEmptyRecord(update.rawInput)
+          && JSON.stringify(update.rawInput) !== tracked.emittedArgsJson
+        ) {
           // Input that arrived after the opening frame. Same item id, so the
           // row merges; it goes out before any close below, because a
           // `tool_call` after its result would mark the row running again.

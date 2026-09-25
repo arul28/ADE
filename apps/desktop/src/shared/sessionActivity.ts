@@ -40,8 +40,9 @@ export function normalizeSessionActivityReport(value: unknown): SessionActivityR
   if (!isSessionActivityValue(record.value) || !isSessionActivitySource(record.source)) return null;
   const updatedAt = normalizeTimestamp(record.updatedAt);
   if (!updatedAt) return null;
+  const reportedAt = normalizeTimestamp(record.reportedAt);
 
-  return { value: record.value, source: record.source, updatedAt };
+  return { value: record.value, source: record.source, updatedAt, ...(reportedAt ? { reportedAt } : {}) };
 }
 
 function isSessionActivitySource(value: unknown): value is SessionActivitySource {
@@ -80,7 +81,12 @@ export function nextAgentActivityReport(
   nowIso: string,
 ): SessionActivityReport {
   const keepsEntryTime = current?.source === "detected" && current.value === value;
-  return { value, source: "agent", updatedAt: keepsEntryTime ? current.updatedAt : nowIso };
+  return {
+    value,
+    source: "agent",
+    updatedAt: keepsEntryTime ? current.updatedAt : nowIso,
+    reportedAt: nowIso,
+  };
 }
 
 /**
@@ -118,5 +124,6 @@ export function isReportFromTurn(
   turnStartedAt: string | null | undefined,
 ): boolean {
   const turnStartedMs = turnStartedAt ? Date.parse(turnStartedAt) : Number.NaN;
-  return !Number.isFinite(turnStartedMs) || Date.parse(report.updatedAt) >= turnStartedMs;
+  const reportedAt = report.source === "agent" ? report.reportedAt ?? report.updatedAt : report.updatedAt;
+  return !Number.isFinite(turnStartedMs) || Date.parse(reportedAt) >= turnStartedMs;
 }

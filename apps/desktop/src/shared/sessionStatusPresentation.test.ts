@@ -212,3 +212,65 @@ describe("sessionStatusPresentation agent-reported activity", () => {
     })?.label).toBe("Done");
   });
 });
+
+describe("sessionStatusPresentation detected activity", () => {
+  const detected: SessionActivityReport = {
+    value: "exploring",
+    source: "detected",
+    updatedAt: "2026-09-24T12:30:00.000Z",
+  };
+
+  it.each([
+    ["exploring", "Exploring", "exploring"],
+    ["shipping", "Shipping", "shipping"],
+  ] as const)("presents %s as live activity", (value, label, glyph) => {
+    const activityStatus = { ...detected, value };
+    expect(sessionStatusPresentation("running", {}, {
+      activityStatus,
+      currentTurnStartedAt: "2026-09-24T12:45:00.000Z",
+    })).toMatchObject({
+      label,
+      glyph,
+      tone: "blue",
+      activityDetail: true,
+      activitySource: "detected",
+      activityUpdatedAt: detected.updatedAt,
+    });
+    expect(sessionElapsedAnchor({ activityStatus, currentTurnStartedAt: "2026-09-24T12:45:00.000Z" }, "running", "turn"))
+      .toBe(detected.updatedAt);
+    expect(sessionStatusPresentation("needs_you", {}, { activityStatus })?.label).toBe("Needs you");
+  });
+
+  it("carries detection across continuation turns, hides an older agent report, and anchors elapsed at entry", () => {
+    const continuation = "2026-09-24T13:00:00.000Z";
+    const oldAgentReport: SessionActivityReport = {
+      value: "debugging",
+      source: "agent",
+      updatedAt: "2026-09-24T12:00:00.000Z",
+    };
+    const carried = sessionStatusPresentation("running", {}, {
+      activityStatus: detected,
+      currentTurnStartedAt: continuation,
+    });
+    const hidden = sessionStatusPresentation("running", {}, {
+      activityStatus: oldAgentReport,
+      currentTurnStartedAt: continuation,
+    });
+
+    expect(carried).toMatchObject({ label: "Exploring", activitySource: "detected" });
+    expect(hidden?.label).toBe("Working");
+    expect(sessionElapsedAnchor({ activityStatus: detected, currentTurnStartedAt: continuation }, "running", "turn"))
+      .toBe(detected.updatedAt);
+    const reconfirmed = {
+      ...detected,
+      source: "agent" as const,
+      reportedAt: continuation,
+    };
+    expect(sessionStatusPresentation("running", {}, {
+      activityStatus: reconfirmed,
+      currentTurnStartedAt: continuation,
+    })).toMatchObject({ label: "Exploring", activitySource: "agent" });
+    expect(sessionElapsedAnchor({ activityStatus: reconfirmed, currentTurnStartedAt: continuation }, "running", "turn"))
+      .toBe(detected.updatedAt);
+  });
+});

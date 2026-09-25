@@ -123,7 +123,7 @@ describe("createAgentChatService", () => {
       expect(systemPromptArgs?.sessionActivityGuidance).toContain("ADE_DEFAULT_ROLE='agent'");
       expect(systemPromptArgs?.sessionActivityGuidance).toContain(`ADE_CHAT_SESSION_ID='${session.id}'`);
       expect(systemPromptArgs?.sessionActivityGuidance)
-        .toContain(`'${cliPath}' chat activity testing --session '${session.id}'`);
+        .toContain(`'${cliPath}' chat activity debugging --session '${session.id}'`);
       expect(systemPromptArgs?.sessionActivityGuidance).not.toContain(staleRuntimeSocketPath);
       await service.dispose({ sessionId: session.id });
     });
@@ -619,7 +619,7 @@ describe("createAgentChatService", () => {
         activityRuntimeSocketPath: runtimeSocketPath,
       }));
       expect(String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? ""))
-        .toContain(`chat activity testing --session '${session.id}'`);
+        .toContain(`chat activity debugging --session '${session.id}'`);
       await service.dispose({ sessionId: session.id });
 
       mockState.cursorSdkAcquireCalls = [];

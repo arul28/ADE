@@ -16,6 +16,13 @@ function envelope(timestamp: string, text: string): AgentChatEventEnvelope {
   };
 }
 
+function toolEnvelope(
+  timestamp: string,
+  event: AgentChatEventEnvelope["event"],
+): AgentChatEventEnvelope {
+  return { sessionId: "session-1", timestamp, event };
+}
+
 describe("chat history ordering", () => {
   it("caches serialized identity across long-thread merge passes", () => {
     let serializations = 0;
@@ -45,6 +52,46 @@ describe("chat history ordering", () => {
 
     expect(mergeAgentChatLiveEvents(existing, [first])).toBe(existing);
     expect(mergeAgentChatLiveEvents(existing, [second])).toEqual([first, second]);
+  });
+
+  it("upserts streamed tool input in place without losing its completed result", () => {
+    const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-1", logicalItemId: "logical-1", turnId: "turn-1",
+    });
+    const result = toolEnvelope("2026-07-29T10:00:02.000Z", {
+      type: "tool_result", tool: "bash", result: "passed", itemId: "call-1", logicalItemId: "logical-1",
+      turnId: "turn-1", status: "completed",
+    });
+    const updated = toolEnvelope("2026-07-29T10:00:03.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "npm test" }, itemId: "call-1",
+      logicalItemId: "logical-1", turnId: "turn-1",
+    });
+
+    const merged = mergeAgentChatLiveEvents([call, result], [updated]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({ timestamp: call.timestamp, event: { type: "tool_call", args: { command: "npm test" } } });
+    expect(merged[1]).toBe(result);
+  });
+
+  it("keeps a completed tool result while a history snapshot fills the call input", () => {
+    const call = toolEnvelope("2026-07-29T10:00:00.000Z", {
+      type: "tool_call", tool: "bash", args: {}, itemId: "call-2", logicalItemId: "logical-2", turnId: "turn-2",
+    });
+    const result = toolEnvelope("2026-07-29T10:00:02.000Z", {
+      type: "tool_result", tool: "bash", result: "passed", itemId: "call-2", logicalItemId: "logical-2",
+      turnId: "turn-2", status: "completed",
+    });
+    const updated = toolEnvelope("2026-07-29T10:00:03.000Z", {
+      type: "tool_call", tool: "bash", args: { command: "pnpm test" }, itemId: "call-2",
+      logicalItemId: "logical-2", turnId: "turn-2",
+    });
+
+    const merged = mergeAgentChatHistorySnapshot([updated], [call, result]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({ event: { type: "tool_call", args: { command: "pnpm test" } } });
+    expect(merged[1]).toMatchObject({ event: { type: "tool_result", result: "passed", status: "completed" } });
   });
 
   it("inserts a delayed old envelope before the completed tail", () => {

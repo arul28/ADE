@@ -4767,6 +4767,7 @@ struct SessionActivityReport: Codable, Equatable {
   var value: String
   var source: String
   var updatedAt: String
+  var reportedAt: String? = nil
 }
 
 struct TerminalSessionSummary: Codable, Identifiable, Equatable {

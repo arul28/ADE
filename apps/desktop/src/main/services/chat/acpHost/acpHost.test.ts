@@ -966,6 +966,105 @@ describe("tool call translation", () => {
     expect(closed.some((event) => event.type === "tool_call")).toBe(false);
   });
 
+  it("waits for execute input and keeps one command row's text through close", () => {
+    const translator = createAcpEventTranslator();
+    translator.beginTurn("turn-late-input");
+    expect(translator.translate({
+      sessionUpdate: "tool_call",
+      toolCallId: "late-execute",
+      title: "bash",
+      kind: "execute",
+      status: "pending",
+    })).toEqual([]);
+    expect(translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-execute",
+      status: "in_progress",
+    })).toEqual([]);
+
+    const opened = translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-execute",
+      rawInput: { command: "npm test", cwd: "/lane" },
+    });
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({ type: "command", command: "npm test", itemId: "late-execute" });
+
+    const closed = translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-execute",
+      status: "completed",
+      content: [{ type: "content", content: { type: "text", text: "passed" } }],
+    });
+    expect(closed).toHaveLength(1);
+    expect(closed[0]).toMatchObject({ type: "command", command: "npm test", output: "passed", itemId: "late-execute" });
+  });
+
+  it("re-emits an ordinary tool once when raw input arrives after its title", () => {
+    const translator = createAcpEventTranslator();
+    translator.beginTurn("turn-late-args");
+    const opened = translator.translate({
+      sessionUpdate: "tool_call",
+      toolCallId: "late-search",
+      title: "Search",
+      name: "grep",
+      kind: "search",
+      status: "in_progress",
+    });
+    expect(opened[0]).toMatchObject({ type: "tool_call", args: {}, itemId: "late-search" });
+
+    const input = translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-search",
+      rawInput: { pattern: "TODO", path: "src" },
+    });
+    expect(input).toEqual([expect.objectContaining({
+      type: "tool_call",
+      args: { pattern: "TODO", path: "src" },
+      itemId: "late-search",
+    })]);
+    const changedInput = translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-search",
+      rawInput: { pattern: "TODO", path: "src", include: "*.ts" },
+    });
+    expect(changedInput).toEqual([expect.objectContaining({
+      type: "tool_call",
+      args: { pattern: "TODO", path: "src", include: "*.ts" },
+      itemId: "late-search",
+    })]);
+    expect(translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-search",
+      status: "completed",
+      rawInput: { pattern: "TODO", path: "src", include: "*.ts" },
+      rawOutput: { count: 2 },
+    }).filter((event) => event.type === "tool_call")).toHaveLength(0);
+  });
+
+  it("keeps a file-change row unclaimed until a diff or another row type arrives", () => {
+    const translator = createAcpEventTranslator();
+    translator.beginTurn("turn-late-kind");
+    expect(translator.translate({
+      sessionUpdate: "tool_call",
+      toolCallId: "late-kind",
+      title: "Tool",
+      kind: "edit",
+      status: "in_progress",
+    })).toEqual([]);
+    expect(translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-kind",
+      kind: "execute",
+      status: "in_progress",
+    })).toEqual([]);
+    expect(translator.translate({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "late-kind",
+      rawInput: { command: "npm test" },
+    })).toEqual([expect.objectContaining({ type: "command", command: "npm test", itemId: "late-kind" })]);
+  });
+
   it("renders an edit tool as file_change rows with diff content", () => {
     const translator = createAcpEventTranslator();
     translator.beginTurn("turn-1");

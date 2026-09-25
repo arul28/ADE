@@ -18804,14 +18804,15 @@ export function createAgentChatService(args: {
     // the evidence has not moved away from. Only counted evidence checks, so
     // streamed re-emits and text frames do not each cost a row read.
     if (!changed && !counted) return;
-    managed.activityRowNeedsWrite = false;
     try {
-      sessionService.setDetectedSessionActivity(
+      const wrote = sessionService.setDetectedSessionActivity(
         managed.session.id,
         detected,
         managed.session.currentTurnStartedAt ?? null,
         { onlyIfEmpty: !changed },
       );
+      if (!wrote) throw new Error("Session activity row was not found.");
+      managed.activityRowNeedsWrite = false;
       managed.activityWriteFailing = false;
     } catch (error) {
       // The detector has already moved on; retry the row on the next event,

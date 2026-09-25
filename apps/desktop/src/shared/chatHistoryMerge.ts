@@ -75,6 +75,63 @@ function compareAgentChatEventTime(
   return left.timestamp.localeCompare(right.timestamp);
 }
 
+function logicalToolItemKey(entry: AgentChatEventEnvelope): string | null {
+  const event = entry.event;
+  if (event.type !== "tool_call" && event.type !== "tool_result") return null;
+  const itemId = event.logicalItemId?.trim() || event.itemId?.trim();
+  return itemId ? `${event.turnId ?? ""}\u0000${itemId}` : null;
+}
+
+/** Replace streamed tool-call payloads in place, retaining their original order and results. */
+function upsertRepeatedToolCalls(
+  events: AgentChatEventEnvelope[],
+  previous: readonly AgentChatEventEnvelope[] = [],
+): AgentChatEventEnvelope[] {
+  let result = events;
+  const callIndexes = new Map<string, number>();
+  const duplicateIndexes = new Set<number>();
+  const previousCalls = new Map<string, AgentChatEventEnvelope>();
+  for (const entry of previous) {
+    if (entry.event.type !== "tool_call") continue;
+    const key = logicalToolItemKey(entry);
+    if (key && !previousCalls.has(key)) previousCalls.set(key, entry);
+  }
+  for (let index = 0; index < events.length; index += 1) {
+    const entry = events[index]!;
+    if (entry.event.type !== "tool_call") continue;
+    const key = logicalToolItemKey(entry);
+    if (!key) continue;
+    const earlier = callIndexes.get(key);
+    if (earlier === undefined) {
+      callIndexes.set(key, index);
+      const previousCall = previousCalls.get(key);
+      if (previousCall && compareAgentChatEventTime(previousCall, entry) < 0) {
+        if (result === events) result = [...events];
+        result[index] = { ...entry, timestamp: previousCall.timestamp };
+      }
+      continue;
+    }
+    if (result === events) result = [...events];
+    result[earlier] = { ...result[earlier]!, event: entry.event };
+    duplicateIndexes.add(index);
+  }
+  if (duplicateIndexes.size > 0) result = result.filter((_entry, index) => !duplicateIndexes.has(index));
+
+  if (callIndexes.size === 0) return result;
+  const resultKeys = new Set(result
+    .filter((entry) => entry.event.type === "tool_result")
+    .map(logicalToolItemKey)
+    .filter((key): key is string => key !== null));
+  const previousResults = previous.filter((entry) => entry.event.type === "tool_result");
+  const missingResults = previousResults.filter((entry) => {
+    const key = logicalToolItemKey(entry);
+    if (!key || !callIndexes.has(key) || resultKeys.has(key)) return false;
+    resultKeys.add(key);
+    return true;
+  });
+  return missingResults.length ? orderAgentChatEventsChronologically([...result, ...missingResults]) : result;
+}
+
 /**
  * Keep physical event order chronological without allocating on the common
  * already-ordered path. JavaScript's stable sort preserves arrival order for
@@ -122,10 +179,10 @@ export function mergeAgentChatLiveEvents(
     appendAnchor = entry;
   }
   if (appendOnly) {
-    return [...existing, ...fresh];
+    return upsertRepeatedToolCalls([...existing, ...fresh], existing);
   }
 
-  return orderAgentChatEventsChronologically([...existing, ...fresh]);
+  return upsertRepeatedToolCalls(orderAgentChatEventsChronologically([...existing, ...fresh]), existing);
 }
 
 /**
@@ -217,12 +274,13 @@ export function mergeAgentChatHistorySnapshot(
   const merged = inFlightEvents.length
     ? orderAgentChatEventsChronologically([...baseMerged, ...inFlightEvents])
     : baseMerged;
+  const reconciled = upsertRepeatedToolCalls(merged, existing);
 
   if (
-    merged.length === existing.length
-    && merged.every((entry, index) => entry === existing[index])
+    reconciled.length === existing.length
+    && reconciled.every((entry, index) => entry === existing[index])
   ) {
     return existing;
   }
-  return merged;
+  return reconciled;
 }
