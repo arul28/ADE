@@ -2,6 +2,10 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 
 import type { EditorTarget } from "../../../shared/editorTargets";
+import {
+  resolveTrustedWindowsTool,
+  TrustedWindowsToolError,
+} from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 
 /**
  * Windows editors do not all put a shim on PATH. The system VS Code installer
@@ -255,10 +259,7 @@ function findViaRegistry(
   spec: WindowsEditorSpec,
   io: WindowsEditorInstallIo,
 ): string | null {
-  const app = io.registryApps.find((entry) => {
-    const displayName = entry.displayName.toLowerCase();
-    return spec.displayNames.some((name) => displayName.includes(name.toLowerCase()));
-  });
+  const app = findRegistryAppForSpec(spec, io.registryApps);
   if (!app) return null;
   if (app.displayIcon) {
     const icon = stripDisplayIcon(app.displayIcon);
@@ -269,6 +270,40 @@ function findViaRegistry(
     if (exe) return exe;
   }
   return null;
+}
+
+/**
+ * Pick the uninstall entry that belongs to `spec`.
+ *
+ * An exact `DisplayName` wins. A `contains` fallback then ignores an entry that
+ * a *more specific* spec names more fully — otherwise matching `"Visual Studio
+ * Code"` inside `"Visual Studio Code - Insiders"` would report a phantom
+ * `vscode` on an Insiders-only machine.
+ */
+export function findRegistryAppForSpec(
+  spec: WindowsEditorSpec,
+  apps: readonly WindowsRegistryApp[],
+): WindowsRegistryApp | null {
+  const ownNames = spec.displayNames.map((name) => name.toLowerCase());
+  const allNames = Object.values(WINDOWS_EDITOR_SPECS)
+    .flatMap((entry) => entry.displayNames.map((name) => name.toLowerCase()));
+  let containsMatch: { app: WindowsRegistryApp; name: string } | null = null;
+  for (const app of apps) {
+    const displayName = app.displayName.toLowerCase();
+    if (ownNames.includes(displayName)) return app;
+    const matched = ownNames
+      .filter((name) => displayName.includes(name))
+      .sort((a, b) => b.length - a.length)[0];
+    if (!matched) continue;
+    const claimedByMoreSpecific = allNames.some(
+      (name) => name.length > matched.length && displayName.includes(name),
+    );
+    if (claimedByMoreSpecific) continue;
+    if (!containsMatch || matched.length > containsMatch.name.length) {
+      containsMatch = { app, name: matched };
+    }
+  }
+  return containsMatch?.app ?? null;
 }
 
 /**
@@ -299,14 +334,36 @@ const UNINSTALL_KEYS = [
 ];
 
 function queryRegistryKey(key: string): Promise<string> {
+  const command = trustedRegCommand();
+  if (!command) return Promise.resolve("");
   return new Promise((resolve) => {
     execFile(
-      "reg.exe",
+      command,
       ["query", key, "/s"],
       { windowsHide: true, timeout: 4_000, maxBuffer: 8 * 1024 * 1024 },
       (error, stdout) => resolve(error ? "" : stdout),
     );
   });
+}
+
+let cachedTrustedRegCommand: string | null | undefined;
+
+/**
+ * The kernel-resolved `reg.exe`, memoized. A bare `reg.exe` lets
+ * `CreateProcessW` search the current directory before PATH, which is a
+ * code-execution hazard in a worktree (see `processExecution.ts` and
+ * `trustedWindowsTools.ts`). A host that refuses the GLOBALROOT lookup returns
+ * null, and registry discovery is skipped — the install-dir scan still runs.
+ */
+export function trustedRegCommand(): string | null {
+  if (cachedTrustedRegCommand !== undefined) return cachedTrustedRegCommand;
+  try {
+    cachedTrustedRegCommand = resolveTrustedWindowsTool("reg");
+  } catch (error) {
+    if (!(error instanceof TrustedWindowsToolError)) throw error;
+    cachedTrustedRegCommand = null;
+  }
+  return cachedTrustedRegCommand;
 }
 
 /** Parse `reg query <key> /s` output into one row per uninstall entry. */
@@ -338,11 +395,34 @@ export function parseRegistryUninstallOutput(output: string): WindowsRegistryApp
 
 const WINDOWS_EXECUTABLE_TTL_MS = 5 * 60_000;
 const windowsExecutableCache = new Map<EditorTarget, { value: string | null; readAt: number }>();
+let registryAppsCache: { value: WindowsRegistryApp[]; readAt: number } | null = null;
 let registryAppsPromise: Promise<WindowsRegistryApp[]> | null = null;
 
 async function readWindowsRegistryApps(): Promise<WindowsRegistryApp[]> {
   const outputs = await Promise.all(UNINSTALL_KEYS.map((key) => queryRegistryKey(key)));
   return outputs.flatMap((output) => parseRegistryUninstallOutput(output));
+}
+
+/**
+ * Registry rows with the same TTL as the executable cache. `force` re-reads;
+ * otherwise an entry older than the TTL is refreshed once and shared by every
+ * concurrent caller.
+ */
+async function readWindowsRegistryAppsCached(force: boolean): Promise<WindowsRegistryApp[]> {
+  if (!force && registryAppsCache && Date.now() - registryAppsCache.readAt < WINDOWS_EXECUTABLE_TTL_MS) {
+    return registryAppsCache.value;
+  }
+  if (!registryAppsPromise) {
+    registryAppsPromise = readWindowsRegistryApps()
+      .then((value) => {
+        registryAppsCache = { value, readAt: Date.now() };
+        return value;
+      })
+      .finally(() => {
+        registryAppsPromise = null;
+      });
+  }
+  return registryAppsPromise;
 }
 
 /**
@@ -359,8 +439,7 @@ export async function resolveWindowsEditorExecutableCached(
   if (!options.force && cached && Date.now() - cached.readAt < WINDOWS_EXECUTABLE_TTL_MS) {
     return cached.value;
   }
-  if (!registryAppsPromise) registryAppsPromise = readWindowsRegistryApps();
-  const registryApps = await registryAppsPromise;
+  const registryApps = await readWindowsRegistryAppsCached(options.force === true);
   const value = resolveWindowsEditorExecutable(target, {
     env: options.env ?? process.env,
     pathExists: (candidate) => {
@@ -387,4 +466,6 @@ export const _testing = {
   resolveWindowsEditorExecutable,
   parseRegistryUninstallOutput,
   windowsEditorSpec,
+  findRegistryAppForSpec,
+  trustedRegCommand,
 };
