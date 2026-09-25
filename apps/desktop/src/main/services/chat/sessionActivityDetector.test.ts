@@ -49,6 +49,39 @@ describe("session activity detection", () => {
       .toBe("reviewing");
   });
 
+  it("reclassifies a refined command once and ignores unchanged repeats", () => {
+    const detector = createSessionActivityDetector();
+    expect(detector.observe(command("npm", "exec-1"), 1_000)).toEqual({ activity: "exploring", counted: true });
+    expect(detector.observe(command("npm test", "exec-1"), 2_000)).toEqual({ activity: "testing", counted: true });
+    expect(detector.observe(command("npm test", "exec-1"), 3_000)).toEqual({ activity: "testing", counted: false });
+  });
+
+  it("does not count same-class command refinements as additional weak signals or reads", () => {
+    const shipping = createSessionActivityDetector();
+    shipping.observe(read("initial"), 1_000);
+    expect(shipping.observe(command("git push", "push-1"), 2_000)).toEqual({ activity: "exploring", counted: true });
+    expect(shipping.observe(command("git push origin", "push-1"), 3_000)).toEqual({ activity: "exploring", counted: false });
+    expect(shipping.observe(command("git push", "push-2"), 4_000)).toEqual({ activity: "shipping", counted: true });
+
+    const reads = createSessionActivityDetector();
+    reads.observe(command("npm test", "test"), 1_000);
+    expect(reads.observe(command("cat README.md", "read-1"), 2_000)).toEqual({ activity: "testing", counted: true });
+    expect(reads.observe(command("cat docs.md", "read-1"), 3_000)).toEqual({ activity: "testing", counted: false });
+    for (let index = 0; index < 10; index += 1) {
+      expect(reads.observe(command(`cat file-${index}.md`, `read-${index + 2}`), 4_000 + index).activity).toBe("testing");
+    }
+    expect(reads.observe(command("cat final.md", "read-final"), 5_000).activity).toBe("exploring");
+  });
+
+  it("does not carry weak evidence across a strong activity transition", () => {
+    const detector = createSessionActivityDetector();
+    detector.observe(read("initial"), 1_000);
+    expect(detector.observe(command("git push", "push-before-test"), 2_000).activity).toBe("exploring");
+    expect(detector.observe(command("npm test", "test"), 3_000).activity).toBe("testing");
+    expect(detector.observe(command("git push", "push-after-test-1"), 4_000).activity).toBe("testing");
+    expect(detector.observe(command("git push", "push-after-test-2"), 5_000).activity).toBe("shipping");
+  });
+
   it("keeps edits in a test loop, and returns to exploring after twelve reads", () => {
     const detector = createSessionActivityDetector();
     detector.observe(command("npm test"), 1_000);
@@ -65,7 +98,7 @@ describe("session activity detection", () => {
     expect(detector.observe(tool("bash", { command: "npm test" }, { parentItemId: "parent" }), 2_000))
       .toEqual({ activity: null, counted: false });
     expect(detector.observe(command("npm test", "runner"), 3_000)).toEqual({ activity: "testing", counted: true });
-    expect(detector.observe(command("git push", "runner"), 4_000)).toEqual({ activity: "testing", counted: false });
+    expect(detector.observe(command("npm test", "runner"), 4_000)).toEqual({ activity: "testing", counted: false });
   });
 
   it("waits for a shell command field but treats an explicit empty command as a read", () => {

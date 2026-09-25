@@ -287,7 +287,7 @@ describe("createAgentChatService", () => {
               type: "tool",
               callID: "tool-call-late-input",
               tool: "bash",
-              state: { status: "pending", input: { command: "npm test" } },
+              state: { status: "pending", input: { command: "npm" } },
             },
           },
         },
@@ -298,15 +298,58 @@ describe("createAgentChatService", () => {
         (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> } =>
           event.event.type === "tool_call"
           && event.event.itemId === "tool-call-late-input"
-          && Boolean((event.event.args as { command?: string })?.command),
+          && (event.event.args as { command?: string })?.command === "npm",
+      );
+      pushEvents({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "tool-part-late-input",
+            sessionID: "opencode-session-1",
+            messageID: "assistant-tool-msg",
+            type: "tool",
+            callID: "tool-call-late-input",
+            tool: "bash",
+            state: { status: "pending", input: { command: "npm test" } },
+          },
+        },
+      });
+      const refinedInput = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> } =>
+          event.event.type === "tool_call"
+          && event.event.itemId === "tool-call-late-input"
+          && (event.event.args as { command?: string })?.command === "npm test",
       );
       const toolCalls = events.filter((entry) =>
         entry.event.type === "tool_call" && entry.event.itemId === "tool-call-late-input");
-      expect(toolCalls).toHaveLength(2);
+      expect(toolCalls).toHaveLength(3);
       expect(toolCalls[0]?.event).not.toMatchObject({ args: { command: "npm test" } });
-      expect(withInput.event.args).toEqual({ command: "npm test" });
+      expect(withInput.event.args).toEqual({ command: "npm" });
+      expect(refinedInput.event.args).toEqual({ command: "npm test" });
       expect(events.some((entry) => entry.event.type === "tool_result" && entry.event.itemId === "tool-call-late-input"))
         .toBe(false);
+      pushEvents({
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "tool-part-late-input",
+            sessionID: "opencode-session-1",
+            messageID: "assistant-tool-msg",
+            type: "tool",
+            callID: "tool-call-late-input",
+            tool: "bash",
+            state: { status: "completed", input: { command: "npm test" }, output: "passed" },
+          },
+        },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "tool_result" }> } =>
+          event.event.type === "tool_result" && event.event.itemId === "tool-call-late-input",
+      );
+      expect(events.filter((entry) =>
+        entry.event.type === "tool_call" && entry.event.itemId === "tool-call-late-input")).toHaveLength(3);
 
       pushEvents(
         {

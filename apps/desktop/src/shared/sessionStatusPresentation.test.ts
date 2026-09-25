@@ -273,4 +273,27 @@ describe("sessionStatusPresentation detected activity", () => {
     expect(sessionElapsedAnchor({ activityStatus: reconfirmed, currentTurnStartedAt: continuation }, "running", "turn"))
       .toBe(detected.updatedAt);
   });
+
+  it("keeps native Planning over detected Exploring but honors an agent refinement", () => {
+    const currentTurnStartedAt = "2026-09-24T12:45:00.000Z";
+    const exploring = sessionStatusPresentation("running", {}, {
+      chatActivityMode: "planning",
+      activityStatus: detected,
+      currentTurnStartedAt,
+    });
+    const explicitTesting: SessionActivityReport = {
+      ...detected,
+      value: "testing",
+      source: "agent",
+      reportedAt: currentTurnStartedAt,
+    };
+    const testing = sessionStatusPresentation("running", {}, {
+      chatActivityMode: "planning",
+      activityStatus: explicitTesting,
+      currentTurnStartedAt,
+    });
+
+    expect(exploring).toMatchObject({ label: "Planning", glyph: "planning", tone: "violet" });
+    expect(testing).toMatchObject({ label: "Testing", glyph: "testing", activitySource: "agent" });
+  });
 });

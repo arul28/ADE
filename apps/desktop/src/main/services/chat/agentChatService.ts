@@ -2812,11 +2812,11 @@ type OpenCodeRuntime = {
   partTypeByPartId: Map<string, string>;
   toolStateByPartId: Map<string, string>;
   /**
-   * Tool parts whose `tool_call` has gone out WITH its input. OpenCode opens a
+   * Tool parts whose latest serialized input has gone out. OpenCode opens a
    * tool part while `pending`, before the input exists, so the first emit
-   * carries `{}` and the call is re-emitted once the input lands.
+   * carries `{}` and the call is re-emitted as its input arrives or changes.
    */
-  toolInputEmittedPartIds: Set<string>;
+  toolInputByPartId: Map<string, string>;
   compactionStartedPartIds: Set<string>;
   /** OpenCode child sessions whose own terminal event has not arrived yet. */
   subagentSessions: Map<string, {
@@ -15360,7 +15360,7 @@ export function createAgentChatService(args: {
       reasoningByPartId: new Map(),
       partTypeByPartId: new Map(),
       toolStateByPartId: new Map(),
-      toolInputEmittedPartIds: new Set(),
+      toolInputByPartId: new Map(),
       compactionStartedPartIds: new Set(),
       subagentSessions: new Map(),
       lastCompactionTrigger: null,
@@ -29474,7 +29474,7 @@ export function createAgentChatService(args: {
       runtime.reasoningByPartId.clear();
       runtime.partTypeByPartId.clear();
       runtime.toolStateByPartId.clear();
-      runtime.toolInputEmittedPartIds.clear();
+      runtime.toolInputByPartId.clear();
       runtime.compactionStartedPartIds.clear();
 
       const toPromptFiles = toOpenCodePromptFiles(resolvedAttachments).files;
@@ -29945,7 +29945,7 @@ export function createAgentChatService(args: {
           runtime.reasoningByPartId.delete(removedPartId);
           runtime.partTypeByPartId.delete(removedPartId);
           runtime.toolStateByPartId.delete(removedPartId);
-          runtime.toolInputEmittedPartIds.delete(removedPartId);
+          runtime.toolInputByPartId.delete(removedPartId);
           runtime.compactionStartedPartIds.delete(removedPartId);
           emittedOpenCodeImagePartIds.delete(removedPartId);
           continue;
@@ -30157,7 +30157,9 @@ export function createAgentChatService(args: {
 
             const input = part.state.input;
             const hasInput = hasNonEmptyRecord(input);
-            const newInputArrived = hasInput && !runtime.toolInputEmittedPartIds.has(part.id);
+            const serializedInput = hasInput ? JSON.stringify(input) : null;
+            const newInputArrived = serializedInput !== null
+              && runtime.toolInputByPartId.get(part.id) !== serializedInput;
             if (!previousStatus) {
               const nextActivity = activityForToolName(part.tool);
               emitChatEvent(managed, {
@@ -30171,7 +30173,7 @@ export function createAgentChatService(args: {
             // empty ones). It must precede the result below: a `tool_call`
             // after its `tool_result` would flip the finished row to running.
             if (!previousStatus || newInputArrived) {
-              if (hasInput) runtime.toolInputEmittedPartIds.add(part.id);
+              if (serializedInput !== null) runtime.toolInputByPartId.set(part.id, serializedInput);
               emitChatEvent(managed, {
                 type: "tool_call",
                 tool: part.tool,

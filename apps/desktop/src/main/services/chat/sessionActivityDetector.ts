@@ -354,7 +354,8 @@ export type SessionActivityDetector = {
   /**
    * Feed one normalized event. Returns the turn's detected activity (null
    * before any evidence) and whether this event counted as new evidence —
-   * streamed re-emits and non-tool frames do not.
+   * unchanged re-emits and non-tool frames do not. A command whose text is
+   * refined under the same item id can count again when its classification changes.
    */
   observe(event: AgentChatEvent, atMs: number): { activity: SessionActivityValue | null; counted: boolean };
   /**
@@ -372,7 +373,11 @@ export function createSessionActivityDetector(): SessionActivityDetector {
   let readStreak = 0;
   let lastTestingAtMs = Number.NEGATIVE_INFINITY;
   let recentWeak: Array<{ activity: SessionActivityValue; atMs: number }> = [];
-  const seenItemIds = new Set<string>();
+  const seenItemIds = new Map<string, {
+    type: "tool_call" | "command" | "file_change";
+    command?: string;
+    signalKey: string;
+  }>();
 
   const reset = (): void => {
     state = null;
@@ -384,15 +389,29 @@ export function createSessionActivityDetector(): SessionActivityDetector {
 
   /**
    * Providers re-emit the same tool call as it streams (args filling in,
-   * status changing). Each item counts once, on its first classifiable frame.
+   * status changing). An item counts on its first classifiable frame; an
+   * execute command may count again when its refined text changes classification.
    */
-  const firstSighting = (event: AgentChatEvent): boolean => {
+  const firstSighting = (event: AgentChatEvent, signal: SessionActivitySignal): boolean => {
     if (event.type !== "tool_call" && event.type !== "command" && event.type !== "file_change") return true;
     const id = event.logicalItemId ?? event.itemId;
     if (!id) return true;
-    if (seenItemIds.has(id)) return false;
+    const signalKey = signal.kind === "read" ? "read" : `${signal.activity}:${signal.strength}`;
+    const previous = seenItemIds.get(id);
+    if (previous) {
+      if (event.type !== "command" || previous.type !== "command" || previous.command === event.command) return false;
+      // Execute tools can refine a partial command into the operation that
+      // actually determines activity. Same-class refinements are still one
+      // call and must not satisfy weak-signal thresholds or read streaks.
+      seenItemIds.set(id, { type: "command", command: event.command, signalKey });
+      return previous.signalKey !== signalKey;
+    }
     if (seenItemIds.size >= SEEN_ITEM_CAP) seenItemIds.clear();
-    seenItemIds.add(id);
+    seenItemIds.set(id, {
+      type: event.type,
+      ...(event.type === "command" ? { command: event.command } : {}),
+      signalKey,
+    });
     return true;
   };
 
@@ -410,6 +429,7 @@ export function createSessionActivityDetector(): SessionActivityDetector {
 
     if (signal.strength === "strong" || state === null) {
       state = activity;
+      recentWeak = [];
       return state;
     }
     if (activity === "implementing" && state === "testing" && atMs - lastTestingAtMs < TEST_LOOP_MS) {
@@ -423,7 +443,7 @@ export function createSessionActivityDetector(): SessionActivityDetector {
 
   const observe = (event: AgentChatEvent, atMs: number) => {
     const signal = classifySessionActivityEvent(event);
-    if (!signal || !firstSighting(event)) return { activity: state, counted: false };
+    if (!signal || !firstSighting(event, signal)) return { activity: state, counted: false };
     return { activity: apply(signal, atMs), counted: true };
   };
 

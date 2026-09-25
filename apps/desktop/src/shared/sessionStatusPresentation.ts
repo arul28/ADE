@@ -247,7 +247,11 @@ export function sessionStatusPresentation(
   const reportedActivity = phase === "running" && liveness === "turn"
     ? currentActivityReport(activity.activityStatus, activity.currentTurnStartedAt)
     : null;
-  if (reportedActivity) {
+  const nativePlanning = phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning";
+  const detectedExplorationDuringPlanning = nativePlanning
+    && reportedActivity?.source === "detected"
+    && reportedActivity.value === "exploring";
+  if (reportedActivity && !detectedExplorationDuringPlanning) {
     return {
       ...REPORTED_ACTIVITY_PRESENTATION[reportedActivity.value],
       activitySource: reportedActivity.source,
@@ -258,7 +262,7 @@ export function sessionStatusPresentation(
   // Planning is a property of a LIVE TURN. A resting session promoted back to
   // `running` by its background work is not planning anything — its plan-mode
   // flag is just the mode the finished turn ran in.
-  if (phase === "running" && liveness === "turn" && activity.chatActivityMode === "planning") {
+  if (nativePlanning) {
     return {
       label: "Planning",
       tone: "violet",
