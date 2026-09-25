@@ -51,8 +51,7 @@ How to write it:
   a partial state, a step you could not check.
 - Cite as many items as your claims need. There is no limit. Choose the items
   that show the claim; do not paste every capture.
-- Proof that ADE captured or recorded, and that your answer cites, shows as
-  **Verified**. A file you attached shows "Attached by the agent".
+- Prefer proof that ADE captured or recorded over a file you made yourself.
 
 A citation of an id ADE does not have shows "ADE has no proof with the id …".
 Copy the id from the `cite:` line; do not type it.

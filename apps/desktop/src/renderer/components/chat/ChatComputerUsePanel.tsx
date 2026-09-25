@@ -9,13 +9,11 @@ import {
   Trash,
   VideoCamera,
   WarningCircle,
-  X,
 } from "@phosphor-icons/react";
 import React, {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from "react";
 import type {
@@ -29,7 +27,7 @@ import {
   readProofProvenance,
 } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
-import { Dialog } from "../ui/dialog";
+import { MediaLightbox } from "../ui/MediaLightbox";
 import { Banner } from "../ui/notice/Banner";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
@@ -162,79 +160,36 @@ function VideoProofPoster({
   );
 }
 
+/**
+ * A proof picture or video opened full size, in ADE's one media viewer. Copy
+ * and download read the bytes through the chat's runtime, so they work for
+ * proof on this computer, on a paired one and in the web client.
+ */
 export function ArtifactLightbox({
   artifact,
   preview,
-  failed,
-  failureText,
   onMediaError,
   onClose,
 }: {
   artifact: ComputerUseArtifactView;
   preview: string;
-  failed: boolean;
-  failureText: string;
   onMediaError: () => void;
   onClose: () => void;
 }) {
-  const closeRef = useRef<HTMLButtonElement | null>(null);
-  const media = isImageArtifact(artifact) ? "image" : "video";
+  const scope = useChatRuntimeScope();
+  const readDataUrl = useCallback(
+    () => window.ade.computerUse.readArtifactPreview({ uri: artifact.uri }, scope.pin),
+    [artifact.uri, scope.pin],
+  );
   return (
-    <Dialog
-      open
-      onOpenChange={(next) => {
-        if (!next) onClose();
-      }}
-      title={`Preview ${artifact.title}`}
-      hideHeader
-      width={media === "video" ? "max-content" : 1152}
-      maxHeight="calc(100vh - 40px)"
-      bodyPadding={false}
-      scrollBody={false}
-      bodyStyle={{ display: "flex", flexDirection: "column" }}
-      // Proof renders on this dark surface in every theme.
-      panelStyle={{ background: "#0d0d11", borderRadius: 16 }}
-      initialFocusRef={closeRef}
-    >
-      <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.07] px-4 py-3">
-        <div className="min-w-0">
-          <div className="truncate font-sans text-[12px] font-semibold text-fg/88">{artifact.title}</div>
-          <div className="mt-0.5 font-mono text-[9.5px] text-muted-fg/42">
-            {kindLabel(artifact.kind)} · {relativeTime(artifact.createdAt)}
-          </div>
-        </div>
-        <button
-          ref={closeRef}
-          type="button"
-          className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-fg/55 transition-colors hover:bg-white/[0.07] hover:text-fg/85"
-          aria-label="Close proof preview"
-          onClick={onClose}
-        >
-          <X size={15} weight="bold" />
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-auto bg-black/30 p-3">
-        {failed ? (
-          <ProofPreviewFailureNotice failureText={failureText} />
-        ) : media === "video" ? (
-          <video
-            src={preview}
-            controls
-            autoPlay
-            playsInline
-            onError={onMediaError}
-            className="mx-auto block h-auto max-h-[calc(85vh-4.5rem)] w-auto max-w-[calc(90vw-1.5rem)] rounded-xl bg-black object-contain"
-          />
-        ) : (
-          <img
-            src={preview}
-            alt={artifact.title}
-            onError={onMediaError}
-            className="mx-auto block max-h-[calc(100vh-9rem)] max-w-full rounded-xl object-contain"
-          />
-        )}
-      </div>
-    </Dialog>
+    <MediaLightbox
+      src={preview}
+      kind={isImageArtifact(artifact) ? "image" : "video"}
+      title={artifact.description?.trim() || artifact.title}
+      readDataUrl={externalArtifactUrl(artifact.uri) ? undefined : readDataUrl}
+      onMediaError={onMediaError}
+      onClose={onClose}
+    />
   );
 }
 
@@ -364,8 +319,6 @@ export function ChatProofArtifactCard({
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
-          failed={failed}
-          failureText={failureText}
           onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />
@@ -575,8 +528,6 @@ function DrawerProofTile({
         <ArtifactLightbox
           artifact={artifact}
           preview={preview}
-          failed={failed}
-          failureText={failureText}
           onMediaError={onMediaError}
           onClose={() => setLightboxOpen(false)}
         />

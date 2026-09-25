@@ -410,9 +410,9 @@ and its JSON result carries `artifacts[].citation`. There is no limit on how
 many items an answer cites. An agent can also compose its own picture (a crop,
 a side-by-side), attach it, and cite it.
 
-**Verified** = the bytes came from an ADE recorder or capture (`proofSource`
-`ade-recorder` / `ade-capture`) and the answer cites it. A cited attached file
-shows "Attached by the agent" and no badge.
+The answer shows each item with its caption only. It adds no badge and no
+provenance line; the one exception is the amber line for a video recorded
+before the request. The drawer still shows where each item came from.
 
 Each new artifact that a chat owns stores `metadata.turnId`: the id of the
 chat's latest turn when it was filed, the same id the transcript's `done` row
@@ -424,7 +424,10 @@ Renderers:
   override and the fence through `ChatProofCitation.tsx`. The figure finds the
   artifact in the chat's proof list, else reads it by id through the chat's
   runtime (`computerUse.listArtifacts({ artifactId })`), and loads bytes with
-  `useArtifactPreview` like the drawer.
+  `useArtifactPreview` like the drawer. A click opens `MediaLightbox`
+  (`components/ui/MediaLightbox.tsx`): the picture fits the window, with a
+  floating copy, download and close toolbar. The Files image viewer has the
+  same copy and download actions.
 - **iOS:** `WorkMarkdownParsing.swift` makes a `proofCitation` block from a
   line that holds only a citation, and a `proofCompare` block from the fence.
   `WorkProofCitationView` reads the chat's proof list and loads bytes with the

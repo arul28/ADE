@@ -7733,7 +7733,7 @@ export function buildLinearSessionDirective(
 const PROOF_IN_ANSWER_GUIDANCE = [
   "Show proof in your answer, directly under the claim it proves. Every proof command prints a `cite:` line such as `![caption](ade-proof://<id>)`; paste it into your message. Pictures show inline and videos play inline.",
   `For a before/after, write a fenced \`\`\`${PROOF_COMPARE_FENCE_LANGUAGE} block with the lines \`before: <id> <label>\`, \`after: <id> <label>\` and an optional \`caption: <one sentence>\`. You may also compose an image yourself (a crop, a side-by-side), file it with \`ade proof attach\`, and cite it.`,
-  "Give each item a caption that says what it shows, and an honest caveat when it does not show everything (mock data, a partial state, a step you could not check). Cite as many items as the claims need, and choose the ones that show the claim instead of every capture. Proof that ADE captured or recorded, and that your answer cites, shows as Verified.",
+  "Give each item a caption that says what it shows, and an honest caveat when it does not show everything (mock data, a partial state, a step you could not check). Cite as many items as the claims need, and choose the ones that show the claim instead of every capture. Prefer proof that ADE captured or recorded over a file you made yourself.",
 ].join("\n");
 
 /**
