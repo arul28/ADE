@@ -3133,12 +3133,12 @@ the host reports any booted iPhone on the Mac, so the chip needs
 sends no `laneDevice` shows no simulator chip). Each
 read is gated on its own action (`supportsWorkToolsState`,
 `supportsAppleDeviceStatus`), and the chips are hidden in personal chats
-and while the composer is input-locked, like the PR chip. The browser and
-App Control chips open `WorkToolsSheet.swift`: four cards in the order people
-ask about them — what the desktop has open now, with the last frame it
-captured; the lane's Apple device, a view-only live stream when the host
-advertises `apple.status`; the browser's tabs; App Control's session —
-plus pull to refresh. Tool display names track the desktop catalogue, so
+and while the composer is input-locked, like the PR chip. Each chip opens
+one surface. The simulator opens `AppleDeviceViewer`. macOS opens
+`MacDesktopViewer` when the host advertises the stream, otherwise its own
+sheet. The browser opens its own sheet. App Control opens `AppControlViewer`
+when the host is streaming, otherwise its own sheet. `WorkToolsSheet` shows
+that one tool and pulls to refresh. Tool display names track the desktop catalogue, so
 `ios` reads **Apple** (the icon is a phone and the availability rule
 already says macOS; the platform word was carrying nothing), and there is
 no `pr` tool name because the Work tools pane no longer has one.
@@ -3202,7 +3202,7 @@ the lease. Chips order: simulator, macOS, browser, App Control. Tapping it
 opens `MacDesktopViewer` when the host advertises the stream, else the tools
 sheet.
 
-In the tools sheet the card is titled **macOS** and sits under the Apple card.
+In its own sheet the card is titled **macOS**.
 With a display it shows a subtitle of "W × H · bitrate · fps" (rate only while
 streaming), a chips row (display name, window count, a danger **Recording**
 badge), the inline live picture, the host's `stream.lastError` line, the lease
@@ -4027,15 +4027,20 @@ the stats and shows update guidance.
   Codex and other adapters reuse compact tool cards; data URIs are never printed
   into the timeline, and stored/mobile compaction byte counts become a short
   "preview omitted" detail.
-- **Tool telemetry keeps one chronological row, and is also disclosed from turn
-  status.** `WorkChatSessionView` draws assistant narration, reasoning,
-  provider-specific cards, `WorkToolCallsPanelView` clusters and
-  `WorkChangedFilesPanelView` rows in chronological order;
+- **The thread follows the desktop turn rules.** A finished turn draws one fold
+  caption (`Worked for <duration>`, or `Worked` when the duration is unknown)
+  and one turn-end line, and no turn-start divider. Tool rows are not drawn;
+  the fold's tool and file counts open the activity sheet. A duration under ten
+  seconds keeps one decimal (`5.0s`), under a second reads `<1s`, and a turn
+  with neither a user message nor a `status: started` event omits the duration.
+  Subagent cards sit in a grid of one column on the phone and three at a regular
+  width. A run of more than three adjacent same-cause stopped or usage-limit
+  results folds into one group; three or fewer stay cards, and a result whose
+  report landed stays its own card. A background job that was still live at
+  turn end stays visible, and a turn with nothing hidden draws no fold. The
+  fold stays incremental and off the main thread.
   `workPresentedTimelineEntries` in `WorkTimelineHelpers.swift` is the seam that
-  decides what reaches the visible timeline. Read-only tool clusters and file
-  changes stay visible as centered, compact `Tool calls N` / `Files changed N`
-  rows; tapping either row still opens the full member or file list, and tapping
-  a member still reveals its result, output, or diff. Mobile-only activity and
+  decides what reaches the visible timeline. Mobile-only activity and
   task-update ribbons are omitted from the thread, while scheduled-work state
   remains available in Chat Info. Claude-only prompt-suggestion ribbons are
   also omitted from the visible Claude transcript while their underlying events

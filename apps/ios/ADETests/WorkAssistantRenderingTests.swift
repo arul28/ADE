@@ -6,14 +6,14 @@ final class WorkAssistantRenderingTests: XCTestCase {
     let compactColumns = workSubagentGridColumnsPerRow(isCompactWidth: true)
     let regularColumns = workSubagentGridColumnsPerRow(isCompactWidth: false)
 
-    XCTAssertEqual(compactColumns, 2)
+    XCTAssertEqual(compactColumns, 1)
     XCTAssertEqual(regularColumns, 3)
     // Lines of `columnsPerRow` tiles; a short last line keeps the remainder and
-    // its tiles share the full width.
+    // its tiles share the full width. A phone is one column.
     XCTAssertEqual(workSubagentGridLines(count: 0, columnsPerRow: compactColumns), [])
     XCTAssertEqual(workSubagentGridLines(count: 1, columnsPerRow: compactColumns), [0..<1])
-    XCTAssertEqual(workSubagentGridLines(count: 3, columnsPerRow: compactColumns), [0..<2, 2..<3])
-    XCTAssertEqual(workSubagentGridLines(count: 4, columnsPerRow: compactColumns), [0..<2, 2..<4])
+    XCTAssertEqual(workSubagentGridLines(count: 3, columnsPerRow: compactColumns), [0..<1, 1..<2, 2..<3])
+    XCTAssertEqual(workSubagentGridLines(count: 4, columnsPerRow: compactColumns), [0..<1, 1..<2, 2..<3, 3..<4])
     XCTAssertEqual(workSubagentGridLines(count: 5, columnsPerRow: regularColumns), [0..<3, 3..<5])
   }
 

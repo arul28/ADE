@@ -1573,7 +1573,7 @@ struct WorkSubagentTimelineGrid: Identifiable, Hashable {
   let rows: [WorkSubagentTimelineRow]
 }
 
-/// Folded run of 2+ same-cause, same-source subagent result rows (desktop
+/// Folded run of more than three same-cause, same-source subagent result rows (desktop
 /// parity: `SubagentStoppedGroupEvent`). Carries the original result rows so
 /// the card can list each agent's title, last activity, and outcome.
 struct WorkSubagentStoppedGroupModel: Identifiable, Hashable {

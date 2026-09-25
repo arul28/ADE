@@ -22131,9 +22131,9 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(markers.count, 2)
     XCTAssertTrue(markers[0].turnId.hasPrefix("fallback-"))
-    XCTAssertEqual(markers[0].workedDurationLabel, "2s")
+    XCTAssertNil(markers[0].workedDurationLabel)
     XCTAssertEqual(markers[1].turnId, "turn-without-start")
-    XCTAssertEqual(markers[1].workedDurationLabel, "<1s")
+    XCTAssertNil(markers[1].workedDurationLabel)
   }
 
   func testWorkEventCardsHideLowSignalLifecycleNoise() {
@@ -22211,7 +22211,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(markers.map(\.status), ["interrupted"])
     XCTAssertEqual(markers.map(\.modelLabel), ["GPT-5.5"])
     XCTAssertEqual(markers.map(\.provider), ["codex"])
-    XCTAssertEqual(markers.map(\.workedDurationLabel), ["5s"])
+    XCTAssertEqual(markers.map(\.workedDurationLabel), ["5.0s"])
     XCTAssertEqual(markers.map(\.terminalReasonLabel), ["context window overflow"])
   }
 
@@ -27489,9 +27489,8 @@ final class LinearPaneTests: XCTestCase {
 }
 
 /// Parity coverage for the iOS mirror of the desktop `groupStoppedSubagentResultCards`
-/// fold: a mass stop collapses a run of 2+ consecutive same-source result rows
-/// into one `.subagentStoppedGroup`, while lone stops and non-stopped rows stay
-/// individual and break runs.
+/// fold: a mass stop collapses a run of more than three consecutive same-source
+/// result rows into one `.subagentStoppedGroup`. Three or fewer stay cards.
 final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
   private func resultEntry(
     _ id: String,
@@ -27562,17 +27561,26 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
   }
 
   func testFoldsRunOfStoppedResultsIntoOneGroup() {
+    let three = collapseSameCauseSubagentEntries([
+      stopped("a", "Alpha", rank: 0),
+      stopped("b", "Bravo", rank: 1),
+      stopped("c", "Charlie", rank: 2),
+    ], causeOf: workSubagentStoppedGroupCause)
+    XCTAssertEqual(three.count, 3)
+    XCTAssertFalse(three.contains(where: isGroup))
+
     let folded = collapseSameCauseSubagentEntries([
       stopped("a", "Alpha", rank: 0),
       stopped("b", "Bravo", rank: 1),
       stopped("c", "Charlie", rank: 2),
+      stopped("d", "Delta", rank: 3),
     ], causeOf: workSubagentStoppedGroupCause)
     XCTAssertEqual(folded.count, 1)
     guard case .subagentStoppedGroup(let model) = folded[0].payload else {
       return XCTFail("expected a stopped group")
     }
-    XCTAssertEqual(model.count, 3)
-    XCTAssertEqual(model.rows.map { $0.snapshot.description }, ["Alpha", "Bravo", "Charlie"])
+    XCTAssertEqual(model.count, 4)
+    XCTAssertEqual(model.rows.map { $0.snapshot.description }, ["Alpha", "Bravo", "Charlie", "Delta"])
     // Group key derives from the first agent so it stays stable as the run grows.
     XCTAssertEqual(folded[0].id, "subagent-stopped-group-unknown-unknown-a")
   }
@@ -27581,8 +27589,12 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     let folded = collapseSameCauseSubagentEntries([
       stopped("a", "Alpha", rank: 0, stopSource: "system", stopReason: "reason-a"),
       stopped("b", "Bravo", rank: 1, stopSource: "system", stopReason: "reason-a"),
-      stopped("c", "Charlie", rank: 2, stopSource: "system", stopReason: "reason-b"),
-      stopped("d", "Delta", rank: 3, stopSource: "system", stopReason: "reason-b"),
+      stopped("a2", "Alpha 2", rank: 2, stopSource: "system", stopReason: "reason-a"),
+      stopped("a3", "Alpha 3", rank: 3, stopSource: "system", stopReason: "reason-a"),
+      stopped("c", "Charlie", rank: 4, stopSource: "system", stopReason: "reason-b"),
+      stopped("d", "Delta", rank: 5, stopSource: "system", stopReason: "reason-b"),
+      stopped("c2", "Charlie 2", rank: 6, stopSource: "system", stopReason: "reason-b"),
+      stopped("c3", "Charlie 3", rank: 7, stopSource: "system", stopReason: "reason-b"),
     ], causeOf: workSubagentStoppedGroupCause)
 
     XCTAssertEqual(folded.count, 2)
@@ -27634,55 +27646,91 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     let folded = collapseSameCauseSubagentEntries([
       stopped("a", "Alpha", rank: 0),
       stopped("b", "Bravo", rank: 1),
-      resultEntry("x", "Interloper", status: .succeeded, rank: 2),
-      stopped("c", "Charlie", rank: 3),
-      stopped("d", "Delta", rank: 4),
+      stopped("a2", "Alpha 2", rank: 2),
+      stopped("a3", "Alpha 3", rank: 3),
+      resultEntry("x", "Interloper", status: .succeeded, rank: 4),
+      stopped("c", "Charlie", rank: 5),
+      stopped("d", "Delta", rank: 6),
+      stopped("c2", "Charlie 2", rank: 7),
+      stopped("c3", "Charlie 3", rank: 8),
     ], causeOf: workSubagentStoppedGroupCause)
-    // group(a,b) · succeeded(x) · group(c,d)
+    // group(a..) · succeeded(x) · group(c..)
     XCTAssertEqual(folded.count, 3)
     XCTAssertFalse(isGroup(folded[1]))
     guard case .subagentStoppedGroup(let first) = folded[0].payload,
           case .subagentStoppedGroup(let last) = folded[2].payload else {
       return XCTFail("expected two stopped groups around the boundary")
     }
-    XCTAssertEqual(first.rows.map { $0.snapshot.description }, ["Alpha", "Bravo"])
-    XCTAssertEqual(last.rows.map { $0.snapshot.description }, ["Charlie", "Delta"])
+    XCTAssertEqual(first.count, 4)
+    XCTAssertEqual(last.count, 4)
   }
 
   func testStoppedGroupsSplitBySourceAndUseExactHeadlines() throws {
     let folded = collapseSameCauseSubagentEntries([
       stopped("user-a", "User A", rank: 0, stopSource: "user"),
       stopped("user-b", "User B", rank: 1, stopSource: "user"),
+      stopped("user-c", "User C", rank: 2, stopSource: "user"),
+      stopped("user-d", "User D", rank: 3, stopSource: "user"),
       stopped(
         "system-a",
         "System A",
-        rank: 2,
+        rank: 4,
         stopSource: "system",
         stopReason: "the ADE brain restarted"
       ),
       stopped(
         "system-b",
         "System B",
-        rank: 3,
+        rank: 5,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted"
+      ),
+      stopped(
+        "system-c",
+        "System C",
+        rank: 6,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted"
+      ),
+      stopped(
+        "system-d",
+        "System D",
+        rank: 7,
         stopSource: "system",
         stopReason: "the ADE brain restarted"
       ),
       stopped(
         "foreign-a",
         "Foreign A",
-        rank: 4,
+        rank: 8,
         stopSource: "foreign-brain",
         stopReason: "another ADE brain took over this chat"
       ),
       stopped(
         "foreign-b",
         "Foreign B",
-        rank: 5,
+        rank: 9,
         stopSource: "foreign-brain",
         stopReason: "another ADE brain took over this chat"
       ),
-      stopped("unknown-a", "Unknown A", rank: 6),
-      stopped("unknown-b", "Unknown B", rank: 7),
+      stopped(
+        "foreign-c",
+        "Foreign C",
+        rank: 10,
+        stopSource: "foreign-brain",
+        stopReason: "another ADE brain took over this chat"
+      ),
+      stopped(
+        "foreign-d",
+        "Foreign D",
+        rank: 11,
+        stopSource: "foreign-brain",
+        stopReason: "another ADE brain took over this chat"
+      ),
+      stopped("unknown-a", "Unknown A", rank: 12),
+      stopped("unknown-b", "Unknown B", rank: 13),
+      stopped("unknown-c", "Unknown C", rank: 14),
+      stopped("unknown-d", "Unknown D", rank: 15),
     ], causeOf: workSubagentStoppedGroupCause)
 
     XCTAssertEqual(folded.count, 4)
@@ -27694,10 +27742,10 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
     }
     XCTAssertEqual(models.map(\.stopSource), ["user", "system", "foreign-brain", "unknown"])
     XCTAssertEqual(models.map(\.headline), [
-      "2 agents stopped when you interrupted",
-      "2 agents stopped: the ADE brain restarted",
-      "2 agents stopped: another ADE brain took over this chat",
-      "2 agents stopped",
+      "4 agents stopped when you interrupted",
+      "4 agents stopped: the ADE brain restarted",
+      "4 agents stopped: another ADE brain took over this chat",
+      "4 agents stopped",
     ])
   }
 
@@ -27720,13 +27768,48 @@ final class WorkSubagentStoppedGroupFoldTests: XCTestCase {
         stopReason: "the ADE brain restarted",
         lastActivity: "Reading the source"
       ),
+      stopped(
+        "lost-2",
+        "Second research agent",
+        rank: 2,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        lastActivity: "Reading the tests"
+      ),
+      stopped(
+        "lost-3",
+        "Third research agent",
+        rank: 3,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        lastActivity: "Reading the diff"
+      ),
+      stopped(
+        "lost-4",
+        "Fourth research agent",
+        rank: 4,
+        stopSource: "system",
+        stopReason: "the ADE brain restarted",
+        lastActivity: "Reading the plan"
+      ),
     ], causeOf: workSubagentStoppedGroupCause)
 
-    guard case .subagentStoppedGroup(let model) = folded.first?.payload else {
+    XCTAssertEqual(folded.count, 2)
+    guard case .subagent(let landed) = folded[0].payload else {
+      return XCTFail("a report that landed stays its own card")
+    }
+    XCTAssertEqual(landed.snapshot.lastActivity, "Writing the report")
+    guard case .subagentStoppedGroup(let model) = folded[1].payload else {
       return XCTFail("expected a stopped group")
     }
-    XCTAssertEqual(model.rows.map { $0.snapshot.lastActivity }, ["Writing the report", "Reading the source"])
-    XCTAssertEqual(model.rows.map { workSubagentStoppedOutcomeLabel($0.snapshot) }, ["report landed", "work lost"])
+    XCTAssertEqual(
+      model.rows.map { $0.snapshot.lastActivity },
+      ["Reading the source", "Reading the tests", "Reading the diff", "Reading the plan"]
+    )
+    XCTAssertEqual(
+      model.rows.map { workSubagentStoppedOutcomeLabel($0.snapshot) },
+      ["work lost", "work lost", "work lost", "work lost"]
+    )
   }
 
   func testSubagentResultStopMetadataDecodesOptionalAndMapsToWorkEnvelope() throws {
