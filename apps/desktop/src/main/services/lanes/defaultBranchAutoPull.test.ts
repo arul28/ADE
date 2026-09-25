@@ -52,6 +52,7 @@ describe("evaluateDefaultBranchAutoPull", () => {
     ["a merge in progress", { inProgressOperation: "merge" }, "git-operation-in-progress"],
     ["a detached HEAD", { headBranchRef: null }, "detached-head"],
     ["a non-default branch", { headBranchRef: "feature/x" }, "not-on-default-branch"],
+    ["a branch differing only in case", { headBranchRef: "Main" }, "not-on-default-branch"],
     ["a held worktree lease", { worktreeLocked: true }, "worktree-locked"],
     ["a lane with no upstream", { sync: sync({ hasUpstream: false }) }, "no-upstream"],
     ["a branch that is ahead of the remote", { sync: sync({ ahead: 2 }) }, "up-to-date"],

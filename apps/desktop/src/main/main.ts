@@ -5356,7 +5356,8 @@ app.whenReady().then(async () => {
         });
       },
       15_000,
-      "ADE_ENABLE_HEAD_WATCHER",
+  "ADE_ENABLE_HEAD_WATCHER",
+  "ADE_ENABLE_AUTO_PULL_DEFAULT",
     );
 
     // Local-runtime only: a remote-bound desktop must never mutate a checkout

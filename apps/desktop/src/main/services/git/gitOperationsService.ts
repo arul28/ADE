@@ -1407,6 +1407,11 @@ export function createGitOperationsService({
           await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
         }
       });
+      // A fetch moves the remote-tracking refs, so a cached sync status is
+      // stale the moment it returns. Without this the default-branch auto-pull
+      // reads its own pre-fetch behind-count back out of the 2 s cache and
+      // decides there is nothing to pull.
+      invalidateLaneReadCache(args.laneId);
       return action;
     },
 
@@ -1444,6 +1449,8 @@ export function createGitOperationsService({
           await runGitOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
         }
       });
+      // A pull moves HEAD and the branch, so any cached lane read is stale.
+      invalidateLaneReadCache(args.laneId);
       return action;
     },
 

@@ -76,7 +76,8 @@ export type AutoPullEligibilityInput = {
 
 function sameBranch(left: string | null, right: string | null): boolean {
   if (!left || !right) return false;
-  return normalizeBranchName(left).trim().toLowerCase() === normalizeBranchName(right).trim().toLowerCase();
+  // Git refs are case-sensitive; compare exactly after normalizing the prefix.
+  return normalizeBranchName(left).trim() === normalizeBranchName(right).trim();
 }
 
 const NON_BLOCKING_OPS = new Set(["bisect"]);
