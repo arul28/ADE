@@ -10,6 +10,7 @@ import { AppleLogo } from "../ui/appleIcons";
 import type {
   AppleDeviceOrientation,
   AppleDeviceStartArgs,
+  AppleHardwareButtonName,
   AppleLaneDevice,
   IosElementContextItem,
   IosSimulatorStatus,
@@ -562,6 +563,18 @@ export function AppleDevicePane({
   }, [deviceUdid, laneId, state]);
 
   /**
+   * The device's other physical buttons. Same guard and same service call as
+   * Home — `pressButton` dispatches by name, so this is one callback rather
+   * than one per key.
+   */
+  const pressHardwareButton = useCallback((name: AppleHardwareButtonName) => {
+    if (!appleInputAllowed(state)) return;
+    void window.ade.iosSimulator
+      .pressButton({ name, laneId, deviceUdid }, runtimePinRef.current)
+      .catch((cause: unknown) => setError(cause));
+  }, [deviceUdid, laneId, state]);
+
+  /**
    * §V2: rotate TO an orientation, and believe the DEVICE rather than the call.
    *
    * The verification now lives in the service, which reads the real
@@ -883,6 +896,7 @@ export function AppleDevicePane({
               recording={Boolean(recordingActive)}
               screenshotPending={screenshotPending}
               onHome={pressHome}
+              onHardwareButton={pressHardwareButton}
               orientation={orientation}
               orientationPending={rotating}
               onOrientation={rotateTo}
