@@ -66,10 +66,12 @@ public func activityStatusShoutsLabel(glyph: ActivityGlyph?, tone: ActivityTone)
 public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     case working
     case planning
+    case exploring
     case implementing
     case testing
     case reviewing
     case debugging
+    case shipping
     case monitoring
     case waiting
     case needsYou
@@ -89,10 +91,12 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
         // Same notepad the notch strip uses; `list.bullet.rectangle` lost its
         // rules below ~10pt and read as a smear.
         case .planning: return "note.text"
+        case .exploring: return "binoculars.fill"
         case .implementing: return "chevron.left.forwardslash.chevron.right"
         case .testing: return "flask.fill"
         case .reviewing: return "magnifyingglass"
         case .debugging: return "ladybug.fill"
+        case .shipping: return "paperplane.fill"
         case .monitoring: return "eye.fill"
         case .waiting: return "hourglass"
         // A filled dot, not a bell. The bell said "notification"; the row is

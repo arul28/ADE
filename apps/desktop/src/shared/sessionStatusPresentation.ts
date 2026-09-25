@@ -2,6 +2,7 @@ import { resolveUsageLimitResumeState } from "./chatAutoResume";
 import { usageLimitResumeRowStatus } from "./usageLimitResumePresentation";
 import type { AgentChatUsageLimitResume } from "./types/chat";
 import type { SessionActivityReport } from "./types/sessions";
+import { isReportFromTurn } from "./sessionActivity";
 import type {
   CanonicalSessionPhase,
   SessionBackgroundWork,
@@ -61,10 +62,12 @@ export type SessionStatusGlyph =
   | "working"
   | "monitoring"
   | "planning"
+  | "exploring"
   | "implementing"
   | "testing"
   | "reviewing"
   | "debugging"
+  | "shipping"
   | "waiting"
   | "needs-you"
   | "done"
@@ -95,8 +98,9 @@ export type SessionStatusPresentation = {
   prominent: boolean;
   /** This label is a finer activity detail inside the parent phase. */
   activityDetail?: boolean;
-  /** Present only for a typed status explicitly reported through ADE. */
+  /** Who set the activity: the agent, or ADE's tool-call detector. */
   activitySource?: SessionActivityReport["source"];
+  /** When the session entered this activity — the row's elapsed counts from here. */
   activityUpdatedAt?: string;
 };
 
@@ -155,9 +159,9 @@ export type SessionStatusOverlay = {
 
 export type SessionStatusActivityContext = {
   chatActivityMode?: "planning" | null;
-  /** Typed, host-stamped activity reported through ADE's CLI. */
+  /** Typed, host-stamped activity: detected from tool calls, or reported by the agent. */
   activityStatus?: SessionActivityReport | null;
-  /** Used to reject a report left over from an earlier foreground turn. */
+  /** Used to reject an agent report left over from an earlier foreground turn. */
   currentTurnStartedAt?: string | null;
   /**
    * Why the session is running, from `canonicalSessionState`. Absent (or
@@ -183,25 +187,28 @@ function countSuffix(count: number): string {
 
 const REPORTED_ACTIVITY_PRESENTATION: Record<SessionActivityReport["value"], SessionStatusPresentation> = {
   planning: { label: "Planning", tone: "violet", glyph: "planning", showsElapsed: true, prominent: false, activityDetail: true },
+  exploring: { label: "Exploring", tone: "blue", glyph: "exploring", showsElapsed: true, prominent: false, activityDetail: true },
   implementing: { label: "Implementing", tone: "blue", glyph: "implementing", showsElapsed: true, prominent: false, activityDetail: true },
   testing: { label: "Testing", tone: "blue", glyph: "testing", showsElapsed: true, prominent: false, activityDetail: true },
   reviewing: { label: "Reviewing", tone: "blue", glyph: "reviewing", showsElapsed: true, prominent: false, activityDetail: true },
   debugging: { label: "Debugging", tone: "blue", glyph: "debugging", showsElapsed: true, prominent: false, activityDetail: true },
+  shipping: { label: "Shipping", tone: "blue", glyph: "shipping", showsElapsed: true, prominent: false, activityDetail: true },
   monitoring: { label: "Monitoring", tone: "blue", glyph: "monitoring", showsElapsed: true, prominent: false, activityDetail: true },
 };
 
-function currentActivityReport(
+/**
+ * The activity to show for a live turn, or null. An agent report is
+ * turn-scoped: one from an earlier turn is stale data, possibly from an older
+ * peer. A detected one is not — the host clears it whenever the user engages,
+ * and it deliberately carries across continuation turns.
+ */
+export function currentActivityReport(
   report: SessionActivityReport | null | undefined,
   currentTurnStartedAt: string | null | undefined,
 ): SessionActivityReport | null {
   if (!report) return null;
-  const reportedAt = Date.parse(report.updatedAt);
-  if (!Number.isFinite(reportedAt)) return null;
-  if (currentTurnStartedAt) {
-    const turnStartedAt = Date.parse(currentTurnStartedAt);
-    if (Number.isFinite(turnStartedAt) && reportedAt < turnStartedAt) return null;
-  }
-  return report;
+  if (!Number.isFinite(Date.parse(report.updatedAt))) return null;
+  return isReportFromTurn(report, currentTurnStartedAt) ? report : null;
 }
 
 export function sessionStatusPresentation(
@@ -231,13 +238,11 @@ export function sessionStatusPresentation(
 
   const liveness = activity.liveness ?? "turn";
 
-  // A structured ADE report refines a live turn only. When the turn ends,
-  // host-observed background work (especially Monitoring) becomes the more
-  // current status and must not be hidden by the agent's last report.
-  // A structured ADE report never changes the phase; Needs you, snooze, and
-  // woke remain higher-priority signals.
-  // The turn timestamp is a second line of defence against stale data arriving
-  // from an older peer after a new accepted turn has already begun.
+  // A typed activity (detected or agent-reported) refines a live turn only.
+  // When the turn ends, host-observed background work (especially Monitoring)
+  // becomes the more current status and must not be hidden by the last one.
+  // It never changes the phase; Needs you, snooze, and woke remain
+  // higher-priority signals.
   const reportedActivity = phase === "running" && liveness === "turn"
     ? currentActivityReport(activity.activityStatus, activity.currentTurnStartedAt)
     : null;
@@ -355,9 +360,13 @@ export function sessionStatusPresentation(
  * The ONE elapsed anchor, shared by the desktop status slot and `ade code`'s
  * work list so the two cannot report different durations for the same row.
  *
- * Three anchors, one per kind of "how long":
- *   • a live turn counts from `currentTurnStartedAt` — immutable for the turn,
- *     so a CLI repainting its TUI cannot reset it every few seconds,
+ * Four anchors, one per kind of "how long":
+ *   • a live turn showing an activity ("Testing") counts from when the session
+ *     entered that activity. It used to count from the turn start, so a turn
+ *     that tested for two minutes after an hour of work read "Testing 1h". The
+ *     turn's own total is the chat's "Working…" timer,
+ *   • any other live turn counts from `currentTurnStartedAt` — immutable for
+ *     the turn, so a CLI repainting its TUI cannot reset it every few seconds,
  *   • background work counts from when that work STARTED. It used to count
  *     from `lastActivityAt`, which every provider frame refreshes: a job that
  *     had been running two hours read "Background work ×2 3s", which is the
@@ -375,6 +384,7 @@ export type SessionElapsedAnchors = {
   lastActivityAt?: string | null;
   startedAt?: string | null;
   backgroundWorkSince?: string | null;
+  activityStatus?: SessionActivityReport | null;
 };
 
 export function sessionElapsedAnchor(
@@ -385,7 +395,8 @@ export function sessionElapsedAnchor(
   const lastActivity = session.lastActivityAt ?? session.startedAt ?? null;
   if (phase !== "running") return lastActivity;
   if (liveness && liveness !== "turn") return session.backgroundWorkSince ?? lastActivity;
-  return session.currentTurnStartedAt ?? lastActivity;
+  const activity = currentActivityReport(session.activityStatus, session.currentTurnStartedAt);
+  return activity?.updatedAt ?? session.currentTurnStartedAt ?? lastActivity;
 }
 
 /**

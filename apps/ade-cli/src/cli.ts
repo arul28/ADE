@@ -1899,7 +1899,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
-    $ ade chat activity testing                      Report a fixed activity label for this turn; use clear to remove it
+    $ ade chat activity debugging                    Name what this turn is doing when ADE's own detection (from tool calls) cannot tell; use clear to remove it
                                                     Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -24742,7 +24742,13 @@ function sessionStatusLine(record: JsonObject, now: number, snoozed: boolean): s
   const presentation = sessionStatusDisplay(input, { snoozed });
   if (!presentation) return undefined;
   const elapsed = sessionElapsedLabel(summary, presentation, canonical.phase, canonical.liveness, now);
-  return elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+  const label = elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+  // An agent reading its own row should know whether ADE saw the activity or
+  // the agent said it.
+  const source = presentation.activitySource === "agent"
+    ? "reported by the agent"
+    : presentation.activitySource === "detected" ? "detected" : null;
+  return source ? `${label} (${source})` : label;
 }
 
 /**

@@ -56,6 +56,7 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
+import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
   claudePluginDeliveryForSource,
@@ -2809,6 +2810,12 @@ type OpenCodeRuntime = {
    */
   partTypeByPartId: Map<string, string>;
   toolStateByPartId: Map<string, string>;
+  /**
+   * Tool parts whose `tool_call` has gone out WITH its input. OpenCode opens a
+   * tool part while `pending`, before the input exists, so the first emit
+   * carries `{}` and the call is re-emitted once the input lands.
+   */
+  toolInputEmittedPartIds: Set<string>;
   compactionStartedPartIds: Set<string>;
   /** OpenCode child sessions whose own terminal event has not arrived yet. */
   subagentSessions: Map<string, {
@@ -4149,6 +4156,14 @@ type ManagedChatSession = {
   summaryInFlight: boolean;
   activeAssistantMessageId: string | null;
   lastActivitySignature: string | null;
+  /**
+   * Reads the turn's tool calls into a Work-row activity (see
+   * `sessionActivityDetector.ts`). Created on first use; reset when the user
+   * engages, alongside the persisted activity it feeds.
+   */
+  activityDetector?: SessionActivityDetector;
+  /** The detected activity last handed to the session row, so it is written once per change. */
+  lastDetectedActivity?: string | null;
   /**
    * `ade_card` identity cache: cardId → last emitted content fingerprint and the
    * card's original `createdAt`. Lets `emitAdeCard` answer "is this a no-op
@@ -15337,6 +15352,7 @@ export function createAgentChatService(args: {
       reasoningByPartId: new Map(),
       partTypeByPartId: new Map(),
       toolStateByPartId: new Map(),
+      toolInputEmittedPartIds: new Set(),
       compactionStartedPartIds: new Set(),
       subagentSessions: new Map(),
       lastCompactionTrigger: null,
@@ -18762,6 +18778,44 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /**
+   * Feed one event to the session's activity detector and hand the row a new
+   * detected activity when it changes. Writing only on a change is what lets
+   * an agent's own `ade chat activity` report stand until the evidence moves
+   * somewhere that report does not cover (`nextDetectedActivityReport`).
+   */
+  const observeSessionActivity = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    const detector = managed.activityDetector ??= createSessionActivityDetector();
+    const detected = detector.observe(event, Date.now());
+    if (!detected || detected === managed.lastDetectedActivity) return;
+    managed.lastDetectedActivity = detected;
+    try {
+      sessionService.setDetectedSessionActivity(
+        managed.session.id,
+        detected,
+        managed.session.currentTurnStartedAt ?? null,
+      );
+    } catch (error) {
+      logger.warn("agent_chat.activity_detect_write_failed", {
+        sessionId: managed.session.id,
+        activity: detected,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /**
+   * The user engaged (a message, a steer, an answer): the turn's activity
+   * starts over, both the persisted row and the evidence behind it.
+   */
+  const resetSessionActivity = (sessionId: string): void => {
+    sessionService.clearSessionActivity(sessionId);
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return;
+    managed.activityDetector?.reset();
+    managed.lastDetectedActivity = null;
+  };
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -18784,6 +18838,7 @@ export function createAgentChatService(args: {
       }
     })();
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
+    observeSessionActivity(managed, normalizedEvent);
 
     if (normalizedEvent.type === "text") {
       queueBufferedTextEvent(managed, normalizedEvent);
@@ -29398,6 +29453,7 @@ export function createAgentChatService(args: {
       runtime.reasoningByPartId.clear();
       runtime.partTypeByPartId.clear();
       runtime.toolStateByPartId.clear();
+      runtime.toolInputEmittedPartIds.clear();
       runtime.compactionStartedPartIds.clear();
 
       const toPromptFiles = toOpenCodePromptFiles(resolvedAttachments).files;
@@ -29868,6 +29924,7 @@ export function createAgentChatService(args: {
           runtime.reasoningByPartId.delete(removedPartId);
           runtime.partTypeByPartId.delete(removedPartId);
           runtime.toolStateByPartId.delete(removedPartId);
+          runtime.toolInputEmittedPartIds.delete(removedPartId);
           runtime.compactionStartedPartIds.delete(removedPartId);
           emittedOpenCodeImagePartIds.delete(removedPartId);
           continue;
@@ -30077,6 +30134,8 @@ export function createAgentChatService(args: {
               partId: part.id,
             };
 
+            const input = part.state.input;
+            const hasInput = Boolean(input) && typeof input === "object" && Object.keys(input).length > 0;
             if (!previousStatus) {
               const nextActivity = activityForToolName(part.tool);
               emitChatEvent(managed, {
@@ -30085,10 +30144,16 @@ export function createAgentChatService(args: {
                 detail: nextActivity.detail,
                 turnId,
               });
+            }
+            // Re-emitting the same item merges into its row (args replace the
+            // empty ones). It must precede the result below: a `tool_call`
+            // after its `tool_result` would flip the finished row to running.
+            if (!previousStatus || (hasInput && !runtime.toolInputEmittedPartIds.has(part.id))) {
+              if (hasInput) runtime.toolInputEmittedPartIds.add(part.id);
               emitChatEvent(managed, {
                 type: "tool_call",
                 tool: part.tool,
-                args: part.state.input,
+                args: input,
                 itemId,
                 logicalItemId: part.id,
                 turnId,
@@ -48808,7 +48873,7 @@ export function createAgentChatService(args: {
     const clearUserTurnMarkers = (): void => {
       if (messageClearsAttentionMarkers(args.metadata)) {
         sessionService.clearTurnStartMarkers(args.sessionId);
-        sessionService.clearSessionActivity(args.sessionId);
+        resetSessionActivity(args.sessionId);
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
@@ -49875,7 +49940,7 @@ export function createAgentChatService(args: {
       }
       markersCleared = true;
       sessionService.clearTurnStartMarkers(args.sessionId);
-      sessionService.clearSessionActivity(args.sessionId);
+      resetSessionActivity(args.sessionId);
     };
     const result = await steerWithOptions(args, {
       onAcceptedDispatch: clearAcceptedUserMarkers,
@@ -54557,7 +54622,7 @@ export function createAgentChatService(args: {
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
     await deliverInputResponse(args);
     sessionService.clearTurnStartMarkers(args.sessionId);
-    sessionService.clearSessionActivity(args.sessionId);
+    resetSessionActivity(args.sessionId);
   };
 
   /**

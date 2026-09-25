@@ -131,14 +131,15 @@ export function buildAdeSessionActivityGuidance(args: {
   } else {
     cliCommand = args.shell === "powershell" ? '& "$env:ADE_CLI_PATH"' : '"$ADE_CLI_PATH"';
   }
-  const command = (activity: "testing" | "clear"): string => {
+  const command = (activity: "debugging" | "clear"): string => {
     const invoke = `${cliCommand} chat activity ${activity} --session ${safeSessionId}`;
     if (target.type !== "inline" || !safeRuntimeSocketPath) return invoke;
     return `${runtimeTargetAssignments}${invoke}`;
   };
   return [
-    `- Report session activity with \`${command("testing")}\`; clear it with \`${command("clear")}\`.`,
-    `  Choose one current state: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
+    "- ADE shows this chat's activity on its Work row, detected from your tool calls. You do not need to report it.",
+    `  When the detected state is wrong or too coarse (debugging looks like testing to it), name the real one with \`${command("debugging")}\`; clear it with \`${command("clear")}\`.`,
+    `  Values: ${SESSION_ACTIVITY_VALUES.join(", ")}.`,
   ].join("\n");
 }
 

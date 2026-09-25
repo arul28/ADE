@@ -1129,6 +1129,13 @@ export type AgentChatEvent =
       type: "tool_call";
       tool: string;
       args: unknown;
+      /**
+       * The provider's own category for this tool, when its protocol has one
+       * (ACP `ToolKind`: read, edit, delete, move, search, execute, think,
+       * fetch, switch_mode, other). Lets activity detection read tools whose
+       * names are free text.
+       */
+      toolKind?: string;
       mcp?: AgentChatMcpToolSource;
       itemId: string;
       logicalItemId?: string;

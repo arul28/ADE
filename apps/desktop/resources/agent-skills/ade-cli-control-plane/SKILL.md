@@ -267,10 +267,13 @@ They are two separate signals on the row the user is looking at:
 
 #### Activity detail on the card
 
-ADE derives the parent state automatically. Some provider adapters also
-surface structured activity, such as Plan mode or a background monitor. ADE
-offers agent-reported activity only when the current provider can invoke the
-session's ADE CLI. When available, session-specific guidance gives the exact
+ADE derives the parent state automatically, and for ADE chats it also detects
+the activity detail (Exploring, Implementing, Testing, Reviewing, Shipping,
+Monitoring) from your tool calls, so you do not need to report it. Some
+provider adapters also surface structured activity, such as Plan mode or a
+background monitor. ADE offers agent-reported activity only when the current
+provider can invoke the session's ADE CLI; use it to correct or refine the
+detected state (Debugging, which looks like testing to the detector). When available, session-specific guidance gives the exact
 command and allowed values. For tracked terminals, `ade chat activity` targets
 `ADE_ACTIVITY_SESSION_ID`, while other ADE commands continue to use the owning
 chat in `ADE_CHAT_SESSION_ID`. Use that guidance to report or clear a detail;
