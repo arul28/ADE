@@ -817,9 +817,9 @@ describe("ChatAppControlPanel", () => {
     expect(screen.queryByRole("menuitem", { name: /Insert as context/ })).toBeNull();
   });
 
-  it("shows launch progress while an app attaches", async () => {
+  it("shows the starting card while a launch is in flight, then once the app is starting", async () => {
     const api = installAdeMock();
-    let release: (session: unknown) => void = () => {};
+    let release: (session: AppControlSession) => void = () => {};
     api.appControl.launchInTerminal.mockImplementation(
       () => new Promise((resolve) => {
         release = resolve;
@@ -829,15 +829,21 @@ describe("ChatAppControlPanel", () => {
     render(<ChatAppControlPanel sessionId="chat-frame" laneId="lane-1" projectRoot="/repo" />);
 
     expect((await screen.findByText("No app attached")).textContent).toBe("No app attached");
-    expect(screen.queryByTestId("app-control-progress")).toBeNull();
+    expect(screen.queryByTestId("app-control-starting")).toBeNull();
 
-    fireEvent.click(await screen.findByLabelText("Switch to Settings"));
-
-    expect((await screen.findByTestId("app-control-progress")).isConnected).toBe(true);
-
-    release({ sessionId: connectedSession.id, activeTargetId: "target-2", windows: targets });
-    await waitFor(() => {
-      expect(api.appControl.switchWindow).toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("App Control launch command"), {
+      target: { value: "pnpm dev" },
     });
+    fireEvent.click(screen.getByLabelText("Launch App Control command"));
+
+    const launchButton = screen.getByLabelText("Launch App Control command") as HTMLButtonElement;
+    expect(launchButton.disabled).toBe(true);
+    expect(screen.getByText("No app attached")).toBeTruthy();
+    expect(api.appControl.switchWindow).not.toHaveBeenCalled();
+
+    release({ ...connectedSession, status: "starting" });
+    expect(await screen.findByTestId("app-control-starting")).toBeTruthy();
+    expect(screen.getByText("Starting ADE Test…")).toBeTruthy();
+    expect(screen.queryByText("No app attached")).toBeNull();
   });
 });

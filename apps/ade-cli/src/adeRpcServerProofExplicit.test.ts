@@ -585,8 +585,12 @@ describe("explicit proof capture", () => {
       const clip = await callTool(handler, "record_environment", { proof: true, durationSec: 1 });
 
       expect(JSON.stringify(shot.error)).toContain("refused");
-      expect(JSON.stringify(shot.error)).toContain("--real-screen");
       expect(JSON.stringify(clip.error)).toContain("refused");
+      if (process.platform === "darwin") {
+        expect(JSON.stringify(shot.error)).toContain("--real-screen");
+      } else {
+        expect(JSON.stringify(shot.error)).not.toContain("--real-screen");
+      }
       expect(spawnSyncCalls).toEqual([]);
       expect(fixture.ingest).not.toHaveBeenCalled();
     }

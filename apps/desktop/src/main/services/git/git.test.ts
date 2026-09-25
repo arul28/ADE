@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { gitOwnershipMessage } from "../../../../../ade-cli/src/services/projects/gitOwnership";
 import {
   formatGitExecutionError,
   gitSafeDirectorySpec,
@@ -226,6 +227,15 @@ describe("macOS git selection", () => {
     ["/", "/"],
   ])("normalizes %s to the safe.directory value %s", (input, expected) => {
     expect(gitSafeDirectorySpec(input)).toBe(expected);
+  });
+
+  it.each([
+    ["darwin" as const, "/Users/a b/repo", "'/Users/a b/repo'"],
+    ["linux" as const, "/home/o'brien/repo", "'/home/o'\\''brien/repo'"],
+    ["win32" as const, "C:\\Users\\a b\\proj", '"C:/Users/a b/proj"'],
+  ])("quotes the safe.directory path for a %s paste", (platform, repoPath, quoted) => {
+    const message = gitOwnershipMessage({ path: repoPath }, platform);
+    expect(message).toContain(`safe.directory ${quoted}`);
   });
 });
 

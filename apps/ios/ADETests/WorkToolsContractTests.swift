@@ -685,6 +685,20 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(far.offset, CGSize(width: 200, height: -125))
   }
 
+  func testLandscapeViewportClampsPanAndSettlePullsARubberBandBack() {
+    let picture = CGSize(width: 400, height: 250)
+    let viewport = CGSize(width: 800, height: 200)
+    // Wider than the zoomed picture: that axis stays centered.
+    XCTAssertEqual(
+      MacDesktopZoom.clampOffset(CGSize(width: 40, height: 80), scale: 1, in: picture, viewport: viewport),
+      CGSize(width: 0, height: 25))
+    let past = MacDesktopZoom.rubberBand(30, limit: 10)
+    XCTAssertGreaterThan(past, 10)
+    XCTAssertLessThan(past, 30)
+    let stretched = MacDesktopZoom(scale: 1, offset: CGSize(width: past, height: past))
+    XCTAssertEqual(stretched.settled(in: picture, viewport: viewport).offset, CGSize(width: 0, height: 25))
+  }
+
   func testDoubleTapTogglesBetweenOneAndTwoAndAHalfAtTheTap() {
     let tap = CGPoint(x: 250, y: 125)
     let zoomed = MacDesktopZoom.identity.toggled(at: tap, in: Self.zoomFrame)
