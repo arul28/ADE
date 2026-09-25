@@ -331,14 +331,3 @@ export async function consumeClaudeResetCredit(args: {
       return failure("Claude could not redeem the reset.", true);
   }
 }
-
-export const _testing = {
-  CLAUDE_API_BASE,
-  CLAUDE_RESET_PROGRAM,
-  CLAUDE_CLI_FALLBACK_VERSION,
-  claudeCredentialsFile,
-  claudeAccountConfigFiles,
-  isFutureTimestamp,
-  parseGrant,
-  resolveClaudeCliVersion,
-};

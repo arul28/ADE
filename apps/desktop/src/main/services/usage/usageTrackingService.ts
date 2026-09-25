@@ -1754,10 +1754,11 @@ const claudeResetCreditConsumeInFlight = new Map<string, Promise<UsageResetCredi
  *
  * Held rather than minted per attempt: a claim that timed out or that Claude
  * could not confirm may already have been applied, and a retry with a fresh id
- * would ask Claude to treat it as a second claim. Cleared once an outcome is
- * known; a local "no credit" never mints one because nothing was sent.
+ * would ask Claude to treat it as a second claim. It is bound to the grant it
+ * was minted for, so a different grant gets a fresh id; a local "no credit"
+ * never mints one because nothing was sent.
  */
-const claudeResetCreditRequestIds = new Map<string, string>();
+const claudeResetCreditRequestIds = new Map<string, { requestId: string; grantId: string }>();
 
 /**
  * Spend one banked Claude reset credit for `configHome`.
@@ -1784,8 +1785,9 @@ async function spendClaudeResetCredit(args: {
           message: "No reset credit is banked on this account.",
         };
       }
-      const requestId = claudeResetCreditRequestIds.get(key) ?? randomUUID();
-      claudeResetCreditRequestIds.set(key, requestId);
+      const held = claudeResetCreditRequestIds.get(key);
+      const requestId = held && held.grantId === grantId ? held.requestId : randomUUID();
+      claudeResetCreditRequestIds.set(key, { requestId, grantId });
       const { result, retrySameClaim } = await consumeClaudeResetCredit({
         ...(args.configHome ? { configHome: args.configHome } : {}),
         grantId,
