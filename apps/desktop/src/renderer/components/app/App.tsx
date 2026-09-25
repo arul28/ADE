@@ -33,6 +33,7 @@ import { OnboardingBootstrap } from "../onboarding/OnboardingBootstrap";
 import { LaunchGate } from "../onboarding/LaunchGate";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
+import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 
@@ -1193,10 +1194,7 @@ function AppNavigationBridge() {
         const handled = await resolvePortableFallback("lane", target, options);
         if (handled) return true;
       }
-      const params = new URLSearchParams();
-      params.set("laneId", target.laneId);
-      if (target.sessionId) params.set("sessionId", target.sessionId);
-      navigate(`/lanes?${params.toString()}`);
+      navigate(openLaneInLanesTabPath(target.laneId, target.sessionId));
       return true;
     }
 
