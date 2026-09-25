@@ -1879,7 +1879,20 @@ not chained by the client. The client picks the chat's session id (the
 `launchId`) and the lane id, calls `chat.startLaunch`, and opens the chat
 immediately; the call returns as soon as the launch is reserved. The brain's
 `chatLaunchService` then walks the stages and publishes a full
-`ChatLaunchSnapshot` after every change:
+`ChatLaunchSnapshot` after every change.
+
+The same flow backs a **configured** new lane: the lane picker's `+` opens the
+full create-lane dialog and defers creation. The dialog hands back a recipe
+(`ChatLaunchArgs.laneConfig`: `root` / `child` / `import` mode, plus parent or
+branch ref, lane template, accent color, and Linear issue) that the picker shows
+as the pending lane; nothing is created until the chat is sent. The launch then
+builds it through the stages below — a `child` recipe passes `parentLaneId`
+(with the chosen base as the start point, since `create` honors `baseBranch`
+only for a primary parent), an `import` recipe adopts an existing branch with
+`laneService.importBranch` on the launch's reserved lane id (Cancel deletes the
+lane it made but never that pre-existing branch), and a `root` recipe branches
+from the chosen base. A configured lane keeps the name the user gave it — it is
+never AI-renamed — and its branch derives from that name.
 
 1. **Fetch base branch** — the same remote-first base resolution every
    base-less lane create uses (`resolveLaneCreateRemoteBaseDetailed`, which

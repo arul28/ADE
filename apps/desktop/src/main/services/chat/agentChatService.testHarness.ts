@@ -1793,6 +1793,7 @@ function createMockSessionService() {
     setLastOutputPreview: vi.fn(),
     clearTurnStartMarkers: vi.fn(),
     clearSessionActivity: vi.fn(),
+    setDetectedSessionActivity: vi.fn((sessionId: string) => Boolean(sessions.get(sessionId))),
     markLastTurnFailed: vi.fn(),
     clearLastTurnFailed: vi.fn(),
     setSummary: vi.fn(),

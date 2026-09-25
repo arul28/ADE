@@ -56,6 +56,8 @@ import { z, type ZodType } from "zod";
 import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClaudeV2Message";
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
+import { hasNonEmptyRecord } from "../../../shared/agentObservationNormalizers";
+import { createSessionActivityDetector, type SessionActivityDetector } from "./sessionActivityDetector";
 import { clampTurnTimerMs, isForeignTurnEvent, SessionTurnAbandonedError, trackTurnInFlight } from "./sessionTurnLimits";
 import {
   claudePluginDeliveryForSource,
@@ -2823,6 +2825,12 @@ type OpenCodeRuntime = {
    */
   partTypeByPartId: Map<string, string>;
   toolStateByPartId: Map<string, string>;
+  /**
+   * Tool parts whose latest serialized input has gone out. OpenCode opens a
+   * tool part while `pending`, before the input exists, so the first emit
+   * carries `{}` and the call is re-emitted as its input arrives or changes.
+   */
+  toolInputByPartId: Map<string, string>;
   compactionStartedPartIds: Set<string>;
   /** OpenCode child sessions whose own terminal event has not arrived yet. */
   subagentSessions: Map<string, {
@@ -4163,6 +4171,21 @@ type ManagedChatSession = {
   summaryInFlight: boolean;
   activeAssistantMessageId: string | null;
   lastActivitySignature: string | null;
+  /**
+   * Reads the turn's tool calls into a Work-row activity (see
+   * `sessionActivityDetector.ts`). Created on first use; reset when the user
+   * engages, alongside the persisted activity it feeds.
+   */
+  activityDetector?: SessionActivityDetector;
+  /**
+   * A turn started since the detector last wrote. A continuation turn (a
+   * subagent finishing, a wake) keeps the detector's state, but an agent
+   * report left from the previous turn is hidden by the presentation, so the
+   * next detection must be written even when its value did not change.
+   */
+  activityRowNeedsWrite?: boolean;
+  /** The last detected write failed; the next failure is not logged again. */
+  activityWriteFailing?: boolean;
   /**
    * `ade_card` identity cache: cardId → last emitted content fingerprint and the
    * card's original `createdAt`. Lets `emitAdeCard` answer "is this a no-op
@@ -15466,6 +15489,7 @@ export function createAgentChatService(args: {
       reasoningByPartId: new Map(),
       partTypeByPartId: new Map(),
       toolStateByPartId: new Map(),
+      toolInputByPartId: new Map(),
       compactionStartedPartIds: new Set(),
       subagentSessions: new Map(),
       lastCompactionTrigger: null,
@@ -18901,6 +18925,57 @@ export function createAgentChatService(args: {
     return true;
   };
 
+  /**
+   * Feed one event to the session's activity detector and hand the row a new
+   * detected activity when it changes. Writing only on a change is what lets
+   * an agent's own `ade chat activity` report stand until the evidence moves
+   * somewhere that report does not cover (`nextDetectedActivityReport`).
+   */
+  const observeSessionActivity = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    const detector = managed.activityDetector ??= createSessionActivityDetector();
+    if (event.type === "status" && event.turnStatus === "started") managed.activityRowNeedsWrite = true;
+    const before = detector.current;
+    const { activity: detected, counted } = detector.observe(event, Date.now());
+    if (!detected) return;
+    const changed = detected !== before || managed.activityRowNeedsWrite === true;
+    // An unchanged detection only refills an empty row (an agent ran
+    // `ade chat activity clear`): rewriting it would override an agent report
+    // the evidence has not moved away from. Only counted evidence checks, so
+    // streamed re-emits and text frames do not each cost a row read.
+    if (!changed && !counted) return;
+    try {
+      const wrote = sessionService.setDetectedSessionActivity(
+        managed.session.id,
+        detected,
+        managed.session.currentTurnStartedAt ?? null,
+        { onlyIfEmpty: !changed },
+      );
+      if (!wrote) throw new Error("Session activity row was not found.");
+      managed.activityRowNeedsWrite = false;
+      managed.activityWriteFailing = false;
+    } catch (error) {
+      // The detector has already moved on; retry the row on the next event,
+      // and log once per failure streak, not once per streamed frame.
+      managed.activityRowNeedsWrite = true;
+      if (managed.activityWriteFailing) return;
+      managed.activityWriteFailing = true;
+      logger.warn("agent_chat.activity_detect_write_failed", {
+        sessionId: managed.session.id,
+        activity: detected,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /**
+   * The user engaged (a message, a steer, an answer): the turn's activity
+   * starts over, both the persisted row and the evidence behind it.
+   */
+  const resetSessionActivity = (sessionId: string): void => {
+    sessionService.clearSessionActivity(sessionId);
+    managedSessions.get(sessionId)?.activityDetector?.reset();
+  };
+
   const emitChatEvent = (
     managed: ManagedChatSession,
     event: AgentChatEvent,
@@ -18923,6 +18998,7 @@ export function createAgentChatService(args: {
       }
     })();
     turnUsageLedger?.observe(managed.session.id, normalizedEvent, managed.session.modelId ?? managed.session.model);
+    observeSessionActivity(managed, normalizedEvent);
 
     if (normalizedEvent.type === "text") {
       queueBufferedTextEvent(managed, normalizedEvent);
@@ -29538,6 +29614,7 @@ export function createAgentChatService(args: {
       runtime.reasoningByPartId.clear();
       runtime.partTypeByPartId.clear();
       runtime.toolStateByPartId.clear();
+      runtime.toolInputByPartId.clear();
       runtime.compactionStartedPartIds.clear();
 
       const toPromptFiles = toOpenCodePromptFiles(resolvedAttachments).files;
@@ -30008,6 +30085,7 @@ export function createAgentChatService(args: {
           runtime.reasoningByPartId.delete(removedPartId);
           runtime.partTypeByPartId.delete(removedPartId);
           runtime.toolStateByPartId.delete(removedPartId);
+          runtime.toolInputByPartId.delete(removedPartId);
           runtime.compactionStartedPartIds.delete(removedPartId);
           emittedOpenCodeImagePartIds.delete(removedPartId);
           continue;
@@ -30217,6 +30295,11 @@ export function createAgentChatService(args: {
               partId: part.id,
             };
 
+            const input = part.state.input;
+            const hasInput = hasNonEmptyRecord(input);
+            const serializedInput = hasInput ? JSON.stringify(input) : null;
+            const newInputArrived = serializedInput !== null
+              && runtime.toolInputByPartId.get(part.id) !== serializedInput;
             if (!previousStatus) {
               const nextActivity = activityForToolName(part.tool);
               emitChatEvent(managed, {
@@ -30225,23 +30308,32 @@ export function createAgentChatService(args: {
                 detail: nextActivity.detail,
                 turnId,
               });
+            }
+            // Re-emitting the same item merges into its row (args replace the
+            // empty ones). It must precede the result below: a `tool_call`
+            // after its `tool_result` would flip the finished row to running.
+            if (!previousStatus || newInputArrived) {
+              if (serializedInput !== null) runtime.toolInputByPartId.set(part.id, serializedInput);
               emitChatEvent(managed, {
                 type: "tool_call",
                 tool: part.tool,
-                args: part.state.input,
+                args: input,
                 itemId,
                 logicalItemId: part.id,
                 turnId,
               });
             }
 
-            if (nextStatus === "completed" && previousStatus !== "completed") {
-              // A media-producing tool's attachment is its output, so it keeps
-              // the generation card; every other tool's images are views.
-              const attachmentIsGenerated = isOpenCodeImageGenerationToolName(part.tool);
-              for (const attachment of part.state.attachments ?? []) {
-                if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
-                else emitOpenCodeImageAttachment(attachment);
+            if (nextStatus === "completed" && (previousStatus !== "completed" || newInputArrived)) {
+              if (previousStatus !== "completed") {
+                // A media-producing tool's attachment is its output, so it keeps
+                // the generation card; every other tool's images are views. Do
+                // not duplicate attachments when a late input re-emits the result.
+                const attachmentIsGenerated = isOpenCodeImageGenerationToolName(part.tool);
+                for (const attachment of part.state.attachments ?? []) {
+                  if (attachmentIsGenerated) emitOpenCodeImagePart(attachment);
+                  else emitOpenCodeImageAttachment(attachment);
+                }
               }
               const webSources = openCodeWebToolSourceRefs(
                 part.tool,
@@ -30264,7 +30356,7 @@ export function createAgentChatService(args: {
                 turnId,
                 status: "completed",
               });
-            } else if (nextStatus === "error" && previousStatus !== "error") {
+            } else if (nextStatus === "error" && (previousStatus !== "error" || newInputArrived)) {
               emitChatEvent(managed, {
                 type: "tool_result",
                 tool: part.tool,
@@ -30278,12 +30370,14 @@ export function createAgentChatService(args: {
                 turnId,
                 status: "failed",
               });
-              emitChatEvent(managed, {
-                type: "error",
-                message: `Tool '${part.tool}' failed: ${part.state.error}`,
-                itemId,
-                turnId,
-              });
+              if (previousStatus !== "error") {
+                emitChatEvent(managed, {
+                  type: "error",
+                  message: `Tool '${part.tool}' failed: ${part.state.error}`,
+                  itemId,
+                  turnId,
+                });
+              }
             }
             continue;
           }
@@ -48966,7 +49060,7 @@ export function createAgentChatService(args: {
     const clearUserTurnMarkers = (): void => {
       if (messageClearsAttentionMarkers(args.metadata)) {
         sessionService.clearTurnStartMarkers(args.sessionId);
-        sessionService.clearSessionActivity(args.sessionId);
+        resetSessionActivity(args.sessionId);
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
@@ -50033,7 +50127,7 @@ export function createAgentChatService(args: {
       }
       markersCleared = true;
       sessionService.clearTurnStartMarkers(args.sessionId);
-      sessionService.clearSessionActivity(args.sessionId);
+      resetSessionActivity(args.sessionId);
     };
     const result = await steerWithOptions(args, {
       onAcceptedDispatch: clearAcceptedUserMarkers,
@@ -54706,16 +54800,17 @@ export function createAgentChatService(args: {
    * because the question really is still open.
    *
    * `sessionService.clearTurnStartMarkers` clears the attention and failure
-   * columns plus the settle-lifecycle clear-on-activity. The separate
-   * `sessionService.clearSessionActivity` clears `activity_status_json`; that
-   * report belongs to the turn and must not be cleared by ordinary PTY input.
+   * columns plus the settle-lifecycle clear-on-activity. `resetSessionActivity`
+   * clears `activity_status_json` and the detector behind it: answering is the
+   * user engaging, which starts the activity over. Ordinary PTY input must not
+   * clear it.
    * `pending_input_item_id` is NOT written here — it is owned by the card
    * stores and their `pending_input_resolved` receipts.
    */
   const respondToInput = async (args: AgentChatRespondToInputArgs): Promise<void> => {
     await deliverInputResponse(args);
     sessionService.clearTurnStartMarkers(args.sessionId);
-    sessionService.clearSessionActivity(args.sessionId);
+    resetSessionActivity(args.sessionId);
   };
 
   /**

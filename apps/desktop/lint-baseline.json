@@ -126,10 +126,6 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/prs/tabs/GitHubTabCreateLaneDialog.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
-    },
     "apps/desktop/src/renderer/components/shared/MentionInput.tsx": {
       "ade-ui/no-raw-z-index": 1
     },

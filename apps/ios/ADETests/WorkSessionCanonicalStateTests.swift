@@ -783,6 +783,23 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
   }
 
+  func testDetectedExploringKeepsNativePlanningButAgentActivityCanRefineIt() {
+    var session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now))
+    var summary = makeChatSummary(status: "active", awaitingInput: false, codexEffectiveCollaborationMode: "plan")
+    summary.currentTurnStartedAt = iso(now)
+    session.activityStatus = SessionActivityReport(value: "exploring", source: "detected", updatedAt: iso(now))
+
+    XCTAssertEqual(workSessionRowPresentation(session: session, summary: summary, now: now).status?.label, "Planning")
+
+    session.activityStatus = SessionActivityReport(
+      value: "testing",
+      source: "agent",
+      updatedAt: iso(now),
+      reportedAt: iso(now)
+    )
+    XCTAssertEqual(workSessionRowPresentation(session: session, summary: summary, now: now).status?.label, "Testing")
+  }
+
   /// A blocked session is amber whatever mode it is in — planning must never
   /// outvote a raised hand.
   func testNeedsYouOutranksPlanning() {

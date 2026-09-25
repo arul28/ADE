@@ -312,11 +312,25 @@ iteration with the playbook cadence (270s just-pushed / 720s CI or bots running 
 **ADE Work chat (Claude Agent SDK):** Work confidently inside the current turn,
 but treat `ScheduleWakeup` as unavailable in this harness. It does not start a
 later turn by itself, and `run_in_background` notifications are not a reliable
-self-resume signal. Either:
-- Poll synchronously inside the current turn (one bounded foreground
-  `until ... ; do sleep N; done`), then fix/merge/exit; or
-- Stop the turn cleanly, write the state file with `status: running`, and tell
-  the user exactly when to re-ping `/ship` for the next iteration.
+self-resume signal. Poll synchronously inside the current turn (one bounded
+foreground `until ... ; do sleep N; done`), then fix/merge/exit. If the turn
+must end while CI or review is still in flight, arm `ade chat scheduled-work
+create` as in the next section before ending. Asking the user to re-ping is
+only for a harness that is not an ADE Work chat and has no scheduler.
+
+**No native wake in this harness:** Claude Code has `ScheduleWakeup`. Codex in
+a terminal can `sleep`. Any other ADE Work chat has no scheduler of its own
+that starts a later turn. Before ending the turn while CI or review is still
+in flight, arm ADE's scheduler:
+
+```
+ade chat scheduled-work create --in 12m --prompt "/ship"
+```
+
+Use `--in 4m` just after a push, `--in 12m` while CI or review is running, and
+`--in 30m` when only a person is left. Pass the same `/ship` arguments this
+run was given. Ending the turn without that command, or without an in-turn
+sleep, leaves the lane idle.
 
 ---
 

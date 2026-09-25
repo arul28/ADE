@@ -3021,9 +3021,12 @@ supposed to mean *your move*, so the "Needs you" badge stopped registering.
 3. An italic preview line plus the provider mark.
 
 The status slot shows one effective label. A structured provider mode may show
-**Planning** for the live turn; a current agent activity report can refine a
-running row to **Planning**, **Implementing**, **Testing**, **Reviewing**,
-**Debugging**, or **Monitoring**. Pending input keeps **Needs you** in the slot
+**Planning** for the live turn; a current activity — detected by the host from
+the turn's tool calls, or reported by the agent — can refine a running row to
+**Planning**, **Exploring**, **Implementing**, **Testing**, **Debugging**,
+**Reviewing**, **Shipping**, or **Monitoring**. Its elapsed counts from when
+the session entered that activity. An agent report must belong to the current
+turn; a detected one may carry across a continuation turn. Pending input keeps **Needs you** in the slot
 ahead of an activity detail. The report refines the card presentation only: it
 does not change the session phase, Work-board column, or grouped Activity count.
 The phone does not generate these reports; it displays the host-authoritative

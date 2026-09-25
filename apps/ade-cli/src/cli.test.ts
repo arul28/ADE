@@ -1300,7 +1300,7 @@ describe("ADE CLI", () => {
         // routinely is) reachable before the first attempt has even failed
         // once, which is the whole point of the reorder.
         const logDeadline = Date.now() + 45_000;
-        while (!stderr.includes("ADE brain sync host failed")) {
+        while (!stderr.includes("sync.host_start_failed")) {
           if (Date.now() >= logDeadline) {
             throw new Error(`ADE brain never reported a sync host failure:\n${stderr}`);
           }
@@ -4947,8 +4947,8 @@ describe("ADE CLI", () => {
     expect(help.kind).toBe("help");
     if (help.kind === "help") {
       expect(help.text).toContain("ade chat note");
-      expect(help.text).toContain("ade chat activity testing");
-      expect(help.text).toContain("planning | implementing | testing | reviewing | debugging | monitoring");
+      expect(help.text).toContain("ade chat activity debugging");
+      expect(help.text).toContain("planning | exploring | implementing | testing | debugging | reviewing | shipping | monitoring");
       expect(help.text).toContain(
         "Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.",
       );

@@ -145,6 +145,34 @@ describe("Cursor SDK policy", () => {
     expect(decide("full-auto", toolName, toolInput, { userHomeDir: "/Users/admin" }).decision).toBe("deny");
   });
 
+  it.each([
+    'ade chat note "/ship"',
+    "ade chat note --text /ship",
+    "ade chat note --session abc /quality",
+    'ade chat scheduled-work create --in 12m --prompt "/ship" --reason "ci"',
+    'ade chat scheduled-work create --prompt "/ship review 1308"',
+    "ade chat scheduled-work create --prompt=/test",
+    "FOO=bar ade chat scheduled-work create --prompt /ship",
+    "date\nade chat note /ship",
+  ])("allows a slash command in an ade prompt: %s", (command) => {
+    expect(decide("full-auto", "shell", { command }).decision).toBe("allow");
+  });
+
+  it.each([
+    'ade chat note "/etc/passwd"',
+    'ade chat scheduled-work create --prompt "/etc/passwd"',
+    'ade chat note "/ship" && cat /etc/passwd',
+    "ade chat note -- && /outside",
+    "ls ade chat note /tmp",
+    "ade chat note --text /ship > /tmp",
+    "ade chat note > /ship",
+    "ade chat note /ship > /tmp",
+    'ade chat note "/ship $(cat /etc/passwd)"',
+    'ade chat scheduled-work create --prompt "/ship /etc/passwd"',
+  ])("still denies a real path inside an ade prompt: %s", (command) => {
+    expect(decide("full-auto", "shell", { command }).decision).toBe("deny");
+  });
+
   // The guard deliberately leaves backslash tokens alone on POSIX, where `\` is
   // a legal filename character, so these escape shapes have no POSIX analogue.
   // WINDOWS-GATE: Windows-only shell path syntax; verified green on a native Windows host.

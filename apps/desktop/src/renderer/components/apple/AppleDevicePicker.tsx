@@ -1,6 +1,6 @@
 import { useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { ArrowsClockwise, Copy, DotsThree, Trash } from "@phosphor-icons/react";
+import { ArrowsClockwise, Copy, DotsThree } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
 import type {
   AppleDeviceDiskUsage,
@@ -33,6 +33,7 @@ import {
   type AppleDeviceFamilyId,
 } from "./appleDeviceFamily";
 import { isAppleSimulatorBooted } from "./appleDeviceState";
+import { DangerConfirmMenuItem } from "./DangerConfirmMenuItem";
 import {
   appleDefaultTemplateUdid,
   appleDeviceDiskLabel,
@@ -498,31 +499,15 @@ function DeviceMenu({
             Copy device id
           </DropdownMenu.Item>
           <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-          {confirming ? (
-            <DropdownMenu.Item
-              className={cn(MENU_ITEM_CLASS, "text-[var(--color-error)]")}
-              data-apple-device-delete-confirm={simulator.udid}
-              onSelect={onDelete}
-            >
-              <Trash size={14} />
-              {size ? `Delete for good — frees ${size}` : "Delete for good"}
-            </DropdownMenu.Item>
-          ) : (
-            <DropdownMenu.Item
-              className={cn(MENU_ITEM_CLASS, "text-[var(--color-error)]")}
-              data-apple-device-delete={simulator.udid}
-              onSelect={(event) => {
-                // Keep the menu open: the confirmation is the same row, one
-                // step further on, so the device being deleted never changes
-                // between the two clicks.
-                event.preventDefault();
-                setConfirming(true);
-              }}
-            >
-              <Trash size={14} />
-              Delete simulator…
-            </DropdownMenu.Item>
-          )}
+          <DangerConfirmMenuItem
+            confirming={confirming}
+            idleLabel="Delete simulator…"
+            confirmLabel={size ? `Delete for good — frees ${size}` : "Delete for good"}
+            idleDataAttribute={{ name: "data-apple-device-delete", value: simulator.udid }}
+            confirmDataAttribute={{ name: "data-apple-device-delete-confirm", value: simulator.udid }}
+            onBeginConfirm={() => setConfirming(true)}
+            onConfirm={onDelete}
+          />
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

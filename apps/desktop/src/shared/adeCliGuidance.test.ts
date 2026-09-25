@@ -167,12 +167,13 @@ describe("ADE session activity guidance", () => {
     });
 
     expect(posixGuidance).toContain(
-      "ADE_DEFAULT_ROLE='agent' ADE_CHAT_SESSION_ID='chat-1' ADE_RPC_URL='/Users/admin/.ade-beta/sock/ade.sock' ADE_RPC_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' ADE_RUNTIME_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' '/Applications/ADE Beta.app/bin/ade' chat activity testing --session 'chat-1'",
+      "ADE_DEFAULT_ROLE='agent' ADE_CHAT_SESSION_ID='chat-1' ADE_RPC_URL='/Users/admin/.ade-beta/sock/ade.sock' ADE_RPC_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' ADE_RUNTIME_SOCKET_PATH='/Users/admin/.ade-beta/sock/ade.sock' '/Applications/ADE Beta.app/bin/ade' chat activity debugging --session 'chat-1'",
     );
     expect(posixGuidance).toContain("chat activity clear --session 'chat-1'");
+    expect(posixGuidance).toContain("replace debugging with the real value");
     expect(posixGuidance).not.toContain("$ADE_CLI_PATH");
     expect(powershellGuidance).toContain(
-      "$env:ADE_DEFAULT_ROLE = 'agent'; $env:ADE_CHAT_SESSION_ID = 'chat-1'; $env:ADE_RPC_URL = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RPC_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RUNTIME_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; & 'C:\\Program Files\\ADE Beta\\ade.exe' chat activity testing --session 'chat-1'",
+      "$env:ADE_DEFAULT_ROLE = 'agent'; $env:ADE_CHAT_SESSION_ID = 'chat-1'; $env:ADE_RPC_URL = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RPC_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; $env:ADE_RUNTIME_SOCKET_PATH = 'C:\\Users\\admin\\.ade-beta\\sock\\ade.sock'; & 'C:\\Program Files\\ADE Beta\\ade.exe' chat activity debugging --session 'chat-1'",
     );
     expect(powershellGuidance).not.toContain("$env:ADE_CLI_PATH");
     expect(buildAdeSessionActivityGuidance({

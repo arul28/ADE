@@ -2073,7 +2073,7 @@ describe("Claude plan intent at query launch", () => {
     await vi.waitFor(() => expect(claudePrompts().length).toBeGreaterThan(0));
     const guidance = claudePrompts().at(-1)?.sessionActivityGuidance;
     if (expectGuidance) {
-      expect(guidance).toContain(`chat activity testing --session '${session.id}'`);
+      expect(guidance).toContain(`chat activity debugging --session '${session.id}'`);
     } else {
       expect(guidance).toBeNull();
     }

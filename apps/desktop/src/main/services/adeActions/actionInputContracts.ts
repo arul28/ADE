@@ -331,7 +331,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
   chat: {
     startLaunch: {
       description: "Launch a chat (or prepare a CLI lane) in a brand-new lane: reserves the chat and lane ids, returns at once, then fetches the base, checks out the worktree, applies the default lane template, creates the chat and sends the opening message. Progress streams as chat_launch_event.",
-      input: "object { launchId: uuid, prompt: string, kind?: \"chat\" | \"cli\" (default chat), mode?: \"foreground\" | \"background\" (default foreground), laneId?: uuid, laneName?, baseBranch? (default: the project's new-lane base), title?, displayPrompt?, attachments?, provider?, modelId?, chat?: { create: <chat.createSession args without laneId>, message: <chat.sendMessage args without sessionId> } (required for kind chat) }",
+      input: "object { launchId: uuid, prompt: string, kind?: \"chat\" | \"cli\" (default chat), mode?: \"foreground\" | \"background\" (default foreground), laneId?: uuid, laneName?, baseBranch? (default: the project's new-lane base), laneConfig?: { mode: \"root\" | \"child\" | \"import\" (default root), parentLaneId? (child), branchRef? (import), templateId?, color?, linearIssue? }, title?, displayPrompt?, attachments?, provider?, modelId?, chat?: { create: <chat.createSession args without laneId>, message: <chat.sendMessage args without sessionId> } (required for kind chat) }",
       example: "ade actions run chat.startLaunch --input-json '{\"kind\":\"chat\",\"mode\":\"background\",\"launchId\":\"6f1c…\",\"prompt\":\"fix the flaky test\",\"chat\":{\"create\":{\"provider\":\"codex\",\"model\":\"openai/gpt-5.6-sol\"},\"message\":{\"text\":\"fix the flaky test\"}}}'",
     },
     listLaunches: {
@@ -340,7 +340,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run chat.listLaunches --json",
     },
     cancelLaunch: {
-      description: "Cancel a new-lane launch and fully delete what it created: the chat, the lane's worktree, and its local and remote branch.",
+      description: "Cancel a new-lane launch and fully delete what it created: the chat, the lane's worktree, and its local and remote branch. A lane imported from an existing branch keeps that branch.",
       input: "object { launchId: uuid }",
       example: "ade actions run chat.cancelLaunch --input-json '{\"launchId\":\"6f1c…\"}'",
     },

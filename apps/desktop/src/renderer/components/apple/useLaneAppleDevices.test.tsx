@@ -11,7 +11,7 @@ import {
   laneAppleDeviceLabel,
   useLaneAppleDevices,
 } from "./useLaneAppleDevices";
-import { useAppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
+import { appleLaneDeviceForLane, useAppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
 
 const { platformForTest } = vi.hoisted(() => ({ platformForTest: { mac: true } }));
 vi.mock("../../lib/platform", async (importOriginal) => ({
@@ -199,7 +199,7 @@ describe("useAppleLaneDeviceCard", () => {
       // the Apple Development card still said Running. The grid's read landed
       // before `simctl shutdown` did, and nothing but the 6s poll re-read it.
       const { result } = renderHook(() => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true }));
-      await waitFor(() => expect(result.current).toEqual({ name: "iPhone 17 Pro", state: "running" }));
+      await waitFor(() => expect(result.current).toMatchObject({ name: "iPhone 17 Pro", state: "running", laneId: "lane-a", udid: "udid-1", origin: "attached" }));
 
       power = "Shutdown";
       const readsBefore = deviceList.mock.calls.length;
@@ -254,5 +254,42 @@ describe("useAppleLaneDeviceCard", () => {
       expect(result.current?.state).toBe("running");
       expect(deviceList.mock.calls.length).toBe(readsBefore);
     });
+
+    it("re-reads when refreshKey changes, for the client with no event feed", async () => {
+      // The hosted web client gets no `apple.device.state` events, so the card
+      // menu's own mutations bump `refreshKey` to force this re-read.
+      const { result, rerender } = renderHook(
+        ({ key }: { key: number }) => useAppleLaneDeviceCard({ laneId: "lane-a", runtimePin: null, enabled: true, refreshKey: key }),
+        { initialProps: { key: 0 } },
+      );
+      await waitFor(() => expect(result.current?.state).toBe("running"));
+
+      const readsBefore = deviceList.mock.calls.length;
+      hasLane = false;
+      rerender({ key: 1 });
+
+      await waitFor(() => expect(result.current).toBeNull());
+      expect(deviceList.mock.calls.length).toBeGreaterThan(readsBefore);
+    });
+  });
+});
+
+describe("appleLaneDeviceForLane", () => {
+  const card = {
+    name: "iPhone 17e",
+    state: "off" as const,
+    laneId: "lane-a",
+    udid: "udid-1",
+    origin: "clone" as const,
+  };
+
+  it("returns the card only for its own lane, so device verbs cannot act on a stale one", () => {
+    // The card keeps its last reading while the next lane's read is in flight;
+    // the verbs act on the LANE, so this gate is what stops a lane switch from
+    // booting or deleting the wrong lane's device.
+    expect(appleLaneDeviceForLane(card, "lane-a")).toBe(card);
+    expect(appleLaneDeviceForLane(card, "lane-b")).toBeNull();
+    expect(appleLaneDeviceForLane(null, "lane-a")).toBeNull();
+    expect(appleLaneDeviceForLane(card, null)).toBeNull();
   });
 });

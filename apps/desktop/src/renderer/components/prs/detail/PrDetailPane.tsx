@@ -1302,7 +1302,10 @@ export function PrDetailPane({
     navigateToAppTarget({ kind: "work", laneId: session.laneId, sessionId: session.sessionId });
   }, []);
   const handleOpenLane = React.useCallback(() => {
-    if (pr.laneId) navigateToAppTarget({ kind: "work", laneId: pr.laneId });
+    // Opening the lane from a PR goes to the Lanes tab, where the lane reads as
+    // a lane (branch, stack, git actions). The Work tab is for its chats, which
+    // is a different destination and a different intent.
+    if (pr.laneId) navigateToAppTarget({ kind: "lane", laneId: pr.laneId });
   }, [pr.laneId]);
 
   const checksBuckets = React.useMemo(() => summarizePipelineStates(headerChecks), [headerChecks]);
