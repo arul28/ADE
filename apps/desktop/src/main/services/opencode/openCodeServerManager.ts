@@ -7,6 +7,7 @@ import path from "node:path";
 import type { Config as OpenCodeConfig } from "@opencode-ai/sdk/v2/client";
 import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
+import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import {
   killWindowsProcessTree,
   quoteWindowsCmdArg,
@@ -783,7 +784,7 @@ function mergeOpenCodeConfig(
 }
 
 function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+  const env: NodeJS.ProcessEnv = userProcessEnv();
   // ADE resolves and pins the OpenCode binary, so its updater must stay off.
   // OpenCode's dedicated env var does this without occupying a config key.
   env.OPENCODE_DISABLE_AUTOUPDATE = "1";

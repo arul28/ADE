@@ -4054,6 +4054,10 @@ final class SyncService: ObservableObject {
   /// Serializes each subscription's record decodes so delivery stays in the
   /// order the socket received them.
   private let macDesktopStreamDecodeQueue = MacDesktopStreamDecodeQueue()
+  /// Live-view consumers for pushed `appControl.streamFrame` /
+  /// `appControl.streamEnded`, keyed by the subscription id the phone minted.
+  private var appControlStreamFrameHandlers: [String: (AppControlStreamFrame) -> Void] = [:]
+  private var appControlStreamEndedHandlers: [String: (AppControlStreamEnded) -> Void] = [:]
   @Published private(set) var pendingOperationCount = 0
   /// Offline new-chat creations awaiting sync. The Work list renders one
   /// "Pending sync" row per entry.
@@ -15208,6 +15212,116 @@ final class SyncService: ObservableObject {
     }
   }
 
+  // MARK: - App Control live view
+
+  /// Whether this host can push the lane's App Control frames. There is no
+  /// feature bit: the host registers the command only when it built the frame
+  /// fan-out, so the advertisement alone is the answer.
+  var supportsAppControlStream: Bool {
+    supportsViewerRemoteAction("appControl.streamSubscribe")
+      && supportsViewerRemoteAction("appControl.streamUnsubscribe")
+  }
+
+  /// The lane's App Control session and whether frames are flowing.
+  func appControlStatus(laneId: String) async throws -> AppControlSyncStatus {
+    try requireAppControlStreamAction("appControl.status")
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return try decode(
+      try await sendCommand(
+        action: "appControl.status",
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+      ),
+      as: AppControlSyncStatus.self
+    )
+  }
+
+  /// Asks the host to push the lane's App Control frames to this viewer. A lane
+  /// with no app is fine: frames start when an app attaches there.
+  func appControlStreamSubscribe(
+    laneId: String,
+    subscriptionId: String,
+    viewerLabel: String? = nil,
+    maxFps: Int? = nil
+  ) async throws -> AppControlStreamSubscribeResult {
+    try requireAppControlStreamAction("appControl.streamSubscribe")
+    let trimmedLane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedSubscription = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedLane.isEmpty, !trimmedSubscription.isEmpty else {
+      throw NSError(
+        domain: "ADE",
+        code: 6,
+        userInfo: [NSLocalizedDescriptionKey: "The live view had no lane to watch."]
+      )
+    }
+    var args: [String: Any] = ["laneId": trimmedLane, "subscriptionId": trimmedSubscription]
+    if let viewerLabel, !viewerLabel.isEmpty { args["viewerLabel"] = viewerLabel }
+    if let maxFps, maxFps > 0 { args["maxFps"] = maxFps }
+    return try decode(
+      try await sendCommand(
+        action: "appControl.streamSubscribe",
+        args: args,
+        disconnectOnTimeout: false,
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      ),
+      as: AppControlStreamSubscribeResult.self
+    )
+  }
+
+  /// Drops this viewer's subscription. Best-effort: a closed socket already
+  /// released it on the host.
+  func appControlStreamUnsubscribe(subscriptionId: String) async throws {
+    try requireAppControlStreamAction("appControl.streamUnsubscribe")
+    let trimmed = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    _ = try await sendCommand(
+      action: "appControl.streamUnsubscribe",
+      args: ["subscriptionId": trimmed],
+      disconnectOnTimeout: false,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// One consumer per subscription id. A second registration replaces the
+  /// first, so a rebuilt view cannot leave a stale closure behind.
+  func registerAppControlStream(
+    subscriptionId: String,
+    onFrame: @escaping (AppControlStreamFrame) -> Void,
+    onEnded: @escaping (AppControlStreamEnded) -> Void
+  ) {
+    appControlStreamFrameHandlers[subscriptionId] = onFrame
+    appControlStreamEndedHandlers[subscriptionId] = onEnded
+  }
+
+  func unregisterAppControlStream(subscriptionId: String) {
+    appControlStreamFrameHandlers.removeValue(forKey: subscriptionId)
+    appControlStreamEndedHandlers.removeValue(forKey: subscriptionId)
+  }
+
+  /// True while a view has this subscription id registered for frames.
+  func isAppControlStreamRegistered(subscriptionId: String) -> Bool {
+    appControlStreamFrameHandlers[subscriptionId] != nil
+  }
+
+  private func resetAppControlStreamHandlers() {
+    appControlStreamFrameHandlers.removeAll()
+    appControlStreamEndedHandlers.removeAll()
+  }
+
+  private func requireAppControlStreamAction(_ action: String) throws {
+    guard supportsViewerRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Live App Control isn't available on this machine version.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+  }
+
   /// Whether this host lets a paired controller drive the lane's screen.
   ///
   /// All four commands have to be advertised. Take without input is a lease
@@ -19941,6 +20055,25 @@ final class SyncService: ObservableObject {
       guard let dict = payload as? [String: Any],
             let ended = MacDesktopStreamEnded(dict) else { break }
       macDesktopStreamEndedHandlers[ended.subscriptionId]?(ended)
+    case "appControl.streamFrame":
+      // A JPEG, not a video stream: each frame stands alone. The decode runs
+      // off the main actor and is not awaited, so a large frame never holds up
+      // the socket. Frames can then land out of order; the live session drops
+      // any frame older than the one it shows.
+      guard let dict = payload as? [String: Any],
+            let envelope = AppControlStreamFrameEnvelope(dict),
+            appControlStreamFrameHandlers[envelope.subscriptionId] != nil else { break }
+      Task { [weak self] in
+        let frame = await Task.detached(priority: .userInitiated) {
+          AppControlStreamFrame.decode(envelope)
+        }.value
+        guard let self, self.isCurrentConnectionGeneration(generation), let frame else { return }
+        self.appControlStreamFrameHandlers[frame.subscriptionId]?(frame)
+      }
+    case "appControl.streamEnded":
+      guard let dict = payload as? [String: Any],
+            let ended = AppControlStreamEnded(dict) else { break }
+      appControlStreamEndedHandlers[ended.subscriptionId]?(ended)
     case "heartbeat":
       if let dict = payload as? [String: Any], (dict["kind"] as? String) == "ping" {
         sendEnvelope(type: "heartbeat", requestId: requestId, payload: [
@@ -20682,6 +20815,7 @@ final class SyncService: ObservableObject {
     // view re-registers against the new connection instead of receiving
     // nothing.
     resetMacDesktopStreamHandlers()
+    resetAppControlStreamHandlers()
     if let socket {
       resolveRelayTransportReady(
         taskIdentifier: socket.taskIdentifier,

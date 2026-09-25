@@ -9,6 +9,8 @@ import type {
   SyncFileRequest,
   SyncFileResponsePayload,
   SyncHelloOkPayload,
+  SyncAppControlStreamEndedPayload,
+  SyncAppControlStreamFramePayload,
   SyncMacDesktopStreamEndedPayload,
   SyncMacDesktopStreamRecordPayload,
   SyncMobileProjectSummary,
@@ -162,6 +164,8 @@ type ClientEvents = {
   chatEvent: SyncChatEventPayload;
   macDesktopStreamRecord: SyncMacDesktopStreamRecordPayload;
   macDesktopStreamEnded: SyncMacDesktopStreamEndedPayload;
+  appControlStreamFrame: SyncAppControlStreamFramePayload;
+  appControlStreamEnded: SyncAppControlStreamEndedPayload;
   chatLaunchEvent: ChatLaunchEvent;
   projectCatalog: SyncProjectCatalogPayload;
   activeProjectChanged: AdeSyncActiveProjectChange;
@@ -270,6 +274,8 @@ export class AdeSyncClient {
     chatEvent: new Set(),
     macDesktopStreamRecord: new Set(),
     macDesktopStreamEnded: new Set(),
+    appControlStreamFrame: new Set(),
+    appControlStreamEnded: new Set(),
     chatLaunchEvent: new Set(),
     projectCatalog: new Set(),
     activeProjectChanged: new Set(),
@@ -981,6 +987,23 @@ export class AdeSyncClient {
     return this.on("macDesktopStreamEnded", listener);
   }
 
+  onAppControlStreamFrame(listener: (payload: SyncAppControlStreamFramePayload) => void): () => void {
+    return this.on("appControlStreamFrame", listener);
+  }
+
+  onAppControlStreamEnded(listener: (payload: SyncAppControlStreamEndedPayload) => void): () => void {
+    return this.on("appControlStreamEnded", listener);
+  }
+
+  /**
+   * The host serves App Control live frames. There is no feature bit: the
+   * command is registered only when the host built the frame fan-out.
+   */
+  supportsAppControlStream(): boolean {
+    return (this.latestHello?.features.commandRouting?.actions ?? [])
+      .some((descriptor) => descriptor.action === "appControl.streamSubscribe");
+  }
+
   /**
    * Both halves of the live Mac Desktop contract: the hello feature bit and
    * the subscribe command the next call would invoke. Either one missing keeps
@@ -1134,6 +1157,12 @@ export class AdeSyncClient {
         break;
       case "macDesktop.streamEnded":
         this.emit("macDesktopStreamEnded", envelope.payload as SyncMacDesktopStreamEndedPayload);
+        break;
+      case "appControl.streamFrame":
+        this.emit("appControlStreamFrame", envelope.payload as SyncAppControlStreamFramePayload);
+        break;
+      case "appControl.streamEnded":
+        this.emit("appControlStreamEnded", envelope.payload as SyncAppControlStreamEndedPayload);
         break;
       case "terminal_snapshot":
         this.handleTerminalSnapshot(envelope.payload as SyncTerminalSnapshotPayload);

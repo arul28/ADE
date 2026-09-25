@@ -7,6 +7,7 @@ import {
   isAgentChatDroidPermissionMode,
   legacyPermissionModeFromDroidPermissionMode,
   activeTurnDispatchModes,
+  activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   cursorSessionRunsInCloud,
   defaultActiveTurnDispatchMode,
@@ -50,6 +51,27 @@ describe("active-turn dispatch modes", () => {
     for (const provider of ["droid", "pi", "qwen", "unknown-provider", undefined]) {
       expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
     }
+  });
+
+  it("keeps an attachment-bearing Cursor steer off the running turn", () => {
+    const image = activeTurnInlineAttachmentBlock("cursor", {
+      attachments: [{ path: "shot.png", type: "image" }],
+      contextAttachmentCount: 0,
+    });
+    const file = activeTurnInlineAttachmentBlock("cursor", {
+      attachments: [{ path: "notes.txt", type: "file" }],
+      contextAttachmentCount: 0,
+    });
+    expect(image).toMatch(/^Images can't join a running /);
+    expect(file).toMatch(/^Attachments can't join a running /);
+    expect(activeTurnInlineAttachmentBlock("claude", {
+      attachments: [{ path: "shot.png", type: "image" }],
+      contextAttachmentCount: 0,
+    })).toBeNull();
+    expect(activeTurnInlineAttachmentBlock("cursor", {
+      attachments: [],
+      contextAttachmentCount: 0,
+    })).toBeNull();
   });
 
   it("defaults to the first mode in menu order", () => {

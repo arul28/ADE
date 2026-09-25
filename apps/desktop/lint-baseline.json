@@ -17,10 +17,6 @@
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx": {
-      "ade-ui/no-fixed-overlay": 5,
-      "ade-ui/no-raw-z-index": 5
-    },
     "apps/desktop/src/renderer/components/chat/AssistantOutputSelectionToolbar.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1

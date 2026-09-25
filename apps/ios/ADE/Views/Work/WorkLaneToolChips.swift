@@ -13,8 +13,11 @@ enum WorkToolChipKind: Equatable {
   /// which lists the tabs. `agentUsing`: a chat
   /// in this lane is driving the browser right now.
   case browser(tabCount: Int, agentUsing: Bool)
-  /// What App Control is attached to. Opens the App Control sheet.
-  case appControl(appName: String)
+  /// What App Control is attached to. Opens `AppControlViewer` when the host
+  /// streams its frames, otherwise the App Control sheet. `live`: the app is
+  /// attached over CDP, so frames flow. The chip reads "App": the host's
+  /// `appName` is often the launch command ("npm start"), which is not a name.
+  case appControl(appName: String, live: Bool = false)
   /// The lane's private macOS screen, while it has one. Opens
   /// `MacDesktopViewer`. `streamLive`: frames flow at full rate.
   /// `agentDriving`: an agent holds the screen's input lease.
@@ -40,7 +43,7 @@ struct WorkToolChip: Equatable, Identifiable {
     switch kind {
     case .simulator(let name, _): return name
     case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
-    case .appControl(let appName): return appName
+    case .appControl: return appControlTagLabel
     case .macDesktop: return "macOS"
     }
   }
@@ -75,7 +78,8 @@ struct WorkToolChip: Equatable, Identifiable {
 /// - Browser: when the desktop browser has tabs ("1 tab" / "N tabs"), or when
 ///   an agent is driving it with none listed ("Browser") — an agent on the
 ///   browser was always reason enough to surface it.
-/// - App Control: the attached app's name.
+/// - App Control: "App" while an app is attached. Live dot while it is
+///   attached and sending frames.
 func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   if let name = appleDeviceRunningName(appleDevice) {
@@ -91,7 +95,7 @@ func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) 
   }
   if let appName = state?.appControl?.appName.trimmingCharacters(in: .whitespacesAndNewlines),
      !appName.isEmpty {
-    chips.append(WorkToolChip(kind: .appControl(appName: appName)))
+    chips.append(WorkToolChip(kind: .appControl(appName: appName, live: appControlIsLive(state?.appControl))))
   }
   return chips
 }
@@ -200,8 +204,10 @@ final class WorkLaneToolsModel: ObservableObject {
   enum Surface: Equatable {
     case appleDevice
     case macDesktop
-    /// A read-only sheet for one tool.
+    /// A sheet for one tool.
     case toolSheet(WorkToolsSheet.Tool)
+    /// Live App Control frames, when the host is streaming.
+    case appControl
   }
 
   @Published private(set) var chips: [WorkToolChip] = []
@@ -210,6 +216,11 @@ final class WorkLaneToolsModel: ObservableObject {
   private(set) var appleStatus: AppleDeviceStatus?
   /// Handed to `MacDesktopViewer` the same way. Not published.
   private(set) var macDesktopState: WorkToolsMacDesktopState?
+  /// Handed to `AppControlViewer` the same way. Not published.
+  private(set) var appControlState: WorkToolsAppControlState?
+  /// The host streams App Control frames, read at the last refresh. `open`
+  /// has no sync service, so the chip's target is decided from this.
+  private(set) var appControlStream = false
   /// The last lane state the Mac answered with. A read that fails or times
   /// out keeps it, so one slow reply does not blank every chip.
   private var lastTools: WorkToolsLaneState?
@@ -228,7 +239,7 @@ final class WorkLaneToolsModel: ObservableObject {
     case .simulator: presented = .appleDevice
     case .macDesktop: presented = macDesktopStream ? .macDesktop : .toolSheet(.macDesktop)
     case .browser: presented = .toolSheet(.browser)
-    case .appControl: presented = .toolSheet(.appControl)
+    case .appControl: presented = appControlStream ? .appControl : .toolSheet(.appControl)
     }
   }
 
@@ -243,6 +254,7 @@ final class WorkLaneToolsModel: ObservableObject {
     chips = []
     appleStatus = nil
     macDesktopState = nil
+    appControlState = nil
     lastTools = nil
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
@@ -273,6 +285,8 @@ final class WorkLaneToolsModel: ObservableObject {
     lastTools = tools
     appleStatus = apple
     macDesktopState = tools?.macDesktop
+    appControlState = tools?.appControl
+    appControlStream = syncService.supportsAppControlStream
     let next = workToolChips(state: tools, appleDevice: apple)
     if next != chips { chips = next }
   }
@@ -282,6 +296,7 @@ final class WorkLaneToolsModel: ObservableObject {
   func installPreview(state: WorkToolsLaneState?, appleStatus: AppleDeviceStatus?) {
     self.appleStatus = appleStatus
     macDesktopState = state?.macDesktop
+    appControlState = state?.appControl
     chips = workToolChips(state: state, appleDevice: appleStatus)
   }
   #endif
@@ -334,6 +349,9 @@ struct WorkLaneToolsPresenter: ViewModifier {
       .fullScreenCover(isPresented: model.isPresented(.macDesktop)) {
         MacDesktopViewer(laneId: laneId, initialState: model.macDesktopState)
       }
+      .fullScreenCover(isPresented: model.isPresented(.appControl)) {
+        AppControlViewer(laneId: laneId, initialState: model.appControlState)
+      }
   }
 
   private func toolSheet(_ tool: WorkToolsSheet.Tool) -> some View {
@@ -379,7 +397,8 @@ struct WorkLaneToolChipView: View {
     switch chip.kind {
     case .simulator: return true
     case .macDesktop(let streamLive, _): return streamLive
-    case .browser, .appControl: return false
+    case .appControl(_, let live): return live
+    case .browser: return false
     }
   }
 
@@ -406,8 +425,10 @@ func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
     return agentUsing
       ? "\(base). An agent is using the browser. Tap for details."
       : "\(base). Tap for details."
-  case .appControl:
-    return "App Control on your Mac, \(chip.label). Tap for details."
+  case .appControl(_, let live):
+    return live
+      ? "\(chip.label) on your Mac, live. Tap to watch."
+      : "\(chip.label) on your Mac. Tap for details."
   case .macDesktop(let streamLive, let agentDriving):
     var text = "This lane's macOS desktop"
     if streamLive { text += ", live" }

@@ -109,10 +109,8 @@ import {
   type UserMessageStatus,
   type UserMessageStatusTone,
 } from "../../../shared/chatUserMessageStatus";
-import {
-  formatLegacyProviderRetryActivityDetail,
-  isLegacyProviderRetryNotice,
-} from "../../../shared/providerRetryPresentation";
+import { formatLegacyProviderRetryActivityDetail } from "../../../shared/providerRetryPresentation";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { isHostResumedNoticeEvent, isHostSleepNoticeEvent } from "../../../shared/hostSleepNotice";
 import { isClaudeContextCategoryKind } from "../../../shared/claudeContextUsage";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
@@ -183,7 +181,6 @@ import { buildDrawnRowKeyIndex, resolveDrawnRowKey } from "./chatDrawnRowIndex";
 import { AgentCliAuthCard, type AgentCliAuthCardInfo } from "./AgentCliAuthCard";
 import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 import { classifyProviderFailure, ProviderFailureRecoveryCard } from "./ProviderFailureRecoveryCard";
-import { CLAUDE_SESSION_QUOTA_CARD_VARIANT } from "../../../shared/claudeSessionQuota";
 import {
   isUsageLimitTurn,
   usageLimitTurnFooterLabel,
@@ -228,8 +225,8 @@ import {
   shouldKeepPinnedThroughViewportShrink,
   shouldStickToBottomAfterScroll,
   STICK_RESUME_THRESHOLD_PX,
+  USER_SCROLL_UP_REPIN_HOLD_MS,
 } from "./chatListScrollAnchoring";
-import { isInlineCardSpawnNotice } from "../../../shared/chatSubagents";
 import { BackgroundJobRunRow } from "./BackgroundJobRunRow";
 import { ScheduledWorkLine } from "./ScheduledWorkLine";
 
@@ -266,8 +263,11 @@ import {
 } from "./chatBackgroundJobRuns";
 import {
   collectMergedThoughtRows,
+  interruptReceiptIdentity,
   mergeAdjacentThoughtRows,
   thoughtRunKeyByMemberKey,
+  transcriptEventDrawsNothing,
+  type TranscriptRowDrawContext,
   thoughtDurationSeconds,
 } from "./chatThoughtRuns";
 import {
@@ -2260,10 +2260,6 @@ function FileChangeEventCard({
 const animatedUserMessageKeys = new Set<string>();
 
 /** Stable-ish identity for an interrupt receipt row (no id on the event). */
-function interruptReceiptIdentity(event: Extract<AgentChatEvent, { type: "interrupt_receipt" }>): string {
-  return `${event.turnId ?? ""}:${(event.stillQueuedUuids ?? []).join(",")}`;
-}
-
 /** Muted per-row timestamp, revealed on row hover only (lives inside an existing
  * group-hover toolbar so it adds zero layout shift). */
 function RowHoverTimestamp({ iso, className }: { iso: string; className?: string }) {
@@ -2574,6 +2570,9 @@ function renderEvent(
 ) {
   const event = envelope.event;
 
+  // One rule for "this row draws nothing", shared with Thought-run merging.
+  if (transcriptEventDrawsNothing(event, options)) return null;
+
   if (event.type === "model_handoff") {
     // Same-provider handoffs never reach here: they are dropped upstream by
     // `isSameProviderModelHandoffEvent` so they do not mount an empty row.
@@ -2680,12 +2679,6 @@ function renderEvent(
 
   /* ── User message ── */
   if (event.type === "user_message") {
-    // Queued steers live in the composer's staging area only — never in the
-    // chat thread. They graduate to a normal user bubble (with deliveryState
-    // "delivered" or "inline") once the model actually consumes them.
-    if (event.deliveryState === "queued" && event.steerId) {
-      return null;
-    }
     const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
     if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
     return (
@@ -3127,10 +3120,6 @@ function renderEvent(
     );
   }
 
-  if (event.type === "codex_moderation_metadata") {
-    return null;
-  }
-
   if (event.type === "codex_sleep") {
     const duration = formatCompactDuration(event.durationMs);
     const isRunning = event.status === "running";
@@ -3264,14 +3253,10 @@ function renderEvent(
 
   /* ── Stop receipt (interrupt) ── */
   if (event.type === "interrupt_receipt") {
-    // Auto-collapse once the referenced messages have run (best-effort: a later
-    // `done` arrived for this session).
-    if (options?.staleInterruptReceipts?.has(interruptReceiptIdentity(event))) return null;
     const known = event.known ?? [];
     const stillQueued = event.stillQueuedUuids ?? [];
     // Count-only when we can't attribute any queued message to a user-visible one.
     const totalCount = stillQueued.length;
-    if (totalCount === 0) return null;
     const onCancel = options?.onCancelQueuedMessage;
     return (
       <div className="inline-flex max-w-[var(--chat-content-width,52rem)] flex-col gap-1 rounded-lg border border-amber-400/16 bg-amber-500/[0.05] px-2.5 py-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-amber-100/80">
@@ -3304,7 +3289,6 @@ function renderEvent(
   }
 
   if (event.type === "queue_recovery") {
-    if (event.state === "expired" || event.state === "restored") return null;
     return (
       <QueueRecoveryCard
         recoveryId={event.recoveryId}
@@ -3317,7 +3301,6 @@ function renderEvent(
   }
 
   if (event.type === "command_lifecycle") {
-    if (event.status !== "cancelled" && event.status !== "discarded") return null;
     const label = event.status === "discarded" ? "Queued message discarded" : "Queued message cancelled";
     return (
       <div className="inline-flex max-w-[var(--chat-content-width,52rem)] items-center gap-2 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55">
@@ -3325,11 +3308,6 @@ function renderEvent(
         <span className="min-w-0 truncate">{event.preview ? `${label}: ${event.preview}` : label}</span>
       </div>
     );
-  }
-
-  /* ── Conversation reset / retry activity: surfaced elsewhere, no inline row. ── */
-  if (event.type === "conversation_reset" || event.type === "api_retry") {
-    return null;
   }
 
   /* ── System Notice ── */
@@ -3355,15 +3333,10 @@ function renderEvent(
     // quiet pill here. A `peer` child that finishes emits a `spawn_completed`
     // notice; render a single quiet steel chip that navigates to the child.
     if (event.noticeKind === "info" && event.status === "subagent_spawned") {
-      // A plain spawn's announcement is carried by the unified, navigable
-      // SubagentSpawnCard, so suppress this quiet pill there (hasInlineCard).
-      // Continuity-recovery spawns emit only the
-      // notice (no inline card) — keep a compact deep-link chip for those.
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
         spawnKind?: "subagent" | "peer";
         spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string };
       };
-      if (isInlineCardSpawnNotice(event)) return null;
       const spawned = detail.spawnedSession;
       const childSessionId = typeof spawned?.sessionId === "string" && spawned.sessionId.length ? spawned.sessionId : null;
       const childTitle = spawned?.title?.trim() || event.message.replace(/^Subagent spawned:\s*/, "") || "chat";
@@ -3459,9 +3432,6 @@ function renderEvent(
         </button>
       );
     }
-    if (event.noticeKind === "info" && event.message === "Promoted to Cursor Cloud") {
-      return null;
-    }
     // ── Host sleep ──
     // One quiet chip per sleep. The transcript fold hands the SAME row first
     // the paused event and then the resumed one, so this renders whichever
@@ -3505,10 +3475,6 @@ function renderEvent(
         />
       );
     }
-    // Older ADE versions persisted every provider retry as a notice. Keep
-    // replay quiet and let the active-turn indicator derive one replacement
-    // status from the same event stream.
-    if (isLegacyProviderRetryNotice(event)) return null;
 
     const inferredSeverity = event.severity
       ?? (
@@ -3650,10 +3616,6 @@ function renderEvent(
     );
   }
 
-  /* ── Step boundary ── */
-  if (event.type === "step_boundary") {
-    return null;
-  }
 
   if (event.type === "tool_call") {
     const meta = getToolMeta(event.tool);
@@ -3982,15 +3944,6 @@ function renderEvent(
 
   /* ── ade_card (generic ADE-emitted card; unknown variants degrade in-place) ── */
   if (event.type === "ade_card") {
-    // While a usage limit is live the compact pill above the composer owns the
-    // whole story — when it resumes, forking, opting out. The quota card says
-    // the same thing a scroll away and offers a subset of the actions, so it
-    // stands down for as long as the pill is up. Once the limit clears
-    // (`usageLimitResume` goes null) the card renders exactly as before, which
-    // is what keeps old transcripts readable.
-    if (event.variant === CLAUDE_SESSION_QUOTA_CARD_VARIANT && options?.usageLimitResumeActive) {
-      return null;
-    }
     // A new-lane launch's setup record. The live launch snapshot drives it
     // while setup runs; afterwards it is a one-line summary that expands.
     if (event.variant === "lane_setup") {
@@ -4045,9 +3998,6 @@ function renderEvent(
   if (event.type === "status") {
     const isFailure = event.turnStatus === "failed";
     const isInterrupted = event.turnStatus === "interrupted";
-    if (!isFailure && !isInterrupted && !(event.message ?? "").trim().length) {
-      return null;
-    }
     return (
       <div
         className={cn(
@@ -5239,6 +5189,11 @@ const SCROLL_RESTORE_STABLE_FRAMES = 2;
 const MAX_CHAINED_AUTO_OLDER_PAGES = 1;
 /** Keys that scroll the transcript pane; pressing one is the reader taking over. */
 const SCROLL_KEYS = new Set(["PageUp", "PageDown", "ArrowUp", "ArrowDown", "Home", "End", " "]);
+const SCROLL_UP_KEYS = new Set(["PageUp", "ArrowUp", "Home"]);
+
+function isScrollUpKey(event: React.KeyboardEvent): boolean {
+  return SCROLL_UP_KEYS.has(event.key) || (event.key === " " && event.shiftKey);
+}
 
 /** Rows on screen before a row-list change, with their viewport-relative tops. */
 type PendingListAnchor = {
@@ -5634,6 +5589,10 @@ function AgentChatMessageListMain({
   const scrollRafRef = useRef<number | null>(null);
   const scrollFollowFramesRef = useRef(0);
   const lastTouchYRef = useRef<number | null>(null);
+  // When the reader last scrolled UP (wheel, touch, key). For a short hold
+  // after it the list does not re-pin to the bottom; a scroll-down gesture
+  // ends the hold early. See `shouldStickToBottomAfterScroll`.
+  const userScrollUpAtRef = useRef<number | null>(null);
   // Programmatic scroll writes can be coalesced by the browser. Track the
   // latest ADE-authored scrollTop target instead of using a counter, so a real
   // user scroll never gets swallowed by stale "programmatic" credits.
@@ -6073,6 +6032,39 @@ function AgentChatMessageListMain({
     () => (showStreamingIndicator && !sessionEnded ? deriveLiveThinkingRowKey(allGroupedRows, activeTurnId) : null),
     [activeTurnId, allGroupedRows, sessionEnded, showStreamingIndicator],
   );
+  // A stop receipt auto-collapses once its queued messages have run — best-effort:
+  // once a *later* turn (different turnId, i.e. the next turn) completes. The
+  // interrupted turn's own `done` does not count.
+  const staleInterruptReceipts = useStableIdentity(useMemo(() => {
+    const stale = new Set<string>();
+    const pending: { identity: string; turnId: string | undefined; donesAfter: number }[] = [];
+    for (const envelope of events) {
+      const evt = envelope.event;
+      if (evt.type === "interrupt_receipt") {
+        pending.push({ identity: interruptReceiptIdentity(evt), turnId: evt.turnId, donesAfter: 0 });
+      } else if (evt.type === "done") {
+        for (const p of pending) {
+          if (stale.has(p.identity)) continue;
+          if (p.turnId && evt.turnId && evt.turnId !== p.turnId) {
+            stale.add(p.identity);
+          } else if (p.turnId && evt.turnId === p.turnId) {
+            // Interrupted turn's own done — wait for the next turn.
+          } else {
+            // Missing turnId on either side: fall back to "second done after".
+            p.donesAfter += 1;
+            if (p.donesAfter >= 2) stale.add(p.identity);
+          }
+        }
+      }
+    }
+    return stale;
+  }, [events]), sameSetContents);
+  // What decides that a row draws nothing (`transcriptEventDrawsNothing`):
+  // `renderEvent` and the Thought-run merge read the same answer.
+  const rowDrawContext = useMemo<TranscriptRowDrawContext>(
+    () => ({ staleInterruptReceipts, usageLimitResumeActive }),
+    [staleInterruptReceipts, usageLimitResumeActive],
+  );
   // The rows the timeline draws: every fold applied, then Thought rows that
   // ended up next to each other (the rows between them are not drawn: tools,
   // an open fold's duplicate answer) merged into one (`mergeAdjacentThoughtRows`).
@@ -6091,10 +6083,10 @@ function AgentChatMessageListMain({
       for (const row of folded) if (row.event.type === "turn_fold") foldRows.set(row.key, row);
     }
     previousFoldRowsRef.current = foldRows;
-    const next = mergeAdjacentThoughtRows(folded, liveThinkingRowKey, previousThoughtRunRowsRef.current);
+    const next = mergeAdjacentThoughtRows(folded, previousThoughtRunRowsRef.current, rowDrawContext);
     previousThoughtRunRowsRef.current = next === folded ? new Map() : collectMergedThoughtRows(next);
     return next;
-  }, [liveThinkingRowKey, openTurnFolds, presentedRows, turnFolds]);
+  }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
   // name it land on the merged row.
@@ -6104,6 +6096,11 @@ function AgentChatMessageListMain({
     sameMapContents,
   );
   thoughtRunKeyByMemberKeyRef.current = thoughtRunKeyByMember;
+  // The drawn row that shows the live preview: the streaming thought's own row,
+  // or the Thought run it joined (keyed by the run's first member).
+  const liveThinkingDrawnKey = liveThinkingRowKey
+    ? thoughtRunKeyByMember.get(liveThinkingRowKey) ?? liveThinkingRowKey
+    : null;
   // `groupedRows` gets a fresh array on every streaming delta (the streaming row
   // is rebuilt), but the ROW KEYS only move when rows are added, removed or
   // regrouped. Reusing the previous key array on a pure content delta keeps
@@ -6317,33 +6314,6 @@ function AgentChatMessageListMain({
     return null;
   }, [groupedRows, sessionEnded, showStreamingIndicator, textPacingEnabled]);
 
-  // A stop receipt auto-collapses once its queued messages have run — best-effort:
-  // once a *later* turn (different turnId, i.e. the next turn) completes. The
-  // interrupted turn's own `done` does not count.
-  const staleInterruptReceipts = useStableIdentity(useMemo(() => {
-    const stale = new Set<string>();
-    const pending: { identity: string; turnId: string | undefined; donesAfter: number }[] = [];
-    for (const envelope of events) {
-      const evt = envelope.event;
-      if (evt.type === "interrupt_receipt") {
-        pending.push({ identity: interruptReceiptIdentity(evt), turnId: evt.turnId, donesAfter: 0 });
-      } else if (evt.type === "done") {
-        for (const p of pending) {
-          if (stale.has(p.identity)) continue;
-          if (p.turnId && evt.turnId && evt.turnId !== p.turnId) {
-            stale.add(p.identity);
-          } else if (p.turnId && evt.turnId === p.turnId) {
-            // Interrupted turn's own done — wait for the next turn.
-          } else {
-            // Missing turnId on either side: fall back to "second done after".
-            p.donesAfter += 1;
-            if (p.donesAfter >= 2) stale.add(p.identity);
-          }
-        }
-      }
-    }
-    return stale;
-  }, [events]), sameSetContents);
   const settledQueueRecoveryIds = useStableIdentity(useMemo(() => new Set(
     events.flatMap(({ event }) =>
       event.type === "queue_recovery" && event.state !== "available"
@@ -6393,15 +6363,15 @@ function AgentChatMessageListMain({
   /**
    * Thumbnail source for inline proof. The stored `uri` is project-relative
    * (`.ade/artifacts/...`), and the `ade-artifact://project/` handler resolves
-   * exactly that against the active project root — so a local project gets real
+   * exactly that against the chat's project root (named in the URL) — so a local project gets real
    * previews synchronously, with no per-tile IPC. A remote project has no such
    * handler, so tiles fall back to their kind label and the drawer (which reads
    * bytes over the runtime) stays the way to view them.
    */
   const resolveProofThumbnailSrc = useCallback((artifact: ComputerUseArtifactView): string | null => {
     if (!allowLocalProofArtifactProtocol) return null;
-    return artifactImageSrc(artifact.uri);
-  }, [allowLocalProofArtifactProtocol]);
+    return artifactImageSrc(artifact.uri, chatScope.rootPath);
+  }, [allowLocalProofArtifactProtocol, chatScope.rootPath]);
 
   const turnProofTimeline = useMemo(() => {
     const byDoneRowKey = new Map<string, ComputerUseArtifactView[]>();
@@ -6645,7 +6615,9 @@ function AgentChatMessageListMain({
     setStickToBottom(false);
     markDetachAnchor();
     scrollFollowFramesRef.current = 0;
-    programmaticScrollTargetRef.current = null;
+    // Keep `programmaticScrollTargetRef`: a bottom snap already written may
+    // still owe its scroll event, and that event must be absorbed, not read
+    // as the reader landing at the bottom. A non-matching event clears it.
     if (scrollRafRef.current !== null) {
       cancelAnimationFrame(scrollRafRef.current);
       scrollRafRef.current = null;
@@ -7415,6 +7387,7 @@ function AgentChatMessageListMain({
 
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
+    const previousScrollTop = lastScrollTopRef.current;
     // Ref write, not state: the per-chat scroll memory is snapshotted at unmount
     // so following the scroll costs zero renders.
     lastScrollTopRef.current = target.scrollTop;
@@ -7448,9 +7421,14 @@ function AgentChatMessageListMain({
     // Wider threshold (~1 row of assistant text) so a small wheel nudge
     // while the turn is streaming actually breaks free instead of snapping
     // straight back to the bottom.
+    const scrolledDown = target.scrollTop > previousScrollTop + 0.5;
+    const scrollUpAt = userScrollUpAtRef.current;
+    const repinHeld = scrollUpAt != null && performance.now() - scrollUpAt < USER_SCROLL_UP_REPIN_HOLD_MS;
     const nextStick = shouldStickToBottomAfterScroll({
       distanceFromBottom,
       wasStuckToBottom: stickToBottomRef.current,
+      scrolledDown,
+      repinHeld,
     });
     if (nextStick !== stickToBottomRef.current) {
       stickToBottomRef.current = nextStick;
@@ -7458,6 +7436,13 @@ function AgentChatMessageListMain({
       // Re-sticking means everything is caught up, so the "N new" baseline goes
       // away; detaching starts a fresh one.
       if (nextStick) {
+        logRendererDebugEvent("renderer.chat.scroll.repin", {
+          sessionId: sessionId ?? null,
+          direction: scrolledDown ? "down" : "none",
+          deltaPx: Math.round(target.scrollTop - previousScrollTop),
+          distanceFromBottomPx: Math.round(distanceFromBottom),
+          msSinceScrollUp: scrollUpAt == null ? null : Math.round(performance.now() - scrollUpAt),
+        });
         setDetachAnchorRowKey(null);
         onReturnToLatest?.();
       } else {
@@ -7469,14 +7454,19 @@ function AgentChatMessageListMain({
     // get their one chained page back.
     autoOlderLoadsSinceUserScrollRef.current = 0;
     maybeRequestOlderHistory(target.scrollTop, "reader");
-  }, [markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon]);
+  }, [markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
+
+  /** The reader scrolled up (true) or down (false): starts or ends the re-pin hold. */
+  const noteReaderScrollDirection = useCallback((up: boolean) => {
+    userScrollUpAtRef.current = up ? performance.now() : null;
+    if (up) releaseBottomStickinessForUserScroll();
+  }, [releaseBottomStickinessForUserScroll]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     noteReaderScrollIntent();
-    if (event.deltaY < 0) {
-      releaseBottomStickinessForUserScroll();
-    }
-  }, [noteReaderScrollIntent, releaseBottomStickinessForUserScroll]);
+    if (event.deltaY < 0) noteReaderScrollDirection(true);
+    else if (event.deltaY > 0) noteReaderScrollDirection(false);
+  }, [noteReaderScrollDirection, noteReaderScrollIntent]);
 
   const handleTouchStart = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     noteReaderScrollIntent();
@@ -7490,23 +7480,27 @@ function AgentChatMessageListMain({
   }, [noteReaderScrollIntent]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (SCROLL_KEYS.has(event.key)) noteReaderScrollIntent();
-  }, [noteReaderScrollIntent]);
+    if (!SCROLL_KEYS.has(event.key)) return;
+    noteReaderScrollIntent();
+    noteReaderScrollDirection(isScrollUpKey(event));
+  }, [noteReaderScrollDirection, noteReaderScrollIntent]);
 
   const handleTouchMove = useCallback((event: React.TouchEvent<HTMLDivElement>) => {
     const nextY = event.touches[0]?.clientY ?? null;
     const previousY = lastTouchYRef.current;
-    if (nextY != null && previousY != null && nextY - previousY > TOUCH_SCROLL_DEADBAND_PX) {
-      releaseBottomStickinessForUserScroll();
+    if (nextY != null && previousY != null) {
+      if (nextY - previousY > TOUCH_SCROLL_DEADBAND_PX) noteReaderScrollDirection(true);
+      else if (previousY - nextY > TOUCH_SCROLL_DEADBAND_PX) noteReaderScrollDirection(false);
     }
     lastTouchYRef.current = nextY;
-  }, [releaseBottomStickinessForUserScroll]);
+  }, [noteReaderScrollDirection]);
 
   const handleTouchEnd = useCallback(() => {
     lastTouchYRef.current = null;
   }, []);
 
   const jumpToLatest = useCallback(() => {
+    userScrollUpAtRef.current = null;
     stickToBottomRef.current = true;
     setStickToBottom(true);
     setDetachAnchorRowKey(null);
@@ -7697,7 +7691,7 @@ function AgentChatMessageListMain({
           settledQueueRecoveryIds={settledQueueRecoveryIds}
           onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
-          liveThinking={envelope.key === liveThinkingRowKey}
+          liveThinking={envelope.key === liveThinkingDrawnKey}
           turnFoldOpen={turnFoldOpen}
           onToggleTurnFold={toggleTurnFold}
           turnWorkInFold={turnWorkInFold}
@@ -7765,13 +7759,13 @@ function AgentChatMessageListMain({
         settledQueueRecoveryIds={settledQueueRecoveryIds}
         onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
-        liveThinking={envelope.key === liveThinkingRowKey}
+        liveThinking={envelope.key === liveThinkingDrawnKey}
         turnFoldOpen={turnFoldOpen}
         onToggleTurnFold={toggleTurnFold}
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingRowKey]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByRowKey, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, handleMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, mosaic, scrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, inlineProofByRowKey, resolveProofThumbnailSrc, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, pacedTextRowKey, liveThinkingDrawnKey]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

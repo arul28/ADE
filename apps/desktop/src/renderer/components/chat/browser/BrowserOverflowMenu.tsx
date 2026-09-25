@@ -35,6 +35,14 @@ import {
   zoomPercentLabel,
 } from "./browserToolbarLabels";
 import { modifierChordLabel } from "../../../lib/platform";
+import {
+  BROWSER_AGENT_ACCESS_MODES,
+  BROWSER_AGENT_ACCESS_MODE_COPY,
+  browserAgentAccessActions,
+  projectNameFromRoot,
+  shortAgentId,
+  useBrowserAgentAccess,
+} from "./browserAgentAccess";
 import { cn } from "../../ui/cn";
 import {
   CHROME_GHOST,
@@ -139,6 +147,12 @@ export function BrowserOverflowMenu({
     close; every other row still gets it, because for them the trigger is where
     the keyboard belongs.
   */
+  // Machine-wide and shared with Settings; null where this renderer cannot
+  // reach it (the hosted web client), which hides the section.
+  const agentAccess = useBrowserAgentAccess();
+  const agentGrantCount = agentAccess
+    ? agentAccess.laneGrants.length + agentAccess.chatGrants.length
+    : 0;
   const restoreFocusRef = useRef(true);
   const handOffFocus = (run: () => void) => () => {
     restoreFocusRef.current = false;
@@ -374,6 +388,115 @@ export function BrowserOverflowMenu({
               <span className="min-w-0 flex-1 truncate">In system browser</span>
             </DropdownMenu.RadioItem>
           </DropdownMenu.RadioGroup>
+
+          {agentAccess ? (
+            <>
+              {/*
+                Who may drive this browser. The same machine-wide choice as
+                Settings → General → ADE browser; answering a prompt with
+                "Allow this lane" or "Allow this chat" adds to the list below.
+              */}
+              <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+              <DropdownMenu.Label className={MENU_LABEL_CLASS}>Agents can use this browser</DropdownMenu.Label>
+              <DropdownMenu.RadioGroup
+                value={agentAccess.mode}
+                onValueChange={(value) => {
+                  if (value === "all" || value === "lanes" || value === "chats") {
+                    void browserAgentAccessActions.setMode(value).catch(() => {});
+                  }
+                }}
+              >
+                {BROWSER_AGENT_ACCESS_MODES.map((value) => (
+                  <DropdownMenu.RadioItem
+                    key={value}
+                    value={value}
+                    className={MENU_ITEM_CLASS}
+                    onSelect={(event) => event.preventDefault()}
+                  >
+                    <Check
+                      size={11}
+                      weight="bold"
+                      aria-hidden="true"
+                      className={cn(
+                        "shrink-0 text-[var(--color-accent)]",
+                        agentAccess.mode === value ? "opacity-100" : "opacity-0",
+                      )}
+                    />
+                    <span className="min-w-0 flex-1 truncate">{BROWSER_AGENT_ACCESS_MODE_COPY[value].label}</span>
+                  </DropdownMenu.RadioItem>
+                ))}
+              </DropdownMenu.RadioGroup>
+              {agentGrantCount > 0 ? (
+                <DropdownMenu.Sub>
+                  <DropdownMenu.SubTrigger className={cn(MENU_ITEM_CLASS, "pl-7")}>
+                    <span className="min-w-0 flex-1 truncate">Allowed lanes and chats</span>
+                    <span className="shrink-0 text-[9.5px] text-muted-fg/70">{agentGrantCount}</span>
+                  </DropdownMenu.SubTrigger>
+                  <DropdownMenu.Portal>
+                    <DropdownMenu.SubContent
+                      sideOffset={4}
+                      collisionPadding={8}
+                      className={cn(MENU_CONTENT_CLASS, "max-h-[320px] max-w-[300px] overflow-y-auto")}
+                    >
+                      <DropdownMenu.Label className={MENU_LABEL_CLASS}>Select one to remove it</DropdownMenu.Label>
+                      {agentAccess.laneGrants.map((grant) => {
+                        const project = projectNameFromRoot(grant.projectRoot);
+                        return (
+                          <DropdownMenu.Item
+                            key={`lane:${grant.projectRoot ?? ""}:${grant.laneId}`}
+                            className={MENU_ITEM_CLASS}
+                            onSelect={(event) => {
+                              event.preventDefault();
+                              void browserAgentAccessActions.revoke({
+                                kind: "lane",
+                                projectRoot: grant.projectRoot,
+                                laneId: grant.laneId,
+                              }).catch(() => {});
+                            }}
+                          >
+                            <span className="w-8 shrink-0 text-[9.5px] text-muted-fg/70">Lane</span>
+                            <span className="min-w-0 flex-1 truncate">
+                              {grant.laneName ?? shortAgentId(grant.laneId)}
+                              {project ? <span className="text-muted-fg/70">{` · ${project}`}</span> : null}
+                            </span>
+                            <X size={11} className="shrink-0 opacity-60" aria-label="Remove" />
+                          </DropdownMenu.Item>
+                        );
+                      })}
+                      {agentAccess.chatGrants.map((grant) => (
+                        <DropdownMenu.Item
+                          key={`chat:${grant.chatSessionId}`}
+                          className={MENU_ITEM_CLASS}
+                          onSelect={(event) => {
+                            event.preventDefault();
+                            void browserAgentAccessActions.revoke({
+                              kind: "chat",
+                              chatSessionId: grant.chatSessionId,
+                            }).catch(() => {});
+                          }}
+                        >
+                          <span className="w-8 shrink-0 text-[9.5px] text-muted-fg/70">Chat</span>
+                          <span className="min-w-0 flex-1 truncate">
+                            {grant.chatTitle ?? shortAgentId(grant.chatSessionId)}
+                          </span>
+                          <X size={11} className="shrink-0 opacity-60" aria-label="Remove" />
+                        </DropdownMenu.Item>
+                      ))}
+                      <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+                      <DropdownMenu.Item
+                        className={MENU_ITEM_CLASS}
+                        onSelect={() => {
+                          void browserAgentAccessActions.revoke({ kind: "all" }).catch(() => {});
+                        }}
+                      >
+                        <span className="min-w-0 flex-1 truncate">Remove all</span>
+                      </DropdownMenu.Item>
+                    </DropdownMenu.SubContent>
+                  </DropdownMenu.Portal>
+                </DropdownMenu.Sub>
+              ) : null}
+            </>
+          ) : null}
 
           <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onOpenLoginImport()}>

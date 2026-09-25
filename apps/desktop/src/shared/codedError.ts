@@ -10,6 +10,13 @@ export type ParsedCodedError = {
 // delimiter because it never appears in a human-readable error message.
 const ROOT_PATH_DELIMITER = String.fromCharCode(0);
 
+/**
+ * Git refused a folder that belongs to another account (safe.directory). The
+ * open flow answers it with a "Trust this folder?" prompt; see
+ * `trustGitSafeDirectory` in the main process.
+ */
+export const GIT_UNTRUSTED_FOLDER_CODE = "git_untrusted_folder";
+
 export function codedError<TCode extends string>(message: string, code: TCode): Error & { code: TCode } {
   return Object.assign(new Error(message), { code });
 }

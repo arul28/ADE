@@ -1368,6 +1368,13 @@ export type LaneDeleteTeardownDeps = {
   macDesktopService?: {
     destroyForLane: (laneId: string) => Promise<{ destroyed: boolean }>;
   };
+  /**
+   * The lane's App Control session: quits the app ADE launched for the lane and
+   * detaches an attached one. Best-effort, like the Mac Desktop step.
+   */
+  appControlService?: {
+    stopForLane: (laneId: string) => Promise<unknown>;
+  };
 };
 
 export function createLaneService({
@@ -4560,6 +4567,9 @@ export function createLaneService({
     try {
       await teardownDeps?.macDesktopService?.destroyForLane(laneId);
     } catch (error) { warn("destroy_mac_desktop", error); }
+    try {
+      await teardownDeps?.appControlService?.stopForLane(laneId);
+    } catch (error) { warn("stop_app_control", error); }
   };
 
   // Named so a few methods (branch-drift resolution) can delegate to sibling
@@ -6607,7 +6617,18 @@ export function createLaneService({
       invalidateLaneListCache();
 
       try {
-        await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        // A lane that already contains the new parent's tip (it merged that
+        // parent in) needs only the record change. `git rebase` would still
+        // refuse on a dirty worktree, and it could rewrite merge commits.
+        const alreadyContainsParent = preHeadSha
+          ? (await runGit(["merge-base", "--is-ancestor", newParentHead, preHeadSha], {
+              cwd: lane.worktree_path,
+              timeoutMs: 15_000,
+            })).exitCode === 0
+          : false;
+        if (!alreadyContainsParent) {
+          await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        }
       } catch (error) {
         try {
           await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 20_000 });
@@ -7715,6 +7736,19 @@ export function createLaneService({
           const result = await svc.destroyForLane(laneId);
           return { detail: result.destroyed ? "display destroyed" : "no display" };
         }, { fatal: false });
+
+        // Not a named step: the delete dialog's step list is a shared contract
+        // (desktop and phone), and releasing App Control has nothing for the
+        // user to watch. Best-effort, before the worktree goes away under the
+        // app it launched.
+        try {
+          await teardownDeps?.appControlService?.stopForLane(laneId);
+        } catch (error) {
+          logger.warn("lane.delete.stop_app_control_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };

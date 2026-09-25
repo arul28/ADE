@@ -87,6 +87,11 @@ export function useNativeToolSessions(args: {
   runtimePin: OpenProjectBinding | null;
   /** True when the pinned machine is not answering; skip every pinned read. */
   offline?: boolean;
+  /**
+   * The lane the tools pane shows. App Control keeps one session per lane, so
+   * its feed reads this lane's session and ignores other lanes' events.
+   */
+  laneId?: string | null;
   /** Called with the first `getStatus` answer, after it has been accepted. */
   onBrowserStatusSettled?: (status: BuiltInBrowserStatus | null) => void;
   /** Raw feed events, for consumers that need more than the latest status. */
@@ -109,6 +114,7 @@ export function useNativeToolSessions(args: {
     browserViewRoot,
     runtimePin,
     offline = false,
+    laneId = null,
     onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,
@@ -207,7 +213,8 @@ export function useNativeToolSessions(args: {
   }, [enabled, offline, runtimePinKey]);
 
   useEffect(() => {
-    if (!enabled || offline || !canAppControl) {
+    // No lane, no session: App Control refuses a call that names no lane.
+    if (!enabled || offline || !canAppControl || !laneId) {
       setAppControlSession(null);
       return undefined;
     }
@@ -215,7 +222,8 @@ export function useNativeToolSessions(args: {
     if (!appControl?.getStatus || !appControl.onEvent) return undefined;
     let cancelled = false;
     const scope: NativeToolFeedScope = { isActive: () => !cancelled };
-    void appControl.getStatus(runtimePinRef.current)
+    setAppControlSession(null);
+    void appControl.getStatus({ laneId }, runtimePinRef.current)
       .then((status) => {
         if (!cancelled) setAppControlSession(status?.activeSession ?? null);
       })
@@ -223,6 +231,8 @@ export function useNativeToolSessions(args: {
         if (!cancelled) setAppControlSession(null);
       });
     const unsubscribe = appControl.onEvent((event) => {
+      // One stream carries every lane's events; this feed is one lane's.
+      if (event.laneId !== laneId) return;
       if (event.type === "session-started" || event.type === "session-updated") {
         setAppControlSession(event.session ?? null);
       } else if (event.type === "session-stopped") {
@@ -234,7 +244,7 @@ export function useNativeToolSessions(args: {
       cancelled = true;
       unsubscribe();
     };
-  }, [canAppControl, enabled, offline, runtimePinKey]);
+  }, [canAppControl, enabled, laneId, offline, runtimePinKey]);
 
   return { browserStatus, iosSession, appControlSession, canBrowser, canIos, canAppControl };
 }

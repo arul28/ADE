@@ -17,7 +17,7 @@
 
 /** The line itself. Exported so a test can assert on it without rebuilding it. */
 export const MAC_DESKTOP_PROMPT_LINE =
-  "This lane has a private macOS screen (Mac Desktop). Drive it with `ade mac-desktop` — observe first, act on the handles it returns; read the **ade-desktop** skill before your first action.";
+  "This lane has a private macOS screen (Mac Desktop). Drive it with `ade mac-desktop` — observe first, act on the handles it returns; read the **ade-computer-use** skill before your first action.";
 
 /**
  * @param enabled True when this lane has a Mac Desktop display right now. The

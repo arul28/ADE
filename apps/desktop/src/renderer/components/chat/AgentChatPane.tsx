@@ -127,7 +127,7 @@ import {
   type ProviderFamily,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
-import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
+import { CURSOR_AVAILABLE_MODE_IDS, foldLegacyCursorFastConfigValue } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import {
   AgentChatComposer,
@@ -154,6 +154,7 @@ import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from 
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
+import { ChatAppControlRecordingCard } from "./ChatAppControlRecordingCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -2665,6 +2666,25 @@ function nativeControlsFromLaunchSource(
   };
 }
 
+/**
+ * Native controls plus Fast, with a Cursor Fast toggle that older builds saved
+ * as a model option folded into Fast. Fast is Cursor's speed tier now, shown
+ * as the model picker's Fast chip, so a saved launch keeps its choice.
+ */
+function launchFastModeAndControls(
+  fastMode: boolean,
+  controlsSource: Partial<LaunchConfigSessionSource>,
+  defaults: NativeControlState,
+): { fastMode: boolean; controls: NativeControlState } {
+  const controls = nativeControlsFromLaunchSource(controlsSource, defaults);
+  const folded = foldLegacyCursorFastConfigValue(fastMode, controls.cursorConfigValues);
+  if (!folded.folded) return { fastMode, controls };
+  return {
+    fastMode: folded.fastMode === true,
+    controls: { ...controls, cursorConfigValues: folded.configValues ?? {} },
+  };
+}
+
 function buildLastLaunchConfig(
   source: Partial<LaunchConfigSessionSource>,
   defaults: NativeControlState,
@@ -2672,14 +2692,15 @@ function buildLastLaunchConfig(
 ): LastLaunchConfig | null {
   const modelId = source.modelId ?? resolveRegistryModelId(source.model);
   if (!modelId) return null;
+  const { fastMode, controls } = launchFastModeAndControls(source.fastMode === true, source, defaults);
   return {
     version: 1,
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
-    fastMode: source.fastMode === true,
+    fastMode,
     cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
-    controls: nativeControlsFromLaunchSource(source, defaults),
+    controls,
     updatedAt,
   };
 }
@@ -2691,7 +2712,8 @@ function normalizeStoredLaunchConfig(
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   if (!modelId) return null;
-  const controls = nativeControlsFromLaunchSource(
+  const { fastMode, controls } = launchFastModeAndControls(
+    readStoredFastMode(value),
     isRecord(value.controls) ? value.controls : {},
     defaults,
   );
@@ -2701,7 +2723,7 @@ function normalizeStoredLaunchConfig(
     reasoningEffort: typeof value.reasoningEffort === "string" && value.reasoningEffort.trim().length
       ? value.reasoningEffort.trim()
       : null,
-    fastMode: readStoredFastMode(value),
+    fastMode,
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -2940,19 +2962,21 @@ function normalizeStoredComposerDraft(
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   const attachments = normalizeComposerFileAttachments(value.attachments);
   const updatedAt = nonEmptyString(value.updatedAt) ?? new Date(0).toISOString();
+  const { fastMode, controls } = launchFastModeAndControls(
+    readStoredFastMode(value),
+    isRecord(value.controls) ? value.controls : {},
+    defaults,
+  );
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
     mentionLabels: normalizeComposerMentionLabels(value.mentionLabels),
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
-    fastMode: readStoredFastMode(value),
+    fastMode,
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
-    controls: nativeControlsFromLaunchSource(
-      isRecord(value.controls) ? value.controls : {},
-      defaults,
-    ),
+    controls,
     attachments,
     attachmentDraftIds: normalizeStoredDraftAttachmentIds(value.attachmentDraftIds, attachments, updatedAt),
     submittedDraftTextEdit: normalizeSubmittedDraftTextEdit(value.submittedDraftTextEdit),
@@ -4545,7 +4569,7 @@ export function AgentChatPane({
     // which left the toggle permanently hidden — and hiding the toggle is what
     // kept the panel from ever opening to un-skip it.
     let cancelled = false;
-    void api.getStatus(chatRuntimePin)
+    void api.getStatus({ laneId: laneId ?? null }, chatRuntimePin)
       .then((status) => {
         if (cancelled) return;
         setAppControlAvailable(Boolean(status.supported));
@@ -4557,7 +4581,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [chatRuntimePin, laneToolsVisible]);
+  }, [chatRuntimePin, laneId, laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -6025,9 +6049,6 @@ export function AgentChatPane({
       onOpenCodePermissionModeChange: (mode) => patchParallelSlot(idx, { opencodePermissionMode: mode }),
       onDroidPermissionModeChange: (mode) => patchParallelSlot(idx, { droidPermissionMode: mode }),
       onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
-      onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
-        cursorConfigValues: userSetCursorConfigValues({ ...row.cursorConfigValues, [configId]: value }),
-      }),
     };
   }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
 
@@ -7821,13 +7842,20 @@ export function AgentChatPane({
     // The full composer bucket effect above owns draft/context hydration for
     // session and lane switches; this effect resets transient chat UI only.
   }, [selectedSessionId, laneId]);
-  const { proofDrawerRef: registerProofDrawer, appleDrawerRef } = useChatPaneShowRequests({
+  const openAppControlDrawer = useCallback(() => {
+    setAppControlAvailable(true);
+    setChatActionsOpen(false);
+    setIosSimulatorOpen(false);
+    setAppControlOpen(true);
+  }, []);
+  const { proofDrawerRef: registerProofDrawer, appleDrawerRef, appControlDrawerRef } = useChatPaneShowRequests({
     chatSessionId: selectedSessionId,
     visible: isTileVisible,
     laneToolDrawersHidden: hideLaneToolDrawers,
     laneId: laneId ?? null,
     openProofDrawer: openProofDrawerForShow,
     openAppleDrawer: openIosSimulatorDrawer,
+    openAppControlDrawer,
   });
   const proofSectionRef = useRef<HTMLDivElement | null>(null);
   const proofDrawerRef = useCallback((element: HTMLDivElement | null) => {
@@ -13821,7 +13849,7 @@ export function AgentChatPane({
           Close
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <div ref={appControlDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
           <Banner
             model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
@@ -13829,7 +13857,9 @@ export function AgentChatPane({
           />
         ) : (
           <ChatAppControlPanel
-            key={activeComposerRuntimeBinding?.key ?? "bound"}
+            // Keyed by lane too: a late reply for the old lane must never land
+            // in the new lane's pane.
+            key={`${activeComposerRuntimeBinding?.key ?? "bound"}:${laneId ?? ""}`}
             sessionId={selectedSessionId}
             laneId={laneId}
             projectRoot={iosSimulatorProjectRoot}
@@ -14428,14 +14458,6 @@ export function AgentChatPane({
             onOpenCodePermissionModeChange={(value) => { void updateNativeControls({ opencodePermissionMode: value }); }}
             onDroidPermissionModeChange={(value) => { void updateNativeControls({ droidPermissionMode: value }); }}
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
-            onCursorConfigChange={(configId, value) => {
-              void updateNativeControls({
-                cursorConfigValues: userSetCursorConfigValues({
-                  ...nativeControlsRef.current.cursorConfigValues,
-                  [configId]: value,
-                }),
-              });
-            }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onRemoveIosElementContext={removeIosElementContext}
             onRemoveAppControlContext={removeAppControlContext}
@@ -14794,12 +14816,25 @@ export function AgentChatPane({
       workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
     />
   ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (
+  /**
+   * An App Control recording this chat made, the same card in the same place.
+   * Null for every chat whose lane never recorded its app.
+   */
+  const appControlRecordingCard = laneId ? (
+    <ChatAppControlRecordingCard
+      laneId={laneId}
+      sessionId={composerSessionId}
+      runtimePin={renderedChatRuntimePin}
+      workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
+    />
+  ) : null;
+  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard || appControlRecordingCard ? (
     <div
       data-testid="chat-composer-notice-overlay"
       className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {macDesktopTimeLapseCard}
+      {appControlRecordingCard}
       {awayDigestCard}
       {lifecyclePill}
     </div>

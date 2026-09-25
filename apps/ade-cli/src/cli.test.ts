@@ -1835,8 +1835,66 @@ describe("ADE CLI", () => {
       { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true },
       "mac-desktop-action",
     );
-    expect(text).toContain("(no element matched)");
+    expect(text).toContain("hit: no element matched");
     expect(text).not.toContain("sent to the focused window");
+  });
+
+  it("prints the same hit and effect lines for an acting command on every computer-use surface", () => {
+    const opts = { ...baseResolveOpts(), projectRoot: null, workspaceRoot: null, text: true };
+    const firstTwoLines = (value: unknown, formatter: Parameters<typeof formatOutput>[2]) =>
+      formatOutput(value, opts, formatter).split("\n").slice(0, 2);
+
+    expect(firstTwoLines({
+      ok: true,
+      action: "click",
+      mode: "accessibility",
+      resolved: { index: 12, handle: "obs-1:e:12", role: "AXButton", title: "Save", center: { x: 1, y: 2 } },
+      effect: { status: "observed", reason: "a window opened, closed or changed title" },
+      observation: null,
+    }, "mac-desktop-action")).toEqual([
+      'hit: AXButton "Save" (obs-1:e:12)',
+      "effect: observed — a window opened, closed or changed title",
+    ]);
+
+    expect(firstTwoLines({
+      ok: true,
+      observation: null,
+      trace: { id: "trace-1", action: "click" },
+      resolved: null,
+      effect: { status: "unconfirmed", reason: "nothing on screen changed" },
+    }, "browser-action")).toEqual([
+      "hit: no element; acted on a point",
+      "effect: unconfirmed — nothing on screen changed; observe again before you continue",
+    ]);
+
+    expect(firstTwoLines({
+      ok: true,
+      observation: null,
+      trace: { id: "trace-2", action: "fill" },
+      resolved: { index: 0, handle: "obs-2:e:3", role: null, tagName: "input", label: "Email" },
+      effect: { status: "observed", reason: "1 element changed" },
+    }, "app-control-action")).toEqual([
+      'hit: input "Email" (obs-2:e:3)',
+      "effect: observed — 1 element changed",
+    ]);
+
+    // An Apple coordinate tap answers `{ ok: true }` and never compares.
+    expect(firstTwoLines({ ok: true }, "apple-point-action")).toEqual([
+      "hit: no element; acted on a point",
+      expect.stringMatching(/^effect: not checked — Apple device actions do not compare the screen/),
+    ]);
+    expect(firstTwoLines({
+      ok: true,
+      action: "tap",
+      match: { ref: "ax:4", element: { role: "button", label: "Continue" }, matchCount: 1 },
+      matchCount: 1,
+      message: null,
+      waitedMs: null,
+      effect: { status: "not_checked", reason: "Apple device actions do not compare the screen" },
+    }, "apple-action")).toEqual([
+      'hit: button "Continue" (ax:4)',
+      "effect: not checked — Apple device actions do not compare the screen",
+    ]);
   });
 
   it("names every failed runtime check at once, not only the first", () => {
@@ -8893,8 +8951,10 @@ describe("ADE CLI", () => {
     )
       return;
 
-    expect(screenshot.preferHeadless).toBe(true);
-    expect(capture.preferHeadless).toBe(true);
+    // The lane display lives in the running brain, so the default path does
+    // not force an in-process runtime; only --real-screen still prefers one.
+    expect(screenshot.preferHeadless).toBeUndefined();
+    expect(capture.preferHeadless).toBeUndefined();
     expect(capture.steps[0]?.params).toMatchObject({
       name: "screenshot_environment",
       arguments: {
@@ -8908,8 +8968,20 @@ describe("ADE CLI", () => {
     });
     expect((screenshot.steps[0]?.params as any)?.arguments?.proof).toBe(true);
     expect((record.steps[0]?.params as any)?.arguments?.proof).toBe(true);
-    expect(record.preferHeadless).toBe(true);
+    expect((capture.steps[0]?.params as any)?.arguments?.realScreen).toBeUndefined();
+    expect((record.steps[0]?.params as any)?.arguments?.realScreen).toBeUndefined();
+    expect(record.preferHeadless).toBeUndefined();
     expect(list.preferHeadless).toBeUndefined();
+
+    for (const argv of [
+      ["proof", "capture", "--real-screen", "--caption", "Done"],
+      ["proof", "record", "--real-screen", "--seconds", "3"],
+    ]) {
+      const plan = buildCliPlan(argv);
+      if (plan.kind !== "execute") throw new Error("expected an execute plan");
+      expect((plan.steps[0]?.params as any)?.arguments).toMatchObject({ proof: true, realScreen: true });
+      expect(plan.preferHeadless).toBe(true);
+    }
   });
 
   it("maps proof attach to visual artifact ingestion", () => {
@@ -9108,6 +9180,25 @@ describe("ADE CLI", () => {
       expect(summarized.warnings).toEqual([warning]);
       const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
       expect(output).toContain(`warning: ${warning}`);
+      expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Attached 1 artifact/);
+    });
+
+    it("names the lane display a proof capture used", () => {
+      const plan = expectExecutePlan(buildCliPlan(["proof", "capture", "--caption", "roots check"]));
+      const summarized = summarizeExecution({
+        plan,
+        connection,
+        values: {
+          result: {
+            ...ingestResult,
+            capturedFrom: { kind: "mac_desktop", laneId: "lane-9", displayName: "ADE · lane-9", width: 1440, height: 900 },
+          },
+          verify: { artifacts: [{ id: "artifact-1" }] },
+        },
+      }) as Record<string, unknown>;
+      expect(summarized.capturedFrom).toBe("Mac Desktop display ADE · lane-9 (1440x900)");
+      const output = formatOutput(summarized, textOpts(), inferFormatter(plan));
+      expect(output).toContain("captured from: Mac Desktop display ADE · lane-9 (1440x900)");
       expect(output.trimEnd().split("\n").at(-1)).toMatch(/^Attached 1 artifact/);
     });
 
@@ -13795,6 +13886,26 @@ describe("ADE CLI", () => {
     });
   });
 
+  it("app-control launch resolves a relative --cwd from the shell's own directory", () => {
+    const shellDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-cwd-"));
+    fs.mkdirSync(path.join(shellDir, "counter-app"));
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(shellDir);
+    try {
+      const argsOf = (argv: string[]) => {
+        const plan = buildCliPlan(argv);
+        if (plan.kind !== "execute") throw new Error("expected an execute plan");
+        return (plan.steps[0]?.params as { arguments: { args: Record<string, unknown> } }).arguments.args;
+      };
+      expect(argsOf(["app-control", "launch", "--command", "npm start", "--cwd", "counter-app"]).cwd)
+        .toBe(path.join(shellDir, "counter-app"));
+      // A folder that is not here is left for the runtime to resolve.
+      expect(argsOf(["app-control", "launch", "--command", "npm start", "--cwd", "apps/web"]).cwd).toBe("apps/web");
+    } finally {
+      cwdSpy.mockRestore();
+      fs.rmSync(shellDir, { recursive: true, force: true });
+    }
+  });
+
   it("app-control launch, connect, and claim carry the agent lane claim", () => {
     const previousLane = process.env.ADE_LANE_ID;
     const previousChat = process.env.ADE_CHAT_SESSION_ID;
@@ -14202,7 +14313,7 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["app-control", "wait"])).toThrow(/requires --selector/);
   });
 
-  it("app-control proof observes and ingests under the ade-app-control backend", () => {
+  it("app-control proof files the still through app_control.captureProof", () => {
     const plan = buildCliPlan([
       "app-control",
       "proof",
@@ -14211,39 +14322,12 @@ describe("ADE CLI", () => {
     ]);
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
-    expect(plan.steps).toHaveLength(2);
+    expect(plan.proofFiling).toEqual({ command: "app-control proof", verify: true });
     expect(plan.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "app_control",
-        action: "observe",
-        args: { includeDom: false },
-      },
-    });
-    const ingest = plan.steps[1];
-    expect(ingest?.method).toBe("ade/actions/call");
-    const params = typeof ingest?.params === "function"
-      ? ingest.params({
-          observation: {
-            domain: "app_control",
-            action: "observe",
-            result: { filePath: "/repo/.ade/cache/app-control-observations/s/obs-1.png" },
-          },
-        })
-      : null;
-    expect(params).toMatchObject({
-      name: "ingest_computer_use_artifacts",
-      arguments: {
-        backendStyle: "manual",
-        backendName: "ade-app-control",
-        toolName: "app-control proof",
-        inputs: [
-          {
-            kind: "screenshot",
-            title: "Settings saved",
-            description: "Settings saved",
-            path: "/repo/.ade/cache/app-control-observations/s/obs-1.png",
-          },
-        ],
+        action: "captureProof",
+        args: { caption: "Settings saved" },
       },
     });
   });

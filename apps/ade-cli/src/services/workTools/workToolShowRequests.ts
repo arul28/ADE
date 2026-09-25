@@ -15,8 +15,8 @@ import {
  * `ade ui show` on the brain side.
  *
  * The surfaces an agent wants the user to see (the Apple tool, the floating
- * device, the browser, the proof drawer, the Mac Desktop tool and its floating
- * card) are renderer UI, and the brain cannot tell which renderer is showing
+ * device, the browser, the proof drawer, the Mac Desktop and App Control tools
+ * and their floating cards) are renderer UI, and the brain cannot tell which renderer is showing
  * which chat. So it asks all of them: the request goes out on the runtime event stream every desktop on this project
  * already reads — a local window and a paired desktop on another machine alike
  * — and the one that has the chat answers.
@@ -54,6 +54,8 @@ const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
   proof: "proof drawer",
   "mac-desktop": "Mac Desktop in the tools pane",
   "floating-mac-desktop": "floating Mac Desktop",
+  "app-control": "App Control in the tools pane",
+  "floating-app-control": "floating App Control",
 };
 
 type HeldAnswer = { desktopLabel: string | null; opened: boolean };
@@ -98,6 +100,8 @@ export type WorkToolShowRequests = {
   noteAgentAppleActivity(input: AgentDeviceActivity): boolean;
   /** The same for the lane's Mac Desktop: an `auto` floating-card offer. */
   noteAgentMacDesktopActivity(input: AgentDeviceActivity): boolean;
+  /** The same for the lane's App Control app: an `auto` floating-card offer. */
+  noteAgentAppControlActivity(input: AgentDeviceActivity): boolean;
   dispose(): void;
 };
 
@@ -184,7 +188,7 @@ export function createWorkToolShowRequests(args: {
   };
 
   const noteAgentActivity = (
-    surface: "floating-apple" | "floating-mac-desktop",
+    surface: "floating-apple" | "floating-mac-desktop" | "floating-app-control",
     input: AgentDeviceActivity,
   ): boolean => {
     const chatSessionId = trimmedOrNull(input.chatSessionId);
@@ -263,6 +267,10 @@ export function createWorkToolShowRequests(args: {
 
     noteAgentMacDesktopActivity(input) {
       return noteAgentActivity("floating-mac-desktop", input);
+    },
+
+    noteAgentAppControlActivity(input) {
+      return noteAgentActivity("floating-app-control", input);
     },
 
     dispose() {

@@ -223,6 +223,17 @@ export function createMacDesktopOwnershipRegistry(options: { now?: () => number 
       return windows.get(windowId)?.laneId ?? null;
     },
 
+    /**
+     * The lane whose display holds a window of this process, or whose launch
+     * of it is still being watched. App Control asks before it attaches, so
+     * one lane cannot drive an app another lane parked on its own screen.
+     */
+    laneForProcess(pid: number): string | null {
+      if (!Number.isInteger(pid) || pid <= 0) return null;
+      for (const record of windows.values()) if (record.pid === pid) return record.laneId;
+      return watchedLaunches.get(pid)?.laneId ?? null;
+    },
+
     listWindowRecords(laneId?: string | null): MacDesktopWindowRecord[] {
       const all = [...windows.values()];
       return laneId ? all.filter((record) => record.laneId === laneId) : all;

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -64,6 +65,17 @@ const PIP_CONCEALED_STYLE = {
 
 const FALLBACK_CONTAINER: FloatingPlayerSize = { width: 960, height: 640 };
 
+/**
+ * The Work column's title rail (chat title, its buttons). A player never sits
+ * on it: a fresh one opens below it and a drag stops at it. Read from the
+ * shared CSS variable; 0 where it is not defined.
+ */
+function readTopInset(node: HTMLElement): number {
+  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") return 0;
+  const value = Number.parseFloat(window.getComputedStyle(node).getPropertyValue("--ade-work-chrome-rail-h"));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 /** What the user chose for the box: a width and a place, each null for "never moved". */
 export type FloatingPlayerChoice = {
   width: number | null;
@@ -95,7 +107,7 @@ export function useFloatingPlayerFrame(args: {
    * `setPosition`/`setWidth` on an unmounted component against a stale box.
    */
   const gestureCleanupRef = useRef<(() => void) | null>(null);
-  const [container, setContainer] = useState({ width: 0, height: 0 });
+  const [container, setContainer] = useState({ width: 0, height: 0, topInset: 0 });
   /**
    * Viewport pixels per CSS pixel of the column. The hosted web client zooms
    * `<body>` with CSS `zoom`, so the pointer moves in one unit and `left`/`top`
@@ -121,7 +133,12 @@ export function useFloatingPlayerFrame(args: {
       const width = node.clientWidth || rect.width;
       const height = node.clientHeight || rect.height;
       scaleRef.current = width > 0 && rect.width > 0 ? rect.width / width : 1;
-      setContainer({ width, height });
+      const topInset = readTopInset(node);
+      setContainer((current) => (
+        current.width === width && current.height === height && current.topInset === topInset
+          ? current
+          : { width, height, topInset }
+      ));
     };
     read();
     if (typeof ResizeObserver === "undefined") return undefined;
@@ -138,8 +155,21 @@ export function useFloatingPlayerFrame(args: {
 
   // An unmeasured column (not laid out yet) stands in as a common one, for the
   // frame and for the gestures alike, so a drag clamps to the box it sees.
-  const box = container.width > 0 ? container : FALLBACK_CONTAINER;
-  const frame = resolveFloatingPlayerFrame({ width, position, source, container: box });
+  // The box starts under the title rail: layout runs in the box's own
+  // coordinates, and the stored place is in the column's.
+  const inset = container.width > 0 ? container.topInset : 0;
+  const box = useMemo<FloatingPlayerSize>(() => (
+    container.width > 0
+      ? { width: container.width, height: Math.max(0, container.height - container.topInset) }
+      : FALLBACK_CONTAINER
+  ), [container]);
+  const inBox = resolveFloatingPlayerFrame({
+    width,
+    position: position ? { x: position.x, y: position.y - inset } : null,
+    source,
+    container: box,
+  });
+  const frame: FloatingPlayerFrame = { ...inBox, y: inBox.y + inset };
 
   /** Listens on the window until the pointer comes up, then reports the choice. */
   const track = useCallback((move: (event: PointerEvent) => void) => {
@@ -167,15 +197,16 @@ export function useFloatingPlayerFrame(args: {
     const size = { width: frame.width, height: frame.height };
     const scale = scaleRef.current;
     track((moveEvent) => {
-      const next = clampFloatingPlayerPosition(
-        { x: start.x + (moveEvent.clientX - origin.x) / scale, y: start.y + (moveEvent.clientY - origin.y) / scale },
+      const clamped = clampFloatingPlayerPosition(
+        { x: start.x + (moveEvent.clientX - origin.x) / scale, y: start.y - inset + (moveEvent.clientY - origin.y) / scale },
         box,
         size,
       );
+      const next = { x: clamped.x, y: clamped.y + inset };
       choiceRef.current = { ...choiceRef.current, position: next };
       setPosition(next);
     });
-  }, [box, frame.height, frame.width, frame.x, frame.y, track]);
+  }, [box, frame.height, frame.width, frame.x, frame.y, inset, track]);
 
   const startResize = useCallback((
     event: ReactPointerEvent<HTMLElement>,
@@ -185,7 +216,7 @@ export function useFloatingPlayerFrame(args: {
     event.preventDefault();
     event.stopPropagation();
     const origin = { x: event.clientX, y: event.clientY };
-    const start: FloatingPlayerFrame = { ...frame };
+    const start: FloatingPlayerFrame = { ...frame, y: frame.y - inset };
     const scale = scaleRef.current;
     track((moveEvent) => {
       const next = resizeFloatingPlayer({
@@ -195,11 +226,12 @@ export function useFloatingPlayerFrame(args: {
         source,
         container: box,
       });
-      choiceRef.current = { width: next.width, position: { x: next.x, y: next.y } };
+      const nextPosition = { x: next.x, y: next.y + inset };
+      choiceRef.current = { width: next.width, position: nextPosition };
       setWidth(next.width);
-      setPosition({ x: next.x, y: next.y });
+      setPosition(nextPosition);
     });
-  }, [box, frame, source, track]);
+  }, [box, frame, inset, source, track]);
 
   return { hostRef, frame, startDrag, startResize };
 }
@@ -342,6 +374,17 @@ export function FloatingPlayerShell({
       }}
     >
       {children}
+
+      {/*
+        The frame's hairline, drawn over the picture. On the box itself it sat
+        under the picture and vanished wherever the picture reached the edge,
+        so a dark app over a dark chat had no visible frame at all.
+      */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-[1] ring-1 ring-inset ring-border"
+        style={{ borderRadius: FLOATING_PLAYER_CORNER_RADIUS }}
+      />
 
       {/*
         Moving the box lives on one invisible strip under the top edge (inside

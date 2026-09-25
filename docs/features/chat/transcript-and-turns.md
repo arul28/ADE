@@ -358,6 +358,12 @@ shows, and `byTurn` for the thread.
   URL) is titled by its domain and path: `anthropic.com/research`, or
   `deepseek.com` for a site root. `chatSourceSubtitle` returns no domain for a
   title that already names it, so a row never prints the same domain twice.
+- **Attachments.** A file the user attached is titled by
+  `attachmentDisplayName`: staged files carry a generated `<uuid>.<ext>` name,
+  so a pasted image reads "Pasted image" and another staged file "Attached PDF
+  file" (a name after the uuid, or any other real name, is kept). Its second
+  line is "Attached by you", never the stored path. iOS Sources lists no user
+  attachments.
 - **Cited by a link.** A source is also cited when an assistant `text`
   event links to it, in any turn: a markdown link, an autolink, or a bare
   URL, matched with `normalizeSourceUrl` (`linkedSourceUrls`). Fragments of

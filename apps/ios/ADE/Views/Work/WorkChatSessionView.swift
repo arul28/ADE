@@ -2192,7 +2192,8 @@ func workChatActiveSendCapability(
   return WorkActiveSendCapability(
     modes: liveRedirectModes,
     agentLabel: capability.agentLabel,
-    interruptContinues: capability.interruptContinues
+    interruptContinues: capability.interruptContinues,
+    inlineCarriesAttachments: capability.inlineCarriesAttachments
   )
 }
 
@@ -2346,6 +2347,20 @@ private struct WorkChatComposerDraftInput: View {
         cursorCloudAgentId: chatSummary.cursorCloudAgentId
       )
     )
+    // A draft the live turn cannot carry (Cursor with attachments) is not
+    // offered "Send during turn"; the default falls to "Send after turn".
+    .withholdingInline(forAttachmentTypes: inputAttachmentTypes)
+  }
+
+  private var inputAttachmentTypes: [String] {
+    inputAttachments.map { $0.kind.rawValue }
+  }
+
+  /// Why this draft cannot be sent during the turn, shown in the send hint.
+  private var draftInlineBlockedReason: String? {
+    guard showInterrupt else { return nil }
+    return WorkActiveSendCapability.forProvider(chatSummary.provider)
+      .inlineAttachmentBlockReason(attachmentTypes: inputAttachmentTypes)
   }
 
   /// Derived rather than stored, so switching providers can never leave a mode
@@ -2359,7 +2374,12 @@ private struct WorkChatComposerDraftInput: View {
   /// A single mode is not a choice: queue-only providers get the plain send
   /// button, matching the desktop composer.
   private var activeSendModePickerVisible: Bool {
-    activeSendModesAvailable && activeSendCapability.modes.count > 1
+    // A CTO Cursor draft with attachments is left with interrupt alone. It
+    // still needs the split button: the plain button stages, which the CTO
+    // turns into the inline send its attachments cannot take.
+    activeSendModesAvailable
+      && (activeSendCapability.modes.count > 1
+        || (draftInlineBlockedReason != nil && !activeSendCapability.modes.contains(.queue)))
   }
 
   /// Where this chat's remembered send mode lives. Blank for the projectless

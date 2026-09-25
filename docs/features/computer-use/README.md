@@ -109,6 +109,27 @@ for a reviewer. Only an explicit proof call writes a record:
   scratch file path. It reaches the proof drawer as a `video_recording` artifact
   **only** when `record start` was given a `--caption`, mirroring
   `ade browser proof`; without one, nothing is ingested.
+- **Browser captures work when nobody is looking at the tab.** A tab the
+  Browser pane is not showing (pane closed, another tab active, Work home
+  screen) is detached from the window and has no compositor surface, so
+  `capturePage()` returns nothing and CDP `Page.captureScreenshot` times out.
+  `observe` (with or without `--map`), post-action and `wait` observations,
+  `screenshot`, `proof` and `record` therefore take a scoped **capture hold**:
+  the tab is parked attached and visible just past every display — the same
+  parking the Work tab's live preview uses, sharing its bookkeeping — for the
+  length of the capture (or the whole recording), then goes back to detached
+  unless a preview watcher or the visible pane still holds it. A tab that has
+  never been on screen is first "warmed" by overlapping the window's
+  bottom-right content pixel for ~120 ms, as the preview does.
+- **When pixels are still unavailable, observe returns the DOM.** If the host
+  ADE window is minimised or hidden, the warm is skipped (there is no surface to
+  borrow), and a tab that was never on screen may still not paint. Likewise a
+  project with no open ADE window has no window to park in. In those cases
+  `observe`, every action's follow-up observation and `wait` answer with the
+  DOM, `filePath: null` and `screenshotUnavailable: "<reason>"` instead of
+  failing; `ade browser screenshot` and `ade browser proof` (which sends
+  `requireScreenshot: true`) still fail loudly, because proof without pixels is
+  not proof. Restore the ADE window and retry to get an image.
 - **Proof must be new bytes.** The broker hashes every stored proof file and
   refuses an attach whose bytes are already proof (`PROOF_DUPLICATE`), reads an
   attached MP4/MOV's `mvhd` creation time to flag a video recorded before the
@@ -158,6 +179,16 @@ any of them later.
   `ade-artifact://` handler makes; a remote one is read chunk by chunk from
   that machine's broker, which applies the check on its side. Remote images
   use `computerUse.readArtifactPreview`.
+  Local URLs carry the chat's project root as `?root=<root>`. Main serves such
+  a URL only when that root is a project open on this computer, and jails the
+  path in that project's `.ade/artifacts`. It never uses the focused window's
+  project for it, so a chat in one window still shows its proof while another
+  project has focus. A URL without `root` (an older stored uri) resolves
+  against the focused project. Every refused read is logged to the machine log
+  as `computer_use.artifact_serve_refused` with the reason (`unknown-project`,
+  `missing`, `outside`, `not-file`, `no-project`), the requested and resolved
+  project, and the path. A local stream that fails to load retries once through
+  `computerUse.readArtifactPreview` before the preview reports it.
   A failed preview names its cause when known (the machine is offline, it sent
   nothing, or the bytes did not play). Neither path falls back to Finder.
 - `apps/desktop/src/renderer/components/chat/useArtifactPreview.ts` — resolves
@@ -253,7 +284,14 @@ with the bytes.
 
 Alongside the proof broker, ADE exposes a separate **App Control** capability for driving developer-owned Electron apps from a chat. Unlike the proof broker, App Control actively launches and inspects an app over Chrome DevTools Protocol; it then feeds screenshot + DOM context back into the chat as `AppControlContextItem`s. App Control is intentionally a bridge — Playwright, agent-browser, browser-use, or Claude's `computer_use` may also attach to the same app — but ADE keeps the launch/session state and turns snapshots into chat context.
 
-App Control also carries the same agent action model as the built-in browser: `ade app-control observe` returns a screenshot plus a bounded element list with stable `obs-…:e:N` handles, and `click` / `hover` / `fill` / `clear` / `type` / `press` / `scroll` / `wait` act on those handles and answer with a post-action observation and a per-session action trace. `ade app-control proof` registers an observation as a proof artifact under the `ade-app-control` backend. Sessions carry a `driver` (`cdp` today; `computer_use` is typed and capability-gated but not implemented).
+App Control also carries the same agent action model as the built-in browser: `ade app-control observe` returns a screenshot plus a bounded element list with stable `obs-…:e:N` handles, and `click` / `hover` / `fill` / `clear` / `type` / `press` / `scroll` / `wait` act on those handles and answer with a post-action observation and a per-session action trace. Sessions carry a `driver` (`cdp` today; `computer_use` is typed and capability-gated but not implemented).
+
+App Control keeps one session per lane. Proof goes through this broker in two ways:
+
+- `ade app-control proof --caption "…"` files an observation screenshot under the `ade-app-control` backend.
+- `ade app-control record start --caption "…"` … `record stop` records the app's own window (macOS window capture; the CDP screencast on Windows and Linux). A captioned recording is filed when it stops, with provenance `ade-recorder`, under the lane, the chat and the lane's primary PR.
+
+`ade app-control show [--floating]` (or `ade ui show app-control|floating-app-control`) shows the session to the user, and the web client and phone can watch it live over the sync socket.
 
 See [`app-control.md`](./app-control.md) for the full surface (service, IPC, renderer panel, ADE CLI commands).
 
@@ -285,6 +323,102 @@ It changes nothing about the two responsibilities above:
 See [`../mac-desktop/README.md`](../mac-desktop/README.md) for the display,
 ownership, lease, and streaming model.
 
+## One action answer
+
+Four surfaces act for an agent: the built-in browser (`ade browser`), App
+Control (`ade app-control`), Mac Desktop (`ade mac-desktop`), and the Apple
+device tool (`ade apple`). Every acting command on them answers the same way.
+The agent learns two facts from each action: which element it hit, and whether
+the screen visibly changed.
+
+In `--text` mode, the first two lines are always:
+
+```
+hit: button "Save" (obs-…:e:12)
+effect: observed — the URL changed
+```
+
+- `hit` names the resolved element: role, name, and the handle (or selector,
+  or Apple ref) the agent can reuse. With no element it says where the input
+  went: `no element; acted on a point`, `no element; sent to whatever had
+  focus`, or `no element matched`.
+- `effect` has four states:
+  - `observed` — something visibly changed. The reason names the first change.
+  - `unconfirmed` — the input was sent, but nothing ADE can see changed. The
+    line ends with `observe again before you continue`.
+  - `not checked` — this action did not compare. The reason says why.
+  - `waiting` (`waiting_for_approval` in JSON, browser only) — the action set
+    off a navigation, and the agent is no longer allowed to use the ADE browser
+    (the user removed its lane or chat). ADE holds the navigation until they
+    answer the prompt: `effect: waiting — navigation to https://x.test is
+    waiting for the user to allow this agent to use the ADE browser`. A Block
+    answers `not checked — the user blocked this agent from the ADE browser …`.
+
+In JSON, the same facts are the `resolved` and `effect` fields
+(`ComputerUseActionEffect` in `shared/types/agentObservation.ts`). They are
+additive; every older field stays.
+
+How each surface decides the effect:
+
+- **Browser and App Control.** The "before" is the DOM snapshot the in-page
+  collector already takes when it locates the target. An action with no target
+  (a point, `type`, `press` with no target, `scroll`) runs the collector once,
+  with no screenshot. The "after" is the post-action observation. Focus and
+  scroll that the locate caused are not counted. A `wait` and an action with
+  `--no-observe` answer `not checked`.
+- **Who can use the ADE browser.** One machine-wide setting, "Agents can use
+  the ADE browser", in the browser's ⋯ menu and in Settings → General → ADE
+  browser:
+  - **All agents, all lanes** (default). No prompt.
+  - **Agents in lanes I approve.** ADE asks once per lane.
+  - **Chats I approve.** ADE asks once per chat.
+
+  One answer covers every site. The prompt is an ADE dialog: "“<chat title>”
+  in lane <lane name> wants to use the ADE browser", with Allow all agents
+  (sets the first value), Allow this lane, Allow this chat, and Block.
+  Enter picks the answer the setting is about; Esc is Block. Keys pressed in
+  the first 0.6 s are ignored, so an Enter meant for the composer does not
+  answer it. Lane grants (per project and lane) and chat grants are saved in
+  the desktop's global state and survive restarts; the same two places list
+  them with Remove. Electron main owns the browser, so main decides for every
+  caller: a local chat, the brain's desktop bridge, or a remote runtime that
+  forwards to this desktop. Callers with no lane and no chat (the person at
+  the Browser pane) are never asked.
+
+  When the setting asks, an agent command (open, new-tab, an action on a tab,
+  `authorize`) waits up to two minutes for the answer. Each desktop call waits
+  15 seconds and then answers `approval_pending` with the prompt still open,
+  which keeps the daemon bridge's 30-second liveness timeout intact; the CLI
+  prints `ade: waiting for the user to allow this chat to use the ADE browser`
+  once and re-runs the call, which joins the same prompt. A Block fails with
+  `approval_blocked: the user blocked this chat from using the ADE browser`.
+  An unanswered prompt closes itself after 10 minutes. With no ADE window
+  open, the prompt waits for the next window and the command answers
+  `approval_pending`.
+
+  These checks do not change with the setting: `file:`, `about:` pages other
+  than `about:blank` and other unsupported protocols stay blocked; site
+  permission requests (camera, notifications, …) still use their own
+  per-site prompt; a login handoff still hands control to the person;
+  the actor capability still binds each command to its chat and lane; tab
+  leases still stop one chat from driving another chat's tab; and reaching a
+  remote machine's port through a tunnel still needs its own yes.
+- **Mac Desktop.** The "before" is the observation the target was resolved
+  against: the newest one for the lane. The "after" is the observation every
+  action already takes. A lane with no earlier observation answers
+  `not checked`. A silent takeover input has no effect.
+- **Apple device.** Always `not checked`. A compare would need a second
+  accessibility snapshot after every tap, which costs more than the tap. The
+  reason tells the agent to run `ade apple find` or `ade apple screenshot`.
+
+The compare is cheap and deterministic
+(`compareAgentEffectFingerprints` in `shared/agentObservation.ts`). It checks,
+in order: URL, title, windows, scroll, elements, element count, focus, and a
+frame hash for pixel-only callers. Each element is a hash of role, label,
+value, text, and its frame rounded to 4 points. Reordering, sub-grid jitter,
+whitespace, and the value of a progress or busy indicator do not count as a
+change. When either list was capped, only the shared prefix is compared.
+
 ## Cross-links
 
 - [`../proof.md`](../proof.md) — `ade proof` CLI and the drawer UI contract.
@@ -293,7 +427,7 @@ ownership, lease, and streaming model.
 
 ## Detail docs
 
-- [`app-control.md`](./app-control.md) — current App Control bridge for Electron apps (CDP launch/connect, snapshot, click/type, source matching, ADE CLI `app-control` and `terminal` surfaces).
+- [`app-control.md`](./app-control.md) — App Control for Electron apps: per-lane sessions, CDP launch/connect, the agent loop, recording and proof, show surfaces, remote viewing, and the ADE CLI `app-control` and `terminal` surfaces.
 
 The backend doc begins with the current direct Codex integration, then retains the pre-rebuild Ghost OS / local-fallback catalog for historical context. The settings/readiness doc is historical.
 

@@ -16,7 +16,7 @@ import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGua
  * domain), with live updates from the pushed `chat_launch_event` envelope.
  */
 export function createChatLaunchNamespace(infra: AdapterInfra): AdeNamespace<"chatLaunch"> {
-  const { commands, events } = infra;
+  const { client, commands, events } = infra;
 
   function guardPin(operation: string, pin: RuntimePinArg): void {
     assertWebRuntimePinRoutable(`chatLaunch.${operation}`, pin, infra);
@@ -67,9 +67,26 @@ export function createChatLaunchNamespace(infra: AdapterInfra): AdeNamespace<"ch
       guardPin("completeClient", pin);
       return await call<ChatLaunchSnapshot | null>("chat.completeLaunchClient", args, false);
     },
-    onEvent: (listener: (event: ChatLaunchEvent) => void, pin?: RuntimePinArg) => {
+    onEvent: (listener: (event: ChatLaunchEvent) => void, pin?: RuntimePinArg, onResync?: () => void) => {
       guardPin("onEvent", pin);
-      return events.on("chatLaunchEvent", listener);
+      const removeEvents = events.on("chatLaunchEvent", listener);
+      if (!onResync) return removeEvents;
+      // Events pushed while the socket was down are gone; a reconnect is a resync.
+      const isReady = () => {
+        const status = client.getStatus();
+        return status.state === "connected" && status.readiness === "ready";
+      };
+      let ready = isReady();
+      const removeStatus = client.subscribe(() => {
+        const next = isReady();
+        const reconnected = next && !ready;
+        ready = next;
+        if (reconnected) onResync();
+      });
+      return () => {
+        removeStatus();
+        removeEvents();
+      };
     },
   };
 }

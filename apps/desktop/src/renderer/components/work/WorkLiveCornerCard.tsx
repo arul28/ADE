@@ -8,7 +8,6 @@ import {
 } from "motion/react";
 import { X } from "@phosphor-icons/react";
 import type {
-  AppControlEventPayload,
   BuiltInBrowserActionTraceEntry,
   BuiltInBrowserEventPayload,
   BuiltInBrowserStatus,
@@ -39,7 +38,6 @@ import {
   unfloatWorkLiveCardForChat,
   useChatCompanionUiState,
 } from "../chat/chatCompanionUiState";
-import type { NativeToolFeedScope } from "../terminals/useNativeToolSessions";
 import {
   useNativeToolFeedHandlers,
   useNativeToolFeeds,
@@ -50,7 +48,6 @@ import {
   formatWorkLiveActionCaption,
   formatWorkLiveAge,
   selectWorkLiveCardTool,
-  updateWorkLiveScrubCaption,
   workLiveBottomReserve,
   workLiveCardDragConstraints,
   workLiveCardFits,
@@ -69,6 +66,7 @@ import {
   type WorkLiveScrubFrame,
 } from "./workLiveCard";
 import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
+import { AppControlMiniPlayer } from "./AppControlMiniPlayer";
 
 /**
  * The floating live-preview card.
@@ -96,10 +94,11 @@ import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
  * floats because somebody asked it to — so there is nothing for this card to
  * surface on its own.
  *
- * Nor is the Mac Desktop. It floats in the same kind of player as the device
- * (`MacDesktopMiniPlayer`, on the shared `FloatingPlayerShell`), which this
- * component mounts beside the card because it is the one the Work page
- * already renders over the chat column with everything the player needs.
+ * Nor are the Mac Desktop and App Control. Each floats in the same kind of
+ * player as the device (`MacDesktopMiniPlayer`, `AppControlMiniPlayer`, on the
+ * shared `FloatingPlayerShell`), which this component mounts beside the card
+ * because it is the one the Work page already renders over the chat column
+ * with everything the players need.
  *
  * The chrome follows t3's mini-player: nothing but an 8px status dot at rest,
  * and a 32px blurred pill — icon, name, last action, ✕ — that takes its place
@@ -194,7 +193,6 @@ export function WorkLiveCornerCard({
   runtimePinRef.current = runtimePin;
 
   const [lastTrace, setLastTrace] = useState<BuiltInBrowserActionTraceEntry | null>(null);
-  const [appControlAction, setAppControlAction] = useState<{ caption: string; at: number } | null>(null);
   const [activityAt, setActivityAt] = useState<Record<WorkLiveScreenTool, number>>({
     browser: 0,
     "app-control": 0,
@@ -274,7 +272,6 @@ export function WorkLiveCornerCard({
   /** A drag ends with a click event; that click must not also open the tool. */
   const suppressClickRef = useRef(false);
   const browserSignatureRef = useRef("");
-  const appControlTraceIdRef = useRef<string | null>(null);
   /**
    * Which tool the card is painting. Both the browser and App Control feeds are
    * subscribed at once (that is how "which tool is most recently active" is
@@ -379,48 +376,6 @@ export function WorkLiveCornerCard({
     bump("browser");
   }, [bump]);
 
-  const onAppControlEvent = useCallback((event: AppControlEventPayload, scope: NativeToolFeedScope) => {
-    if (event.type === "session-started" || event.type === "session-updated") {
-      const session = event.session ?? null;
-      bump("app-control");
-      // App Control has no `trace` event; it announces an action by moving
-      // `lastTraceEntryId`. Snapshot the frame at THAT instant and let the
-      // words catch up — the picture is the perishable half.
-      const traceId = session?.lastTraceEntryId ?? null;
-      if (traceId && traceId !== appControlTraceIdRef.current) {
-        appControlTraceIdRef.current = traceId;
-        const at = Date.now();
-        setScrubBuffer((current) => commitWorkLiveScrubFrame(current, {
-          id: traceId,
-          dataUrl: liveFrameRef.current,
-          caption: null,
-          at,
-        }));
-        void window.ade?.appControl?.getTrace?.({ limit: 1 }, runtimePinRef.current)
-          .then((result) => {
-            const entry = result?.entries?.[result.entries.length - 1] ?? null;
-            if (!scope.isActive() || !entry || entry.id !== traceId) return;
-            const caption = formatWorkLiveActionCaption(entry.action, entry.target);
-            setAppControlAction({ caption, at: Date.parse(entry.endedAt) || at });
-            setScrubBuffer((current) => updateWorkLiveScrubCaption(current, traceId, caption));
-          })
-          .catch(() => {});
-      }
-      return;
-    }
-    if (event.type === "frame") {
-      // Painted, but deliberately NOT counted as activity. The panel's
-      // screencast runs at 30fps for the life of the session, independent of
-      // this card: bumping on it made the × unusable and let App Control win
-      // the most-recent-activity tie-break forever. Real activity is a session
-      // event or a new trace id.
-      if (event.frame.width > 0 && event.frame.height > 0) {
-        setSourceAspect(event.frame.width / event.frame.height);
-      }
-      paintFrame("app-control", `data:${event.frame.mimeType};base64,${event.frame.data}`);
-    }
-  }, [bump, paintFrame]);
-
   // The page's one subscription set, shared with the Work tools pane: the
   // capability gate, the web-client boundary check, the offline guard and the
   // teardown all live in `NativeToolFeedsProvider`. The card contributes
@@ -431,30 +386,12 @@ export function WorkLiveCornerCard({
     appControlSession,
     browserViewRoot,
     canBrowser,
-    canAppControl,
     context: toolContext,
   } = useNativeToolFeeds();
   useNativeToolFeedHandlers(useMemo(() => ({
     onBrowserStatusSettled,
     onBrowserEvent,
-    onAppControlEvent,
-  }), [onAppControlEvent, onBrowserEvent, onBrowserStatusSettled]));
-
-  /**
-   * A session that was already running when this card mounted counts too.
-   *
-   * The same gap the settled browser answer closes: App Control and the
-   * simulator only bump on events, so a card that mounted after the session
-   * started — a Work remount, a chat switch — saw a live session with no
-   * activity and could never picture it.
-   */
-  const seenAppControlSessionRef = useRef<string | null>(null);
-  useEffect(() => {
-    const key = appControlSession?.id ?? null;
-    if (!key || key === seenAppControlSessionRef.current) return;
-    seenAppControlSessionRef.current = key;
-    bump("app-control");
-  }, [appControlSession?.id, bump]);
+  }), [onBrowserEvent, onBrowserStatusSettled]));
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
@@ -534,15 +471,10 @@ export function WorkLiveCornerCard({
       sessionKey: sources.browser.sessionKey,
       showWhenUnowned: isWorkLiveCardSeen(seen, "browser", sources.browser.sessionKey),
     },
-    {
-      tool: "app-control",
-      lastActivityAt: activityAt["app-control"],
-      available: canAppControl,
-      live: sources["app-control"].live,
-      ownerChatSessionId: appControlSession?.chatSessionId ?? null,
-      sessionKey: sources["app-control"].sessionKey,
-      showWhenUnowned: isWorkLiveCardSeen(seen, "app-control", sources["app-control"].sessionKey),
-    },
+    /*
+      Nor App Control: it floats in `AppControlMiniPlayer`, beside this card,
+      on the same shell as the Apple device and the Mac Desktop.
+    */
     /*
       The Apple device is deliberately absent: it floats in its own player,
       which the device rail opens (see the note on the component).
@@ -554,8 +486,6 @@ export function WorkLiveCornerCard({
   ], [
     activeBrowserTab?.ownerChatSessionId,
     activityAt,
-    appControlSession?.chatSessionId,
-    canAppControl,
     canBrowser,
     seen,
     sources,
@@ -841,7 +771,6 @@ export function WorkLiveCornerCard({
     paintToolRef.current = visible ? tool : null;
     liveFrameRef.current = null;
     pendingFrameRef.current = null;
-    appControlTraceIdRef.current = null;
     setSourceAspect(null);
     setScrubBuffer([]);
     setScrubFrameId(null);
@@ -915,11 +844,8 @@ export function WorkLiveCornerCard({
       const label = formatWorkLiveActionCaption(lastTrace.action, lastTrace.target);
       return `${label} · ${formatWorkLiveAge(nowTick - (Date.parse(lastTrace.endedAt) || nowTick))}`;
     }
-    if (tool === "app-control" && appControlAction) {
-      return `${appControlAction.caption} · ${formatWorkLiveAge(nowTick - appControlAction.at)}`;
-    }
     return null;
-  }, [appControlAction, lastTrace, nowTick, scrubbedFrame, tool]);
+  }, [lastTrace, nowTick, scrubbedFrame, tool]);
 
   const handoff = source?.handoff ?? null;
   const recording = source?.recording ?? null;
@@ -1269,6 +1195,15 @@ export function WorkLiveCornerCard({
       runtimePin={runtimePin}
       supported={toolContext.supportsMacDesktop !== false}
       onOpenInPane={() => onPick("mac-desktop")}
+    />
+    <AppControlMiniPlayer
+      active={active}
+      laneId={laneId}
+      paneTool={activeTool}
+      chatSessionId={chatSessionId}
+      sessionLaneId={sessionLaneId}
+      runtimePin={runtimePin}
+      onOpenInPane={() => onPick("app-control")}
     />
     </>
   );

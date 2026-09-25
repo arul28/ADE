@@ -267,6 +267,13 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * has to force visibility to get a frame at all.
    */
   isTabSurfaced?: (tabId: string) => boolean;
+  /**
+   * Keep this tab parked with a compositor surface until the returned release
+   * is called — the same scoped capture hold observe and screenshot take, held
+   * here for the length of a recording so a tab nobody is looking at still
+   * produces frames. Resolves once the view is ready to be captured.
+   */
+  holdCaptureSurface?: (tabId: string) => Promise<() => void>;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
   targetTabFromInput: (
     input: BuiltInBrowserTabTargetArgs | undefined,
@@ -1142,6 +1149,32 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
 
   /* ── Recording ─────────────────────────────────────────────────────────── */
 
+  /**
+   * Ties a recording's capture hold to the recording's own ending, whichever
+   * way it ends — `stop` (agent or max-duration) or `abort` (handoff, tab
+   * teardown) — so no path leaves a finished recording's tab parked.
+   */
+  const releaseHoldWhenRecordingEnds = (
+    session: BuiltInBrowserRecordingSession,
+    release: () => void,
+  ): BuiltInBrowserRecordingSession => ({
+    ...session,
+    stop: async () => {
+      try {
+        return await session.stop();
+      } finally {
+        release();
+      }
+    },
+    abort: () => {
+      try {
+        session.abort();
+      } finally {
+        release();
+      }
+    },
+  });
+
   const recordingDirectory = (tab: BrowserTabState, recordingId: string): string =>
     path.join(observationDirectory(tab), RECORDING_CACHE_DIR, sanitizeObservationPathSegment(recordingId));
 
@@ -1159,30 +1192,49 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     const caption = stringOrNull(input.caption);
     const recordingId = `rec-${Date.now()}-${randomUUID()}`;
     const directory = recordingDirectory(tab, recordingId);
-    const session: BuiltInBrowserRecordingSession = await runTracedTabCapability(
-      tab,
-      "startRecording",
-      input,
-      () => createBuiltInBrowserRecordingSession({
-        id: recordingId,
-        directory,
-        fps,
-        caption,
-        createRecorder: tabRecorderFactory(tab),
-        logger: logger(),
-        // The cap is the session's own, not the caller's: an agent that forgets
-        // `stopRecording` (or dies mid-run) must not capture until the app quits.
-        maxDurationMs: BUILT_IN_BROWSER_MAX_RECORDING_MS,
-        onMaxDurationReached: () => {
-          void finishRecording(tab, session, "max_duration").catch((error) => {
-            logger()?.warn("built_in_browser.recording_max_duration_stop_failed", {
-              tabId: tab.id,
-              err: errorMessage(error),
+    // A tab the pane is not showing has no surface and records black or not at
+    // all; hold it parked from before the stream is negotiated until the
+    // recording is finished.
+    const releaseCaptureHold = deps.holdCaptureSurface
+      ? await deps.holdCaptureSurface(tab.id)
+      : () => {};
+    // The hold can wait out a warm; a second start that raced us is refused
+    // here rather than opening a second recorder on the same tab.
+    if (tab.recording) {
+      releaseCaptureHold();
+      throw new Error(`Browser tab ${tab.id} is already recording. Stop the current recording first.`);
+    }
+    let session: BuiltInBrowserRecordingSession;
+    try {
+      const created = await runTracedTabCapability(
+        tab,
+        "startRecording",
+        input,
+        () => createBuiltInBrowserRecordingSession({
+          id: recordingId,
+          directory,
+          fps,
+          caption,
+          createRecorder: tabRecorderFactory(tab),
+          logger: logger(),
+          // The cap is the session's own, not the caller's: an agent that forgets
+          // `stopRecording` (or dies mid-run) must not capture until the app quits.
+          maxDurationMs: BUILT_IN_BROWSER_MAX_RECORDING_MS,
+          onMaxDurationReached: () => {
+            void finishRecording(tab, session, "max_duration").catch((error) => {
+              logger()?.warn("built_in_browser.recording_max_duration_stop_failed", {
+                tabId: tab.id,
+                err: errorMessage(error),
+              });
             });
-          });
-        },
-      }),
-    );
+          },
+        }),
+      );
+      session = releaseHoldWhenRecordingEnds(created, releaseCaptureHold);
+    } catch (error) {
+      releaseCaptureHold();
+      throw error;
+    }
     tab.recording = session;
     const status: { startedAt: string; fps: number } = { startedAt: session.startedAt, fps };
     emit({

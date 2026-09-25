@@ -559,6 +559,11 @@ export const IPC = {
   appControlDispatchKey: "ade.appControl.dispatchKey",
   appControlListTargets: "ade.appControl.listTargets",
   appControlAttachToTarget: "ade.appControl.attachToTarget",
+  appControlStartRecording: "ade.appControl.startRecording",
+  appControlStopRecording: "ade.appControl.stopRecording",
+  appControlGetRecordingStatus: "ade.appControl.getRecordingStatus",
+  appControlCaptureProof: "ade.appControl.captureProof",
+  appControlGetLatestFrame: "ade.appControl.getLatestFrame",
   appControlEvent: "ade.appControl.event",
   builtInBrowserGetStatus: "ade.builtInBrowser.getStatus",
   builtInBrowserGetAgentPresence: "ade.builtInBrowser.getAgentPresence",
@@ -566,6 +571,11 @@ export const IPC = {
   builtInBrowserGetProfileDiagnostics: "ade.builtInBrowser.getProfileDiagnostics",
   builtInBrowserListPermissions: "ade.builtInBrowser.listPermissions",
   builtInBrowserClearPermissions: "ade.builtInBrowser.clearPermissions",
+  builtInBrowserAgentAccessGet: "ade.builtInBrowser.agentAccess.get",
+  builtInBrowserAgentAccessSetMode: "ade.builtInBrowser.agentAccess.setMode",
+  builtInBrowserAgentAccessAnswer: "ade.builtInBrowser.agentAccess.answer",
+  builtInBrowserAgentAccessRevoke: "ade.builtInBrowser.agentAccess.revoke",
+  builtInBrowserAgentAccessEvent: "ade.builtInBrowser.agentAccess.event",
   /**
    * Login import. Trusted-renderer-only, like the profile diagnostics and
    * permission administration above it: importing a browser's cookies hands

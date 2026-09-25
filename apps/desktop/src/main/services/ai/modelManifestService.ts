@@ -41,6 +41,8 @@ type ModelManifestLogger = {
 };
 
 let initialized = false;
+/** Bumped on init and shutdown so a cache read that outlives its service does not apply. */
+let manifestEpoch = 0;
 let enabled = true;
 let adeVersion: string | null = null;
 let logger: ModelManifestLogger | null = null;
@@ -90,10 +92,12 @@ function applyIfNewer(manifest: ModelManifest, source: string): ApplyOutcome {
 }
 
 async function loadCachedManifest(): Promise<void> {
+  const epoch = manifestEpoch;
   try {
     const cached = JSON.parse(await readFile(cacheFilePath(), "utf-8")) as CachedManifest;
+    if (epoch !== manifestEpoch) return;
     const parsed = parseModelManifest(cached.manifest);
-    if (!parsed.ok) return;
+    if (!parsed.ok || epoch !== manifestEpoch) return;
     etag = typeof cached.etag === "string" ? cached.etag : null;
     lastCheckedAtMs = Number.isFinite(cached.fetchedAtMs) ? cached.fetchedAtMs : 0;
     applyIfNewer(parsed.manifest, "disk");
@@ -116,6 +120,7 @@ async function persistManifest(manifest: unknown): Promise<void> {
 }
 
 async function fetchRemoteManifest(): Promise<void> {
+  const epoch = manifestEpoch;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
@@ -123,10 +128,12 @@ async function fetchRemoteManifest(): Promise<void> {
       signal: controller.signal,
       headers: etag ? { "If-None-Match": etag } : {},
     });
+    if (epoch !== manifestEpoch) return;
     lastCheckedAtMs = Date.now();
     if (response.status === 304) return;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const raw = await response.json() as unknown;
+    if (epoch !== manifestEpoch) return;
     const parsed = parseModelManifest(raw);
     if (!parsed.ok) {
       logger?.warn("ai.model_manifest.invalid_remote", { errors: parsed.errors.slice(0, 10) });
@@ -192,6 +199,7 @@ export function initializeModelManifestService(args: {
     return;
   }
   initialized = true;
+  manifestEpoch += 1;
   adeVersion = args.adeVersion?.trim() || null;
   logger = args.logger ?? null;
   enabled = args.fetchRemote !== false;
@@ -213,6 +221,7 @@ function startPolling(): void {
 export function shutdownModelManifestService(): void {
   if (pollTimer) clearInterval(pollTimer);
   pollTimer = null;
+  manifestEpoch += 1;
   initialized = false;
   enabled = true;
   adeVersion = null;

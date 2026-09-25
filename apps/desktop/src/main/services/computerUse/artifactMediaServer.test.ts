@@ -176,12 +176,12 @@ describe("artifact media server", () => {
   });
 
   it("refuses `..`, encoded `..`, and anything outside the artifacts dir", async () => {
-    const warn = vi.fn();
+    const onRefused = vi.fn();
     const strict = createArtifactMediaServer({
       localScope: () => ({ projectRoot, allowedDir: artifactsDir }),
       remoteReader: () => null,
       token: TOKEN,
-      warn,
+      onRefused,
     });
     const strictBase = await strict.baseUrl();
     const strictOrigin = strictBase.slice(0, strictBase.length - TOKEN.length - 1);
@@ -201,9 +201,8 @@ describe("artifact media server", () => {
         expect(reply.body.toString()).toBe("Not found");
       }
       // The symlink and the plain outside file reach the containment check and are logged.
-      expect(warn).toHaveBeenCalledWith(
-        "[artifact-media] rejected path outside artifacts dir",
-        expect.objectContaining({ resolvedFile: path.join(projectRoot, "secret.txt") }),
+      expect(onRefused).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "outside", resolvedPath: path.join(projectRoot, "secret.txt") }),
       );
     } finally {
       await strict.close();

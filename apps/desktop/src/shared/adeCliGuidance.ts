@@ -16,6 +16,7 @@ import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
  */
 export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
+  "ade-computer-use",
   "ade-apple",
   "ade-harnesses",
   "ade-ios-simulator",
@@ -203,7 +204,7 @@ export function buildAdeBootstrapGuidance(
     `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
-    "For Codex Computer Use, prefer direct `mcp__computer_use` tools and honor per-app approvals; never substitute `@oai/sky` via `node_repl`.",
+    "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
     "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,

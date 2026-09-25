@@ -50,8 +50,11 @@ export const MAC_DESKTOP_RECORDING_MAX_MS = 10 * 60 * 1000;
 /** The longest cap `maxSeconds` may ask for. */
 export const MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT = 4 * 60 * 60;
 
-/** A caller's `maxSeconds`, in ms, clamped to 1 s .. four hours. Null when absent or not a number. */
-function capFromSeconds(maxSeconds: number | null | undefined): number | null {
+/**
+ * A caller's `maxSeconds`, in ms, clamped to 1 s .. four hours. Null when absent or not a number.
+ * Exported for App Control's window recording, which keeps the same cap rules.
+ */
+export function capFromSeconds(maxSeconds: number | null | undefined): number | null {
   if (typeof maxSeconds !== "number" || !Number.isFinite(maxSeconds) || maxSeconds <= 0) return null;
   return Math.round(Math.min(Math.max(maxSeconds, 1), MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT) * 1000);
 }
@@ -64,7 +67,7 @@ function recordingCapMs(args: { maxSeconds?: number | null; chatSessionId: strin
   return capFromSeconds(args.maxSeconds) ?? (args.chatSessionId ? MAC_DESKTOP_RECORDING_MAX_MS : null);
 }
 
-type RecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs: number };
+export type RecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs: number };
 
 /**
  * The three lengths from a `record.stop` reply.
@@ -72,7 +75,7 @@ type RecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs:
  * An older driver sends only `durationMs`. It never cuts idle time, so its
  * video length is the wall-clock length and nothing was cut.
  */
-function readLengths(reply: DesktopSeatReply): RecordingLengths {
+export function readLengths(reply: DesktopSeatReply): RecordingLengths {
   const number = (value: unknown): number | null =>
     typeof value === "number" && Number.isFinite(value) ? Math.max(0, value) : null;
   const durationMs = number(reply.durationMs) ?? 0;

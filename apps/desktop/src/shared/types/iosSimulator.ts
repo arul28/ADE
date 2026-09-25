@@ -1,3 +1,5 @@
+import type { ComputerUseActionEffect } from "./agentObservation";
+
 export type IosSimulatorDevice = {
   udid: string;
   name: string;
@@ -1301,6 +1303,15 @@ export type IosSimulatorElementMatch = {
 
 export type IosSimulatorElementActionKind = "tap" | "fill" | "wait" | "assert";
 
+/**
+ * Why an Apple device action answers `effect: not_checked`. Comparing the
+ * screen would cost a second accessibility snapshot (hundreds of
+ * milliseconds) on every tap, so the answer names the check to run instead.
+ * The CLI prints the same sentence for coordinate taps, drags and typing.
+ */
+export const IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON =
+  "Apple device actions do not compare the screen; run `ade apple find` or `ade apple screenshot` to check";
+
 export type IosSimulatorElementActionResult = {
   ok: boolean;
   action: IosSimulatorElementActionKind;
@@ -1308,6 +1319,11 @@ export type IosSimulatorElementActionResult = {
   matchCount: number;
   message: string | null;
   waitedMs: number | null;
+  /**
+   * Always `not_checked` today: comparing the screen would cost a second
+   * accessibility snapshot per tap, so the reason names the command to run.
+   */
+  effect: ComputerUseActionEffect;
 };
 
 export type IosSimulatorFindElementArgs = IosSimulatorDeviceArgs & {
@@ -1390,6 +1406,13 @@ export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
  */
 export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
 /**
+ * An agent asked to attach a simulator that is not its lane's own device.
+ *
+ * Agents only ever use a device ADE made for their lane. A simulator they did
+ * not create may be another lane's, a running test's, or the user's own.
+ */
+export const APPLE_DEVICE_NOT_LANE_OWNED_CODE = "APPLE_DEVICE_NOT_LANE_OWNED" as const;
+/**
  * The chosen clone template is running, and `simctl` cannot clone a booted
  * device (error 405, "Unable to clone device in current state: Booted").
  */
@@ -1466,6 +1489,12 @@ export type AppleDeviceAttachArgs = {
   chatSessionId?: string | null;
   /** udid or name of an installed simulator to bind without cloning. */
   simulator: string;
+  /**
+   * Set by the RPC server for agent callers, never trusted from one. An agent
+   * may attach only the device its lane already holds; see
+   * `APPLE_DEVICE_NOT_LANE_OWNED_CODE`. User clients leave it unset.
+   */
+  agentCaller?: boolean | null;
 };
 
 export type AppleDeviceListArgs = {
@@ -1491,12 +1520,18 @@ export type AppleDeviceListArgs = {
  * `udid` names an installed simulator to attach when the lane owns nothing.
  * `create.sourceUdid` clones that simulator for the lane instead. Neither is
  * consulted when the lane already owns a device: that device is started.
+ *
+ * For an agent caller (`agentCaller`), `udid` must be the lane's own device,
+ * and a lane with no device and no `udid` gets a fresh clone, the same one
+ * `deviceCreate` makes.
  */
 export type AppleDeviceStartArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
   udid?: string | null;
   create?: { sourceUdid: string } | null;
+  /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
+  agentCaller?: boolean | null;
 };
 
 /**

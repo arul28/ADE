@@ -20,6 +20,8 @@ import {
 } from "./InboundDeeplinkModal";
 import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { DialogHost } from "../ui/dialog/confirm";
+import { BrowserAgentAccessPromptHost } from "./BrowserAgentAccessPrompt";
+import { GitFolderTrustPromptHost } from "./GitFolderTrustPrompt";
 import { LeftoverWorktreeDialogHost } from "../lanes/LeftoverWorktreeDialogHost";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
@@ -1404,6 +1406,10 @@ export function App() {
           </Routes>
           {/* The one host for confirmDialog / promptDialog (ui/dialog). */}
           <DialogHost />
+          {/* "May this agent use the ADE browser?" — only when the setting asks. */}
+          <BrowserAgentAccessPromptHost />
+          {/* "Trust this folder?" — git refused a folder the user chose to open. */}
+          <GitFolderTrustPromptHost />
           <LeftoverWorktreeDialogHost />
         </div>
       </Router>

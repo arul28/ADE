@@ -457,15 +457,18 @@ describe("adjacent Thought rows merge into one", () => {
     const thoughtB = [reasoning(5, "Decide.", "r-2"), reasoning(8, " Pick one.", "r-2")];
     const view = render(list([userMessage(0), ...thoughtA, lifecycle(4), ...thoughtB], { live: true }));
 
-    // The live thought never joins the earlier one: it keeps its own row.
-    expect(screen.getByTestId("thinking-preview")).toBeTruthy();
-    expect(thoughtButtons()).toHaveLength(1);
-    expect(screen.getByText("for 2s")).toBeTruthy();
+    // The live thought joins the finished one above it: one row, drawing the
+    // live preview, under the run's first key.
+    const rowKeyOf = (element: Element) => element.closest("[data-chat-row-key]")?.getAttribute("data-chat-row-key");
+    const liveRowKey = rowKeyOf(screen.getByTestId("thinking-preview"));
+    expect(thoughtButtons()).toHaveLength(0);
 
     view.rerender(list([userMessage(0), ...thoughtA, lifecycle(4), ...thoughtB, answer(9, "Here.")], { live: true }));
     expect(screen.queryByTestId("thinking-preview")).toBeNull();
     const thoughts = thoughtButtons();
     expect(thoughts).toHaveLength(1);
+    // Settling keeps the same drawn row: nothing remounts.
+    expect(rowKeyOf(thoughts[0]!)).toBe(liveRowKey);
     // 2s + 3s: every member has a measured span.
     expect(thoughts[0]!.textContent).toContain("for 5s");
     fireEvent.click(thoughts[0]!);

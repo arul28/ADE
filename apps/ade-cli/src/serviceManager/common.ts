@@ -5,6 +5,7 @@ import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
+import { buildPackagedRuntimeNodeModulePaths } from "../../../desktop/src/main/services/runtime/packagedNodePath";
 
 /**
  * The launchd plist key that lets a background service read an evicted cloud
@@ -314,7 +315,36 @@ const RUNTIME_ENV_PASSTHROUGH = [
   "ADE_WINDOWS_USER_SID",
 ] as const;
 
-function runtimeEnvironment(): Record<string, string> | undefined {
+/**
+ * The module dirs a packaged CLI entry (`<resources>/ade-cli/cli.cjs`) needs
+ * on NODE_PATH. Its externals (`@linear/sdk`, `yaml`, ...) live in the app's
+ * asar, not next to the entry, so a runtime started without NODE_PATH cannot
+ * load them. These are the same dirs, in the same order, as the installed
+ * `ade` wrapper uses on macOS and Windows. Empty for a dev entry, which
+ * resolves its modules from the repo.
+ */
+export function packagedCliNodeModulePaths(
+  entryPath: string,
+  options: {
+    platform?: NodeJS.Platform;
+    arch?: NodeJS.Architecture;
+    exists?: (candidate: string) => boolean;
+  } = {},
+): string[] {
+  const entryDir = path.dirname(entryPath);
+  if (path.basename(entryDir).toLowerCase() !== "ade-cli") return [];
+  const resourcesPath = path.dirname(entryDir);
+  const exists = options.exists ?? fs.existsSync;
+  const paths = buildPackagedRuntimeNodeModulePaths({
+    resourcesPath,
+    platform: options.platform,
+    arch: options.arch,
+  });
+  // Only an entry that sits next to an app asar is a packaged one.
+  return paths.some((candidate) => exists(path.dirname(candidate))) ? paths : [];
+}
+
+function runtimeEnvironment(entry?: string): Record<string, string> | undefined {
   const env: Record<string, string> = {};
   if (process.versions.electron) {
     env.ELECTRON_RUN_AS_NODE = "1";
@@ -324,6 +354,14 @@ function runtimeEnvironment(): Record<string, string> | undefined {
     if (value?.trim()) {
       env[key] = value;
     }
+  }
+  // A service started from a process without NODE_PATH (the desktop, a
+  // Windows task) still has to load the packaged CLI's externals.
+  const packagedPaths = entry ? packagedCliNodeModulePaths(entry) : [];
+  if (packagedPaths.length) {
+    const inherited = (env.NODE_PATH ?? "").split(path.delimiter).filter(Boolean);
+    const merged = [...packagedPaths, ...inherited.filter((item) => !packagedPaths.includes(item))];
+    env.NODE_PATH = merged.join(path.delimiter);
   }
   return Object.keys(env).length > 0 ? env : undefined;
 }
@@ -853,7 +891,7 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
     return withRuntimeBuildHash({
       command: process.execPath,
       args: [entry, "serve"],
-      env: runtimeEnvironment(),
+      env: runtimeEnvironment(entry),
     });
   }
   if (entry && fs.existsSync(entry)) {

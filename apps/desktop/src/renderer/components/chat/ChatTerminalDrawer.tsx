@@ -491,13 +491,18 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     const appControlBridge = window.ade?.appControl;
     if (!appControlBridge) return undefined;
     let cancelled = false;
-    void appControlBridge.getStatus(pin)
+    // App Control keeps one session per lane: this drawer's lane is the one
+    // whose app terminal it can show, and other lanes' events are not ours.
+    void appControlBridge.getStatus({ laneId }, pin)
       .then((status) => {
         if (cancelled) return;
         setAppControlTabState(deriveAppControlTabState(status?.activeSession ?? null));
       })
       .catch(() => {});
     const unsubscribe = appControlBridge.onEvent((event) => {
+      // Only this drawer's lane: an event that names no lane, or another
+      // lane, is never this drawer's app.
+      if (!laneId || !("laneId" in event) || event.laneId !== laneId) return;
       if (event.type === "session-started" || event.type === "session-updated") {
         setAppControlTabState(deriveAppControlTabState(event.session));
       } else if (event.type === "session-stopped") {
@@ -508,7 +513,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       cancelled = true;
       unsubscribe();
     };
-  }, [open, pin]);
+  }, [laneId, open, pin]);
 
   const closeTab = useCallback((tabId: string) => {
     const entry = tabsRef.current.find((tab) => tab.id === tabId);

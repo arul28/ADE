@@ -30,6 +30,12 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import type { BuiltInBrowserAgentAccessSnapshot } from "../shared/types/builtInBrowser";
+import type {
+  AppControlEventPayload,
+  AppControlRecordingStatus,
+  AppControlSession,
+} from "../shared/types/appControl";
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../shared/chatAttachmentLimits";
 import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
@@ -122,6 +128,76 @@ const resolved =
   <T>(v: T) =>
   async () =>
     v;
+/**
+ * In-memory "Agents can use the ADE browser" for the browser-mock renderer.
+ * `window.__adeMockBrowserAgentPrompt()` opens a sample prompt so the dialog
+ * can be looked at without a live agent.
+ */
+function createMockBrowserAgentAccess() {
+  type Snapshot = BuiltInBrowserAgentAccessSnapshot;
+  let snapshot: Snapshot = { mode: "all", laneGrants: [], chatGrants: [], prompts: [] };
+  const listeners = new Set<(next: Snapshot) => void>();
+  const emit = () => {
+    for (const listener of listeners) listener(snapshot);
+    return snapshot;
+  };
+  if (typeof window !== "undefined") {
+    (window as unknown as Record<string, unknown>).__adeMockBrowserAgentPrompt = (mode: "lanes" | "chats" = "lanes") => {
+      snapshot = {
+        ...snapshot,
+        mode,
+        prompts: [...snapshot.prompts, {
+          id: `mock-${Date.now()}`,
+          chatSessionId: "3f1c2a9e-0000-4000-8000-000000000001",
+          chatTitle: "Fix the sign-in redirect",
+          laneId: "7b2d4e10-0000-4000-8000-000000000002",
+          laneName: "auth-refactor",
+          projectRoot: "/Users/me/Projects/web-app",
+          canAllowLane: mode === "lanes",
+          canAllowChat: true,
+          requestedAt: new Date().toISOString(),
+        }],
+      };
+      emit();
+    };
+  }
+  return {
+    get: async () => snapshot,
+    setMode: async (mode: Snapshot["mode"]) => {
+      snapshot = { ...snapshot, mode, prompts: mode === "all" ? [] : snapshot.prompts };
+      return emit();
+    },
+    answer: async (promptId: string, answer: string) => {
+      const prompt = snapshot.prompts.find((entry) => entry.id === promptId);
+      if (!prompt) return snapshot;
+      const now = new Date().toISOString();
+      snapshot = {
+        mode: answer === "all" ? "all" : snapshot.mode,
+        laneGrants: answer === "lane" && prompt.laneId
+          ? [{ projectRoot: prompt.projectRoot, laneId: prompt.laneId, laneName: prompt.laneName, grantedAt: now }, ...snapshot.laneGrants]
+          : snapshot.laneGrants,
+        chatGrants: answer === "chat" && prompt.chatSessionId
+          ? [{ chatSessionId: prompt.chatSessionId, chatTitle: prompt.chatTitle, laneName: prompt.laneName, grantedAt: now }, ...snapshot.chatGrants]
+          : snapshot.chatGrants,
+        prompts: snapshot.prompts.filter((entry) => entry.id !== promptId),
+      };
+      return emit();
+    },
+    revoke: async (args: { kind: string; laneId?: string; chatSessionId?: string }) => {
+      snapshot = {
+        ...snapshot,
+        laneGrants: args.kind === "all" ? [] : snapshot.laneGrants.filter((grant) => !(args.kind === "lane" && grant.laneId === args.laneId)),
+        chatGrants: args.kind === "all" ? [] : snapshot.chatGrants.filter((grant) => !(args.kind === "chat" && grant.chatSessionId === args.chatSessionId)),
+      };
+      return emit();
+    },
+    onChange: (cb: (next: Snapshot) => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+}
+
 const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
@@ -268,6 +344,319 @@ function browserMockPlatform(): string {
     return normalized;
   }
   return rendererPlatformAttribute();
+}
+
+/* ── App Control (browser preview) ───────────────────────────────────────
+   A stateful mock so the App Control pane, its strip, the recording chrome and
+   the floating player can be looked at in the Vite preview. Pick the starting
+   state with the URL (plain or hash query), remembered in localStorage:
+
+     ?adeAppControl=off         No app: the Off card with Launch and Attach
+     ?adeAppControl=live        An attached app with a live frame (default)
+     ?adeAppControl=recording   The same app, recording for 12 seconds
+     ?adeAppControl=permission  Record refused: Screen Recording is off
+
+   Launch or Attach from the Off card goes live, Stop goes back to Off, and
+   Record / Stop recording round-trip with a "Saved to proof" receipt. */
+
+type MockAppControlState = "off" | "live" | "recording" | "permission";
+
+function browserMockAppControlState(): MockAppControlState {
+  const raw = browserMockOverride("adeAppControl", "ade.mock.appControl")?.trim().toLowerCase();
+  return raw === "off" || raw === "recording" || raw === "permission" ? raw : "live";
+}
+
+/** A believable app window, drawn as SVG and rasterized once for frames. */
+function mockAppControlSvg(): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800">
+  <rect width="1280" height="800" fill="#0f1115"/>
+  <rect width="1280" height="44" fill="#171a21"/>
+  <circle cx="24" cy="22" r="6" fill="#ff5f57"/><circle cx="44" cy="22" r="6" fill="#febc2e"/><circle cx="64" cy="22" r="6" fill="#28c840"/>
+  <text x="640" y="27" fill="#9aa3b2" font-family="-apple-system,Segoe UI,sans-serif" font-size="14" text-anchor="middle">ADE Playground</text>
+  <rect x="0" y="44" width="240" height="756" fill="#13161c"/>
+  <g font-family="-apple-system,Segoe UI,sans-serif" font-size="14" fill="#c9d1dc">
+    <rect x="12" y="64" width="216" height="32" rx="6" fill="#232838"/>
+    <text x="28" y="85">Inbox</text><text x="28" y="125" fill="#8b94a3">Drafts</text><text x="28" y="161" fill="#8b94a3">Settings</text>
+  </g>
+  <g font-family="-apple-system,Segoe UI,sans-serif">
+    <text x="288" y="112" fill="#e6ebf2" font-size="28" font-weight="600">Sign in to continue</text>
+    <text x="288" y="144" fill="#8b94a3" font-size="15">Use the account you set up in the playground.</text>
+    <rect x="288" y="180" width="440" height="44" rx="8" fill="#171a21" stroke="#2c3240"/>
+    <text x="304" y="208" fill="#6b7383" font-size="15">you@example.com</text>
+    <rect x="288" y="240" width="440" height="44" rx="8" fill="#171a21" stroke="#2c3240"/>
+    <text x="304" y="268" fill="#6b7383" font-size="15">Password</text>
+    <rect x="288" y="308" width="140" height="42" rx="8" fill="#7c6cf6"/>
+    <text x="358" y="335" fill="#ffffff" font-size="15" font-weight="600" text-anchor="middle">Sign in</text>
+  </g>
+  <rect x="820" y="96" width="400" height="260" rx="12" fill="#171a21" stroke="#232838"/>
+  <text x="844" y="132" fill="#c9d1dc" font-family="-apple-system,Segoe UI,sans-serif" font-size="15" font-weight="600">Activity</text>
+  <rect x="844" y="152" width="352" height="10" rx="5" fill="#232838"/><rect x="844" y="152" width="220" height="10" rx="5" fill="#7c6cf6"/>
+  <rect x="844" y="180" width="352" height="10" rx="5" fill="#232838"/><rect x="844" y="180" width="140" height="10" rx="5" fill="#38bdf8"/>
+</svg>`;
+  return `data:image/svg+xml;base64,${btoa(svg)}`;
+}
+
+function createMockAppControl() {
+  type Listener = (event: AppControlEventPayload) => void;
+  const listeners = new Set<Listener>();
+  let state = browserMockAppControlState();
+  let laneId: string | null = null;
+  let recordingStartedAt: string | null = state === "recording" ? new Date(Date.now() - 12_000).toISOString() : null;
+  let pngBase64: string | null = null;
+  let frameTimer: number | null = null;
+  const svgDataUrl = mockAppControlSvg();
+
+  const session = (): AppControlSession => ({
+    id: "mock-app-control-session",
+    appKind: "electron",
+    label: "ADE Playground",
+    projectRoot: MOCK_PROJECT.rootPath,
+    laneId,
+    cwd: MOCK_PROJECT.rootPath,
+    command: "pnpm dev",
+    pid: 4242,
+    terminalSessionId: null,
+    terminalPtyId: null,
+    cdpPort: 9222,
+    cdpEndpoint: "ws://127.0.0.1:9222/devtools/page/mock",
+    cdpTargetId: "mock-target",
+    provider: "cdp",
+    driver: "cdp",
+    chatSessionId: null,
+    startedAt: new Date(Date.now() - 60_000).toISOString(),
+    connectedAt: new Date(Date.now() - 58_000).toISOString(),
+    status: "connected",
+    lastError: null,
+    lastObservationId: null,
+    lastTraceEntryId: null,
+  });
+  const activeSession = () => (state === "off" ? null : session());
+  const permissionsDenied = { screenRecording: "denied", accessibility: "granted" } as const;
+  const recordingStatus = (): AppControlRecordingStatus => ({
+    laneId: laneId ?? "",
+    running: state === "recording",
+    startedAt: state === "recording" ? recordingStartedAt : null,
+    filePath: null,
+    durationMs: null,
+    caption: state === "recording" ? "App Control recording of ADE Playground" : null,
+    engine: "window-capture",
+    lastError: state === "permission" ? "Screen Recording is off for ADE." : null,
+    permissions: state === "permission" ? permissionsDenied : null,
+  });
+  const emit = (event: AppControlEventPayload) => {
+    for (const listener of [...listeners]) listener(event);
+  };
+  const rasterize = async (): Promise<string | null> => {
+    if (pngBase64) return pngBase64;
+    try {
+      const image = new Image();
+      image.src = svgDataUrl;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = 1280;
+      canvas.height = 800;
+      canvas.getContext("2d")?.drawImage(image, 0, 0);
+      pngBase64 = canvas.toDataURL("image/jpeg", 0.8).split(",")[1] ?? null;
+    } catch {
+      pngBase64 = null;
+    }
+    return pngBase64;
+  };
+  const emitFrame = async () => {
+    if (state === "off" || !laneId) return;
+    const data = await rasterize();
+    if (!data) return;
+    emit({
+      type: "frame",
+      laneId,
+      frame: {
+        sessionId: "mock-app-control-session",
+        laneId,
+        cdpTargetId: "mock-target",
+        data,
+        mimeType: "image/jpeg",
+        width: 1280,
+        height: 800,
+        scale: 1,
+        viewportWidth: 1280,
+        viewportHeight: 800,
+        capturedAt: new Date().toISOString(),
+      },
+    });
+  };
+  // A screencast only while something listens, once a second: enough for the
+  // "live" look without a 30 fps loop in a preview tab.
+  const syncFrames = () => {
+    if (listeners.size > 0 && state !== "off") {
+      if (frameTimer == null) frameTimer = window.setInterval(() => void emitFrame(), 1_000);
+      void emitFrame();
+    } else if (frameTimer != null) {
+      window.clearInterval(frameTimer);
+      frameTimer = null;
+    }
+  };
+  const noteLane = (args: any) => {
+    const next = typeof args?.laneId === "string" && args.laneId ? args.laneId : null;
+    if (next) laneId = next;
+  };
+  const goLive = async (args: any) => {
+    noteLane(args);
+    state = "live";
+    emit({ type: "session-started", laneId, session: session() });
+    syncFrames();
+    return session();
+  };
+
+  return {
+    getStatus: async (args?: any) => {
+      noteLane(args);
+      const current = activeSession();
+      return {
+        platform: "darwin" as NodeJS.Platform,
+        supported: true,
+        laneId,
+        activeSession: current,
+        sessions: current ? [current] : [],
+        providers: [{ provider: "cdp" as const, available: true }],
+      };
+    },
+    launch: goLive,
+    launchInTerminal: goLive,
+    connect: goLive,
+    stop: async (args?: any) => {
+      noteLane(args);
+      const previous = activeSession();
+      state = "off";
+      recordingStartedAt = null;
+      emit({ type: "session-stopped", laneId, previousSession: previous });
+      syncFrames();
+      return { ok: true as const, previousSession: previous };
+    },
+    focusWindow: resolvedArg({ ok: true as const }),
+    minimizeWindow: resolvedArg({ ok: true as const }),
+    screenshot: async () => ({
+      sessionId: "mock-app-control-session",
+      capturedAt: new Date().toISOString(),
+      width: 1280,
+      height: 800,
+      dataUrl: svgDataUrl,
+    }),
+    getSnapshot: async (args?: any) => {
+      noteLane(args);
+      return {
+        session: activeSession(),
+        capturedAt: new Date().toISOString(),
+        screenshot: state === "off" ? null : {
+          sessionId: "mock-app-control-session",
+          cdpTargetId: "mock-target",
+          capturedAt: new Date().toISOString(),
+          width: 1280,
+          height: 800,
+          dataUrl: svgDataUrl,
+        },
+        screen: { width: 1280, height: 800, scale: 1, viewportWidth: 1280, viewportHeight: 800, scaleX: 1, scaleY: 1 },
+        elements: [],
+        hitElement: null,
+        providers: [{ provider: "cdp" as const, available: true, elementCount: 0 }],
+        url: "http://localhost:5173/sign-in",
+        title: "ADE Playground",
+      };
+    },
+    inspectPoint: resolvedArg({} as any),
+    selectPoint: resolvedArg({} as any),
+    click: resolvedArg({ ok: true as const }),
+    typeText: resolvedArg({ ok: true as const }),
+    scroll: resolvedArg({ ok: true as const }),
+    dispatchKey: resolvedArg({ ok: true as const }),
+    listTargets: async () => (state === "off" ? [] : [
+      { id: "mock-target", title: "ADE Playground", url: "http://localhost:5173/sign-in", type: "page", active: true },
+    ]),
+    attachToTarget: async () => session(),
+    listDrivers: async () => ({
+      platform: "darwin" as NodeJS.Platform,
+      activeDriver: "cdp" as const,
+      drivers: [
+        { driver: "cdp" as const, status: "available" as const, reason: null, implemented: true },
+        {
+          driver: "computer_use" as const,
+          status: "unavailable" as const,
+          reason: "The computer-use App Control driver is not built yet.",
+          implemented: false,
+        },
+      ],
+    }),
+    observe: resolvedArg({} as any),
+    getTrace: async () => ({ sessionId: activeSession()?.id ?? null, entries: [] }),
+    windows: async () => ({ sessionId: activeSession()?.id ?? null, activeTargetId: "mock-target", windows: [] }),
+    switchWindow: async () => ({ sessionId: activeSession()?.id ?? null, activeTargetId: "mock-target", windows: [] }),
+    getRecordingStatus: async (args?: any) => {
+      noteLane(args);
+      return recordingStatus();
+    },
+    getLatestFrame: async () => null,
+    startRecording: async (args?: any) => {
+      noteLane(args);
+      if (state === "permission") {
+        const status = recordingStatus();
+        emit({ type: "recording-changed", laneId: laneId ?? "", status });
+        return status;
+      }
+      state = "recording";
+      recordingStartedAt = new Date().toISOString();
+      const status = { ...recordingStatus(), caption: args?.caption ?? null };
+      emit({ type: "recording-changed", laneId: laneId ?? "", status });
+      return status;
+    },
+    stopRecording: async (args?: any) => {
+      noteLane(args);
+      const startedAt = recordingStartedAt;
+      state = "live";
+      recordingStartedAt = null;
+      const durationMs = startedAt ? Math.max(1_000, Date.now() - Date.parse(startedAt)) : 0;
+      const status: AppControlRecordingStatus = {
+        ...recordingStatus(),
+        running: false,
+        filePath: `${MOCK_PROJECT.rootPath}/.ade/artifacts/app-control-recording.mp4`,
+        durationMs,
+        wallDurationMs: durationMs,
+        idleCutMs: 0,
+        bytes: 3_400_000,
+        caption: "App Control recording of ADE Playground",
+        proofArtifactId: "mock-app-control-proof",
+        chatSessionId: args?.chatSessionId ?? null,
+      };
+      emit({ type: "recording-changed", laneId: laneId ?? "", status });
+      return status;
+    },
+    captureProof: async (args?: any) => {
+      noteLane(args);
+      return {
+        artifactId: "mock-app-control-still",
+        filePath: `${MOCK_PROJECT.rootPath}/.ade/cache/app-control-observations/mock/obs-mock.png`,
+        width: 1280,
+        height: 800,
+        caption: args?.caption ?? "App Control screenshot · ADE Playground",
+        laneId: laneId ?? "",
+        chatSessionId: args?.chatSessionId ?? null,
+        artifacts: [],
+        links: [],
+      };
+    },
+    onEvent: (listener: Listener) => {
+      listeners.add(listener);
+      // The permission state is the answer a refused start gave: say it once
+      // to whoever subscribes, so the card is on screen without a click.
+      if (state === "permission" && laneId) {
+        const status = recordingStatus();
+        window.setTimeout(() => listener({ type: "recording-changed", laneId: laneId ?? "", status }), 0);
+      }
+      syncFrames();
+      return () => {
+        listeners.delete(listener);
+        syncFrames();
+      };
+    },
+  };
 }
 
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
@@ -467,6 +856,7 @@ const browserMockIosElementResult = (
   matchCount: 0,
   message: "Browser preview has no iOS simulator.",
   waitedMs: null,
+  effect: { status: "not_checked", reason: "nothing was sent" },
 });
 
 const WELCOME_VIDEO_STORAGE_KEY = "ade.browserMock.welcomeVideoState";
@@ -5750,38 +6140,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         };
       },
     },
-    appControl: {
-      getStatus: resolved({
-        platform: "darwin",
-        supported: false,
-        activeSession: null,
-        providers: [{
-          provider: "cdp",
-          available: false,
-          detail: "Browser preview does not run App Control.",
-        }],
-      }),
-      launch: resolvedArg({} as any),
-      launchInTerminal: resolvedArg({} as any),
-      connect: resolvedArg({} as any),
-      stop: resolved({ ok: true as const, previousSession: null }),
-      screenshot: resolvedArg({ dataUrl: null } as any),
-      getSnapshot: resolvedArg({
-        screenshot: null,
-        elements: [],
-        hitElement: null,
-        screen: { width: 0, height: 0, scale: 1 },
-      } as any),
-      inspectPoint: resolvedArg({} as any),
-      selectPoint: resolvedArg({} as any),
-      click: resolved({ ok: true as const }),
-      typeText: resolved({ ok: true as const }),
-      scroll: resolved({ ok: true as const }),
-      dispatchKey: resolved({ ok: true as const }),
-      listTargets: resolved([]),
-      attachToTarget: resolvedArg({} as any),
-      onEvent: () => () => {},
-    },
+    appControl: createMockAppControl(),
     iosSimulator: {
       /*
        * Supported, with a device list, so the Apple picker renders in the web
@@ -6041,6 +6400,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       listPermissions: resolved({ permissions: [] }),
       clearPermissions: resolvedArg({ removed: 0, permissions: [] }),
+      agentAccess: createMockBrowserAgentAccess(),
       loginImport: {
         capabilities: resolved({ platform: "other" as const, anySupported: false, browsers: [] }),
         listSources: resolved({

@@ -133,6 +133,8 @@ export type MacDesktopSyncStreamDeps = {
 };
 
 type Subscription = {
+  /** The subscription's key: its connection and its client-chosen id. */
+  key: string;
   subscriptionId: string;
   laneId: string;
   connectionId: string;
@@ -148,11 +150,21 @@ type Subscription = {
   ended: boolean;
 };
 
+/**
+ * A subscription id is the client's own name for its stream, so it is only
+ * unique on the connection that chose it. Keying by both means one viewer can
+ * never end, replace or release another viewer's stream by reusing its id.
+ * The key is also the stream owner id, so two connections' owners never merge.
+ */
+function subscriptionKey(connectionId: string, subscriptionId: string): string {
+  return `${connectionId}\u0000${subscriptionId}`;
+}
+
 export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
   const now = deps.now ?? (() => Date.now());
   const openReader = deps.openReader ?? openLoopbackReader;
   const subscriptions = new Map<string, Subscription>();
-  /** Subscribe calls still inside `startStream`, keyed id → its connection. */
+  /** Subscribe calls still inside `startStream`, keyed by subscription key. */
   const pending = new Map<string, { connectionId: string; laneId: string }>();
   const cancelled = new Set<string>();
   /** laneId → `now()` of the last activity note, for the 1s throttle. */
@@ -245,7 +257,7 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
     subscription.ended = true;
     // Remove before releasing: releaseOwner can stop the stream, which closes
     // our reader and would re-enter this path.
-    subscriptions.delete(subscription.subscriptionId);
+    subscriptions.delete(subscription.key);
     subscription.reader?.close();
     subscription.reader = null;
     if (options.notify) {
@@ -262,7 +274,7 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
         });
       }
     }
-    releaseOwner(subscription.subscriptionId);
+    releaseOwner(subscription.key);
     deps.logger.debug("mac_desktop.sync_stream_ended", {
       subscriptionId: subscription.subscriptionId,
       laneId: subscription.laneId,
@@ -364,11 +376,9 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
             + `${MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTION_ID_LENGTH} characters.`,
         );
       }
-      const existing = subscriptions.get(subscriptionId);
-      if (existing) {
-        if (existing.connectionId === args.connectionId) return existing.result;
-        endSubscription(existing, "connection_closed", undefined, { notify: false });
-      }
+      const key = subscriptionKey(args.connectionId, subscriptionId);
+      const existing = subscriptions.get(key);
+      if (existing) return existing.result;
       if (
         connectionLaneSubscriptionCount(args.connectionId, laneId)
         >= MAC_DESKTOP_SYNC_STREAM_MAX_SUBSCRIPTIONS_PER_CONNECTION_LANE
@@ -382,16 +392,16 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
       }
       const sink = args.sink;
       if (!sink) throw new Error("macDesktop.streamSubscribe requires a live sync connection.");
-      pending.set(subscriptionId, { connectionId: args.connectionId, laneId });
+      pending.set(key, { connectionId: args.connectionId, laneId });
       let started: MacDesktopSyncStreamStarted;
       try {
-        started = await deps.startStream({ laneId, ownerId: subscriptionId });
+        started = await deps.startStream({ laneId, ownerId: key });
       } catch (error) {
-        pending.delete(subscriptionId);
-        cancelled.delete(subscriptionId);
+        pending.delete(key);
+        cancelled.delete(key);
         throw error;
       }
-      pending.delete(subscriptionId);
+      pending.delete(key);
       const result: SyncMacDesktopStreamSubscribeResult = {
         ok: true,
         width: started.width,
@@ -401,13 +411,14 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
       // `startStream` is async; an unsubscribe or a socket close can land while
       // it was in flight. The owner was registered either way, so it still has
       // to be released.
-      const wasCancelled = cancelled.delete(subscriptionId);
+      const wasCancelled = cancelled.delete(key);
       if (disposed || wasCancelled) {
-        releaseOwner(subscriptionId);
+        releaseOwner(key);
         return result;
       }
       noteActivity(laneId, true);
       const subscription: Subscription = {
+        key,
         subscriptionId,
         laneId,
         connectionId: args.connectionId,
@@ -422,7 +433,7 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
         droppedFrames: 0,
         ended: false,
       };
-      subscriptions.set(subscriptionId, subscription);
+      subscriptions.set(key, subscription);
       let reader: MacDesktopSyncStreamReader;
       try {
         reader = openReader(started.url);
@@ -449,20 +460,23 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
     },
 
     /**
-     * Ends one subscription. Safe for an id this process never had — the
-     * unsubscribe may race the connection that owned it.
+     * Ends one of this connection's subscriptions. Safe for an id this
+     * process never had — the unsubscribe may race the connection that owned
+     * it — and a no-op for another connection's id: without the connection
+     * that subscribed there is nothing this caller may end.
      */
-    unsubscribe(subscriptionId: string): { ok: boolean } {
+    unsubscribe(subscriptionId: string, connectionId?: string | null): { ok: boolean } {
       const id = subscriptionId?.trim();
-      if (!id) return { ok: true };
-      const subscription = subscriptions.get(id);
+      if (!id || !connectionId) return { ok: true };
+      const key = subscriptionKey(connectionId, id);
+      const subscription = subscriptions.get(key);
       if (subscription) {
         endSubscription(subscription, "unsubscribed", undefined, { notify: true });
         return { ok: true };
       }
       // Still inside `startStream`: mark it so the owner is released when the
       // transport comes back.
-      if (pending.has(id)) cancelled.add(id);
+      if (pending.has(key)) cancelled.add(key);
       return { ok: true };
     },
 
@@ -485,7 +499,10 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
 
     /** Test seam: how many frames one subscription has dropped. */
     droppedFrameCount(subscriptionId: string): number {
-      return subscriptions.get(subscriptionId)?.droppedFrames ?? 0;
+      for (const subscription of subscriptions.values()) {
+        if (subscription.subscriptionId === subscriptionId) return subscription.droppedFrames;
+      }
+      return 0;
     },
 
     dispose(): void {

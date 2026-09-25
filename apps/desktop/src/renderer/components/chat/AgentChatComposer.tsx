@@ -80,6 +80,7 @@ import { chipDisplayLabel, chipFromPath, chipFromSmartLink, chipGlyph } from "..
 import { serializeComposerDom, serializedComposerOffsetAt } from "./composerChipDom";
 import {
   activeTurnDispatchModes,
+  activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   defaultActiveTurnDispatchMode,
   type HeicConversionErrorCode,
@@ -135,6 +136,8 @@ import {
 import { hasChatOutputContext } from "../../../shared/chatOutputContext";
 import { hydrateChatOutputContextChipsInEditor } from "./composerChatOutputContext";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import type { ZLayer } from "../ui/zLayers";
 import { VoiceDictationButton } from "./VoiceDictationButton";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -502,7 +505,6 @@ export type ParallelComposerControlSlot = {
   onDroidPermissionModeChange: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
-  onCursorConfigChange: (configId: string, value: string | boolean | null) => void;
 };
 
 /**
@@ -825,7 +827,8 @@ function ComposerIdleSendButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
+        ? (
+          <ComposerMenuLayer layer="popover">
             <div
               data-idle-send-menu
               role="menu"
@@ -834,7 +837,7 @@ function ComposerIdleSendButton({
                 setMenuOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
               {rows.map((row, index) => (
@@ -867,8 +870,8 @@ function ComposerIdleSendButton({
                   </span>
                 </button>
               ))}
-            </div>,
-            document.body,
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -997,7 +1000,8 @@ function ComposerOverflowMenu({
         </button>
       </SmartTooltip>
       {open && caretRef.current
-        ? createPortal(
+        ? (
+          <ComposerMenuLayer layer="popover">
             <div
               data-composer-overflow-menu
               role="menu"
@@ -1006,7 +1010,7 @@ function ComposerOverflowMenu({
                 setOpen(false);
                 requestAnimationFrame(() => caretRef.current?.focus());
               })}
-              className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              className="pointer-events-auto absolute flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
                 {items.map((item) => (
@@ -1040,8 +1044,8 @@ function ComposerOverflowMenu({
                     ) : null}
                   </button>
                 ))}
-            </div>,
-            document.body,
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -1122,16 +1126,6 @@ const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode,
 };
 const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
   BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
-
-/** A Cursor boolean option's label: unset is Cursor's default, not Off. */
-export function cursorBooleanConfigLabel(value: unknown): "On" | "Off" | "Default" {
-  return value === true ? "On" : value === false ? "Off" : "Default";
-}
-
-/** The next value of a Cursor boolean option: Default, then On, then Off, then Default again. */
-export function nextCursorBooleanConfigValue(value: unknown): boolean | null {
-  return value === true ? false : value === false ? null : true;
-}
 
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;
@@ -1304,6 +1298,8 @@ function stagedSteerHint(args: {
   capability: ActiveTurnSendCapability;
   canSendNow: boolean;
   canInterrupt: boolean;
+  /** Why some staged messages cannot be sent during the turn, when any cannot. */
+  inlineBlockedReason?: string | null;
 }): string {
   const actions = [
     ...(args.canSendNow ? ["send during the turn"] : []),
@@ -1313,6 +1309,7 @@ function stagedSteerHint(args: {
   ];
   const list = `${actions.slice(0, -1).join(", ")} or ${actions[actions.length - 1]}`;
   const sentence = `${list.charAt(0).toUpperCase()}${list.slice(1)}.`;
+  if (args.inlineBlockedReason) return `${sentence} ${args.inlineBlockedReason}`;
   if (args.capability.modes.some((mode) => mode !== "queue")) return sentence;
   return `${sentence} ${args.capability.agentLabel} cannot take a message mid-turn, so this one waits for the turn to end.`;
 }
@@ -1370,12 +1367,22 @@ function composerSplitMenuPosition(anchor: HTMLButtonElement): React.CSSProperti
   });
 }
 
+/**
+ * Portal a composer menu into a viewport overlay layer. The layer is the
+ * viewport, so the menu's `absolute` left/top are viewport coordinates, the
+ * same numbers `fixedMenuAboveAnchorStyle` computes for a fixed element.
+ */
+function ComposerMenuLayer({ layer, children }: { layer: ZLayer; children: React.ReactNode }) {
+  return createPortal(<ViewportOverlayHost layer={layer}>{children}</ViewportOverlayHost>, document.body);
+}
+
 function ActiveTurnSendButton({
   enabled,
   mode,
   capability,
   allowInline,
   allowInterrupt,
+  inlineBlockedReason,
   onModeChange,
   onSend,
 }: {
@@ -1384,6 +1391,8 @@ function ActiveTurnSendButton({
   capability: ActiveTurnSendCapability;
   allowInline: boolean;
   allowInterrupt: boolean;
+  /** Why "Send during turn" is withheld for this draft, shown in the menu. */
+  inlineBlockedReason?: string | null;
   onModeChange: (mode: ActiveTurnSendMode) => void;
   onSend: () => void;
 }) {
@@ -1406,6 +1415,7 @@ function ActiveTurnSendButton({
           content={{
             label: selectedCopy.label,
             description: selectedCopy.description,
+            ...(inlineBlockedReason ? { effect: inlineBlockedReason } : {}),
           }}
         >
           <button
@@ -1451,59 +1461,61 @@ function ActiveTurnSendButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
-            (() => {
-              return (
-                <div
-                  data-active-send-menu
-                  role="menu"
-                  aria-label="Send options"
-                  className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={composerSplitMenuPosition(caretRef.current)}
-                >
-                  {offeredModes.map((option, index) => {
-                    const copy = activeTurnSendCopy(option, capability);
-                    const selected = option === mode;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        onClick={() => {
-                          onModeChange(option);
-                          setMenuOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
-                          index > 0 && "border-t border-white/[0.05]",
-                          option === "interrupt" && "hover:bg-amber-500/[0.08]",
-                        )}
-                      >
-                        <span className={cn(
-                          "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45",
-                          option === "interrupt" && "text-amber-400/80",
-                        )}>
-                          <ActiveTurnSendIcon mode={option} size={13} />
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
-                            {copy.label}
-                          </span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
-                            {copy.description}
-                          </span>
-                        </span>
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
-                          {selected ? <Check size={11} weight="bold" /> : null}
-                        </span>
-                      </button>
-                    );
-                  })}
+        ? (
+          <ComposerMenuLayer layer="popover">
+            <div
+              data-active-send-menu
+              role="menu"
+              aria-label="Send options"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+              {offeredModes.map((option, index) => {
+                const copy = activeTurnSendCopy(option, capability);
+                const selected = option === mode;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      onModeChange(option);
+                      setMenuOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-white/[0.05]",
+                      index > 0 && "border-t border-white/[0.05]",
+                      option === "interrupt" && "hover:bg-amber-500/[0.08]",
+                    )}
+                  >
+                    <span className={cn(
+                      "mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-fg/45",
+                      option === "interrupt" && "text-amber-400/80",
+                    )}>
+                      <ActiveTurnSendIcon mode={option} size={13} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">
+                        {copy.label}
+                      </span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                        {copy.description}
+                      </span>
+                    </span>
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-[var(--chat-accent)]">
+                      {selected ? <Check size={11} weight="bold" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+              {inlineBlockedReason ? (
+                <div className="border-t border-white/[0.05] px-2.5 py-2 text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">
+                  {inlineBlockedReason}
                 </div>
-              );
-            })(),
-            document.body,
+              ) : null}
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -1571,51 +1583,48 @@ function ActiveTurnStopButton({
         </SmartTooltip>
       </div>
       {menuOpen && caretRef.current
-        ? createPortal(
-            (() => {
-              return (
-                <div
-                  data-active-stop-menu
-                  role="menu"
-                  aria-label="Stop options"
-                  className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
-                  style={composerSplitMenuPosition(caretRef.current)}
-                >
-                  {ACTIVE_TURN_STOP_MODES.map((option, index) => {
-                    const copy = chatStopModeCopy(option, backgroundJobCount);
-                    const selected = option === mode;
-                    return (
-                      <button
-                        key={option}
-                        type="button"
-                        role="menuitemradio"
-                        aria-checked={selected}
-                        onClick={() => {
-                          onModeChange(option);
-                          setMenuOpen(false);
-                        }}
-                        className={cn(
-                          "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
-                          index > 0 && "border-t border-white/[0.05]",
-                        )}
-                      >
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
-                          {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
-                        </span>
-                        <span className="min-w-0 flex-1">
-                          <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
-                          <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
-                        </span>
-                        <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
-                          {selected ? <Check size={11} weight="bold" /> : null}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              );
-            })(),
-            document.body,
+        ? (
+          <ComposerMenuLayer layer="popover">
+            <div
+              data-active-stop-menu
+              role="menu"
+              aria-label="Stop options"
+              className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
+              style={composerSplitMenuPosition(caretRef.current)}
+            >
+              {ACTIVE_TURN_STOP_MODES.map((option, index) => {
+                const copy = chatStopModeCopy(option, backgroundJobCount);
+                const selected = option === mode;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={selected}
+                    onClick={() => {
+                      onModeChange(option);
+                      setMenuOpen(false);
+                    }}
+                    className={cn(
+                      "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors hover:bg-red-500/[0.08]",
+                      index > 0 && "border-t border-white/[0.05]",
+                    )}
+                  >
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400/75">
+                      {stopModeClearsQueue(option) ? <Trash size={12} weight="bold" /> : <Square size={9} weight="fill" />}
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-fg/85">{copy.label}</span>
+                      <span className="mt-0.5 block text-[length:calc(var(--chat-font-size)*8/14)] leading-[1.25] text-fg/40">{copy.description}</span>
+                    </span>
+                    <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center text-red-400">
+                      {selected ? <Check size={11} weight="bold" /> : null}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </ComposerMenuLayer>
           )
         : null}
     </div>
@@ -1719,7 +1728,6 @@ export function AgentChatComposer({
   onOpenCodePermissionModeChange,
   onDroidPermissionModeChange,
   onCursorModeChange,
-  onCursorConfigChange,
   onRemoveIosElementContext,
   onRemoveAppControlContext,
   onRemoveBuiltInBrowserContext,
@@ -1933,7 +1941,6 @@ export function AgentChatComposer({
   onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
   onCursorModeChange?: (modeId: string) => void;
   /** `null` hands the option back to Cursor's default. */
-  onCursorConfigChange?: (configId: string, value: string | boolean | null) => void;
   onComputerUsePolicyChange?: (policy: unknown) => void;
   onRemoveIosElementContext?: (id: string) => void;
   onRemoveAppControlContext?: (id: string) => void;
@@ -2114,9 +2121,27 @@ export function AgentChatComposer({
   // live session's provider (which drives the handlers). On the CTO, where
   // queue is not offered, that keeps the primary button inside the same menu
   // the caret shows instead of silently labelling itself "send after turn".
+  const draftInlineBlockedReason = activeTurnInlineAttachmentBlock(sessionProvider, {
+    attachments,
+    contextAttachmentCount: contextAttachments.length
+      + iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length,
+  });
+  const stagedSteerInlineBlock = (steer: {
+    attachments: AgentChatFileRef[];
+    contextAttachments: AgentChatContextAttachment[];
+  }): string | null => activeTurnInlineAttachmentBlock(sessionProvider, {
+    attachments: steer.attachments,
+    contextAttachmentCount: steer.contextAttachments.length,
+  });
+  // A draft the live turn cannot take is not offered "Send during turn"; the
+  // fallback below then lands on "Send after turn", with interrupt still in
+  // the menu.
+  const draftInlineSteerHandler = draftInlineBlockedReason ? undefined : onSendSteerNow;
   const activeTurnSendModeDispatchable = (mode: ActiveTurnSendMode): boolean => (
     mode === "inline"
-      ? Boolean(onSendSteerNow)
+      ? Boolean(draftInlineSteerHandler)
       : mode === "interrupt"
         ? Boolean(onSendSteerInterrupt)
         : activeTurnSendCapability.modes.includes("queue")
@@ -4336,12 +4361,6 @@ export function AgentChatComposer({
     }
 
     const cursorModeOption = resolveCursorModeOption(cmsUse);
-    const cursorExtraOptions = (cmsUse?.configOptions ?? []).filter((option) => {
-      if (option.id === cmsUse?.modelConfigId) return false;
-      if (option.id === cursorModeOption?.id) return false;
-      return true;
-    });
-
     if (sp === "cursor" && (cmsUse?.availableModeIds?.length || cursorModeOption)) {
       const modeValue = typeof cursorModeOption?.currentValue === "string"
         ? cursorModeOption.currentValue
@@ -4353,97 +4372,20 @@ export function AgentChatComposer({
             label: formatCursorModeLabel(modeId),
           }));
       const cursorModeOptions = modeChoices.map((option) => cursorPermissionPickerOption(option.value, option.label));
+      // Only the mode lives in the prompt box. Cursor's Fast is the model
+      // picker's Fast chip, and its other model options keep Cursor's default.
+      if (!modeChoices.length) return null;
       return (
-        <div className="flex flex-wrap items-center gap-2">
-          {modeChoices.length ? (
-            <PermissionModePicker
-              ariaLabel="Cursor mode"
-              selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
-              options={cursorModeOptions}
-              disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
-              onSelect={(value) => {
-                if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
-                else onCursorModeChange?.(value);
-              }}
-            />
-          ) : null}
-          {cursorExtraOptions.map((option) => {
-            if (option.type === "boolean") {
-              const active = option.currentValue === true;
-              // Three states: Default (unset, Cursor decides), On, Off. The
-              // cycle ends back at Default, so an option can be un-set again.
-              const next = nextCursorBooleanConfigValue(option.currentValue);
-              return (
-                <button
-                  key={option.id}
-                  type="button"
-                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
-                  onClick={() => {
-                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, next);
-                    else onCursorConfigChange?.(option.id, next);
-                  }}
-                  className={cn(
-                    "inline-flex h-8 min-h-8 items-center gap-2 rounded-md px-2 font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",
-                    plainComposerToolbarChrome
-                      ? cn(
-                          "border border-transparent bg-transparent",
-                          active ? "text-emerald-200/90" : "text-fg/72",
-                          nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:bg-white/[0.05] hover:text-fg/86",
-                        )
-                      : cn(
-                          "border px-2.5 py-1.5",
-                          active
-                            ? "border-emerald-500/24 bg-emerald-500/[0.10] text-emerald-100/88"
-                            : "border-white/[0.06] bg-[#1a1a22] text-fg/72",
-                          nativeControlsDisabled ? "cursor-not-allowed opacity-50" : "hover:border-white/[0.1] hover:text-fg/86",
-                        ),
-                  )}
-                  title={option.description ?? option.name}
-                  aria-pressed={active}
-                >
-                  <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.12em] text-muted-fg/45">
-                    {cursorBooleanConfigLabel(option.currentValue)}
-                  </span>
-                  <span>{option.name}</span>
-                </button>
-              );
-            }
-
-            const choices = option.options ?? [];
-            if (!choices.length) return null;
-            return (
-              <label
-                key={option.id}
-                className={cn(
-                  "flex h-8 min-h-8 items-center gap-2 rounded-md px-2",
-                  plainComposerToolbarChrome
-                    ? "border border-transparent bg-transparent"
-                    : "border border-white/[0.06] bg-[#1a1a22] px-2.5 py-1.5",
-                )}
-                title={option.description ?? option.name}
-              >
-                <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] uppercase tracking-[0.16em] text-muted-fg/45">
-                  {option.name}
-                </span>
-                <select
-                  value={typeof option.currentValue === "string" ? option.currentValue : ""}
-                  disabled={nativeControlsDisabled || (!onCursorConfigChange && !parallelControlSlot)}
-                  onChange={(event) => {
-                    if (parallelControlSlot) parallelControlSlot.onCursorConfigChange(option.id, event.target.value);
-                    else onCursorConfigChange?.(option.id, event.target.value);
-                  }}
-                  className="min-w-0 bg-transparent font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/82 outline-none disabled:cursor-not-allowed disabled:text-muted-fg/35"
-                >
-                  {choices.map((choice) => (
-                    <option key={`${option.id}:${choice.value}`} value={choice.value}>
-                      {choice.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            );
-          })}
-        </div>
+        <PermissionModePicker
+          ariaLabel="Cursor mode"
+          selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
+          options={cursorModeOptions}
+          disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
+          onSelect={(value) => {
+            if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
+            else onCursorModeChange?.(value);
+          }}
+        />
       );
     }
 
@@ -4470,7 +4412,6 @@ export function AgentChatComposer({
     onClaudeModeChange,
     onClaudePermissionModeChange,
     onInteractionModeChange,
-    onCursorConfigChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
     onOpenCodePermissionModeChange,
@@ -5249,9 +5190,9 @@ export function AgentChatComposer({
       else submitComposerDraft();
       return;
     }
-    if (onSendSteerNow) onSendSteerNow();
+    if (draftInlineSteerHandler) draftInlineSteerHandler();
     else submitComposerDraft();
-  }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
+  }, [draftInlineSteerHandler, effectiveActiveTurnSendMode, onSendSteerInterrupt, submitComposerDraft]);
 
   /**
    * The request behind `askQuestionActive`, narrowed for the card. There is
@@ -5368,45 +5309,24 @@ export function AgentChatComposer({
     "m-3 mt-0 rounded-[var(--chat-radius-shell)]",
     layoutVariant === "grid-tile" ? "m-0" : "",
   );
-  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? createPortal(
-    <div
-      className="fixed z-[1000] overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
-      data-issue-context-menu="true"
-      role="menu"
-      aria-label="Attach issue context"
-      style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
-        width: ISSUE_CONTEXT_MENU_WIDTH,
-        gap: ISSUE_CONTEXT_MENU_GAP,
-        gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
-        align: "end",
-      })}
-    >
-      <div className="border-b border-white/[0.04] px-3 py-2">
-        <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
-      </div>
-      <div className="p-1">
-        <button
-          type="button"
-          className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
-          disabled={!canAttachIssueContext}
-          onClick={() => {
-            if (!canAttachIssueContext) return;
-            setIssueContextMenuOpen(false);
-            setLinearIssuePickerMode("attach");
-            setLinearIssuePickerOpen(true);
-          }}
-        >
-          <span
-            className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-            style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
-          >
-            <LinearMark size={11} />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block font-medium">Linear issue</span>
-          </span>
-        </button>
-        {githubRepo ? (
+  const issueContextMenu = issueContextMenuOpen && issueContextButtonRef.current ? (
+    <ComposerMenuLayer layer="contextMenu">
+      <div
+        className="pointer-events-auto absolute overflow-hidden rounded-xl border border-white/10 bg-[#16121c] shadow-xl"
+        data-issue-context-menu="true"
+        role="menu"
+        aria-label="Attach issue context"
+        style={fixedMenuAboveAnchorStyle(issueContextButtonRef.current.getBoundingClientRect(), {
+          width: ISSUE_CONTEXT_MENU_WIDTH,
+          gap: ISSUE_CONTEXT_MENU_GAP,
+          gutter: ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER,
+          align: "end",
+        })}
+      >
+        <div className="border-b border-white/[0.04] px-3 py-2">
+          <div className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/80">Attach issue context</div>
+        </div>
+        <div className="p-1">
           <button
             type="button"
             className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
@@ -5414,24 +5334,46 @@ export function AgentChatComposer({
             onClick={() => {
               if (!canAttachIssueContext) return;
               setIssueContextMenuOpen(false);
-              setGitHubIssuePickerMode("attach");
-              setGitHubIssuePickerOpen(true);
+              setLinearIssuePickerMode("attach");
+              setLinearIssuePickerOpen(true);
             }}
           >
             <span
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
-              style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+              style={{ background: LINEAR_BRAND.surfaceHover, color: LINEAR_BRAND.primaryBright }}
             >
-              <GithubLogo size={13} weight="fill" />
+              <LinearMark size={11} />
             </span>
             <span className="min-w-0 flex-1">
-              <span className="block font-medium">GitHub issue</span>
+              <span className="block font-medium">Linear issue</span>
             </span>
           </button>
-        ) : null}
+          {githubRepo ? (
+            <button
+              type="button"
+              className="ade-chat-drawer-row flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/75"
+              disabled={!canAttachIssueContext}
+              onClick={() => {
+                if (!canAttachIssueContext) return;
+                setIssueContextMenuOpen(false);
+                setGitHubIssuePickerMode("attach");
+                setGitHubIssuePickerOpen(true);
+              }}
+            >
+              <span
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded"
+                style={{ background: GITHUB_BRAND.surfaceHover, color: GITHUB_BRAND.primaryBright }}
+              >
+                <GithubLogo size={13} weight="fill" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block font-medium">GitHub issue</span>
+              </span>
+            </button>
+          ) : null}
+        </div>
       </div>
-    </div>,
-    document.body,
+    </ComposerMenuLayer>
   ) : null;
 
   const selectedLinearContextIssue = (
@@ -6430,8 +6372,9 @@ export function AgentChatComposer({
                       enabled={activeSteerEnabled}
                       mode={effectiveActiveTurnSendMode}
                       capability={activeTurnSendCapability}
-                      allowInline={Boolean(onSendSteerNow)}
+                      allowInline={Boolean(draftInlineSteerHandler)}
                       allowInterrupt={Boolean(onSendSteerInterrupt)}
+                      inlineBlockedReason={onSendSteerNow ? draftInlineBlockedReason : null}
                       onModeChange={setActiveTurnSendMode}
                       onSend={submitActiveTurnDraft}
                     />
@@ -6863,8 +6806,12 @@ export function AgentChatComposer({
             <span className="font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/30">
               {stagedSteerHint({
                 capability: activeTurnSendCapability,
-                canSendNow: Boolean(onDispatchSteerInline),
+                canSendNow: Boolean(onDispatchSteerInline)
+                  && pendingSteers.some((steer) => !stagedSteerInlineBlock(steer)),
                 canInterrupt: Boolean(onDispatchSteerInterrupt),
+                inlineBlockedReason: onDispatchSteerInline
+                  ? pendingSteers.map(stagedSteerInlineBlock).find(Boolean) ?? null
+                  : null,
               })}
             </span>
           </div>
@@ -6880,7 +6827,9 @@ export function AgentChatComposer({
                 steer.attachments,
                 steer.contextAttachments,
               )}
-              onSendNow={onDispatchSteerInline ? () => onDispatchSteerInline(steer.steerId) : undefined}
+              onSendNow={onDispatchSteerInline && !stagedSteerInlineBlock(steer)
+                ? () => onDispatchSteerInline(steer.steerId)
+                : undefined}
               onInterrupt={onDispatchSteerInterrupt ? () => onDispatchSteerInterrupt(steer.steerId) : undefined}
             />
           ))}

@@ -156,6 +156,7 @@
 		E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000002F /* WorkArtifactTerminalViews.swift */; };
 		E200000000000000000000B2 /* WorkProofSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B2 /* WorkProofSheet.swift */; };
 		E200000000000000000000B3 /* MacDesktopLiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B3 /* MacDesktopLiveView.swift */; };
+		E2000000000000000000AC01 /* AppControlLiveView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AC01 /* AppControlLiveView.swift */; };
 		E200000000000000000000B4 /* MacDesktopViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B4 /* MacDesktopViewer.swift */; };
 		E200000000000000000000B5 /* MacDesktopCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B5 /* MacDesktopCard.swift */; };
 		E200000000000000000000B6 /* MacDesktopStreamMath.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000B6 /* MacDesktopStreamMath.swift */; };
@@ -526,6 +527,7 @@
 		D1000000000000000000002F /* WorkArtifactTerminalViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkArtifactTerminalViews.swift; path = ADE/Views/Work/WorkArtifactTerminalViews.swift; sourceTree = "<group>"; };
 		D200000000000000000000B2 /* WorkProofSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkProofSheet.swift; path = ADE/Views/Work/WorkProofSheet.swift; sourceTree = "<group>"; };
 		D200000000000000000000B3 /* MacDesktopLiveView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopLiveView.swift; path = ADE/Views/Work/MacDesktopLiveView.swift; sourceTree = "<group>"; };
+		D2000000000000000000AC01 /* AppControlLiveView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppControlLiveView.swift; path = ADE/Views/Work/AppControlLiveView.swift; sourceTree = "<group>"; };
 		D200000000000000000000B4 /* MacDesktopViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopViewer.swift; path = ADE/Views/Work/MacDesktopViewer.swift; sourceTree = "<group>"; };
 		D200000000000000000000B5 /* MacDesktopCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopCard.swift; path = ADE/Views/Work/MacDesktopCard.swift; sourceTree = "<group>"; };
 		D200000000000000000000B6 /* MacDesktopStreamMath.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopStreamMath.swift; path = ADE/Views/Work/MacDesktopStreamMath.swift; sourceTree = "<group>"; };
@@ -1124,6 +1126,7 @@
 				D1000000000000000000002F /* WorkArtifactTerminalViews.swift */,
 				D200000000000000000000B2 /* WorkProofSheet.swift */,
 				D200000000000000000000B3 /* MacDesktopLiveView.swift */,
+				D2000000000000000000AC01 /* AppControlLiveView.swift */,
 				D200000000000000000000B4 /* MacDesktopViewer.swift */,
 				D200000000000000000000B5 /* MacDesktopCard.swift */,
 				D200000000000000000000B6 /* MacDesktopStreamMath.swift */,
@@ -1987,6 +1990,7 @@
 				E1000000000000000000002F /* WorkArtifactTerminalViews.swift in Sources */,
 				E200000000000000000000B2 /* WorkProofSheet.swift in Sources */,
 				E200000000000000000000B3 /* MacDesktopLiveView.swift in Sources */,
+				E2000000000000000000AC01 /* AppControlLiveView.swift in Sources */,
 				E200000000000000000000B4 /* MacDesktopViewer.swift in Sources */,
 				E200000000000000000000B5 /* MacDesktopCard.swift in Sources */,
 				E200000000000000000000B6 /* MacDesktopStreamMath.swift in Sources */,

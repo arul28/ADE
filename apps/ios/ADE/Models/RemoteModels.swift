@@ -7210,3 +7210,100 @@ struct MacDesktopStreamEnded: Equatable {
     self.message = payload["message"] as? String
   }
 }
+
+// MARK: - App Control live view
+
+/// An App Control session as the host sends it to a sync client. The launch
+/// command, CDP endpoint, pid and terminal ids never leave the Mac. Status
+/// strings stay raw so a newer host's value falls back instead of failing.
+struct AppControlSyncSession: Codable, Equatable {
+  var id: String
+  var appKind: String?
+  var label: String
+  var laneId: String?
+  var chatSessionId: String?
+  var provider: String?
+  var driver: String?
+  var status: String
+  var cdpTargetId: String?
+  var startedAt: String?
+  var connectedAt: String?
+  var lastError: String?
+}
+
+/// Whether the lane's app is sending frames, as the host last saw it.
+struct AppControlSyncStreamSummary: Codable, Equatable {
+  var live: Bool
+  var lastFrameAt: String?
+  var width: Int?
+  var height: Int?
+  var viewerCount: Int?
+}
+
+/// The `appControl.status` reply for one lane.
+struct AppControlSyncStatus: Codable, Equatable {
+  var laneId: String?
+  var platform: String?
+  var supported: Bool
+  var session: AppControlSyncSession?
+  var stream: AppControlSyncStreamSummary?
+}
+
+/// The `appControl.streamSubscribe` reply.
+struct AppControlStreamSubscribeResult: Codable, Equatable {
+  var ok: Bool
+  var laneId: String?
+  var maxFps: Int?
+  var session: AppControlSyncSession?
+  var width: Int?
+  var height: Int?
+}
+
+/// A pushed `appControl.streamFrame` before its base64 JPEG is decoded. The
+/// decode happens off the main actor; a frame is tens to hundreds of kilobytes.
+struct AppControlStreamFrameEnvelope: Equatable {
+  var subscriptionId: String
+  var laneId: String?
+  var seq: Int
+  var sessionId: String?
+  var mimeType: String
+  var width: Int
+  var height: Int
+  var capturedAt: String?
+  var base64Data: String
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let encoded = payload["data"] as? String,
+      !encoded.isEmpty
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.laneId = payload["laneId"] as? String
+    self.seq = (payload["seq"] as? NSNumber)?.intValue ?? 0
+    self.sessionId = payload["sessionId"] as? String
+    self.mimeType = (payload["mimeType"] as? String) ?? "image/jpeg"
+    self.width = (payload["width"] as? NSNumber)?.intValue ?? 0
+    self.height = (payload["height"] as? NSNumber)?.intValue ?? 0
+    self.capturedAt = payload["capturedAt"] as? String
+    self.base64Data = encoded
+  }
+}
+
+/// A pushed `appControl.streamEnded`. `reason` stays raw for the same reason
+/// as `MacDesktopStreamEnded`.
+struct AppControlStreamEnded: Equatable {
+  var subscriptionId: String
+  var reason: String
+  var message: String?
+
+  init?(_ payload: [String: Any]) {
+    guard
+      let subscriptionId = payload["subscriptionId"] as? String,
+      let reason = payload["reason"] as? String
+    else { return nil }
+    self.subscriptionId = subscriptionId
+    self.reason = reason
+    self.message = payload["message"] as? String
+  }
+}

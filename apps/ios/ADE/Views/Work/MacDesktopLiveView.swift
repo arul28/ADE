@@ -607,11 +607,6 @@ struct MacDesktopControlPicture: View {
   @State private var pressOutstanding = false
   @State private var pictureSize: CGSize = .zero
   @State private var pump = MacDesktopPointerPump()
-  @State private var zoom = MacDesktopZoom.identity
-  /// The last magnification and pan translation seen, so each gesture update
-  /// applies only its change. Pinch and pan can then run at the same time.
-  @State private var lastMagnification: CGFloat = 1
-  @State private var lastPanTranslation: CGSize = .zero
 
   private var controlling: Bool { holderId != nil }
 
@@ -639,10 +634,8 @@ struct MacDesktopControlPicture: View {
         }
         .onChange(of: controlling) { _, next in
           focused = next
-          if next { resetZoom() }
           onControlChange?(next)
         }
-        .onChange(of: pictureSize) { _, _ in resetZoom() }
       controls
     }
     .task(id: holderId) { await heartbeat() }
@@ -656,63 +649,12 @@ struct MacDesktopControlPicture: View {
   }
 
   /// One view tree in every mode. The gesture masks switch the input on and
-  /// off, so taking control does not rebuild the display layer.
+  /// off, so taking control does not rebuild the display layer. Taking
+  /// control turns zoom off, which puts the picture back at 1x.
   private var gesturedPicture: some View {
     measuredPicture
       .highPriorityGesture(drag, including: controlling ? .all : .subviews)
-      .scaleEffect(zoom.scale)
-      .offset(zoom.offset)
-      .clipped()
-      .contentShape(Rectangle())
-      .gesture(zoomGesture, including: zoomActive ? .all : .subviews)
-  }
-
-  private var zoomGesture: some Gesture {
-    magnifyGesture
-      .simultaneously(with: panGesture)
-      .simultaneously(with: doubleTapGesture)
-  }
-
-  private var magnifyGesture: some Gesture {
-    MagnifyGesture()
-      .onChanged { value in
-        guard zoomActive, lastMagnification > 0 else { return }
-        let factor = value.magnification / lastMagnification
-        lastMagnification = value.magnification
-        zoom = zoom.magnified(by: factor, around: value.startLocation, in: pictureSize)
-      }
-      .onEnded { _ in lastMagnification = 1 }
-  }
-
-  /// One finger, or the fingers of a pinch, move a zoomed picture.
-  private var panGesture: some Gesture {
-    DragGesture(minimumDistance: 8, coordinateSpace: .local)
-      .onChanged { value in
-        guard zoomActive else { return }
-        let delta = CGSize(
-          width: value.translation.width - lastPanTranslation.width,
-          height: value.translation.height - lastPanTranslation.height
-        )
-        lastPanTranslation = value.translation
-        zoom = zoom.panned(by: delta, in: pictureSize)
-      }
-      .onEnded { _ in lastPanTranslation = .zero }
-  }
-
-  private var doubleTapGesture: some Gesture {
-    SpatialTapGesture(count: 2, coordinateSpace: .local)
-      .onEnded { value in
-        guard zoomActive else { return }
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-          zoom = zoom.toggled(at: value.location, in: pictureSize)
-        }
-      }
-  }
-
-  private func resetZoom() {
-    zoom = .identity
-    lastMagnification = 1
-    lastPanTranslation = .zero
+      .livePictureZoom(enabled: zoomActive)
   }
 
   private var measuredPicture: some View {
@@ -875,5 +817,165 @@ struct MacDesktopControlPicture: View {
       try? await service.macDesktopInput(laneId: lane, call: call)
       _ = try? await service.macDesktopReturnControl(laneId: lane, controllerId: id)
     }
+  }
+}
+
+// MARK: - Zoom
+
+/// Watch-mode zoom for every live picture on the phone (macOS, App Control):
+/// pinch 1x-4x, pan when zoomed, double-tap 1x / 2.5x. The rules are
+/// `MacDesktopZoom`; this is the gesture wiring around them.
+///
+/// The zoomed picture may fill the whole viewer stage, not just its own
+/// letterboxed frame: the stage publishes its size with
+/// `livePictureViewport()`, and a pan stops where an edge of the picture meets
+/// an edge of the stage. Past an edge or a scale limit the picture follows the
+/// finger at a fraction and springs back when the gesture ends.
+///
+/// Turning zoom off, or turning the phone between portrait and landscape,
+/// puts the picture back at 1x. Other size changes keep the zoom and settle it
+/// inside the new limits.
+struct LivePictureZoom: ViewModifier {
+  var enabled: Bool
+
+  @Environment(\.livePictureViewport) private var viewport
+  @State private var zoom = MacDesktopZoom.identity
+  /// The last magnification seen, so each update applies only its change.
+  @State private var lastMagnification: CGFloat = 1
+  /// Where the picture was when the current pan began.
+  @State private var panStartOffset: CGSize?
+  @State private var size: CGSize = .zero
+
+  private static let settleAnimation = Animation.spring(response: 0.32, dampingFraction: 0.86)
+
+  func body(content: Content) -> some View {
+    content
+      .background(
+        GeometryReader { proxy in
+          Color.clear
+            .onAppear { size = proxy.size }
+            .onChange(of: proxy.size) { previous, next in
+              size = next
+              let turned = (previous.width > previous.height) != (next.width > next.height)
+              if turned {
+                reset()
+              } else {
+                zoom = zoom.settled(in: next, viewport: viewport)
+              }
+            }
+        }
+      )
+      .scaleEffect(zoom.scale)
+      .offset(zoom.offset)
+      .zIndex(zoom.isZoomed ? 1 : 0)
+      .contentShape(Rectangle())
+      .gesture(zoomGesture, including: enabled ? .all : .subviews)
+      .onChange(of: enabled) { _, on in
+        if !on { reset() }
+      }
+  }
+
+  private var zoomGesture: some Gesture {
+    magnify
+      .simultaneously(with: pan)
+      .simultaneously(with: doubleTap)
+  }
+
+  private var magnify: some Gesture {
+    MagnifyGesture()
+      .onChanged { value in
+        guard enabled, lastMagnification > 0 else { return }
+        let factor = value.magnification / lastMagnification
+        lastMagnification = value.magnification
+        let rawScale = zoom.scale * factor
+        // Past the limits the pinch still gives a little, then springs back.
+        let softScale = min(max(rawScale, MacDesktopZoom.minScale * 0.85), MacDesktopZoom.maxScale * 1.25)
+        let anchored = MacDesktopZoom(scale: zoom.scale, offset: zoom.offset)
+          .magnified(by: softScale / zoom.scale, around: value.startLocation, in: size, viewport: viewport)
+        zoom = MacDesktopZoom(scale: softScale, offset: anchored.offset)
+      }
+      .onEnded { _ in
+        lastMagnification = 1
+        withAnimation(Self.settleAnimation) { zoom = zoom.settled(in: size, viewport: viewport) }
+      }
+  }
+
+  /// One finger, or the fingers of a pinch, move a zoomed picture. It starts
+  /// on the first movement, so the picture never jumps to catch up.
+  private var pan: some Gesture {
+    DragGesture(minimumDistance: 1, coordinateSpace: .local)
+      .onChanged { value in
+        guard enabled, zoom.isZoomed else { return }
+        let start = panStartOffset ?? zoom.offset
+        if panStartOffset == nil { panStartOffset = start }
+        let limit = MacDesktopZoom.offsetLimits(scale: zoom.scale, in: size, viewport: viewport)
+        zoom.offset = CGSize(
+          width: MacDesktopZoom.rubberBand(start.width + value.translation.width, limit: limit.width),
+          height: MacDesktopZoom.rubberBand(start.height + value.translation.height, limit: limit.height)
+        )
+      }
+      .onEnded { _ in
+        panStartOffset = nil
+        withAnimation(Self.settleAnimation) { zoom = zoom.settled(in: size, viewport: viewport) }
+      }
+  }
+
+  private var doubleTap: some Gesture {
+    SpatialTapGesture(count: 2, coordinateSpace: .local)
+      .onEnded { value in
+        guard enabled else { return }
+        withAnimation(Self.settleAnimation) {
+          zoom = zoom.toggled(at: value.location, in: size, viewport: viewport)
+        }
+      }
+  }
+
+  private func reset() {
+    zoom = .identity
+    lastMagnification = 1
+    panStartOffset = nil
+  }
+}
+
+private struct LivePictureViewportKey: EnvironmentKey {
+  static let defaultValue: CGSize? = nil
+}
+
+extension EnvironmentValues {
+  /// The stage a zoomed live picture may fill. Set by `livePictureViewport()`.
+  var livePictureViewport: CGSize? {
+    get { self[LivePictureViewportKey.self] }
+    set { self[LivePictureViewportKey.self] = newValue }
+  }
+}
+
+/// Measures a viewer's stage, hands its size to the zoomable picture inside,
+/// and clips the zoomed picture to the stage.
+private struct LivePictureViewportModifier: ViewModifier {
+  @State private var stageSize: CGSize?
+
+  func body(content: Content) -> some View {
+    content
+      .environment(\.livePictureViewport, stageSize)
+      .background(
+        GeometryReader { proxy in
+          Color.clear
+            .onAppear { stageSize = proxy.size }
+            .onChange(of: proxy.size) { _, next in stageSize = next }
+        }
+      )
+      .clipped()
+  }
+}
+
+extension View {
+  /// See `LivePictureZoom`.
+  func livePictureZoom(enabled: Bool) -> some View {
+    modifier(LivePictureZoom(enabled: enabled))
+  }
+
+  /// Marks a viewer's stage as the area a zoomed live picture may fill.
+  func livePictureViewport() -> some View {
+    modifier(LivePictureViewportModifier())
   }
 }

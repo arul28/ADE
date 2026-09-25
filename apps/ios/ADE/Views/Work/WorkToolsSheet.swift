@@ -6,8 +6,9 @@ import UIKit
 /// the Apple device has its own full-screen viewer and no sheet.
 ///
 /// The browser is a `WebContentsView` in ADE Desktop and App Control is a CDP
-/// socket to a local process; neither can be reached from a phone, so those
-/// sheets stay read-only. Mac Desktop is the exception: when the host
+/// socket to a local process; neither can be driven from a phone. App Control
+/// can be watched: its sheet shows the app's live frames when the host serves
+/// `appControl.streamSubscribe`. Mac Desktop is the exception: when the host
 /// advertises takeover, the picture takes a finger, inline or full screen.
 ///
 /// Refresh is a poll, not a subscription. The brain has no generic named-event
@@ -63,6 +64,8 @@ struct WorkToolsSheet: View {
   /// Bumped after each tools poll. The card retries a stopped stream and
   /// reloads its still on that tick.
   @State private var macDesktopRefreshTick = 0
+  /// The App Control viewer owns the live picture while it is up.
+  @State private var appControlViewerPresented = false
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots. When set, `refresh`
@@ -101,12 +104,15 @@ struct WorkToolsSheet: View {
         try? await Task.sleep(for: Self.refreshInterval)
         guard !Task.isCancelled else { return }
         // The viewer polls the same read itself while it is up.
-        guard !macDesktopViewerPresented else { continue }
+        guard !macDesktopViewerPresented, !appControlViewerPresented else { continue }
         await refresh()
       }
     }
     .onChange(of: macDesktopViewerPresented) { _, presented in
       // Catch up on whatever changed while the viewer was up.
+      if !presented { Task { await refresh() } }
+    }
+    .onChange(of: appControlViewerPresented) { _, presented in
       if !presented { Task { await refresh() } }
     }
   }
@@ -119,8 +125,12 @@ struct WorkToolsSheet: View {
           browserCard
           lastFrameCard
         case .appControl:
-          appControlCard
-          lastFrameCard
+          AppControlCard(
+            laneId: laneId,
+            appControl: state?.appControl,
+            refreshTick: macDesktopRefreshTick,
+            viewerPresented: $appControlViewerPresented
+          )
         case .macDesktop:
           MacDesktopCard(
             laneId: laneId,
@@ -238,30 +248,6 @@ struct WorkToolsSheet: View {
       }
     }
   }
-
-  @ViewBuilder
-  private var appControlCard: some View {
-    ADEGlassSection(title: "App Control") {
-      if let appControl = state?.appControl {
-        VStack(alignment: .leading, spacing: 3) {
-          Text(appControl.appName)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-          Text("\(appControl.status) · \(appControl.driver)")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-      } else {
-        Text("No app is attached in this lane.")
-          .font(.footnote)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-    }
-  }
-
 
   private var loadingState: some View {
     VStack(spacing: 12) {
