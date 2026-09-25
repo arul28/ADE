@@ -117,6 +117,8 @@ import type {
   CtoAttentionState,
   CtoRunProjectScanResult,
   CursorCloudServiceTier,
+  DevinCloudMode,
+  AgentChatFileRef,
   CtoStartFreshSessionResult,
   CtoThreadHealth,
   CtoLinearQuickView,
@@ -2309,6 +2311,99 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").stopAgentRun(
         requireNonEmptyString(args?.agentId, "agentId"),
       ),
+    getDevinCloudAuthStatus: () => aiIntegrationService.getDevinCloudAuthStatus(),
+    setDevinCloudCredentials: async (args?: { apiKey?: string; orgId?: string | null }) => {
+      const status = await aiIntegrationService.setDevinCloudCredentials({
+        apiKey: args?.apiKey ?? "",
+        ...(args?.orgId !== undefined ? { orgId: args.orgId } : {}),
+      });
+      runtime.devinCloudFleetService?.invalidateCache();
+      return status;
+    },
+    getDevinCloudFleet: (args?: { force?: boolean; includeArchived?: boolean }) =>
+      requireService(runtime.devinCloudFleetService, "Devin Cloud fleet not available.").getFleet({
+        includeArchived: args?.includeArchived === true,
+        ...(args?.force !== undefined ? { force: args.force } : {}),
+      }),
+    pullDevinCloudSessionIntoLane: async (args?: { devinSessionId?: string }) => {
+      const result = await requireService(runtime.devinCloudFleetService, "Devin Cloud fleet not available.").pullIntoLane(
+        requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
+      );
+      runtime.devinCloudFleetService?.invalidateCache();
+      return result;
+    },
+    terminateDevinCloudSession: async (args?: { devinSessionId?: string; archive?: boolean }) => {
+      await aiIntegrationService.terminateDevinCloudSession({
+        devinSessionId: requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
+        ...(args?.archive !== undefined ? { archive: args.archive } : {}),
+      });
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
+    archiveDevinCloudSession: async (args?: { devinSessionId?: string }) => {
+      await aiIntegrationService.archiveDevinCloudSession(
+        requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
+      );
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
+    unarchiveDevinCloudSession: async (args?: { devinSessionId?: string }) => {
+      await aiIntegrationService.unarchiveDevinCloudSession(
+        requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
+      );
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
+    devinCloudFollowUp: async (args?: { devinSessionId?: string; message?: string }) => {
+      await requireService(runtime.agentChatService, "Agent chat service not available.").devinCloudFollowUp({
+        devinSessionId: requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
+        message: requireNonEmptyString(args?.message, "message"),
+      });
+      runtime.devinCloudFleetService?.invalidateCache();
+    },
+    openDevinCloudChat: (args?: {
+      devinSessionId?: string;
+      laneId?: string;
+      sessionId?: string;
+      devinMode?: DevinCloudMode | null;
+    }) =>
+      requireService(runtime.agentChatService, "Agent chat service not available.").openDevinCloudChat({
+        devinSessionId: requireNonEmptyString(args?.devinSessionId, "devinSessionId"),
+        laneId: requireNonEmptyString(args?.laneId, "laneId"),
+        ...(args?.sessionId ? { sessionId: args.sessionId } : {}),
+        ...(args?.devinMode !== undefined ? { devinMode: args.devinMode } : {}),
+      }),
+    watchDevinCloudMirror: (args?: { sessionId?: string; watching?: boolean }) => {
+      if (typeof args?.watching !== "boolean") {
+        throw new Error("Expected 'watching' to be a boolean.");
+      }
+      requireService(runtime.agentChatService, "Agent chat service not available.").watchDevinCloudMirror({
+        sessionId: requireNonEmptyString(args?.sessionId, "sessionId"),
+        watching: args.watching,
+      });
+    },
+    createDevinCloudSession: (args?: {
+      laneId?: string;
+      prompt?: string;
+      sessionId?: string | null;
+      title?: string | null;
+      devinMode?: DevinCloudMode | null;
+      projectId?: string | null;
+      platform?: string | null;
+      bypassApproval?: boolean;
+      attachments?: AgentChatFileRef[];
+    }) =>
+      requireService(runtime.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
+        laneId: requireNonEmptyString(args?.laneId, "laneId"),
+        prompt: requireNonEmptyString(args?.prompt, "prompt"),
+        ...(args?.sessionId ? { sessionId: args.sessionId } : {}),
+        ...(args?.title ? { title: args.title } : {}),
+        ...(args?.devinMode !== undefined ? { devinMode: args.devinMode } : {}),
+        ...(args?.projectId ? { projectId: args.projectId } : {}),
+        ...(args?.platform !== undefined ? { platform: args.platform } : {}),
+        ...(args?.bypassApproval !== undefined ? { bypassApproval: args.bypassApproval } : {}),
+        ...(args?.attachments?.length ? { attachments: args.attachments } : {}),
+      }).then((result) => {
+        runtime.devinCloudFleetService?.invalidateCache();
+        return result;
+      }),
   };
 }
 

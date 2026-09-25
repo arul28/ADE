@@ -92,10 +92,12 @@ export type TerminalToolType =
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
   | "qwen-chat"
   | "kimi-chat"
   | "grok-chat"
   | "copilot-chat"
+  | "devin-chat"
   | "aider"
   | "continue"
   | "other";
@@ -111,6 +113,7 @@ export type TrackedAgentCliToolType =
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
   | "claude-orchestrated"
   | "codex-orchestrated"
   | "opencode-orchestrated";
@@ -151,6 +154,7 @@ export function isTrackedAgentCliToolType(
     || toolType === "kimi"
     || toolType === "grok"
     || toolType === "copilot"
+    || toolType === "devin"
     || toolType === "claude-orchestrated"
     || toolType === "codex-orchestrated"
     || toolType === "opencode-orchestrated";
@@ -216,7 +220,8 @@ export type TerminalResumeProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export type TerminalResumeTargetKind = "session" | "thread";
 

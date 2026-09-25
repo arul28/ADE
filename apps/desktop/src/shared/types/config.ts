@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { ProviderMode, ModelId } from "./core";
-import type { AgentChatModelInfo, AgentChatPermissionMode, AgentChatSession } from "./chat";
+import type { AgentChatFileRef, AgentChatModelInfo, AgentChatPermissionMode, AgentChatSession } from "./chat";
 import type { LaneType } from "./lanes";
 import type { ModelConfig, ThinkingLevel } from "./models";
 import type { LinearSyncConfig } from "./linearSync";
@@ -1052,7 +1052,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
+  cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   provider?: string;
   source?: "config" | "env" | "store" | "file";
   endpointSource?: "auto" | "config";
@@ -1086,7 +1086,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot";
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -1117,6 +1117,7 @@ export type AiProviderConnections = {
   kimi?: AiProviderConnectionStatus;
   grok?: AiProviderConnectionStatus;
   copilot?: AiProviderConnectionStatus;
+  devin?: AiProviderConnectionStatus;
 };
 
 /**
@@ -1127,7 +1128,7 @@ export type AiProviderConnections = {
  * meaningful next to one that does.
  */
 export type AcpProviderDiagnostics = {
-  provider: "qwen" | "kimi" | "grok" | "copilot";
+  provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
   /** Null when nothing was found — the bare command name is a guess, not a path. */
   binaryPath: string | null;
   binarySource: "env" | "auth" | "path" | "common-dir" | "fallback-command";
@@ -1397,6 +1398,252 @@ export type CursorCloudOpenChatRequest = {
 export type CursorCloudOpenChatResult = {
   sessionId: string;
   session?: AgentChatSession;
+};
+
+// ---------------------------------------------------------------------------
+// Devin Cloud
+// ---------------------------------------------------------------------------
+
+/** Devin's agent tier, chosen at session create (`devin_mode`). */
+export type DevinCloudMode = "normal" | "fast" | "lite" | "ultra" | "fusion";
+
+export type DevinCloudAuthMode = "v3" | "v1";
+
+export type DevinCloudSessionStatus =
+  | "new"
+  | "claimed"
+  | "running"
+  | "resuming"
+  | "suspended"
+  | "exit"
+  | "error";
+
+/**
+ * One Devin cloud session, normalized from the v3 `SessionResponse`
+ * (or the v1 equivalent on the personal-key fallback path).
+ */
+export type DevinCloudSessionSummary = {
+  /** Devin's session id — the bare id, without the `devin-` prefix. */
+  sessionId: string;
+  title: string | null;
+  status: DevinCloudSessionStatus | null;
+  /**
+   * Raw `status_detail` (working, waiting_for_user, waiting_for_approval,
+   * finished, or a suspension reason). `devinCloudFleetStatus` interprets it.
+   */
+  statusDetail: string | null;
+  isArchived: boolean;
+  /** app.devin.ai deep link — opens the session incl. its live Desktop view. */
+  url: string | null;
+  pullRequests: Array<{ prUrl: string; prState: string | null }>;
+  tags: string[];
+  /** Repo names in `owner/repo` form, from the v3 create payload. */
+  repos: string[];
+  createdAt: number | null;
+  updatedAt: number | null;
+  devinMode: DevinCloudMode | null;
+  acusConsumed: number | null;
+  userId: string | null;
+  parentSessionId: string | null;
+  /** "mine" when the API caller created it, when the API reports it. */
+  origin: string | null;
+};
+
+export type DevinCloudMessage = {
+  eventId: string;
+  source: "devin" | "user";
+  message: string;
+  createdAt: number;
+};
+
+/**
+ * One file a Devin session uploaded or produced (recordings, screenshots,
+ * exports) — the raw material ADE files into the proof drawer.
+ */
+export type DevinCloudAttachment = {
+  attachmentId: string;
+  name: string;
+  url: string;
+  source: "devin" | "user";
+  contentType: string | null;
+};
+
+export type DevinCloudListMessagesResult = {
+  items: DevinCloudMessage[];
+  endCursor: string | null;
+};
+
+export type DevinCloudCreateSessionRequest = {
+  prompt: string;
+  /** Remote repo URLs bound to the session (e.g. the lane's origin). */
+  repoUrls?: string[];
+  /** Extra tags beyond ADE's provenance tags. */
+  tags?: string[];
+  title?: string | null;
+  devinMode?: DevinCloudMode | null;
+  /** Resume-able session (Devin keeps the VM snapshot warm). */
+  resumable?: boolean;
+  /** ADE chat session id to mirror into; not sent to Devin. */
+  sessionId?: string | null;
+  /** ADE lane id used for provenance tags + mirror ownership. */
+  laneId?: string | null;
+  /** Canonical ADE projects.id; not sent to Devin. */
+  projectId?: string | null;
+  /** Linear identifier such as ADE-12. Kept on the ADE session. */
+  linearIssueId?: string | null;
+  /** Skip Devin's approval gate (maps to `bypass_approval`). */
+  bypassApproval?: boolean;
+  /**
+   * VM platform label for the session (`platform`, v3 only) — org-defined
+   * values such as linux/macos/windows or an outpost pool name; unset uses
+   * the org default.
+   */
+  platform?: string | null;
+};
+
+export type DevinCloudCreateSessionResult = {
+  session: DevinCloudSessionSummary;
+};
+
+export type DevinCloudSendMessageRequest = {
+  devinSessionId: string;
+  message: string;
+  attachmentUrls?: string[];
+};
+
+export type DevinCloudSendMessageResult = {
+  delivered: true;
+};
+
+/**
+ * Fleet-row status, resolved from `status` + `status_detail`. "needs_you" is
+ * the loud attention tier (waiting_for_user / waiting_for_approval); it maps
+ * onto ADE's two-tier attention model so Devin work is not a silent channel.
+ */
+export type DevinCloudFleetStatus =
+  | "starting"
+  | "working"
+  | "needs_you"
+  | "finished"
+  | "suspended"
+  | "error"
+  | "archived";
+
+export type DevinCloudFleetOwnership = {
+  sessionId: string | null;
+  sessionTitle: string | null;
+  laneId: string | null;
+  laneName: string | null;
+  /** Linear identifier such as ADE-12, from the owning lane. */
+  linearIssueId: string | null;
+};
+
+export type DevinCloudFleetEntry = {
+  session: DevinCloudSessionSummary;
+  fleetStatus: DevinCloudFleetStatus;
+  /** Branch pulled from the session's first PR URL when it is a branch link. */
+  prUrl: string | null;
+  ownership: DevinCloudFleetOwnership;
+  /** True when ADE launched this session (`ade` provenance tag). */
+  createdViaAde: boolean;
+  /** Lane id parsed from the `ade:lane:<id>` provenance tag. */
+  adeLaneId: string | null;
+  /**
+   * Why this entry is in the fleet: a linked ADE session ("session"), a repo
+   * match against the project origin ("repo"), an `ade:` tag ("tag"), or an
+   * org-level row unrelated to this project ("org").
+   */
+  matchedBy: "session" | "repo" | "tag" | "org";
+  /**
+   * True when the fleet credential's principal (`/v3/self` user_id) created
+   * this session. Null-safe: false on v1 keys, which report no caller.
+   */
+  isMine: boolean;
+};
+
+export type DevinCloudFleetResult = {
+  items: DevinCloudFleetEntry[];
+  fetchedAt: string;
+};
+
+export type DevinCloudPullIntoLaneResult = {
+  status: "pulled" | "created_lane";
+  laneId: string;
+  laneName: string;
+  sessionId: string | null;
+  mergedBranch: string;
+};
+
+export type DevinCloudOpenChatRequest = {
+  devinSessionId: string;
+  laneId: string;
+  /** Predetermined ADE session id (same id stamped at create). */
+  sessionId?: string | null;
+  modelId?: string | null;
+  /** Agent mode the cloud session runs under (normal/fast/lite/ultra/fusion). */
+  devinMode?: DevinCloudMode | null;
+};
+
+export type DevinCloudOpenChatResult = {
+  sessionId: string;
+  session?: AgentChatSession;
+};
+
+export type DevinCloudAuthStatus = {
+  configured: boolean;
+  /** Which API generation the stored credential can drive. */
+  authMode: DevinCloudAuthMode | null;
+  /** Resolved org id (configured or auto-discovered), null for v1 keys. */
+  orgId: string | null;
+  /** Devin account/org label for the settings page, when verified. */
+  orgName: string | null;
+  error: string | null;
+};
+
+export type DevinCloudSetCredentialsRequest = {
+  /** PAT (`cog_...`) or legacy personal key (`apk_user_...`). Empty clears. */
+  apiKey: string;
+  /** `org-...` id for v3 PATs; auto-discovered when omitted. */
+  orgId?: string | null;
+};
+
+export type DevinCloudWatchMirrorRequest = {
+  /** ADE chat session id whose Devin transcript mirror should poll. */
+  sessionId: string;
+  watching: boolean;
+};
+
+export type DevinCloudFollowUpRequest = {
+  devinSessionId: string;
+  message: string;
+};
+
+export type DevinCloudFollowUpResult = {
+  sessionId: string;
+};
+
+export type DevinCloudCreateSessionForLaneRequest = {
+  laneId: string;
+  prompt: string;
+  sessionId?: string | null;
+  title?: string | null;
+  devinMode?: DevinCloudMode | null;
+  projectId?: string | null;
+  bypassApproval?: boolean;
+  /** VM platform label (v3 only); unset uses the org default. */
+  platform?: string | null;
+  /**
+   * Composer attachments to deliver with the first prompt. Local files are
+   * uploaded to Devin's attachment store and referenced in the prompt by URL;
+   * image URLs ride along as hints.
+   */
+  attachments?: AgentChatFileRef[];
+};
+
+export type DevinCloudCreateSessionForLaneResult = {
+  sessionId: string;
+  session?: AgentChatSession;
+  devinSessionId: string;
 };
 
 export type CursorCloudWatchMirrorRequest = {
@@ -1710,6 +1957,7 @@ export type AiSettingsStatus = {
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AiModelDescriptor[];
@@ -1720,6 +1968,7 @@ export type AiSettingsStatus = {
     kimi?: AiModelDescriptor[];
     grok?: AiModelDescriptor[];
     copilot?: AiModelDescriptor[];
+    devin?: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
@@ -1796,6 +2045,7 @@ export type AiProviderPermissions = {
   kimi?: AgentChatPermissionMode;
   grok?: AgentChatPermissionMode;
   copilot?: AgentChatPermissionMode;
+  devin?: AgentChatPermissionMode;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   writablePaths?: string[];
   allowedTools?: string[];
@@ -1890,6 +2140,11 @@ export type AiConfig = {
   chat?: AiChatConfig;
   // OpenCode/runtime-backed fields
   apiKeys?: Record<string, string>;
+  /**
+   * Devin Cloud org id (`org-...`) for v3 PAT calls. Auto-discovered from
+   * `GET /v3/enterprise/organizations` when unset; not a secret.
+   */
+  devinCloudOrgId?: string | null;
   localProviders?: AiLocalProviderConfigs;
   /** User-defined OpenAI-compatible providers injected into the OpenCode server config. */
   customProviders?: AiCustomProviderConfig[];
@@ -1936,6 +2191,7 @@ export type AiIntegrationStatus = {
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AgentChatModelInfo[];
@@ -1946,6 +2202,7 @@ export type AiIntegrationStatus = {
     kimi?: AgentChatModelInfo[];
     grok?: AgentChatModelInfo[];
     copilot?: AgentChatModelInfo[];
+    devin?: AgentChatModelInfo[];
   };
   // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];

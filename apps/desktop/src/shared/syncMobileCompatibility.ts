@@ -92,6 +92,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "ai.cursorCloudResolveLane",
   "ai.cursorCloudPullIntoLane",
   "ai.cursorCloudStopRun",
+  // Devin Cloud fleet view — same optional gating as Cursor's.
+  "ai.getDevinCloudFleet",
+  "ai.pullDevinCloudSessionIntoLane",
+  "ai.openDevinCloudChat",
+  "ai.getDevinCloudAuthStatus",
   // Per-project prompt stash. iOS gates the overflow-menu items on these
   // descriptors so an older brain simply omits stash instead of going limited.
   "chat.listPromptStashes",

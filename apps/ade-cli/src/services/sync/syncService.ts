@@ -24,6 +24,7 @@ import {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
+import type { createDevinCloudFleetService } from "../../../../desktop/src/main/services/chat/devinCloudFleetService";
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -155,6 +156,7 @@ type SyncServiceArgs = {
   agentChatService: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
   personalChatScope?: PersonalChatScopeContract;
   /** Brain→push-relay publisher; threaded to the runtime remote-command service. */
   pushPublisherService?: PushPublisherService | null;
@@ -803,6 +805,7 @@ export function createSyncService(args: SyncServiceArgs) {
     agentChatService: args.agentChatService,
     chatLaunchService: args.chatLaunchService,
     cursorCloudFleetService: args.cursorCloudFleetService,
+    devinCloudFleetService: args.devinCloudFleetService,
     personalChatScope: args.personalChatScope,
     pushPublisherService: args.pushPublisherService,
     ctoStateService: args.ctoStateService,
@@ -954,6 +957,7 @@ export function createSyncService(args: SyncServiceArgs) {
       agentChatService: args.agentChatService,
       chatLaunchService: args.chatLaunchService,
       cursorCloudFleetService: args.cursorCloudFleetService,
+      devinCloudFleetService: args.devinCloudFleetService,
       aiIntegrationService: args.aiIntegrationService,
       accountSettingsStore: args.accountSettingsStore,
       pushPublisherService: args.pushPublisherService,

@@ -40,6 +40,7 @@ describe("buildModelPickerLayout", () => {
         "claude",
         "codex",
         "cursor",
+        "devin",
         "opencode",
         "pi",
         "copilot",

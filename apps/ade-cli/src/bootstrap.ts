@@ -113,6 +113,7 @@ import { createLinearAccessTokenGetter, createLinearIngressService } from "../..
 import { buildLinearAutomationDispatches } from "../../desktop/src/main/services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "../../desktop/src/main/services/automations/cursorCloudIngressService";
 import { createCursorCloudFleetService } from "../../desktop/src/main/services/chat/cursorCloudFleetService";
+import { createDevinCloudFleetService } from "../../desktop/src/main/services/chat/devinCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
@@ -385,6 +386,7 @@ export type AdeRuntime = {
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
@@ -2247,6 +2249,39 @@ export async function createAdeRuntime(args: {
         return { state: status.state, lastEventAt: status.lastEventAt };
       },
     });
+    const devinCloudFleetService = createDevinCloudFleetService({
+      projectRoot,
+      logger,
+      listDevinCloudSessions: (args) => aiIntegrationService.listDevinCloudSessions(args),
+      getDevinCloudSession: (devinSessionId) => aiIntegrationService.getDevinCloudSession(devinSessionId),
+      getDevinCloudCallerUserId: () => aiIntegrationService.getDevinCloudCallerUserId(),
+      // A v1 personal-key listing is already owner-scoped: every row is the
+      // caller's session, so isMine holds without a /v3/self principal (which
+      // headless v1 hosts cannot produce).
+      callerIsListingOwner: () => aiIntegrationService.devinCloudListingIsPersonalScope(),
+      laneService: {
+        list: (args) => laneService.list(args),
+        importBranch: (args) => laneService.importBranch(args),
+      },
+      listDevinCloudSessionLinks: async () => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        const sessions = await agentChatService.listSessions(undefined, { includeArchived: true });
+        return sessions
+          .filter((session) => Boolean(session.devinSessionId))
+          .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
+          .map((session) => ({
+            sessionId: session.sessionId,
+            devinSessionId: session.devinSessionId ?? "",
+            laneId: session.laneId,
+            title: session.title ?? null,
+          }))
+          .filter((link) => link.devinSessionId.length > 0);
+      },
+      openDevinCloudChat: (args) => {
+        if (!agentChatService) throw new Error("Agent chat service not available.");
+        return agentChatService.openDevinCloudChat(args);
+      },
+    });
     const configReloadService = createConfigReloadService({
       paths: {
         sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -2688,6 +2723,7 @@ export async function createAdeRuntime(args: {
         agentChatService,
         chatLaunchService,
         cursorCloudFleetService,
+        devinCloudFleetService,
         pushPublisherService,
         ctoStateService,
         ctoMemoryService,
@@ -2865,6 +2901,7 @@ export async function createAdeRuntime(args: {
       agentChatService,
       chatLaunchService,
       cursorCloudFleetService,
+      devinCloudFleetService,
       ctoStateService,
       ctoMemoryService,
       ctoVoiceCallService,

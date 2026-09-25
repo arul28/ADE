@@ -70,6 +70,7 @@ import { ChannelBadge } from "./ChannelBadge";
 import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
+import { DevinCloudQuickViewButton } from "./DevinCloudQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import {
@@ -2194,6 +2195,7 @@ export function TopBar({
       if (menuLayout) {
         return (
           <div className="flex flex-col gap-0.5">
+            <DevinCloudQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
             <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
             <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} onOpenHarnessSettings={openHarnessSettings} />
             <HeaderUsageControl
@@ -2208,6 +2210,7 @@ export function TopBar({
 
       return (
         <>
+          <DevinCloudQuickViewButton />
           <CursorCloudQuickViewButton />
           <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
           {connectionsChip}

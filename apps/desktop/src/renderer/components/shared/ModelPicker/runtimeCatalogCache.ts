@@ -12,6 +12,7 @@ const REFRESH_PROVIDER_BY_FAMILY: Partial<Record<ProviderFamily, AgentChatModelC
   moonshot: "kimi",
   xai: "grok",
   "github-copilot": "copilot",
+  devin: "devin",
 };
 
 export function refreshProviderForFamily(family: ProviderFamily): AgentChatModelCatalogRefreshProvider | null {
@@ -31,6 +32,7 @@ const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
   "kimi",
   "grok",
   "copilot",
+  "devin",
 ];
 
 /**

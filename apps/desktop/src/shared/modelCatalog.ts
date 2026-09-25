@@ -81,6 +81,7 @@ export const MODEL_PICKER_PROVIDER_ORDER = [
   "claude",
   "codex",
   "cursor",
+  "devin",
   "opencode",
   "pi",
   "copilot",
@@ -113,9 +114,11 @@ const PROVIDER_LABELS: Record<string, string> = {
   meta: "Meta",
   qwen: "Qwen",
   moonshot: "Moonshot",
+  devin: "Devin",
 };
 
 export const PROVIDER_BADGE_COLORS: Record<string, string> = { ...SHARED_PROVIDER_BADGE_COLORS };
+
 
 export const PROVIDER_ORDER: string[] = [
   "opencode",
@@ -145,6 +148,7 @@ const PROVIDER_GROUP_ORDER = Object.fromEntries(
 
 /** Provider-group colors are shared with usage, chat, model, and iOS surfaces. */
 export const PROVIDER_GROUP_COLORS = SHARED_PROVIDER_GROUP_COLORS as Record<ProviderGroupKey, string>;
+
 
 const CURSOR_SECTION_PREFIX = "__cursor_line__:";
 const DROID_SECTION_PREFIX = "__droid_line__:";
@@ -219,6 +223,7 @@ const PROVIDER_GROUP_LABELS: Record<ProviderGroupKey, string> = {
   kimi: "Kimi",
   grok: "Grok",
   copilot: "GitHub Copilot",
+  devin: "Devin",
   opencode: "OpenCode",
   ollama: "Ollama",
   lmstudio: "LM Studio",

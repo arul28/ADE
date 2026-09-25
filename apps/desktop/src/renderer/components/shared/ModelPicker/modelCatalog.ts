@@ -323,6 +323,7 @@ const PICKER_FAMILY_BY_CATALOG_GROUP: Record<ProviderGroupKey, ProviderFamily> =
   kimi: "moonshot",
   grok: "xai",
   copilot: "github-copilot",
+  devin: "devin",
   ollama: "ollama",
   lmstudio: "lmstudio",
 };

@@ -42,7 +42,8 @@ export type ProviderFamily =
   | "pi"
   | "qwen"
   | "moonshot"
-  | "github-copilot";
+  | "github-copilot"
+  | "devin";
 
 export type LocalProviderFamily = Extract<ProviderFamily, "ollama" | "lmstudio">;
 
@@ -177,7 +178,8 @@ export type ModelProviderGroup =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 /** Every provider group, in the order surfaces list them. */
 export const MODEL_PROVIDER_GROUPS = [
@@ -191,6 +193,7 @@ export const MODEL_PROVIDER_GROUPS = [
   "droid",
   "kimi",
   "qwen",
+  "devin",
 ] as const satisfies readonly ModelProviderGroup[];
 
 /** Select a valid reasoning tier without duplicating fallback policy in each UI. */
@@ -994,6 +997,97 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     providerRoute: "copilot-acp",
     providerModelId: "gpt-5.3-codex",
     cliCommand: "copilot",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+
+  // ---- Devin (CLI-wrapped via `devin`, ACP, preview) ----
+  // Devin's `--model` takes short family names that always resolve to the
+  // latest release ("adaptive" is the router it recommends by default). The
+  // whole server-side catalog arrives through live ACP discovery; these rows
+  // are the durable picks a person reaches for.
+  {
+    id: "devin/adaptive",
+    shortId: "devin-adaptive",
+    aliases: ["adaptive"],
+    displayName: "Adaptive (Devin)",
+    family: "devin",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    capabilities: ALL_CAPS,
+    color: "#2563EB",
+    providerRoute: "devin-acp",
+    providerModelId: "adaptive",
+    cliCommand: "devin",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "devin/swe",
+    shortId: "devin-swe",
+    aliases: ["swe", "devin-swe-1-6"],
+    displayName: "SWE (Devin)",
+    family: "devin",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    capabilities: ALL_CAPS,
+    color: "#1D4ED8",
+    providerRoute: "devin-acp",
+    providerModelId: "swe",
+    cliCommand: "devin",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "devin/opus",
+    shortId: "devin-opus",
+    aliases: ["devin-opus"],
+    displayName: "Opus (Devin)",
+    family: "devin",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    capabilities: ALL_CAPS,
+    color: "#1E40AF",
+    providerRoute: "devin-acp",
+    providerModelId: "opus",
+    cliCommand: "devin",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "devin/gpt",
+    shortId: "devin-gpt",
+    aliases: ["gpt", "devin-gpt-5-5"],
+    displayName: "GPT (Devin)",
+    family: "devin",
+    authTypes: ["cli-subscription"],
+    contextWindow: 400_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    color: "#172554",
+    providerRoute: "devin-acp",
+    providerModelId: "gpt",
+    cliCommand: "devin",
+    isCliWrapped: true,
+    previewTier: true,
+  },
+  {
+    id: "devin/fable",
+    shortId: "devin-fable",
+    aliases: ["devin-fable"],
+    displayName: "Fable (Devin)",
+    family: "devin",
+    authTypes: ["cli-subscription"],
+    contextWindow: 200_000,
+    maxOutputTokens: 64_000,
+    capabilities: ALL_CAPS,
+    color: "#3B82F6",
+    providerRoute: "devin-acp",
+    providerModelId: "fable",
+    cliCommand: "devin",
     isCliWrapped: true,
     previewTier: true,
   },
@@ -1906,9 +2000,9 @@ export function getDynamicOpenCodeModelDescriptors(): ModelDescriptor[] {
 // ---------------------------------------------------------------------------
 
 /** Provider groups whose models can arrive from a live ACP session. */
-export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "copilot";
+export type AcpModelProviderGroup = "qwen" | "kimi" | "grok" | "copilot" | "devin";
 
-const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "copilot"] as const;
+const ACP_MODEL_PROVIDER_GROUPS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 
 /** Family, route prefix, and brand color for each ACP provider group. */
 const ACP_GROUP_METADATA: Record<
@@ -1923,6 +2017,13 @@ const ACP_GROUP_METADATA: Record<
     providerRoute: "copilot-acp",
     cliCommand: "copilot",
     color: ACP_PROVIDER_MODEL_COLORS.copilot,
+    previewTier: true,
+  },
+  devin: {
+    family: "devin",
+    providerRoute: "devin-acp",
+    cliCommand: "devin",
+    color: "#2563EB",
     previewTier: true,
   },
 };
@@ -2572,6 +2673,7 @@ export function getAvailableModels(
     moonshot: "kimi",
     xai: "grok",
     "github-copilot": "copilot",
+    devin: "devin",
   };
 
   const hasMappedCli = (family: ProviderFamily): boolean => {
@@ -2742,7 +2844,7 @@ export function resolveModelIdForProvider(
  */
 export function resolveCliProviderForModel(
   descriptor: ModelDescriptor,
-): "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | null {
+): "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | null {
   if (descriptor.providerRoute === "pi-sdk") return "pi";
   if (!descriptor.isCliWrapped) return null;
   if (descriptor.family === "cursor") return "cursor";
@@ -2751,6 +2853,7 @@ export function resolveCliProviderForModel(
   if (descriptor.family === "moonshot") return "kimi";
   if (descriptor.family === "xai") return "grok";
   if (descriptor.family === "github-copilot") return "copilot";
+  if (descriptor.family === "devin") return "devin";
   if (descriptor.family === "anthropic") return "claude";
   if (descriptor.family === "openai") return "codex";
   return null;
@@ -2796,6 +2899,7 @@ export function getRuntimeModelRefForDescriptor(
     || provider === "kimi"
     || provider === "grok"
     || provider === "copilot"
+    || provider === "devin"
   ) {
     return descriptor.providerModelId;
   }
@@ -2826,6 +2930,7 @@ function listProviderModelsInternal(provider: ModelProviderGroup): ModelDescript
     if (provider === "kimi") return descriptor.isCliWrapped && descriptor.family === "moonshot";
     if (provider === "grok") return descriptor.isCliWrapped && descriptor.family === "xai";
     if (provider === "copilot") return descriptor.isCliWrapped && descriptor.family === "github-copilot";
+    if (provider === "devin") return descriptor.isCliWrapped && descriptor.family === "devin";
     return !descriptor.isCliWrapped;
   });
   // Curated rows first (with the efforts a live session reported), then the
@@ -2964,7 +3069,7 @@ function pickDefaultModelForProvider(
     if (discovered) return models.find((model) => model.id === discovered.id) ?? models[0];
     return models[0];
   }
-  if (provider === "kimi" || provider === "grok" || provider === "copilot") {
+  if (provider === "kimi" || provider === "grok" || provider === "copilot" || provider === "devin") {
     return models[0];
   }
   return pickDefaultOpenCodeModel(models);

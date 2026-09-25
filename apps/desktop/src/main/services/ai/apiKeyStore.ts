@@ -111,6 +111,7 @@ const ENV_KEY_PROVIDERS: Record<string, string> = {
   together: "TOGETHER_API_KEY",
   openrouter: "OPENROUTER_API_KEY",
   cursor: "CURSOR_API_KEY",
+  devin: "DEVIN_API_KEY",
   moonshotai: "MOONSHOT_API_KEY",
 };
 

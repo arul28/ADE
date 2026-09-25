@@ -39,9 +39,10 @@ export type SettingsProviderId =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
-/** The four providers ADE drives over the Agent Client Protocol. */
+/** The providers ADE drives over the Agent Client Protocol. */
 export type AcpSettingsProviderId = AcpProviderId;
 
 /**

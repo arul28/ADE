@@ -111,7 +111,7 @@ export type DraftLaunchJobStatus = "naming-lane" | "creating-lane" | "starting-s
  * lane, start the agent, hand over the prompt — but each stage takes visibly longer and happens
  * off this machine, so the status line says so rather than claiming a local session is starting.
  */
-export type DraftLaunchTarget = "local" | "cursor-cloud";
+export type DraftLaunchTarget = "local" | "cursor-cloud" | "devin-cloud";
 
 export type DraftLaunchJob = {
   id: string;

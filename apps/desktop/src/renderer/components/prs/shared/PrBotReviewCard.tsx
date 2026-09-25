@@ -1,11 +1,89 @@
 import { memo, useMemo, useState, type CSSProperties } from "react";
-import { CaretRight } from "@phosphor-icons/react";
+import { CaretRight, Robot } from "@phosphor-icons/react";
+import claudeMark from "@lobehub/icons-static-svg/icons/claude.svg";
+import codexMark from "@lobehub/icons-static-svg/icons/codex.svg";
+import copilotMark from "@lobehub/icons-static-svg/icons/githubcopilot.svg";
+import greptileMark from "@lobehub/icons-static-svg/icons/greptile.svg";
+import vercelMark from "@lobehub/icons-static-svg/icons/vercel.svg";
+import devinMark from "../../../assets/provider-logos/devin.svg";
 
 import type { PrReview } from "../../../../shared/types";
 import { classifyPrAuthor } from "../../../../shared/prBotIdentity";
 import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
+import { PrUserAvatar } from "./PrUserAvatar";
+
+export type BotProvider =
+  | "greptile"
+  | "seer"
+  | "coderabbit"
+  | "claude"
+  | "codex"
+  | "copilot"
+  | "sourcery"
+  | "cursor"
+  | "vercel"
+  | "linear"
+  | "codecov"
+  | "devin";
+
+type ProviderVisual = {
+  label: string;
+  accent: string;
+  initial: string;
+  /**
+   * Bundled brand mark used as a fallback when GitHub doesn't hand us the bot's
+   * real avatar URL (the avatar IS the logo). Tinted to `accent` via a CSS mask
+   * so color/mono source marks render as a consistent branded silhouette.
+   */
+  mark?: string;
+};
+
+const PROVIDERS: Record<BotProvider, ProviderVisual> = {
+  greptile: { label: "Greptile", accent: COLORS.success, initial: "G", mark: greptileMark },
+  seer: { label: "Seer", accent: COLORS.accent, initial: "S" },
+  coderabbit: { label: "CodeRabbit", accent: COLORS.entryCli, initial: "R" },
+  claude: { label: "Claude", accent: COLORS.info, initial: "C", mark: claudeMark },
+  codex: { label: "Codex", accent: COLORS.textSecondary, initial: "C", mark: codexMark },
+  copilot: { label: "Copilot", accent: COLORS.info, initial: "C", mark: copilotMark },
+  sourcery: { label: "Sourcery", accent: COLORS.warning, initial: "Y" },
+  cursor: { label: "Cursor", accent: COLORS.accent, initial: "C" },
+  vercel: { label: "Vercel", accent: COLORS.textPrimary, initial: "V", mark: vercelMark },
+  linear: { label: "Linear", accent: COLORS.accent, initial: "L" },
+  codecov: { label: "Codecov", accent: COLORS.danger, initial: "C" },
+  devin: { label: "Devin", accent: "#2563EB", initial: "D", mark: devinMark },
+};
+
+const DETECTION_PATTERNS: Array<{ provider: BotProvider; test: (login: string) => boolean }> = [
+  { provider: "greptile", test: (l) => l.startsWith("greptile") },
+  { provider: "seer", test: (l) => l.startsWith("seer") || l.includes("seer-by-sentry") || l.startsWith("sentry") },
+  { provider: "coderabbit", test: (l) => l.startsWith("coderabbit") },
+  {
+    provider: "copilot",
+    test: (l) => l === "copilot" || l.startsWith("github-copilot") || l.startsWith("copilot-"),
+  },
+  {
+    provider: "codex",
+    test: (l) => l.startsWith("codex") || l.startsWith("chatgpt-codex") || l.includes("codex-connector"),
+  },
+  { provider: "claude", test: (l) => l === "claude" || l.startsWith("claude-") || l.startsWith("anthropic-") },
+  { provider: "sourcery", test: (l) => l.startsWith("sourcery") },
+  { provider: "vercel", test: (l) => l.startsWith("vercel") },
+  { provider: "linear", test: (l) => l === "linear" || l.startsWith("linear-") },
+  { provider: "codecov", test: (l) => l.startsWith("codecov") },
+  { provider: "cursor", test: (l) => l.startsWith("cursor") },
+  { provider: "devin", test: (l) => l === "devin" || l.startsWith("devin-") },
+];
+
+export function detectBotProvider(authorLogin: string): BotProvider | null {
+  if (!authorLogin) return null;
+  const normalized = authorLogin.toLowerCase().replace(/\[bot\]$/, "");
+  for (const { provider, test } of DETECTION_PATTERNS) {
+    if (test(normalized)) return provider;
+  }
+  return null;
+}
 import { PrAgentAvatar } from "./PrAgentAvatar";
 
 type Severity = "P0" | "P1" | "P2" | "High" | "Medium" | "Low";

@@ -139,7 +139,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type { ZLayer } from "../ui/zLayers";
 import { VoiceDictationButton } from "./VoiceDictationButton";
-import { ProviderLogo } from "../shared/ProviderLogos";
+import { ProviderLogo, DevinLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel, providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, useRootAppStore, rootAppStoreApi } from "../../state/appStore";
 import { presetLabel } from "../../../shared/harnessPresets";
@@ -1770,10 +1770,18 @@ export function AgentChatComposer({
   cursorCloudModelReady = false,
   cursorCloudHasEligibleModels = true,
   cursorCloudModeActive = false,
+  cloudSessionLinked = false,
   onSubmitToCloud,
+  cloudTargetLabel = "Cursor Cloud",
+  cloudFileAttachmentsDelivered = false,
   cursorCloudPanelAvailable = false,
   cursorCloudPaneOpen = false,
   onToggleCursorCloudPanel,
+  devinCloudPanelAvailable = false,
+  devinCloudPaneOpen = false,
+  onToggleDevinCloudPanel,
+  devinCloudHandoffAvailable = false,
+  onHandoffToDevinCloud,
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
@@ -2013,6 +2021,14 @@ export function AgentChatComposer({
    */
   cursorCloudCanLaunch?: boolean;
   /**
+   * Whether this chat is already bound to a cloud session (its agent is a
+   * cloud session id, not the launchable-draft state). Linked replies ride
+   * the ordinary submit path — they are not launches — so `cursorCloudCanLaunch`
+   * stays false; this prop exists only so send gating does not fall back to
+   * the local-model readiness check, which a cloud-bound chat never needs.
+   */
+  cloudSessionLinked?: boolean;
+  /**
    * Whether the draft's model is one Cursor Cloud can run. Read only while cloud mode is active.
    * It is a separate prop from `cursorCloudCanLaunch` on purpose: cloud mode must stay on with an
    * ineligible model so the send is BLOCKED with a reason, never silently rerouted to the local
@@ -2028,16 +2044,31 @@ export function AgentChatComposer({
    */
   cursorCloudHasEligibleModels?: boolean;
   /**
-   * Cloud mode: the next send goes to Cursor Cloud instead of the local runtime. The composer
-   * sets it by picking "Cursor Cloud" in the launch shelf's machine picker. The same overflow
-   * menu exposes the all-agents Cursor Cloud panel.
+   * Cloud mode: the next send goes to a hosted cloud runtime instead of the local runtime.
+   * The composer sets it by picking a cloud row in the launch shelf's machine picker. The same
+   * overflow menu exposes the cloud sessions panel.
    */
   cursorCloudModeActive?: boolean;
   onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
+  /**
+   * Display name of the cloud runtime the next send targets ("Cursor Cloud", "Devin Cloud").
+   * The composer uses it for the send button's label and tooltip text.
+   */
+  cloudTargetLabel?: string;
+  /** True when the cloud provider behind this composer accepts file
+   *  attachments with a send (Devin uploads them; Cursor does not). Lets
+   *  attachment-only drafts enable Send only for providers that deliver them. */
+  cloudFileAttachmentsDelivered?: boolean;
   /** Whether the Cursor Cloud all-agents panel can be opened for this lane. */
   cursorCloudPanelAvailable?: boolean;
   cursorCloudPaneOpen?: boolean;
   onToggleCursorCloudPanel?: () => void;
+  /** Whether the Devin Cloud sessions panel can be opened for this lane. */
+  devinCloudPanelAvailable?: boolean;
+  devinCloudPaneOpen?: boolean;
+  onToggleDevinCloudPanel?: () => void;
+  devinCloudHandoffAvailable?: boolean;
+  onHandoffToDevinCloud?: () => void;
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
@@ -4144,7 +4175,7 @@ export function AgentChatComposer({
      with no remote binding is running on this Mac. */
   const composerMachineName = sessionId
     ? cursorRuntime === "cloud"
-      ? "Cursor Cloud"
+      ? cloudTargetLabel
       : composerMachineBinding?.kind === "remote"
         ? composerMachineBinding.runtimeName
         : THIS_MACHINE_NAME
@@ -5157,7 +5188,11 @@ export function AgentChatComposer({
       const block = cursorCloudSendBlock({
         hasEligibleModels: cursorCloudHasEligibleModels,
         modelReady: cursorCloudModelReady,
-        hasContent: trimmed.length > 0 || contextAttachmentCount > 0,
+        // The launch prompt carries typed text, issue context, and delivered
+        // file attachments — visual-context items are not part of it, so a
+        // visual-only draft must stay blocked rather than launch with "".
+        hasContent: trimmed.length > 0 || contextAttachmentCount > 0
+          || (cloudFileAttachmentsDelivered && attachments.length > 0),
       });
       if (block) {
         if (block.notify) onSubmitBlocked?.(block.reason);
@@ -5173,12 +5208,15 @@ export function AgentChatComposer({
       });
       return;
     }
-    if (busy || !singleModelReady || !activeTurnHasContent) {
-      if (!busy && !singleModelReady) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
+    // A linked cloud reply rides this same submit path but never touches the
+    // local model — don't let local-model readiness veto it.
+    const linkedCloudReply = cloudSessionLinked && cursorCloudModeActive;
+    if (busy || (!singleModelReady && !linkedCloudReply) || !activeTurnHasContent) {
+      if (!busy && !singleModelReady && !linkedCloudReply) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5253,12 +5291,19 @@ export function AgentChatComposer({
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0 || contextAttachmentCount > 0);
   const singleReady = !parallelChatMode && singleModelReady && activeTurnHasContent;
-  const cloudModeActiveForSend = cursorCloudCanLaunch && cursorCloudModeActive && !parallelChatMode;
+  const cloudModeActiveForSend = (cursorCloudCanLaunch || cloudSessionLinked) && cursorCloudModeActive && !parallelChatMode;
   const cloudSendBlock = cloudModeActiveForSend
     ? cursorCloudSendBlock({
       hasEligibleModels: cursorCloudHasEligibleModels,
       modelReady: cursorCloudModelReady,
-      hasContent: draft.trim().length > 0 || contextAttachmentCount > 0,
+      // Match the predicate of the path the send will actually take: a fresh
+      // launch delivers text + issue context + file attachments, while a
+      // linked reply rides submit, which accepts composer context but not
+      // file-attachment-only payloads.
+      hasContent: cursorCloudCanLaunch
+        ? draft.trim().length > 0 || contextAttachmentCount > 0
+          || (cloudFileAttachmentsDelivered && attachments.length > 0)
+        : hasComposerContextContent,
     })
     : null;
   const hasPendingImageAttachments = pendingImageAttachments.length > 0;
@@ -5293,7 +5338,7 @@ export function AgentChatComposer({
     }
     if (cloudModeActiveForSend) {
       if (cloudSendBlock) return cloudSendBlock.reason;
-      return "Send to Cursor Cloud";
+      return `Send to ${cloudTargetLabel}`;
     }
     if (!modelId) return singleModelBlockedMessage ?? "Select a model first";
     if (singleModelBlockedMessage) return singleModelBlockedMessage;
@@ -6286,6 +6331,23 @@ export function AgentChatComposer({
                       onSelect: onToggleCursorCloudPanel,
                     }]
                   : []),
+                ...(devinCloudPanelAvailable && onToggleDevinCloudPanel
+                  ? [{
+                      id: "devin-cloud-panel",
+                      label: devinCloudPaneOpen ? "Close Devin Cloud sessions" : "Open Devin Cloud sessions",
+                      icon: <DevinLogo size={14} />,
+                      active: devinCloudPaneOpen,
+                      onSelect: onToggleDevinCloudPanel,
+                    }]
+                  : []),
+                ...(devinCloudHandoffAvailable && onHandoffToDevinCloud
+                  ? [{
+                      id: "devin-cloud-handoff",
+                      label: "Hand off to Devin Cloud",
+                      icon: <CloudArrowUp size={14} weight="regular" />,
+                      onSelect: onHandoffToDevinCloud,
+                    }]
+                  : []),
                 ...(showParallelChatToggle && !parallelChatMode
                   ? [{
                       id: "parallel",
@@ -6418,12 +6480,12 @@ export function AgentChatComposer({
                 const label = parallelChatMode
                   ? "Send to lanes"
                   : cloudMode
-                    ? "Send to Cursor Cloud"
+                    ? `Send to ${cloudTargetLabel}`
                     : "Send";
                 const description = parallelChatMode
                   ? "Create child lanes and send this prompt with its attachments to every configured model."
                   : cloudMode
-                    ? "Launch a Cursor Cloud agent with this prompt and the panel's settings."
+                    ? `Launch a ${cloudTargetLabel} session with this prompt and the panel's settings.`
                     : "Send this prompt to the selected model.";
                 const backgroundAvailable = Boolean(onSubmitInBackground) && !parallelChatMode && !cloudMode;
                 const sendIcon = cloudMode

@@ -31,6 +31,11 @@ export const Z_LAYERS = {
   hud: 130,
   /** Floating top-center banners. */
   floatingBanner: 140,
+  /**
+   * A full-viewport app surface (the Mac Desktop fullscreen view). Below
+   * dialogs and toasts so a confirm or picker raised from inside it works.
+   */
+  fullscreenTakeover: 150,
   /** Modal dialogs and their scrim. */
   dialog: 200,
   /** A confirm/prompt raised from inside another dialog. */

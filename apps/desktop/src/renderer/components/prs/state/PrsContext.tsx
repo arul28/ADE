@@ -240,7 +240,7 @@ function readBoolLs(key: string, fallback: boolean): boolean {
 
 type ResolverPermissionFamily = Extract<
   ModelProviderGroup,
-  "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+  "claude" | "codex" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
 >;
 type ResolverPermissionPreferences = Record<ResolverPermissionFamily, PrAgentPermissionMode>;
 
@@ -255,6 +255,7 @@ const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
   kimi: "default",
   grok: "default",
   copilot: "default",
+  devin: "default",
 };
 
 function normalizeResolverPermissionMode(value: unknown): PrAgentPermissionMode | null {
@@ -287,6 +288,7 @@ function readPersistedResolverPermissions(): ResolverPermissionPreferences {
       kimi: normalizeResolverPermissionMode(parsed?.kimi) ?? DEFAULT_RESOLVER_PERMISSIONS.kimi,
       grok: normalizeResolverPermissionMode(parsed?.grok) ?? DEFAULT_RESOLVER_PERMISSIONS.grok,
       copilot: normalizeResolverPermissionMode(parsed?.copilot) ?? DEFAULT_RESOLVER_PERMISSIONS.copilot,
+      devin: normalizeResolverPermissionMode(parsed?.devin) ?? DEFAULT_RESOLVER_PERMISSIONS.devin,
     };
   } catch {
     return DEFAULT_RESOLVER_PERMISSIONS;

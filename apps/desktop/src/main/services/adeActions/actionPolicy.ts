@@ -88,7 +88,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // for the same reason: writing or destroying a provider credential is
   // operator work. `getMachineApiKeyStatus` stays open like `getStatus` — it
   // answers "is a key configured and where from", never the key.
-  ai: { only: ["updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  ai: { only: ["updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "setDevinCloudCredentials"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -727,6 +727,17 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resolveCursorCloudAgentLane",
     "pullCursorCloudAgentIntoLane",
     "stopCursorCloudAgentRun",
+    "getDevinCloudAuthStatus",
+    "setDevinCloudCredentials",
+    "getDevinCloudFleet",
+    "pullDevinCloudSessionIntoLane",
+    "terminateDevinCloudSession",
+    "archiveDevinCloudSession",
+    "unarchiveDevinCloudSession",
+    "devinCloudFollowUp",
+    "openDevinCloudChat",
+    "watchDevinCloudMirror",
+    "createDevinCloudSession",
   ],
   onboarding: [
     "complete",

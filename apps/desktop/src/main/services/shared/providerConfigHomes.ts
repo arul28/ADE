@@ -124,6 +124,28 @@ export function openCodeDataDirs(args: HomeArg & { platform?: NodeJS.Platform } 
 }
 
 /**
+ * Devin's stored login: `credentials.toml` under the XDG data dir. `devin
+ * auth status` reports it as `$XDG_DATA_HOME/devin/credentials.toml`
+ * (`~/.local/share/devin` by default); Windows honours `%LOCALAPPDATA%`.
+ * XDG selects THE data directory — it is not a search path — so when the
+ * override is set only that location counts; returning the default alongside
+ * it would let a stale, logged-out credential mark the provider active.
+ * The auth detector and the per-turn account reader share this list so they
+ * never disagree about where the login lives.
+ */
+export function devinCredentialFiles(args: HomeArg & { platform?: NodeJS.Platform } = {}): string[] {
+  const env = args.env ?? process.env;
+  const home = baseHome(args);
+  const platform = args.platform ?? process.platform;
+  const xdgData = trimmed(env.XDG_DATA_HOME);
+  if (platform === "win32") {
+    return [path.join(trimmed(env.LOCALAPPDATA) ?? path.join(home, "AppData", "Local"), "devin", "credentials.toml")];
+  }
+  const dataHome = xdgData ? path.resolve(xdgData) : path.join(home, ".local", "share");
+  return [path.join(dataHome, "devin", "credentials.toml")];
+}
+
+/**
  * Qwen's per-request usage files. `QWEN_RUNTIME_DIR` moves Qwen's runtime
  * state (usage included) away from the config home, and the Qwen binary
  * honours it, so ADE must too.

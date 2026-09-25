@@ -2237,6 +2237,7 @@ export type SyncCliLaunchProvider =
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
   | "shell";
 
 export type SyncStartCliSessionArgs = {
@@ -2608,6 +2609,18 @@ export type SyncRemoteCommandAction =
   | "ai.cursorCloudResolveLane"
   | "ai.cursorCloudPullIntoLane"
   | "ai.cursorCloudStopRun"
+  | "ai.getDevinCloudAuthStatus"
+  | "ai.setDevinCloudCredentials"
+  | "ai.deleteDevinCloudCredentials"
+  | "ai.getDevinCloudFleet"
+  | "ai.pullDevinCloudSessionIntoLane"
+  | "ai.terminateDevinCloudSession"
+  | "ai.archiveDevinCloudSession"
+  | "ai.unarchiveDevinCloudSession"
+  | "ai.devinCloudFollowUp"
+  | "ai.openDevinCloudChat"
+  | "ai.watchDevinCloudMirror"
+  | "ai.createDevinCloudSession"
   | "prs.list"
   | "prs.listOpenForRepo"
   | "prs.refresh"

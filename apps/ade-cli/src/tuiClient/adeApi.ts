@@ -555,7 +555,7 @@ export async function signalTerminal(
 /** Provider CLIs the TUI can launch as tracked terminal sessions. */
 export type CliTerminalProvider = Extract<
   AdeCodeProvider,
-  "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+  "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
 >;
 
 export type StartCliTerminalSessionResult = {

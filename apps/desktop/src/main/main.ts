@@ -320,6 +320,7 @@ import { createLinearAccessTokenGetter, createLinearIngressService } from "./ser
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "./services/automations/cursorCloudIngressService";
 import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
+import { createDevinCloudFleetService } from "./services/chat/devinCloudFleetService";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
@@ -4461,6 +4462,33 @@ app.whenReady().then(async () => {
         return { state: status.state, lastEventAt: status.lastEventAt };
       },
     });
+
+    const devinCloudFleetService = createDevinCloudFleetService({
+      projectRoot,
+      logger,
+      listDevinCloudSessions: (args) => aiIntegrationService.listDevinCloudSessions(args),
+      getDevinCloudSession: (devinSessionId) => aiIntegrationService.getDevinCloudSession(devinSessionId),
+      getDevinCloudCallerUserId: () => aiIntegrationService.getDevinCloudCallerUserId(),
+      callerIsListingOwner: () => aiIntegrationService.devinCloudListingIsPersonalScope(),
+      laneService: {
+        list: (args) => laneService.list(args),
+        importBranch: (args) => laneService.importBranch(args),
+      },
+      listDevinCloudSessionLinks: async () => {
+        const sessions = await agentChatService.listSessions(undefined, { includeArchived: true });
+        return sessions
+          .filter((session) => Boolean(session.devinSessionId))
+          .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))
+          .map((session) => ({
+            sessionId: session.sessionId,
+            devinSessionId: session.devinSessionId ?? "",
+            laneId: session.laneId,
+            title: session.title ?? null,
+          }))
+          .filter((link) => link.devinSessionId.length > 0);
+      },
+      openDevinCloudChat: (args) => agentChatService.openDevinCloudChat(args),
+    });
     automationService?.setCursorCloudIngressAvailable(() => {
       const status = cursorCloudIngressService.getStatus();
       return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
@@ -4889,6 +4917,7 @@ app.whenReady().then(async () => {
       getAppleRemoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       agentChatService,
       cursorCloudFleetService,
+      devinCloudFleetService,
       ctoStateService,
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
@@ -5360,6 +5389,7 @@ app.whenReady().then(async () => {
       linearIngressService,
       cursorCloudIngressService,
       cursorCloudFleetService,
+      devinCloudFleetService,
       feedbackReporterService,
       usageTrackingService,
       storageInsightsService,

@@ -35,7 +35,8 @@ export function isPtyContextInsertableToolType(toolType: TerminalSessionSummary[
     || toolType === "qwen"
     || toolType === "kimi"
     || toolType === "grok"
-    || toolType === "copilot";
+    || toolType === "copilot"
+    || toolType === "devin";
 }
 
 /**
@@ -99,7 +100,8 @@ export type KnownChatProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolType> = {
   claude: "claude-chat",
@@ -112,6 +114,7 @@ export const CHAT_TOOL_TYPE_BY_PROVIDER: Record<KnownChatProvider, TerminalToolT
   kimi: "kimi-chat",
   grok: "grok-chat",
   copilot: "copilot-chat",
+  devin: "devin-chat",
 };
 
 const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
@@ -125,6 +128,7 @@ const CHAT_PROVIDER_BY_TOOL_TYPE: Record<string, KnownChatProvider> = {
   "kimi-chat": "kimi",
   "grok-chat": "grok",
   "copilot-chat": "copilot",
+  "devin-chat": "devin",
 };
 
 /**
@@ -201,10 +205,12 @@ export function defaultSessionLabel(toolType: string | null | undefined): string
   if (toolType === "kimi-chat") return "Kimi chat";
   if (toolType === "grok-chat") return "Grok chat";
   if (toolType === "copilot-chat") return "Copilot chat";
+  if (toolType === "devin-chat") return "Devin chat";
   if (toolType === "qwen") return "Qwen CLI session";
   if (toolType === "kimi") return "Kimi CLI session";
   if (toolType === "grok") return "Grok CLI session";
   if (toolType === "copilot") return "Copilot CLI session";
+  if (toolType === "devin") return "Devin CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   return "Session";
@@ -280,6 +286,7 @@ const SHORT_TOOL_TYPE_PREFIXES: readonly [string, string][] = [
   ["kimi", "Kimi"],
   ["grok", "Grok"],
   ["copilot", "Copilot"],
+  ["devin", "Devin"],
 ];
 
 /** Resolve a short label via exact match, prefix match, or hyphen-to-space fallback. */
@@ -314,10 +321,12 @@ export function formatToolTypeLabel(toolType: string | null | undefined): string
   if (toolType === "kimi-chat") return "Kimi chat";
   if (toolType === "grok-chat") return "Grok chat";
   if (toolType === "copilot-chat") return "Copilot chat";
+  if (toolType === "devin-chat") return "Devin chat";
   if (toolType === "qwen") return "Qwen CLI session";
   if (toolType === "kimi") return "Kimi CLI session";
   if (toolType === "grok") return "Grok CLI session";
   if (toolType === "copilot") return "Copilot CLI session";
+  if (toolType === "devin") return "Devin CLI session";
   if (toolType === "claude") return "Claude session";
   if (toolType === "codex") return "Codex session";
   if (toolType === "shell") return "Terminal session";
