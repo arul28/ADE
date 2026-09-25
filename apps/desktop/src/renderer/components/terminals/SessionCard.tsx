@@ -9,6 +9,8 @@ import {
   DownloadSimple,
   GitPullRequest,
   GridFour,
+  PaperPlaneTilt,
+  PencilSimple,
   PushPin,
   Tag,
   TreeStructure,
@@ -73,7 +75,9 @@ import { navigateToSpawnedChat } from "../chat/spawnNavigation";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
-import { useChatLaunchRowState, useChatLaunchStatusLine } from "../../state/chatLaunchStore";
+import { useChatLaunchQueuedState, useChatLaunchRowState, useChatLaunchStatusLine } from "../../state/chatLaunchStore";
+import { useComposerDraftPresence } from "../../state/composerDraftPresenceStore";
+import { deriveSessionRowIndicators } from "../../../shared/sessionDraftIndicators";
 import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
 import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
@@ -600,6 +604,19 @@ export const SessionCard = React.memo(function SessionCard({
   const chatLaunch = useChatLaunchRowState(session.id);
   // Only a row born this moment slides in; a remount of an older launch row is still.
   const launchRowJustAppeared = Boolean(chatLaunch && Date.now() - Date.parse(chatLaunch.startedAt) < 1500);
+  // Draft / outbox marks. Each reads its own store and re-renders this row only
+  // when its own boolean or count flips, so typing in one chat or a queue tick
+  // does not repaint the list.
+  const hasComposerDraft = useComposerDraftPresence(session.id);
+  const queuedState = useChatLaunchQueuedState(session.id);
+  const rowIndicators = deriveSessionRowIndicators({
+    hasDraft: hasComposerDraft,
+    queuedCount: queuedState.count,
+    queuedSending: queuedState.sending,
+    queuedFailed: queuedState.failed,
+  });
+  const draftIndicator = rowIndicators.find((indicator) => indicator.kind === "draft") ?? null;
+  const outboxIndicator = rowIndicators.find((indicator) => indicator.kind === "outbox") ?? null;
   const namingLane = useLaneNamePending(lane?.id ?? session.laneId);
   const namingTitle = useSessionFieldGenerating(session.id, "title");
   const namingStatus = useSessionFieldGenerating(session.id, "statusLine");
@@ -1091,6 +1108,20 @@ export const SessionCard = React.memo(function SessionCard({
       value: gridBadge === "active" ? "In the active grid" : "In another grid",
     });
   }
+  if (draftIndicator) {
+    hoverRows.push({
+      id: "draft",
+      icon: <PencilSimple size={13} className="text-muted-fg/60" />,
+      value: draftIndicator.title,
+    });
+  }
+  if (outboxIndicator) {
+    hoverRows.push({
+      id: "outbox",
+      icon: <PaperPlaneTilt size={13} className="text-muted-fg/60" />,
+      value: outboxIndicator.title,
+    });
+  }
   if (session.claudeTag?.trim()) {
     hoverRows.push({
       id: "tag",
@@ -1185,6 +1216,31 @@ export const SessionCard = React.memo(function SessionCard({
       aria-label={gridBadge === "active" ? "In the active grid" : "In another grid"}
     >
       <GridFour size={11} weight={gridBadge === "active" ? "fill" : "bold"} />
+    </span>
+  ) : null;
+  /* Draft / outbox marks sit in the same fixed-width glyph cluster as the grid
+     and machine marks: identity-adjacent state that never spends a status hue
+     and never competes with the status slot for the eye. Glyph-only, with the
+     sentence in the title and the hover card — the existing vocabulary. */
+  const indicatorGlyph = rowIndicators.length > 0 ? (
+    <span className="inline-flex shrink-0 items-center gap-1" data-testid="session-row-indicators">
+      {rowIndicators.map((indicator) => (
+        <span
+          key={indicator.kind}
+          data-testid={`session-${indicator.kind}-indicator`}
+          role="img"
+          title={indicator.title}
+          aria-label={indicator.title}
+          className={cn(
+            "inline-flex shrink-0 items-center justify-center",
+            indicator.kind === "outbox" ? "text-sky-300/75" : "text-muted-fg/60",
+          )}
+        >
+          {indicator.kind === "draft"
+            ? <PencilSimple size={11} weight="fill" />
+            : <PaperPlaneTilt size={11} weight="fill" />}
+        </span>
+      ))}
     </span>
   ) : null;
   const singletonPrBadge = showLaneIdentity && lanePr ? (
@@ -1349,6 +1405,7 @@ export const SessionCard = React.memo(function SessionCard({
               same precedent as `compactLineageGlyph` directly above. */}
           {machineGlyph}
           {gridIndicator}
+          {indicatorGlyph}
           {statusSlot}
         </div>
       ) : (
@@ -1367,6 +1424,7 @@ export const SessionCard = React.memo(function SessionCard({
             {browserPresenceGlyph}
             {machineGlyph}
             {gridIndicator}
+            {indicatorGlyph}
             {statusSlot}
           </div>
 

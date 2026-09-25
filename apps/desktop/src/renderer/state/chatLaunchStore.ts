@@ -672,6 +672,39 @@ export function useChatLaunchRowState(sessionId: string | null | undefined): Cha
   }, sameRowState);
 }
 
+export type ChatLaunchQueuedState = {
+  /** Messages still waiting to reach the chat. */
+  count: number;
+  /** At least one is being delivered right now (agent started, none failed). */
+  sending: boolean;
+  /** At least one failed its last delivery attempt. */
+  failed: boolean;
+};
+
+function sameQueuedState(a: ChatLaunchQueuedState, b: ChatLaunchQueuedState): boolean {
+  return a.count === b.count && a.sending === b.sending && a.failed === b.failed;
+}
+
+/**
+ * The outbox state a session row shows: how many messages a launch still owes
+ * this chat, whether delivery is in flight, and whether it failed. Structurally
+ * shared, so a row re-renders only when one of those three changes — not on
+ * every stage tick.
+ */
+export function useChatLaunchQueuedState(sessionId: string | null | undefined): ChatLaunchQueuedState {
+  return useChatLaunchSelector((state) => {
+    const snapshot = sessionId ? state.entries[sessionId]?.snapshot : undefined;
+    const queued = snapshot?.queuedMessages ?? [];
+    return {
+      count: queued.length,
+      sending: queued.length > 0
+        && queued.every((message) => !message.deliveryError)
+        && snapshot?.agentStarted === true,
+      failed: queued.some((message) => Boolean(message.deliveryError)),
+    };
+  }, sameQueuedState);
+}
+
 /** The launch's one-line status ("Checking out files · 62%"); re-renders only when the text changes. */
 export function useChatLaunchStatusLine(launchId: string | null | undefined): string | null {
   return useStore(chatLaunchStore, (state) => {

@@ -350,6 +350,10 @@ import {
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
 import {
+  COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
+  setComposerDraftPresence,
+} from "../../state/composerDraftPresenceStore";
+import {
   captureComposerHandoff,
   CHAT_SHELL_HEADER_SELECTOR,
   findDraftComposerHandoffElement,
@@ -439,7 +443,6 @@ const CURSOR_CLOUD_MACHINE_ID = "__ade_cursor_cloud__";
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
-const COMPOSER_DRAFT_STORAGE_KEY_PREFIX = "ade.chat.composerDraft.v1";
 const WORK_START_DRAFT_COMPANION_STATE_KEY = "draft:work-start";
 const WORK_START_DRAFT_LAUNCH_SCOPE_ID = "work-start";
 const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
@@ -4683,6 +4686,19 @@ export function AgentChatPane({
     draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
   }, [clearPromptSuggestionForSession, companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
+
+  // Publish this session's draft presence for the sidebar's row indicator.
+  // Runs on every keystroke; the store no-ops when the boolean is unchanged,
+  // so a long session list never re-renders for typing.
+  const hasComposerDraftContent = draft.trim().length > 0
+    || attachments.length > 0
+    || contextAttachments.length > 0
+    || iosElementContextItems.length > 0
+    || appControlContextItems.length > 0
+    || builtInBrowserContextItems.length > 0;
+  useEffect(() => {
+    setComposerDraftPresence(selectedSessionId, hasComposerDraftContent);
+  }, [selectedSessionId, hasComposerDraftContent]);
   const updateComposerMentionLabel = useCallback((token: string, title: string) => {
     const label = title.trim();
     if (!label) return;
