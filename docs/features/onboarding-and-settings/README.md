@@ -792,7 +792,9 @@ Renderer — settings:
   default-on prompt-stash bookmark visibility; hiding the bookmark leaves
   Cmd/Ctrl+S active). The Theme card renders the `ThemeGallery` picker
   (`components/settings/ThemeGallery.tsx` + `ThemePreview.tsx`) instead of a
-  two-swatch toggle, and a `ThemeCustomizer` dialog
+  two-swatch toggle, a `ThemeImportExport` toolbar
+  (`components/settings/ThemeImportExport.tsx`) to export the active theme or
+  import an ADE / VS Code theme file, and a `ThemeCustomizer` dialog
   (`components/settings/ThemeCustomizer.tsx` + `themeCustomizerModel.ts`) to
   override individual tokens and save custom themes; the theme format, engine
   and shipped library live in `apps/desktop/src/shared/theme/` and are applied

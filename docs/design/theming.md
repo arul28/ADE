@@ -41,6 +41,7 @@ A theme does **not** replace that seam. It feeds it:
 | `color.ts` | Colour maths: hex / `rgb()` / `oklch()` parsing, sRGB mixing, Oklch lightness shifts, WCAG contrast. |
 | `resolve.ts` | Derives every omitted palette token and emits the CSS-variable override map plus the xterm palette. |
 | `validate.ts` | Parses and **repairs** untrusted themes; the versioned import/export envelope. |
+| `vscode.ts` | Best-effort VS Code theme import: maps the workbench colours it understands and reports what it could not. |
 | `library.ts` | The shipped themes and the id → theme resolution used everywhere. |
 
 A theme states the core five — `bg`, `fg`, `surface`, `card`, `accent` — and may
@@ -117,6 +118,22 @@ id, while editing an existing custom theme keeps its id and replaces it in
 place. The base's inherited description and author are dropped from the saved
 theme. Duplicate seeds a new draft; Delete removes a custom theme and returns to
 the default; Reset to base restores every token to the base's resolved value.
+
+## Import and export
+
+`ThemeImportExport.tsx` (Appearance → Theme) exports the active theme as the
+versioned ADE envelope — copied to the clipboard and downloaded as
+`ade-theme-<id>.json` — and imports a `.json` file back. Import accepts either
+an ADE theme (`prepareImportedTheme` gives it a collision-free id and stamps its
+source) or a VS Code theme.
+
+VS Code import (`shared/theme/vscode.ts`) is **best-effort and says so**. It
+maps the `colors` keys that translate cleanly to ADE tokens and the
+`terminal.ansi*` keys to the ANSI palette, infers the base mode from the editor
+background, and returns the list of keys it could not map — including
+`tokenColors`, whose syntax-highlighting colours ADE does not apply. The import
+dialog shows the user that list; the importer never claims VS Code's syntax
+fidelity it does not have.
 
 ## Adding a token
 

@@ -248,3 +248,17 @@ export function parseAdeThemeFile(raw: unknown): ParseThemeFileResult {
 export function themeExportFileName(theme: AdeTheme): string {
   return `ade-theme-${slugifyThemeId(theme.id || theme.name)}.json`;
 }
+
+/**
+ * Prepare a freshly imported theme for the custom list: give it a
+ * collision-free id and (re)stamp its source. The name is preserved, so a
+ * second import of the same theme becomes "Nord 2".
+ */
+export function prepareImportedTheme(
+  theme: AdeTheme,
+  source: Extract<AdeThemeSource, "imported" | "vscode">,
+  takenIds: Iterable<string>,
+): AdeTheme {
+  const id = uniqueThemeId(theme.id || theme.name, takenIds);
+  return normalizeAdeTheme({ ...theme, id, source }, { source, id }) ?? { ...theme, id, source };
+}
