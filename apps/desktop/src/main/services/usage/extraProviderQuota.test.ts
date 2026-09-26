@@ -523,15 +523,20 @@ describe("extra provider quota polls", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("looks for OpenCode's auth.json where OpenCode keeps its data, XDG first", () => {
+  it("looks for OpenCode's auth.json where OpenCode keeps its data, ADE's owned store first", () => {
+    const adeAuth = (home: string) =>
+      path.join(home, ".ade", "opencode-runtime", "xdg-v1", "data", "opencode", "auth.json");
     expect(openCodeAuthPaths({ homeDir: "/home/ada", platform: "linux", env: {} })).toEqual([
+      adeAuth("/home/ada"),
       path.join("/home/ada", ".local", "share", "opencode", "auth.json"),
     ]);
     expect(openCodeAuthPaths({ homeDir: "/home/ada", platform: "linux", env: { XDG_DATA_HOME: "/xdg/data" } })).toEqual([
+      adeAuth("/home/ada"),
       path.join("/xdg/data", "opencode", "auth.json"),
       path.join("/home/ada", ".local", "share", "opencode", "auth.json"),
     ]);
     expect(openCodeAuthPaths({ homeDir: "/Users/ada", platform: "darwin", env: {} })).toEqual([
+      adeAuth("/Users/ada"),
       path.join("/Users/ada", ".local", "share", "opencode", "auth.json"),
       path.join("/Users/ada", "Library", "Application Support", "opencode", "auth.json"),
     ]);

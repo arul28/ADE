@@ -308,8 +308,9 @@ type TimedValue<T> = { at: number; value: T };
  * TTL.
  *
  * `dataDirs` on a call names the data home of the OpenCode server that ran the
- * turn, for a server launched with its own `XDG_DATA_HOME`; without it the
- * user's own (`openCodeDataDirs()`) is read.
+ * turn; without it `openCodeDataDirs()` is read, which leads with ADE's owned
+ * store and falls back to the user's for a legacy session re-opened on its
+ * original home.
  */
 export function createOpenCodeUsageAccountResolver(options: {
   dataDirs?: () => string[];

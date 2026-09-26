@@ -34,7 +34,6 @@ import type {
   OpenCodeRuntimeSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
-import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import type { PermissionMode } from "../ai/tools/universalTools";
@@ -43,6 +42,7 @@ import {
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
   getOpenCodeRuntimeDiagnostics,
+  type OpenCodeDataHome,
   type OpenCodeServerLease,
   type OpenCodeServerOwnerKind,
   type OpenCodeServerShutdownReason,
@@ -132,6 +132,8 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   leaseKind?: "shared" | "dedicated";
   /** Isolate user/project config for this session only. */
   isolatedConfig?: boolean;
+  /** Data home for the server. Defaults to ADE's owned home. */
+  dataHome?: OpenCodeDataHome;
   logger?: Logger | null;
 };
 
@@ -291,8 +293,14 @@ function fingerprintOpenCodeConfig(config: OpenCodeConfig): string {
   return stableStringify(config);
 }
 
-export function buildSharedOpenCodeServerKey(config: OpenCodeConfig): string {
-  return `shared:${fingerprintOpenCodeConfig(config)}`;
+export function buildSharedOpenCodeServerKey(
+  config: OpenCodeConfig,
+  dataHome: OpenCodeDataHome = "ade",
+): string {
+  // The data home must be in the key: two identical configs on different homes
+  // are different servers, and sharing one would silently write the user store
+  // for a session that asked for the ADE-owned one (or vice versa).
+  return `shared:${dataHome}:${fingerprintOpenCodeConfig(config)}`;
 }
 
 export function buildOpenCodeMergedConfig(args: BuildOpenCodeConfigArgs): OpenCodeConfig {
@@ -669,21 +677,6 @@ export function buildOpenCodePromptParts(args: {
 }
 
 /**
- * The v2 session prompt's file-attachment shape (`{uri, name}`), which is a
- * different wire type from the v1 `FilePartInput` above. Lives here beside its
- * sibling so the runtime module stays the one place that knows how an OpenCode
- * prompt file is expressed on either API.
- */
-export function buildOpenCodeV2PromptAttachments(
-  files: readonly OpenCodePromptFile[],
-): Array<{ uri: string; name: string }> {
-  return files.map((file) => ({
-    uri: pathToFileURL(file.path).toString(),
-    name: file.filename ?? basenameCrossPlatform(file.path),
-  }));
-}
-
-/**
  * True only when an OpenCode server call failed with a confirmed
  * "session does not exist" (HTTP 404 / `NotFoundError`). Anything else — a
  * transport blip, timeout, HTML version-mismatch guard, auth hiccup — must NOT
@@ -770,28 +763,35 @@ async function startOpenCodeSessionInternal(
     || (leaseKind === "dedicated"
       ? `${ownerKind}:${args.ownerId?.trim() || args.sessionId?.trim() || `${args.directory}:${args.title}:${randomUUID()}`}`
       : null);
-  const lease = leaseKind === "shared"
-    ? await acquireSharedOpenCodeServer({
-        config,
-        key: buildSharedOpenCodeServerKey(config),
-        ownerKind,
-        ownerId: args.ownerId,
-        isolatedConfig: args.isolatedConfig,
-        logger: args.logger,
-      })
-    : await acquireDedicatedOpenCodeServer({
-        ownerKey: ownerKey ?? `dedicated:${ownerKind}:${randomUUID()}`,
-        config,
-        ownerKind,
-        ownerId: args.ownerId,
-        isolatedConfig: args.isolatedConfig,
-        logger: args.logger,
-      });
-  const client = createOpencodeClient({
+
+  const acquireLease = async (dataHome: OpenCodeDataHome): Promise<OpenCodeServerLease> =>
+    leaseKind === "shared"
+      ? await acquireSharedOpenCodeServer({
+          config,
+          key: buildSharedOpenCodeServerKey(config, dataHome),
+          ownerKind,
+          ownerId: args.ownerId,
+          isolatedConfig: args.isolatedConfig,
+          dataHome,
+          logger: args.logger,
+        })
+      : await acquireDedicatedOpenCodeServer({
+          ownerKey: ownerKey ?? `dedicated:${ownerKind}:${randomUUID()}`,
+          config,
+          ownerKind,
+          ownerId: args.ownerId,
+          isolatedConfig: args.isolatedConfig,
+          dataHome,
+          logger: args.logger,
+        });
+
+  const resolvedSessionId = trimToUndefined(args.sessionId);
+  const requestedDataHome = args.dataHome ?? "ade";
+  let lease = await acquireLease(requestedDataHome);
+  let client = createOpencodeClient({
     baseUrl: lease.url,
     directory: args.directory,
   });
-  const resolvedSessionId = trimToUndefined(args.sessionId);
 
   if (resolvedSessionId) {
     try {
@@ -807,14 +807,61 @@ async function startOpenCodeSessionInternal(
         directory: args.directory,
       });
     } catch (error) {
-      // Only a confirmed "session missing" may fall through to creation. Any
-      // other failure (transport, timeout, server restart mid-request) must
-      // surface — silently starting an empty session would strand the thread.
+      // Only a confirmed "session missing" may fall through. Any other failure
+      // (transport, timeout, server restart mid-request) must surface —
+      // silently starting an empty session would strand the thread.
       if (!isOpenCodeNotFoundError(error)) {
         lease.close("error");
         throw error instanceof Error ? error : new Error(String(error));
       }
-      // Fall through to session creation when the persisted session no longer exists.
+      // Session continuity: a persisted `providerSessionId` from before ADE
+      // owned its data home exists only in the user's store. Re-open THAT
+      // session on its original home rather than silently creating a fresh,
+      // empty one (the t3code #3604 failure mode). New sessions never take this
+      // path: it requires a persisted id, and only after the owned home
+      // confirmed it does not have it.
+      if (requestedDataHome === "ade") {
+        lease.close("handle_close");
+        lease = await acquireLease("user");
+        client = createOpencodeClient({
+          baseUrl: lease.url,
+          directory: args.directory,
+        });
+        try {
+          const legacy = await client.session.get(
+            { sessionID: resolvedSessionId, directory: args.directory },
+            { throwOnError: true },
+          );
+          args.logger?.info("opencode.session_legacy_home_continuity", {
+            sessionId: resolvedSessionId,
+            reason: "providerSessionId exists only in the user data home",
+          });
+          return createOpenCodeSessionHandle({
+            client,
+            lease,
+            sessionId: resolvedSessionId,
+            initialTitle: legacy.data?.title,
+            directory: args.directory,
+          });
+        } catch (legacyError) {
+          if (!isOpenCodeNotFoundError(legacyError)) {
+            lease.close("error");
+            throw legacyError instanceof Error ? legacyError : new Error(String(legacyError));
+          }
+          // Gone from both homes. Fall back to the owned home and create a
+          // replacement session, exactly as before, and say so loudly enough to
+          // find in logs when a user reports lost OpenCode context.
+          args.logger?.warn("opencode.session_recreated_missing", {
+            sessionId: resolvedSessionId,
+          });
+          lease.close("handle_close");
+          lease = await acquireLease(requestedDataHome);
+          client = createOpencodeClient({
+            baseUrl: lease.url,
+            directory: args.directory,
+          });
+        }
+      }
     }
   }
 

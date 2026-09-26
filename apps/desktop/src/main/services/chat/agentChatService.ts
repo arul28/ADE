@@ -312,7 +312,6 @@ import {
 import { liveContextUsageEvent } from "./liveContextUsageEvent";
 import { isServedRouteMismatch } from "./servedModelMismatch";
 import { createPiWorkerExitTracker } from "./piWorkerExits";
-import { resolveOpenCodeIsolatedDataHome } from "../opencode/openCodeServerManager";
 import {
   resolveLaunchBrain,
   type HarnessPresetLaunchPlan,
@@ -919,7 +918,6 @@ import {
 } from "./laneAppleDeviceDirective";
 import {
   buildOpenCodePromptParts,
-  buildOpenCodeV2PromptAttachments,
   mapPermissionModeToOpenCodeAgent,
   openCodeEventStream,
   openCodePartUpdatedDelta,
@@ -2223,26 +2221,6 @@ type SteerUserRowFields = Pick<
 /** One `ManagedChatSession.acceptedSteerRows` entry. */
 type AcceptedSteerRow = { turnId: string | undefined; shown: "accepted" | "queued" };
 
-/**
- * The fields one inline OpenCode steer needs. `uuid` doubles as the v2 prompt's
- * admission id (prefixed `msg_` — the server validates that brand and rejects
- * anything else with a 400), so retrying the same admission re-admits the same
- * identity instead of duplicating the message. It does not cover the queue
- * fallback: a refused steer is re-sent as a fresh turn through the v1 path and
- * gets a new identity there.
- */
-type OpenCodeInlineSteer = Pick<
-  QueuedSteer,
-  | "steerId"
-  | "uuid"
-  | "text"
-  | "displayText"
-  | "attachments"
-  | "contextAttachments"
-  | "resolvedAttachments"
-  | "metadata"
->;
-
 type AcceptedCodexSteer = {
   steerId: string;
   text: string;
@@ -2668,6 +2646,12 @@ type PendingOpenCodeApproval = {
   permissionId: string;
   protocol?: "legacy" | "v2";
   request?: PendingInputRequest;
+  /**
+   * Session that owns the ask. Absent means the chat's primary session. Child
+   * (subagent) asks carry their own session id, and the legacy
+   * `permission.respond` endpoint is keyed by it.
+   */
+  sessionId?: string;
 };
 
 /** Stable id for one OpenCode todo entry, which carries no id of its own. */
@@ -2755,7 +2739,9 @@ async function replyToOpenCodePendingApproval(
   }
   await handle.client.permission.respond(
     {
-      sessionID: handle.sessionId,
+      // A child-session ask belongs to the child, not the chat's primary
+      // session; answering with the parent's id leaves OpenCode waiting.
+      sessionID: pending.sessionId ?? handle.sessionId,
       permissionID: pending.permissionId,
       directory: handle.directory,
       response: reply,
@@ -2817,8 +2803,6 @@ type OpenCodeRuntime = {
   permissionMode: AgentChatOpenCodePermissionMode;
   pendingApprovals: Map<string, PendingOpenCodeApproval>;
   pendingSteers: QueuedSteer[];
-  /** Staged rows currently being folded into the live turn (see `dispatchSteer`). */
-  dispatchingSteerIds: Set<string>;
   interrupted: boolean;
   modelDescriptor: ModelDescriptor;
   textByPartId: Map<string, string>;
@@ -2843,6 +2827,8 @@ type OpenCodeRuntime = {
   subagentSessions: Map<string, {
     summary: string;
     turnId: string;
+    /** Human-readable child title, used to attribute child permission asks. */
+    description?: string;
   }>;
   /**
    * Trigger (manual/auto) captured from the most recent compaction "begin" part, so
@@ -6516,10 +6502,10 @@ const settledSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
 /**
  * True while an explicit dispatch owns this staged row.
  *
- * Claude, Cursor, and OpenCode track in-flight dispatches, and Cursor and
- * OpenCode hold the row out of `pendingSteers` across a network await — which is
- * the window where an edit or a cancel would contradict what the agent already
- * received.
+ * Claude and Cursor track in-flight dispatches, and Cursor holds the row out of
+ * `pendingSteers` across a network await — which is the window where an edit or
+ * a cancel would contradict what the agent already received. OpenCode has no
+ * inline dispatch (queue-only, see ACTIVE_TURN_DISPATCH_MODES).
  */
 function isSteerDispatchInFlight(runtime: ChatRuntime, steerId: string): boolean {
   return "dispatchingSteerIds" in runtime && runtime.dispatchingSteerIds.has(steerId);
@@ -6530,7 +6516,7 @@ function isSteerDispatchInFlight(runtime: ChatRuntime, steerId: string): boolean
  * an execution/interaction mode. A text-only inline steer channel cannot carry
  * one, so every provider with an inline path declines the row and leaves it
  * staged for the turn boundary, which applies the directives. One predicate so
- * the Claude/Cursor/OpenCode guards cannot drift apart.
+ * the Claude/Cursor guards cannot drift apart.
  */
 function rowHasPerMessageOverrides(
   row: Pick<QueuedSteer, "reasoningEffort" | "executionMode" | "interactionMode">,
@@ -8798,7 +8784,18 @@ function buildOpenCodeSystemPrompt(args: {
     adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
     sessionActivityGuidance: args.sessionActivityGuidance,
   });
-  return [base, buildAdeSessionLineageGuidance(args.session, args.spawnGuidance)]
+  // OpenCode's `task` tool has no directory argument: the child inherits this
+  // session's directory, and the only path the child ever reads is the one the
+  // model typed into the spawn prompt. A paraphrased/truncated path is not a
+  // no-op — it is a real out-of-worktree filesystem access that stalls the
+  // child on an approval card. Naming the exact string here gives the model
+  // something to copy instead of reconstruct.
+  const delegationPathGuidance = [
+    "When you delegate with OpenCode's `task` tool, copy this session's working directory verbatim into the child's prompt:",
+    `\`${args.laneWorktreePath}\``,
+    "Never retype, abbreviate, or reconstruct a path from memory; the child inherits this directory, so a mistyped path only creates out-of-worktree accesses that park the child on an approval.",
+  ].join(" ");
+  return [base, delegationPathGuidance, buildAdeSessionLineageGuidance(args.session, args.spawnGuidance)]
     .filter(Boolean)
     .join("\n\n");
 }
@@ -11506,7 +11503,11 @@ export function createAgentChatService(args: {
         label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
         description: event.description?.trim() || previous?.description || "Subagent task",
+        // The child is still an active member of the tree, so its status stays
+        // "running"; `blockedReason` is what tells clients it is parked on an
+        // unanswered ask rather than progressing.
         status: "running",
+        blockedReason: event.blockedReason ?? null,
         turnId: event.turnId ?? previous?.turnId,
         startTimestamp: previous?.startTimestamp ?? timestamp,
         summary: preferSubagentSummary(previous?.summary, event.summary) ?? undefined,
@@ -15537,13 +15538,6 @@ export function createAgentChatService(args: {
       permissionMode: permMode,
       pendingApprovals: new Map(),
       pendingSteers: [],
-      /**
-       * Staged rows currently being folded into the live turn by
-       * `dispatchSteer`/`promoteStagedSteer`. The row leaves `pendingSteers`
-       * before the v2 await, so without this a cancel or edit during the round
-       * trip would contradict a delivery that already happened.
-       */
-      dispatchingSteerIds: new Set(),
       interrupted: false,
       modelDescriptor: descriptor,
       textByPartId: new Map(),
@@ -17607,7 +17601,7 @@ export function createAgentChatService(args: {
       const storedEvent = compactChatEventForStorage(event);
       const envelope: AgentChatEventEnvelope = {
         sessionId: managed.session.id,
-        timestamp: nowIso(),
+        timestamp: message.timestamp ?? nowIso(),
         event: storedEvent,
         sequence: ++managed.eventSequence,
         provenance: {
@@ -17640,6 +17634,9 @@ export function createAgentChatService(args: {
       parentToolUseId: null,
       message: event,
       ...(text ? { text } : {}),
+      // A live envelope's timestamp is a real receive time; the synthetic time
+      // marker is renderer-local (AgentChatPane) and never reaches main.
+      timestamp: envelope.timestamp,
     }, metadata);
   }
 
@@ -29923,8 +29920,30 @@ export function createAgentChatService(args: {
           type: "session.idle",
           properties: { sessionID },
         }) as OpenCodeRuntimeEvent,
+        // A server that stops answering status probes while this turn is quiet
+        // would otherwise hold the chat on "Working" forever. After a bounded
+        // run of unusable probes the turn fails visibly with this error.
+        makeProbeFailureEvent: (sessionIDs) => ({
+          type: "session.error",
+          properties: {
+            sessionID: sessionIDs[0] ?? runtime.handle.sessionId,
+            error: {
+              name: "OpenCodeStatusProbeFailed",
+              data: {
+                message: "OpenCode stopped answering status checks while this turn was still running, so ADE ended it. Check the OpenCode server and retry.",
+              },
+            },
+          },
+        }) as unknown as OpenCodeRuntimeEvent,
         onSynthesized: (sessionIDs) => {
           logger.warn("agent_chat.opencode_idle_recovered_by_probe", {
+            sessionId: managed.session.id,
+            turnId,
+            sessionIDs: [...sessionIDs],
+          });
+        },
+        onProbeFailed: (sessionIDs) => {
+          logger.warn("agent_chat.opencode_idle_probe_failed", {
             sessionId: managed.session.id,
             turnId,
             sessionIDs: [...sessionIDs],
@@ -30064,6 +30083,7 @@ export function createAgentChatService(args: {
               runtime.subagentSessions.set(childKey, {
                 summary: formatSummary(),
                 turnId,
+                description: childDescription,
               });
               // We intentionally do NOT set `agentType` here. OpenCode encodes
               // the human-readable identity in `session.title`, which we surface
@@ -30094,6 +30114,7 @@ export function createAgentChatService(args: {
               runtime.subagentSessions.set(childKey, {
                 summary: formatSummary(),
                 turnId,
+                description: childDescription,
               });
               emitChatEvent(managed, {
                 type: "subagent_progress",
@@ -30141,9 +30162,58 @@ export function createAgentChatService(args: {
           }
         }
 
-        if (resolveSessionId() !== runtime.handle.sessionId) {
-          continue;
+        const eventSessionId = resolveSessionId();
+        const childAskSessionId = eventSessionId !== null && eventSessionId !== runtime.handle.sessionId
+          ? eventSessionId
+          : null;
+        if (childAskSessionId !== null) {
+          // An ask raised by a tracked child session (subagent) blocks the whole
+          // turn: dropping it here is exactly what left the parent "running"
+          // for an hour while a child sat on an unanswered permission prompt.
+          // Admit it through the same handlers below. v2 replies are keyed by
+          // request id; the legacy responder carries the child's session id.
+          const isChildAsk = event.type === "permission.asked"
+            || event.type === "question.asked"
+            || asLegacyOpenCodePermissionUpdated(event) !== null;
+          if (!isChildAsk || !runtime.subagentSessions.has(childAskSessionId)) continue;
         }
+        const childAskLabel = childAskSessionId !== null
+          ? runtime.subagentSessions.get(childAskSessionId)?.description ?? "Subagent"
+          : null;
+        /**
+         * A child ask is the reason the child is not progressing, so the
+         * subagent row must say "blocked" rather than keep drawing a spinner.
+         * Emitting a plain progress event on reply clears it.
+         */
+        const markChildAskBlocked = (reason: string): void => {
+          if (childAskSessionId === null) return;
+          const child = runtime.subagentSessions.get(childAskSessionId);
+          const usage = childUsageEvent(childAskSessionId);
+          emitChatEvent(managed, {
+            type: "subagent_progress",
+            taskId: childAskSessionId,
+            parentToolUseId: null,
+            ...(child?.description ? { description: child.description } : {}),
+            summary: `Waiting for approval — ${reason}`,
+            blockedReason: reason,
+            ...(usage ? { usage } : {}),
+            turnId: child?.turnId ?? turnId,
+          });
+        };
+        const clearChildAskBlocked = (): void => {
+          if (childAskSessionId === null) return;
+          const child = runtime.subagentSessions.get(childAskSessionId);
+          if (!child) return;
+          emitChatEvent(managed, {
+            type: "subagent_progress",
+            taskId: childAskSessionId,
+            parentToolUseId: null,
+            ...(child.description ? { description: child.description } : {}),
+            summary: child.summary,
+            blockedReason: null,
+            turnId: child.turnId,
+          });
+        };
 
         // Incremental assistant output. OpenCode's processor calls
         // `updatePartDelta` for every `text-delta` and only calls `updatePart`
@@ -30553,10 +30623,14 @@ export function createAgentChatService(args: {
               directory: runtime.handle.directory,
             }, { throwOnError: true });
           };
+          const questionTitle = childAskLabel
+            ? `${childAskLabel} asks`
+            : questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode";
+          markChildAskBlocked(firstQuestion?.question ?? "Waiting for an answer");
           const resolveOpenCodeQuestion = async (): Promise<void> => {
             const response = await requestChatInput({
               chatSessionId: managed.session.id,
-              title: questions.length === 1 ? "Question from OpenCode" : "Questions from OpenCode",
+              title: questionTitle,
               body: firstQuestion?.question ?? waitingOnYouDescription(questions.length),
               source: "opencode",
               providerMetadata: {
@@ -30607,6 +30681,7 @@ export function createAgentChatService(args: {
         }
 
         if (event.type === "question.replied" || event.type === "question.rejected") {
+          clearChildAskBlocked();
           continue;
         }
 
@@ -30649,12 +30724,15 @@ export function createAgentChatService(args: {
             || description.toLowerCase().includes("bash")
             ? "bash"
             : "write";
+          // A child ask is attributed to its subagent so the card and status
+          // read as "Subagent X is waiting", not as an anonymous parent ask.
+          const attributedDescription = childAskLabel ? `${childAskLabel} · ${description}` : description;
           const request: PendingInputRequest = {
             requestId: permission.id,
             itemId: permission.id,
             source: "opencode",
             kind: "approval",
-            description,
+            description: attributedDescription,
             questions: [],
             allowsFreeform: false,
             blocking: true,
@@ -30664,6 +30742,7 @@ export function createAgentChatService(args: {
               metadata: permission.metadata,
               callId: permission.tool?.callID ?? null,
               protocol: "v2",
+              childSessionId: childAskSessionId,
             },
             turnId,
           };
@@ -30672,10 +30751,12 @@ export function createAgentChatService(args: {
             permissionId: permission.id,
             protocol: "v2",
             request,
+            ...(childAskSessionId ? { sessionId: childAskSessionId } : {}),
           });
+          markChildAskBlocked(attributedDescription);
           emitPendingInputRequest(managed, request, {
             kind: category === "bash" ? "command" : "file_change",
-            description,
+            description: attributedDescription,
             detail: permission.metadata,
           });
           continue;
@@ -30692,12 +30773,13 @@ export function createAgentChatService(args: {
             || description.toLowerCase().includes("bash")
             ? "bash"
             : "write";
+          const attributedDescription = childAskLabel ? `${childAskLabel} · ${description}` : description;
           const request: PendingInputRequest = {
             requestId: permission.id,
             itemId: permission.id,
             source: "opencode",
             kind: "approval",
-            description,
+            description: attributedDescription,
             questions: [],
             allowsFreeform: false,
             blocking: true,
@@ -30706,6 +30788,7 @@ export function createAgentChatService(args: {
               type: permission.type,
               metadata: permission.metadata,
               callId: permission.callID ?? null,
+              childSessionId: childAskSessionId,
             },
             turnId,
           };
@@ -30714,10 +30797,12 @@ export function createAgentChatService(args: {
             permissionId: permission.id,
             protocol: "legacy",
             request,
+            ...(childAskSessionId ? { sessionId: childAskSessionId } : {}),
           });
+          markChildAskBlocked(attributedDescription);
           emitPendingInputRequest(managed, request, {
             kind: category === "bash" ? "command" : "file_change",
-            description,
+            description: attributedDescription,
             detail: permission.metadata,
           });
           continue;
@@ -30743,6 +30828,7 @@ export function createAgentChatService(args: {
             questions: pending.request?.questions ?? [],
             turnId: pending.request?.turnId ?? null,
           });
+          clearChildAskBlocked();
           continue;
         }
 
@@ -32757,7 +32843,10 @@ export function createAgentChatService(args: {
       if (eventKind === "started") state.itemTurnIdByItemId.set(itemId, turnId);
       if (eventKind === "completed") state.itemTurnIdByItemId.delete(itemId);
     }
-    const messages = codexThreadItemToTranscriptMessages(item, state.threadId, turnId, 0)
+    const itemTimestamp = coerceProviderTimestampToIso(
+      item.timestamp ?? item.startedAt ?? item.createdAt,
+    );
+    const messages = codexThreadItemToTranscriptMessages(item, state.threadId, turnId, 0, itemTimestamp)
       .map((message) => transcriptMessageWithMetadata(message, codexSubagentMetadataForThread(runtime, state.threadId)));
     recordCodexSubagentTranscriptMessages(managed, runtime, state.threadId, messages);
   }
@@ -35150,11 +35239,6 @@ export function createAgentChatService(args: {
       }
       return configured || getLocalProviderDefaultEndpoint(providerID);
     },
-    // A strict-config chat runs its own OpenCode server on ADE's isolated
-    // XDG_DATA_HOME, so its credentials live there, not in the user's store.
-    openCodeDataDirs: (managed) => managed.session.strictMcpConfig === true
-      ? [path.join(resolveOpenCodeIsolatedDataHome(), "opencode")]
-      : undefined,
   });
 
   /**
@@ -38038,12 +38122,12 @@ export function createAgentChatService(args: {
 
     const nextSteer = runtime.pendingSteers.shift();
     if (!nextSteer) return false;
-    // A Cursor or OpenCode steer the live turn refused already has a row of
-    // its own. Its turn lands on that row as `delivered` instead of leaving it
-    // beside a second bubble. Taken at the shift, so a refusal still awaiting
-    // its answer sees the steer as taken, not lost.
+    // A Cursor steer the live turn refused already has a row of its own. Its
+    // turn lands on that row as `delivered` instead of leaving it beside a
+    // second bubble. Taken at the shift, so a refusal still awaiting its answer
+    // sees the steer as taken, not lost.
     const acceptedRowSteerId = takeAcceptedSteerRow(managed, nextSteer.steerId)
-      && (runtime.kind === "cursor" || runtime.kind === "opencode")
+      && runtime.kind === "cursor"
       ? nextSteer.steerId
       : undefined;
 
@@ -45967,7 +46051,7 @@ export function createAgentChatService(args: {
    */
   const drainQueueHeadIfIdle = async (
     managed: ManagedChatSession,
-    runtime: CursorRuntime | OpenCodeRuntime,
+    runtime: CursorRuntime,
     restoreRow: (row: QueuedSteer) => void,
     logKey: string,
   ): Promise<string | null> => {
@@ -46026,16 +46110,6 @@ export function createAgentChatService(args: {
     runtime,
     (row) => emitQueuedCursorSteerRow(managed, runtime, row),
     "agent_chat.cursor_sdk_idle_queue_drain_failed",
-  );
-
-  const drainOpenCodeQueueHeadIfIdle = (
-    managed: ManagedChatSession,
-    runtime: OpenCodeRuntime,
-  ): Promise<string | null> => drainQueueHeadIfIdle(
-    managed,
-    runtime,
-    (row) => emitSteerUserRow(managed, row, "queued", runtime.activeTurnId ?? undefined),
-    "agent_chat.opencode_idle_queue_drain_failed",
   );
 
   /**
@@ -49400,59 +49474,6 @@ export function createAgentChatService(args: {
     return Date.now();
   };
 
-  /**
-   * Fold a steer into OpenCode's live agent loop.
-   *
-   * The v2 session prompt admits one input with `delivery: "steer"`; the
-   * server injects it at the next model step (OpenCode's own follow-up
-   * steering). ADE used to only ever stage on the turn boundary here, so a
-   * message typed mid-turn waited for the whole turn even though the transport
-   * supported folding it in. Throws when the server refuses — callers fall back
-   * to the queue so nothing is lost.
-   */
-  const dispatchOpenCodeSteerMessage = async (
-    managed: ManagedChatSession,
-    runtime: OpenCodeRuntime,
-    steer: OpenCodeInlineSteer,
-    onAccepted?: () => void,
-  ): Promise<number> => {
-    const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
-    // The v1 prompt path attaches real files by URL; the v2 input takes the
-    // same files as `{uri}` through the runtime module's builder. A file that is
-    // not on disk (an http(s) image-url attachment) cannot be sent as a part,
-    // so it is named in the prompt text exactly as a normal OpenCode send names
-    // it, instead of being silently dropped.
-    const { files, unsent } = toOpenCodePromptFiles(steer.resolvedAttachments);
-    const attachmentHint = formatAttachedContextHint(unsent);
-    const text = contextPrompt
-      ? `${contextPrompt}\n\n${steer.text}${attachmentHint}`
-      : `${steer.text}${attachmentHint}`;
-    const promptFiles = buildOpenCodeV2PromptAttachments(files);
-    // `accepted` before the round trip (see `emitSteerUserRow`). On a throw the
-    // caller owns the row: it restages it (`queued`), sends it as its own turn
-    // (`delivered`), or drops it (`failed`).
-    emitSteerUserRow(managed, steer, "accepted", runtime.activeTurnId ?? undefined);
-    persistChatState(managed);
-    await runtime.handle.client.v2.session.prompt({
-      sessionID: runtime.handle.sessionId,
-      // The admission id is the row's own uuid under the server's `msg_` brand:
-      // if a transport failure hides whether the server committed, retrying the
-      // same admission reuses the identity instead of duplicating the message.
-      // A bare uuid fails the server's ID schema (HTTP 400), which would make
-      // every inline steer silently degrade to the queue.
-      id: `msg_${steer.uuid}`,
-      prompt: {
-        text,
-        ...(promptFiles.length ? { files: promptFiles } : {}),
-      },
-      delivery: "steer",
-    }, { throwOnError: true });
-    onAccepted?.();
-    emitSteerUserRow(managed, steer, "inline", runtime.activeTurnId ?? undefined);
-    persistChatState(managed);
-    return Date.now();
-  };
-
   const steerWithOptions = async (
     steerArgs: AgentChatSteerArgs,
     options?: {
@@ -49536,70 +49557,23 @@ export function createAgentChatService(args: {
         if (!preparedSteer) {
           return { steerId, queued: false };
         }
-        // Inline: fold into the live turn. Only a delivered outcome returns
-        // here; a refusal falls through to staging, so the message is queued
-        // exactly as it would have been without an inline attempt and nothing
-        // is sent twice. The row is built here because only the inline channel
-        // consumes it — the queue fallback builds its own through
-        // `enqueueSteerOrDrop`.
-        let inlineRefused = false;
-        // Set once the refused steer's row reads `accepted`, so every exit below
-        // moves that row on instead of leaving it "Steering…".
-        let refusedRow: OpenCodeInlineSteer | null = null;
-        // The v2 steer prompt carries text and file parts only, so a per-message
-        // reasoning/execution/interaction override cannot ride it. Cursor refuses
-        // the same shape for the same reason: fall through to staging, which
-        // applies the directives at the turn boundary, rather than silently
-        // pinning the session's current defaults.
-        const hasPerMessageOverrides = rowHasPerMessageOverrides({
-          reasoningEffort,
-          executionMode,
-          interactionMode,
-        });
-        if (dispatchMode === "inline" && !hasPerMessageOverrides) {
-          const immediateSteer: OpenCodeInlineSteer = {
-            steerId,
-            uuid: randomUUID(),
-            text: preparedSteer.submittedText,
-            ...(preparedSteer.visibleText !== preparedSteer.submittedText
-              ? { displayText: preparedSteer.visibleText }
-              : {}),
-            attachments: preparedSteer.attachments,
-            contextAttachments: preparedSteer.contextAttachments,
-            resolvedAttachments: preparedSteer.resolvedAttachments,
-            ...(preparedSteer.metadata ? { metadata: preparedSteer.metadata } : {}),
-          };
-          try {
-            await dispatchOpenCodeSteerMessage(managed, runtime, immediateSteer, options?.onAcceptedDispatch);
-            return { steerId, queued: false };
-          } catch (error) {
-            inlineRefused = true;
-            refusedRow = immediateSteer;
-            logger.warn("agent_chat.opencode_inline_steer_refused", {
-              sessionId,
-              turnId: runtime.activeTurnId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        // A close or runtime swap during the v2 await tears the queue down with
-        // the runtime. Re-route onto whatever owns the session now, exactly as
-        // Cursor's post-await guard does: stage on a live replacement, or send
-        // it as its own turn when there is none. Non-Claude queues are not
-        // persisted, so staging onto the captured runtime would show a queued
-        // chip for a message nothing owns.
+        // OpenCode is queue-only (see ACTIVE_TURN_DISPATCH_MODES): its running
+        // turn is the legacy `prompt_async` loop, which never drains a mid-turn
+        // input, so an admitted `delivery: "steer"` was invisible to the model
+        // while its row read "Steered". The message is staged here and delivered
+        // as the next turn by `deliverNextQueuedSteer`; nothing is sent twice.
+        //
+        // A close or runtime swap tears a non-Claude queue down with the
+        // runtime, so re-route onto whatever owns the session now: stage on a
+        // live replacement, or send it as its own turn when there is none.
         let stageRuntime = runtime;
         if (managed.closed) {
-          if (refusedRow) failAcceptedSteerRow(managed, refusedRow, undefined);
           return { steerId, queued: false };
         }
         if (managed.runtime !== runtime) {
           const current = managed.runtime;
           if (current?.kind === "opencode" && (current.busy || managed.session.status === "active")) {
             stageRuntime = current;
-          } else if (refusedRow) {
-            await sendRefusedSteerAsOwnTurn(managed, preparedSteer, refusedRow, options?.onAcceptedDispatch);
-            return { steerId, queued: false };
           } else {
             preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
             await executePreparedSendMessage(preparedSteer);
@@ -49619,18 +49593,7 @@ export function createAgentChatService(args: {
           { displayText: preparedSteer.visibleText, reasoningEffort, executionMode, interactionMode },
         );
         if (!queued) {
-          if (refusedRow) failAcceptedSteerRow(managed, refusedRow, stageRuntime.activeTurnId ?? undefined);
           return { steerId, queued: false, reason: "queue_full" };
-        }
-        // Emitted only once the message is genuinely queued — above the
-        // queue-full guard it would promise a delivery that never happens.
-        if (inlineRefused) {
-          emitInlineSteerFallbackNotice(managed, stageRuntime);
-          // A refusal is often the turn ending in the same instant; if that tail
-          // already drained, send this as its own turn rather than leaving it
-          // parked for a turn that will never come.
-          const flushed = await drainOpenCodeQueueHeadIfIdle(managed, stageRuntime);
-          if (flushed === steerId) return { steerId, queued: false };
         }
         return { steerId, queued: true };
       }
@@ -51057,34 +51020,9 @@ export function createAgentChatService(args: {
         },
       });
     }
-    // OpenCode: a staged row can be folded into the live run through the
-    // server's native steer delivery. The table guard above already rejected
-    // "interrupt" for OpenCode (it has no interrupt-and-resend), so only
-    // "inline" reaches here.
-    if (runtime.kind === "opencode") {
-      return promoteStagedSteer({
-        managed,
-        steerId,
-        provider: "opencode",
-        queue: runtime.pendingSteers,
-        activeTurnId: runtime.activeTurnId,
-        // The v2 steer prompt cannot carry per-message overrides. Keep a row
-        // that has them staged so the turn boundary applies the directives,
-        // mirroring Cursor's refusal rather than dropping them.
-        canDeliver: (row) => !rowHasPerMessageOverrides(row),
-        deliver: async (promoted) => {
-          // Held across the v2 await so a cancel or edit during the round trip
-          // is refused rather than contradicting a delivery in flight.
-          runtime.dispatchingSteerIds.add(steerId);
-          try {
-            await dispatchOpenCodeSteerMessage(managed, runtime, promoted);
-          } finally {
-            runtime.dispatchingSteerIds.delete(steerId);
-          }
-        },
-        afterRestore: () => drainOpenCodeQueueHeadIfIdle(managed, runtime),
-      });
-    }
+    // OpenCode never reaches here: it is queue-only in
+    // ACTIVE_TURN_DISPATCH_MODES, so the provider guard above rejects both
+    // "inline" and "interrupt" before this point.
     if (runtime.kind !== "claude") {
       throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);
     }
@@ -57628,12 +57566,41 @@ export function createAgentChatService(args: {
     };
   };
 
+  /**
+   * Coerce a provider-supplied message time into ISO-8601, or return null when
+   * there is nothing trustworthy to coerce.
+   *
+   * Providers disagree on units: OpenCode and Codex emit epoch milliseconds,
+   * some JSONL streams emit epoch seconds, and enriched SDK objects may carry an
+   * ISO string. A bare number below the seconds threshold is rejected rather
+   * than guessed at — rendering a wrong clock is exactly the defect this
+   * replaces, so "no time" is the only safe default.
+   */
+  const coerceProviderTimestampToIso = (value: unknown): string | null => {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed.length) return null;
+      const parsed = Date.parse(trimmed);
+      return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+    }
+    if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+    const millis = value >= 1e12 ? value : value >= 1e9 ? value * 1000 : NaN;
+    if (!Number.isFinite(millis)) return null;
+    const date = new Date(millis);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  };
+
   const mapClaudeSdkSessionMessage = (
     message: ClaudeSdkSessionMessage,
   ): AgentChatClaudeSessionMessage => {
     const parentToolUseId = (message as unknown as { parent_tool_use_id?: unknown }).parent_tool_use_id;
     const parentAgentId = (message as unknown as { parent_agent_id?: unknown }).parent_agent_id;
     const text = extractClaudeSessionMessageText(message.message);
+    // The declared SDK type carries no time, but the stream object does carry
+    // one on builds that enrich it. Read it defensively rather than inventing a
+    // time: the drill-in suppresses the clock when this is absent.
+    const providerTimestamp = (message as unknown as { timestamp?: unknown }).timestamp;
+    const timestamp = coerceProviderTimestampToIso(providerTimestamp);
     return {
       type: message.type,
       uuid: message.uuid,
@@ -57642,6 +57609,7 @@ export function createAgentChatService(args: {
       parentAgentId: typeof parentAgentId === "string" ? parentAgentId : null,
       message: message.message,
       ...(text ? { text } : {}),
+      ...(timestamp ? { timestamp } : {}),
     };
   };
 
@@ -57696,10 +57664,12 @@ export function createAgentChatService(args: {
     threadId: string,
     turnId: string | null,
     itemIndex: number,
+    timestamp?: string | null,
   ): AgentChatSubagentTranscriptMessage[] => {
     const itemId = typeof item.id === "string" && item.id.length > 0 ? item.id : `no-id:${turnId ?? "?"}:${itemIndex}`;
     const itemType = typeof item.type === "string" ? item.type : "";
     const baseUuid = `codex-thread-item:${threadId}:${itemId}`;
+    const rowTimestamp = timestamp ?? null;
     const baseMessage = (event: AgentChatEvent, role: AgentChatSubagentTranscriptMessage["type"], extras?: { uuidSuffix?: string; text?: string }): AgentChatSubagentTranscriptMessage => ({
       type: role,
       uuid: extras?.uuidSuffix ? `${baseUuid}:${extras.uuidSuffix}` : baseUuid,
@@ -57707,6 +57677,7 @@ export function createAgentChatService(args: {
       parentToolUseId: null,
       message: event,
       ...(extras?.text ? { text: extras.text } : {}),
+      ...(rowTimestamp ? { timestamp: rowTimestamp } : {}),
     });
 
     const mapCommandStatusLocal = (value: unknown): "running" | "completed" | "failed" => {
@@ -57933,13 +57904,21 @@ export function createAgentChatService(args: {
         const turns = Array.isArray(response?.data) ? response.data : [];
         for (const turn of turns) {
           const turnId = typeof turn?.id === "string" ? turn.id : null;
+          // The Turn carries the only real clock in the app-server payload; each
+          // item inherits it. Without this the drill-in stamps rows with a
+          // placeholder and renders 7:00 PM Dec 31 (see the timestamp defect).
+          const turnTimestamp = coerceProviderTimestampToIso(turn?.startedAt);
           const items = Array.isArray(turn?.items) ? turn.items : [];
           for (let idx = 0; idx < items.length; idx++) {
             const item = items[idx];
             if (!item || typeof item !== "object" || Array.isArray(item)) continue;
             const metadata = codexSubagentMetadataForThread(runtime, threadId);
+            const itemRecord = item as Record<string, unknown>;
+            const itemTimestamp = coerceProviderTimestampToIso(
+              itemRecord.timestamp ?? itemRecord.startedAt ?? itemRecord.createdAt,
+            ) ?? turnTimestamp;
             collected.push(
-              ...codexThreadItemToTranscriptMessages(item as Record<string, unknown>, threadId, turnId, idx)
+              ...codexThreadItemToTranscriptMessages(itemRecord, threadId, turnId, idx, itemTimestamp)
                 .map((message) => transcriptMessageWithMetadata(message, metadata)),
             );
           }
@@ -58246,15 +58225,31 @@ export function createAgentChatService(args: {
           const sId = typeof info.sessionID === "string" ? info.sessionID : normalizedAgentId;
           const parts = Array.isArray(row.parts) ? row.parts : [];
           const textBlocks: string[] = [];
+          let earliestPartTimeMs: number | null = null;
           for (const part of parts) {
             if (!part || typeof part !== "object") continue;
-            const block = part as { type?: unknown; text?: unknown };
+            const block = part as { type?: unknown; text?: unknown; time?: unknown };
             if (typeof block.text === "string" && block.text.length
                 && (block.type === "text" || block.type === "reasoning")) {
               textBlocks.push(block.text);
             }
+            const partTime = block.time && typeof block.time === "object"
+              ? (block.time as { created?: unknown; start?: unknown })
+              : null;
+            for (const candidate of [partTime?.created, partTime?.start]) {
+              if (typeof candidate === "number" && Number.isFinite(candidate) && candidate > 0) {
+                earliestPartTimeMs = earliestPartTimeMs === null
+                  ? candidate
+                  : Math.min(earliestPartTimeMs, candidate);
+              }
+            }
           }
           const text = textBlocks.join("");
+          const infoTime = info.time && typeof info.time === "object"
+            ? (info.time as { created?: unknown }).created
+            : undefined;
+          const timestamp = coerceProviderTimestampToIso(infoTime)
+            ?? coerceProviderTimestampToIso(earliestPartTimeMs);
           return {
             type: messageType,
             uuid: id,
@@ -58262,6 +58257,7 @@ export function createAgentChatService(args: {
             parentToolUseId: null,
             message: { info, parts },
             ...(text.length ? { text } : {}),
+            ...(timestamp ? { timestamp } : {}),
           };
         }).filter((entry): entry is AgentChatSubagentTranscriptMessage => entry !== null);
         const sliced = normalizedOffset !== undefined ? mapped.slice(normalizedOffset) : mapped;

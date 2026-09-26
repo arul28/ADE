@@ -739,6 +739,14 @@ function coalesceSubagentEventEnvelopes(envelopes: AgentChatEventEnvelope[]): Ag
         event: merged,
         timestamp: envelope.timestamp,
         sequence: envelope.sequence ?? previous.sequence,
+        // The merged row now carries the right envelope's time, so its
+        // synthetic flag must follow that time rather than the left stub's.
+        provenance: previous.provenance
+          ? {
+            ...previous.provenance,
+            timestampSynthetic: envelope.provenance?.timestampSynthetic === true,
+          }
+          : envelope.provenance,
       };
     } else {
       output.push(envelope);
@@ -779,13 +787,30 @@ function buildSubagentEventHistory(args: {
     : false;
 
   let sequence = 0;
-  const timestampFor = (index: number): string =>
+  // Deterministic ordering placeholder for rows whose provider published no
+  // time. It is never displayed: `timestampSynthetic` tells the message list to
+  // hide the clock, because this epoch rendered as "7:00 PM Dec 31" in negative
+  // UTC offsets and ranked as a real time everywhere else.
+  const syntheticTimestampFor = (index: number): string =>
     new Date(Date.UTC(2026, 0, 1, 0, 0, 0, Math.min(index, 999))).toISOString();
+  const envelopeTimeFor = (
+    message: AgentChatSubagentTranscriptMessage | null,
+    index: number,
+  ): { timestamp: string; synthetic: boolean } => {
+    const raw = typeof message?.timestamp === "string" ? message.timestamp : null;
+    const parsed = raw ? Date.parse(raw) : NaN;
+    return Number.isFinite(parsed)
+      ? { timestamp: new Date(parsed).toISOString(), synthetic: false }
+      : { timestamp: syntheticTimestampFor(index), synthetic: true };
+  };
+  const provenanceTime = (time: { synthetic: boolean }): { timestampSynthetic?: boolean } =>
+    time.synthetic ? { timestampSynthetic: true } : {};
   const envelopes: AgentChatEventEnvelope[] = [];
   if (prompt && !hasPromptMessage) {
+    const time = envelopeTimeFor(null, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence: sequence++,
       event: {
         type: "user_message",
@@ -799,6 +824,7 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: "user",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }
@@ -812,9 +838,10 @@ function buildSubagentEventHistory(args: {
       ?? entry.message.uuid
       ?? subagentMergeKey(entry.event)
       ?? `subagent:${args.subagentId}:${sequence}`;
+    const time = envelopeTimeFor(entry.message, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence: sequence++,
       event: entry.event,
       provenance: {
@@ -822,14 +849,16 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: entry.message.type === "user" ? "user" : "agent",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }
 
   if (envelopes.length === 0 && args.loading) {
+    const time = envelopeTimeFor(null, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence: sequence++,
       event: {
         type: "activity",
@@ -840,13 +869,15 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: "agent",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }
   if (envelopes.length === 0 && args.unsupported) {
+    const time = envelopeTimeFor(null, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence,
       event: {
         type: "error",
@@ -856,6 +887,7 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: "agent",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }

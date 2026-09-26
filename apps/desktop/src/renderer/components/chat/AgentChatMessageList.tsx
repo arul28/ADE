@@ -1222,6 +1222,8 @@ type RenderEnvelope = {
   | TaskListRenderEvent;
   /** Folded-row count from the transcript collapse; see ChatTranscriptRenderEnvelope. */
   repeatCount?: number;
+  /** True when `timestamp` is an ordering placeholder with no real clock behind it. */
+  timestampSynthetic?: boolean;
   /** Row identity for a scene's still; see ChatTranscriptRenderEnvelope. */
   sceneScopeKey?: string;
 };
@@ -2707,7 +2709,9 @@ function renderEvent(
           data-chat-user-message-card=""
         >
           <div className="absolute right-2 top-1.5 flex items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
-            <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />
+            {envelope.timestampSynthetic === true
+              ? null
+              : <RowHoverTimestamp iso={envelope.timestamp} className="mr-0.5" />}
             {event.messageId && options?.onRewindFiles ? (
               <button
                 type="button"
@@ -2858,7 +2862,9 @@ function renderEvent(
             data-testid="assistant-text-hover-footer"
             className="mt-0.5 flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100"
           >
-            <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
+            {event.originTimestamp || envelope.timestampSynthetic !== true
+              ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
+              : null}
             <MessageCopyButton value={event.text} />
             {options?.assistantTurnCopy ? (
               <MessageCopyButton
