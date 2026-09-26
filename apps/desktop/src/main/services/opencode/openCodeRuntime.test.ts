@@ -540,9 +540,9 @@ describe("openCodeRuntime", () => {
     mockState.getSession.mockImplementationOnce(async () => {
       throw new Error("not found", { cause: { body: { name: "NotFoundError" }, status: 404 } });
     });
-    mockState.getSession.mockImplementationOnce(async () => ({
+    mockState.getSession.mockImplementationOnce((async () => ({
       data: { id: "ses_legacy", title: "Legacy chat" },
-    }));
+    })) as never);
     const reopened = await startOpenCodeSession({
       directory: "/repo",
       sessionId: "ses_legacy",
