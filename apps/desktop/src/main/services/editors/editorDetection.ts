@@ -99,13 +99,15 @@ export async function detectInstalledEditorTargets(
     return null;
   }));
   const found = detected.filter((id): id is EditorTarget => id !== null);
-  if (deps.platform !== "darwin") return found;
-  const seenMacApps = new Set<string>();
+  // One entry per real app. `zed` and `zeditor` are two targets for one editor
+  // (a legacy CLI alias) and share a `macAppName`; on Windows both also resolve
+  // to the same executable, so without this the "Open in" menu lists Zed twice.
+  const seenApps = new Set<string>();
   return found.filter((id) => {
     const appName = editorTargetDefinition(id)?.macAppName;
     if (!appName) return true;
-    if (seenMacApps.has(appName)) return false;
-    seenMacApps.add(appName);
+    if (seenApps.has(appName)) return false;
+    seenApps.add(appName);
     return true;
   });
 }
