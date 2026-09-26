@@ -162,6 +162,19 @@ describe("detectInstalledEditorTargets on win32", () => {
     );
   });
 
+  it("lists Zed once when both the zed and zeditor targets resolve to one install", async () => {
+    const zedExe = "C:\\Users\\me\\AppData\\Local\\Programs\\Zed\\zed.exe";
+    const targets = await detectionTesting.detectInstalledEditorTargets({
+      platform: "win32",
+      env: {},
+      commandSucceeds: async () => false,
+      resolveWindowsExecutable: async (target) =>
+        target === "zed" || target === "zeditor" ? zedExe : null,
+    });
+    expect(targets).toEqual(["zed"]);
+    expect(detectionTesting.resolveDetectedEditorCommand("zed")).toBe(zedExe);
+  });
+
   it("probes every editor concurrently rather than one after another", async () => {
     let started = 0;
     let maxConcurrent = 0;
