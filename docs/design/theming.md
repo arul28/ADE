@@ -102,6 +102,22 @@ name, a base mode and at least the core five palette colours; the gallery previe
 and every surface work from there. Do **not** add per-theme CSS blocks to
 index.css — that would create a second code path for official themes.
 
+## The customizer
+
+Appearance → Theme → **Customize…** opens `ThemeCustomizer.tsx`, the advanced
+editor. It starts from the active theme, lets the user override any semantic
+token, and shows the same `resolveTheme` output the app paints with, so the
+preview and the live contrast warnings are the real thing.
+
+The save rule lives in `themeCustomizerModel.ts` (`planThemeSave`,
+`upsertCustomTheme`) rather than in the dialog, so it is testable without
+rendering: **editing a shipped theme never mutates it.** Save always writes a
+custom theme; a theme derived from a shipped base gets a fresh, collision-free
+id, while editing an existing custom theme keeps its id and replaces it in
+place. The base's inherited description and author are dropped from the saved
+theme. Duplicate seeds a new draft; Delete removes a custom theme and returns to
+the default; Reset to base restores every token to the base's resolved value.
+
 ## Adding a token
 
 Add the semantic key to `ADE_THEME_PALETTE_KEYS` and a derivation in
