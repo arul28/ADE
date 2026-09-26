@@ -825,9 +825,11 @@ function readOwnedOpenCodeAuthContent(paths: OpenCodeIsolationPaths): string | n
 let lastOpenCodeStoreRetentionAt = 0;
 
 /**
- * Bounded automatic retention for ADE's owned OpenCode store, throttled per
- * process and run off the launch path so a large store never blocks a spawn.
- * Non-throwing by contract; see `runOpenCodeStoreRetention`.
+ * Bounded automatic retention for ADE's owned OpenCode store: throttled per
+ * process, deferred one event-loop turn, and delete-only. It never runs VACUUM
+ * (that rewrites a multi-GB file on the Electron main thread); the opt-in CLI
+ * `ade storage opencode --vacuum` owns compaction. It also skips a store a live
+ * server is writing. Non-throwing by contract; see `runOpenCodeStoreRetention`.
  */
 function maybeRunOpenCodeStoreRetention(args: {
   dataHome: OpenCodeDataHome;
@@ -840,7 +842,7 @@ function maybeRunOpenCodeStoreRetention(args: {
   lastOpenCodeStoreRetentionAt = nowMs;
   setImmediate(() => {
     try {
-      const result = runOpenCodeStoreRetention({ nowMs });
+      const result = runOpenCodeStoreRetention({ nowMs, vacuum: false });
       if (result.ran) {
         args.logger?.info("opencode.store_retention_pruned", {
           dbPath: result.dbPath,

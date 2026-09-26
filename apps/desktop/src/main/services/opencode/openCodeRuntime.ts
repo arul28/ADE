@@ -1145,6 +1145,9 @@ export async function runOpenCodeTextPrompt(
     return { text: text.trim(), inputTokens, outputTokens };
   } finally {
     args.signal?.removeEventListener("abort", forwardAbort);
+    // Bounded SSE subscriptions must not outlive a failed setup: aborting the
+    // controller closes the stream before the lease does.
+    controller.abort();
     await handle.close("handle_close");
   }
 }

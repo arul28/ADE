@@ -390,6 +390,7 @@ export type OpenCodeStoreRetentionResult = {
   reason?:
     | "no-store"
     | "below-threshold"
+    | "writer-active"
     | "no-eligible-sessions"
     | "failed";
   dbPath?: string;
@@ -428,6 +429,12 @@ export function runOpenCodeStoreRetention(args?: {
     const minFileBytes = args?.minFileBytes ?? OPENCODE_STORE_RETENTION_MIN_FILE_BYTES;
     if (fileBytesBefore < minFileBytes) {
       return { ran: false, reason: "below-threshold", dbPath, fileBytesBefore };
+    }
+    // A live server on the same home is writing this store; deleting under it
+    // would hold a write lock a live turn then waits on. Skip this window and
+    // let the next acquisition (throttled) try again.
+    if (openCodeStoreHasActiveWriter(dbPath)) {
+      return { ran: false, reason: "writer-active", dbPath, fileBytesBefore };
     }
     const cutoffMs = nowMs - (args?.maxAgeMs ?? OPENCODE_STORE_RETENTION_MAX_AGE_MS);
     const plan = planOpenCodeStorePrune({ dbPath, cutoffMs });

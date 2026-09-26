@@ -229,6 +229,42 @@ describe("runOpenCodeStoreRetention", () => {
     expect(missing.reason).toBe("no-store");
   });
 
+  it("skips a store a live writer holds", () => {
+    const storeDir = path.join(tmpRoot, "store");
+    fs.mkdirSync(storeDir, { recursive: true });
+    const dbPath = path.join(storeDir, "opencode.db");
+    seedStore(dbPath, nowMs);
+
+    const holder = new DatabaseSync(dbPath);
+    try {
+      holder.exec("PRAGMA busy_timeout = 0; BEGIN IMMEDIATE");
+      const result = runOpenCodeStoreRetention({
+        storeDir,
+        nowMs,
+        maxAgeMs: 7 * 86_400_000,
+        minFileBytes: 0,
+        vacuum: false,
+      });
+      expect(result.ran).toBe(false);
+      expect(result.reason).toBe("writer-active");
+      expect(sessionIds(storeDir)).toHaveLength(3);
+      holder.exec("ROLLBACK");
+    } finally {
+      holder.close();
+    }
+
+    // Once the writer is gone the next window prunes normally.
+    const result = runOpenCodeStoreRetention({
+      storeDir,
+      nowMs,
+      maxAgeMs: 7 * 86_400_000,
+      minFileBytes: 0,
+      vacuum: false,
+    });
+    expect(result.ran).toBe(true);
+    expect(sessionIds(storeDir)).toEqual(["ses_fresh"]);
+  });
+
   it("leaves a store the caller did not name untouched", () => {
     const ownedDir = path.join(tmpRoot, "owned");
     const otherDir = path.join(tmpRoot, "other");

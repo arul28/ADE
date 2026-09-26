@@ -59,8 +59,11 @@ generated config then merges on top.
   acquisition runs the bounded **automatic retention policy** (throttled to once
   per `OPENCODE_STORE_RETENTION_INTERVAL_MS`, only when the database is at or
   above `OPENCODE_STORE_RETENTION_MIN_FILE_BYTES`, only sessions untouched for
-  `OPENCODE_STORE_RETENTION_MAX_AGE_MS`, VACUUM only when no writer holds it).
-  It never throws and never touches the user's store.
+  `OPENCODE_STORE_RETENTION_MAX_AGE_MS`, and skipped while a live server holds
+  the store). The automatic path deletes only — it never VACUUMs, because that
+  rewrites a multi-GB file on the Electron main thread; `ade storage opencode
+  --vacuum` owns compaction. It never throws and never touches the user's
+  store.
 
 ## Runners
 

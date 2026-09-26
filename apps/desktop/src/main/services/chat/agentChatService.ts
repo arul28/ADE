@@ -46099,6 +46099,33 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * Admit one message to the v2 runner as a mid-turn steer and return the
+   * server's admitted message id. One owner for the wire call, so the direct
+   * inline path and the staged-row promotion cannot drift.
+   */
+  const submitOpenCodeV2Steer = async (
+    runtime: OpenCodeRuntime,
+    prepared: PreparedSendMessage,
+  ): Promise<string> => {
+    const files = toOpenCodePromptFiles(prepared.resolvedAttachments).files;
+    const response = await runtime.handle.client.v2.session.prompt(
+      {
+        sessionID: runtime.handle.sessionId,
+        prompt: {
+          text: prepared.submittedText,
+          ...(files.length ? { files: buildOpenCodeV2PromptFiles(files) } : {}),
+        },
+        delivery: "steer",
+      },
+      { throwOnError: true },
+    );
+    const admitted = unwrapOpenCodeV2Data<{ id?: string }>(response.data);
+    const messageID = admitted?.id?.trim();
+    if (!messageID) throw new Error("OpenCode admitted a steer without a message id.");
+    return messageID;
+  };
+
+  /**
    * Admit one mid-turn message to the v2 runner as a steer.
    *
    * Delivery is durable server-side: a `steer` input is promoted at the next
@@ -46135,23 +46162,9 @@ export function createAgentChatService(args: {
     };
     emitSteerUserRow(managed, row, "accepted", runtime.activeTurnId ?? undefined);
     persistChatState(managed);
-    let messageID: string | null = null;
+    let messageID: string;
     try {
-      const files = toOpenCodePromptFiles(prepared.resolvedAttachments).files;
-      const response = await runtime.handle.client.v2.session.prompt(
-        {
-          sessionID: runtime.handle.sessionId,
-          prompt: {
-            text: prepared.submittedText,
-            ...(files.length ? { files: buildOpenCodeV2PromptFiles(files) } : {}),
-          },
-          delivery: "steer",
-        },
-        { throwOnError: true },
-      );
-      const admitted = unwrapOpenCodeV2Data<{ id?: string }>(response.data);
-      messageID = admitted?.id?.trim() ?? null;
-      if (!messageID) throw new Error("OpenCode admitted a steer without a message id.");
+      messageID = await submitOpenCodeV2Steer(runtime, prepared);
     } catch (error) {
       logger.warn("agent_chat.opencode_inline_steer_failed", {
         sessionId: managed.session.id,
@@ -46184,7 +46197,10 @@ export function createAgentChatService(args: {
     runtime.pendingSteerPromotions.set(messageID, { steerId: args.steerId, row });
     prepared.onDispatched?.();
     args.onAcceptedDispatch?.();
-    persistDeliveredLaneDirectiveKey(managed, prepared.laneDirectiveKey);
+    // Deliberately NOT `persistDeliveredLaneDirectiveKey`: the inline channel
+    // sends `submittedText`, not the composed `promptText` that carries the
+    // lane-worktree directive, so recording it as delivered would suppress it
+    // on the next real send. Cursor's inline path omits it for the same reason.
     persistChatState(managed);
     return { steerId: args.steerId, queued: false };
   };
@@ -51405,21 +51421,7 @@ export function createAgentChatService(args: {
       queue.splice(idx, 1);
       claimSteerSettlement(managed, steerId);
       try {
-        const files = toOpenCodePromptFiles(prepared.resolvedAttachments).files;
-        const response = await runtime.handle.client.v2.session.prompt(
-          {
-            sessionID: runtime.handle.sessionId,
-            prompt: {
-              text: prepared.submittedText,
-              ...(files.length ? { files: buildOpenCodeV2PromptFiles(files) } : {}),
-            },
-            delivery: "steer",
-          },
-          { throwOnError: true },
-        );
-        const admitted = unwrapOpenCodeV2Data<{ id?: string }>(response.data);
-        const messageID = admitted?.id?.trim();
-        if (!messageID) throw new Error("OpenCode admitted a steer without a message id.");
+        const messageID = await submitOpenCodeV2Steer(runtime, prepared);
         emitSteerUserRow(managed, staged, "accepted", runtime.activeTurnId ?? undefined);
         runtime.pendingSteerPromotions.set(messageID, { steerId, row: staged });
         prepared.onDispatched?.();
@@ -58633,12 +58635,30 @@ export function createAgentChatService(args: {
       try {
         let rows: Array<{ info: unknown; parts: unknown }>;
         if (managed.runtime.runner === "v2") {
-          const v2Response = await managed.runtime.handle.client.v2.session.messages({
-            sessionID: normalizedAgentId,
-            limit: 500,
-          });
-          const body = v2Response.data as { data?: unknown[] } | unknown[] | undefined;
-          const messages = Array.isArray(body) ? body : body?.data ?? [];
+          // Page through the cursor so a long child session is not silently
+          // truncated at one page. Bounded: the response byte cap trims later,
+          // and eight pages is far past any transcript a user drills into.
+          const messages: unknown[] = [];
+          let cursor: string | undefined;
+          for (let page = 0; page < 8; page += 1) {
+            const v2Response = await managed.runtime.handle.client.v2.session.messages({
+              sessionID: normalizedAgentId,
+              limit: 500,
+              ...(cursor ? { cursor } : {}),
+            });
+            const body = v2Response.data as
+              | { data?: unknown[]; cursor?: { next?: string } }
+              | unknown[]
+              | undefined;
+            if (Array.isArray(body)) {
+              messages.push(...body);
+              cursor = undefined;
+            } else {
+              messages.push(...(body?.data ?? []));
+              cursor = body?.cursor?.next;
+            }
+            if (!cursor) break;
+          }
           rows = mapOpenCodeV2MessagesToLegacyRows(
             messages as Parameters<typeof mapOpenCodeV2MessagesToLegacyRows>[0],
           );
