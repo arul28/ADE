@@ -38,6 +38,8 @@ import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavig
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
+import { applyAdeTheme } from "../../theme/applyTheme";
+import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -665,6 +667,8 @@ function ProjectTabHost() {
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot ?? EMPTY_PROJECT_INFO_BY_ROOT);
   const rootPrefs = useAppStore(useShallow((s) => ({
     theme: s.theme,
+    themeId: s.themeId,
+    customThemes: s.customThemes,
     terminalPreferences: s.terminalPreferences,
     codeBlockCopyButtonPosition: s.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: s.agentTurnCompletionSound,
@@ -1358,6 +1362,8 @@ function BrowserHashRouteBridge() {
 
 export function App() {
   const theme = useAppStore((s) => s.theme);
+  const themeId = useAppStore((s) => s.themeId);
+  const customThemes = useAppStore((s) => s.customThemes);
   const projectRoot = useAppStore(selectActiveProjectRoot);
 
   // Account-scoped preferences follow the signed-in account between machines.
@@ -1378,18 +1384,25 @@ export function App() {
   }, [projectRoot]);
 
   React.useEffect(() => {
-    // Keep theme consistent for portals mounted outside the app root.
-    document.documentElement.setAttribute("data-theme", theme);
-    document.body.setAttribute("data-theme", theme);
+    // One pass per theme change: inline custom properties on <html> for a
+    // custom/imported theme, plus `data-theme` for the structural block and
+    // `data-theme-id` for identity. Built-in dark/light emit no inline vars, so
+    // they render exactly as the stylesheet defines them.
+    const resolved = resolveTheme(resolveThemeById(themeId, customThemes));
+    applyAdeTheme(resolved);
     // The Windows caption strip is painted by the OS from a colour ADE hands
     // it, so it does not inherit `data-theme` the way the header does.
-    syncWindowsTitleBarOverlay({ theme });
-  }, [theme]);
+    syncWindowsTitleBarOverlay({ theme: resolved.theme.baseMode });
+  }, [themeId, customThemes]);
 
   return (
     <LaunchGate>
       <Router>
-        <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
+        <div
+          data-theme={theme}
+          data-theme-id={themeId}
+          className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30"
+        >
           <OnboardingBootstrap />
           {/* Windows beta notice: shown on every start of every Windows install
               (Stable included), and re-openable from Settings → About or the
