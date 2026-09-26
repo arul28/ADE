@@ -1,10 +1,22 @@
 import fs from "node:fs";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import {
   resolveAdeOpenCodeStoreDir,
   resolveUserOpenCodeDataRoot,
 } from "../../../../desktop/src/shared/opencodeDataHome";
+
+// Type-only import plus an anchored `require`, mirroring `rosterBuilder`: a
+// static value import of `node:sqlite` is a build-time dependency the Windows
+// CLI contract test cannot resolve, and it would load the module for every
+// `ade` invocation rather than only the maintenance path.
+type DatabaseSyncConstructor = new (
+  dbPath: string,
+  options?: { allowExtension?: boolean; readOnly?: boolean },
+) => DatabaseSyncType;
+const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 /**
  * Pruning for an OpenCode data store.
@@ -122,6 +134,8 @@ export type OpenCodeStoreTableSize = {
 export type OpenCodePrunePlan = {
   dbPath: string;
   fileBytes: number;
+  /** The cutoff the eligible set was computed with; re-applied at delete time. */
+  cutoffMs: number;
   totalSessions: number;
   eligibleSessions: string[];
   /** Payload bytes of the eligible sessions' own rows (event/message/part). */
@@ -152,7 +166,7 @@ const PAYLOAD_TABLES = [
   { table: "part", sessionColumn: "session_id" },
 ] as const;
 
-function openDatabase(dbPath: string): DatabaseSync {
+function openDatabase(dbPath: string): DatabaseSyncType {
   const db = new DatabaseSync(dbPath);
   // Cascades only fire on a connection that enables them; OpenCode's own
   // connection does, and the maintenance path must match or it would delete a
@@ -164,7 +178,7 @@ function openDatabase(dbPath: string): DatabaseSync {
 
 type TableInfoRow = { name?: unknown };
 
-function tableNames(db: DatabaseSync): Set<string> {
+function tableNames(db: DatabaseSyncType): Set<string> {
   const rows = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as TableInfoRow[];
   return new Set(rows.map((row) => (typeof row.name === "string" ? row.name : "")).filter(Boolean));
 }
@@ -226,7 +240,7 @@ export function planOpenCodeStorePrune(args: {
       // attribution for every store.
       const statRows = db
         .prepare(
-          'SELECT name AS "table", SUM(pgsize) AS bytes, SUM(ncell) AS rows FROM dbstat GROUP BY name ORDER BY bytes DESC',
+          'SELECT name AS "table", SUM(pgsize) AS bytes, SUM(ncell) AS "rows" FROM dbstat GROUP BY name ORDER BY bytes DESC',
         )
         .all() as Array<{ table?: unknown; bytes?: unknown; rows?: unknown }>;
       for (const row of statRows) {
@@ -244,6 +258,7 @@ export function planOpenCodeStorePrune(args: {
     return {
       dbPath: args.dbPath,
       fileBytes,
+      cutoffMs: args.cutoffMs,
       totalSessions,
       eligibleSessions: eligibleIds,
       reclaimablePayloadBytes,
@@ -277,15 +292,32 @@ export function applyOpenCodeStorePrune(args: {
   const { plan } = args;
   const fileBytesBefore = fs.statSync(plan.dbPath).size;
   const db = openDatabase(plan.dbPath);
+  let deletedSessions = 0;
   let deletedEvents = 0;
   let deletedMessages = 0;
   let deletedParts = 0;
   try {
-    if (plan.eligibleSessions.length > 0) {
-      const placeholders = plan.eligibleSessions.map(() => "?").join(",");
-      db.exec("BEGIN IMMEDIATE");
-      try {
-        const countOf = (sql: string): number => Number((db.prepare(sql).get(...plan.eligibleSessions) as { count: number | bigint }).count);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      // Re-select under the write lock. The plan was built on another
+      // connection before the writer check, and `--force` skips that check, so
+      // a session could have been resumed and updated past the cutoff in
+      // between. Deleting the plan's stale list would take live work.
+      const doomed = db
+        .prepare(
+          `WITH RECURSIVE doomed(id) AS (
+             SELECT id FROM session WHERE time_updated < :cutoff
+             UNION
+             SELECT child.id FROM session child JOIN doomed parent ON child.parent_id = parent.id
+           )
+           SELECT id FROM doomed ORDER BY id`,
+        )
+        .all({ cutoff: plan.cutoffMs }) as Array<{ id: string }>;
+      const doomedIds = doomed.map((row) => row.id);
+      deletedSessions = doomedIds.length;
+      if (doomedIds.length > 0) {
+        const placeholders = doomedIds.map(() => "?").join(",");
+        const countOf = (sql: string): number => Number((db.prepare(sql).get(...doomedIds) as { count: number | bigint }).count);
         deletedEvents = countOf(
           `SELECT COUNT(*) AS count FROM event WHERE aggregate_id IN (${placeholders})`,
         );
@@ -298,15 +330,15 @@ export function applyOpenCodeStorePrune(args: {
         // Order matters. `event` cascades from `event_sequence`, never from
         // `session`; deleting the sequence row first removes the log. The
         // session row then cascades every projection table. Children are part
-        // of the selection already (recursive CTE), so a parent-first delete
+        // of the re-selection already (recursive CTE), so a parent-first delete
         // cannot strand them.
-        db.prepare(`DELETE FROM event_sequence WHERE aggregate_id IN (${placeholders})`).run(...plan.eligibleSessions);
-        db.prepare(`DELETE FROM session WHERE id IN (${placeholders})`).run(...plan.eligibleSessions);
-        db.exec("COMMIT");
-      } catch (error) {
-        db.exec("ROLLBACK");
-        throw error;
+        db.prepare(`DELETE FROM event_sequence WHERE aggregate_id IN (${placeholders})`).run(...doomedIds);
+        db.prepare(`DELETE FROM session WHERE id IN (${placeholders})`).run(...doomedIds);
       }
+      db.exec("COMMIT");
+    } catch (error) {
+      db.exec("ROLLBACK");
+      throw error;
     }
   } finally {
     db.close();
@@ -325,7 +357,7 @@ export function applyOpenCodeStorePrune(args: {
   }
 
   return {
-    deletedSessions: plan.eligibleSessions.length,
+    deletedSessions,
     deletedEvents,
     deletedMessages,
     deletedParts,

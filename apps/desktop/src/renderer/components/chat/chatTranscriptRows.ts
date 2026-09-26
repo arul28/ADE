@@ -2905,6 +2905,13 @@ export function appendCollapsedChatTranscriptEvent(
       rows[rows.length - 1] = {
         ...previous,
         timestamp: envelope.timestamp,
+        // The merged row now carries this envelope's time, so its synthetic
+        // marker must follow that time: fragments with one messageId but
+        // different item ids can reach this branch with different provenance,
+        // and a stale marker would hide (or invent) the clock.
+        ...(envelope.provenance?.timestampSynthetic === true
+          ? { timestampSynthetic: true }
+          : { timestampSynthetic: false }),
         event: {
           ...previous.event,
           text: `${previous.event.text}${event.text}`,

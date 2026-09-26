@@ -77,8 +77,17 @@ export async function runOpenCodeCleanupCommand(
     };
   }
 
-  if (openCodeStoreHasActiveWriter(target.dbPath) && !request.force) {
+  const activeWriter = openCodeStoreHasActiveWriter(target.dbPath);
+  if (activeWriter && !request.force) {
     throw new OpenCodeCleanupUsageError(`Refusing --apply: ${IN_USE}.`);
+  }
+  // VACUUM needs exclusive access and takes a write lock for its whole run, so
+  // even --force must not start one over a live writer: the deletes would
+  // commit and the VACUUM would fail after them.
+  if (activeWriter && request.vacuum) {
+    throw new OpenCodeCleanupUsageError(
+      "Refusing --vacuum: a writer holds the store, and VACUUM needs exclusive access. Stop the writer and retry (deletes already applied will still shrink then).",
+    );
   }
 
   const result = applyOpenCodeStorePrune({ plan, vacuum: request.vacuum });
