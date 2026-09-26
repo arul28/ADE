@@ -24,6 +24,7 @@ import {
 import { AppleDevicesSection } from "./AppleDevicesSection";
 import { ThemeGallery } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
+import { ThemeImportExport } from "./ThemeImportExport";
 
 /**
  * Appearance settings.
@@ -95,6 +96,7 @@ export function AppearanceSection() {
           }
           stacked
         >
+          <ThemeImportExport />
           <ThemeGallery />
         </SettingsCard>
       </SettingsGroup>

@@ -5,6 +5,7 @@ import {
   normalizeAdeTheme,
   normalizeAdeThemeList,
   parseAdeThemeFile,
+  prepareImportedTheme,
   serializeAdeTheme,
   slugifyThemeId,
   themeExportFileName,
@@ -127,5 +128,21 @@ describe("theme file export and import", () => {
     expect(envelope.version).toBe(1);
     expect(envelope.exportedAt).toBe("2026-01-02T03:04:05.000Z");
     expect(themeExportFileName(theme)).toBe("ade-theme-shared.json");
+  });
+});
+
+describe("prepareImportedTheme", () => {
+  it("gives a colliding import a fresh id and stamps its source, keeping the name", () => {
+    const imported = normalizeAdeTheme({ id: "nord", name: "Nord", palette: CORE })!;
+    const prepared = prepareImportedTheme(imported, "imported", ["dark", "nord"]);
+    expect(prepared.id).toBe("nord-2");
+    expect(prepared.name).toBe("Nord");
+    expect(prepared.source).toBe("imported");
+    expect(prepared.palette).toMatchObject(CORE);
+  });
+
+  it("stamps a VS Code import as vscode", () => {
+    const imported = normalizeAdeTheme({ name: "One Dark", palette: CORE })!;
+    expect(prepareImportedTheme(imported, "vscode", []).source).toBe("vscode");
   });
 });
