@@ -2262,7 +2262,7 @@ describe("createAgentChatService", () => {
           })(),
         } as any;
       });
-      vi.mocked(buildOpenCodePromptParts).mockClear();
+      mockState.openCodeV2PromptCalls = [];
 
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -2278,14 +2278,23 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Finish the active turn first.",
       });
-      for (let attempt = 0; attempt < 20 && vi.mocked(buildOpenCodePromptParts).mock.calls.length < 1; attempt += 1) {
-        await Promise.resolve();
-      }
-      expect(vi.mocked(buildOpenCodePromptParts).mock.calls.length).toBeGreaterThanOrEqual(1);
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status" && event.event.turnStatus === "started",
+      );
+      await waitForCondition(
+        () => mockState.openCodeV2PromptCalls.length >= 1,
+        "the first v2 prompt to be dispatched",
+      );
 
       const attachmentPath = path.join(tmpRoot, "opencode-steer-context.txt");
       fs.writeFileSync(attachmentPath, "OpenCode steer attachment context.");
 
+      // The inline attempt is refused (a refused steer is the real path that
+      // stages a message on a v2 session): the message must fall back to the
+      // queue and be delivered — with its attachment — as the next turn.
+      mockState.openCodeV2SteerError = new Error("steer refused");
       const steerResult = await service.steer({
         sessionId: session.id,
         text: "Then review the attached context.",
@@ -2306,18 +2315,23 @@ describe("createAgentChatService", () => {
       firstTurnControl.release!();
       await firstTurn;
 
-      for (let attempt = 0; attempt < 50 && vi.mocked(buildOpenCodePromptParts).mock.calls.length < 2; attempt += 1) {
-        await Promise.resolve();
-      }
-      expect(vi.mocked(buildOpenCodePromptParts).mock.calls).toHaveLength(2);
-      expect(vi.mocked(buildOpenCodePromptParts).mock.calls[1]?.[0]).toEqual(expect.objectContaining({
-        prompt: expect.stringContaining("Then review the attached context."),
-        files: expect.arrayContaining([
-          expect.objectContaining({
-            path: expect.stringContaining("opencode-steer-context.txt"),
-            filename: "opencode-steer-context.txt",
-          }),
-        ]),
+      await waitForCondition(
+        () => mockState.openCodeV2PromptCalls.length >= 2,
+        "the queued OpenCode steer to be delivered as its own turn",
+      );
+      expect(mockState.openCodeV2PromptCalls).toHaveLength(2);
+      // The queued steer is delivered as its own v2 turn: the text and the
+      // resolving attachment arrive in the prompt payload.
+      expect(mockState.openCodeV2PromptCalls[1]).toEqual(expect.objectContaining({
+        prompt: expect.objectContaining({
+          text: expect.stringContaining("Then review the attached context."),
+          files: expect.arrayContaining([
+            expect.objectContaining({
+              uri: expect.stringContaining("opencode-steer-context.txt"),
+              name: "opencode-steer-context.txt",
+            }),
+          ]),
+        }),
       }));
 
       await waitForEvent(
@@ -2399,12 +2413,13 @@ describe("createAgentChatService", () => {
       });
       await turn;
 
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
-      expect(openCodeState.questionReply).toHaveBeenCalledWith({
+      // A v2 ask is answered on the session-scoped route with the ask's own
+      // session id; the legacy `/question` route answers `not found` for it.
+      expect(mockState.openCodeV2QuestionReplies).toContainEqual({
+        sessionID: "opencode-session-1",
         requestID: "opencode-question-1",
-        directory: expect.stringMatching(/project$/),
-        answers: [["Chat"]],
-      }, { throwOnError: true });
+        questionV2Reply: { answers: [["Chat"]] },
+      });
     });
 
     /**
