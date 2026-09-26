@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState } from "react";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   useAppStore,
@@ -23,6 +23,7 @@ import {
 } from "./primitives";
 import { AppleDevicesSection } from "./AppleDevicesSection";
 import { ThemeGallery } from "./ThemeGallery";
+import { ThemeCustomizer } from "./ThemeCustomizer";
 
 /**
  * Appearance settings.
@@ -57,6 +58,7 @@ export const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
 
 export function AppearanceSection() {
   const resetThemeAndChatFontDefaults = useAppStore((s) => s.resetThemeAndChatFontDefaults);
+  const [customizerOpen, setCustomizerOpen] = useState(false);
 
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
@@ -72,14 +74,24 @@ export function AppearanceSection() {
           title="Theme"
           description="Applies to every ADE surface, not just chat."
           control={
-            <button
-              type="button"
-              onClick={() => resetThemeAndChatFontDefaults()}
-              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
-              title="Sets the theme to ADE Dark and chat font to 14px. Density, tint, and geometry stay as set."
-            >
-              Restore defaults
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button
+                type="button"
+                onClick={() => setCustomizerOpen(true)}
+                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                title="Override individual colours and save the result as a custom theme."
+              >
+                Customize…
+              </button>
+              <button
+                type="button"
+                onClick={() => resetThemeAndChatFontDefaults()}
+                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                title="Sets the theme to ADE Dark and chat font to 14px. Density, tint, and geometry stay as set."
+              >
+                Restore defaults
+              </button>
+            </div>
           }
           stacked
         >
@@ -188,6 +200,8 @@ export function AppearanceSection() {
       </SettingsGroup>
 
       <AppleDevicesSection />
+
+      <ThemeCustomizer open={customizerOpen} onOpenChange={setCustomizerOpen} />
     </div>
   );
 }

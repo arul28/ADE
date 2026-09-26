@@ -792,9 +792,11 @@ Renderer — settings:
   default-on prompt-stash bookmark visibility; hiding the bookmark leaves
   Cmd/Ctrl+S active). The Theme card renders the `ThemeGallery` picker
   (`components/settings/ThemeGallery.tsx` + `ThemePreview.tsx`) instead of a
-  two-swatch toggle; the theme format, engine and shipped library live in
-  `apps/desktop/src/shared/theme/` and are applied by
-  `apps/desktop/src/renderer/theme/applyTheme.ts`. See
+  two-swatch toggle, and a `ThemeCustomizer` dialog
+  (`components/settings/ThemeCustomizer.tsx` + `themeCustomizerModel.ts`) to
+  override individual tokens and save custom themes; the theme format, engine
+  and shipped library live in `apps/desktop/src/shared/theme/` and are applied
+  by `apps/desktop/src/renderer/theme/applyTheme.ts`. See
   [design/theming.md](../../design/theming.md).
 - `apps/desktop/src/renderer/components/settings/DictationSection.tsx`
   — voice input settings. Persists `voiceInputEnabled`, shows whether
