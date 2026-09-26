@@ -57,9 +57,11 @@ describe("createAgentChatService", () => {
         text: "Now add tests.",
       });
 
-      const promptCalls = vi.mocked(buildOpenCodePromptParts).mock.calls;
-      const firstUserContent = String(promptCalls[0]?.[0]?.prompt ?? "");
-      const secondUserContent = String(promptCalls[1]?.[0]?.prompt ?? "");
+      // The turn text on the wire is the v2 `session.prompt` payload; the
+      // legacy part builder is not on a new chat's path any more.
+      const promptCalls = mockState.openCodeV2PromptCalls as Array<{ prompt?: { text?: string } }>;
+      const firstUserContent = String(promptCalls[0]?.prompt?.text ?? "");
+      const secondUserContent = String(promptCalls[1]?.prompt?.text ?? "");
       const openCodeStartCalls = vi.mocked(startOpenCodeSession).mock.calls;
       const systemPromptCalls = vi.mocked(buildCodingAgentSystemPrompt).mock.calls;
 

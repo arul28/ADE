@@ -45,6 +45,7 @@ import {
   openCodeV2WaitForIdle,
   readOpenCodeV2ActiveStatuses,
   unwrapOpenCodeV2Data,
+  isOpenCodeNotFoundError,
   type OpenCodeV2AdapterHooks,
   type OpenCodeV2SessionInfo,
 } from "./openCodeV2Events";
@@ -722,49 +723,6 @@ export function buildOpenCodePromptParts(args: {
   return parts;
 }
 
-/**
- * True only when an OpenCode server call failed with a confirmed
- * "session does not exist" (HTTP 404 / `NotFoundError`). Anything else — a
- * transport blip, timeout, HTML version-mismatch guard, auth hiccup — must NOT
- * be treated as a missing session: the caller would silently start a fresh,
- * empty session and strand the user's thread (t3code's #3604 silent context
- * loss). Walks a bounded chain of `cause`/`body`/`error`/`data` properties so
- * SDK wrapper shapes stay covered; any explicit non-404 status seals the walk.
- */
-export function isOpenCodeNotFoundError(error: unknown): boolean {
-  // Two passes over the same bounded tree, so a deep non-404 status vetoes a
-  // shallow `NotFoundError` name: `{ name: "NotFoundError", cause: { status:
-  // 503 } }` must NOT re-create the session. Pass 1 seals on any explicit
-  // non-404 status anywhere; pass 2 affirms on a NotFoundError name or a 404.
-  const collect = (value: unknown, depth: number, visit: (record: Record<string, unknown>) => void): void => {
-    if (!value || typeof value !== "object" || depth > 6) return;
-    const record = value as Record<string, unknown>;
-    visit(record);
-    for (const key of ["cause", "body", "error", "data"] as const) {
-      const nested = record[key];
-      if (nested === undefined || nested === null || Array.isArray(nested)) continue;
-      collect(nested, depth + 1, visit);
-    }
-  };
-  let sealed = false;
-  let affirmed = false;
-  collect(error, 0, (record) => {
-    if (sealed) return;
-    for (const key of ["status", "statusCode"] as const) {
-      const candidate = record[key];
-      if (typeof candidate === "number" && Number.isFinite(candidate)) {
-        if (candidate !== 404) {
-          sealed = true;
-          return;
-        }
-        affirmed = true;
-      }
-    }
-    if (record.name === "NotFoundError") affirmed = true;
-  });
-  return !sealed && affirmed;
-}
-
 function createOpenCodeSessionHandle(args: {
   client: OpencodeClient;
   lease: OpenCodeServerLease;
@@ -1192,6 +1150,7 @@ export async function runOpenCodeTextPrompt(
 }
 
 export {
+  isOpenCodeNotFoundError,
   mapOpenCodeV2MessagesToLegacyRows,
   mergeOpenCodeV2IdleReceipt,
   openCodeV2EventStream,

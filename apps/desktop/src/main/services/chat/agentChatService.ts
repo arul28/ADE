@@ -29888,18 +29888,23 @@ export function createAgentChatService(args: {
             && managed.session.interactionMode !== "plan",
         ),
       });
-      const openCodePromptBody = {
-        sessionID: runtime.handle.sessionId,
-        directory: runtime.handle.directory,
-        ...(openCodeAgent ? { agent: openCodeAgent } : {}),
-        model: requestedOpenCodeModel,
-        ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
-        ...(openCodeSelection.variant ? { variant: openCodeSelection.variant } : {}),
-        parts: buildOpenCodePromptParts({
-          prompt: userContent,
-          files: toPromptFiles,
-        }),
-      };
+      // The legacy runner carries agent/model/system in one flat prompt body;
+      // the v2 runner sets the first two on the session and folds the system
+      // text into the first prompt, so this is built only where it is sent.
+      const openCodePromptBody = runtime.runner === "legacy"
+        ? {
+          sessionID: runtime.handle.sessionId,
+          directory: runtime.handle.directory,
+          ...(openCodeAgent ? { agent: openCodeAgent } : {}),
+          model: requestedOpenCodeModel,
+          ...(openCodeSystemPrompt ? { system: openCodeSystemPrompt } : {}),
+          ...(openCodeSelection.variant ? { variant: openCodeSelection.variant } : {}),
+          parts: buildOpenCodePromptParts({
+            prompt: userContent,
+            files: toPromptFiles,
+          }),
+        }
+        : null;
 
       // Subscribe BEFORE dispatching. The event stream is live-only — it never
       // replays events published before the connection lands — so a prompt
@@ -29914,12 +29919,11 @@ export function createAgentChatService(args: {
           error: error instanceof Error ? error.message : String(error),
         });
       };
-      const streamsByIdle = runtime.runner === "v2"
-        ? await (async () => {
-          // A v2 prompt lands on a session whose model/agent live on the
-          // session, not the request: see `dispatchPrompt`, which switches
-          // before the turn's first prompt.
-          const normalized = await openCodeV2EventStream({
+      const eventStream = runtime.runner === "v2"
+        ? mergeOpenCodeV2IdleReceipt(
+          // The v2 stream needs the session, not the request: model/agent are
+          // switched on the session by `dispatchPrompt` before the first prompt.
+          await openCodeV2EventStream({
             client: runtime.handle.client,
             sessionId: runtime.handle.sessionId,
             signal: abortController.signal,
@@ -29929,18 +29933,17 @@ export function createAgentChatService(args: {
                 promoteOpenCodeSteerForMessage(managed, runtime, sessionID, messageID);
               },
             },
-          });
-          const waitReceipt = openCodeV2WaitForIdle({
-            client: runtime.handle.client,
-            sessionId: runtime.handle.sessionId,
-            signal: abortController.signal,
-          });
-          return mergeOpenCodeV2IdleReceipt(normalized, {
-            wait: waitReceipt,
+          }),
+          {
+            wait: openCodeV2WaitForIdle({
+              client: runtime.handle.client,
+              sessionId: runtime.handle.sessionId,
+              signal: abortController.signal,
+            }),
             parentSessionId: runtime.handle.sessionId,
             childSessionIds: () => [...runtime.subagentSessions.keys()],
-          });
-        })()
+          },
+        )
         : await openCodeEventStream({
           client: runtime.handle.client,
           directory: runtime.handle.directory,
@@ -29952,7 +29955,6 @@ export function createAgentChatService(args: {
           // same socket, and that is the user getting what they asked for.
           onSseError,
         });
-      const eventStream = streamsByIdle;
 
       let promptFailure: unknown = null;
       const dispatchPrompt = runtime.runner === "v2"
@@ -29990,7 +29992,10 @@ export function createAgentChatService(args: {
           );
           runtime.systemContextSent = true;
         })()
-        : runtime.handle.client.session.promptAsync(openCodePromptBody, { throwOnError: true });
+        : runtime.handle.client.session.promptAsync(
+          openCodePromptBody!,
+          { throwOnError: true },
+        );
       const promptAccepted = dispatchPrompt.then(() => {
         args.onBackendDispatched?.();
       }).catch((error: unknown) => {
