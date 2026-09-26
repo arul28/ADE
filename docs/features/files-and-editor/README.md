@@ -238,9 +238,10 @@ Renderer:
   view under `ade:diff:ignoreWhitespace:<persistKey>` (the PR code tab and
   chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the
   pure rule: full-contents diffs set `parseDiffOptions.ignoreWhitespace`,
-  and pre-parsed patches drop `-`/`+` pairs equal after `trim()` and
-  recompute their `@@` counts, advancing each start past any lines dropped
-  before the first retained line. A file left with no hunks shows a
+  and pre-parsed patches turn a `-`/`+` pair equal after `trim()` back into a
+  context line (the new-side text, as `git diff -w` prints it) rather than
+  deleting it, so the hunk keeps its order and its own `@@` start and counts
+  stay exact. A file left with no change lines shows a
   "whitespace-only changes hidden" state instead of an empty diff.
 - `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
