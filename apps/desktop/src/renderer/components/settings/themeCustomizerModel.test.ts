@@ -22,6 +22,18 @@ describe("planThemeSave", () => {
     expect(saved!.description).toBeUndefined();
   });
 
+  it("keeps an existing custom theme's own description when editing it", () => {
+    const draft = { ...base, id: "mine", name: "Mine", source: "custom" as const, description: "Imported from Nord" };
+    const saved = planThemeSave({
+      draft,
+      name: "Mine",
+      editingExisting: true,
+      takenIds: ["mine"],
+      baseId: "mine",
+    });
+    expect(saved!.description).toBe("Imported from Nord");
+  });
+
   it("gives a colliding name a fresh id instead of overwriting an existing theme", () => {
     const saved = planThemeSave({
       draft: base,

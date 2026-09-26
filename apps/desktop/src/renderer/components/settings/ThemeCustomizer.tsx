@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { useAppStore } from "../../state/appStore";
 import {
-  ADE_THEME_PALETTE_KEYS,
   DEFAULT_THEME_ID,
   allThemeOptions,
   parseColor,
@@ -14,7 +13,7 @@ import {
   type ThemeBaseMode,
 } from "../../../shared/theme";
 import { Dialog } from "../ui/dialog";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { SettingsSegmented, SettingsTextField } from "./primitives";
 import { ThemePreview } from "./ThemePreview";
 import { planThemeSave, upsertCustomTheme } from "./themeCustomizerModel";
@@ -236,19 +235,19 @@ export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenC
       ]}
       footerStart={
         <div style={{ display: "flex", gap: 8 }}>
-          <button type="button" onClick={handleDuplicate} style={footerButton}>Duplicate</button>
+          <button type="button" onClick={handleDuplicate} style={customizerButton}>Duplicate</button>
           <button
             type="button"
             onClick={() => {
               setDraft(baseTheme);
               setName(baseTheme.name);
             }}
-            style={footerButton}
+            style={customizerButton}
           >
             Reset to base
           </button>
           {editingExisting ? (
-            <button type="button" onClick={handleDelete} style={{ ...footerButton, color: COLORS.danger }}>
+            <button type="button" onClick={handleDelete} style={{ ...customizerButton, color: COLORS.danger }}>
               Delete
             </button>
           ) : null}
@@ -317,17 +316,4 @@ export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenC
   );
 }
 
-const footerButton: React.CSSProperties = {
-  height: 28,
-  padding: "0 10px",
-  fontFamily: SANS_FONT,
-  fontSize: 11,
-  color: COLORS.textSecondary,
-  background: COLORS.recessedBg,
-  border: `1px solid ${COLORS.borderMuted}`,
-  borderRadius: 8,
-  cursor: "pointer",
-};
-
-/** Every palette key must have a label the editor can show. */
-export const THEME_CUSTOMIZER_TOKEN_KEYS: readonly AdeThemePaletteKey[] = ADE_THEME_PALETTE_KEYS;
+const customizerButton: React.CSSProperties = outlineButton({ height: 28, padding: "0 10px", fontSize: 11 });

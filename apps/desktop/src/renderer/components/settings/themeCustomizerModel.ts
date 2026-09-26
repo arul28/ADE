@@ -33,12 +33,15 @@ export function planThemeSave(args: PlanThemeSaveArgs): AdeTheme | null {
   const name = args.name.trim();
   if (!name) return null;
   const id = args.editingExisting ? args.draft.id : uniqueThemeId(name, args.takenIds);
-  // The draft starts as a clone of its base, so it carries the base's
-  // description and author; neither describes the user's theme, so drop them
-  // rather than show ADE Dark's marketing line under a custom card.
   const draft: AdeTheme = { ...args.draft };
-  delete draft.description;
-  delete draft.author;
+  // A draft based on a shipped theme starts as a clone of it, so it carries the
+  // shipped theme's description and author; neither describes the user's theme.
+  // An existing custom theme (which may carry its own, e.g. from an import)
+  // keeps what it has.
+  if (!args.editingExisting) {
+    delete draft.description;
+    delete draft.author;
+  }
   return normalizeAdeTheme(
     {
       ...draft,
