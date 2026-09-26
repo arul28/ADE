@@ -24,6 +24,7 @@ import {
   __terminateOpenCodeServerProcessesForTests,
   acquireDedicatedOpenCodeServer,
   acquireSharedOpenCodeServer,
+  buildOwnedOpenCodeEnv,
   classifyOpenCodeLaunchFailure,
   getOpenCodeRuntimeDiagnostics,
   OpenCodeLaunchError,
@@ -973,5 +974,26 @@ describe("withInheritedSkillPaths", () => {
       { skills: { paths: ["/shared"] } },
     ) as { skills: { paths: string[] } };
     expect(merged.skills.paths).toEqual(["/shared", "/ade"]);
+  });
+});
+
+describe("buildOwnedOpenCodeEnv", () => {
+  it("forces the data/state/cache homes into ADE's root and keeps the config channel", () => {
+    const paths = {
+      root: "/ade/root",
+      configHome: "/ade/root/config",
+      dataHome: "/ade/root/data",
+      stateHome: "/ade/root/state",
+      cacheHome: "/ade/root/cache",
+      runtimeDir: "/ade/root/runtime",
+    };
+    const env = buildOwnedOpenCodeEnv(
+      { provider: { openai: { options: { apiKey: "test-key" } } } } as never,
+      paths,
+    );
+    expect(env.XDG_DATA_HOME).toBe("/ade/root/data");
+    expect(env.XDG_STATE_HOME).toBe("/ade/root/state");
+    expect(env.XDG_CACHE_HOME).toBe("/ade/root/cache");
+    expect(env.OPENCODE_CONFIG_CONTENT).toContain("test-key");
   });
 });

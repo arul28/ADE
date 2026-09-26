@@ -514,7 +514,11 @@ describe("openCodeRuntime", () => {
   });
 
   it("recreates a persisted session only on a confirmed miss, and rethrows anything else", async () => {
-    // Confirmed 404 → fall through to session.create.
+    // Confirmed 404 on the owned home, then on the legacy user home (the
+    // continuity fallback probes it) → only then fall through to create.
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new Error("not found", { cause: { body: { name: "NotFoundError" }, status: 404 } });
+    });
     mockState.getSession.mockImplementationOnce(async () => {
       throw new Error("not found", { cause: { body: { name: "NotFoundError" }, status: 404 } });
     });
@@ -529,6 +533,28 @@ describe("openCodeRuntime", () => {
     });
     expect(recreated.sessionId).toContain("opencode-session-");
     expect(mockState.createSession).toHaveBeenCalled();
+
+  it("reopens a persisted session on its legacy user home instead of starting empty", async () => {
+    // Owned home misses, the user home still has it: continuity wins over a
+    // fresh session (the whole point of the fallback).
+    mockState.getSession.mockImplementationOnce(async () => {
+      throw new Error("not found", { cause: { body: { name: "NotFoundError" }, status: 404 } });
+    });
+    mockState.getSession.mockImplementationOnce(async () => ({
+      data: { id: "ses_legacy", title: "Legacy chat" },
+    }));
+    const reopened = await startOpenCodeSession({
+      directory: "/repo",
+      sessionId: "ses_legacy",
+      leaseKind: "dedicated",
+      projectConfig: { ai: {} },
+      ownerKind: "chat",
+      ownerId: "chat-legacy",
+      ownerKey: "chat:chat-legacy",
+    });
+    expect(reopened.sessionId).toBe("ses_legacy");
+    expect(mockState.createSession).not.toHaveBeenCalled();
+  });
 
     // Transient failure (no response / non-404 status) must surface, not reset
     // the thread onto a brand-new empty session.

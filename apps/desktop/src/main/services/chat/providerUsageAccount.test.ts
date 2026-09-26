@@ -218,10 +218,13 @@ describe("turn usage account resolvers", () => {
       upstream: "lmstudio",
       endpoint: "http://127.0.0.1:1234",
     });
-    expect(accounts.openCode({ isolatedStore: "/nonexistent/opencode" }, "anthropic")).toEqual({
+    // No credential for this provider anywhere in the lookup order -> unknown,
+    // not a guess. The id is deliberately one no auth.json can define, so the
+    // assertion does not depend on the machine's real OpenCode store.
+    expect(accounts.openCode({}, "definitely-not-a-provider")).toEqual({
       provider: "opencode",
       kind: "unknown",
-      upstream: "anthropic",
+      upstream: "definitely-not-a-provider",
     });
   });
 });

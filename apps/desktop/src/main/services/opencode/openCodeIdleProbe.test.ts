@@ -91,20 +91,59 @@ describe("withOpenCodeIdleProbe", () => {
     await stream.return(undefined);
   });
 
-  it("treats a failed probe as unknown and keeps waiting", async () => {
+  it("bounds a failing probe: it waits, then ends the turn after the limit", async () => {
+    // A server that stops answering must not hold the chat on "Working"
+    // forever: failures are counted and the turn is failed visibly.
     const source = pushSource();
     const timers = manualTimers();
+    const failed: string[][] = [];
     const stream = withOpenCodeIdleProbe<Ev>(source.iterator, {
       waitingOn: () => ["parent"],
       probe: async () => { throw new Error("no status endpoint"); },
       makeIdleEvent: (sessionID) => ({ type: "session.idle", sessionID }),
+      makeProbeFailureEvent: (sessionIDs) => ({ type: "session.error", sessionID: sessionIDs[0]! }),
+      probeFailureLimit: 2,
+      quietMs: 1_000,
+      setTimer: timers.setTimer,
+      onProbeFailed: (ids) => failed.push([...ids]),
+    });
+    // One pending read for the whole sequence: a second `next()` issues a
+    // queued request that would not settle on this yield.
+    const next = stream.next();
+    await tick(); timers.fire(); await tick();
+    // One failure is not a decision; the probe is retried.
+    expect(failed).toEqual([]);
+    await tick(); timers.fire(); await tick();
+    expect(await next).toEqual({
+      value: { type: "session.error", sessionID: "parent" },
+      done: false,
+    });
+    expect(failed).toEqual([["parent"]]);
+    await stream.return(undefined);
+  });
+
+  it("counts a status call that never answers as unusable", async () => {
+    // A TCP-alive but wedged server used to park the generator in
+    // `await probe()` forever; the probe timeout turns it into a failure.
+    const source = pushSource();
+    const timers = manualTimers();
+    const stream = withOpenCodeIdleProbe<Ev>(source.iterator, {
+      waitingOn: () => ["parent"],
+      probe: () => new Promise(() => {}),
+      makeIdleEvent: (sessionID) => ({ type: "session.idle", sessionID }),
+      makeProbeFailureEvent: (sessionIDs) => ({ type: "session.error", sessionID: sessionIDs[0]! }),
+      probeFailureLimit: 1,
+      probeTimeoutMs: 500,
       quietMs: 1_000,
       setTimer: timers.setTimer,
     });
     const next = stream.next();
     await tick(); timers.fire(); await tick();
-    source.push({ type: "session.idle", sessionID: "parent" });
-    expect(await next).toEqual({ value: { type: "session.idle", sessionID: "parent" }, done: false });
+    timers.fire(); await tick();
+    expect(await next).toEqual({
+      value: { type: "session.error", sessionID: "parent" },
+      done: false,
+    });
     await stream.return(undefined);
   });
 
