@@ -41,11 +41,12 @@ in-memory remote-runtime snapshot — no polling). When two or more connected
 machines can host the repo, the selector shows an **Auto — least loaded** card
 above the machine grid. It resolves through `chooseLaneMachineByLoad`, which
 prefers a machine with healthy disk headroom, then fewer already-running lanes
-(caller-supplied `activeLaneCount`), then more free disk, and keeps the bound
-machine on a true tie. With one eligible machine, or when the repo is missing
-from all but one, there is nothing to balance and the card is absent — the
-default stays the machine the project is bound to. Picking a named machine is
-still the way to force one.
+(caller-supplied `activeLaneCount` — an uncounted machine is not treated as idle
+and the load rule is skipped unless both machines report a count), then more
+free disk, and keeps the bound machine on a true tie. With one eligible machine,
+or when the repo is missing from all but one, there is nothing to balance and
+the card is absent — the default stays the machine the project is bound to.
+Picking a named machine is still the way to force one.
 
 Balancing is an explicit choice rather than the dialog's silent default because
 selecting a non-bound machine rebinds the whole app tab; doing that merely
