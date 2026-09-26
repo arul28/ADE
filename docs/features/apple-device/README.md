@@ -172,20 +172,24 @@ is no separate column.
 ### Foldable ("Duo") mode
 
 A device whose simulator record reports fold/dual-screen support (a `Duo` —
-or `Fold` — in the CoreSimulator type identifier or name) renders an articulated
-two-panel body instead of a GLB: two screen halves, two body slabs and a hinge
-barrel, built procedurally and sized from the streamed inner display
+or `Fold` — in the CoreSimulator
+type identifier, which the installed-simulator record carries) renders an
+articulated two-panel body instead of a GLB: two screen halves, two body slabs
+and a hinge barrel, built procedurally and sized from the streamed inner display
 (`appleDuoScene.ts`). The rail grows a **Duo** menu with the four postures —
 Open (180°), Laptop (flat base), Tent, Closed (0°) — plus `Close/Open hinge 15°`
 nudge items, and a trackpad pinch on the glass moves the hinge instead of
 zooming the camera.
 
-The whole mode is capability-gated by `appleDeviceSupportsDuo`. A device that
-does not fold gets no `duo` prop, the procedural body is never built, and the
-imported GLB path (and its per-frame work) is byte-for-byte unchanged. The
-state machine, panel rotations, continuous inner-display coordinate mapping and
-the capability matcher live in `appleDuo.ts`, away from three.js, so they are
-tested without a GPU.
+The whole mode is capability-gated by `appleDeviceSupportsDuo`, which the pane
+feeds the CoreSimulator **type identifier** only. The lane device's display name
+is deliberately not a gate input: for an ADE clone it is `ADE · <lane>`, so a
+lane named e.g. `duo-hinge` would otherwise mark a rigid iPhone as foldable. A
+device that does not fold gets no `duo` prop, the procedural body is never
+built, and the imported GLB path (and its per-frame work) is byte-for-byte
+unchanged. The state machine, panel rotations, continuous inner-display
+coordinate mapping and the capability matcher live in `appleDuo.ts`, away from
+three.js, so they are tested without a GPU.
 
 > **Not validated on a real Duo.** No iOS 27.1 iPhone Duo runtime exists on the
 > build host, so this mode is written from the documented foldable behaviour and

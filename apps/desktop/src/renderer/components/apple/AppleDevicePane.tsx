@@ -684,12 +684,18 @@ export function AppleDevicePane({
     ? installed.find((entry) => entry.udid === laneDevice.udid)?.deviceTypeIdentifier ?? null
     : null;
   /*
-   * The Duo mode is capability-gated. Only a device whose simulator record
-   * reports foldable gets the procedural two-panel body and the fold controls;
-   * every other device — and every host with no Duo runtime — keeps the
-   * unchanged single-display path and does no Duo work.
+   * The Duo mode is capability-gated on the CoreSimulator type identifier only.
+   * Only a device whose simulator record reports foldable gets the procedural
+   * two-panel body and the fold controls; every other device — and every host
+   * with no Duo runtime — keeps the unchanged single-display path and does no
+   * Duo work.
+   *
+   * `deviceName` is deliberately NOT passed to the matcher: it is the lane
+   * device's display name ("ADE · <lane>" for a clone), not Apple's device-type
+   * name, so a lane called "duo-hinge" would otherwise mark an iPhone 17 as
+   * foldable and render the Duo body on a rigid device.
    */
-  const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier, deviceTypeName: deviceName });
+  const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier });
   const duoControlsEnabled = duoCapable && canUse3d;
   const duoProps: AppleDeviceDuoProps | undefined = duoControlsEnabled
     ? {
