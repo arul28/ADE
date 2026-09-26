@@ -4,7 +4,7 @@ import {
   openCodeStoreHasActiveWriter,
   planOpenCodeStorePrune,
   resolveOpenCodeStoreTarget,
-} from "../services/opencode/openCodeStoreMaintenance";
+} from "../../../desktop/src/shared/opencodeStoreMaintenance";
 
 export type OpenCodeCleanupRequest = {
   store: string;

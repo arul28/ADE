@@ -665,12 +665,13 @@ struct WorkActiveSendCapability: Equatable {
         inlineCarriesAttachments: false
       )
     case "opencode":
-      // Queue-only, matching desktop's `ACTIVE_TURN_DISPATCH_MODES`: OpenCode
-      // turns still run on the legacy `prompt_async` loop, which does not drain
-      // a mid-turn input, so a `delivery: "steer"` admission was never promoted
-      // and the row claimed "Steered" for a message the model never read. No
-      // interrupt either: like Codex there is no cancel-and-resend.
-      return WorkActiveSendCapability(modes: [.queue], agentLabel: "OpenCode", interruptContinues: false)
+      // Matches desktop's `ACTIVE_TURN_DISPATCH_MODES`: ADE creates OpenCode
+      // sessions on the v2 runner, whose `delivery: "steer"` input is promoted
+      // mid-turn and acknowledged with `session.next.prompted`. A legacy chat
+      // (a persisted id with no v2 read model) cannot honor inline; the host
+      // rejects that dispatch with an explicit error rather than faking it.
+      // No interrupt: like Codex there is no cancel-and-resend.
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and

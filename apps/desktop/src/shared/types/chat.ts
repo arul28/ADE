@@ -4104,13 +4104,9 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * three since `@cursor/sdk` 1.0.31 added `Run.steer()`, which injects a message
  * into the live local run; its interrupt still means something different from
  * Claude's — it cancels the run and resends on the same agent thread — which is
- * why `activeTurnInterruptContinues` keeps saying so. OpenCode is queue-only:
- * its turns still run on the legacy `prompt_async` loop, which has no drain for
- * mid-turn inputs, so a v2 `delivery: "steer"` admission was visible in the
- * server's input table but never promoted — the row read "Steered" while the
- * model never saw it. The v2 runner that promotes steers mid-turn is a staged
- * migration (see docs/features/chat/opencode-integration.md); until turns run
- * on it, this table must not advertise a capability the transport cannot honor.
+ * why `activeTurnInterruptContinues` keeps saying so. OpenCode has inline and
+ * queue: ADE creates its sessions on the v2 runner, whose `delivery: "steer"`
+ * input is drained mid-turn (see docs/features/chat/opencode-integration.md).
  * Everything else is queue-only.
  *
  * Cursor's inline mode is effectively local-only. A cloud run implements
@@ -4118,6 +4114,15 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * message. This table stays per-provider; the renderer withholds the inline
  * handler for a cloud Cursor session so the default never lands on a mode that
  * always degrades.
+ *
+ * OpenCode sessions ADE creates run on the v2 runner (`POST
+ * /api/session/{id}/prompt` with `delivery: "steer"`), which promotes a
+ * mid-turn input at the next step boundary and acknowledges it with
+ * `session.next.prompted`; a row reads "Steered" only after that ack. A chat
+ * whose persisted `providerSessionId` exists only on the legacy read model has
+ * no such drain, and the host rejects an inline dispatch on it explicitly
+ * instead of restaging the old lie. No interrupt: like Codex, there is no
+ * cancel-and-resend.
  *
  * The ACP providers are stated rather than left to the fallback. ACP has no
  * mid-turn message method at all — `session/prompt` is one request per turn —
@@ -4127,7 +4132,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
   cursor: ["inline", "queue", "interrupt"],
-  opencode: ["queue"],
+  opencode: ["inline", "queue"],
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
