@@ -177,6 +177,8 @@ const mockState = vi.hoisted(() => ({
   openCodeV2AutoStream: true,
   /** When set, a v2 queue prompt rejects with this before anything runs. */
   openCodeV2PromptError: null as Error | null,
+  /** When true, a v2 steer publishes `session.next.prompted` before answering. */
+  openCodeV2SteerPromoteBeforeResponse: false,
   /** Makes the next `startOpenCodeSession` return a legacy handle. */
   openCodeForceLegacy: false,
   /** What a `runner: "resume"` start resolves to. Defaults to legacy. */
@@ -723,6 +725,7 @@ if (mockState.openCodeTitleForNextPrompt) {
       v2: {
         session: {
           prompt: vi.fn(async (params: any) => {
+            const inputId = `v2-input-${mockState.openCodeV2PromptCalls.length + 1}`;
             mockState.openCodeV2PromptCalls.push(params);
             if (params?.delivery !== "steer" && mockState.openCodeV2PromptError) {
               throw mockState.openCodeV2PromptError;
@@ -731,12 +734,26 @@ if (mockState.openCodeTitleForNextPrompt) {
               mockState.openCodeV2SteerCalls.push(params);
               if (mockState.openCodeV2SteerBarrier) await mockState.openCodeV2SteerBarrier;
               if (mockState.openCodeV2SteerError) throw mockState.openCodeV2SteerError;
+              if (mockState.openCodeV2SteerPromoteBeforeResponse) {
+                // The server reached a step boundary before ADE processed the
+                // HTTP response.
+                pushEvent({
+                  type: "session.next.prompted",
+                  data: {
+                    timestamp: Date.now(),
+                    sessionID: sessionId,
+                    messageID: inputId,
+                    prompt: { text: params?.prompt?.text ?? "" },
+                    delivery: "steer",
+                  },
+                });
+              }
             } else if (mockState.openCodeV2AutoStream) {
               // Default flow: run the same scripted stream the legacy prompt
               // did, so a turn nobody instruments still completes.
               void emitTurnStream();
             }
-            return { data: { data: { id: `v2-input-${mockState.openCodeV2PromptCalls.length}` } } };
+            return { data: { data: { id: inputId } } };
           }),
           switchAgent: vi.fn(async () => ({ data: { data: {} } })),
           switchModel: vi.fn(async (params: any) => {
@@ -2500,6 +2517,7 @@ beforeEach(() => {
   mockState.openCodeForceV2 = false;
   mockState.openCodeV2AutoStream = true;
   mockState.openCodeV2PromptError = null;
+  mockState.openCodeV2SteerPromoteBeforeResponse = false;
   mockState.openCodeForceLegacy = false;
   mockState.openCodeResumeRunner = "legacy";
   mockState.openCodeV2Active.clear();

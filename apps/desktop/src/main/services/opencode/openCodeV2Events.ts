@@ -666,10 +666,17 @@ export async function openCodeV2EventStream(
       const event = raw as V2WireEnvelope;
       if (!event || typeof event.type !== "string") continue;
       const sessionID = sessionIdOf(event);
+      let lookupFailedTransiently = false;
       if (sessionID && !sessionKinds.has(sessionID) && !pendingLookups.has(sessionID)) {
         pendingLookups.add(sessionID);
         try {
-          const response = await args.client.v2.session.get({ sessionID });
+          // `throwOnError` is load-bearing: without it a 5xx comes back as an
+          // `{error}` result instead of a rejection, and the id would be
+          // marked foreign forever.
+          const response = await args.client.v2.session.get(
+            { sessionID },
+            { throwOnError: true },
+          );
           const info = unwrapOpenCodeV2Data<OpenCodeV2SessionInfo>(response.data);
           sessionKinds.set(
             sessionID,
@@ -681,14 +688,21 @@ export async function openCodeV2EventStream(
           }
         } catch (error) {
           // A confirmed missing session shares the server and is dropped for
-          // good. A transport blip leaves the id unmarked so the next event
-          // retries the lookup instead of silently orphaning the child's asks.
-          if (isOpenCodeNotFoundError(error)) sessionKinds.set(sessionID, "foreign");
+          // good. A transport blip leaves the id unmarked (and this event
+          // unprocessed) so the next event retries the lookup instead of
+          // letting an unattributed session's event into this chat's loop.
+          if (isOpenCodeNotFoundError(error)) {
+            sessionKinds.set(sessionID, "foreign");
+          } else {
+            lookupFailedTransiently = true;
+          }
         } finally {
           pendingLookups.delete(sessionID);
         }
       }
-      if (sessionID && sessionKinds.get(sessionID) === "foreign") continue;
+      if (sessionID && (sessionKinds.get(sessionID) === "foreign" || lookupFailedTransiently)) {
+        continue;
+      }
       const normalized = normalizeOpenCodeV2Event(event, toolInputs, toolNames);
       if (normalized.prompted) {
         args.hooks?.onPrompted?.({

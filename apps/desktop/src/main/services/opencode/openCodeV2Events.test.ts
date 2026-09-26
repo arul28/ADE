@@ -264,9 +264,17 @@ describe("openCodeV2EventStream", () => {
 
   it("retries a child lookup after a transient failure instead of orphaning it", async () => {
     let attempts = 0;
-    const get = vi.fn(async ({ sessionID }: { sessionID: string }) => {
+    const get = vi.fn(async (
+      { sessionID }: { sessionID: string },
+      options?: { throwOnError?: boolean },
+    ) => {
       attempts += 1;
-      if (attempts === 1) throw Object.assign(new Error("temporarily unavailable"), { status: 503 });
+      if (attempts === 1) {
+        // The generated client returns the error as a value unless the caller
+        // asks it to throw; the adapter must ask.
+        if (!options?.throwOnError) return { error: { status: 503 }, data: undefined };
+        throw Object.assign(new Error("temporarily unavailable"), { status: 503 });
+      }
       return { data: { data: { id: sessionID, parentID: "ses_parent" } } };
     });
     const client = {
@@ -291,11 +299,14 @@ describe("openCodeV2EventStream", () => {
     });
     for await (const event of stream) seen.push(event);
 
-    // The 503 is not a confirmed miss: the id stays unknown and the next event
-    // retries, so the child is announced and its ask is not dropped for good.
+    // The 503 is not a confirmed miss: the first event is withheld (an
+    // unattributed session's ask must not reach the chat), the id stays
+    // unknown, and the next event retries — so the child is announced and its
+    // ask surfaces with the child attribution.
     expect(attempts).toBeGreaterThanOrEqual(2);
-    expect(seen.map((event) => event.type)).toContain("session.created");
-    expect(seen.filter((event) => event.type === "permission.asked")).toHaveLength(2);
+    expect(seen.map((event) => event.type)).toEqual(["session.created", "permission.asked"]);
+    const ask = seen[1] as Extract<OpenCodeRuntimeEvent, { type: "permission.asked" }>;
+    expect(ask.properties).toMatchObject({ id: "per_2", sessionID: "ses_child" });
   });
 
   it("does not ask the server twice for the same session and routes prompted to the hook", async () => {

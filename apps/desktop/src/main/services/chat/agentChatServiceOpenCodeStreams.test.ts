@@ -1404,6 +1404,57 @@ describe("OpenCode v2 runner", () => {
     await sendPromise;
   });
 
+  it("honors a v2 steer the server promoted before the prompt response landed", async () => {
+    mockState.openCodeForceV2 = true;
+    mockState.openCodeV2AutoStream = false;
+    mockState.openCodeV2SteerPromoteBeforeResponse = true;
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({ sessionId: session.id, text: "Start the long scan." });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    const steerResult = await service.steer({
+      sessionId: session.id,
+      text: "Skip the fixtures.",
+      dispatchMode: "inline",
+    });
+    expect(steerResult.queued).toBe(false);
+    // The promotion raced the response: the row still must read Steered, not
+    // the queued fallback the old code would settle on at the turn boundary.
+    const inline = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } => event.event.type === "user_message"
+        && (event.event as { steerId?: string }).steerId === steerResult.steerId
+        && (event.event as { deliveryState?: string }).deliveryState === "inline",
+    );
+    expect((inline.event as { deliveryState?: string }).deliveryState).toBe("inline");
+
+    pushEvents({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    await sendPromise;
+  });
+
   it("keeps an unpromoted v2 inline steer queued instead of claiming it was read", async () => {
     mockState.openCodeV2AutoStream = false;
     mockState.openCodeForceV2 = true;

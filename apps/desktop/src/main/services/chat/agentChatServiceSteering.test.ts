@@ -2315,14 +2315,17 @@ describe("createAgentChatService", () => {
       firstTurnControl.release!();
       await firstTurn;
 
+      const queuedPrompts = () => (mockState.openCodeV2PromptCalls as Array<{ delivery?: string }>)
+        .filter((call) => call.delivery !== "steer");
       await waitForCondition(
-        () => mockState.openCodeV2PromptCalls.length >= 2,
+        () => queuedPrompts().length >= 2,
         "the queued OpenCode steer to be delivered as its own turn",
       );
-      expect(mockState.openCodeV2PromptCalls).toHaveLength(2);
+      // The refused inline attempt is not a queued delivery.
+      expect(queuedPrompts()).toHaveLength(2);
       // The queued steer is delivered as its own v2 turn: the text and the
       // resolving attachment arrive in the prompt payload.
-      expect(mockState.openCodeV2PromptCalls[1]).toEqual(expect.objectContaining({
+      expect(queuedPrompts()[1]).toEqual(expect.objectContaining({
         prompt: expect.objectContaining({
           text: expect.stringContaining("Then review the attached context."),
           files: expect.arrayContaining([

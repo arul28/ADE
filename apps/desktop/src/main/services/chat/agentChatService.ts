@@ -2891,6 +2891,12 @@ type OpenCodeRuntime = {
   /** Inline v2 steers awaiting `session.next.prompted`, keyed by message id. */
   pendingSteerPromotions: Map<string, PendingOpenCodeSteerPromotion>;
   /**
+   * Message ids the server promoted before ADE finished processing the
+   * steer's HTTP response. `session.next.prompted` can win that race, so the
+   * hook records the id and registration consumes it.
+   */
+  earlyPromptedMessageIds: Set<string>;
+  /**
    * Whether this runtime incarnation already delivered ADE's assembled system
    * prompt to a v2 session as its marked first-prompt context. The v2 runner
    * has no per-request `system` field, so the context is sent once per
@@ -15637,6 +15643,7 @@ export function createAgentChatService(args: {
       pendingApprovals: new Map(),
       pendingSteers: [],
       pendingSteerPromotions: new Map(),
+      earlyPromptedMessageIds: new Set(),
       systemContextSent: false,
       interrupted: false,
       modelDescriptor: descriptor,
@@ -46072,10 +46079,37 @@ export function createAgentChatService(args: {
   ): void => {
     if (sessionID !== runtime.handle.sessionId) return;
     const pending = runtime.pendingSteerPromotions.get(messageID);
-    if (!pending) return;
+    if (!pending) {
+      // The server can promote the input before the HTTP response that carries
+      // its id has been processed. Remember it; registration consumes it.
+      if (runtime.earlyPromptedMessageIds.size >= 64) {
+        const oldest = runtime.earlyPromptedMessageIds.values().next().value;
+        if (oldest) runtime.earlyPromptedMessageIds.delete(oldest);
+      }
+      runtime.earlyPromptedMessageIds.add(messageID);
+      return;
+    }
     runtime.pendingSteerPromotions.delete(messageID);
     emitSteerUserRow(managed, pending.row, "inline", runtime.activeTurnId ?? undefined);
     persistChatState(managed);
+  };
+
+  /**
+   * Record an admitted steer. A promotion that arrived while the HTTP response
+   * was in flight is honored immediately.
+   */
+  const registerOpenCodeSteerPromotion = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    messageID: string,
+    entry: PendingOpenCodeSteerPromotion,
+  ): void => {
+    if (runtime.earlyPromptedMessageIds.delete(messageID)) {
+      emitSteerUserRow(managed, entry.row, "inline", runtime.activeTurnId ?? undefined);
+      persistChatState(managed);
+      return;
+    }
+    runtime.pendingSteerPromotions.set(messageID, entry);
   };
 
   /**
@@ -46092,6 +46126,7 @@ export function createAgentChatService(args: {
     if (!runtime.pendingSteerPromotions.size) return;
     const pending = [...runtime.pendingSteerPromotions.values()];
     runtime.pendingSteerPromotions.clear();
+    runtime.earlyPromptedMessageIds.clear();
     for (const entry of pending) {
       emitSteerUserRow(managed, entry.row, outcome, runtime.activeTurnId ?? undefined);
     }
@@ -46194,7 +46229,7 @@ export function createAgentChatService(args: {
         ? { steerId: args.steerId, queued: true }
         : { steerId: args.steerId, queued: false, reason: "queue_full" };
     }
-    runtime.pendingSteerPromotions.set(messageID, { steerId: args.steerId, row });
+    registerOpenCodeSteerPromotion(managed, runtime, messageID, { steerId: args.steerId, row });
     prepared.onDispatched?.();
     args.onAcceptedDispatch?.();
     // Deliberately NOT `persistDeliveredLaneDirectiveKey`: the inline channel
@@ -51423,7 +51458,7 @@ export function createAgentChatService(args: {
       try {
         const messageID = await submitOpenCodeV2Steer(runtime, prepared);
         emitSteerUserRow(managed, staged, "accepted", runtime.activeTurnId ?? undefined);
-        runtime.pendingSteerPromotions.set(messageID, { steerId, row: staged });
+        registerOpenCodeSteerPromotion(managed, runtime, messageID, { steerId, row: staged });
         prepared.onDispatched?.();
         persistChatState(managed);
         return { dispatchedAt: Date.now() };
