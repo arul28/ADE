@@ -17,7 +17,8 @@ import {
   planOpenCodeStorePrune,
   parseOpenCodeStoreDuration,
   resolveOpenCodeStoreTarget,
-} from "./openCodeStoreMaintenance";
+  runOpenCodeStoreRetention,
+} from "./opencodeStoreMaintenance";
 
 /**
  * The prune engine's contract: a whole session goes, its event log goes with it
@@ -148,6 +149,103 @@ describe("openCodeStoreMaintenance", () => {
     } finally {
       holder.close();
     }
+  });
+});
+
+describe("runOpenCodeStoreRetention", () => {
+  let tmpRoot: string;
+  let nowMs: number;
+
+  beforeEach(() => {
+    tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-oc-retention-"));
+    nowMs = Date.now();
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  });
+
+  function sessionIds(storeDir: string): string[] {
+    const db = new DatabaseSync(path.join(storeDir, "opencode.db"));
+    try {
+      return db.prepare("SELECT id FROM session ORDER BY id").all()
+        .map((row) => (row as { id: string }).id);
+    } finally {
+      db.close();
+    }
+  }
+
+  it("removes sessions past the retention age and keeps fresh ones", () => {
+    const storeDir = path.join(tmpRoot, "store");
+    fs.mkdirSync(storeDir, { recursive: true });
+    seedStore(path.join(storeDir, "opencode.db"), nowMs);
+
+    const result = runOpenCodeStoreRetention({
+      storeDir,
+      nowMs,
+      maxAgeMs: 7 * 86_400_000,
+      minFileBytes: 0,
+      vacuum: false,
+    });
+    expect(result.ran).toBe(true);
+    expect(result.eligibleSessions).toBe(2);
+    expect(result.applied?.deletedSessions).toBe(2);
+    expect(sessionIds(storeDir)).toEqual(["ses_fresh"]);
+
+    // Idempotent: a second run finds nothing left to do.
+    const second = runOpenCodeStoreRetention({
+      storeDir,
+      nowMs,
+      maxAgeMs: 7 * 86_400_000,
+      minFileBytes: 0,
+      vacuum: false,
+    });
+    expect(second.ran).toBe(false);
+    expect(second.reason).toBe("no-eligible-sessions");
+    expect(sessionIds(storeDir)).toEqual(["ses_fresh"]);
+  });
+
+  it("skips a store below the size threshold and never throws on a missing one", () => {
+    const storeDir = path.join(tmpRoot, "store");
+    fs.mkdirSync(storeDir, { recursive: true });
+    seedStore(path.join(storeDir, "opencode.db"), nowMs);
+    const below = runOpenCodeStoreRetention({
+      storeDir,
+      nowMs,
+      maxAgeMs: 7 * 86_400_000,
+      minFileBytes: 1024 * 1024 * 1024,
+      vacuum: false,
+    });
+    expect(below.ran).toBe(false);
+    expect(below.reason).toBe("below-threshold");
+    expect(sessionIds(storeDir)).toHaveLength(3);
+
+    const missing = runOpenCodeStoreRetention({
+      storeDir: path.join(tmpRoot, "nope"),
+      nowMs,
+      minFileBytes: 0,
+    });
+    expect(missing.ran).toBe(false);
+    expect(missing.reason).toBe("no-store");
+  });
+
+  it("leaves a store the caller did not name untouched", () => {
+    const ownedDir = path.join(tmpRoot, "owned");
+    const otherDir = path.join(tmpRoot, "other");
+    fs.mkdirSync(ownedDir, { recursive: true });
+    fs.mkdirSync(otherDir, { recursive: true });
+    seedStore(path.join(ownedDir, "opencode.db"), nowMs);
+    seedStore(path.join(otherDir, "opencode.db"), nowMs);
+
+    runOpenCodeStoreRetention({
+      storeDir: ownedDir,
+      nowMs,
+      maxAgeMs: 7 * 86_400_000,
+      minFileBytes: 0,
+      vacuum: false,
+    });
+    expect(sessionIds(ownedDir)).toEqual(["ses_fresh"]);
+    expect(sessionIds(otherDir)).toEqual(["ses_fresh", "ses_old_child", "ses_old_parent"]);
   });
 });
 

@@ -43,7 +43,7 @@ import {
   openCodeCleanupText,
   runOpenCodeCleanupCommand,
 } from "./commands/openCodeCleanup";
-import { parseOpenCodeStoreDuration } from "./services/opencode/openCodeStoreMaintenance";
+import { parseOpenCodeStoreDuration } from "../../desktop/src/shared/opencodeStoreMaintenance";
 import { formatProxyStatus } from "./commands/proxy";
 import {
   buildCliDiagnosticReport,

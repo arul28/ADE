@@ -3832,12 +3832,11 @@ describe("createAgentChatService", () => {
 
       await service.sendMessage({ sessionId: session.id, text: "Use OpenCode fast mode." }, { awaitDispatch: true });
 
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
       await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+        expect(mockState.openCodeV2SwitchModelCalls.length).toBeGreaterThan(0);
       });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        variant: "fast",
+      expect(mockState.openCodeV2SwitchModelCalls.at(-1)).toEqual(expect.objectContaining({
+        model: expect.objectContaining({ variant: "fast" }),
       }));
     });
 
@@ -3869,12 +3868,11 @@ describe("createAgentChatService", () => {
 
       await service.sendMessage({ sessionId: session.id, text: "Think hard." }, { awaitDispatch: true });
 
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
       await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+        expect(mockState.openCodeV2SwitchModelCalls.length).toBeGreaterThan(0);
       });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        variant: "extra-high",
+      expect(mockState.openCodeV2SwitchModelCalls.at(-1)).toEqual(expect.objectContaining({
+        model: expect.objectContaining({ variant: "extra-high" }),
       }));
     });
 
@@ -3921,13 +3919,11 @@ describe("createAgentChatService", () => {
 
       await service.sendMessage({ sessionId: session.id, text: "Fast and careful." }, { awaitDispatch: true });
 
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
       await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+        expect(mockState.openCodeV2SwitchModelCalls.length).toBeGreaterThan(0);
       });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        model: { providerID: "openai", modelID: "gpt-5.4-fast" },
-        variant: "high",
+      expect(mockState.openCodeV2SwitchModelCalls.at(-1)).toEqual(expect.objectContaining({
+        model: { id: "gpt-5.4-fast", providerID: "openai", variant: "high" },
       }));
     });
 
@@ -3962,13 +3958,11 @@ describe("createAgentChatService", () => {
 
       await service.sendMessage({ sessionId: session.id, text: "Think hard." }, { awaitDispatch: true });
 
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
       await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+        expect(mockState.openCodeV2SwitchModelCalls.length).toBeGreaterThan(0);
       });
-      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
-        model: { providerID: "openai", modelID: "gpt-5.4" },
-        variant: "high",
+      expect(mockState.openCodeV2SwitchModelCalls.at(-1)).toEqual(expect.objectContaining({
+        model: { id: "gpt-5.4", providerID: "openai", variant: "high" },
       }));
       const fastNotApplied = vi.mocked(logger.warn).mock.calls
         .filter(([event]) => event === "agent_chat.opencode_fast_not_applied");
@@ -4099,9 +4093,8 @@ describe("createAgentChatService", () => {
       waiters.forEach((waiter) => waiter());
 
       await vi.waitFor(() => {
-        expect(state.permissionReply).toHaveBeenCalledWith(
+        expect(mockState.openCodeV2PermissionReplies).toContainEqual(
           expect.objectContaining({ requestID: "perm-ade-1", reply: "always" }),
-          expect.anything(),
         );
       });
       // No card was raised, so nothing is left for a later sweep to close
@@ -4164,7 +4157,7 @@ describe("createAgentChatService", () => {
         (event): event is AgentChatEventEnvelope =>
           event.event.type === "approval_request" && event.event.itemId === "perm-etc-1",
       );
-      expect(state.permissionReply).not.toHaveBeenCalled();
+      expect(mockState.openCodeV2PermissionReplies).toHaveLength(0);
 
       releaseStream();
       await sendPromise.catch(() => {});
@@ -4786,14 +4779,11 @@ describe("createAgentChatService", () => {
       await sendPromise;
     });
 
-    it("keeps ADE instructions in the system channel on every turn, never in user text", async () => {
-      // The prompt boundary, asserted on the wire ADE actually sends:
-      //  - ADE's instructions ride the first-class `system` field, so OpenCode
-      //    never renders them as a user message (the reported prompt echo);
-      //  - a second turn carries the same contract rather than re-appending the
-      //    instructions to the user's text (the reported reprint);
-      //  - the user's own words stay in `parts` and out of `system`, so nothing
-      //    the user typed can be promoted into privileged instructions.
+    it("sends ADE's system context once, marked, on the first v2 prompt only", async () => {
+      // v2 has no per-request `system` field. ADE's assembled system prompt
+      // rides the session's first prompt under `<ade-system-context>`, a later
+      // turn does not re-send it, and nothing the user typed is ever placed in
+      // a privileged channel (there is none).
       vi.mocked(streamText).mockImplementation(() => ({
         fullStream: (async function* () {
           yield { type: "finish", usage: {} };
@@ -4813,30 +4803,20 @@ describe("createAgentChatService", () => {
       await service.runSessionTurn({ sessionId: session.id, text: "First request." });
       await service.runSessionTurn({ sessionId: session.id, text: "Second request." });
 
-      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
       await vi.waitFor(() => {
-        expect(openCodeState.promptBodies.length).toBe(2);
+        expect(mockState.openCodeV2PromptCalls.length).toBe(2);
       });
-
-      const partsText = (body: any): string => (body.parts ?? [])
-        .map((part: any) => String(part?.text ?? ""))
-        .join("\n");
-
+      const [first, second] = mockState.openCodeV2PromptCalls as Array<{
+        prompt: { text: string };
+      }>;
       // `buildCodingAgentSystemPrompt` is mocked to this sentinel at the top of
-      // the file; what matters is which channel carries its output.
-      for (const body of openCodeState.promptBodies) {
-        expect(typeof body.system).toBe("string");
-        expect(body.system).toContain("system prompt");
-        // The instructions must not also be pasted into the visible message.
-        expect(partsText(body)).not.toContain("system prompt");
-      }
-
-      const [first, second] = openCodeState.promptBodies;
-      expect(second.system).toBe(first.system);
-      expect(partsText(first)).toContain("First request.");
-      expect(partsText(second)).toContain("Second request.");
-      expect(second.system).not.toContain("Second request.");
-      expect(second.system).not.toContain("First request.");
+      // the file; what matters is which prompt carries its output.
+      expect(first.prompt.text).toContain("<ade-system-context>");
+      expect(first.prompt.text).toContain("system prompt");
+      expect(first.prompt.text).toContain("First request.");
+      expect(second.prompt.text).not.toContain("<ade-system-context>");
+      expect(second.prompt.text).not.toContain("system prompt");
+      expect(second.prompt.text).toContain("Second request.");
     });
   });
 

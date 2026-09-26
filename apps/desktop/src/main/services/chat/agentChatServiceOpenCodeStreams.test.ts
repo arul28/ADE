@@ -523,6 +523,7 @@ describe("createAgentChatService", () => {
     });
 
     it("finishes an OpenCode turn when a settled child keeps publishing session.updated", async () => {
+      mockState.openCodeForceLegacy = true;
       // 2026-09-21: a child reported (session.idle) and one millisecond later
       // OpenCode published session.updated for that same finished child. The
       // "missed the created event" synthesis re-added it, nothing settled it
@@ -779,6 +780,7 @@ describe("createAgentChatService", () => {
     });
 
       it("subscribes to the OpenCode event stream before dispatching the prompt", async () => {
+      mockState.openCodeForceLegacy = true;
       // The SSE stream is live-only. Dispatching first races the subscription:
       // if the server publishes the assistant message.updated before /event is
       // connected, the role announcement is lost and the role gate would drop
@@ -820,6 +822,7 @@ describe("createAgentChatService", () => {
     });
 
     it("renders OpenCode follow-up text whose message.updated arrives before promptAsync settles", async () => {
+      mockState.openCodeForceLegacy = true;
       // The SSE is live-only. Awaiting promptAsync before draining it used to
       // drop the role announcement on a fast follow-up; the role gate then
       // swallowed every assistant part while session.idle still completed.
@@ -1237,5 +1240,215 @@ describe("createAgentChatService", () => {
       releaseStream();
       await sendPromise;
     });
+  });
+});
+
+describe("OpenCode v2 runner", () => {
+  it("attributes a child-session ask to the child and answers it on the v2 session route", async () => {
+    mockState.openCodeV2AutoStream = false;
+    // The v2 stream is the adapter's output: tests script legacy-shaped events,
+    // exactly what `openCodeV2EventStream` yields from the `session.next.*`
+    // wire shapes. The ask is a child's, so the reply must carry the child's
+    // session id — answering on the parent leaves the server waiting.
+    mockState.openCodeForceV2 = true;
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Delegate the repository scan.",
+    });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    pushEvents(
+      {
+        type: "session.created",
+        properties: {
+          info: { id: "v2-child-1", parentID: "opencode-session-1", title: "Repository explorer" },
+        },
+      },
+      {
+        type: "permission.asked",
+        properties: {
+          id: "per_1",
+          sessionID: "v2-child-1",
+          permission: "bash",
+          patterns: ["echo hi"],
+          metadata: {},
+          always: [],
+        },
+      },
+    );
+
+    const approval = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+      } => event.event.type === "approval_request" && event.event.itemId === "per_1",
+    );
+    expect(approval.event.description).toContain("Repository explorer");
+    const request = (approval.event.detail as { request: { providerMetadata?: { childSessionId?: string } } }).request;
+    expect(request.providerMetadata?.childSessionId).toBe("v2-child-1");
+
+    // A live child ask blocks the chat: the same guard `ade chat status`
+    // reports, so a send while the child is parked must be refused.
+    await expect(service.sendMessage({ sessionId: session.id, text: "one more" }))
+      .rejects.toThrow(/pending|blocked|waiting/i);
+
+    await service.approveToolUse({ sessionId: session.id, itemId: "per_1", decision: "accept" });
+    expect(mockState.openCodeV2PermissionReplies).toEqual([
+      { sessionID: "v2-child-1", requestID: "per_1", reply: "once" },
+    ]);
+
+    pushEvents(
+      { type: "session.idle", properties: { sessionID: "v2-child-1" } },
+      { type: "session.idle", properties: { sessionID: "opencode-session-1" } },
+    );
+    await sendPromise;
+  });
+
+  it("labels a v2 inline steer Steered only when session.next.prompted lands for its message id", async () => {
+    mockState.openCodeV2AutoStream = false;
+    mockState.openCodeForceV2 = true;
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({ sessionId: session.id, text: "Start the long scan." });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    const steerResult = await service.steer({
+      sessionId: session.id,
+      text: "Actually skip the fixtures.",
+      dispatchMode: "inline",
+    });
+    expect(steerResult.queued).toBe(false);
+    expect(mockState.openCodeV2SteerCalls).toHaveLength(1);
+    expect(mockState.openCodeV2SteerCalls[0]).toMatchObject({
+      delivery: "steer",
+      sessionID: "opencode-session-1",
+    });
+
+    const acceptedRow = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } => event.event.type === "user_message" && event.event.deliveryState === "accepted",
+    );
+    expect((acceptedRow.event as { steerId?: string }).steerId).toBe(steerResult.steerId);
+    expect(events.some((event) =>
+      event.event.type === "user_message"
+      && (event.event as { steerId?: string }).steerId === steerResult.steerId
+      && (event.event as { deliveryState?: string }).deliveryState === "inline")).toBe(false);
+
+    // The server read the steer mid-turn: the adapter reports it through the
+    // prompted hook, and only now may the row say Steered.
+    pushEvents({
+      type: "session.next.prompted",
+      data: {
+        timestamp: 1,
+        sessionID: "opencode-session-1",
+        messageID: "v2-input-2",
+        prompt: { text: "Actually skip the fixtures." },
+        delivery: "steer",
+      },
+    });
+    const inline = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } => event.event.type === "user_message"
+        && (event.event as { steerId?: string }).steerId === steerResult.steerId
+        && (event.event as { deliveryState?: string }).deliveryState === "inline",
+    );
+    expect((inline.event as { deliveryState?: string }).deliveryState).toBe("inline");
+
+    pushEvents({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    await sendPromise;
+  });
+
+  it("keeps an unpromoted v2 inline steer queued instead of claiming it was read", async () => {
+    mockState.openCodeV2AutoStream = false;
+    mockState.openCodeForceV2 = true;
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({ sessionId: session.id, text: "Start the long scan." });
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope =>
+        event.event.type === "status" && event.event.turnStatus === "started",
+    );
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    const pushEvents = (...nextEvents: any[]): void => {
+      state.events.push(...nextEvents);
+      const waiters = [...state.waiters];
+      state.waiters.length = 0;
+      waiters.forEach((waiter) => waiter());
+    };
+
+    const steerResult = await service.steer({
+      sessionId: session.id,
+      text: "Actually skip the fixtures.",
+      dispatchMode: "inline",
+    });
+    expect(steerResult.queued).toBe(false);
+
+    pushEvents({ type: "session.idle", properties: { sessionID: "opencode-session-1" } });
+    const settled = await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "user_message" }>;
+      } => event.event.type === "user_message"
+        && (event.event as { steerId?: string }).steerId === steerResult.steerId
+        && (event.event as { deliveryState?: string }).deliveryState !== "accepted",
+    );
+    expect((settled.event as { deliveryState?: string }).deliveryState).toBe("queued");
+    await sendPromise;
   });
 });

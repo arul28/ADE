@@ -19,6 +19,7 @@ import {
   resolveOpenCodeExecutablePath,
   startOpenCodeSession,
 } from "../opencode/openCodeRuntime";
+import { normalizeOpenCodeV2Event } from "../opencode/openCodeV2Events";
 import { loadExternalSessionEvents } from "../externalSessions/events";
 import { createMockAcpAgent, respondWithSession, type MockAcpAgent } from "./acpHost/mockAcpAgent";
 import { createAcpSessionPool } from "./acpHost/acpSessionPool";
@@ -162,6 +163,24 @@ const mockState = vi.hoisted(() => ({
   openCodePromptAsyncBarrier: null as Promise<void> | null,
   /** v2 `session.prompt({ delivery: "steer" })` calls, in call order. */
   openCodeV2SteerCalls: [] as any[],
+  /** Every v2 `session.prompt` call, in call order. */
+  openCodeV2PromptCalls: [] as any[],
+  /** v2 `session.permission.reply` calls, in call order. */
+  openCodeV2PermissionReplies: [] as any[],
+  /** v2 `session.switchModel` calls, in call order. */
+  openCodeV2SwitchModelCalls: [] as any[],
+  /** v2 `session.question.reply` calls, in call order. */
+  openCodeV2QuestionReplies: [] as any[],
+  /** Makes the next `startOpenCodeSession` return a v2 handle. */
+  openCodeForceV2: false,
+  /** When false, a v2 queue prompt does not auto-run the scripted turn stream. */
+  openCodeV2AutoStream: true,
+  /** Makes the next `startOpenCodeSession` return a legacy handle. */
+  openCodeForceLegacy: false,
+  /** What a `runner: "resume"` start resolves to. Defaults to legacy. */
+  openCodeResumeRunner: "legacy" as "legacy" | "v2",
+  /** Session ids the mocked v2 `session.active` reports as running. */
+  openCodeV2Active: new Set<string>(),
   /** Set to make the mocked v2 steer throw, standing in for a refused steer. */
   openCodeV2SteerError: null as Error | null,
   /** When set, the mocked v2 steer waits on this before answering. */
@@ -522,8 +541,17 @@ vi.mock("../opencode/openCodeRuntime", () => {
     modelID: String(descriptor.providerModelId ?? descriptor.id ?? "model"),
   })),
   resolveOpenCodeExecutablePath: vi.fn(() => "/usr/local/bin/opencode"),
-  startOpenCodeSession: vi.fn(async (args: { directory: string; sessionId?: string }) => {
+  startOpenCodeSession: vi.fn(async (args: { directory: string; sessionId?: string; runner?: string }) => {
     mockState.openCodeSessionCounter += 1;
+    const runnerKind: "v2" | "legacy" = mockState.openCodeForceV2
+      ? "v2"
+      : mockState.openCodeForceLegacy
+        ? "legacy"
+        : args.runner === "v2"
+          ? "v2"
+          : args.runner === "resume"
+            ? mockState.openCodeResumeRunner
+            : "legacy";
     const sessionId = args.sessionId ?? `opencode-session-${mockState.openCodeSessionCounter}`;
     const state = {
       events: [] as any[],
@@ -569,18 +597,209 @@ vi.mock("../opencode/openCodeRuntime", () => {
       for (const waiter of waiters) waiter();
     };
 
+    const emitTurnStream = async (): Promise<void> => {
+if (mockState.openCodeTitleForNextPrompt) {
+          pushEvent({
+            type: "session.updated",
+            properties: {
+              info: {
+                id: sessionId,
+                title: mockState.openCodeTitleForNextPrompt,
+              },
+            },
+          });
+          mockState.openCodeTitleForNextPrompt = null;
+        }
+        if (mockState.openCodeQuestionForNextPrompt) {
+          const request = mockState.openCodeQuestionForNextPrompt;
+          mockState.openCodeQuestionForNextPrompt = null;
+          pushEvent({
+            type: "question.asked",
+            properties: {
+              id: request.id,
+              sessionID: sessionId,
+              questions: request.questions,
+              tool: { messageID: `message-${sessionId}`, callID: `call-${sessionId}` },
+            },
+          });
+        }
+        const result = streamText({} as any) as {
+          fullStream?: AsyncIterable<Record<string, unknown>>;
+        };
+        // Mirror the real wire order: OpenCode announces every message
+        // (with its role) before its parts arrive.
+        const assistantMessageId = `message-${sessionId}`;
+        pushEvent({
+          type: "message.updated",
+          properties: { info: { id: assistantMessageId, role: "assistant", sessionID: sessionId } },
+        });
+        let text = "";
+        for await (const part of result.fullStream ?? []) {
+          if (state.aborted) break;
+          if (part.type === "start-step") {
+            pushEvent({
+              type: "message.part.updated",
+              properties: {
+                part: { id: `step-${sessionId}`, sessionID: sessionId, type: "step-start" },
+              },
+            });
+            continue;
+          }
+          if (part.type === "text-delta") {
+            text += String(part.textDelta ?? "");
+            pushEvent({
+              type: "message.part.updated",
+              properties: {
+                part: { id: `text-${sessionId}`, type: "text", text, messageID: assistantMessageId, sessionID: sessionId },
+              },
+            });
+            continue;
+          }
+          if (part.type === "tool-call") {
+            pushEvent({
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: String(part.toolCallId ?? `tool-${sessionId}`),
+                  callID: String(part.toolCallId ?? `tool-${sessionId}`),
+                  sessionID: sessionId,
+                  type: "tool",
+                  tool: String(part.toolName ?? "tool"),
+                  state: { status: "running", input: part.input ?? {} },
+                },
+              },
+            });
+            continue;
+          }
+          if (part.type === "tool-result") {
+            pushEvent({
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: String(part.toolCallId ?? `tool-${sessionId}`),
+                  callID: String(part.toolCallId ?? `tool-${sessionId}`),
+                  sessionID: sessionId,
+                  type: "tool",
+                  tool: String(part.toolName ?? "tool"),
+                  state: { status: "completed", input: {}, output: part.result ?? part.output ?? {} },
+                },
+              },
+            });
+            continue;
+          }
+          if (part.type === "finish") {
+            const usage = (part.usage ?? part.totalUsage ?? {}) as Record<string, unknown>;
+            pushEvent({
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: `finish-${sessionId}`,
+                  sessionID: sessionId,
+                  type: "step-finish",
+                  tokens: {
+                    input: Number(usage.inputTokens ?? 0),
+                    output: Number(usage.outputTokens ?? 0),
+                    cache: { read: 0, write: 0 },
+                  },
+                },
+              },
+            });
+            break;
+          }
+        }
+        if (state.aborted) return;
+        pushEvent({
+          type: "session.idle",
+          properties: { sessionID: sessionId },
+        });
+    };
+
     const client = {
       __sessionId: sessionId,
-      // The v2 API ADE uses for inline steering: one admitted input with
-      // `delivery: "steer"` folded into the live agent loop.
+      // The v2 API ADE uses for turns and inline steering. Responses carry the
+      // server's double `data` envelope, exactly like the real client.
       v2: {
         session: {
           prompt: vi.fn(async (params: any) => {
-            mockState.openCodeV2SteerCalls.push(params);
-            if (mockState.openCodeV2SteerBarrier) await mockState.openCodeV2SteerBarrier;
-            if (mockState.openCodeV2SteerError) throw mockState.openCodeV2SteerError;
-            return { data: {} };
+            mockState.openCodeV2PromptCalls.push(params);
+            if (params?.delivery === "steer") {
+              mockState.openCodeV2SteerCalls.push(params);
+              if (mockState.openCodeV2SteerBarrier) await mockState.openCodeV2SteerBarrier;
+              if (mockState.openCodeV2SteerError) throw mockState.openCodeV2SteerError;
+            } else if (mockState.openCodeV2AutoStream) {
+              // Default flow: run the same scripted stream the legacy prompt
+              // did, so a turn nobody instruments still completes.
+              void emitTurnStream();
+            }
+            return { data: { data: { id: `v2-input-${mockState.openCodeV2PromptCalls.length}` } } };
           }),
+          switchAgent: vi.fn(async () => ({ data: { data: {} } })),
+          switchModel: vi.fn(async (params: any) => {
+            mockState.openCodeV2SwitchModelCalls.push(params);
+            return { data: { data: {} } };
+          }),
+          interrupt: vi.fn(async () => ({ data: { data: {} } })),
+          active: vi.fn(async () => ({
+            data: {
+              data: Object.fromEntries(
+                [...mockState.openCodeV2Active].map((id) => [id, { type: "running" }]),
+              ),
+            },
+          })),
+          get: vi.fn(async ({ sessionID }: { sessionID: string }) => ({
+            data: { data: { id: sessionID, parentID: sessionId } },
+          })),
+          messages: vi.fn(async () => ({ data: { data: [], cursor: {} } })),
+          permission: {
+            reply: vi.fn(async (params: any) => {
+              mockState.openCodeV2PermissionReplies.push(params);
+              pushEvent({
+                type: "permission.replied",
+                properties: {
+                  sessionID: params?.sessionID ?? sessionId,
+                  requestID: params?.requestID,
+                  reply: params?.reply,
+                },
+              });
+              return { data: { data: {} } };
+            }),
+            reject: vi.fn(async (params: any) => {
+              mockState.openCodeV2PermissionReplies.push({ ...params, reply: "reject" });
+              pushEvent({
+                type: "permission.replied",
+                properties: {
+                  sessionID: params?.sessionID ?? sessionId,
+                  requestID: params?.requestID,
+                  reply: "reject",
+                },
+              });
+              return { data: { data: {} } };
+            }),
+          },
+          question: {
+            reply: vi.fn(async (params: any) => {
+              mockState.openCodeV2QuestionReplies.push(params);
+              pushEvent({
+                type: "question.replied",
+                properties: {
+                  sessionID: params?.sessionID ?? sessionId,
+                  requestID: params?.requestID,
+                  answers: params?.questionV2Reply?.answers ?? [],
+                },
+              });
+              return { data: { data: {} } };
+            }),
+            reject: vi.fn(async (params: any) => {
+              pushEvent({
+                type: "question.rejected",
+                properties: {
+                  sessionID: params?.sessionID ?? sessionId,
+                  requestID: params?.requestID,
+                },
+              });
+              return { data: { data: {} } };
+            }),
+          },
         },
       },
       session: {
@@ -597,121 +816,7 @@ vi.mock("../opencode/openCodeRuntime", () => {
           if (mockState.openCodePromptAsyncBarrier) {
             await mockState.openCodePromptAsyncBarrier;
           }
-          void (async () => {
-            if (mockState.openCodeTitleForNextPrompt) {
-              pushEvent({
-                type: "session.updated",
-                properties: {
-                  info: {
-                    id: sessionId,
-                    title: mockState.openCodeTitleForNextPrompt,
-                  },
-                },
-              });
-              mockState.openCodeTitleForNextPrompt = null;
-            }
-            if (mockState.openCodeQuestionForNextPrompt) {
-              const request = mockState.openCodeQuestionForNextPrompt;
-              mockState.openCodeQuestionForNextPrompt = null;
-              pushEvent({
-                type: "question.asked",
-                properties: {
-                  id: request.id,
-                  sessionID: sessionId,
-                  questions: request.questions,
-                  tool: { messageID: `message-${sessionId}`, callID: `call-${sessionId}` },
-                },
-              });
-            }
-            const result = streamText({} as any) as {
-              fullStream?: AsyncIterable<Record<string, unknown>>;
-            };
-            // Mirror the real wire order: OpenCode announces every message
-            // (with its role) before its parts arrive.
-            const assistantMessageId = `message-${sessionId}`;
-            pushEvent({
-              type: "message.updated",
-              properties: { info: { id: assistantMessageId, role: "assistant", sessionID: sessionId } },
-            });
-            let text = "";
-            for await (const part of result.fullStream ?? []) {
-              if (state.aborted) break;
-              if (part.type === "start-step") {
-                pushEvent({
-                  type: "message.part.updated",
-                  properties: {
-                    part: { id: `step-${sessionId}`, sessionID: sessionId, type: "step-start" },
-                  },
-                });
-                continue;
-              }
-              if (part.type === "text-delta") {
-                text += String(part.textDelta ?? "");
-                pushEvent({
-                  type: "message.part.updated",
-                  properties: {
-                    part: { id: `text-${sessionId}`, type: "text", text, messageID: assistantMessageId, sessionID: sessionId },
-                  },
-                });
-                continue;
-              }
-              if (part.type === "tool-call") {
-                pushEvent({
-                  type: "message.part.updated",
-                  properties: {
-                    part: {
-                      id: String(part.toolCallId ?? `tool-${sessionId}`),
-                      callID: String(part.toolCallId ?? `tool-${sessionId}`),
-                      sessionID: sessionId,
-                      type: "tool",
-                      tool: String(part.toolName ?? "tool"),
-                      state: { status: "running", input: part.input ?? {} },
-                    },
-                  },
-                });
-                continue;
-              }
-              if (part.type === "tool-result") {
-                pushEvent({
-                  type: "message.part.updated",
-                  properties: {
-                    part: {
-                      id: String(part.toolCallId ?? `tool-${sessionId}`),
-                      callID: String(part.toolCallId ?? `tool-${sessionId}`),
-                      sessionID: sessionId,
-                      type: "tool",
-                      tool: String(part.toolName ?? "tool"),
-                      state: { status: "completed", input: {}, output: part.result ?? part.output ?? {} },
-                    },
-                  },
-                });
-                continue;
-              }
-              if (part.type === "finish") {
-                const usage = (part.usage ?? part.totalUsage ?? {}) as Record<string, unknown>;
-                pushEvent({
-                  type: "message.part.updated",
-                  properties: {
-                    part: {
-                      id: `finish-${sessionId}`,
-                      sessionID: sessionId,
-                      type: "step-finish",
-                      tokens: {
-                        input: Number(usage.inputTokens ?? 0),
-                        output: Number(usage.outputTokens ?? 0),
-                        cache: { read: 0, write: 0 },
-                      },
-                    },
-                  },
-                });
-                break;
-              }
-            }
-            pushEvent({
-              type: "session.idle",
-              properties: { sessionID: sessionId },
-            });
-          })();
+          void emitTurnStream();
         }),
         abort: vi.fn(async ({ sessionID }: { sessionID: string }) => {
           if (sessionID !== sessionId) return;
@@ -748,6 +853,7 @@ vi.mock("../opencode/openCodeRuntime", () => {
 
     return {
       sessionId,
+      runner: runnerKind,
       directory: args.directory,
       server: {
         url: "http://mock-opencode",
@@ -796,6 +902,89 @@ vi.mock("../opencode/openCodeRuntime", () => {
       }
     })();
   }),
+  // The v2 stream mock stands in for `/api/event`: it yields the REAL
+  // `session.next.*` mapping through `normalizeOpenCodeV2Event` (and reports
+  // promotions to the hooks), while an already legacy-shaped scripted event is
+  // passed through untouched so tests can compose the adapter's output.
+  openCodeV2EventStream: vi.fn(async ({
+    client,
+    signal,
+    hooks,
+  }: {
+    client: { __sessionId?: string };
+    signal?: AbortSignal;
+    hooks?: { onPrompted?: (args: { sessionID: string; messageID: string; delivery: "steer" | "queue" }) => void };
+  }) => {
+    const state = client.__sessionId ? mockState.openCodeSessions.get(client.__sessionId) : undefined;
+    if (!state) {
+      return (async function* () {})();
+    }
+    const toolInputs = new Map<string, Record<string, unknown>>();
+    const toolNames = new Map<string, string>();
+    return (async function* () {
+      while (true) {
+        if (signal?.aborted) return;
+        if (state.events.length > 0) {
+          const raw = state.events.shift();
+          const normalized = normalizeOpenCodeV2Event(raw, toolInputs, toolNames);
+          if (normalized.prompted) {
+            hooks?.onPrompted?.({
+              sessionID: normalized.sessionID ?? "",
+              messageID: normalized.prompted.messageID,
+              delivery: normalized.prompted.delivery,
+            });
+          }
+          if (normalized.events.length > 0) {
+            for (const event of normalized.events) yield event;
+            continue;
+          }
+          if (raw && typeof raw === "object" && "properties" in raw) {
+            yield raw;
+          }
+          continue;
+        }
+        if (state.aborted) return;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) {
+            resolve();
+            return;
+          }
+          const finish = () => {
+            signal?.removeEventListener("abort", finish);
+            const index = state.waiters.indexOf(finish);
+            if (index >= 0) state.waiters.splice(index, 1);
+            resolve();
+          };
+          signal?.addEventListener("abort", finish, { once: true });
+          state.waiters.push(finish);
+        });
+      }
+    })();
+  }),
+  mergeOpenCodeV2IdleReceipt: vi.fn((source: AsyncGenerator<unknown>) => source),
+  // 1.18.32 answers 503 "Session wait is not available yet".
+  openCodeV2WaitForIdle: vi.fn(async () => false),
+  openCodeV2IdleEvent: vi.fn((sessionID: string) => ({
+    type: "session.idle",
+    properties: { sessionID },
+  })),
+  readOpenCodeV2ActiveStatuses: vi.fn((raw: unknown) => {
+    if (!raw || typeof raw !== "object") return null;
+    const out: Record<string, "busy"> = {};
+    for (const [id, value] of Object.entries(raw as Record<string, unknown>)) {
+      if ((value as { type?: string } | null)?.type === "running") out[id] = "busy";
+    }
+    return out;
+  }),
+  unwrapOpenCodeV2Data: vi.fn((value: unknown) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const record = value as { data?: unknown };
+    return record.data === undefined ? value : record.data;
+  }),
+  buildOpenCodeV2PromptFiles: vi.fn((files: Array<{ path?: string; filename?: string }> = []) => (
+    files.map((file) => ({ uri: file.path ?? "", name: file.filename ?? "file" }))
+  )),
+  mapOpenCodeV2MessagesToLegacyRows: vi.fn(() => []),
   };
 });
 
@@ -2299,6 +2488,15 @@ beforeEach(() => {
   mockState.openCodeSessions.clear();
   mockState.openCodePromptAsyncBarrier = null;
   mockState.openCodeV2SteerCalls = [];
+  mockState.openCodeV2PromptCalls = [];
+  mockState.openCodeV2PermissionReplies = [];
+  mockState.openCodeV2SwitchModelCalls = [];
+  mockState.openCodeV2QuestionReplies = [];
+  mockState.openCodeForceV2 = false;
+  mockState.openCodeV2AutoStream = true;
+  mockState.openCodeForceLegacy = false;
+  mockState.openCodeResumeRunner = "legacy";
+  mockState.openCodeV2Active.clear();
   mockState.openCodeV2SteerError = null;
   mockState.openCodeV2SteerBarrier = null;
   mockState.openCodeTitleForNextPrompt = null;

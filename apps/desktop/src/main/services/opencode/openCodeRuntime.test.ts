@@ -7,43 +7,41 @@ const mockState = vi.hoisted(() => {
   let nextSessionId = 1;
   const makeStream = (sessionId: string) => (async function* () {
     yield {
-      type: "message.updated",
-      properties: {
-        info: { id: `msg-${sessionId}`, role: "assistant", sessionID: sessionId },
-      },
-    };
-    yield {
-      type: "message.part.updated",
-      properties: {
-        part: {
-          id: `part-${sessionId}`,
-          sessionID: sessionId,
-          messageID: `msg-${sessionId}`,
-          type: "text",
-          text: "pong",
-        },
-        delta: "pong",
-      },
-    };
-    yield {
-      type: "message.part.updated",
-      properties: {
-        part: {
-          id: `step-${sessionId}`,
-          sessionID: sessionId,
-          type: "step-finish",
-          tokens: {
-            input: 1,
-            output: 1,
-            cache: { read: 0, write: 0 },
-          },
-        },
-      },
-    };
-    yield {
-      type: "session.idle",
-      properties: {
+      id: "e1",
+      type: "session.next.step.started",
+      data: {
+        timestamp: 1,
         sessionID: sessionId,
+        assistantMessageID: `msg-${sessionId}`,
+        agent: "ade-helper",
+        model: { id: "gpt-5-mini", providerID: "openai" },
+      },
+    };
+    yield {
+      id: "e2",
+      type: "session.next.text.started",
+      data: { timestamp: 2, sessionID: sessionId, assistantMessageID: `msg-${sessionId}`, textID: "text-0" },
+    };
+    yield {
+      id: "e3",
+      type: "session.next.text.delta",
+      data: { timestamp: 3, sessionID: sessionId, assistantMessageID: `msg-${sessionId}`, textID: "text-0", delta: "pong" },
+    };
+    yield {
+      id: "e4",
+      type: "session.next.text.ended",
+      data: { timestamp: 4, sessionID: sessionId, assistantMessageID: `msg-${sessionId}`, textID: "text-0", text: "pong" },
+    };
+    yield {
+      id: "e5",
+      type: "session.next.step.ended",
+      data: {
+        timestamp: 5,
+        sessionID: sessionId,
+        assistantMessageID: `msg-${sessionId}`,
+        finish: "stop",
+        cost: 0,
+        tokens: { input: 1, output: 1, reasoning: 0, cache: { read: 0, write: 0 } },
       },
     };
   })();
@@ -65,7 +63,15 @@ const mockState = vi.hoisted(() => {
     createSession: vi.fn(async () => ({
       data: { id: `opencode-session-${nextSessionId++}` },
     })),
+    v2CreateSession: vi.fn(async () => ({
+      data: { data: { id: `opencode-session-${nextSessionId++}` } },
+    })),
     promptAsync: vi.fn(async () => ({})),
+    v2Prompt: vi.fn(async () => ({ data: { data: { id: "v2-input-1", delivery: "queue" } } })),
+    v2SwitchAgent: vi.fn(async () => ({ data: { data: {} } })),
+    v2SwitchModel: vi.fn(async () => ({ data: { data: {} } })),
+    v2Active: vi.fn(async () => ({ data: { data: {} } })),
+    v2PermissionReply: vi.fn(async () => ({ data: { data: {} } })),
     eventSubscribe: vi.fn(async () => {
       const sessionId = `opencode-session-${Math.max(1, nextSessionId - 1)}`;
       return { stream: makeStream(sessionId) };
@@ -97,6 +103,26 @@ vi.mock("@opencode-ai/sdk/v2/client", () => ({
     permission: {
       reply: mockState.permissionReply,
       respond: vi.fn(),
+    },
+    v2: {
+      event: {
+        subscribe: mockState.eventSubscribe,
+      },
+      session: {
+        create: mockState.v2CreateSession,
+        get: mockState.getSession,
+        prompt: mockState.v2Prompt,
+        switchAgent: mockState.v2SwitchAgent,
+        switchModel: mockState.v2SwitchModel,
+        active: mockState.v2Active,
+        permission: {
+          reply: mockState.v2PermissionReply,
+        },
+        question: {
+          reply: vi.fn(),
+          reject: vi.fn(),
+        },
+      },
     },
   })),
 }));
@@ -143,11 +169,17 @@ import {
   openCodeAdeInstructionsPath,
 } from "./openCodeAdeInstructions";
 
-/** The flat parameters object from the most recent v2 `session.promptAsync`. */
+/** The parameters object from the most recent v2 `session.prompt`. */
 function openCodePromptParams(): Record<string, unknown> {
-  const call = mockState.promptAsync.mock.calls.at(-1) as unknown as
+  const call = mockState.v2Prompt.mock.calls.at(-1) as unknown as
     [Record<string, unknown> | undefined] | undefined;
   return call?.[0] ?? {};
+}
+
+/** The prompt text the most recent v2 `session.prompt` carried. */
+function openCodeV2PromptText(): string {
+  const params = openCodePromptParams() as { prompt?: { text?: string } };
+  return params.prompt?.text ?? "";
 }
 
 /** The model descriptor the one-shot prompt tests share. */
@@ -299,10 +331,12 @@ describe("openCodeRuntime", () => {
     });
 
     expect(result.text).toBe("pong");
-    expect(mockState.promptAsync).toHaveBeenCalledWith(
-      expect.not.objectContaining({ tools: expect.anything() }),
-      expect.objectContaining({ throwOnError: true }),
-    );
+    expect(mockState.v2Prompt).toHaveBeenCalledTimes(1);
+    expect(openCodePromptParams()).toMatchObject({
+      delivery: "queue",
+      sessionID: "opencode-session-1",
+    });
+    expect(openCodePromptParams()).not.toHaveProperty("tools");
   });
 
   it("keeps the caller's prompt, reasoning, and injected context out of a one-shot result", async () => {
@@ -312,48 +346,49 @@ describe("openCodeRuntime", () => {
     // those names.
     mockState.eventSubscribe.mockImplementationOnce((async () => {
       const sessionID = "opencode-session-1";
+      const messageID = `msg-${sessionID}`;
       return {
         stream: (async function* () {
           yield {
-            type: "message.updated",
-            properties: { info: { id: "msg-user", role: "user", sessionID } },
+            id: "w1",
+            type: "session.next.step.started",
+            data: { timestamp: 1, sessionID, assistantMessageID: messageID, agent: "ade-helper", model: { id: "gpt-5-mini", providerID: "openai" } },
           };
           yield {
-            type: "message.part.updated",
-            properties: {
-              part: { id: "p-user", sessionID, messageID: "msg-user", type: "text", text: "PROMPT_ECHO" },
-            },
+            id: "w2",
+            type: "session.next.context.updated",
+            data: { timestamp: 1, sessionID, messageID: "msg-ctx", text: "INJECTED_CONTEXT" },
           };
           yield {
-            type: "message.updated",
-            properties: { info: { id: "msg-a", role: "assistant", sessionID } },
+            id: "w3",
+            type: "session.next.reasoning.started",
+            data: { timestamp: 2, sessionID, assistantMessageID: messageID, reasoningID: "r-0" },
           };
           yield {
-            type: "message.part.updated",
-            properties: {
-              part: { id: "p-think", sessionID, messageID: "msg-a", type: "reasoning", text: "THOUGHTS" },
-            },
+            id: "w4",
+            type: "session.next.reasoning.delta",
+            data: { timestamp: 3, sessionID, assistantMessageID: messageID, reasoningID: "r-0", delta: "THOUGHTS" },
           };
           yield {
-            type: "message.part.updated",
-            properties: {
-              part: {
-                id: "p-ctx",
-                sessionID,
-                messageID: "msg-a",
-                type: "text",
-                text: "INJECTED_CONTEXT",
-                synthetic: true,
-              },
-            },
+            id: "w5",
+            type: "session.next.reasoning.ended",
+            data: { timestamp: 4, sessionID, assistantMessageID: messageID, reasoningID: "r-0", text: "THOUGHTS" },
           };
           yield {
-            type: "message.part.updated",
-            properties: {
-              part: { id: "p-answer", sessionID, messageID: "msg-a", type: "text", text: "Real answer" },
-            },
+            id: "w6",
+            type: "session.next.text.started",
+            data: { timestamp: 5, sessionID, assistantMessageID: messageID, textID: "t-0" },
           };
-          yield { type: "session.idle", properties: { sessionID } };
+          yield {
+            id: "w7",
+            type: "session.next.text.delta",
+            data: { timestamp: 6, sessionID, assistantMessageID: messageID, textID: "t-0", delta: "Real answer" },
+          };
+          yield {
+            id: "w8",
+            type: "session.next.text.ended",
+            data: { timestamp: 7, sessionID, assistantMessageID: messageID, textID: "t-0", text: "Real answer" },
+          };
         })(),
       };
     }) as any);
@@ -380,30 +415,36 @@ describe("openCodeRuntime", () => {
     // reproduces the old hard deny.
     mockState.eventSubscribe.mockImplementationOnce((async () => {
       const sessionID = "opencode-session-1";
+      const messageID = `msg-${sessionID}`;
       return {
         stream: (async function* () {
           yield {
-            type: "permission.asked",
-            properties: {
+            id: "w1",
+            type: "permission.v2.asked",
+            data: {
               id: "perm-1",
               sessionID,
-              permission: "external_directory",
-              patterns: ["/etc/*"],
+              action: "external_directory",
+              resources: ["/etc/*"],
+              save: [],
               metadata: {},
-              always: [],
             },
           };
           yield {
-            type: "message.updated",
-            properties: { info: { id: "msg-a", role: "assistant", sessionID } },
+            id: "w2",
+            type: "session.next.step.started",
+            data: { timestamp: 1, sessionID, assistantMessageID: messageID, agent: "ade-helper", model: { id: "gpt-5-mini", providerID: "openai" } },
           };
           yield {
-            type: "message.part.updated",
-            properties: {
-              part: { id: "p-a", sessionID, messageID: "msg-a", type: "text", text: "done" },
-            },
+            id: "w3",
+            type: "session.next.text.started",
+            data: { timestamp: 2, sessionID, assistantMessageID: messageID, textID: "t-0" },
           };
-          yield { type: "session.idle", properties: { sessionID } };
+          yield {
+            id: "w4",
+            type: "session.next.text.ended",
+            data: { timestamp: 3, sessionID, assistantMessageID: messageID, textID: "t-0", text: "done" },
+          };
         })(),
       };
     }) as any);
@@ -418,8 +459,8 @@ describe("openCodeRuntime", () => {
     });
 
     expect(result.text).toBe("done");
-    expect(mockState.permissionReply).toHaveBeenCalledWith(
-      expect.objectContaining({ requestID: "perm-1", reply: "reject" }),
+    expect(mockState.v2PermissionReply).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionID: "opencode-session-1", requestID: "perm-1", reply: "reject" }),
       expect.objectContaining({ throwOnError: true }),
     );
   });
@@ -443,7 +484,6 @@ describe("openCodeRuntime", () => {
     // And a ceiling: a large value reintroduces the long silent stall this bounds.
     expect(OPENCODE_SSE_MAX_RETRY_ATTEMPTS).toBeLessThan(5);
     expect(mockState.eventSubscribe).toHaveBeenCalledWith(
-      expect.anything(),
       expect.objectContaining({ sseMaxRetryAttempts: OPENCODE_SSE_MAX_RETRY_ATTEMPTS }),
     );
   });
@@ -473,14 +513,12 @@ describe("openCodeRuntime", () => {
       projectConfig: { ai: {} },
     });
 
-    const params = openCodePromptParams();
-    expect(params.system).toBe("You are ADE's naming agent.");
-    // The synthetic/ignored part injection is gone for good: OpenCode drops
-    // `ignored` parts from model context, so that transport never worked.
-    const parts = params.parts as Array<Record<string, unknown>>;
-    expect(parts.every((part) => !part.synthetic && !part.ignored)).toBe(true);
-    // And it must not have leaked into the user-visible message text either.
-    expect(parts.some((part) => String(part.text ?? "").includes("naming agent"))).toBe(false);
+    // The v2 body has no `system` field; the one-shot carries it as the marked
+    // first-prompt context, the same transport the chat turn uses.
+    const text = openCodeV2PromptText();
+    expect(text).toContain("<ade-system-context>");
+    expect(text).toContain("You are ADE's naming agent.");
+    expect(openCodePromptParams()).toMatchObject({ delivery: "queue" });
   });
 
   it("omits the system field when no system prompt is provided", async () => {
@@ -499,7 +537,7 @@ describe("openCodeRuntime", () => {
       projectConfig: { ai: {} },
     });
 
-    expect(openCodePromptParams()).not.toHaveProperty("system");
+    expect(openCodeV2PromptText()).not.toContain("<ade-system-context>");
   });
 
   it("builds prompt parts from the user text plus file attachments only", () => {
