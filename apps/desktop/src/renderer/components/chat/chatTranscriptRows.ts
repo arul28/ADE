@@ -584,6 +584,12 @@ export type ChatTranscriptRenderEnvelope = {
    */
   voiceCallId?: string;
   /**
+   * Copied off the source envelope's `provenance.timestampSynthetic`. True when
+   * `timestamp` is an ordering placeholder with no provider time behind it; the
+   * row still sorts on it but must not show it as a clock (subagent drill-in).
+   */
+  timestampSynthetic?: boolean;
+  /**
    * What names this row on disk for a scene drawn in it.
    *
    * Derived here, from the row's own event and key, because row identity is a
@@ -617,6 +623,8 @@ export type ChatTranscriptGroupedEnvelope = {
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `voiceCallId`. */
   voiceCallId?: string;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
+  timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
   sceneScopeKey?: string;
 };
@@ -3299,12 +3307,20 @@ function appendCollapsedEventWithVoiceStamp(
   context: CollapseTranscriptContext,
 ): void {
   const callId = envelope.provenance?.voiceCallId?.trim() || null;
+  const timestampSynthetic = envelope.provenance?.timestampSynthetic === true;
   const before = rows.length;
   const rowKey = allocateTranscriptEventRowKey(envelope, context.eventRowKeyOrdinals);
   appendCollapsedChatTranscriptEvent(rows, envelope, rowKey, context);
   for (let index = before; index < rows.length; index += 1) {
     const row = rows[index]!;
-    rows[index] = stampSceneScopeKey(callId ? { ...row, voiceCallId: callId } : row);
+    const stamped = callId || timestampSynthetic
+      ? {
+        ...row,
+        ...(callId ? { voiceCallId: callId } : {}),
+        ...(timestampSynthetic ? { timestampSynthetic: true } : {}),
+      }
+      : row;
+    rows[index] = stampSceneScopeKey(stamped);
   }
 }
 

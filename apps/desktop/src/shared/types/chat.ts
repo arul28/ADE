@@ -1524,6 +1524,12 @@ export type AgentChatEvent =
       workflowProgress?: AgentChatWorkflowProgress;
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
+      /**
+       * Why this subagent is parked, when it is waiting on something the user
+       * must resolve (an OpenCode permission card). A progress event without it
+       * clears a previously reported blocked state.
+       */
+      blockedReason?: string | null;
       turnId?: string;
     }
   | {
@@ -2185,6 +2191,13 @@ export type AgentChatEventEnvelope = {
      * client may set it.
      */
     voiceCallId?: string | null;
+    /**
+     * True when `timestamp` is a deterministic ordering placeholder rather than
+     * a provider or local wall-clock time. Set by the subagent transcript
+     * builder when the provider handed back no real time for the row. Clients
+     * still ORDER by `timestamp`; they must not display it.
+     */
+    timestampSynthetic?: boolean;
   };
 };
 
@@ -2905,6 +2918,14 @@ export type AgentChatSubagentSnapshot = {
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
+  /**
+   * Set while the child is parked on a pending user answer (an OpenCode
+   * permission or question card). The status stays "running" — the child is
+   * still an active member of the tree — but clients can present it as
+   * "blocked" from this field; the session-level `awaitingInput` state is the
+   * authority for `ade chat status`.
+   */
+  blockedReason?: string | null;
   turnId?: string;
   startTimestamp?: string;
   endTimestamp?: string;
@@ -3085,6 +3106,13 @@ export type AgentChatClaudeSessionMessage = {
   parentAgentId?: string | null;
   message: unknown;
   text?: string | null;
+  /**
+   * The provider's real time for this message, ISO-8601, when the runtime
+   * exposes one (OpenCode `info.time.created`, Codex turn/item time). Absent
+   * when the provider does not publish a per-message time — the subagent
+   * transcript then suppresses the clock instead of rendering a placeholder.
+   */
+  timestamp?: string | null;
   subagentMetadata?: AgentChatSubagentMetadata | null;
 };
 
@@ -4076,9 +4104,14 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * three since `@cursor/sdk` 1.0.31 added `Run.steer()`, which injects a message
  * into the live local run; its interrupt still means something different from
  * Claude's — it cancels the run and resends on the same agent thread — which is
- * why `activeTurnInterruptContinues` keeps saying so. OpenCode takes the v2
- * session prompt's `delivery: "steer"` input into the live agent loop, so it
- * has "inline" and no interrupt mode. Everything else is queue-only.
+ * why `activeTurnInterruptContinues` keeps saying so. OpenCode is queue-only:
+ * its turns still run on the legacy `prompt_async` loop, which has no drain for
+ * mid-turn inputs, so a v2 `delivery: "steer"` admission was visible in the
+ * server's input table but never promoted — the row read "Steered" while the
+ * model never saw it. The v2 runner that promotes steers mid-turn is a staged
+ * migration (see docs/features/chat/opencode-integration.md); until turns run
+ * on it, this table must not advertise a capability the transport cannot honor.
+ * Everything else is queue-only.
  *
  * Cursor's inline mode is effectively local-only. A cloud run implements
  * `Run.steer` but refuses every call, so a cloud turn degrades to a follow-up
@@ -4094,7 +4127,7 @@ export const ACTIVE_TURN_DISPATCH_MODES: Partial<Record<AgentChatProvider, reado
   claude: ["inline", "queue", "interrupt"],
   codex: ["inline", "queue"],
   cursor: ["inline", "queue", "interrupt"],
-  opencode: ["inline", "queue"],
+  opencode: ["queue"],
   qwen: ["queue"],
   kimi: ["queue"],
   grok: ["queue"],
