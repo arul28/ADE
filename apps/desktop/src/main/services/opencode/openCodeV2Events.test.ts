@@ -262,6 +262,42 @@ describe("openCodeV2EventStream", () => {
     expect(created.properties.info).toMatchObject({ id: "ses_child", parentID: "ses_parent" });
   });
 
+  it("retries a child lookup after a transient failure instead of orphaning it", async () => {
+    let attempts = 0;
+    const get = vi.fn(async ({ sessionID }: { sessionID: string }) => {
+      attempts += 1;
+      if (attempts === 1) throw Object.assign(new Error("temporarily unavailable"), { status: 503 });
+      return { data: { data: { id: sessionID, parentID: "ses_parent" } } };
+    });
+    const client = {
+      v2: {
+        session: { get },
+        event: {
+          subscribe: vi.fn(async () => ({
+            stream: eventStream([
+              { id: "e1", type: "permission.v2.asked", data: { id: "per_1", sessionID: "ses_child", action: "bash", resources: ["ls"] } },
+              { id: "e2", type: "permission.v2.asked", data: { id: "per_2", sessionID: "ses_child", action: "bash", resources: ["ls"] } },
+            ]),
+          })),
+        },
+      },
+    } as unknown as Parameters<typeof openCodeV2EventStream>[0]["client"];
+
+    const seen: OpenCodeRuntimeEvent[] = [];
+    const stream = await openCodeV2EventStream({
+      client,
+      sessionId: "ses_parent",
+      signal: new AbortController().signal,
+    });
+    for await (const event of stream) seen.push(event);
+
+    // The 503 is not a confirmed miss: the id stays unknown and the next event
+    // retries, so the child is announced and its ask is not dropped for good.
+    expect(attempts).toBeGreaterThanOrEqual(2);
+    expect(seen.map((event) => event.type)).toContain("session.created");
+    expect(seen.filter((event) => event.type === "permission.asked")).toHaveLength(2);
+  });
+
   it("does not ask the server twice for the same session and routes prompted to the hook", async () => {
     const { client, get } = fakeClient({
       events: [

@@ -3163,16 +3163,9 @@ describe("createAgentChatService", () => {
         sessionId: session.id,
         text: "Start the reusable OpenCode runtime.",
       });
-      const handle = await vi.mocked(startOpenCodeSession).mock.results.at(-1)!.value as {
-        client: {
-          session: {
-            promptAsync: ReturnType<typeof vi.fn>;
-          };
-        };
-      };
-      handle.client.session.promptAsync.mockRejectedValueOnce(
-        new Error("OpenCode rejected the prompt."),
-      );
+      // The chat runs on the v2 runner; a prompt rejected before dispatch is
+      // the same lifecycle-marker contract whichever transport sends it.
+      mockState.openCodeV2PromptError = new Error("OpenCode rejected the prompt.");
       sessionService.clearTurnStartMarkers.mockClear();
 
       await expect(service.steerUserMessage({
@@ -3180,6 +3173,7 @@ describe("createAgentChatService", () => {
         text: "Continue from my answer.",
       })).resolves.toMatchObject({ queued: false });
       expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      mockState.openCodeV2PromptError = null;
     });
 
     it("preserves lifecycle markers when a Cursor user steer is rejected by a full queue", async () => {

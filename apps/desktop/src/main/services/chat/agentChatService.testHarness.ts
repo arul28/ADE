@@ -175,6 +175,8 @@ const mockState = vi.hoisted(() => ({
   openCodeForceV2: false,
   /** When false, a v2 queue prompt does not auto-run the scripted turn stream. */
   openCodeV2AutoStream: true,
+  /** When set, a v2 queue prompt rejects with this before anything runs. */
+  openCodeV2PromptError: null as Error | null,
   /** Makes the next `startOpenCodeSession` return a legacy handle. */
   openCodeForceLegacy: false,
   /** What a `runner: "resume"` start resolves to. Defaults to legacy. */
@@ -722,6 +724,9 @@ if (mockState.openCodeTitleForNextPrompt) {
         session: {
           prompt: vi.fn(async (params: any) => {
             mockState.openCodeV2PromptCalls.push(params);
+            if (params?.delivery !== "steer" && mockState.openCodeV2PromptError) {
+              throw mockState.openCodeV2PromptError;
+            }
             if (params?.delivery === "steer") {
               mockState.openCodeV2SteerCalls.push(params);
               if (mockState.openCodeV2SteerBarrier) await mockState.openCodeV2SteerBarrier;
@@ -2494,6 +2499,7 @@ beforeEach(() => {
   mockState.openCodeV2QuestionReplies = [];
   mockState.openCodeForceV2 = false;
   mockState.openCodeV2AutoStream = true;
+  mockState.openCodeV2PromptError = null;
   mockState.openCodeForceLegacy = false;
   mockState.openCodeResumeRunner = "legacy";
   mockState.openCodeV2Active.clear();
