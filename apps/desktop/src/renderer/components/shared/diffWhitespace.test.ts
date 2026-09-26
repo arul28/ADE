@@ -161,4 +161,36 @@ describe("stripWhitespaceOnlyPatchChanges", () => {
 -const d = 4;
 +const d = 5;`);
   });
+
+  it("keeps the shared no-newline marker on a whitespace-only pair turned to context", () => {
+    const patch = `${header}
+@@ -1,2 +1,2 @@
+-const b = 2;
+-const a = 1;
+\\ No newline at end of file
++const c = 2;
++const a = 1; 
+\\ No newline at end of file`;
+    const result = stripWhitespaceOnlyPatchChanges(patch);
+    expect(result.whitespaceOnly).toBe(false);
+    expect(result.patch).toBe(`${header}
+@@ -1,2 +1,2 @@
+-const b = 2;
++const c = 2;
+ const a = 1; 
+\\ No newline at end of file`);
+  });
+
+  it("keeps a pair whose two sides disagree on the no-newline marker", () => {
+    // One context line cannot carry both newline states, so the pair stays a
+    // change rather than being folded away.
+    const patch = `${header}
+@@ -1 +1 @@
+-const a = 1;
+\\ No newline at end of file
++const a = 1;`;
+    const result = stripWhitespaceOnlyPatchChanges(patch);
+    expect(result.whitespaceOnly).toBe(false);
+    expect(result.patch).toBe(patch);
+  });
 });

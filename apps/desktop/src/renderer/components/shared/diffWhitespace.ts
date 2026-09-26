@@ -101,16 +101,25 @@ function filterHunkBody(body: string[]): FilteredHunk {
     for (let pair = 0; pair < paired; pair += 1) {
       const deletionText = deletions[pair]!.slice(1);
       const additionText = additions[pair]!.slice(1);
-      if (normalizeLineForWhitespaceCompare(deletionText) === normalizeLineForWhitespaceCompare(additionText)) {
+      const deletionMarker = deletionMarkers[pair];
+      const additionMarker = additionMarkers[pair];
+      // A pair whose newline-at-EOF state differs is not whitespace-only: one
+      // context line cannot carry both states, so it stays a real change.
+      if (
+        normalizeLineForWhitespaceCompare(deletionText) === normalizeLineForWhitespaceCompare(additionText)
+        && Boolean(deletionMarker) === Boolean(additionMarker)
+      ) {
         // Whitespace-only: the line is unchanged, so show it as context in
-        // place. The new-side text is what `git diff -w` prints.
+        // place. The new-side text is what `git diff -w` prints; a shared
+        // no-newline marker follows it so the hunk keeps its real EOF state.
         out.push(` ${additionText}`);
+        if (additionMarker) out.push(additionMarker);
         continue;
       }
       out.push(deletions[pair]!);
-      if (deletionMarkers[pair]) out.push(deletionMarkers[pair]!);
+      if (deletionMarker) out.push(deletionMarker);
       out.push(additions[pair]!);
-      if (additionMarkers[pair]) out.push(additionMarkers[pair]!);
+      if (additionMarker) out.push(additionMarker);
       changes += 1;
     }
     for (let leftover = paired; leftover < deletions.length; leftover += 1) {
