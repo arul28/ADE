@@ -39,8 +39,11 @@ import {
   DEFAULT_THEME_ID,
   baseModeForThemeId,
   normalizeAdeThemeList,
+  resolveTheme,
+  resolveThemeById,
   type AdeTheme,
 } from "../../shared/theme";
+import { applyAdeTheme } from "../theme/applyTheme";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -1192,6 +1195,24 @@ function readInitialUserPreferences(): PersistedUserPreferences {
 
 const initialPersistedWorkViews = readPersistedWorkViewState();
 const initialUserPreferences = readInitialUserPreferences();
+
+/**
+ * Paint the stored theme before React's first frame.
+ *
+ * Reading the preference at module scope is already how this store loads
+ * (`readInitialUserPreferences` above), so applying it here — guarded, since
+ * tests run without a DOM — costs nothing and removes the flash of the default
+ * dark chrome on a light or custom theme. `App.tsx` re-applies the same theme
+ * from an effect; `applyAdeTheme` clears and rewrites its own variables, so the
+ * second call is a no-op in effect.
+ */
+if (typeof document !== "undefined" && document.documentElement) {
+  try {
+    applyAdeTheme(resolveTheme(resolveThemeById(initialUserPreferences.themeId, initialUserPreferences.customThemes)));
+  } catch {
+    // A failed early paint must never block the app; the App effect retries.
+  }
+}
 
 function clampTerminalFontSize(value: unknown): number {
   const next = typeof value === "number" ? value : Number(value);

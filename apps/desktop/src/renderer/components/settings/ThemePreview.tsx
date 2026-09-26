@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { resolveTheme, type AdeTheme } from "../../../shared/theme";
 
 /**
@@ -15,7 +15,7 @@ import { resolveTheme, type AdeTheme } from "../../../shared/theme";
  * active theme's colours.
  */
 export function ThemePreview({ theme, height = 88 }: { theme: AdeTheme; height?: number }) {
-  const { palette: p } = resolveTheme(theme);
+  const { palette: p } = useMemo(() => resolveTheme(theme), [theme]);
   const line = (width: string, color: string, opacity = 1): React.CSSProperties => ({
     width,
     height: 3,
