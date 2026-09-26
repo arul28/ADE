@@ -36,6 +36,18 @@ import type {
 } from "../../../shared/types";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
+import { withOpenCodeIdleProbe } from "./openCodeIdleProbe";
+import {
+  mapOpenCodeV2MessagesToLegacyRows,
+  mergeOpenCodeV2IdleReceipt,
+  openCodeV2EventStream,
+  openCodeV2IdleEvent,
+  openCodeV2WaitForIdle,
+  readOpenCodeV2ActiveStatuses,
+  unwrapOpenCodeV2Data,
+  type OpenCodeV2AdapterHooks,
+  type OpenCodeV2SessionInfo,
+} from "./openCodeV2Events";
 import type { PermissionMode } from "../ai/tools/universalTools";
 import type { Logger } from "../logging/logger";
 import {
@@ -50,8 +62,21 @@ import {
 
 export type OpenCodeAgentProfile = "ade-plan" | "ade-edit" | "ade-full-auto" | "ade-helper";
 
+/**
+ * Which OpenCode runner owns a session.
+ *
+ * `v2` is the only runner ADE creates: a fresh chat is created on the v2
+ * session API, dispatches with `POST /api/session/{id}/prompt`, and consumes
+ * `/api/event`, which is what makes mid-turn steering real. `legacy` exists
+ * only for a persisted `providerSessionId` that has no v2 read model and whose
+ * transcript would be empty on the v2 runner; those chats keep running on the
+ * legacy `prompt_async` loop exactly as before.
+ */
+export type OpenCodeRunnerKind = "v2" | "legacy";
+
 export type OpenCodeSessionHandle = {
   client: OpencodeClient;
+  runner: OpenCodeRunnerKind;
   server: {
     url: string;
     close(): Promise<void>;
@@ -135,6 +160,12 @@ type StartOpenCodeSessionArgs = BuildOpenCodeConfigArgs & {
   /** Data home for the server. Defaults to ADE's owned home. */
   dataHome?: OpenCodeDataHome;
   logger?: Logger | null;
+  /**
+   * Which runner owns the session. Defaults to `legacy`; new chats pass `v2`,
+   * and a chat with a persisted `providerSessionId` passes `resume` so the id
+   * is probed on the v2 read model before the legacy continuity path runs.
+   */
+  runner?: OpenCodeRunnerKind | "resume";
 };
 
 type RunOpenCodePromptArgs = BuildOpenCodeConfigArgs & {
@@ -656,6 +687,21 @@ export function mapPermissionModeToOpenCodeAgent(mode: PermissionMode): OpenCode
   return "ade-edit";
 }
 
+/**
+ * The v2 prompt file attachment: `{uri, name}`. The URI is the same
+ * `file://` form the legacy part carried; only the wrapper differs.
+ */
+export function buildOpenCodeV2PromptFiles(
+  files?: OpenCodePromptFile[],
+): Array<{ uri: string; name: string }> {
+  return (files ?? []).map((file) => ({
+    uri: pathToFileURL(file.path).toString(),
+    name: file.filename?.trim()
+      || file.path.split(/[\\/]/).filter(Boolean).pop()
+      || file.path,
+  }));
+}
+
 export function buildOpenCodePromptParts(args: {
   prompt: string;
   files?: OpenCodePromptFile[];
@@ -723,11 +769,13 @@ function createOpenCodeSessionHandle(args: {
   client: OpencodeClient;
   lease: OpenCodeServerLease;
   sessionId: string;
+  runner?: OpenCodeRunnerKind;
   initialTitle?: string | null;
   directory: string;
 }): OpenCodeSessionHandle {
   return {
     client: args.client,
+    runner: args.runner ?? "legacy",
     server: {
       url: args.lease.url,
       async close() {
@@ -786,6 +834,7 @@ async function startOpenCodeSessionInternal(
         });
 
   const resolvedSessionId = trimToUndefined(args.sessionId);
+  const requestedRunner = args.runner ?? "legacy";
   const requestedDataHome = args.dataHome ?? "ade";
   let lease = await acquireLease(requestedDataHome);
   let client = createOpencodeClient({
@@ -793,7 +842,35 @@ async function startOpenCodeSessionInternal(
     directory: args.directory,
   });
 
-  if (resolvedSessionId) {
+  // `resume` is how a persisted `providerSessionId` is routed: probe the v2
+  // read model first, because a chat ADE created on v2 exists only there. A
+  // legacy id 404s and falls through to the legacy continuity path below.
+  if (resolvedSessionId && requestedRunner !== "legacy") {
+    try {
+      const existing = await client.v2.session.get(
+        { sessionID: resolvedSessionId },
+        { throwOnError: true },
+      );
+      const info = unwrapOpenCodeV2Data<{ id?: string }>(existing.data);
+      if (info?.id) {
+        return createOpenCodeSessionHandle({
+          client,
+          lease,
+          sessionId: info.id,
+          runner: "v2",
+          initialTitle: null,
+          directory: args.directory,
+        });
+      }
+    } catch (error) {
+      if (!isOpenCodeNotFoundError(error)) {
+        lease.close("error");
+        throw error instanceof Error ? error : new Error(String(error));
+      }
+    }
+  }
+
+  if (resolvedSessionId && requestedRunner !== "v2") {
     try {
       const existing = await client.session.get(
         { sessionID: resolvedSessionId, directory: args.directory },
@@ -848,9 +925,9 @@ async function startOpenCodeSessionInternal(
             lease.close("error");
             throw legacyError instanceof Error ? legacyError : new Error(String(legacyError));
           }
-          // Gone from both homes. Fall back to the owned home and create a
-          // replacement session, exactly as before, and say so loudly enough to
-          // find in logs when a user reports lost OpenCode context.
+          // Gone from every home. A legacy resume has nothing to recreate, so
+          // a fresh v2 session replaces it (below); log loudly enough to find
+          // when a user reports lost OpenCode context.
           args.logger?.warn("opencode.session_recreated_missing", {
             sessionId: resolvedSessionId,
           });
@@ -863,6 +940,28 @@ async function startOpenCodeSessionInternal(
         }
       }
     }
+  }
+
+  if (requestedRunner !== "legacy") {
+    const createdV2 = await client.v2.session.create(
+      { location: { directory: args.directory } },
+      { throwOnError: true },
+    );
+    const createdInfo = unwrapOpenCodeV2Data<{ id?: string }>(createdV2.data);
+    if (!createdInfo?.id) {
+      lease.close("error");
+      throw new Error("OpenCode v2 session create returned no session payload.");
+    }
+    // The v2 create title is a generated placeholder ("New session - <date>"),
+    // never a user-meaningful name; ADE names its own chats.
+    return createOpenCodeSessionHandle({
+      client,
+      lease,
+      sessionId: createdInfo.id,
+      runner: "v2",
+      initialTitle: null,
+      directory: args.directory,
+    });
   }
 
   const createdTitle = trimToUndefined(args.title);
@@ -883,6 +982,7 @@ async function startOpenCodeSessionInternal(
     client,
     lease,
     sessionId: created.data.id,
+    runner: "legacy",
     initialTitle: created.data.title,
     directory: args.directory,
   });
@@ -964,6 +1064,7 @@ export async function runOpenCodeTextPrompt(
     ...(args.agentSkillRoots ? { agentSkillRoots: args.agentSkillRoots } : {}),
     leaseKind: "shared",
     ownerKind: "oneshot",
+    runner: "v2",
   });
 
   const model = resolveOpenCodeModelSelection(args.modelDescriptor);
@@ -972,26 +1073,33 @@ export async function runOpenCodeTextPrompt(
   args.signal?.addEventListener("abort", forwardAbort, { once: true });
 
   try {
-    const stream = await openCodeEventStream({
+    const stream = await openCodeV2EventStream({
       client: handle.client,
-      directory: handle.directory,
+      sessionId: handle.sessionId,
       signal: controller.signal,
     });
-    await handle.client.session.promptAsync(
+    await handle.client.v2.session.switchAgent({
+      sessionID: handle.sessionId,
+      agent: args.agent ?? "ade-helper",
+    });
+    await handle.client.v2.session.switchModel({
+      sessionID: handle.sessionId,
+      model: { id: model.modelID, providerID: model.providerID },
+    });
+    // The v2 body has no `system` field. A one-shot's system text (provider
+    // tasks name lanes and titles) still has to reach the model, so it rides
+    // the first prompt under the same marker the chat runner uses.
+    const systemText = args.system?.trim();
+    await handle.client.v2.session.prompt(
       {
         sessionID: handle.sessionId,
-        directory: handle.directory,
-        agent: args.agent ?? "ade-helper",
-        model,
-        // First-class system prompt on the wire. Never inject it as a
-        // synthetic/ignored text part: OpenCode drops `ignored` parts from
-        // model context entirely, so the prompt would silently never reach
-        // the model.
-        ...(args.system?.trim() ? { system: args.system.trim() } : {}),
-        parts: buildOpenCodePromptParts({
-          prompt: args.prompt,
-          files: args.files,
-        }),
+        prompt: {
+          text: systemText
+            ? `<ade-system-context>\n${systemText}\n</ade-system-context>\n\n${args.prompt}`
+            : args.prompt,
+          ...(args.files?.length ? { files: buildOpenCodeV2PromptFiles(args.files) } : {}),
+        },
+        delivery: "queue",
       },
       { throwOnError: true },
     );
@@ -1002,10 +1110,19 @@ export async function runOpenCodeTextPrompt(
     // Part events carry no role, so the caller's own prompt streams back through
     // the same channel. The result of this helper names lanes and titles chats,
     // so an ungated accumulator put the user's prompt — and the model's chain of
-    // thought — into those names. OpenCode announces every message with its role
-    // before any of its parts, so this map is always populated in time.
+    // thought — into those names. The adapter announces every message with its
+    // role before any of its parts, so this map is always populated in time.
     const roleByMessageId = new Map<string, "assistant" | "user">();
-    for await (const event of stream) {
+    const probed = withOpenCodeIdleProbe<OpenCodeRuntimeEvent>(stream, {
+      quietMs: 2_000,
+      waitingOn: () => [handle.sessionId],
+      probe: async () => {
+        const reply = await handle.client.v2.session.active({ throwOnError: true });
+        return readOpenCodeV2ActiveStatuses(unwrapOpenCodeV2Data(reply.data));
+      },
+      makeIdleEvent: (sessionID) => openCodeV2IdleEvent(sessionID),
+    });
+    for await (const event of probed) {
       if (event.type === "message.updated") {
         const info = event.properties.info;
         if (info.sessionID !== handle.sessionId) continue;
@@ -1042,10 +1159,10 @@ export async function runOpenCodeTextPrompt(
       // later. Rejecting immediately reproduces the old hard deny: the tool
       // call fails and the turn errors or idles on its own.
       if (event.type === "permission.asked" && event.properties.sessionID === handle.sessionId) {
-        void handle.client.permission.reply(
+        void handle.client.v2.session.permission.reply(
           {
+            sessionID: handle.sessionId,
             requestID: event.properties.id,
-            directory: handle.directory,
             reply: "reject",
           },
           { throwOnError: true },
@@ -1073,3 +1190,14 @@ export async function runOpenCodeTextPrompt(
     await handle.close("handle_close");
   }
 }
+
+export {
+  mapOpenCodeV2MessagesToLegacyRows,
+  mergeOpenCodeV2IdleReceipt,
+  openCodeV2EventStream,
+  openCodeV2IdleEvent,
+  openCodeV2WaitForIdle,
+  readOpenCodeV2ActiveStatuses,
+  unwrapOpenCodeV2Data,
+};
+export type { OpenCodeV2AdapterHooks, OpenCodeV2SessionInfo };

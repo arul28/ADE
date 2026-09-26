@@ -14230,12 +14230,12 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(codex.agentLabel, "Codex")
     XCTAssertEqual(WorkActiveSendCapability.forProvider("openai").modes, [.inline, .queue])
 
-    // OpenCode is queue-only: its turns run on the legacy prompt loop, which
-    // does not drain a mid-turn input, so an inline mode would promise a
-    // delivery the transport cannot honor. No interrupt either.
+    // OpenCode sessions created by ADE run on the v2 runner, which promotes a
+    // mid-turn steer; the table matches desktop. No interrupt: like Codex there
+    // is no cancel-and-resend.
     let opencode = WorkActiveSendCapability.forProvider("opencode")
-    XCTAssertEqual(opencode.modes, [.queue])
-    XCTAssertEqual(opencode.defaultMode, .queue)
+    XCTAssertEqual(opencode.modes, [.inline, .queue])
+    XCTAssertEqual(opencode.defaultMode, .inline)
     XCTAssertFalse(opencode.interruptContinues)
     XCTAssertEqual(opencode.agentLabel, "OpenCode")
 

@@ -109,11 +109,10 @@ describe("createAgentChatService", () => {
 
       await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
 
-      let promptBody: Record<string, unknown> | undefined;
       await vi.waitFor(() => {
-        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
-        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
-        expect(promptBody).toBeDefined();
+        // ADE creates OpenCode chats on the v2 runner: the turn is dispatched
+        // with `session.prompt`, not the legacy `promptAsync`.
+        expect(mockState.openCodeV2PromptCalls.length).toBeGreaterThan(0);
       });
       const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
       for (const selector of ["ADE_RPC_URL", "ADE_RPC_SOCKET_PATH", "ADE_RUNTIME_SOCKET_PATH"]) {
@@ -156,11 +155,10 @@ describe("createAgentChatService", () => {
 
       await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
 
-      let promptBody: Record<string, unknown> | undefined;
       await vi.waitFor(() => {
-        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
-        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
-        expect(promptBody).toBeDefined();
+        // ADE creates OpenCode chats on the v2 runner: the turn is dispatched
+        // with `session.prompt`, not the legacy `promptAsync`.
+        expect(mockState.openCodeV2PromptCalls.length).toBeGreaterThan(0);
       });
       const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
       expect(systemPromptArgs?.sessionActivityGuidance).toBeNull();

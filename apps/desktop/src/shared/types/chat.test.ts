@@ -38,16 +38,16 @@ describe("Droid permission vocabulary", () => {
 });
 
 describe("active-turn dispatch modes", () => {
-  it("is the one table every surface reads: Claude/Cursor inline, Codex inline-only, OpenCode and ACP queue-only", () => {
+  it("is the one table every surface reads: Claude/Cursor/OpenCode inline+queue, Codex inline-only, ACP queue-only", () => {
     expect(activeTurnDispatchModes("claude")).toEqual(["inline", "queue", "interrupt"]);
     // Codex's app-server takes `turn/steer` into the running turn — the service
     // has always sent it; the table was the thing that never said so.
     expect(activeTurnDispatchModes("codex")).toEqual(["inline", "queue"]);
     // Cursor gained inline with `Run.steer()` in @cursor/sdk 1.0.31.
     expect(activeTurnDispatchModes("cursor")).toEqual(["inline", "queue", "interrupt"]);
-    // OpenCode runs on the legacy prompt loop, which never drains a v2 steer
-    // admission; queue-only until turns move to the v2 runner.
-    expect(activeTurnDispatchModes("opencode")).toEqual(["queue"]);
+    // OpenCode runs on the v2 runner, whose `delivery: "steer"` input is
+    // promoted mid-turn; no interrupt (there is no cancel-and-resend).
+    expect(activeTurnDispatchModes("opencode")).toEqual(["inline", "queue"]);
     for (const provider of ["droid", "pi", "qwen", "unknown-provider", undefined]) {
       expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
     }
@@ -78,7 +78,7 @@ describe("active-turn dispatch modes", () => {
     expect(defaultActiveTurnDispatchMode("claude")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("codex")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("cursor")).toBe("inline");
-    expect(defaultActiveTurnDispatchMode("opencode")).toBe("queue");
+    expect(defaultActiveTurnDispatchMode("opencode")).toBe("inline");
     expect(defaultActiveTurnDispatchMode("droid")).toBe("queue");
   });
 

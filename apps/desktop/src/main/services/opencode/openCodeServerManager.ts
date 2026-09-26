@@ -16,6 +16,10 @@ import {
   resolveUserOpenCodeAuthPath,
 } from "../../../shared/opencodeDataHome";
 import {
+  OPENCODE_STORE_RETENTION_INTERVAL_MS,
+  runOpenCodeStoreRetention,
+} from "../../../shared/opencodeStoreMaintenance";
+import {
   killWindowsProcessTree,
   quoteWindowsCmdArg,
   resolveWindowsCmdLineInvocation,
@@ -764,6 +768,100 @@ function buildIsolatedOpenCodeEnv(
   };
 }
 
+/**
+ * Write the generated config as a FILE for the v2 config service.
+ *
+ * The v2 service never reads `OPENCODE_CONFIG_CONTENT`; it loads config files
+ * from the user config home, the project, and `OPENCODE_CONFIG`. Writing one
+ * file per config fingerprint and pointing `OPENCODE_CONFIG` at it keeps the
+ * user's own config loading underneath (nothing is written into their config
+ * home) while ADE's generated providers/agents merge on top. `_v2` is the one
+ * path the service reads.
+ */
+function writeOpenCodeV2ConfigFile(
+  config: OpenCodeConfig,
+  paths: OpenCodeIsolationPaths,
+): string | null {
+  try {
+    const fingerprint = createHash("sha256")
+      .update(stableStringify(config ?? {}))
+      .digest("hex")
+      .slice(0, 24);
+    const dir = path.join(paths.root, "config-v2", fingerprint);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, "opencode.json");
+    fs.writeFileSync(file, JSON.stringify(config ?? {}), { encoding: "utf8", mode: 0o600 });
+    return file;
+  } catch {
+    // A config file that cannot be written is not fatal: the legacy transport
+    // still reads `OPENCODE_CONFIG_CONTENT`.
+    return null;
+  }
+}
+
+/**
+ * The seeded owned auth, handed to the v2 service through the env override it
+ * documents (`OPENCODE_AUTH_CONTENT`).
+ *
+ * The legacy store is `<XDG_DATA_HOME>/opencode/auth.json`; the v2 Auth service
+ * reads `XDG_DATA_HOME/auth.json` first and only falls back to the file. Rather
+ * than keep two credential files in sync (OAuth refresh tokens are single-use —
+ * a stale second copy is worse than none), ADE passes the live owned file's
+ * content. A user-provided `OPENCODE_AUTH_CONTENT` always wins.
+ */
+function readOwnedOpenCodeAuthContent(paths: OpenCodeIsolationPaths): string | null {
+  try {
+    const file = path.join(paths.dataHome, "opencode", "auth.json");
+    if (!fs.existsSync(file)) return null;
+    const raw = fs.readFileSync(file, "utf8").trim();
+    if (!raw) return null;
+    JSON.parse(raw);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+let lastOpenCodeStoreRetentionAt = 0;
+
+/**
+ * Bounded automatic retention for ADE's owned OpenCode store, throttled per
+ * process and run off the launch path so a large store never blocks a spawn.
+ * Non-throwing by contract; see `runOpenCodeStoreRetention`.
+ */
+function maybeRunOpenCodeStoreRetention(args: {
+  dataHome: OpenCodeDataHome;
+  isolatedConfig: boolean;
+  logger?: Logger | null;
+}): void {
+  if (args.dataHome === "user") return;
+  const nowMs = Date.now();
+  if (nowMs - lastOpenCodeStoreRetentionAt < OPENCODE_STORE_RETENTION_INTERVAL_MS) return;
+  lastOpenCodeStoreRetentionAt = nowMs;
+  setImmediate(() => {
+    try {
+      const result = runOpenCodeStoreRetention({ nowMs });
+      if (result.ran) {
+        args.logger?.info("opencode.store_retention_pruned", {
+          dbPath: result.dbPath,
+          cutoffMs: result.cutoffMs,
+          eligibleSessions: result.eligibleSessions,
+          deletedSessions: result.applied?.deletedSessions,
+          vacuumed: result.applied?.vacuumed,
+          fileBytesBefore: result.fileBytesBefore,
+          fileBytesAfter: result.applied?.fileBytesAfter,
+        });
+      } else if (result.reason === "failed") {
+        args.logger?.warn("opencode.store_retention_failed", { error: result.error });
+      }
+    } catch (error) {
+      args.logger?.warn("opencode.store_retention_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1215,6 +1313,16 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
     : dataHome === "user"
       ? buildUserOpenCodeEnv(args.config)
       : buildOwnedOpenCodeEnv(args.config, xdgPaths);
+  if (dataHome !== "user") {
+    const v2ConfigFile = writeOpenCodeV2ConfigFile(args.config, xdgPaths);
+    if (v2ConfigFile && !env.OPENCODE_CONFIG?.trim()) {
+      env.OPENCODE_CONFIG = v2ConfigFile;
+    }
+    if (!env.OPENCODE_AUTH_CONTENT?.trim()) {
+      const authContent = readOwnedOpenCodeAuthContent(xdgPaths);
+      if (authContent) env.OPENCODE_AUTH_CONTENT = authContent;
+    }
+  }
   // Only shim through cmd.exe when the resolved target actually needs it (a
   // `.cmd`/`.bat` shim, or an extensionless file), matching
   // {@link shouldUseWindowsCmdWrapper} — the policy every other ADE CLI launch
@@ -1594,6 +1702,7 @@ export async function acquireSharedOpenCodeServer(args: {
   const isolatedConfig = args.isolatedConfig === true;
   const dataHome = args.dataHome ?? "ade";
   const key = args.key?.trim() || configFingerprint;
+  maybeRunOpenCodeStoreRetention({ dataHome, isolatedConfig, logger: args.logger });
   return await withAcquireLock(`shared:${key}`, async () => {
     while (true) {
       const existing = sharedEntries.get(key);
@@ -1668,6 +1777,7 @@ export async function acquireDedicatedOpenCodeServer(args: {
   const configFingerprint = serializeConfigFingerprint(args.config);
   const isolatedConfig = args.isolatedConfig === true;
   const dataHome = args.dataHome ?? "ade";
+  maybeRunOpenCodeStoreRetention({ dataHome, isolatedConfig, logger: args.logger });
   return await withAcquireLock(`dedicated:${ownerKey}`, async () => {
     while (true) {
       const existing = dedicatedEntries.get(ownerKey);

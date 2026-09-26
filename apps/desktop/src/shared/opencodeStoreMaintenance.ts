@@ -5,7 +5,7 @@ import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import {
   resolveAdeOpenCodeStoreDir,
   resolveUserOpenCodeDataRoot,
-} from "../../../../desktop/src/shared/opencodeDataHome";
+} from "./opencodeDataHome";
 
 // Type-only import plus an anchored `require`, mirroring `rosterBuilder`: a
 // static value import of `node:sqlite` is a build-time dependency the Windows
@@ -365,4 +365,92 @@ export function applyOpenCodeStorePrune(args: {
     fileBytesBefore,
     fileBytesAfter: fs.statSync(plan.dbPath).size,
   };
+}
+
+/**
+ * Automatic retention for ADE's OWNED OpenCode store.
+ *
+ * The store grows the same way whether a user runs `ade storage opencode` or
+ * not: OpenCode snapshots whole messages (diffs included) into an append-only
+ * event log, and ADE chats are the writers. Opt-in pruning left that growth
+ * unbounded for every user who never ran the command, so this policy runs on
+ * runtime init without user action.
+ *
+ * Bounds: at most once per caller-throttle window, only when the database is at
+ * or above `minFileBytes`, only sessions untouched for `maxAgeMs`, and VACUUM
+ * only while no writer holds the store. It targets the owned store only — the
+ * caller resolves the path — and never the user's personal one.
+ */
+export const OPENCODE_STORE_RETENTION_MAX_AGE_MS = 30 * 86_400_000;
+export const OPENCODE_STORE_RETENTION_MIN_FILE_BYTES = 2 * 1024 * 1024 * 1024;
+export const OPENCODE_STORE_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+export type OpenCodeStoreRetentionResult = {
+  ran: boolean;
+  reason?:
+    | "no-store"
+    | "below-threshold"
+    | "no-eligible-sessions"
+    | "failed";
+  dbPath?: string;
+  cutoffMs?: number;
+  fileBytesBefore?: number;
+  eligibleSessions?: number;
+  applied?: OpenCodeApplyResult;
+  error?: string;
+};
+
+/**
+ * Run the bounded retention policy once. Never throws: a missing store, a
+ * locked database, or a partially-written file must not fail runtime init.
+ */
+export function runOpenCodeStoreRetention(args?: {
+  /** Defaults to ADE's owned store (`--store ade`). */
+  storeDir?: string;
+  env?: NodeJS.ProcessEnv;
+  nowMs?: number;
+  maxAgeMs?: number;
+  minFileBytes?: number;
+  /** Default true; skipped while another connection holds a write lock. */
+  vacuum?: boolean;
+}): OpenCodeStoreRetentionResult {
+  try {
+    const nowMs = args?.nowMs ?? Date.now();
+    const storeDir = args?.storeDir ?? resolveAdeOpenCodeStoreDir(args?.env ?? process.env);
+    if (!fs.existsSync(storeDir)) return { ran: false, reason: "no-store" };
+    let dbPath: string;
+    try {
+      dbPath = pickStoreDatabase(storeDir);
+    } catch {
+      return { ran: false, reason: "no-store" };
+    }
+    const fileBytesBefore = fs.statSync(dbPath).size;
+    const minFileBytes = args?.minFileBytes ?? OPENCODE_STORE_RETENTION_MIN_FILE_BYTES;
+    if (fileBytesBefore < minFileBytes) {
+      return { ran: false, reason: "below-threshold", dbPath, fileBytesBefore };
+    }
+    const cutoffMs = nowMs - (args?.maxAgeMs ?? OPENCODE_STORE_RETENTION_MAX_AGE_MS);
+    const plan = planOpenCodeStorePrune({ dbPath, cutoffMs });
+    if (plan.eligibleSessions.length === 0) {
+      return { ran: false, reason: "no-eligible-sessions", dbPath, cutoffMs, fileBytesBefore };
+    }
+    // VACUUM rewrites the whole file and needs exclusive access, so it waits
+    // for the writer; the delete itself is a bounded transaction either way.
+    const vacuum = (args?.vacuum ?? true) && !openCodeStoreHasActiveWriter(dbPath);
+    const applied = applyOpenCodeStorePrune({ plan, vacuum });
+    return {
+      ran: true,
+      dbPath,
+      cutoffMs,
+      fileBytesBefore,
+      eligibleSessions: plan.eligibleSessions.length,
+      applied,
+    };
+  } catch (error) {
+    return {
+      ran: false,
+      reason: "failed",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }

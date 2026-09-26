@@ -908,7 +908,7 @@ import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
-import { readOpenCodeSessionStatuses, withOpenCodeIdleProbe } from "../opencode/openCodeIdleProbe";
+import { readOpenCodeSessionStatuses, withOpenCodeIdleProbe, type OpenCodeIdleProbeStatus } from "../opencode/openCodeIdleProbe";
 import type { OpenCodeRuntimeEvent } from "../opencode/openCodeRuntime";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
 import {
@@ -918,15 +918,24 @@ import {
 } from "./laneAppleDeviceDirective";
 import {
   buildOpenCodePromptParts,
+  buildOpenCodeV2PromptFiles,
+  mapOpenCodeV2MessagesToLegacyRows,
   mapPermissionModeToOpenCodeAgent,
+  mergeOpenCodeV2IdleReceipt,
   openCodeEventStream,
   openCodePartUpdatedDelta,
+  openCodeV2EventStream,
+  openCodeV2IdleEvent,
+  openCodeV2WaitForIdle,
+  readOpenCodeV2ActiveStatuses,
+  unwrapOpenCodeV2Data,
   resolveOpenCodeExecutablePath,
   resolveOpenCodeModelSelection,
   startOpenCodeSession,
   type DiscoveredLocalModelEntry,
   type OpenCodePromptFile,
   type OpenCodeQuestionInfo,
+  type OpenCodeRunnerKind,
   type OpenCodeSessionHandle,
 } from "../opencode/openCodeRuntime";
 import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
@@ -2727,6 +2736,20 @@ async function replyToOpenCodePendingApproval(
   reply: "once" | "always" | "reject",
 ): Promise<void> {
   if (pending.protocol === "v2") {
+    // The v2 runner keeps its pending asks in its own service: the legacy
+    // `/permission/{id}/reply` route answers `PermissionNotFoundError` for them
+    // (verified live), so a v2-runner ask must be answered on the session route.
+    if (handle.runner === "v2") {
+      await handle.client.v2.session.permission.reply(
+        {
+          sessionID: pending.sessionId ?? handle.sessionId,
+          requestID: pending.permissionId,
+          reply,
+        },
+        { throwOnError: true },
+      );
+      return;
+    }
     await handle.client.permission.reply(
       {
         requestID: pending.permissionId,
@@ -2756,6 +2779,52 @@ async function rejectOpenCodePendingApproval(
   pending: PendingOpenCodeApproval,
 ): Promise<void> {
   await replyToOpenCodePendingApproval(handle, pending, "reject");
+}
+
+/**
+ * Answer one OpenCode question. Same split as approvals: the v2 runner's asks
+ * live on the session-scoped route, the legacy runner's on `/question`.
+ */
+async function replyToOpenCodeQuestion(
+  handle: OpenCodeSessionHandle,
+  args: { sessionID: string; requestID: string; answers: Array<Array<string>> },
+): Promise<void> {
+  if (handle.runner === "v2") {
+    await handle.client.v2.session.question.reply(
+      {
+        sessionID: args.sessionID,
+        requestID: args.requestID,
+        questionV2Reply: { answers: args.answers },
+      },
+      { throwOnError: true },
+    );
+    return;
+  }
+  await handle.client.question.reply(
+    {
+      requestID: args.requestID,
+      directory: handle.directory,
+      answers: args.answers,
+    },
+    { throwOnError: true },
+  );
+}
+
+async function rejectOpenCodeQuestion(
+  handle: OpenCodeSessionHandle,
+  args: { sessionID: string; requestID: string },
+): Promise<void> {
+  if (handle.runner === "v2") {
+    await handle.client.v2.session.question.reject(
+      { sessionID: args.sessionID, requestID: args.requestID },
+      { throwOnError: true },
+    );
+    return;
+  }
+  await handle.client.question.reject(
+    { requestID: args.requestID, directory: handle.directory },
+    { throwOnError: true },
+  );
 }
 
 /**
@@ -2794,15 +2863,40 @@ export function isOpenCodeExternalDirectoryInsideAdeRoot(
   });
 }
 
+/**
+ * One inline steer admitted to the v2 runner, waiting for the server to read it
+ * mid-turn. The row reads "Steering…" until `session.next.prompted` arrives for
+ * `messageID`; only then is it truthful to call it "Steered".
+ */
+type PendingOpenCodeSteerPromotion = {
+  steerId: string;
+  row: QueuedSteer;
+};
+
 type OpenCodeRuntime = {
   kind: "opencode";
   handle: OpenCodeSessionHandle;
+  /**
+   * `v2` for sessions ADE creates now (real mid-turn steering, `session.wait`
+   * capable, `/api/event`); `legacy` only for a chat whose persisted
+   * `providerSessionId` predates the v2 read model.
+   */
+  runner: OpenCodeRunnerKind;
   busy: boolean;
   eventAbortController: AbortController | null;
   activeTurnId: string | null;
   permissionMode: AgentChatOpenCodePermissionMode;
   pendingApprovals: Map<string, PendingOpenCodeApproval>;
   pendingSteers: QueuedSteer[];
+  /** Inline v2 steers awaiting `session.next.prompted`, keyed by message id. */
+  pendingSteerPromotions: Map<string, PendingOpenCodeSteerPromotion>;
+  /**
+   * Whether this runtime incarnation already delivered ADE's assembled system
+   * prompt to a v2 session as its marked first-prompt context. The v2 runner
+   * has no per-request `system` field, so the context is sent once per
+   * incarnation instead of on every prompt.
+   */
+  systemContextSent: boolean;
   interrupted: boolean;
   modelDescriptor: ModelDescriptor;
   textByPartId: Map<string, string>;
@@ -15508,6 +15602,9 @@ export function createAgentChatService(args: {
         directory: managed.laneWorktreePath,
         title: manualSessionTitleForRuntime(managed),
         sessionId: persisted?.providerSessionId,
+        // A persisted id is probed on the v2 read model first; a fresh chat is
+        // created on the v2 runner.
+        runner: persisted?.providerSessionId ? "resume" : "v2",
         projectConfig: configSnapshot.effective,
         discoveredLocalModels,
         // OpenCode has no env var for "use this key against this endpoint" — a
@@ -15532,12 +15629,15 @@ export function createAgentChatService(args: {
     const runtime: OpenCodeRuntime = {
       kind: "opencode",
       handle,
+      runner: handle.runner === "v2" ? "v2" : "legacy",
       busy: false,
       eventAbortController: null,
       activeTurnId: null,
       permissionMode: permMode,
       pendingApprovals: new Map(),
       pendingSteers: [],
+      pendingSteerPromotions: new Map(),
+      systemContextSent: false,
       interrupted: false,
       modelDescriptor: descriptor,
       textByPartId: new Map(),
@@ -29806,30 +29906,92 @@ export function createAgentChatService(args: {
       // request that wins this race would have its assistant `message.updated`
       // role announcement (and first parts) lost, and the role gate below
       // would then drop every part of that message.
-      const eventStream = await openCodeEventStream({
-        client: runtime.handle.client,
-        directory: runtime.handle.directory,
-        signal: abortController.signal,
-        // The stream is bounded now (see OPENCODE_SSE_MAX_RETRY_ATTEMPTS), so a
-        // dropped socket ends the loop instead of hanging the turn forever. Log
-        // the cause: the turn then fails through the "ended before idle" path,
-        // whose message alone does not say the connection broke. Stop aborts the
-        // same socket, and that is the user getting what they asked for.
-        onSseError: (error) => {
-          if (abortController.signal.aborted) return;
-          logger.warn("agent_chat.opencode_event_stream_error", {
-            sessionId: managed.session.id,
-            turnId,
-            error: error instanceof Error ? error.message : String(error),
+      const onSseError = (error: unknown): void => {
+        if (abortController.signal.aborted) return;
+        logger.warn("agent_chat.opencode_event_stream_error", {
+          sessionId: managed.session.id,
+          turnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      };
+      const streamsByIdle = runtime.runner === "v2"
+        ? await (async () => {
+          // A v2 prompt lands on a session whose model/agent live on the
+          // session, not the request: see `dispatchPrompt`, which switches
+          // before the turn's first prompt.
+          const normalized = await openCodeV2EventStream({
+            client: runtime.handle.client,
+            sessionId: runtime.handle.sessionId,
+            signal: abortController.signal,
+            onSseError,
+            hooks: {
+              onPrompted: ({ sessionID, messageID }) => {
+                promoteOpenCodeSteerForMessage(managed, runtime, sessionID, messageID);
+              },
+            },
           });
-        },
-      });
+          const waitReceipt = openCodeV2WaitForIdle({
+            client: runtime.handle.client,
+            sessionId: runtime.handle.sessionId,
+            signal: abortController.signal,
+          });
+          return mergeOpenCodeV2IdleReceipt(normalized, {
+            wait: waitReceipt,
+            parentSessionId: runtime.handle.sessionId,
+            childSessionIds: () => [...runtime.subagentSessions.keys()],
+          });
+        })()
+        : await openCodeEventStream({
+          client: runtime.handle.client,
+          directory: runtime.handle.directory,
+          signal: abortController.signal,
+          // The stream is bounded now (see OPENCODE_SSE_MAX_RETRY_ATTEMPTS), so a
+          // dropped socket ends the loop instead of hanging the turn forever. Log
+          // the cause: the turn then fails through the "ended before idle" path,
+          // whose message alone does not say the connection broke. Stop aborts the
+          // same socket, and that is the user getting what they asked for.
+          onSseError,
+        });
+      const eventStream = streamsByIdle;
 
       let promptFailure: unknown = null;
-      const promptAccepted = runtime.handle.client.session.promptAsync(
-        openCodePromptBody,
-        { throwOnError: true },
-      ).then(() => {
+      const dispatchPrompt = runtime.runner === "v2"
+        ? (async (): Promise<void> => {
+          if (openCodeAgent) {
+            await runtime.handle.client.v2.session.switchAgent({
+              sessionID: runtime.handle.sessionId,
+              agent: openCodeAgent,
+            });
+          }
+          await runtime.handle.client.v2.session.switchModel({
+            sessionID: runtime.handle.sessionId,
+            model: {
+              id: requestedOpenCodeModel.modelID,
+              providerID: requestedOpenCodeModel.providerID,
+              ...(openCodeSelection.variant ? { variant: openCodeSelection.variant } : {}),
+            },
+          });
+          // The v2 body has no `system` field. ADE's assembled system prompt
+          // goes in as the session's first prompt context under a clear marker
+          // (see docs/features/chat/opencode-integration.md, "System prompt").
+          const v2Text = !runtime.systemContextSent && openCodeSystemPrompt
+            ? `<ade-system-context>\n${openCodeSystemPrompt}\n</ade-system-context>\n\n${userContent}`
+            : userContent;
+          await runtime.handle.client.v2.session.prompt(
+            {
+              sessionID: runtime.handle.sessionId,
+              prompt: {
+                text: v2Text,
+                ...(toPromptFiles.length ? { files: buildOpenCodeV2PromptFiles(toPromptFiles) } : {}),
+              },
+              delivery: "queue",
+            },
+            { throwOnError: true },
+          );
+          runtime.systemContextSent = true;
+        })()
+        : runtime.handle.client.session.promptAsync(openCodePromptBody, { throwOnError: true });
+      const promptAccepted = dispatchPrompt.then(() => {
         args.onBackendDispatched?.();
       }).catch((error: unknown) => {
         promptFailure = error;
@@ -29907,6 +30069,24 @@ export function createAgentChatService(args: {
           ...runtime.subagentSessions.keys(),
         ],
         probe: async () => {
+          if (runtime.runner === "v2") {
+            // `session.active` lists the drains this process owns. Absent
+            // means idle, and a child cannot outlive its parent's drain: while
+            // the parent runs, every known child is reported busy so a
+            // slow child is never synthesized finished early.
+            const reply = await runtime.handle.client.v2.session.active({ throwOnError: true });
+            const statuses = readOpenCodeV2ActiveStatuses(unwrapOpenCodeV2Data((reply as { data?: unknown }).data));
+            if (!statuses) return null;
+            const parentBusy = Boolean(statuses[runtime.handle.sessionId]);
+            const out: Record<string, OpenCodeIdleProbeStatus> = {};
+            for (const id of [
+              ...(parentSessionIdle ? [] : [runtime.handle.sessionId]),
+              ...runtime.subagentSessions.keys(),
+            ]) {
+              if (parentBusy || statuses[id]) out[id] = "busy";
+            }
+            return out;
+          }
           const status = runtime.handle.client.session.status;
           if (typeof status !== "function") return null;
           const reply = await status.call(
@@ -29916,10 +30096,14 @@ export function createAgentChatService(args: {
           );
           return readOpenCodeSessionStatuses((reply as { data?: unknown }).data);
         },
-        makeIdleEvent: (sessionID) => ({
-          type: "session.idle",
-          properties: { sessionID },
-        }) as OpenCodeRuntimeEvent,
+        makeIdleEvent: (sessionID) => (
+          runtime.runner === "v2"
+            ? openCodeV2IdleEvent(sessionID)
+            : {
+              type: "session.idle",
+              properties: { sessionID },
+            } as OpenCodeRuntimeEvent
+        ),
         // A server that stops answering status probes while this turn is quiet
         // would otherwise hold the chat on "Working" forever. After a bounded
         // run of unusable probes the turn fails visibly with this error.
@@ -30617,11 +30801,11 @@ export function createAgentChatService(args: {
           // question tool blocks server-side until it gets a reply, so the parent
           // session is not expected to idle underneath an open card — see the
           // completion path, which does NOT cancel these cards for that reason.
-          const rejectOpenCodeQuestion = async (): Promise<void> => {
-            await runtime.handle.client.question.reject({
+          const rejectOpenCodeQuestionRequest = async (): Promise<void> => {
+            await rejectOpenCodeQuestion(runtime.handle, {
+              sessionID: questionRequest.sessionID,
               requestID: questionRequest.id,
-              directory: runtime.handle.directory,
-            }, { throwOnError: true });
+            });
           };
           const questionTitle = childAskLabel
             ? `${childAskLabel} asks`
@@ -30647,7 +30831,7 @@ export function createAgentChatService(args: {
             });
             if (managed.runtime !== runtime) return;
             if (response.decision === "decline" || response.decision === "cancel") {
-              await rejectOpenCodeQuestion();
+              await rejectOpenCodeQuestionRequest();
               return;
             }
             const answerList = questions.map((question) => {
@@ -30655,11 +30839,11 @@ export function createAgentChatService(args: {
               if (answers.length > 0) return answers;
               return response.responseText?.trim() ? [response.responseText.trim()] : [];
             });
-            await runtime.handle.client.question.reply({
+            await replyToOpenCodeQuestion(runtime.handle, {
+              sessionID: questionRequest.sessionID,
               requestID: questionRequest.id,
-              directory: runtime.handle.directory,
               answers: answerList,
-            }, { throwOnError: true });
+            });
           };
           void resolveOpenCodeQuestion().catch(async (error) => {
             // Stop already cancelled this card and aborted the session, so the
@@ -30675,7 +30859,7 @@ export function createAgentChatService(args: {
             // The turn no longer fails on this path, so reject the question
             // rather than leave OpenCode waiting for an answer that is not coming.
             if (managed.runtime !== runtime) return;
-            await rejectOpenCodeQuestion().catch(() => {});
+            await rejectOpenCodeQuestionRequest().catch(() => {});
           });
           continue;
         }
@@ -30703,7 +30887,12 @@ export function createAgentChatService(args: {
             try {
               await replyToOpenCodePendingApproval(
                 runtime.handle,
-                { category: "write", permissionId: permission.id, protocol: "v2" },
+                {
+                  category: "write",
+                  permissionId: permission.id,
+                  protocol: "v2",
+                  ...(childAskSessionId ? { sessionId: childAskSessionId } : {}),
+                },
                 "always",
               );
               continue;
@@ -30914,6 +31103,7 @@ export function createAgentChatService(args: {
         // `interrupted`, and the loop settles here instead of throwing. Without
         // this call that second route stranded the card.
         cancelPendingInputsFrom(managed, "opencode", "ade");
+        settleOpenCodeSteerPromotions(managed, runtime, "failed");
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
@@ -30929,6 +31119,10 @@ export function createAgentChatService(args: {
         persistChatState(managed);
       } else {
         // No cancel here — this is the one ending whose card is still answerable.
+        // A v2 steer is promoted before its drain ends, so anything still here
+        // reached the clean boundary unpromoted only in a server ending ADE did
+        // not observe; the durable input runs next, so the row reads queued.
+        settleOpenCodeSteerPromotions(managed, runtime, "queued");
         setOpenCodeRuntimeBusy(runtime, false);
         runtime.activeTurnId = null;
         runtime.eventAbortController = null;
@@ -30980,6 +31174,9 @@ export function createAgentChatService(args: {
       runtime.activeTurnId = null;
       runtime.eventAbortController = null;
       cancelPendingInputsFrom(managed, "opencode", "ade");
+      // An aborted/failed drain never promoted its steers, so none of them were
+      // read; the rows must not keep promising "Steered".
+      settleOpenCodeSteerPromotions(managed, runtime, "failed");
       void emitTurnDiffSummaryIfChanged(managed, turnId);
 
       if (runtime.interrupted) {
@@ -45855,6 +46052,139 @@ export function createAgentChatService(args: {
   };
 
   /**
+   * The v2 runner read an inline steer mid-turn.
+   *
+   * `session.next.prompted` for the admitted message id is the only evidence
+   * that the model will actually see the message in this turn. Until it lands
+   * the row reads "Steering…"; marking it "Steered" on admission was the lie
+   * this whole migration exists to remove.
+   */
+  const promoteOpenCodeSteerForMessage = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    sessionID: string,
+    messageID: string,
+  ): void => {
+    if (sessionID !== runtime.handle.sessionId) return;
+    const pending = runtime.pendingSteerPromotions.get(messageID);
+    if (!pending) return;
+    runtime.pendingSteerPromotions.delete(messageID);
+    emitSteerUserRow(managed, pending.row, "inline", runtime.activeTurnId ?? undefined);
+    persistChatState(managed);
+  };
+
+  /**
+   * A turn ended with v2 inline steers still unpromoted: the server never got
+   * to read them in this turn. `failed` for an aborted or failed turn (nothing
+   * was delivered), `queued` for a clean end where the durable input simply
+   * runs next. Both are honest; neither claims the model saw the message.
+   */
+  const settleOpenCodeSteerPromotions = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    outcome: "queued" | "failed",
+  ): void => {
+    if (!runtime.pendingSteerPromotions.size) return;
+    const pending = [...runtime.pendingSteerPromotions.values()];
+    runtime.pendingSteerPromotions.clear();
+    for (const entry of pending) {
+      emitSteerUserRow(managed, entry.row, outcome, runtime.activeTurnId ?? undefined);
+    }
+    persistChatState(managed);
+  };
+
+  /**
+   * Admit one mid-turn message to the v2 runner as a steer.
+   *
+   * Delivery is durable server-side: a `steer` input is promoted at the next
+   * step boundary (verified live on 1.18.32 — a steer admitted after the last
+   * step still starts another step before the drain ends). The row is only
+   * moved to `inline` by `session.next.prompted`. A failed request puts the
+   * message back on ADE's queue and reports `queued`, so nothing is lost.
+   */
+  const dispatchOpenCodeV2InlineSteer = async (args: {
+    managed: ManagedChatSession;
+    runtime: OpenCodeRuntime;
+    sessionId: string;
+    steerId: string;
+    prepared: PreparedSendMessage;
+    reasoningEffort?: string | null;
+    executionMode?: AgentChatExecutionMode | null;
+    interactionMode?: AgentChatInteractionMode | null;
+    onAcceptedDispatch?: () => void;
+    allowPendingInput?: boolean;
+  }): Promise<AgentChatSteerResult> => {
+    const { managed, runtime, prepared } = args;
+    const row: QueuedSteer = {
+      steerId: args.steerId,
+      uuid: randomUUID(),
+      text: prepared.submittedText,
+      ...(prepared.visibleText !== prepared.submittedText ? { displayText: prepared.visibleText } : {}),
+      attachments: prepared.attachments,
+      contextAttachments: prepared.contextAttachments,
+      resolvedAttachments: prepared.resolvedAttachments,
+      metadata: prepared.metadata,
+      reasoningEffort: args.reasoningEffort,
+      executionMode: args.executionMode,
+      interactionMode: args.interactionMode,
+    };
+    emitSteerUserRow(managed, row, "accepted", runtime.activeTurnId ?? undefined);
+    persistChatState(managed);
+    let messageID: string | null = null;
+    try {
+      const files = toOpenCodePromptFiles(prepared.resolvedAttachments).files;
+      const response = await runtime.handle.client.v2.session.prompt(
+        {
+          sessionID: runtime.handle.sessionId,
+          prompt: {
+            text: prepared.submittedText,
+            ...(files.length ? { files: buildOpenCodeV2PromptFiles(files) } : {}),
+          },
+          delivery: "steer",
+        },
+        { throwOnError: true },
+      );
+      const admitted = unwrapOpenCodeV2Data<{ id?: string }>(response.data);
+      messageID = admitted?.id?.trim() ?? null;
+      if (!messageID) throw new Error("OpenCode admitted a steer without a message id.");
+    } catch (error) {
+      logger.warn("agent_chat.opencode_inline_steer_failed", {
+        sessionId: managed.session.id,
+        steerId: args.steerId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      const queued = enqueueSteerOrDrop(
+        managed,
+        runtime,
+        args.sessionId,
+        args.steerId,
+        prepared.submittedText,
+        prepared.attachments,
+        prepared.contextAttachments,
+        prepared.resolvedAttachments,
+        prepared.metadata,
+        {
+          displayText: prepared.visibleText,
+          reasoningEffort: args.reasoningEffort,
+          executionMode: args.executionMode,
+          interactionMode: args.interactionMode,
+        },
+      );
+      emitSteerUserRow(managed, row, queued ? "queued" : "failed", runtime.activeTurnId ?? undefined);
+      persistChatState(managed);
+      return queued
+        ? { steerId: args.steerId, queued: true }
+        : { steerId: args.steerId, queued: false, reason: "queue_full" };
+    }
+    runtime.pendingSteerPromotions.set(messageID, { steerId: args.steerId, row });
+    prepared.onDispatched?.();
+    args.onAcceptedDispatch?.();
+    persistDeliveredLaneDirectiveKey(managed, prepared.laneDirectiveKey);
+    persistChatState(managed);
+    return { steerId: args.steerId, queued: false };
+  };
+
+  /**
    * Take a steer off its row: a path is about to deliver it some other way.
    * Returns the entry so a delivery that throws can put it back.
    */
@@ -49580,6 +49910,25 @@ export function createAgentChatService(args: {
             return { steerId, queued: false };
           }
         }
+        // A v2 session's runner drains mid-turn inputs: deliver the message as
+        // a real steer and let `session.next.prompted` move the row to
+        // "Steered". Only a legacy session (a persisted id with no v2 read
+        // model) still stages — its loop has no drain, so "Steered" there
+        // would be the old lie.
+        if (stageRuntime.runner === "v2") {
+          return await dispatchOpenCodeV2InlineSteer({
+            managed,
+            runtime: stageRuntime,
+            sessionId,
+            steerId,
+            prepared: preparedSteer,
+            reasoningEffort,
+            executionMode,
+            interactionMode,
+            onAcceptedDispatch: options?.onAcceptedDispatch,
+            allowPendingInput: options?.allowPendingInput,
+          });
+        }
         const queued = enqueueSteerOrDrop(
           managed,
           stageRuntime,
@@ -51020,9 +51369,74 @@ export function createAgentChatService(args: {
         },
       });
     }
-    // OpenCode never reaches here: it is queue-only in
-    // ACTIVE_TURN_DISPATCH_MODES, so the provider guard above rejects both
-    // "inline" and "interrupt" before this point.
+    // OpenCode: only a v2 session can promote a staged row into its running
+    // turn. A legacy session's loop never drains `delivery: "steer"` inputs, so
+    // it must not pretend otherwise.
+    if (runtime.kind === "opencode") {
+      if (runtime.runner !== "v2") {
+        throw new Error(
+          "This OpenCode chat runs on the legacy session API, which cannot take a mid-turn message. Send it as a normal message instead.",
+        );
+      }
+      const queue = runtime.pendingSteers;
+      const idx = queue.findIndex((s) => s.steerId === steerId);
+      if (idx === -1) return { dispatchedAt: null };
+      const staged = queue[idx];
+      const prepared = prepareSendMessage({
+        sessionId,
+        text: staged.text,
+        displayText: staged.displayText ?? staged.text,
+        attachments: staged.attachments,
+        contextAttachments: staged.contextAttachments,
+        metadata: staged.metadata,
+        reasoningEffort: staged.reasoningEffort,
+        executionMode: staged.executionMode,
+        interactionMode: staged.interactionMode,
+        allowActiveSession: true,
+      });
+      if (!prepared) return { dispatchedAt: null };
+      // Held until the promotion is acknowledged: the turn boundary must not
+      // drain this row underneath the steer and send it a second time.
+      queue.splice(idx, 1);
+      claimSteerSettlement(managed, steerId);
+      try {
+        const files = toOpenCodePromptFiles(prepared.resolvedAttachments).files;
+        const response = await runtime.handle.client.v2.session.prompt(
+          {
+            sessionID: runtime.handle.sessionId,
+            prompt: {
+              text: prepared.submittedText,
+              ...(files.length ? { files: buildOpenCodeV2PromptFiles(files) } : {}),
+            },
+            delivery: "steer",
+          },
+          { throwOnError: true },
+        );
+        const admitted = unwrapOpenCodeV2Data<{ id?: string }>(response.data);
+        const messageID = admitted?.id?.trim();
+        if (!messageID) throw new Error("OpenCode admitted a steer without a message id.");
+        emitSteerUserRow(managed, staged, "accepted", runtime.activeTurnId ?? undefined);
+        runtime.pendingSteerPromotions.set(messageID, { steerId, row: staged });
+        prepared.onDispatched?.();
+        persistChatState(managed);
+        return { dispatchedAt: Date.now() };
+      } catch (error) {
+        // Put the row back exactly as it was, so the turn boundary still
+        // delivers it and the user's message is never lost.
+        reopenSteerSettlement(managed, steerId);
+        queue.splice(Math.min(idx, queue.length), 0, staged);
+        emitSteerUserRow(managed, staged, "queued", runtime.activeTurnId ?? undefined);
+        persistChatState(managed);
+        logger.warn("agent_chat.dispatch_steer_failed", {
+          sessionId,
+          steerId,
+          mode,
+          provider: "opencode",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }
     if (runtime.kind !== "claude") {
       throw new Error(`dispatchSteer is not supported on ${runtime.kind} sessions.`);
     }
@@ -51179,10 +51593,16 @@ export function createAgentChatService(args: {
       managed.runtime.interrupted = true;
       managed.runtime.eventAbortController?.abort();
       try {
-        await managed.runtime.handle.client.session.abort({
-          sessionID: managed.runtime.handle.sessionId,
-          directory: managed.runtime.handle.directory,
-        });
+        if (managed.runtime.runner === "v2") {
+          await managed.runtime.handle.client.v2.session.interrupt({
+            sessionID: managed.runtime.handle.sessionId,
+          });
+        } else {
+          await managed.runtime.handle.client.session.abort({
+            sessionID: managed.runtime.handle.sessionId,
+            directory: managed.runtime.handle.directory,
+          });
+        }
       } catch {
         // Ignore provider abort failures; SSE cancellation still tears the turn down.
       }
@@ -58206,12 +58626,25 @@ export function createAgentChatService(args: {
 
     if (runtimeKind === "opencode" && managed?.runtime?.kind === "opencode") {
       try {
-        const response = await managed.runtime.handle.client.session.messages({
-          sessionID: normalizedAgentId,
-          directory: managed.runtime.handle.directory,
-        });
-        const rows = (response as { data?: Array<{ info: unknown; parts: unknown }> }).data
-          ?? (response as unknown as Array<{ info: unknown; parts: unknown }>);
+        let rows: Array<{ info: unknown; parts: unknown }>;
+        if (managed.runtime.runner === "v2") {
+          const v2Response = await managed.runtime.handle.client.v2.session.messages({
+            sessionID: normalizedAgentId,
+            limit: 500,
+          });
+          const body = v2Response.data as { data?: unknown[] } | unknown[] | undefined;
+          const messages = Array.isArray(body) ? body : body?.data ?? [];
+          rows = mapOpenCodeV2MessagesToLegacyRows(
+            messages as Parameters<typeof mapOpenCodeV2MessagesToLegacyRows>[0],
+          );
+        } else {
+          const response = await managed.runtime.handle.client.session.messages({
+            sessionID: normalizedAgentId,
+            directory: managed.runtime.handle.directory,
+          });
+          rows = (response as { data?: Array<{ info: unknown; parts: unknown }> }).data
+            ?? (response as unknown as Array<{ info: unknown; parts: unknown }>);
+        }
         if (!Array.isArray(rows)) return [];
         const mapped = rows.map((row): AgentChatSubagentTranscriptMessage | null => {
           const info = row?.info && typeof row.info === "object"
@@ -58222,7 +58655,8 @@ export function createAgentChatService(args: {
           const messageType: AgentChatSubagentTranscriptMessage["type"] =
             role === "user" ? "user" : role === "assistant" ? "assistant" : "system";
           const id = typeof info.id === "string" ? info.id : "";
-          const sId = typeof info.sessionID === "string" ? info.sessionID : normalizedAgentId;
+          const infoSessionId = typeof info.sessionID === "string" ? info.sessionID : "";
+          const sId = infoSessionId.length ? infoSessionId : normalizedAgentId;
           const parts = Array.isArray(row.parts) ? row.parts : [];
           const textBlocks: string[] = [];
           let earliestPartTimeMs: number | null = null;
