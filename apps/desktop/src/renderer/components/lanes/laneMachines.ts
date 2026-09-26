@@ -421,8 +421,13 @@ export function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): 
 function compareLaneMachineLoad(a: LaneMachineOption, b: LaneMachineOption): number {
   const lowDiskDelta = Number(isLowLaneMachineDisk(a.freeBytes)) - Number(isLowLaneMachineDisk(b.freeBytes));
   if (lowDiskDelta !== 0) return lowDiskDelta;
-  const loadDelta = (a.activeLaneCount ?? 0) - (b.activeLaneCount ?? 0);
-  if (loadDelta !== 0) return loadDelta;
+  // A missing count is not a count of zero. Only compare load when BOTH
+  // machines report one; otherwise an uncounted machine would sort as idle and
+  // win the tie, which the input contract forbids. Fall through to disk.
+  if (a.activeLaneCount !== null && b.activeLaneCount !== null) {
+    const loadDelta = a.activeLaneCount - b.activeLaneCount;
+    if (loadDelta !== 0) return loadDelta;
+  }
   const freeDelta = (typeof b.freeBytes === "number" ? b.freeBytes : 0)
     - (typeof a.freeBytes === "number" ? a.freeBytes : 0);
   if (freeDelta !== 0) return freeDelta;

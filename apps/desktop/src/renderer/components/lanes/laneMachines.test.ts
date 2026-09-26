@@ -481,6 +481,16 @@ describe("chooseLaneMachineByLoad", () => {
     expect(chooseLaneMachineByLoad(options)).toBe("b");
   });
 
+  it("does not treat an uncounted machine as idle", () => {
+    // Equal, healthy disk; only `a` reports a lane count. `b` is uncounted, not
+    // idle, so the load term must not silently sort it ahead of `a`.
+    const options = [
+      machineOption({ id: "a", activeLaneCount: 3, freeBytes: 200 * 1024 ** 3 }),
+      machineOption({ id: "b", activeLaneCount: null, freeBytes: 200 * 1024 ** 3 }),
+    ];
+    expect(chooseLaneMachineByLoad(options)).toBe("a");
+  });
+
   it("deprioritizes a machine below the disk warning threshold", () => {
     const options = [
       machineOption({ id: "a", freeBytes: 4 * 1024 ** 3 }),
