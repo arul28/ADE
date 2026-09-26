@@ -35,6 +35,12 @@ import {
   normalizeWorkSessionFilters,
   type WorkSessionFilters,
 } from "../components/terminals/workSessionFilters";
+import {
+  DEFAULT_THEME_ID,
+  baseModeForThemeId,
+  normalizeAdeThemeList,
+  type AdeTheme,
+} from "../../shared/theme";
 
 export type ThemeId = "dark" | "light";
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
@@ -942,6 +948,10 @@ function removePersistedLaneCache(projectRoot: string | null | undefined): void 
 
 type PersistedUserPreferences = {
   theme: ThemeId;
+  /** The active theme's id — one of the shipped ids or a custom theme's id. */
+  themeId: string;
+  /** User-authored / imported themes. Shipped themes are not in this list. */
+  customThemes: AdeTheme[];
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
@@ -1010,6 +1020,23 @@ function coerceTheme(value: unknown): ThemeId | null {
   return null;
 }
 
+/**
+ * Keep the active theme id verbatim rather than resolving it here.
+ *
+ * A custom theme's id can arrive from the account store before the theme list
+ * itself does, and resolving now would pin the machine to the fallback and lose
+ * the user's choice. The renderer resolves the id against the full list at paint
+ * time (`resolveThemeById`), so an id that names nothing today paints as the
+ * default until its definition lands.
+ */
+function coerceThemeId(value: unknown): string {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed) return trimmed;
+  }
+  return DEFAULT_THEME_ID;
+}
+
 function readUnifiedUserPreferences(): PersistedUserPreferences | null {
   try {
     const raw = window.localStorage.getItem(USER_PREFERENCES_STORAGE_KEY);
@@ -1017,6 +1044,8 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
     const parsed = JSON.parse(raw) as Partial<PersistedUserPreferences>;
     return {
       theme: coerceTheme(parsed.theme) ?? "dark",
+      themeId: coerceThemeId(parsed.themeId ?? parsed.theme),
+      customThemes: normalizeAdeThemeList(parsed.customThemes),
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
       // Detailed tooltips are an onboarding aid that defaults OFF in the browser
       // web client (clutter for an already oriented user), and ON on desktop. An
@@ -1069,6 +1098,8 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
   }
   return {
     theme,
+    themeId: theme,
+    customThemes: [],
     terminalPreferences,
     smartTooltipsEnabled,
     launchPromptClipboardEnabled: true,
@@ -1105,6 +1136,8 @@ function persistUserPreferences(prefs: PersistedUserPreferences) {
 /** Assemble the persisted-prefs payload from current store state. Keeps setters DRY as we add prefs. */
 function persistUserPreferencesFrom(state: {
   theme: ThemeId;
+  themeId: string;
+  customThemes: AdeTheme[];
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
@@ -1126,6 +1159,8 @@ function persistUserPreferencesFrom(state: {
 }) {
   persistUserPreferences({
     theme: state.theme,
+    themeId: state.themeId,
+    customThemes: state.customThemes,
     terminalPreferences: state.terminalPreferences,
     smartTooltipsEnabled: state.smartTooltipsEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
@@ -1299,6 +1334,10 @@ export type AppState = {
   focusedSessionId: string | null;
   projectRevision: number;
   theme: ThemeId;
+  /** Active theme id: a shipped id ("dark", "obsidian", …) or a custom theme id. */
+  themeId: string;
+  /** User-authored and imported themes available to select. */
+  customThemes: AdeTheme[];
   terminalPreferences: TerminalPreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
@@ -1447,7 +1486,10 @@ export type AppState = {
   setLaneInspectorTab: (laneId: string, tab: LaneInspectorTab) => void;
   clearLaneInspectorTab: (laneId: string) => void;
   focusSession: (sessionId: string | null) => void;
-  setTheme: (theme: ThemeId) => void;
+  /** Select a theme by id; `theme` (base mode) is recomputed from it. */
+  setTheme: (themeId: string) => void;
+  /** Replace the whole custom-theme list (import / delete / rename / save). */
+  setCustomThemes: (themes: AdeTheme[]) => void;
   setCodeBlockCopyButtonPosition: (position: CodeBlockCopyButtonPosition) => void;
   setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
   setAgentTurnCompletionSoundVolume: (volume: number) => void;
@@ -1848,7 +1890,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   selectedLaneId: null,
   focusedSessionId: null,
   projectRevision: 0,
-  theme: initialUserPreferences.theme,
+  theme: baseModeForThemeId(initialUserPreferences.themeId, initialUserPreferences.customThemes),
+  themeId: initialUserPreferences.themeId,
+  customThemes: initialUserPreferences.customThemes,
   terminalPreferences: initialUserPreferences.terminalPreferences,
   codeBlockCopyButtonPosition: initialUserPreferences.codeBlockCopyButtonPosition,
   agentTurnCompletionSound: initialUserPreferences.agentTurnCompletionSound,
@@ -2285,11 +2329,21 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         },
       };
     }),
-  setTheme: (theme) =>
+  setTheme: (themeId) =>
     set((prev) => {
-      const next = { ...prev, theme };
+      const nextThemeId = coerceThemeId(themeId);
+      const theme = baseModeForThemeId(nextThemeId, prev.customThemes);
+      const next = { ...prev, theme, themeId: nextThemeId };
       persistUserPreferencesFrom(next);
-      return { theme };
+      return { theme, themeId: nextThemeId };
+    }),
+  setCustomThemes: (themes) =>
+    set((prev) => {
+      const customThemes = normalizeAdeThemeList(themes);
+      const theme = baseModeForThemeId(prev.themeId, customThemes);
+      const next = { ...prev, theme, customThemes };
+      persistUserPreferencesFrom(next);
+      return { theme, customThemes };
     }),
   setCodeBlockCopyButtonPosition: (position) =>
     set((prev) => {
@@ -2377,10 +2431,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({
         ...prev,
         theme: nextTheme,
+        themeId: DEFAULT_THEME_ID,
         chatFontSizePx: nextFont,
         userOverrodeChatFontSize: false,
       });
-      return { theme: nextTheme, chatFontSizePx: nextFont, userOverrodeChatFontSize: false };
+      return { theme: nextTheme, themeId: DEFAULT_THEME_ID, chatFontSizePx: nextFont, userOverrodeChatFontSize: false };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {
@@ -3238,6 +3293,8 @@ export function createProjectAppStore(
     isNewTabOpen: false,
     personalChatsTabOpen: false,
     theme: rootState.theme,
+    themeId: rootState.themeId,
+    customThemes: rootState.customThemes,
     terminalPreferences: rootState.terminalPreferences,
     codeBlockCopyButtonPosition: rootState.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: rootState.agentTurnCompletionSound,
@@ -3256,6 +3313,7 @@ export function createProjectAppStore(
     promptStashButtonEnabled: rootState.promptStashButtonEnabled,
     voiceInputEnabled: rootState.voiceInputEnabled,
     setTheme: rootState.setTheme,
+    setCustomThemes: rootState.setCustomThemes,
     setTerminalPreferences: rootState.setTerminalPreferences,
     setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
     setAgentTurnCompletionSound: rootState.setAgentTurnCompletionSound,

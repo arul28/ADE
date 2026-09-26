@@ -790,7 +790,12 @@ Renderer — settings:
   and writes local user preferences through `appStore` (font size,
   transcript density, chrome tint, shell geometry, user minimap, and the
   default-on prompt-stash bookmark visibility; hiding the bookmark leaves
-  Cmd/Ctrl+S active).
+  Cmd/Ctrl+S active). The Theme card renders the `ThemeGallery` picker
+  (`components/settings/ThemeGallery.tsx` + `ThemePreview.tsx`) instead of a
+  two-swatch toggle; the theme format, engine and shipped library live in
+  `apps/desktop/src/shared/theme/` and are applied by
+  `apps/desktop/src/renderer/theme/applyTheme.ts`. See
+  [design/theming.md](../../design/theming.md).
 - `apps/desktop/src/renderer/components/settings/DictationSection.tsx`
   — voice input settings. Persists `voiceInputEnabled`, shows whether
   the bundled on-device transcription model is installed, and gates the

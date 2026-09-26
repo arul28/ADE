@@ -1,7 +1,6 @@
-import React, { useState } from "react";
+import React from "react";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
-  THEME_IDS,
   useAppStore,
 } from "../../state/appStore";
 import type {
@@ -9,7 +8,6 @@ import type {
   ChatShellGeometry,
   ChatTranscriptDensity,
   CodeBlockCopyButtonPosition,
-  ThemeId,
 } from "../../state/appStore";
 import {
   TERMINAL_FONT_FAMILY_OPTIONS,
@@ -24,6 +22,7 @@ import {
   SettingsSelect,
 } from "./primitives";
 import { AppleDevicesSection } from "./AppleDevicesSection";
+import { ThemeGallery } from "./ThemeGallery";
 
 /**
  * Appearance settings.
@@ -32,123 +31,6 @@ import { AppleDevicesSection } from "./AppleDevicesSection";
  * (localStorage) and the Apple keys also sync with the signed-in account,
  * same as the rest of Appearance. Writes land immediately.
  */
-
-export const THEME_META: Record<
-  ThemeId,
-  {
-    label: string;
-    description: string;
-    colors: { bg: string; fg: string; accent: string; card: string; border: string };
-  }
-> = {
-  dark: {
-    label: "Dark",
-    description: "Dark surfaces, cool violet accent.",
-    colors: { bg: "#0f0f11", fg: "#e4e4e7", accent: "#A78BFA", card: "#18181b", border: "#27272a" },
-  },
-  light: {
-    label: "Light",
-    description: "Light background, saturated violet accent.",
-    colors: { bg: "#f5f5f6", fg: "#0f0f11", accent: "#7C3AED", card: "#ffffff", border: "#d4d4d8" },
-  },
-};
-
-export function ThemeSwatch({
-  themeId,
-  selected,
-  onClick,
-}: {
-  themeId: ThemeId;
-  selected: boolean;
-  onClick: () => void;
-}) {
-  const { label, description, colors } = THEME_META[themeId];
-  const [hovered, setHovered] = useState(false);
-
-  return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 12,
-        padding: 12,
-        flex: 1,
-        minWidth: 0,
-        textAlign: "left",
-        background: selected
-          ? "color-mix(in srgb, var(--color-accent) 10%, transparent)"
-          : hovered
-            ? COLORS.hoverBg
-            : COLORS.recessedBg,
-        border: `1px solid ${selected ? COLORS.accent : hovered ? COLORS.outlineBorder : COLORS.borderMuted}`,
-        borderRadius: 10,
-        cursor: "pointer",
-        transition: "border-color 150ms, background 150ms",
-      }}
-    >
-      {/* Miniature of the theme: title bar, accent, two text lines. */}
-      <span
-        aria-hidden
-        style={{
-          width: 60,
-          height: 42,
-          flexShrink: 0,
-          background: colors.bg,
-          border: `1px solid ${colors.border}`,
-          borderRadius: 6,
-          overflow: "hidden",
-          display: "block",
-        }}
-      >
-        <span style={{ display: "block", height: 8, background: colors.card }} />
-        <span
-          style={{
-            display: "block",
-            width: 32,
-            height: 3,
-            margin: "6px auto 0",
-            background: colors.accent,
-            borderRadius: 2,
-          }}
-        />
-        <span style={{ display: "block", margin: "5px 6px 0" }}>
-          <span style={{ display: "block", height: 2, width: 30, background: colors.fg, opacity: 0.4, borderRadius: 1 }} />
-          <span style={{ display: "block", height: 2, width: 20, marginTop: 3, background: colors.fg, opacity: 0.25, borderRadius: 1 }} />
-        </span>
-      </span>
-
-      <span style={{ minWidth: 0 }}>
-        <span
-          style={{
-            display: "block",
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            fontWeight: 600,
-            color: selected ? COLORS.accent : COLORS.textPrimary,
-          }}
-        >
-          {label}
-        </span>
-        <span
-          style={{
-            display: "block",
-            marginTop: 2,
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            color: COLORS.textMuted,
-          }}
-        >
-          {description}
-        </span>
-      </span>
-    </button>
-  );
-}
 
 export const COPY_POSITION_META: Record<CodeBlockCopyButtonPosition, { label: string; hint: string }> = {
   top: { label: "Top", hint: "Pinned to the corner" },
@@ -174,8 +56,6 @@ export const SHELL_GEOMETRY_LABEL: Record<ChatShellGeometry, string> = {
 };
 
 export function AppearanceSection() {
-  const theme = useAppStore((s) => s.theme);
-  const setTheme = useAppStore((s) => s.setTheme);
   const resetThemeAndChatFontDefaults = useAppStore((s) => s.resetThemeAndChatFontDefaults);
 
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
@@ -196,18 +76,14 @@ export function AppearanceSection() {
               type="button"
               onClick={() => resetThemeAndChatFontDefaults()}
               style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
-              title="Sets theme to dark and chat font to 14px. Density, tint, and geometry stay as set."
+              title="Sets the theme to ADE Dark and chat font to 14px. Density, tint, and geometry stay as set."
             >
               Restore defaults
             </button>
           }
           stacked
         >
-          <div style={{ display: "flex", gap: 10 }}>
-            {THEME_IDS.map((id) => (
-              <ThemeSwatch key={id} themeId={id} selected={theme === id} onClick={() => setTheme(id)} />
-            ))}
-          </div>
+          <ThemeGallery />
         </SettingsCard>
       </SettingsGroup>
 
