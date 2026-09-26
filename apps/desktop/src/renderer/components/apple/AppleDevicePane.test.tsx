@@ -838,3 +838,40 @@ describe("AppleDevicePane after a restart (owner's 2026-09-23 reports)", () => {
     await waitFor(() => expect(paneState()).toBe("stopped"));
   });
 });
+
+/* ── Duo capability gate ──────────────────────────────────────────────────── */
+
+describe("AppleDevicePane Duo capability gate", () => {
+  const NON_FOLDABLE = {
+    ...PRO,
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro",
+  };
+  const FOLDABLE = {
+    ...PRO,
+    deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-Duo",
+  };
+
+  it("keeps the rigid body for a non-foldable device whose clone name says duo", async () => {
+    // A clone is named "ADE · <lane>", so a lane called "duo-hinge" must not be
+    // mistaken for a foldable simulator: the type identifier is the only truth.
+    setup({
+      lane: { ...LANE_DEVICE, name: "ADE · duo-hinge" },
+      installed: [NON_FOLDABLE, MAX],
+      stream: "live",
+    });
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(stage.props?.duo).toBeUndefined();
+  });
+
+  it("enables the articulated body when the type identifier reports Duo", async () => {
+    setup({
+      lane: { ...LANE_DEVICE, name: "ADE · main" },
+      installed: [FOLDABLE, MAX],
+      stream: "live",
+    });
+    renderPane();
+    await waitFor(() => expect(paneState()).toBe("live"));
+    expect(stage.props?.duo).toMatchObject({ enabled: true });
+  });
+});
