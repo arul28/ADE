@@ -58,7 +58,25 @@ type OpenCodeServerLaunchArgs = {
   config: OpenCodeConfig;
   /** Keep user/project OpenCode config available when the caller is not a lead. */
   isolatedConfig?: boolean;
+  /** Where the server's data/state/cache live. See {@link OpenCodeDataHome}. */
+  dataHome?: OpenCodeDataHome;
 };
+
+/**
+ * Which OpenCode data home a managed server writes.
+ *
+ * ADE-managed servers default to `"ade"`: their `opencode.db`, snapshots,
+ * tool-output and logs live under ADE's own runtime root, so ADE chats stop
+ * growing the user's personal OpenCode store (which reached 12.5 GB on one real
+ * machine, 88% of it `message.updated` event snapshots) and stop sharing a
+ * database with the user's own OpenCode install. The user's provider auth is
+ * seeded in, so login keeps working.
+ *
+ * `"user"` is the compatibility path for a session whose `providerSessionId`
+ * only exists in the user's store: ADE opens that one session there rather than
+ * silently starting a fresh, empty session. New sessions never use it.
+ */
+export type OpenCodeDataHome = "ade" | "user";
 
 type OpenCodeIsolationPaths = {
   root: string;
@@ -113,6 +131,7 @@ type OpenCodeServerEntry = {
   ownerId: string | null;
   configFingerprint: string;
   isolatedConfig: boolean;
+  dataHome: OpenCodeDataHome;
   server: OpenCodeServerInstance;
   idleTtlMs: number | null;
   idleTimer: ReturnType<typeof setTimeout> | null;
@@ -783,11 +802,15 @@ function mergeOpenCodeConfig(
   return merged;
 }
 
-function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = userProcessEnv();
-  // ADE resolves and pins the OpenCode binary, so its updater must stay off.
-  // OpenCode's dedicated env var does this without occupying a config key.
-  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
+/**
+ * Layer ADE's generated config onto whatever the environment already carries.
+ *
+ * `OPENCODE_CONFIG_CONTENT` merges last, so ADE's keys must be unioned into an
+ * inherited user value rather than replacing it — except that a malformed user
+ * value is preserved untouched: OpenCode reports the parse error to the user,
+ * and turning an invalid setting into a different, valid one would hide it.
+ */
+function assignOpenCodeConfigContent(env: NodeJS.ProcessEnv, config: OpenCodeConfig): NodeJS.ProcessEnv {
   const inheritedContent = env.OPENCODE_CONFIG_CONTENT?.trim();
   if (inheritedContent) {
     try {
@@ -798,16 +821,90 @@ function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
       );
       return addUserOpenCodeOwnershipMarkers(env);
     } catch {
-      // Preserve malformed user content rather than silently replacing a user
-      // setting. OpenCode will report the parse error to the user, and ADE must
-      // not turn an invalid setting into a different, valid configuration.
       return addUserOpenCodeOwnershipMarkers(env);
     }
   }
-  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(
-    config as Record<string, unknown>,
-  );
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config as Record<string, unknown>);
   return addUserOpenCodeOwnershipMarkers(env);
+}
+
+function buildUserOpenCodeEnv(config: OpenCodeConfig): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = userProcessEnv();
+  // ADE resolves and pins the OpenCode binary, so its updater must stay off.
+  // OpenCode's dedicated env var does this without occupying a config key.
+  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
+  return assignOpenCodeConfigContent(env, config);
+}
+
+/**
+ * The env for an ADE-owned server: the user's config still loads and their
+ * `OPENCODE_*` overrides survive, but the data/state/cache homes are forced to
+ * ADE's runtime root. These three are overridden rather than inherited because
+ * they ARE the ownership guarantee — inheriting a user `XDG_DATA_HOME` would
+ * put ADE chat traffic straight back into the user's personal OpenCode store,
+ * which is the bug this exists to fix.
+ */
+export function buildOwnedOpenCodeEnv(
+  config: OpenCodeConfig,
+  paths: OpenCodeIsolationPaths,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = userProcessEnv();
+  env.XDG_DATA_HOME = paths.dataHome;
+  env.XDG_STATE_HOME = paths.stateHome;
+  env.XDG_CACHE_HOME = paths.cacheHome;
+  env.OPENCODE_DISABLE_AUTOUPDATE = "1";
+  return assignOpenCodeConfigContent(env, config);
+}
+
+/**
+ * `XDG_DATA_HOME`-style location of the USER's OpenCode data root, matching
+ * OpenCode's xdg-basedir resolution on each platform. Used to seed the owned
+ * home's auth and by the maintenance command's `--store user` target.
+ */
+export function resolveUserOpenCodeDataRoot(env: NodeJS.ProcessEnv = process.env): string | null {
+  const configured = env.XDG_DATA_HOME?.trim();
+  if (configured) return path.resolve(configured, "opencode");
+  const homeDir = env.HOME?.trim() || os.homedir().trim();
+  if (process.platform === "win32") {
+    const localAppData = env.LOCALAPPDATA?.trim()
+      || (homeDir ? path.join(homeDir, "AppData", "Local") : "");
+    return localAppData ? path.join(localAppData, "opencode") : null;
+  }
+  return homeDir ? path.join(homeDir, ".local", "share", "opencode") : null;
+}
+
+/** The user's `auth.json`, whether or not it exists. */
+export function resolveUserOpenCodeAuthPath(env: NodeJS.ProcessEnv = process.env): string | null {
+  const root = resolveUserOpenCodeDataRoot(env);
+  return root ? path.join(root, "auth.json") : null;
+}
+
+/**
+ * Copy the user's provider auth into an ADE-owned data root once.
+ *
+ * Never overwrites an existing file: after the first launch the owned copy is
+ * the live credential store (OAuth refresh rewrites it), and copying over it
+ * would resurrect a stale refresh token. Seeding only when absent is what makes
+ * "reuse the user's auth so login still works" and "never touch the user's
+ * store" true at the same time.
+ */
+function seedOwnedOpenCodeAuth(paths: OpenCodeIsolationPaths): void {
+  try {
+    const target = path.join(paths.dataHome, "opencode", "auth.json");
+    if (fs.existsSync(target)) return;
+    const source = resolveUserOpenCodeAuthPath();
+    if (!source || !fs.existsSync(source)) return;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+    try {
+      fs.chmodSync(target, 0o600);
+    } catch {
+      // Best effort; Windows ACLs do not map onto POSIX modes.
+    }
+  } catch {
+    // A missing auth seed is not fatal: config-provided API keys still work and
+    // the user can sign in from Settings, which writes the owned store.
+  }
 }
 
 function isStringArray(value: unknown): value is string[] {
@@ -1148,10 +1245,19 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
   }
   const xdgPaths = resolveOpenCodeIsolationPaths();
   const isolatedConfig = args.isolatedConfig === true;
-  if (isolatedConfig) ensureOpenCodeIsolationDirs(xdgPaths);
+  const dataHome = args.dataHome ?? "ade";
+  if (isolatedConfig || dataHome === "ade") {
+    ensureOpenCodeIsolationDirs(xdgPaths);
+    // Reuse the user's provider auth in the owned home without ever writing
+    // their store. A copy (not a symlink) so OAuth refresh lands in ADE's home
+    // and cannot mutate the credentials the user's own OpenCode is holding.
+    seedOwnedOpenCodeAuth(xdgPaths);
+  }
   const env = isolatedConfig
     ? buildIsolatedOpenCodeEnv(args.config, xdgPaths)
-    : buildUserOpenCodeEnv(args.config);
+    : dataHome === "user"
+      ? buildUserOpenCodeEnv(args.config)
+      : buildOwnedOpenCodeEnv(args.config, xdgPaths);
   // Only shim through cmd.exe when the resolved target actually needs it (a
   // `.cmd`/`.bat` shim, or an extensionless file), matching
   // {@link shouldUseWindowsCmdWrapper} — the policy every other ADE CLI launch
@@ -1301,7 +1407,7 @@ function parseOpenCodeServerListenUrl(line: string): string | null {
 
 async function createOpencodeServerWithRetry(
   config: OpenCodeConfig,
-  options: { isolatedConfig: boolean },
+  options: { isolatedConfig: boolean; dataHome: OpenCodeDataHome },
 ): Promise<OpenCodeServerInstance> {
   const binaryPath = resolveOpenCodeBinaryPath();
   let lastError: unknown;
@@ -1315,6 +1421,7 @@ async function createOpencodeServerWithRetry(
         port,
         config,
         isolatedConfig: options.isolatedConfig,
+        dataHome: options.dataHome,
       });
     } catch (error) {
       protectedLaunchPorts.delete(port);
@@ -1474,10 +1581,11 @@ async function createEntry(args: {
   config: OpenCodeConfig;
   configFingerprint: string;
   isolatedConfig: boolean;
+  dataHome: OpenCodeDataHome;
   idleTtlMs?: number | null;
   logger?: Logger | null;
 }): Promise<OpenCodeServerEntry> {
-  const inflightKey = `${args.leaseKind}:${args.key}:${args.configFingerprint}:${args.isolatedConfig ? "isolated" : "user"}`;
+  const inflightKey = `${args.leaseKind}:${args.key}:${args.configFingerprint}:${args.isolatedConfig ? "isolated" : "user"}:${args.dataHome}`;
   const existingPromise = inFlightEntries.get(inflightKey);
   if (existingPromise) return await existingPromise;
 
@@ -1485,6 +1593,7 @@ async function createEntry(args: {
     await recoverManagedOpenCodeOrphans({ logger: args.logger });
     const server = await createOpencodeServerWithRetry(args.config, {
       isolatedConfig: args.isolatedConfig,
+      dataHome: args.dataHome,
     });
     const entry: OpenCodeServerEntry = {
       id: randomUUID(),
@@ -1494,6 +1603,7 @@ async function createEntry(args: {
       ownerId: args.ownerId?.trim() || null,
       configFingerprint: args.configFingerprint,
       isolatedConfig: args.isolatedConfig,
+      dataHome: args.dataHome,
       server,
       idleTtlMs: args.leaseKind === "shared" ? args.idleTtlMs ?? DEFAULT_SHARED_IDLE_TTL_MS : null,
       idleTimer: null,
@@ -1520,15 +1630,22 @@ export async function acquireSharedOpenCodeServer(args: {
   ownerId?: string | null;
   idleTtlMs?: number | null;
   isolatedConfig?: boolean;
+  dataHome?: OpenCodeDataHome;
   logger?: Logger | null;
 }): Promise<OpenCodeServerLease> {
   const configFingerprint = serializeConfigFingerprint(args.config);
   const isolatedConfig = args.isolatedConfig === true;
+  const dataHome = args.dataHome ?? "ade";
   const key = args.key?.trim() || configFingerprint;
   return await withAcquireLock(`shared:${key}`, async () => {
     while (true) {
       const existing = sharedEntries.get(key);
-      if (existing && existing.configFingerprint === configFingerprint && existing.isolatedConfig === isolatedConfig) {
+      if (
+        existing
+        && existing.configFingerprint === configFingerprint
+        && existing.isolatedConfig === isolatedConfig
+        && existing.dataHome === dataHome
+      ) {
         clearIdleTimer(existing);
         existing.refCount += 1;
         existing.lastUsedAt = Date.now();
@@ -1556,10 +1673,15 @@ export async function acquireSharedOpenCodeServer(args: {
         config: args.config,
         configFingerprint,
         isolatedConfig,
+        dataHome,
         idleTtlMs: args.idleTtlMs,
         logger: args.logger,
       });
-      if (entry.configFingerprint !== configFingerprint || entry.isolatedConfig !== isolatedConfig) {
+      if (
+        entry.configFingerprint !== configFingerprint
+        || entry.isolatedConfig !== isolatedConfig
+        || entry.dataHome !== dataHome
+      ) {
         unprotectLaunchPortForUrl(entry.server.url);
         shutdownEntry(entry, "config_changed", args.logger);
         continue;
@@ -1579,6 +1701,7 @@ export async function acquireDedicatedOpenCodeServer(args: {
   ownerKind: OpenCodeServerOwnerKind;
   ownerId?: string | null;
   isolatedConfig?: boolean;
+  dataHome?: OpenCodeDataHome;
   logger?: Logger | null;
 }): Promise<OpenCodeServerLease> {
   const ownerKey = args.ownerKey.trim();
@@ -1587,10 +1710,16 @@ export async function acquireDedicatedOpenCodeServer(args: {
   }
   const configFingerprint = serializeConfigFingerprint(args.config);
   const isolatedConfig = args.isolatedConfig === true;
+  const dataHome = args.dataHome ?? "ade";
   return await withAcquireLock(`dedicated:${ownerKey}`, async () => {
     while (true) {
       const existing = dedicatedEntries.get(ownerKey);
-      if (existing && existing.configFingerprint === configFingerprint && existing.isolatedConfig === isolatedConfig) {
+      if (
+        existing
+        && existing.configFingerprint === configFingerprint
+        && existing.isolatedConfig === isolatedConfig
+        && existing.dataHome === dataHome
+      ) {
         existing.refCount += 1;
         existing.lastUsedAt = Date.now();
         logRuntimeEvent(args.logger, "opencode.server_reused", existing, { refCount: existing.refCount });
@@ -1617,9 +1746,14 @@ export async function acquireDedicatedOpenCodeServer(args: {
         config: args.config,
         configFingerprint,
         isolatedConfig,
+        dataHome,
         logger: args.logger,
       });
-      if (entry.configFingerprint !== configFingerprint || entry.isolatedConfig !== isolatedConfig) {
+      if (
+        entry.configFingerprint !== configFingerprint
+        || entry.isolatedConfig !== isolatedConfig
+        || entry.dataHome !== dataHome
+      ) {
         unprotectLaunchPortForUrl(entry.server.url);
         shutdownEntry(entry, "config_changed", args.logger);
         continue;

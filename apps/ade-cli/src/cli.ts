@@ -38,6 +38,12 @@ import {
   runDoctorCommand,
   type DoctorRow,
 } from "./commands/doctor";
+import {
+  OpenCodeCleanupUsageError,
+  openCodeCleanupText,
+  runOpenCodeCleanupCommand,
+} from "./commands/openCodeCleanup";
+import { parseOpenCodeStoreDuration } from "./services/opencode/openCodeStoreMaintenance";
 import { formatProxyStatus } from "./commands/proxy";
 import {
   buildCliDiagnosticReport,
@@ -446,6 +452,7 @@ type InvocationStep = {
 export type FormatterId =
   | "status"
   | "doctor"
+  | "opencode-cleanup"
   | "brain-status"
   | "auth"
   | "account-auth"
@@ -651,6 +658,14 @@ export type CliPlan =
   | { kind: "setup"; rest: string[] }
   | { kind: "connect"; rest: string[] }
   | { kind: "doctor"; online: boolean }
+  | {
+      kind: "opencode-cleanup";
+      store: string;
+      olderThan: string;
+      apply: boolean;
+      vacuum: boolean;
+      force: boolean;
+    }
   | { kind: "report-issue"; open: boolean; send: boolean }
   | { kind: "triage"; agent: boolean; provider: TriageProviderName | null }
   | { kind: "serve"; rest: string[] }
@@ -2880,6 +2895,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade storage actions --text                    List raw storage service actions
     $ ade storage action cleanupPreview --input-json '{"targets":[...]}'   Preview a target-scoped cleanup
     $ ade --role cto storage action cleanup --input-json '{"targets":[...],"preview":{...}}'   Delete previewed targets (CTO)
+
+  OpenCode stores are pruned separately, because they are OpenCode's SQLite
+  database rather than ADE's. Its append-only event log snapshots whole messages
+  (patches included), which is why one real store reached 12.5 GB. Pruning
+  deletes whole sessions older than the cutoff, event log included, and reports
+  what was freed. It is a dry run unless --apply, and ADE's own store is the
+  default target: the user's personal store is only touched with an explicit
+  --store user. VACUUM (the only thing that shrinks the file) needs no server
+  writing the store; run it while OpenCode/ADE chats are closed.
+
+    $ ade storage opencode --text                         Preview pruning ADE's store (sessions older than 14d)
+    $ ade storage opencode --older-than 30d --text        A different cutoff (m/h/d/w)
+    $ ade storage opencode --apply --vacuum --text        Delete and shrink, with no writer running
+    $ ade storage opencode --store user --older-than 30d --text   Preview the user's own OpenCode store
 `,
   providers: `${ADE_BANNER}
   Provider accounts on this machine
@@ -14667,8 +14696,24 @@ function buildStoragePlan(args: string[]): CliPlan {
       steps: [actionStep("result", "storage", "runMaintenanceNow", {})],
     };
   }
+  if (sub === "opencode") {
+    // Prunes whole old sessions from an OpenCode store. This runs against a
+    // SQLite file on disk, not through the daemon action bridge: the store is
+    // user/ADE-home state and the command must work when no brain is running.
+    // Dry-run unless --apply; ADE's owned store is the default target.
+    const store = readCommandTextValue(args, ["--store"]) ?? "ade";
+    const olderThan = readCommandTextValue(args, ["--older-than", "--older"]) ?? "14d";
+    return {
+      kind: "opencode-cleanup",
+      store,
+      olderThan,
+      apply: readFlag(args, ["--apply"]),
+      vacuum: readFlag(args, ["--vacuum"]),
+      force: readFlag(args, ["--force"]),
+    };
+  }
   throw new CliUsageError(
-    "storage supports snapshot, compress, maintenance, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
+    "storage supports snapshot, compress, maintenance, opencode, actions, or action <name>. Use 'ade actions run storage.cleanupPreview' / 'storage.cleanup' for target-scoped cleanup.",
   );
 }
 
@@ -26814,6 +26859,8 @@ function formatTextOutput(
       ]);
     case "brain-status":
       return formatBrainStatus(value);
+    case "opencode-cleanup":
+      return openCodeCleanupText(isRecord(value) ? value : {});
     case "doctor": {
       const doctorRows = isRecord(value) && Array.isArray(value.rows)
         ? value.rows.filter(isRecord)
@@ -28992,6 +29039,30 @@ async function runCli(
         output: formatOutput(payload, parsed.options, undefined),
         exitCode,
       };
+    }
+    if (plan.kind === "opencode-cleanup") {
+      let olderThanMs: number;
+      try {
+        olderThanMs = parseOpenCodeStoreDuration(plan.olderThan);
+      } catch (error) {
+        throw new CliUsageError(error instanceof Error ? error.message : String(error));
+      }
+      try {
+        const result = await runOpenCodeCleanupCommand({
+          store: plan.store,
+          olderThanMs,
+          apply: plan.apply,
+          vacuum: plan.vacuum,
+          force: plan.force,
+        });
+        return {
+          output: formatOutput(result, parsed.options, "opencode-cleanup"),
+          exitCode: 0,
+        };
+      } catch (error) {
+        if (error instanceof OpenCodeCleanupUsageError) throw new CliUsageError(error.message);
+        throw error;
+      }
     }
     if (plan.kind === "doctor") {
       const result = await runDoctorCommand(plan.online, parsed.options, {
