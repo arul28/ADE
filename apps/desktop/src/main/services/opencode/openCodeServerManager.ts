@@ -9,6 +9,13 @@ import type { Logger } from "../logging/logger";
 import { stableStringify } from "../shared/utils";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import {
+  ADE_OPENCODE_XDG_LAYOUT_VERSION,
+  resolveAdeOpenCodeIsolationPaths,
+  resolveAdeOpenCodeRuntimeRoot,
+  type OpenCodeIsolationPaths,
+  resolveUserOpenCodeAuthPath,
+} from "../../../shared/opencodeDataHome";
+import {
   killWindowsProcessTree,
   quoteWindowsCmdArg,
   resolveWindowsCmdLineInvocation,
@@ -77,15 +84,6 @@ type OpenCodeServerLaunchArgs = {
  * silently starting a fresh, empty session. New sessions never use it.
  */
 export type OpenCodeDataHome = "ade" | "user";
-
-type OpenCodeIsolationPaths = {
-  root: string;
-  configHome: string;
-  dataHome: string;
-  stateHome: string;
-  cacheHome: string;
-  runtimeDir: string;
-};
 
 type OpenCodeServeLaunchSpec = {
   executable: string;
@@ -170,7 +168,6 @@ const DEFAULT_SHARED_IDLE_TTL_MS = 15_000;
 const MAX_DEDICATED_OPENCODE_SERVERS = 6;
 const OPEN_CODE_SERVER_START_TIMEOUT_MS = 15_000;
 const ORPHAN_RECOVERY_TERM_GRACE_MS = 250;
-const ADE_OPENCODE_XDG_LAYOUT_VERSION = 1;
 const ADE_OPENCODE_MANAGED_ENV = "ADE_OPENCODE_MANAGED";
 const ADE_OPENCODE_OWNER_PID_ENV = "ADE_OPENCODE_OWNER_PID";
 
@@ -690,58 +687,41 @@ function terminateOpenCodeServerProcesses(proc: ChildProcess, listenerPid: numbe
   stopChildProcess(proc);
 }
 
-function resolveAdeManagedOpenCodeRoot(): string {
-  const override = process.env.ADE_OPENCODE_XDG_ROOT?.trim();
-  if (override) return path.resolve(override);
+/**
+ * Roots an older ADE could have written before the shared resolver existed.
+ *
+ * Orphan recovery must still reap a server launched under Electron `userData`;
+ * no live code resolves a data home there any more (see
+ * `shared/opencodeDataHome.ts` for why that split was a bug).
+ */
+function resolveLegacyManagedOpenCodeRoots(current: string): string[] {
+  const roots: string[] = [];
   try {
     const electron = require("electron") as ElectronLikeModule;
     const userDataPath = electron.app?.getPath?.("userData");
     if (typeof userDataPath === "string" && userDataPath.trim().length > 0) {
-      return path.resolve(userDataPath, "opencode-runtime");
+      roots.push(path.resolve(userDataPath, "opencode-runtime"));
     }
   } catch {
-    // Ignore when running outside Electron, such as unit tests.
+    // Not running under Electron.
   }
+  // A brain launched with ADE_HOME (or the XDG override) elsewhere may still
+  // have old servers under the plain home root; Windows cannot see their env,
+  // so the registry scan must know the path. This is the only way they get
+  // reaped after an upgrade.
   const homeDir = os.homedir().trim();
-  if (homeDir.length > 0) {
-    return path.resolve(homeDir, ".ade", "opencode-runtime");
-  }
-  return path.resolve(os.tmpdir(), "ade-opencode-runtime");
-}
-
-function resolveHomeManagedOpenCodeRoot(): string | null {
-  const homeDir = os.homedir().trim();
-  if (!homeDir.length) return null;
-  return path.resolve(homeDir, ".ade", "opencode-runtime");
+  if (homeDir.length > 0) roots.push(path.resolve(homeDir, ".ade", "opencode-runtime"));
+  return roots.filter((root) => path.resolve(root) !== path.resolve(current));
 }
 
 function resolveKnownAdeManagedOpenCodeRoots(): string[] {
-  const roots = new Set<string>();
-  roots.add(resolveAdeManagedOpenCodeRoot());
-  const homeRoot = resolveHomeManagedOpenCodeRoot();
-  if (homeRoot) roots.add(homeRoot);
+  const current = resolveAdeOpenCodeRuntimeRoot();
+  const roots = new Set<string>([current]);
+  for (const legacy of resolveLegacyManagedOpenCodeRoots(current)) roots.add(legacy);
   return [...roots];
 }
 
-function resolveOpenCodeIsolationPaths(): OpenCodeIsolationPaths {
-  const root = path.join(
-    resolveAdeManagedOpenCodeRoot(),
-    `xdg-v${ADE_OPENCODE_XDG_LAYOUT_VERSION}`,
-  );
-  return {
-    root,
-    configHome: path.join(root, "config"),
-    dataHome: path.join(root, "data"),
-    stateHome: path.join(root, "state"),
-    cacheHome: path.join(root, "cache"),
-    runtimeDir: path.join(root, "runtime"),
-  };
-}
 
-/** `XDG_DATA_HOME` of an isolated (strict-config) server; its `opencode/` holds that server's `auth.json` and `opencode.db`. */
-export function resolveOpenCodeIsolatedDataHome(): string {
-  return resolveOpenCodeIsolationPaths().dataHome;
-}
 
 function ensureOpenCodeIsolationDirs(paths: OpenCodeIsolationPaths): void {
   for (const dir of [
@@ -854,29 +834,6 @@ export function buildOwnedOpenCodeEnv(
   env.XDG_CACHE_HOME = paths.cacheHome;
   env.OPENCODE_DISABLE_AUTOUPDATE = "1";
   return assignOpenCodeConfigContent(env, config);
-}
-
-/**
- * `XDG_DATA_HOME`-style location of the USER's OpenCode data root, matching
- * OpenCode's xdg-basedir resolution on each platform. Used to seed the owned
- * home's auth and by the maintenance command's `--store user` target.
- */
-export function resolveUserOpenCodeDataRoot(env: NodeJS.ProcessEnv = process.env): string | null {
-  const configured = env.XDG_DATA_HOME?.trim();
-  if (configured) return path.resolve(configured, "opencode");
-  const homeDir = env.HOME?.trim() || os.homedir().trim();
-  if (process.platform === "win32") {
-    const localAppData = env.LOCALAPPDATA?.trim()
-      || (homeDir ? path.join(homeDir, "AppData", "Local") : "");
-    return localAppData ? path.join(localAppData, "opencode") : null;
-  }
-  return homeDir ? path.join(homeDir, ".local", "share", "opencode") : null;
-}
-
-/** The user's `auth.json`, whether or not it exists. */
-export function resolveUserOpenCodeAuthPath(env: NodeJS.ProcessEnv = process.env): string | null {
-  const root = resolveUserOpenCodeDataRoot(env);
-  return root ? path.join(root, "auth.json") : null;
 }
 
 /**
@@ -996,7 +953,7 @@ function managedServerRegistryDirs(): string[] {
 
 function managedServerRecordPath(pid: number): string {
   return path.join(
-    resolveOpenCodeIsolationPaths().runtimeDir,
+    resolveAdeOpenCodeIsolationPaths().runtimeDir,
     "servers",
     `${pid}.json`,
   );
@@ -1243,7 +1200,7 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
   if (!executable) {
     throw new Error("OpenCode executable is not available.");
   }
-  const xdgPaths = resolveOpenCodeIsolationPaths();
+  const xdgPaths = resolveAdeOpenCodeIsolationPaths();
   const isolatedConfig = args.isolatedConfig === true;
   const dataHome = args.dataHome ?? "ade";
   if (isolatedConfig || dataHome === "ade") {

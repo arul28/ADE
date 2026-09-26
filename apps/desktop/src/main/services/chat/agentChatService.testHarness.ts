@@ -512,13 +512,6 @@ vi.mock("../opencode/openCodeRuntime", () => {
     { type: "text", text: prompt },
     ...files,
   ]),
-  // The v2 steer input's file shape; only the inline steer path calls this.
-  buildOpenCodeV2PromptAttachments: vi.fn(
-    (files: Array<{ path: string; filename?: string }>) => files.map((file) => ({
-      uri: `file://${file.path}`,
-      name: file.filename ?? file.path,
-    })),
-  ),
   mapPermissionModeToOpenCodeAgent: vi.fn((mode: string) => {
     if (mode === "plan") return "ade-plan";
     if (mode === "full-auto") return "ade-full-auto";

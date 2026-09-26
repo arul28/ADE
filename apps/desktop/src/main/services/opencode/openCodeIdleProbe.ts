@@ -30,6 +30,13 @@ export type OpenCodeIdleProbeDeps<TEvent> = {
   makeIdleEvent: (sessionID: string) => TEvent;
   /** How long the stream may stay silent before a probe. */
   quietMs: number;
+  /**
+   * How long one status probe may take before it counts as unusable. A server
+   * that accepts the connection but never answers would otherwise park the
+   * generator in `await probe()` and the turn would never end — the exact
+   * unbounded wait this wrapper exists to remove. Defaults to 10s.
+   */
+  probeTimeoutMs?: number;
   onSynthesized?: (sessionIDs: readonly string[]) => void;
   /**
    * Consecutive probes that failed outright or answered with nothing usable
@@ -72,8 +79,22 @@ export async function* withOpenCodeIdleProbe<TEvent>(
   const setTimer = deps.setTimer ?? defaultSetTimer;
   const synthesized = new Set<string>();
   const probeFailureLimit = Math.max(1, deps.probeFailureLimit ?? 3);
+  const probeTimeoutMs = Math.max(1, deps.probeTimeoutMs ?? 10_000);
   let consecutiveProbeFailures = 0;
   let pending: Promise<IteratorResult<TEvent>> | null = null;
+  /** A probe that never resolves counts as unusable, like one that throws. */
+  const probeWithTimeout = async (): Promise<Record<string, OpenCodeIdleProbeStatus> | null> => {
+    let clearTimer: () => void = () => {};
+    const timedOut = new Promise<null>((resolve) => {
+      const handle = setTimer(() => resolve(null), probeTimeoutMs);
+      clearTimer = () => handle.clear();
+    });
+    try {
+      return await Promise.race([deps.probe().catch(() => null), timedOut]);
+    } finally {
+      clearTimer();
+    }
+  };
   try {
     while (true) {
       pending ??= iterator.next();
@@ -100,12 +121,7 @@ export async function* withOpenCodeIdleProbe<TEvent>(
       }
       const waiting = currentWaiting.filter((id) => !synthesized.has(id));
       if (waiting.length === 0) continue;
-      let statuses: Record<string, OpenCodeIdleProbeStatus> | null = null;
-      try {
-        statuses = await deps.probe();
-      } catch {
-        statuses = null;
-      }
+      const statuses = await probeWithTimeout();
       const idle = statuses
         ? waiting.filter((id) => (statuses?.[id] ?? "idle") === "idle")
         : [];
@@ -127,16 +143,15 @@ export async function* withOpenCodeIdleProbe<TEvent>(
       consecutiveProbeFailures += 1;
       if (consecutiveProbeFailures < probeFailureLimit) continue;
       consecutiveProbeFailures = 0;
-      const stuck = currentWaiting.filter((id) => !synthesized.has(id));
-      for (const id of stuck) synthesized.add(id);
-      deps.onProbeFailed?.(stuck);
+      for (const id of waiting) synthesized.add(id);
+      deps.onProbeFailed?.(waiting);
       if (deps.makeProbeFailureEvent) {
         // One terminal event per waited-on session: a single event would fail
         // only the first and leave the rest marked synthesized but never told,
         // which hangs the loop exactly as before.
-        for (const id of stuck) yield deps.makeProbeFailureEvent([id]);
+        for (const id of waiting) yield deps.makeProbeFailureEvent([id]);
       } else {
-        for (const id of stuck) yield deps.makeIdleEvent(id);
+        for (const id of waiting) yield deps.makeIdleEvent(id);
       }
     }
   } finally {

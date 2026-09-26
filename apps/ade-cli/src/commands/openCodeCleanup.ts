@@ -23,7 +23,7 @@ export class OpenCodeCleanupUsageError extends Error {
 
 const POINTER = "pass --apply to delete; without it this is a dry run.";
 const IN_USE =
-  "the OpenCode store is in use by a running server; quit your OpenCode chats (or the OpenCode TUI/CLI) and retry, or pass --force if you know the writer is gone";
+  "the OpenCode store is in use by a writer; quit your OpenCode chats (or the OpenCode TUI/CLI) and retry, or pass --force if you know the writer is gone";
 
 /**
  * `ade storage opencode` — prune whole old sessions from an OpenCode store.
@@ -46,11 +46,10 @@ export async function runOpenCodeCleanupCommand(
     throw error;
   }
 
-  const nowMs = Date.now();
-  const cutoffMs = nowMs - request.olderThanMs;
+  const cutoffMs = Date.now() - request.olderThanMs;
   let plan;
   try {
-    plan = planOpenCodeStorePrune({ dbPath: target.dbPath, cutoffMs, nowMs });
+    plan = planOpenCodeStorePrune({ dbPath: target.dbPath, cutoffMs });
   } catch (error) {
     if (error instanceof OpenCodeStoreError) throw new OpenCodeCleanupUsageError(error.message);
     throw error;
@@ -78,12 +77,8 @@ export async function runOpenCodeCleanupCommand(
     };
   }
 
-  const activeWriter = openCodeStoreHasActiveWriter(target.dbPath);
-  if (activeWriter && !request.force) {
+  if (openCodeStoreHasActiveWriter(target.dbPath) && !request.force) {
     throw new OpenCodeCleanupUsageError(`Refusing --apply: ${IN_USE}.`);
-  }
-  if (request.vacuum && activeWriter && !request.force) {
-    throw new OpenCodeCleanupUsageError(`Refusing --vacuum: ${IN_USE}.`);
   }
 
   const result = applyOpenCodeStorePrune({ plan, vacuum: request.vacuum });

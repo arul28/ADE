@@ -312,7 +312,6 @@ import {
 import { liveContextUsageEvent } from "./liveContextUsageEvent";
 import { isServedRouteMismatch } from "./servedModelMismatch";
 import { createPiWorkerExitTracker } from "./piWorkerExits";
-import { resolveOpenCodeIsolatedDataHome } from "../opencode/openCodeServerManager";
 import {
   resolveLaunchBrain,
   type HarnessPresetLaunchPlan,
@@ -2804,8 +2803,6 @@ type OpenCodeRuntime = {
   permissionMode: AgentChatOpenCodePermissionMode;
   pendingApprovals: Map<string, PendingOpenCodeApproval>;
   pendingSteers: QueuedSteer[];
-  /** Staged rows currently being folded into the live turn (see `dispatchSteer`). */
-  dispatchingSteerIds: Set<string>;
   interrupted: boolean;
   modelDescriptor: ModelDescriptor;
   textByPartId: Map<string, string>;
@@ -6505,10 +6502,10 @@ const settledSteerIds = new WeakMap<ManagedChatSession, Set<string>>();
 /**
  * True while an explicit dispatch owns this staged row.
  *
- * Claude, Cursor, and OpenCode track in-flight dispatches, and Cursor and
- * OpenCode hold the row out of `pendingSteers` across a network await — which is
- * the window where an edit or a cancel would contradict what the agent already
- * received.
+ * Claude and Cursor track in-flight dispatches, and Cursor holds the row out of
+ * `pendingSteers` across a network await — which is the window where an edit or
+ * a cancel would contradict what the agent already received. OpenCode has no
+ * inline dispatch (queue-only, see ACTIVE_TURN_DISPATCH_MODES).
  */
 function isSteerDispatchInFlight(runtime: ChatRuntime, steerId: string): boolean {
   return "dispatchingSteerIds" in runtime && runtime.dispatchingSteerIds.has(steerId);
@@ -6519,7 +6516,7 @@ function isSteerDispatchInFlight(runtime: ChatRuntime, steerId: string): boolean
  * an execution/interaction mode. A text-only inline steer channel cannot carry
  * one, so every provider with an inline path declines the row and leaves it
  * staged for the turn boundary, which applies the directives. One predicate so
- * the Claude/Cursor/OpenCode guards cannot drift apart.
+ * the Claude/Cursor guards cannot drift apart.
  */
 function rowHasPerMessageOverrides(
   row: Pick<QueuedSteer, "reasoningEffort" | "executionMode" | "interactionMode">,
@@ -15541,13 +15538,6 @@ export function createAgentChatService(args: {
       permissionMode: permMode,
       pendingApprovals: new Map(),
       pendingSteers: [],
-      /**
-       * Staged rows currently being folded into the live turn by
-       * `dispatchSteer`/`promoteStagedSteer`. The row leaves `pendingSteers`
-       * before the v2 await, so without this a cancel or edit during the round
-       * trip would contradict a delivery that already happened.
-       */
-      dispatchingSteerIds: new Set(),
       interrupted: false,
       modelDescriptor: descriptor,
       textByPartId: new Map(),
@@ -17644,9 +17634,9 @@ export function createAgentChatService(args: {
       parentToolUseId: null,
       message: event,
       ...(text ? { text } : {}),
-      // The live envelope carries a real receive time; only a placeholder is
-      // dropped so the drill-in shows no clock rather than a wrong one.
-      ...(envelope.provenance?.timestampSynthetic === true ? {} : { timestamp: envelope.timestamp }),
+      // A live envelope's timestamp is a real receive time; the synthetic time
+      // marker is renderer-local (AgentChatPane) and never reaches main.
+      timestamp: envelope.timestamp,
     }, metadata);
   }
 
@@ -30198,6 +30188,7 @@ export function createAgentChatService(args: {
         const markChildAskBlocked = (reason: string): void => {
           if (childAskSessionId === null) return;
           const child = runtime.subagentSessions.get(childAskSessionId);
+          const usage = childUsageEvent(childAskSessionId);
           emitChatEvent(managed, {
             type: "subagent_progress",
             taskId: childAskSessionId,
@@ -30205,7 +30196,7 @@ export function createAgentChatService(args: {
             ...(child?.description ? { description: child.description } : {}),
             summary: `Waiting for approval — ${reason}`,
             blockedReason: reason,
-            ...(childUsageEvent(childAskSessionId) ? { usage: childUsageEvent(childAskSessionId) } : {}),
+            ...(usage ? { usage } : {}),
             turnId: child?.turnId ?? turnId,
           });
         };
@@ -35248,11 +35239,6 @@ export function createAgentChatService(args: {
       }
       return configured || getLocalProviderDefaultEndpoint(providerID);
     },
-    // A strict-config chat runs its own OpenCode server on ADE's isolated
-    // XDG_DATA_HOME, so its credentials live there, not in the user's store.
-    openCodeDataDirs: (managed) => managed.session.strictMcpConfig === true
-      ? [path.join(resolveOpenCodeIsolatedDataHome(), "opencode")]
-      : undefined,
   });
 
   /**
@@ -46065,7 +46051,7 @@ export function createAgentChatService(args: {
    */
   const drainQueueHeadIfIdle = async (
     managed: ManagedChatSession,
-    runtime: CursorRuntime | OpenCodeRuntime,
+    runtime: CursorRuntime,
     restoreRow: (row: QueuedSteer) => void,
     logKey: string,
   ): Promise<string | null> => {
@@ -57683,7 +57669,7 @@ export function createAgentChatService(args: {
     const itemId = typeof item.id === "string" && item.id.length > 0 ? item.id : `no-id:${turnId ?? "?"}:${itemIndex}`;
     const itemType = typeof item.type === "string" ? item.type : "";
     const baseUuid = `codex-thread-item:${threadId}:${itemId}`;
-    const rowTimestamp = coerceProviderTimestampToIso(timestamp);
+    const rowTimestamp = timestamp ?? null;
     const baseMessage = (event: AgentChatEvent, role: AgentChatSubagentTranscriptMessage["type"], extras?: { uuidSuffix?: string; text?: string }): AgentChatSubagentTranscriptMessage => ({
       type: role,
       uuid: extras?.uuidSuffix ? `${baseUuid}:${extras.uuidSuffix}` : baseUuid,

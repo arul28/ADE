@@ -34,7 +34,6 @@ import type {
   OpenCodeRuntimeSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
-import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { stableStringify } from "../shared/utils";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 import type { PermissionMode } from "../ai/tools/universalTools";
@@ -675,21 +674,6 @@ export function buildOpenCodePromptParts(args: {
     });
   }
   return parts;
-}
-
-/**
- * The v2 session prompt's file-attachment shape (`{uri, name}`), which is a
- * different wire type from the v1 `FilePartInput` above. Lives here beside its
- * sibling so the runtime module stays the one place that knows how an OpenCode
- * prompt file is expressed on either API.
- */
-export function buildOpenCodeV2PromptAttachments(
-  files: readonly OpenCodePromptFile[],
-): Array<{ uri: string; name: string }> {
-  return files.map((file) => ({
-    uri: pathToFileURL(file.path).toString(),
-    name: file.filename ?? basenameCrossPlatform(file.path),
-  }));
 }
 
 /**

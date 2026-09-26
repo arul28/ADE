@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import path from "node:path";
+import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
 
 /**
  * Provider config: where it lives, and who owns each key.
@@ -105,22 +106,38 @@ export function grokSessionsDir(args: HomeArg = {}): string {
 
 /**
  * Where OpenCode keeps its data (`auth.json`, `opencode.db`), in lookup order.
- * OpenCode itself uses `XDG_DATA_HOME` when it is set, else
- * `~/.local/share/opencode`; the macOS and Windows app-data folders follow as
- * fallbacks that older builds used. The quota poller and the per-turn account
- * reader both read this one list, so they never read different files.
+ * ADE's owned store comes first: every ADE-managed server writes there, so the
+ * quota poller and the per-turn account reader must see it or a successful
+ * login reads back as "unknown". The user's store follows — a legacy session
+ * re-opened on its original home still finds its credential there — then the
+ * macOS and Windows app-data folders as fallbacks older builds used. One list,
+ * so no two OpenCode readers disagree about which file holds the account.
  */
 export function openCodeDataDirs(args: HomeArg & { platform?: NodeJS.Platform } = {}): string[] {
   const env = args.env ?? process.env;
   const home = baseHome(args);
   const platform = args.platform ?? process.platform;
   const dirs: string[] = [];
+  // A caller-supplied home must also relocate the ADE entry, or a test or a
+  // remote-profile resolver would read this machine's owned store.
+  const adeEnv: NodeJS.ProcessEnv = trimmed(env.ADE_HOME)
+    ? env
+    : { ...env, ADE_HOME: path.join(home, ".ade") };
+  dirs.push(resolveAdeOpenCodeStoreDir(adeEnv));
   const xdgData = trimmed(env.XDG_DATA_HOME);
   if (xdgData) dirs.push(path.join(path.resolve(xdgData), "opencode"));
   dirs.push(path.join(home, ".local", "share", "opencode"));
   if (platform === "darwin") dirs.push(path.join(home, "Library", "Application Support", "opencode"));
   if (platform === "win32") dirs.push(path.join(trimmed(env.APPDATA) ?? path.join(home, "AppData", "Roaming"), "opencode"));
-  return dirs;
+  // When XDG_DATA_HOME (or an app-data fallback) is the owned base, the same
+  // directory would otherwise be read twice under two cache keys.
+  const seen = new Set<string>();
+  return dirs.filter((dir) => {
+    const key = path.resolve(dir);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**

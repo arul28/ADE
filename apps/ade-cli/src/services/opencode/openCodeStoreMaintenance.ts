@@ -1,7 +1,10 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  resolveAdeOpenCodeStoreDir,
+  resolveUserOpenCodeDataRoot,
+} from "../../../../desktop/src/shared/opencodeDataHome";
 
 /**
  * Pruning for an OpenCode data store.
@@ -59,28 +62,6 @@ export function parseOpenCodeStoreDuration(value: string): number {
   return amount * multiplier;
 }
 
-/** The user's OpenCode data root, matching xdg-basedir exactly. */
-export function resolveUserOpenCodeDataRoot(env: NodeJS.ProcessEnv = process.env): string | null {
-  const configured = env.XDG_DATA_HOME?.trim();
-  if (configured) return path.resolve(configured, "opencode");
-  const homeDir = env.HOME?.trim() || os.homedir().trim();
-  if (process.platform === "win32") {
-    const localAppData = env.LOCALAPPDATA?.trim()
-      || (homeDir ? path.join(homeDir, "AppData", "Local") : "");
-    return localAppData ? path.join(localAppData, "opencode") : null;
-  }
-  return homeDir ? path.join(homeDir, ".local", "share", "opencode") : null;
-}
-
-/** ADE's owned data root, matching the desktop manager's fallback resolution. */
-export function resolveAdeOpenCodeDataRoot(env: NodeJS.ProcessEnv = process.env): string {
-  const override = env.ADE_OPENCODE_XDG_ROOT?.trim();
-  const root = override
-    ? path.resolve(override)
-    : path.join(os.homedir().trim() || os.tmpdir(), ".ade", "opencode-runtime");
-  return path.join(root, "xdg-v1", "data");
-}
-
 function listStoreDatabases(dataRoot: string): string[] {
   if (!fs.existsSync(dataRoot)) return [];
   return fs
@@ -97,6 +78,17 @@ function listStoreDatabases(dataRoot: string): string[] {
 }
 
 /**
+ * A pinned binary uses `opencode.db`; a locally built one may use a channel
+ * suffix. Prefer the canonical name, else the most recently modified.
+ */
+function pickStoreDatabase(dataRoot: string): string {
+  const databases = listStoreDatabases(dataRoot);
+  if (databases.length === 0) throw new OpenCodeStoreError(`No OpenCode database found under ${dataRoot}.`);
+  return databases.find((file) => path.basename(file) === "opencode.db")
+    ?? databases.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0]!;
+}
+
+/**
  * Resolve a store target. `--store user` is the user's personal OpenCode home;
  * `--store ade` is ADE's owned home. `--store <path>` accepts either the data
  * root or the database file itself.
@@ -107,27 +99,15 @@ export function resolveOpenCodeStoreTarget(
 ): OpenCodeStoreTarget {
   const trimmed = store.trim();
   if (trimmed === "user" || trimmed === "ade") {
-    const dataRoot = trimmed === "user" ? resolveUserOpenCodeDataRoot(env) : resolveAdeOpenCodeDataRoot(env);
+    const dataRoot = trimmed === "user" ? resolveUserOpenCodeDataRoot(env) : resolveAdeOpenCodeStoreDir(env);
     if (!dataRoot) throw new OpenCodeStoreError(`Could not resolve the ${trimmed} OpenCode data root.`);
-    const databases = listStoreDatabases(dataRoot);
-    if (databases.length === 0) {
-      throw new OpenCodeStoreError(`No OpenCode database found under ${dataRoot}.`);
-    }
-    // A pinned binary uses `opencode.db`; a locally built one may use a channel
-    // suffix. Prefer the canonical name, else the most recently modified.
-    const dbPath = databases.find((file) => path.basename(file) === "opencode.db")
-      ?? databases.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0]!;
-    return { kind: trimmed, dataRoot, dbPath };
+    return { kind: trimmed, dataRoot, dbPath: pickStoreDatabase(dataRoot) };
   }
 
   const resolved = path.resolve(trimmed);
   if (!fs.existsSync(resolved)) throw new OpenCodeStoreError(`No OpenCode store at ${resolved}.`);
   if (fs.statSync(resolved).isDirectory()) {
-    const databases = listStoreDatabases(resolved);
-    if (databases.length === 0) throw new OpenCodeStoreError(`No OpenCode database found under ${resolved}.`);
-    const dbPath = databases.find((file) => path.basename(file) === "opencode.db")
-      ?? databases.sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs)[0]!;
-    return { kind: "path", dataRoot: resolved, dbPath };
+    return { kind: "path", dataRoot: resolved, dbPath: pickStoreDatabase(resolved) };
   }
   return { kind: "path", dataRoot: path.dirname(resolved), dbPath: resolved };
 }
@@ -146,7 +126,7 @@ export type OpenCodePrunePlan = {
   eligibleSessions: string[];
   /** Payload bytes of the eligible sessions' own rows (event/message/part). */
   reclaimablePayloadBytes: number;
-  byTable: Array<{ table: string; rows: number; bytes: number }>;
+  byTable: OpenCodeStoreTableSize[];
   tableSizes: OpenCodeStoreTableSize[];
 };
 
@@ -160,7 +140,17 @@ export type OpenCodeApplyResult = {
   fileBytesAfter: number;
 };
 
-const PAYLOAD_TABLES = ["event", "message", "part"] as const;
+/**
+ * The three tables a pruned session's own payload lives in, and the column
+ * that identifies the session in each. `event` is keyed by aggregate id (its
+ * aggregate IS the session); the projections are keyed by session id. Stated
+ * literally so the report cannot drift per table.
+ */
+const PAYLOAD_TABLES = [
+  { table: "event", sessionColumn: "aggregate_id" },
+  { table: "message", sessionColumn: "session_id" },
+  { table: "part", sessionColumn: "session_id" },
+] as const;
 
 function openDatabase(dbPath: string): DatabaseSync {
   const db = new DatabaseSync(dbPath);
@@ -182,7 +172,6 @@ function tableNames(db: DatabaseSync): Set<string> {
 export function planOpenCodeStorePrune(args: {
   dbPath: string;
   cutoffMs: number;
-  nowMs?: number;
 }): OpenCodePrunePlan {
   const fileBytes = fs.statSync(args.dbPath).size;
   const db = openDatabase(args.dbPath);
@@ -212,14 +201,12 @@ export function planOpenCodeStorePrune(args: {
     let reclaimablePayloadBytes = 0;
     if (eligibleIds.length > 0) {
       const placeholders = eligibleIds.map(() => "?").join(",");
-      for (const table of PAYLOAD_TABLES) {
+      for (const { table, sessionColumn } of PAYLOAD_TABLES) {
         if (!tables.has(table)) continue;
-        const dataColumn = table === "event" ? "data" : "data";
-        const column = table === "part" ? "session_id" : table === "message" ? "session_id" : "aggregate_id";
         const row = db
           .prepare(
-            `SELECT COUNT(*) AS rows, COALESCE(SUM(LENGTH(${dataColumn})), 0) AS bytes
-             FROM ${table} WHERE ${column} IN (${placeholders})`,
+            `SELECT COUNT(*) AS rows, COALESCE(SUM(LENGTH(data)), 0) AS bytes
+             FROM ${table} WHERE ${sessionColumn} IN (${placeholders})`,
           )
           .get(...eligibleIds) as { rows: number | bigint; bytes: number | bigint };
         const bytes = Number(row.bytes);
@@ -234,9 +221,12 @@ export function planOpenCodeStorePrune(args: {
     // sums rather than failing the command.
     const tableSizes: OpenCodeStoreTableSize[] = [];
     try {
+      // `table` is a keyword; the quoted alias is what keeps this query
+      // parseable instead of landing in the catch below and reporting an empty
+      // attribution for every store.
       const statRows = db
         .prepare(
-          "SELECT name AS table, SUM(pgsize) AS bytes, SUM(ncell) AS rows FROM dbstat GROUP BY name ORDER BY bytes DESC",
+          'SELECT name AS "table", SUM(pgsize) AS bytes, SUM(ncell) AS rows FROM dbstat GROUP BY name ORDER BY bytes DESC',
         )
         .all() as Array<{ table?: unknown; bytes?: unknown; rows?: unknown }>;
       for (const row of statRows) {
@@ -291,41 +281,32 @@ export function applyOpenCodeStorePrune(args: {
   let deletedMessages = 0;
   let deletedParts = 0;
   try {
-    if (plan.eligibleSessions.length === 0) {
-      return {
-        deletedSessions: 0,
-        deletedEvents: 0,
-        deletedMessages: 0,
-        deletedParts: 0,
-        vacuumed: false,
-        fileBytesBefore,
-        fileBytesAfter: fileBytesBefore,
-      };
-    }
-    const placeholders = plan.eligibleSessions.map(() => "?").join(",");
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      const countOf = (sql: string): number => Number((db.prepare(sql).get(...plan.eligibleSessions) as { count: number | bigint }).count);
-      deletedEvents = countOf(
-        `SELECT COUNT(*) AS count FROM event WHERE aggregate_id IN (${placeholders})`,
-      );
-      deletedMessages = countOf(
-        `SELECT COUNT(*) AS count FROM message WHERE session_id IN (${placeholders})`,
-      );
-      deletedParts = countOf(
-        `SELECT COUNT(*) AS count FROM part WHERE session_id IN (${placeholders})`,
-      );
-      // Order matters. `event` cascades from `event_sequence`, never from
-      // `session`; deleting the sequence row first removes the log. The session
-      // row then cascades every projection table. Children are part of the
-      // selection already (recursive CTE), so a parent-first delete cannot
-      // strand them.
-      db.prepare(`DELETE FROM event_sequence WHERE aggregate_id IN (${placeholders})`).run(...plan.eligibleSessions);
-      db.prepare(`DELETE FROM session WHERE id IN (${placeholders})`).run(...plan.eligibleSessions);
-      db.exec("COMMIT");
-    } catch (error) {
-      db.exec("ROLLBACK");
-      throw error;
+    if (plan.eligibleSessions.length > 0) {
+      const placeholders = plan.eligibleSessions.map(() => "?").join(",");
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const countOf = (sql: string): number => Number((db.prepare(sql).get(...plan.eligibleSessions) as { count: number | bigint }).count);
+        deletedEvents = countOf(
+          `SELECT COUNT(*) AS count FROM event WHERE aggregate_id IN (${placeholders})`,
+        );
+        deletedMessages = countOf(
+          `SELECT COUNT(*) AS count FROM message WHERE session_id IN (${placeholders})`,
+        );
+        deletedParts = countOf(
+          `SELECT COUNT(*) AS count FROM part WHERE session_id IN (${placeholders})`,
+        );
+        // Order matters. `event` cascades from `event_sequence`, never from
+        // `session`; deleting the sequence row first removes the log. The
+        // session row then cascades every projection table. Children are part
+        // of the selection already (recursive CTE), so a parent-first delete
+        // cannot strand them.
+        db.prepare(`DELETE FROM event_sequence WHERE aggregate_id IN (${placeholders})`).run(...plan.eligibleSessions);
+        db.prepare(`DELETE FROM session WHERE id IN (${placeholders})`).run(...plan.eligibleSessions);
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
     }
   } finally {
     db.close();
