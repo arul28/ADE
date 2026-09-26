@@ -141,3 +141,25 @@ Add the semantic key to `ADE_THEME_PALETTE_KEYS` and a derivation in
 `resolvePalette`, then emit it from `resolveCssVars`. If it is a token the
 stylesheet already derives with `color-mix`/`var()`, emitting it is unnecessary
 and should be skipped — the seam recomputes it.
+
+## Per-project themes are deliberately not shipped
+
+A theme is a user preference, like the chat font size: it lives in
+`ade.userPreferences.v1` and syncs through the `account` scope, so every surface
+and every machine agree. A per-project theme would layer a second, project-scoped
+choice on top, and the seam for that already exists (`accountSettingsSync`
+supports an `account-repo` scope keyed on the project's git remote). It is not
+shipped because the product questions have more than one reasonable answer and
+the answers disagree with each other:
+
+- Does a project pin **replace** the user's theme for that project, or only
+  override the accent on top of it?
+- When a project pins a theme, what does the gallery's **Active** state show,
+  and what does **Customize…** edit — the pin, or the account theme?
+- Does the pin **travel** to other machines (it can, via `account-repo` scope)
+  or stay local to the checkout?
+
+Each answer changes the gallery, the customizer, and the sync key. Picking one
+without a decision would bake a guess into persisted state that is awkward to
+migrate. The format, engine, and settings scopes already carry what the feature
+needs, so it is a self-contained follow-up once those questions are answered.
