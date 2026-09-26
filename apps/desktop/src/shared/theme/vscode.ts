@@ -18,6 +18,7 @@ import { parseColor, relativeLuminance, toHex } from "./color";
 import { slugifyThemeId } from "./validate";
 import {
   ADE_THEME_FORMAT_VERSION,
+  ADE_THEME_NAME_MAX_LENGTH,
   type AdeTerminalAnsiKey,
   type AdeTerminalPalette,
   type AdeTheme,
@@ -149,7 +150,8 @@ export function importVscodeTheme(input: unknown, options: { name?: string } = {
 
   const bg = parseColor(palette.bg ?? "");
   const baseMode: ThemeBaseMode = bg && relativeLuminance(bg) > 0.5 ? "light" : "dark";
-  const name = (options.name?.trim() || (typeof source.name === "string" ? source.name.trim() : "") || "VS Code theme").slice(0, 60);
+  const name = (options.name?.trim() || (typeof source.name === "string" ? source.name.trim() : "") || "VS Code theme")
+    .slice(0, ADE_THEME_NAME_MAX_LENGTH);
 
   const theme: AdeTheme = {
     formatVersion: ADE_THEME_FORMAT_VERSION,
