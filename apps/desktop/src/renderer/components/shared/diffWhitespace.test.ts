@@ -50,9 +50,9 @@ describe("stripWhitespaceOnlyPatchChanges", () => {
     expect(result.patch).toBe("");
   });
 
-  it("keeps a real change and removes a whitespace-only pair beside it", () => {
+  it("keeps a whitespace-only pair as a context line beside a real change", () => {
     const patch = `${header}
-@@ -1,4 +1,4 @@
+@@ -1,3 +1,3 @@
  const a = 1;
 -const b = 2;
 +const b = 2; 
@@ -61,13 +61,14 @@ describe("stripWhitespaceOnlyPatchChanges", () => {
     const result = stripWhitespaceOnlyPatchChanges(patch);
     expect(result.whitespaceOnly).toBe(false);
     expect(result.patch).toBe(`${header}
-@@ -1,2 +1,2 @@
+@@ -1,3 +1,3 @@
  const a = 1;
+ const b = 2; 
 -const c = 3;
 +const c = 4;`);
   });
 
-  it("keeps an unpaired real addition after dropping a whitespace pair", () => {
+  it("keeps an unpaired real addition in place after a dropped whitespace pair", () => {
     const patch = `${header}
 @@ -1,3 +1,4 @@
  const a = 1;
@@ -78,10 +79,33 @@ describe("stripWhitespaceOnlyPatchChanges", () => {
     const result = stripWhitespaceOnlyPatchChanges(patch);
     expect(result.whitespaceOnly).toBe(false);
     expect(result.patch).toBe(`${header}
-@@ -1,2 +1,3 @@
+@@ -1,3 +1,4 @@
  const a = 1;
+ const b = 2;
 +const d = 4;
  const c = 3;`);
+  });
+
+  it("does not move an addition ahead of a line whose whitespace-only change was dropped", () => {
+    // The trailing addition belongs after `line two`, and the whitespace-only
+    // reindent of `line two` must remain as context so it stays there.
+    const patch = `${header}
+@@ -1,3 +1,4 @@
+-line one
+-  line two
+-line three
++line one 
++    line two
++line three
++line four`;
+    const result = stripWhitespaceOnlyPatchChanges(patch);
+    expect(result.whitespaceOnly).toBe(false);
+    expect(result.patch).toBe(`${header}
+@@ -1,3 +1,4 @@
+ line one 
+     line two
+ line three
++line four`);
   });
 
   it("reindentation-only hunk is dropped", () => {
@@ -101,9 +125,9 @@ describe("stripWhitespaceOnlyPatchChanges", () => {
     expect(result.patch).toBe(patch);
   });
 
-  it("advances the hunk start past leading dropped whitespace-only lines", () => {
-    // The first change pair (trailing space) is whitespace-only and the hunk has
-    // no leading context, so the surviving change is really on line 2, not line 1.
+  it("keeps a leading whitespace-only pair as context without moving the hunk start", () => {
+    // A leading whitespace-only change is not a real change, so the line stays
+    // as context and the `@@` start is untouched — matching `git diff -w`.
     const patch = `${header}
 @@ -1,2 +1,2 @@
 -const a = 1;
@@ -113,8 +137,28 @@ describe("stripWhitespaceOnlyPatchChanges", () => {
     const result = stripWhitespaceOnlyPatchChanges(patch);
     expect(result.whitespaceOnly).toBe(false);
     expect(result.patch).toBe(`${header}
-@@ -2,1 +2,1 @@
+@@ -1,2 +1,2 @@
+ const a = 1; 
 -const b = 2;
 +const b = 3;`);
+  });
+
+  it("drops a whitespace-only hunk but keeps a real hunk in the same file", () => {
+    const patch = `${header}
+@@ -1,2 +1,2 @@
+-const a = 1;
++const a = 1; 
+ const b = 2;
+@@ -10,2 +10,2 @@
+ const c = 3;
+-const d = 4;
++const d = 5;`;
+    const result = stripWhitespaceOnlyPatchChanges(patch);
+    expect(result.whitespaceOnly).toBe(false);
+    expect(result.patch).toBe(`${header}
+@@ -10,2 +10,2 @@
+ const c = 3;
+-const d = 4;
++const d = 5;`);
   });
 });

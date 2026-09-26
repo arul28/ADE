@@ -4,9 +4,10 @@
  * `@pierre/diffs` forwards `parseDiffOptions` to the underlying `diff` library
  * when it computes a diff from full file contents, so the old/new-contents path
  * can pass `{ ignoreWhitespace: true }`. A pre-parsed patch has no such hook, so
- * the unified-diff text is filtered here by dropping `-`/`+` pairs whose content
- * is equal after per-line `trim()` (the same "ignore leading/trailing
- * whitespace" rule `diff` uses). A trimmed line also drops a trailing `\r`, so
+ * the unified-diff text is filtered here by turning a `-`/`+` pair whose content
+ * is equal after per-line `trim()` back into a context line (the new-side text,
+ * as `git diff -w` prints it), which is the same "ignore leading/trailing
+ * whitespace" rule `diff` uses. A trimmed line also drops a trailing `\r`, so
  * CRLF and LF compare equal, and a tab-vs-spaces reindent is a no-op.
  *
  * Pure and dependency-free so both the PR code tab (patch) and the chat turn
@@ -46,50 +47,32 @@ type FilteredHunk = {
   lines: string[];
   /** Number of addition/deletion lines kept; 0 means the hunk was whitespace-only. */
   changes: number;
-  /**
-   * Old-side lines dropped before the first retained line. The `@@` start is
-   * advanced by this so a surviving change keeps its real gutter line when a
-   * leading whitespace-only pair is removed.
-   */
-  leadingOldDropped: number;
-  /** New-side lines dropped before the first retained line. */
-  leadingNewDropped: number;
 };
 
 /**
- * Drop whitespace-only `-`/`+` pairs from one hunk body.
+ * Remove whitespace-only changes from one hunk body.
  *
  * A change block in unified diff output is a run of `-` lines followed by `+`
- * lines, so deletion[k] pairs with addition[k]. A pair whose content is equal
- * after `trim()` is removed; anything unpaired is kept. `\ No newline at end of
- * file` markers follow the line they annotate and are dropped or kept with it.
+ * lines, so deletion[k] pairs with addition[k] — the same pairing a side-by-side
+ * view draws. A pair whose content is equal after `trim()` did not really change,
+ * so it becomes a **context line** (keeping the new-side text, exactly what
+ * `git diff -w` prints) rather than being deleted. Keeping it in place is what
+ * preserves the order of the changes around it; removing the line instead would
+ * let an unpaired addition slip ahead of a line that follows it. Because a
+ * dropped pair was one old line plus one new line and a context line is also one
+ * of each, the hunk's `@@` start and counts stay correct with no rewrite.
+ *
+ * Anything unpaired is a real change and is kept. `\ No newline at end of file`
+ * markers follow the line they annotate and are dropped or kept with it.
  */
 function filterHunkBody(body: string[]): FilteredHunk {
   const out: string[] = [];
   let changes = 0;
   let index = 0;
-  let sawKeptLine = false;
-  let leadingOldDropped = 0;
-  let leadingNewDropped = 0;
-  let pendingOldDropped = 0;
-  let pendingNewDropped = 0;
-  const dropLine = (side: "old" | "new"): void => {
-    if (sawKeptLine) return;
-    if (side === "old") pendingOldDropped += 1;
-    else pendingNewDropped += 1;
-  };
-  const emit = (line: string): void => {
-    if (!sawKeptLine) {
-      sawKeptLine = true;
-      leadingOldDropped = pendingOldDropped;
-      leadingNewDropped = pendingNewDropped;
-    }
-    out.push(line);
-  };
   while (index < body.length) {
     const line = body[index]!;
     if (!isChangeLine(line)) {
-      emit(line);
+      out.push(line);
       index += 1;
       continue;
     }
@@ -119,47 +102,29 @@ function filterHunkBody(body: string[]): FilteredHunk {
       const deletionText = deletions[pair]!.slice(1);
       const additionText = additions[pair]!.slice(1);
       if (normalizeLineForWhitespaceCompare(deletionText) === normalizeLineForWhitespaceCompare(additionText)) {
-        dropLine("old");
-        dropLine("new");
+        // Whitespace-only: the line is unchanged, so show it as context in
+        // place. The new-side text is what `git diff -w` prints.
+        out.push(` ${additionText}`);
         continue;
       }
-      emit(deletions[pair]!);
-      if (deletionMarkers[pair]) emit(deletionMarkers[pair]!);
-      emit(additions[pair]!);
-      if (additionMarkers[pair]) emit(additionMarkers[pair]!);
+      out.push(deletions[pair]!);
+      if (deletionMarkers[pair]) out.push(deletionMarkers[pair]!);
+      out.push(additions[pair]!);
+      if (additionMarkers[pair]) out.push(additionMarkers[pair]!);
       changes += 1;
     }
     for (let leftover = paired; leftover < deletions.length; leftover += 1) {
-      emit(deletions[leftover]!);
-      if (deletionMarkers[leftover]) emit(deletionMarkers[leftover]!);
+      out.push(deletions[leftover]!);
+      if (deletionMarkers[leftover]) out.push(deletionMarkers[leftover]!);
       changes += 1;
     }
     for (let leftover = paired; leftover < additions.length; leftover += 1) {
-      emit(additions[leftover]!);
-      if (additionMarkers[leftover]) emit(additionMarkers[leftover]!);
+      out.push(additions[leftover]!);
+      if (additionMarkers[leftover]) out.push(additionMarkers[leftover]!);
       changes += 1;
     }
   }
-  return { lines: out, changes, leadingOldDropped, leadingNewDropped };
-}
-
-function rebuildHunkHeader(original: string, lines: string[], leadingOldDropped = 0, leadingNewDropped = 0): string {
-  const match = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(original);
-  if (!match) return original;
-  const oldStart = Number(match[1]) + leadingOldDropped;
-  const newStart = Number(match[2]) + leadingNewDropped;
-  let oldCount = 0;
-  let newCount = 0;
-  for (const line of lines) {
-    if (line.startsWith("\\")) continue;
-    if (line.startsWith("+")) newCount += 1;
-    else if (line.startsWith("-")) oldCount += 1;
-    else {
-      oldCount += 1;
-      newCount += 1;
-    }
-  }
-  return `@@ -${oldStart},${oldCount} +${newStart},${newCount} @@${match[3] ?? ""}`;
+  return { lines: out, changes };
 }
 
 export type WhitespaceFilteredPatch = {
@@ -202,7 +167,9 @@ export function stripWhitespaceOnlyPatchChanges(patchText: string): WhitespaceFi
     }
     const filtered = filterHunkBody(lines.slice(index + 1, end));
     if (filtered.changes > 0) {
-      out.push(rebuildHunkHeader(line, filtered.lines, filtered.leadingOldDropped, filtered.leadingNewDropped));
+      // A dropped pair became a context line, so the hunk's own `@@` start and
+      // counts are still exact — the header is reused untouched.
+      out.push(line);
       out.push(...filtered.lines);
       sawKeptHunk = true;
     }
