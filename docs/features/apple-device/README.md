@@ -129,17 +129,22 @@ anything when `simctl list` cannot be read.
   five minutes is skipped, because create writes the marker before the row. The
   pass reads the rows again right before each delete, so a device another
   process re-adopted or attached meanwhile is kept.
-- Another project's marked devices are never touched, even when that project
-  looks gone (it may be moved or on an unmounted volume). The storage view
-  lists them.
+- Another project's marked devices are checked in THAT project's `ade.db`,
+  read-only. While a live lane there holds the device, or the database cannot
+  be read, it is left alone. When that project no longer uses it, or the
+  project (or its database) is gone, it is a stale leftover and is deleted
+  like one of ours. Devices start empty, so a project that was only moved
+  loses nothing that matters: its lane gets a new device on its next ask.
 
 `device-detach` of an ADE device stamps the marker `detachedAt`. The device is
 then a leftover: it is never re-adopted, and the pass deletes it five minutes
 after the detach unless a lane picks it again. Attaching this project's marked
 device (the picker, or an agent for a leftover) makes it that lane's ADE device
 again (`origin: created`) and rewrites the marker. Another project's ADE device
-attaches as `attached`, marker untouched, so this project never deletes it; an
-agent may not attach one at all. Detaching an ATTACHED device uninstalls the
+follows the same check: while that project uses it, nobody here may attach it
+(user or agent, `APPLE_DEVICE_NOT_LANE_OWNED`); once it is stale, attaching
+takes it over as this lane's ADE device, with the marker rewritten to this
+project, so it is deleted when this lane ends. Detaching an ATTACHED device uninstalls the
 apps ADE installed on it in the background and leaves its power state as it was.
 
 `ade apple device-cleanup` and the picker's **Clean up** run it on demand, with

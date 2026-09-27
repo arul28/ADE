@@ -22,7 +22,7 @@ import {
   appleMarkerIsProject,
   appleSimulatorOwnership,
   listAppleDeviceMarkers,
-  removeAppleDeviceMarker,
+  appleMarkerProjectHolds,
   readAppleDeviceMarker,
   writeAppleDeviceMarker,
   type AppleDeviceMarker,
@@ -48,6 +48,7 @@ import {
   type LaneDeviceRow,
   type LaneDeviceStore,
 } from "./laneDeviceRows";
+import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { deleteAppleSimulator } from "./simulatorPower";
 
 /**
@@ -113,6 +114,11 @@ export type LaneDeviceRegistryDeps = {
    * before the cleanup pass powers it off or deletes it. The host's; optional.
    */
   releaseDeviceHolds?: ((udid: string) => Promise<void>) | null;
+  /**
+   * Open another project's `ade.db` read-only, to ask whether that project
+   * still uses a device it made. Defaults to `node:sqlite` read-only.
+   */
+  openProjectDatabase?: ((dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown }; close: () => void }) | null;
   /** Human name for a lane, used in the device's name. Null falls back to the id. */
   resolveLaneName?: ((laneId: string) => string | null) | null;
   /** The lanes DB. Omitted in hosts that have none; the registry then keeps rows in memory. */
@@ -438,6 +444,10 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
 
   const dataRoot = (): string => deps.deviceDataRoot?.trim() || appleDeviceDataRoot();
 
+  /** Does the project that made this device still use it? See `appleMarkerProjectHolds`. */
+  const foreignHolds = (marker: AppleDeviceMarker, udid: string) =>
+    appleMarkerProjectHolds(marker, udid, deps.openProjectDatabase ?? openReadOnlyDatabase);
+
   const listRuntimes = async (): Promise<AppleInstalledRuntime[]> => {
     if (deps.listInstalledRuntimes) return deps.listInstalledRuntimes();
     const { stdout } = await deps.run("xcrun", ["simctl", "list", "runtimes", "available", "--json"], { timeoutMs: 30_000 });
@@ -633,17 +643,25 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     const marker = readAppleDeviceMarker(dataRoot(), match.udid);
     const projectRoot = deps.projectRoot?.trim() || null;
     const otherProject = Boolean(marker && projectRoot && !appleMarkerIsProject(marker, projectRoot));
-    if (args.agentCaller && (holders.length || otherProject)) {
-      // Another project's ADE device may be that project's lane's right now,
-      // and this project cannot see its rows. Only the user takes it.
-      const holder = holders[0] ?? null;
-      const reason: AppleDeviceNotLaneOwnedReason = holder
-        ? { kind: "other-lane", laneLabel: laneNameFor(holder.laneId) ?? holder.laneId }
-        : { kind: "other-project" };
-      deps.logger.info("apple.lane_device_attach_refused_agent", {
+    /*
+     * Another project's ADE device is checked in THAT project's database. While
+     * a live lane there uses it, nobody here takes it — the user included —
+     * because this project could later delete it under that lane. When that
+     * project no longer uses it (or no longer exists), it is a stale leftover:
+     * this lane takes it over as its own ADE device, deleted when the lane ends.
+     */
+    const foreign = otherProject ? foreignHolds(marker!, match.udid) : null;
+    const foreignBlocked = foreign === "held" || foreign === "unknown";
+    if ((args.agentCaller && holders.length) || foreignBlocked) {
+      const holder = args.agentCaller ? holders[0] ?? null : null;
+      let reason: AppleDeviceNotLaneOwnedReason;
+      if (holder) reason = { kind: "other-lane", laneLabel: laneNameFor(holder.laneId) ?? holder.laneId };
+      else reason = foreign === "held" ? { kind: "other-project" } : { kind: "other-project-unknown" };
+      deps.logger.info("apple.lane_device_attach_refused", {
         laneId,
         udid: match.udid,
         reason: reason.kind,
+        agent: args.agentCaller === true,
         ...(holder ? { holderLaneId: holder.laneId } : {}),
       });
       throw new AppleDeviceNotLaneOwnedError(match, reason);
@@ -664,33 +682,19 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
        * `origin` travels WITH the device, not with the lane. It describes where
        * the simulator came from: a device ADE made is still ADE's to delete
        * after it changes hands, and re-labelling it "attached" would leak it
-       * forever when the new lane is archived. A device with this project's
-       * marker and no holder (a detached leftover) is ADE's for the same
-       * reason. Another project's ADE device is NOT: that project may still
-       * hold it, so here it is only ever attached, never deleted, and loses the
-       * marker that would let that project's cleanup delete it.
+       * forever when the new lane is archived. A device with ADE's marker and
+       * no holder — a detached leftover here, or a stale one another project
+       * no longer uses — is ADE's for the same reason, and now this lane's.
        * `createdAt` is the opposite — it dates the BINDING, so it is now.
        */
-      origin: previous?.origin ?? (marker && !otherProject ? "created" : "attached"),
+      origin: previous?.origin ?? (marker ? "created" : "attached"),
       family: match.family,
       runtime: match.runtime,
       createdAt: now().toISOString(),
     };
-    // Another project's device becomes the user's: without its marker, that
-    // project's cleanup pass can no longer delete it out from under this lane.
-    if (otherProject) {
-      try {
-        removeAppleDeviceMarker(dataRoot(), device.udid);
-      } catch (error) {
-        deps.logger.warn?.("apple.lane_device_marker_remove_failed", {
-          udid: device.udid,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    // An ADE device of this project now belongs to this lane: the marker says
-    // so, and a detached leftover stops being one.
-    if (isAdeOwnedLaneDevice(device.origin) && !otherProject) {
+    // An ADE device now belongs to this lane: the marker says so (and names
+    // this project, for a stale one taken over), and a leftover stops being one.
+    if (isAdeOwnedLaneDevice(device.origin)) {
       writeMarker(device.udid, { laneId, name: device.name, createdAt: marker?.createdAt || device.createdAt, detachedAt: null });
     }
     if (previous) {
@@ -791,6 +795,12 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       heldUdids: new Set(readAll().map((device) => device.udid)),
       dataRoot: dataRoot(),
       projectRoot: deps.projectRoot?.trim() || null,
+      // Another project's device that project no longer uses is a leftover
+      // here too: Clean up deletes it.
+      foreignInUse: (marker, udid) => {
+        const holds = foreignHolds(marker, udid);
+        return holds === "held" || holds === "unknown";
+      },
     });
 
   /** A lane row holds this udid right now. Read fresh: the pass awaits between devices. */
@@ -855,19 +865,27 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     }
 
     /*
-     * Marked devices no lane holds. Only this project's: another project's ADE
-     * devices are that project's to clean up, and a project that looks gone
-     * from here may only be moved or on an unmounted volume. The storage view
-     * lists them for the user.
+     * Marked devices no lane here holds.
+     *
+     * - This project's: deleted after the grace period, or given back to a
+     *   live lane that only lost its row.
+     * - Another project's: asked of that project's own database. Still used
+     *   there, or not readable: left alone. Not used, or the project is gone:
+     *   a stale leftover, deleted like one of ours. Devices are empty and cheap
+     *   to make again, so a project that was only moved loses nothing that
+     *   matters; its lane gets a new device on its next ask.
      */
     const projectRoot = deps.projectRoot?.trim() || null;
     const nowMs = now().getTime();
     for (const { udid, marker } of projectRoot ? listAppleDeviceMarkers(root) : []) {
       const listed = all.get(udid);
-      if (!listed || !appleMarkerIsProject(marker, projectRoot!) || heldNow(udid)) continue;
+      if (!listed || heldNow(udid)) continue;
       const since = Date.parse(marker.detachedAt || marker.createdAt);
       if (Number.isFinite(since) && nowMs - since < APPLE_DEVICE_MARKER_GRACE_MS) continue;
-      if (!marker.detachedAt && isLaneLive(marker.laneId) && !readOne(marker.laneId)) {
+      const ours = appleMarkerIsProject(marker, projectRoot!);
+      const foreign = ours ? null : foreignHolds(marker, udid);
+      if (foreign === "held" || foreign === "unknown") continue;
+      if (ours && !marker.detachedAt && isLaneLive(marker.laneId) && !readOne(marker.laneId)) {
         // The lane is still here and lost only its row. Give the device back.
         try {
           write({
@@ -891,7 +909,10 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
         if (heldNow(udid)) continue;
         await deps.releaseDeviceHolds?.(udid).catch(() => undefined);
         await deleteAppleSimulator(udid, { run: deps.run, powerOff: deps.powerOffDevice });
-        result.deleted.push({ udid, name: listed.name, reason: marker.detachedAt ? "detached from its lane" : "no live lane holds it" });
+        let reason = marker.detachedAt ? "detached from its lane" : "no live lane holds it";
+        if (foreign === "gone") reason = "its project no longer exists";
+        else if (foreign === "free") reason = "its project no longer uses it";
+        result.deleted.push({ udid, name: listed.name, reason });
       } catch (error) {
         result.errors.push({ udid, message: errorText(error) });
       }
