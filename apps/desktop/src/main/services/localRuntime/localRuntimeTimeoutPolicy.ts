@@ -46,6 +46,15 @@ export const IOS_SIMULATOR_PREVIEW_TIMEOUT_MS = 10 * 60_000;
 export const IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS = 4 * 60_000;
 
 /**
+ * `runTests` runs `xcodebuild test`, which the service bounds at 2 hours; the
+ * margin covers the device boot before it and the log read after it.
+ */
+export const IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS = 2 * 60 * 60_000 + 5 * 60_000;
+
+/** The cleanup pass may delete several devices, each up to 120s, plus power-offs. */
+export const IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS = 15 * 60_000;
+
+/**
  * The innermost budgets on the remote path: the JSON-RPC transport carrying
  * these actions to a paired/SSH runtime, whose daemon runs the very same
  * xcodebuild and Xcode preview toolchain a local one does. Without entries
@@ -60,6 +69,8 @@ export const IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_LAUNCH_TIMEOUT_MS - 30_000;
 export const IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS - 30_000;
+export const IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS - 30_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;
@@ -158,6 +169,9 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceCreate", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDelete", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.deviceDetach", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
+  // See IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS.
+  ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

@@ -9,6 +9,8 @@ import type {
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceDetachArgs,
+  AppleDeviceCleanupArgs,
+  AppleDeviceCleanupResult,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -2543,6 +2545,11 @@ declare global {
           args: AppleDeviceDeleteInstalledArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        /** Delete leftover ADE devices and release ended lanes' devices, now. */
+        deviceCleanup: (
+          args?: AppleDeviceCleanupArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDeviceCleanupResult>;
         frame: (
           args?: AppleFrameArgs,
           pin?: OpenProjectBinding | null,

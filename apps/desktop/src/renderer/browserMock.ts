@@ -6185,6 +6185,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       deviceDelete: resolvedArg(undefined as any),
       deviceDetach: resolvedArg(null as any),
       deviceDeleteInstalled: resolvedArg(undefined as any),
+      deviceCleanup: resolvedArg({ deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] } as any),
       listDevices: resolved([]),
       listLaunchTargets: resolved([]),
       launch: resolvedArg({} as any),

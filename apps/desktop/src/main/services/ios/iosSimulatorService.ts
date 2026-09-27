@@ -10,8 +10,12 @@ import type {
   AppleDeviceStatePhase,
   AppleDeviceStopArgs,
   AppleDeviceStopResult,
+  AppleDeviceCleanupArgs,
+  AppleDeviceCleanupResult,
   AppleDeviceCreateArgs,
   AppleDeviceListArgs,
+  AppleRunTestsArgs,
+  AppleRunTestsResult,
   AppleDeviceListResult,
   AppleDeviceOrientation,
   AppleFrameArgs,
@@ -117,6 +121,7 @@ import {
   APPLE_SCROLL_DIRECTIONS,
   APPLE_HARDWARE_BUTTONS,
   APPLE_STREAM_NOT_RUNNING_CODE,
+  APPLE_TEST_RUN_BUSY_CODE,
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_LAUNCH_IN_PROGRESS_CODE,
   IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE,
@@ -135,9 +140,11 @@ import {
   AppleDeviceExistsError,
   AppleDeviceNotLaneOwnedError,
   appleDeviceFamily,
+  appleLaneDerivedDataPath,
   createLaneDeviceRegistry,
   type LaneDeviceStore,
 } from "./laneDeviceRegistry";
+import { createLaneDeviceMaintenance, type LaneDeviceMaintenance } from "./laneDeviceMaintenance";
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
@@ -432,7 +439,7 @@ type CreateIosSimulatorServiceArgs = {
    * stranger's proof drawer.
    */
   resolveLaneIdForPath?: ((absolutePath: string) => string | null) | null;
-  /** Human name for a lane, used to name its cloned simulator. */
+  /** Human name for a lane, used to name its simulator. */
   resolveLaneName?: ((laneId: string) => string | null) | null;
   /**
    * The lanes DB, for the `lane_apple_devices` table.
@@ -454,6 +461,12 @@ type CreateIosSimulatorServiceArgs = {
    * one, rather than a second, inert service shadowing it.
    */
   recordingDeps?: Pick<SimRecordingServiceDeps, "artifactFiler" | "readOverlaySetting" | "accentColor" | "fps">;
+  /**
+   * Run the lane-device cleanup pass and idle power-off in the background
+   * (`laneDeviceMaintenance.ts`). The hosts that own a project turn it on; a
+   * service built for one call does not.
+   */
+  backgroundMaintenance?: boolean | null;
 };
 
 type RootScope = {
@@ -2106,7 +2119,7 @@ export type IosSimulatorService = ReturnType<typeof createIosSimulatorService>;
 
 /** What an agent hears when its lane has no device and the action needs one. */
 const AGENT_NO_LANE_DEVICE_MESSAGE =
-  "This lane has no Apple device yet. Run `ade apple start` to give it its own (it clones a simulator and boots it), "
+  "This lane has no Apple device yet. Run `ade apple start` to give it its own (it makes a new device and boots it), "
   + "or `ade apple device-create`.";
 
 /**
@@ -2121,7 +2134,11 @@ const AGENT_DEVICE_DRIVING_ACTIONS = [
   "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp",
   "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "getForegroundApp", "startEventLog",
   "findElement", "tapElement", "fillElement", "waitForElement", "assertVisible", "captureProofBundle",
+  "runTests",
 ] as const;
+
+/** Driving actions that give a lane with no device its own device first, instead of refusing. */
+const AGENT_DEVICE_CREATING_ACTIONS = new Set<string>(["launch", "openDevice", "runTests"]);
 
 /**
  * Actions that may name a device but need none: an agent's explicit udid must
@@ -2146,6 +2163,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    */
   const launchOwners = new Map<string, { chatSessionId: string | null; laneId: string | null }>();
   const activeBuildDataPaths = new Map<string, number>();
+  /** Devices an `xcodebuild test` from this service is running on. */
+  const activeTestUdids = new Set<string>();
+  /** Set once the registry and power path exist; see `laneDeviceMaintenance.ts`. */
+  let maintenance: LaneDeviceMaintenance | null = null;
   let disposed = false;
   let xcodeMcpBridge: XcodeMcpBridge | null = null;
   const toolAvailabilityCache = new Map<string, { available: boolean; checkedAt: number }>();
@@ -2284,7 +2305,25 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * those says anything does the one busy lane, or else the un-laned bucket,
    * answer — the bucket is also what a fresh process with no sessions returns.
    */
+  /**
+   * The lane a call is about, and a note that its device was used.
+   *
+   * Every verb resolves its lane through here, including the pane's status
+   * poll while it is on screen, so this is where "someone is using this lane's
+   * device" is recorded for idle power-off.
+   */
   const resolveRuntime = (
+    scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
+  ): LaneRuntime => {
+    const runtime = resolveRuntimeUntracked(scope);
+    if (runtime.key && maintenance) {
+      const device = laneDevices.get(runtime.key);
+      if (device) maintenance.touch(device.udid);
+    }
+    return runtime;
+  };
+
+  const resolveRuntimeUntracked = (
     scope: { laneId?: string | null; chatSessionId?: string | null; projectRoot?: string | null } = {},
   ): LaneRuntime => {
     const explicit = laneKey(scope.laneId);
@@ -2593,6 +2632,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     listInstalledSimulators,
     resolveLaneName: args.resolveLaneName ?? null,
     store: args.laneDeviceStore ?? null,
+    projectRoot: args.projectRoot,
+    // The cleanup pass is about to power off or delete this device: nothing in
+    // this process may still be reading it.
+    releaseDeviceHolds: async (udid) => {
+      await stopDeviceRecording(udid, "device-off");
+      await lifecycle.releaseUnlanedHolds(udid);
+      invalidateDeviceList();
+    },
     logger: args.logger,
     /**
      * A lane is losing its device to another lane's takeover.
@@ -4435,6 +4482,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           throw new Error(`Could not find ${target.target.name}.app after building. Try launching with build=true from the project root.`);
         }
         await installAppOnSimulator(device, appBundle);
+        // On an attached device this app is ADE's to remove when the lane ends.
+        laneDevices.noteAppInstalled({ udid: device.udid, bundleId });
         emitLaunchProgress(launchId, "install-app", "complete", "App installed.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
       } else {
         emitLaunchProgress(launchId, "install-app", "skipped", "App already installed.", bundleId, { deviceUdid: device.udid, targetId: target.target.id });
@@ -5934,6 +5983,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const device = await laneDevices.deviceCreate({
       laneId: runtime.key,
       from: deviceArgs.from,
+      runtime: deviceArgs.runtime,
+      deviceType: deviceArgs.deviceType,
       name: deviceArgs.name,
     });
     invalidateDeviceList();
@@ -5991,27 +6042,33 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = requireLaneScope(deviceArgs);
     const laneId = runtime.key;
     const requestedUdid = deviceArgs.udid?.trim() || null;
-    const sourceUdid = deviceArgs.create?.sourceUdid?.trim() || null;
+    const create = deviceArgs.create ?? null;
+    const sourceUdid = create?.sourceUdid?.trim() || null;
+    const wantsCreate = Boolean(sourceUdid || create?.runtime?.trim() || create?.deviceType?.trim());
     const agentCaller = deviceArgs.agentCaller === true;
     let laneDevice = laneDevices.get(laneId);
     if (!laneDevice) {
-      if (sourceUdid) {
-        laneDevice = await laneDevices.deviceCreate({ laneId, from: sourceUdid });
+      if (wantsCreate) {
+        laneDevice = await laneDevices.deviceCreate({
+          laneId,
+          from: sourceUdid,
+          runtime: create?.runtime ?? null,
+          deviceType: create?.deviceType ?? null,
+        });
       } else if (requestedUdid) {
         laneDevice = await laneDevices.deviceAttach({ laneId, simulator: requestedUdid, agentCaller });
       } else if (agentCaller) {
-        // An agent gets its lane's own clone rather than an error it has to
-        // translate into a second command. Same template choice as
-        // `device-create`: the project's last-used simulator, never a booted
-        // one, so nobody else's device is booted, cloned while running or used.
+        // An agent gets its lane's own device rather than an error it has to
+        // translate into a second command: a new, empty one, the same one
+        // `device-create` makes, so nobody else's device is booted or used.
         laneDevice = await laneDevices.deviceCreate({ laneId });
       } else {
         throw new Error(
           "This lane has no Apple device yet. Run `ade apple device-create` to give it its own, "
-            + "or `ade apple start --create <udid>` to clone a specific simulator.",
+            + "or `ade apple start --udid <udid>` to attach an installed simulator.",
         );
       }
-      // A clone is a simulator the cached device list has never seen.
+      // A new device is a simulator the cached device list has never seen.
       invalidateDeviceList();
       invalidateStatus(runtime);
     } else if (requestedUdid && requestedUdid !== laneDevice.udid) {
@@ -6144,6 +6201,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // numbers afterwards, so a `du` over a 20 GB device store never sits in
       // front of the first frame of the page.
       disk: deviceArgs.disk,
+      runtimes: deviceArgs.runtimes,
     });
   };
 
@@ -6163,6 +6221,242 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     invalidateDeviceList();
     invalidateStatus(runtime);
     return created;
+  };
+
+  /**
+   * The cleanup pass, now: the storage view's "Clean up" and `ade apple
+   * device-cleanup`. The same pass the background timer runs, plus (with
+   * `powerOffIdle`) powering off every ADE device nothing is using.
+   */
+  const deviceCleanup = async (cleanupArgs: AppleDeviceCleanupArgs = {}): Promise<AppleDeviceCleanupResult> => {
+    assertDarwin();
+    const result = await laneMaintenance().runCleanup({ powerOffIdle: cleanupArgs.powerOffIdle === true });
+    invalidateDeviceList();
+    for (const runtime of runtimes.values()) invalidateStatus(runtime);
+    return result;
+  };
+
+  /**
+   * A lane is being archived or deleted: let go of its device in this process
+   * (recording, stream, chat claim, hub session). The device itself is deleted
+   * or released on disk by `releaseLaneAppleDevice`, which runs in hosts that
+   * have no simulator service too.
+   */
+  const stopForLane = async (laneId: string): Promise<void> => {
+    const key = laneKey(laneId);
+    if (!key) return;
+    const device = laneDevices.get(key);
+    if (!device) return;
+    await lifecycle.releaseLaneHold(device).catch((error: unknown) => {
+      args.logger.debug("apple.stop_for_lane_failed", {
+        laneId: key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
+  /* ───────────────────────── tests ───────────────────────── */
+
+  /** The one test run this service allows at a time: the lane and scheme, for the busy message. */
+  let testRunInFlight: string | null = null;
+  const TEST_RUN_DEFAULT_TIMEOUT_MS = 30 * 60_000;
+  const TEST_RUN_MAX_TIMEOUT_MS = 2 * 60 * 60_000;
+
+  /** Keep the newest `keep` entries of a cache directory, delete the rest. Best effort. */
+  const pruneCacheEntries = async (directory: string, keep: number): Promise<void> => {
+    const entries = await fs.promises.readdir(directory).catch(() => [] as string[]);
+    const stats = await Promise.all(entries.map(async (name) => {
+      const full = path.join(directory, name);
+      const stat = await fs.promises.stat(full).catch(() => null);
+      return stat ? { full, mtimeMs: stat.mtimeMs } : null;
+    }));
+    const sorted = stats.filter((entry): entry is { full: string; mtimeMs: number } => Boolean(entry))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    for (const entry of sorted.slice(keep)) {
+      await fs.promises.rm(entry.full, { recursive: true, force: true }).catch(() => undefined);
+    }
+  };
+
+  /**
+   * `xcodebuild test` on the lane's own device.
+   *
+   * What agents did before this existed: made their own simulator with
+   * `simctl create`, pointed `xcodebuild` at it with DerivedData in `/tmp`,
+   * and left both behind — a 6 GB simulator and a 1.6 GB build folder nobody
+   * owned. This keeps all of it inside the lane: its device, its cache, and
+   * the result bundles, all of which go when the lane is archived or deleted.
+   *
+   * One run at a time on this service (`APPLE_TEST_RUN_BUSY`), parallel testing
+   * off, output streamed to a log file rather than held in memory. A failing
+   * test is a result, not an error: the call resolves with `passed: false`.
+   */
+  const runTests = async (testArgs: AppleRunTestsArgs = {}): Promise<AppleRunTestsResult> => {
+    assertDarwin();
+    const runtime = requireLaneScope(testArgs);
+    if (testRunInFlight) {
+      throw new Error(
+        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going on this Mac (${testRunInFlight}). `
+          + "xcodebuild test runs one at a time; wait for it to finish, then run again.",
+      );
+    }
+    // Claimed before the first await. A device boot takes tens of seconds, and
+    // a second run that slipped in behind it ran a second xcodebuild into the
+    // same DerivedData, which broke package resolution for both.
+    testRunInFlight = `lane ${runtime.key}`;
+    try {
+      return await runTestsClaimed(testArgs, runtime);
+    } finally {
+      testRunInFlight = null;
+    }
+  };
+
+  const runTestsClaimed = async (testArgs: AppleRunTestsArgs, runtime: LaneRuntime): Promise<AppleRunTestsResult> => {
+    const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
+    let projectPath: string | null = null;
+    let scheme: string | null = testArgs.scheme?.trim() || null;
+    let bundleId: string | null = null;
+    const targets = await listProjectLaunchTargets(projectRoot);
+    if (testArgs.targetId?.trim()) {
+      assertTargetIdWithinRoot(testArgs.targetId, projectRoot);
+      const target = targets.find((candidate) => candidate.id === testArgs.targetId)
+        ?? recoverStaleLaunchTarget(testArgs.targetId, targets, projectRoot);
+      if (!target?.projectPath || !target.scheme) {
+        throw new Error(`Launch target ${testArgs.targetId} was not found under ${projectRoot}. Run \`ade apple apps\` and pass one of its ids.`);
+      }
+      projectPath = target.projectPath;
+      scheme = target.scheme;
+      bundleId = target.bundleId;
+    } else if (testArgs.projectPath?.trim()) {
+      const resolved = normalizeProjectPath(projectRoot, testArgs.projectPath);
+      if (!resolved || !isPathInside(resolved, projectRoot)) {
+        throw new Error(`${IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE}: ${testArgs.projectPath} is outside the build root ${projectRoot}.`);
+      }
+      projectPath = relativeToRoot(projectRoot, resolved);
+    } else {
+      const first = targets.find((candidate) => candidate.projectPath && candidate.scheme && (!scheme || candidate.scheme === scheme));
+      projectPath = first?.projectPath ?? null;
+      scheme ??= first?.scheme ?? null;
+      bundleId = first?.bundleId ?? null;
+    }
+    if (!projectPath || !scheme) {
+      throw new Error(`${IOS_SIMULATOR_NO_BUILDABLE_TARGET_CODE}: no Xcode project and scheme to test under ${projectRoot}. Pass --scheme and --project.`);
+    }
+
+    const laneDevice = await ensureLaneDevice(runtime);
+    if (!laneDevice) throw new Error(AGENT_NO_LANE_DEVICE_MESSAGE);
+    const device = await resolveDevice(laneDevice.udid, runtime);
+    await ensureDeviceBooted(device);
+
+    const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
+    const cacheRoot = path.dirname(derivedDataPath);
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const resultsDir = path.join(cacheRoot, "test-results");
+    const logsDir = path.join(cacheRoot, "test-logs");
+    await Promise.all([derivedDataPath, resultsDir, logsDir].map((dir) => fs.promises.mkdir(dir, { recursive: true })));
+    // Result bundles are hundreds of megabytes each; a lane keeps its last three.
+    await pruneCacheEntries(resultsDir, 2);
+    await pruneCacheEntries(logsDir, 9);
+    const resultBundlePath = path.join(resultsDir, `${stamp}.xcresult`);
+    const logPath = path.join(logsDir, `${stamp}.log`);
+
+    const xcodebuildArgs = [
+      projectPath.endsWith(".xcworkspace") ? "-workspace" : "-project",
+      projectPath,
+      "-scheme",
+      scheme,
+      "-destination",
+      `platform=iOS Simulator,id=${device.udid}`,
+      "-derivedDataPath",
+      derivedDataPath,
+      "-parallel-testing-enabled",
+      "NO",
+      "-resultBundlePath",
+      resultBundlePath,
+    ];
+    if (testArgs.testPlan?.trim()) xcodebuildArgs.push("-testPlan", testArgs.testPlan.trim());
+    for (const id of testArgs.onlyTesting ?? []) if (id.trim()) xcodebuildArgs.push(`-only-testing:${id.trim()}`);
+    for (const id of testArgs.skipTesting ?? []) if (id.trim()) xcodebuildArgs.push(`-skip-testing:${id.trim()}`);
+    xcodebuildArgs.push(testArgs.buildOnly ? "build-for-testing" : "test");
+
+    const timeoutMs = Math.min(
+      Math.max(Number(testArgs.timeoutMs) || TEST_RUN_DEFAULT_TIMEOUT_MS, 60_000),
+      TEST_RUN_MAX_TIMEOUT_MS,
+    );
+    const startedAt = Date.now();
+    testRunInFlight = `lane ${runtime.key}, scheme ${scheme}`;
+    activeTestUdids.add(device.udid);
+    activeBuildDataPaths.set(derivedDataPath, (activeBuildDataPaths.get(derivedDataPath) ?? 0) + 1);
+    args.logger.info("apple.tests.start", { laneId: runtime.key, udid: device.udid, projectPath, scheme, derivedDataPath });
+    let exitCode: number | null = null;
+    let timedOut = false;
+    try {
+      const log = fs.createWriteStream(logPath);
+      const child = spawnProcess("xcodebuild", xcodebuildArgs, { cwd: projectRoot, stdio: ["ignore", "pipe", "pipe"], detached: true });
+      child.stdout?.pipe(log, { end: false });
+      child.stderr?.pipe(log, { end: false });
+      exitCode = await new Promise<number | null>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          timedOut = true;
+          signalChildProcessTree(child, "SIGTERM");
+        }, timeoutMs);
+        child.once("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
+        child.once("close", (code) => {
+          clearTimeout(timer);
+          resolve(typeof code === "number" ? code : null);
+        });
+      });
+      await new Promise<void>((resolve) => log.end(() => resolve()));
+    } finally {
+      activeTestUdids.delete(device.udid);
+      const remaining = (activeBuildDataPaths.get(derivedDataPath) ?? 1) - 1;
+      if (remaining > 0) activeBuildDataPaths.set(derivedDataPath, remaining);
+      else activeBuildDataPaths.delete(derivedDataPath);
+      maintenance?.touch(device.udid);
+    }
+    if (bundleId) laneDevices.noteAppInstalled({ udid: device.udid, bundleId });
+
+    const output = await fs.promises.readFile(logPath, "utf8").catch(() => "");
+    const executed = [...output.matchAll(/Executed (\d+) tests?, with (\d+) failures?/g)].pop();
+    const failingLines = output.split(/\r?\n/).filter((line) => (
+      /Test Case .* failed|: error:|\*\* TEST (FAILED|BUILD FAILED)|\*\* BUILD FAILED/.test(line)
+    ));
+    const tail = output.trimEnd().split(/\r?\n/).slice(-15);
+    const passed = exitCode === 0 && !timedOut;
+    const summary = [
+      timedOut ? `Timed out after ${Math.round(timeoutMs / 60_000)} min.` : null,
+      ...failingLines.slice(0, 30),
+      failingLines.length ? null : tail.join("\n"),
+    ].filter(Boolean).join("\n");
+    const result: AppleRunTestsResult = {
+      passed,
+      exitCode,
+      timedOut,
+      deviceUdid: device.udid,
+      deviceName: device.name,
+      scheme,
+      projectPath,
+      derivedDataPath,
+      resultBundlePath: fs.existsSync(resultBundlePath) ? resultBundlePath : null,
+      logPath,
+      testsExecuted: executed ? Number(executed[1]) : null,
+      testsFailed: executed ? Number(executed[2]) : null,
+      summary,
+      durationMs: Date.now() - startedAt,
+    };
+    args.logger.info("apple.tests.complete", {
+      laneId: runtime.key,
+      udid: device.udid,
+      passed,
+      exitCode,
+      timedOut,
+      testsExecuted: result.testsExecuted,
+      testsFailed: result.testsFailed,
+      durationMs: result.durationMs,
+    });
+    return result;
   };
 
   /* ───────────────────────── recording ───────────────────────── */
@@ -6261,6 +6555,38 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * udid is then passed in as `deviceUdid`, so no inner fallback can pick a
    * different one. User callers pass straight through.
    */
+  /* ───────────────────────── maintenance ───────────────────────── */
+
+  const isBusyHere = (udid: string): boolean => {
+    if (activeTestUdids.has(udid)) return true;
+    for (const runtime of runtimes.values()) {
+      if (runtime.streamStatus.running && runtime.streamStatus.deviceUdid === udid) return true;
+      const laneUdid = runtime.key ? laneDevices.get(runtime.key)?.udid ?? null : null;
+      if (laneUdid !== udid) continue;
+      if (runtime.activeLaunchId) return true;
+      if (recordings.active({ laneId: runtime.key })) return true;
+    }
+    return false;
+  };
+
+  const laneMaintenance = () => {
+    maintenance ??= createLaneDeviceMaintenance({
+      laneDevices,
+      run: (command, commandArgs, options) => run(command, commandArgs, options),
+      // `deviceStop` for the lane, as the owner's Stop would: the stream and the
+      // chat claim go first, then the power. The device stays the lane's.
+      powerOffDevice: async (device) => {
+        await deviceStop({ laneId: device.laneId, ignoreOwnership: true });
+      },
+      isBusyHere,
+      logger: args.logger,
+    });
+    return maintenance;
+  };
+  if (args.backgroundMaintenance && process.platform === "darwin" && args.laneDeviceStore) {
+    laneMaintenance().start();
+  }
+
   const guardAgentDeviceActions = <T extends Record<string, unknown>>(service: T): T => {
     const guarded: Record<string, unknown> = { ...service };
     const refuseForeign = async (udid: string): Promise<never> => {
@@ -6288,7 +6614,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         let laneDevice = laneDevices.get(runtime.key);
         if (explicit && explicit !== laneDevice?.udid) await refuseForeign(explicit);
         if (!laneDevice && mode === "drive") {
-          if (action === "launch" || action === "openDevice") {
+          if (AGENT_DEVICE_CREATING_ACTIONS.has(action)) {
             laneDevice = await ensureLaneDevice(runtime);
           } else {
             throw new Error(AGENT_NO_LANE_DEVICE_MESSAGE);
@@ -6354,6 +6680,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /** Unbind the lane's device and keep the simulator. The off card's "Choose another device". */
     deviceDetach: lifecycle.deviceDetach,
     deviceDeleteInstalled: lifecycle.deviceDeleteInstalled,
+    /** The cleanup pass now, plus an optional power-off of idle ADE devices. */
+    deviceCleanup,
+    /** The lane is being archived or deleted: let go of its device in this process. */
+    stopForLane,
+
+    /* Tests on the lane's own device, DerivedData in the lane's cache. */
+    runTests,
 
     /* Recording (unit 2C owns the implementation). */
     recordStart,
@@ -6495,6 +6828,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
+      maintenance?.stop();
       for (const runtime of runtimes.values()) {
         runtime.hub?.dispose();
         runtime.hub = null;

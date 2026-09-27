@@ -68,6 +68,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     deviceCreate: IPC.iosSimulatorDeviceCreate,
     deviceDelete: IPC.iosSimulatorDeviceDelete,
     deviceDetach: IPC.iosSimulatorDeviceDetach,
+    deviceCleanup: IPC.iosSimulatorDeviceCleanup,
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
     renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,

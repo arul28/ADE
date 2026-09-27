@@ -2336,14 +2336,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple stream-stop                      Stop the live view
 
   Per-lane devices:
-    $ ade apple device-create --text             Clone the project's last-used simulator
-    $ ade apple device-attach --simulator <id>   Bind an existing simulator to this lane
-    $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
+    $ ade apple device-create --text             Make a new, empty device for this lane
+    $ ade apple device-create --runtime "iOS 26.3" --device-type "iPad Air 11-inch (M4)" --text
+    $ ade apple device-attach --simulator <id>   Bind an installed simulator the user named
+    $ ade apple start [--udid <id>|--runtime <r>] Attach or create, boot, wait, and stream
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
     $ ade apple device-list --installed --text   Installed simulators for a picker
     $ ade apple device-list --text               The one device this lane owns
     $ ade apple device-detach --text             Give up the lane's device; the simulator stays installed
-    $ ade apple device-delete --text             Delete a clone (attached devices refuse)
+    $ ade apple device-delete --text             Delete the lane's ADE device (attached devices refuse)
+    $ ade apple device-cleanup --text            Delete leftover ADE devices, release ended lanes
+    $ ade apple test --scheme ADE --text         xcodebuild test on the lane's device, cache in the lane
 
   Recording:
     $ ade apple record-start --text              Start a manual recording
@@ -11924,11 +11927,66 @@ function buildIosSimulatorPlan(
     const from =
       readValue(args, ["--from", "--simulator"]) ?? readIosSimulatorDevice(args);
     const name = readValue(args, ["--name"]);
+    const runtime = readValue(args, ["--runtime"]);
+    const deviceType = readValue(args, ["--device-type", "--model", "--type"]);
     return iosAction("Apple device create", "deviceCreate", {
       ...(laneId ? { laneId } : {}),
       ...(from ? { from } : {}),
+      ...(runtime ? { runtime } : {}),
+      ...(deviceType ? { deviceType } : {}),
       ...(name ? { name } : {}),
     });
+  }
+  if (sub === "device-cleanup" || sub === "cleanup") {
+    const powerOffIdle = readFlag(args, ["--power-off-idle", "--power-off"]);
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.deviceCleanup");
+    return {
+      kind: "execute",
+      label: "Apple device cleanup",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      steps: [
+        iosStep("result", "deviceCleanup", collectGenericObjectArgs(args, {
+          ...(laneId ? { laneId } : {}),
+          ...(powerOffIdle ? { powerOffIdle: true } : {}),
+        })),
+      ],
+    };
+  }
+  if (sub === "test" || sub === "tests") {
+    const readList = (names: string[]): string[] => {
+      const values: string[] = [];
+      for (let index = 0; index < args.length; index += 1) {
+        if (names.includes(args[index]!) && args[index + 1]) values.push(...args[index + 1]!.split(","));
+      }
+      return values.map((value) => value.trim()).filter(Boolean);
+    };
+    const onlyTesting = readList(["--only", "--only-testing"]);
+    const skipTesting = readList(["--skip", "--skip-testing"]);
+    const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.runTests");
+    return {
+      kind: "execute",
+      label: "Apple tests",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      progressNotice: "apple test: building and running tests on the lane's device… the summary prints when xcodebuild finishes.",
+      steps: [
+        iosStep("result", "runTests", collectGenericObjectArgs(args, {
+          ...(laneId ? { laneId } : {}),
+          ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
+          ...rootArgs(),
+          ...(readValue(args, ["--target"]) ? { targetId: readValue(args, ["--target"]) } : {}),
+          ...(readValue(args, ["--scheme"]) ? { scheme: readValue(args, ["--scheme"]) } : {}),
+          ...(readValue(args, ["--project", "--xcodeproj", "--workspace"])
+            ? { projectPath: readValue(args, ["--project", "--xcodeproj", "--workspace"]) }
+            : {}),
+          ...(readValue(args, ["--test-plan"]) ? { testPlan: readValue(args, ["--test-plan"]) } : {}),
+          ...(onlyTesting.length ? { onlyTesting } : {}),
+          ...(skipTesting.length ? { skipTesting } : {}),
+          ...(readFlag(args, ["--build-only", "--build-for-testing"]) ? { buildOnly: true } : {}),
+          ...(timeoutMs == null ? {} : { timeoutMs }),
+        })),
+      ],
+    };
   }
   if (sub === "device-attach") {
     const simulator = requireValue(
@@ -11942,22 +12000,37 @@ function buildIosSimulatorPlan(
     });
   }
   if (sub === "start") {
-    // `--create` first: `firstPositional` would otherwise eat its value.
+    // The value flags first: `firstPositional` would otherwise eat their values.
     const sourceUdid = readValue(args, ["--create", "--from"]);
+    const runtime = readValue(args, ["--runtime"]);
+    const deviceType = readValue(args, ["--device-type", "--model", "--type"]);
     const udid = readValue(args, ["--udid", "--simulator", "--device"]) ?? firstPositional(args);
-    if (udid && sourceUdid) {
-      throw new CliUsageError("apple start takes --udid (attach) or --create <sourceUdid> (clone), not both.");
+    const creating = Boolean(sourceUdid || runtime || deviceType);
+    if (udid && creating) {
+      throw new CliUsageError("apple start takes --udid (attach) or --runtime/--device-type/--create (a new device), not both.");
     }
     return iosAction("Apple device start", "deviceStart", {
       ...(laneId ? { laneId } : {}),
       ...(udid ? { udid } : {}),
-      ...(sourceUdid ? { create: { sourceUdid } } : {}),
+      ...(creating
+        ? {
+          create: {
+            ...(sourceUdid ? { sourceUdid } : {}),
+            ...(runtime ? { runtime } : {}),
+            ...(deviceType ? { deviceType } : {}),
+          },
+        }
+        : {}),
     });
   }
   if (sub === "device-list") {
     const installed = readFlag(args, ["--installed"]);
+    const runtimes = readFlag(args, ["--runtimes"]);
+    const disk = readFlag(args, ["--disk", "--storage"]);
     return iosAction("Apple device list", "deviceList", {
       ...(installed ? { installed: true } : {}),
+      ...(runtimes ? { runtimes: true } : {}),
+      ...(disk ? { disk: true } : {}),
       ...(laneId ? { laneId } : {}),
     });
   }
