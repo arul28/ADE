@@ -1,6 +1,5 @@
 import type {
   AppleDeviceDiskUsage,
-  AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
   AppleSimulatorOwner,
@@ -88,23 +87,6 @@ export function partitionApplePickerDevices(input: ApplePickerPartitionInput): A
   };
 }
 
-/** The runtime and model the Create control starts on. */
-export type AppleNewDeviceSpec = { runtime: string; deviceType: string };
-
-/**
- * The Create control's resting choice: the newest installed iOS runtime (the
- * service lists it first), and the first iPhone that runtime runs, which is
- * the newest one. The service applies the same default when nothing is named.
- */
-export function appleDefaultNewDeviceSpec(
-  runtimes: readonly AppleInstalledRuntime[] | null | undefined,
-): AppleNewDeviceSpec | null {
-  const runtime = (runtimes ?? []).find((entry) => entry.deviceTypes.length > 0);
-  if (!runtime) return null;
-  const type = runtime.deviceTypes.find((entry) => entry.family === "iphone") ?? runtime.deviceTypes[0]!;
-  return { runtime: runtime.identifier, deviceType: type.identifier };
-}
-
 /**
  * Bytes as the owner reads them: `18.2 GB`, `612 MB`.
  *
@@ -114,7 +96,7 @@ export function appleDefaultNewDeviceSpec(
  * count, because a device directory measured in bytes is a directory that is
  * not really there.
  */
-function appleDiskLabel(bytes: number): string | null {
+export function appleDiskLabel(bytes: number): string | null {
   if (!Number.isFinite(bytes) || bytes < 0) return null;
   const KIB = 1024;
   if (bytes < KIB) return "0 KB";

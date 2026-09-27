@@ -8,6 +8,8 @@ import React, {
 } from "react";
 import { AppleLogo } from "../ui/appleIcons";
 import type {
+  AppleDeviceCleanupResult,
+  AppleNewDeviceSpec,
   AppleDeviceOrientation,
   AppleDeviceStartArgs,
   AppleHardwareButtonName,
@@ -28,7 +30,6 @@ import {
 } from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
-import type { AppleNewDeviceSpec } from "./applePickerInventory";
 import { showToast } from "../app/toast/toastStore";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
@@ -109,6 +110,12 @@ function helperAvailable(status: IosSimulatorStatus | null): boolean {
   return helper ? helper.available : true;
 }
 
+/** Why Clean up powered nothing off, in the words the toast uses. */
+const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOffSkipped"]>, string> = {
+  "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
+  "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
+};
+
 export function AppleDevicePane({
   sessionId,
   laneId,
@@ -171,6 +178,7 @@ export function AppleDevicePane({
     ownership,
     measuringDisk,
     runtimes,
+    defaultNewDevice,
     refreshing,
     bootedRead,
     refreshList,
@@ -497,14 +505,32 @@ export function AppleDevicePane({
       .deviceCleanup({ ...(laneId ? { laneId } : {}), powerOffIdle: true }, runtimePinRef.current)
       .then((result) => {
         const parts = [
-          result.deleted.length ? `${result.deleted.length} deleted` : null,
-          result.poweredOff.length ? `${result.poweredOff.length} powered off` : null,
-          result.released.length ? `${result.released.length} released` : null,
+          result.deleted.length ? `deleted ${result.deleted.length}` : null,
+          result.poweredOff.length ? `powered off ${result.poweredOff.length}` : null,
+          result.released.length ? `released ${result.released.length}` : null,
         ].filter(Boolean);
-        showToast({
-          title: parts.length ? `Simulators: ${parts.join(", ")}` : "Nothing to clean up",
-          ...(result.errors.length ? { message: result.errors.map((entry) => entry.message).join("\n"), tone: "error" as const } : {}),
-        });
+        const listUnreadable = result.errors.some((entry) => entry.udid === null);
+        const deviceErrors = result.errors.filter((entry) => entry.udid !== null).length;
+        const skippedWhy = result.powerOffSkipped ? CLEANUP_SKIP_REASON[result.powerOffSkipped] : null;
+        // Counts only. The raw simctl errors are in the log, not in the toast.
+        if (listUnreadable) {
+          showToast({ id: "apple-device-cleanup", tone: "warning", title: "Could not read the simulator list", message: "Nothing was cleaned up. The ADE log has the details.", durationMs: 18_000 });
+        } else if (deviceErrors) {
+          showToast({
+            id: "apple-device-cleanup",
+            tone: "warning",
+            title: parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : "Simulators could not be cleaned up",
+            message: `${deviceErrors} could not be cleaned up. The ADE log has the details.`,
+            durationMs: 18_000,
+          });
+        } else {
+          showToast({
+            id: "apple-device-cleanup",
+            tone: "success",
+            title: parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : "No simulators to clean up",
+            ...(skippedWhy ? { message: skippedWhy } : {}),
+          });
+        }
       })
       .catch((cause: unknown) => setError(cause))
       .finally(() => {
@@ -709,7 +735,7 @@ export function AppleDevicePane({
   /*
    * The lane device row carries no CoreSimulator type, so read it off the
    * installed entry with the same udid. That entry is Apple's own record; the
-   * lane device's NAME is whatever ADE or a person called the clone.
+   * lane device's NAME is whatever ADE or a person called the device.
    */
   const deviceTypeIdentifier = laneDevice
     ? installed.find((entry) => entry.udid === laneDevice.udid)?.deviceTypeIdentifier ?? null
@@ -722,7 +748,7 @@ export function AppleDevicePane({
    * Duo work.
    *
    * `deviceName` is deliberately NOT passed to the matcher: it is the lane
-   * device's display name ("ADE · <lane>" for a clone), not Apple's device-type
+   * device's display name ("ADE · <lane>" for an ADE device), not Apple's device-type
    * name, so a lane called "duo-hinge" would otherwise mark an iPhone 17 as
    * foldable and render the Duo body on a rigid device.
    */
@@ -766,6 +792,7 @@ export function AppleDevicePane({
             disk={disk}
             measuringDisk={measuringDisk}
             runtimes={runtimes}
+            defaultNewDevice={defaultNewDevice}
             ownership={ownership}
             pending={pendingStart}
             refreshing={refreshing}

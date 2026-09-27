@@ -890,7 +890,7 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "github_pr_stacks",
   "github_pr_stack_entries",
   "github_webhook_deliveries",
-  // A lane's cloned simulator lives in ONE Mac's CoreSimulator device set, so
+  // A lane's simulator lives in ONE Mac's CoreSimulator device set, so
   // its udid means nothing on another machine. Replicating it would make a
   // second machine (or a phone) believe the lane owns a device it cannot see.
   "lane_apple_devices",
@@ -2329,7 +2329,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
    * `lane_id` is the primary key because the model is one device per lane —
    * and deliberately the ONLY unique index on the table: cr-sqlite refuses a
    * CRR with "unique indices besides the primary key", and a second index on
-   * `udid` (tempting, since two lanes must not share a clone) would be exactly
+   * `udid` (tempting, since two lanes must not share a device) would be exactly
    * that. The registry enforces the udid rule in code instead.
    *
    * Excluded from CRR below (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`): a simulator
@@ -2349,6 +2349,10 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
       template_udid text
     )
   `);
+  // Bundle ids ADE installed on an ATTACHED device, as a JSON array. Kept on
+  // the local-only row, not in the synced kv table: a udid means nothing on
+  // another machine, and the list must not replicate or race across peers.
+  safeAddColumn(db, "alter table lane_apple_devices add column ade_installed_bundle_ids text");
 
   db.run(`
     create table if not exists terminal_sessions (

@@ -4,6 +4,7 @@ import type {
   AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
+  AppleNewDeviceSpec,
   AppleSimulatorOwner,
   AppleSimulatorOwnershipInfo,
   IosSimulatorStatus,
@@ -35,6 +36,8 @@ export type AppleLaneDeviceList = {
   measuringDisk: boolean;
   /** Installed runtimes and their device types, for the Create control. */
   runtimes: AppleInstalledRuntime[];
+  /** The service's default runtime and model, where the Create control starts. */
+  defaultNewDevice: AppleNewDeviceSpec | null;
   refreshing: boolean;
   /**
    * The last list read that found the lane's device booted, else null. A new
@@ -75,6 +78,7 @@ export function useAppleLaneDeviceList({
   const [disk, setDisk] = useState<AppleDeviceDiskUsage | null>(null);
   const [ownership, setOwnership] = useState<AppleSimulatorOwnershipInfo[]>([]);
   const [runtimes, setRuntimes] = useState<AppleInstalledRuntime[]>([]);
+  const [defaultNewDevice, setDefaultNewDevice] = useState<AppleNewDeviceSpec | null>(null);
   const [measuringDisk, setMeasuringDisk] = useState(false);
   const [listNonce, setListNonce] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -127,6 +131,7 @@ export function useAppleLaneDeviceList({
         if (cancelled) return;
         setInstalled(next.installed);
         setRuntimes(next.runtimes ?? []);
+        setDefaultNewDevice(next.defaultNewDevice ?? null);
         setLaneDevice(next.lane);
         setBootedRead(next.lane && laneDeviceBooted(next) ? { udid: next.lane.udid } : null);
         setOwners(next.owners ?? []);
@@ -138,7 +143,12 @@ export function useAppleLaneDeviceList({
          * on this owner's machine is the difference between a list that
          * paints and a list that hangs.
          */
-        if (next.lane || next.installed.length === 0) return;
+        if (next.lane || next.installed.length === 0) {
+          // No second read: drop the last one, or deleted devices keep their tags.
+          setDisk(null);
+          setOwnership([]);
+          return;
+        }
         setMeasuringDisk(true);
         void window.ade.iosSimulator
           .deviceList(
@@ -176,6 +186,7 @@ export function useAppleLaneDeviceList({
     ownership,
     measuringDisk,
     runtimes,
+    defaultNewDevice,
     refreshing,
     bootedRead,
     refreshList,

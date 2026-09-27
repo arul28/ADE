@@ -7,6 +7,8 @@ import type {
   AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
+  AppleLaneDeviceFamily,
+  AppleNewDeviceSpec,
   AppleSimulatorOwner,
   AppleSimulatorOwnershipInfo,
 } from "../../../shared/types/iosSimulator";
@@ -38,12 +40,11 @@ import { isAppleSimulatorBooted } from "./appleDeviceState";
 import { DangerConfirmMenuItem } from "./DangerConfirmMenuItem";
 import { DrawerMenu, type DrawerMenuOption } from "./drawer/drawerPrimitives";
 import {
-  appleDefaultNewDeviceSpec,
   appleDeviceDiskLabel,
+  appleDiskLabel,
   appleDiskTotalLabel,
   appleOwnerLaneLabel,
   partitionApplePickerDevices,
-  type AppleNewDeviceSpec,
 } from "./applePickerInventory";
 
 /**
@@ -71,6 +72,8 @@ export type AppleDevicePickerProps = {
   measuringDisk?: boolean;
   /** `deviceList({ runtimes: true }).runtimes`: what a new device can run. */
   runtimes?: readonly AppleInstalledRuntime[] | null;
+  /** `deviceList({ runtimes: true }).defaultNewDevice`: where the Create control starts. */
+  defaultNewDevice?: AppleNewDeviceSpec | null;
   /** `deviceList({ disk: true }).ownership`: who each device belongs to. */
   ownership?: readonly AppleSimulatorOwnershipInfo[] | null;
   /** The udid a start is in flight for, or `"create"` while making a new device. */
@@ -133,6 +136,7 @@ export function AppleDevicePicker({
   disk,
   measuringDisk = false,
   runtimes,
+  defaultNewDevice,
   ownership,
   pending,
   refreshing,
@@ -145,10 +149,6 @@ export function AppleDevicePicker({
   playing = true,
 }: AppleDevicePickerProps) {
   const theme = useAppStore((s) => s.theme);
-  const templates = useMemo(
-    () => [...installed].sort((a, b) => a.name.localeCompare(b.name)),
-    [installed],
-  );
 
   const partition = useMemo(
     () => partitionApplePickerDevices({ installed, owners, laneDevice }),
@@ -223,6 +223,7 @@ export function AppleDevicePicker({
 
           <CreateSection
             runtimes={runtimes ?? []}
+            defaultSpec={defaultNewDevice ?? null}
             missing={partition.laneDeviceMissing ? laneDevice : null}
             disabled={busy}
             creating={pending === "create"}
@@ -233,7 +234,7 @@ export function AppleDevicePicker({
             disk={disk}
             measuringDisk={measuringDisk}
             ownership={ownership ?? []}
-            installed={templates}
+            installedCount={installed.length}
             cleaning={cleaning}
             disabled={busy}
             {...(onCleanup ? { onCleanup } : {})}
@@ -551,6 +552,12 @@ function DeviceMenu({
   );
 }
 
+const FAMILY_GROUP_LABEL: Record<AppleLaneDeviceFamily, string> = {
+  iphone: "iPhone",
+  ipad: "iPad",
+  watch: "Watch",
+};
+
 /**
  * Make a new device, at the foot of the page where the owner put it.
  *
@@ -562,36 +569,39 @@ function DeviceMenu({
  */
 function CreateSection({
   runtimes,
+  defaultSpec,
   missing,
   disabled,
   creating,
   onCreate,
 }: {
   runtimes: readonly AppleInstalledRuntime[];
+  /** The service's default; the first runtime and its first iPhone when absent. */
+  defaultSpec: AppleNewDeviceSpec | null;
   /** Set when the lane's registry row points at a simulator that is gone. */
   missing: AppleLaneDevice | null | undefined;
   disabled: boolean;
   creating: boolean;
   onCreate: (spec: AppleNewDeviceSpec) => void;
 }) {
-  const fallback = appleDefaultNewDeviceSpec(runtimes);
   const [runtimeId, setRuntimeId] = useState<string | null>(null);
   const [typeId, setTypeId] = useState<string | null>(null);
-  const runtime = runtimes.find((entry) => entry.identifier === runtimeId)
-    ?? runtimes.find((entry) => entry.identifier === fallback?.runtime)
+  const creatable = runtimes.filter((entry) => entry.deviceTypes.length > 0);
+  const runtime = creatable.find((entry) => entry.identifier === (runtimeId ?? defaultSpec?.runtime))
+    ?? creatable[0]
     ?? null;
   const types = runtime?.deviceTypes ?? [];
-  const deviceType = types.find((entry) => entry.identifier === typeId)
+  // The service's default model applies only to the service's default runtime.
+  const wantedType = typeId ?? (runtime?.identifier === defaultSpec?.runtime ? defaultSpec?.deviceType : null);
+  const deviceType = types.find((entry) => entry.identifier === wantedType)
     ?? types.find((entry) => entry.family === "iphone")
     ?? types[0]
     ?? null;
-  const runtimeOptions: DrawerMenuOption<string>[] = runtimes
-    .filter((entry) => entry.deviceTypes.length > 0)
-    .map((entry) => ({ value: entry.identifier, label: entry.name }));
+  const runtimeOptions: DrawerMenuOption<string>[] = creatable.map((entry) => ({ value: entry.identifier, label: entry.name }));
   const typeOptions: DrawerMenuOption<string>[] = types.map((entry) => ({
     value: entry.identifier,
     label: entry.name,
-    group: entry.family === "ipad" ? "iPad" : entry.family === "watch" ? "Watch" : "iPhone",
+    group: FAMILY_GROUP_LABEL[entry.family],
   }));
   if (!runtime) return null;
   return (
@@ -672,7 +682,7 @@ function StorageSection({
   disk,
   measuringDisk,
   ownership,
-  installed,
+  installedCount,
   cleaning,
   disabled,
   onCleanup,
@@ -680,7 +690,7 @@ function StorageSection({
   disk: AppleDeviceDiskUsage | null | undefined;
   measuringDisk: boolean;
   ownership: readonly AppleSimulatorOwnershipInfo[];
-  installed: readonly AppleInstalledSimulator[];
+  installedCount: number;
   cleaning: boolean;
   disabled: boolean;
   onCleanup?: () => void;
@@ -692,14 +702,12 @@ function StorageSection({
     (sum, entry) => sum + (disk?.devices.find((row) => row.udid === entry.udid)?.bytes ?? 0),
     0,
   );
-  const leftoverLabel = leftovers.length && disk
-    ? appleDeviceDiskLabel({ ...disk, devices: [{ udid: "_", bytes: leftoverBytes }] }, "_")
-    : null;
+  const leftoverLabel = leftovers.length && disk ? appleDiskLabel(leftoverBytes) : null;
   const unmarked = ownership.filter((entry) => entry.looksLikeAde).length;
   const summary = measuringDisk && !total
     ? "Measuring…"
     : [
-      total ? `${installed.length} simulators use ${total}` : `${installed.length} simulators`,
+      total ? `${installedCount} simulators use ${total}` : `${installedCount} simulators`,
       leftovers.length ? `${leftovers.length} leftover${leftoverLabel ? ` (${leftoverLabel})` : ""}` : null,
       unmarked ? `${unmarked} old ADE?` : null,
     ].filter(Boolean).join(" · ");

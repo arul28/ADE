@@ -191,6 +191,8 @@ export function createAppleDeviceNamespace(
         // The picker's second, disk-only read has to reach the host too, or the
         // web client's inventory line is the one surface with no disk number.
         disk: (args as { disk?: unknown } | null | undefined)?.disk === true,
+        // Without it the web picker has no runtimes and hides Create.
+        runtimes: (args as { runtimes?: unknown } | null | undefined)?.runtimes === true,
       },
       unavailable(NO_HOST),
       true,

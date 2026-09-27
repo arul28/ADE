@@ -1,4 +1,4 @@
-import { readLaneAppleDevice, type LaneDeviceStore } from "../ios/laneDeviceRegistry";
+import { readLaneAppleDevice, type LaneDeviceStore } from "../ios/laneDeviceRows";
 
 /**
  * The turn-time hint that tells an agent its lane has an ADE Apple device.

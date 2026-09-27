@@ -97,12 +97,9 @@ import {
   resolveAppliedAutoLaneBranchFragment,
 } from "../../../shared/laneNameFallback";
 
-import {
-  appleLaneDerivedDataPath,
-  endLaneDeviceOnDisk,
-  readLaneAppleDevice,
-  releaseLaneAppleDevice,
-} from "../ios/laneDeviceRegistry";
+import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
+import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
+import { bareSimulatorPowerOff } from "../ios/simulatorPower";
 
 /** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
 const execFileAsync = promisify(execFileCallback);
@@ -2933,20 +2930,40 @@ export function createLaneService({
     // the table's primary key, so keep the keeper's binding when it already has
     // one and only adopt the duplicate's otherwise. Without this the duplicate's
     // row is dropped by the cleanup below and the keeper forgets its simulator,
-    // so a later lane delete never releases the clone.
+    // so a later lane delete never releases the device.
     const keeperHasAppleDevice = db.get<{ one: number }>(
       "select 1 as one from lane_apple_devices where lane_id = ? limit 1",
       [keeperId],
     );
     if (keeperHasAppleDevice) {
-      // Both lanes had a device. The keeper's stays; the duplicate's is deleted
-      // after this transaction, not just forgotten — a dropped row with its
-      // simulator left on disk is exactly how a device leaks.
-      const orphan = readLaneAppleDevice(db, duplicateId);
+      // Both lanes had a device. The keeper's stays; the duplicate's is deleted,
+      // not just forgotten — a dropped row with its simulator left on disk is
+      // exactly how a device leaks. This runs inside the caller's transaction,
+      // so the delete waits until it has settled and checks again then: a
+      // rollback brings the row back, and a udid another lane holds (the keeper
+      // included) is never touched.
+      const orphan = readLaneAppleDeviceRecord(db, duplicateId);
       db.run("delete from lane_apple_devices where lane_id = ?", [duplicateId]);
       if (orphan && process.platform === "darwin") {
         setTimeout(() => {
-          void endLaneDeviceOnDisk({ device: orphan, run: runAppleCommand, store: db, logger }).catch(() => undefined);
+          try {
+            if (readLaneAppleDeviceRecord(db, duplicateId)) return;
+            if (anotherLaneHoldsUdid(db, orphan.device.udid, duplicateId)) return;
+          } catch (error) {
+            // A read that failed says nothing; nothing is deleted on a guess.
+            logger.warn("lane.merge.apple_device_check_failed", {
+              laneId: duplicateId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+          void endLaneDeviceOnDisk({
+            device: orphan.device,
+            adeInstalledBundleIds: orphan.adeInstalledBundleIds,
+            run: runAppleCommand,
+            powerOff: bareSimulatorPowerOff(runAppleCommand),
+            logger,
+          }).catch(() => undefined);
         }, 0);
       }
     } else {
@@ -4514,21 +4531,6 @@ export function createLaneService({
     return row;
   };
 
-  /**
-   * The archive itself: stop the lane's running work, run whatever the caller
-   * wants done between that and the status write, then write the archived
-   * status, invalidate caches, announce it.
-   *
-   * Takes the already-validated row rather than re-reading it: the caller
-   * guards first, and `archive` awaits a teardown in between, so a second read
-   * here could find the lane gone and throw "Lane not found" out of an archive
-   * that had already stopped the lane's work.
-   *
-   * `afterStopWork` is how the public `archive` gets its environment teardown to
-   * run AFTER the processes are stopped — a `compose down` racing live PTYs
-   * still bound to the stack is how services came back up half-dead.
-   * `archiveAndReclaim` passes nothing and runs its own teardown later.
-   */
   /** `simctl` for the Apple device release, outside any simulator service. */
   const runAppleCommand = async (
     command: string,
@@ -4561,9 +4563,9 @@ export function createLaneService({
       projectRoot,
       store: db,
       run: runAppleCommand,
-      removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),
+      removeDirectory: (directory: string) => fs.promises.rm(directory, { recursive: true, force: true }),
       removeRecordings: options.removeRecordings,
-      derivedDataDirectories: options.worktreePath && path.resolve(options.worktreePath) !== path.resolve(projectRoot)
+      derivedDataDirectories: options.worktreePath && !pathsEqual(path.resolve(options.worktreePath), path.resolve(projectRoot))
         ? [appleLaneDerivedDataPath(options.worktreePath)]
         : [],
       logger,
@@ -4575,6 +4577,21 @@ export function createLaneService({
     });
   };
 
+  /**
+   * The archive itself: stop the lane's running work, run whatever the caller
+   * wants done between that and the status write, then write the archived
+   * status, invalidate caches, announce it.
+   *
+   * Takes the already-validated row rather than re-reading it: the caller
+   * guards first, and `archive` awaits a teardown in between, so a second read
+   * here could find the lane gone and throw "Lane not found" out of an archive
+   * that had already stopped the lane's work.
+   *
+   * `afterStopWork` is how the public `archive` gets its environment teardown to
+   * run AFTER the processes are stopped — a `compose down` racing live PTYs
+   * still bound to the stack is how services came back up half-dead.
+   * `archiveAndReclaim` passes nothing and runs its own teardown later.
+   */
   const archiveLaneCore = async (
     laneId: string,
     row: LaneRow,
