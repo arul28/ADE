@@ -3710,8 +3710,9 @@ function withAppleAgentCaller(
  * Two things, the same for every action on the domain:
  *
  * - `agentCaller` is set, never taken from the caller. The service reads it on
- *   `deviceAttach` and `deviceStart`: an agent may attach only the simulator
- *   its lane already holds, and a lane with no device gets its own clone. The
+ *   `deviceAttach`, `deviceStart` and `deviceCleanup`: an agent may attach a
+ *   simulator no lane holds but never another lane's, a lane with no device
+ *   gets its own new one, and an agent's cleanup powers off only its lane's. The
  *   live failure this closes: an agent in a lane with no device read the
  *   booted simulators off `ade apple devices`, ran `ade apple start --udid`
  *   on one another session's `xcodebuild test` was using, and drove it.

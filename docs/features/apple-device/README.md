@@ -76,15 +76,32 @@ stopped first through `teardownDeps.iosSimulatorService.stopForLane`):
 
 - An ADE device is powered off and deleted, with all its data.
 - An attached device is the user's. ADE uninstalls only the apps ADE installed
-  on it (recorded per udid in KV `apple:ade-installed-apps` at install time),
-  powers it off, and unbinds it. ADE never deletes it.
+  on it, powers it off, and unbinds it. ADE never deletes it. An install counts
+  as ADE's only when `simctl get_app_container` said the app was absent before
+  and present after (a check that cannot answer counts as "the user had it");
+  the list lives on the lane's local-only row
+  (`ade_installed_bundle_ids`), never in the synced `kv` table. ADE waits five
+  seconds after the last uninstall before the power-off: on iOS 26.3 a
+  shutdown straight after `simctl uninstall` sometimes brought the app back.
+- When another lane holds the same udid (should not happen, has happened), the
+  ending lane only drops its row and the device is left alone.
+- When the delete fails, or an app ADE installed is still there after the
+  uninstall, the row is kept (with the apps still left). The lane has ended, so
+  the cleanup pass tries again. The row is removed by lane AND udid, so a new
+  device an unarchived lane got meanwhile is never the one removed.
 - The lane's build cache, `<worktree>/.ade/cache/ios-simulator/DerivedData`, is
   deleted. So are test logs and result bundles beside it.
 - Recordings stay on archive (they are proof) and go on delete.
 
 An unarchived lane gets a new device on the next ask. When a duplicate lane is
 merged into its keeper and both had a device, the duplicate's device is deleted,
-not just forgotten.
+not just forgotten. The delete runs after the merge transaction settles, and
+not at all when the row came back in a rollback or the keeper holds the udid.
+
+The module split: `appleSimulatorCatalog.ts` parses `simctl` (devices,
+runtimes, `du`) and picks the runtime and model; `appleDeviceMarker.ts` owns the
+marker; `laneDeviceRows.ts` owns the rows; `laneDeviceRelease.ts` ends a lane on
+disk; `appleTestRun.ts` runs `xcodebuild test`.
 
 ### Ownership marker and the cleanup pass
 
@@ -103,12 +120,29 @@ anything when `simctl list` cannot be read.
 - A row whose simulator no longer exists is dropped.
 - A row whose lane is archived or gone is released, as above.
 - A marked device of this project that no live lane holds is deleted (or
-  re-adopted, when its lane is live and lost only its row). A marked device of a
-  project whose root no longer exists is deleted too. A marker younger than
-  five minutes is skipped, because create writes the marker before the row.
+  re-adopted, when its lane is live and lost only its row). A marker younger than
+  five minutes is skipped, because create writes the marker before the row. The
+  pass reads the rows again right before each delete, so a device another
+  process re-adopted or attached meanwhile is kept.
+- Another project's marked devices are never touched, even when that project
+  looks gone (it may be moved or on an unmounted volume). The storage view
+  lists them.
+
+`device-detach` of an ADE device stamps the marker `detachedAt`. The device is
+then a leftover: it is never re-adopted, and the pass deletes it five minutes
+after the detach unless a lane picks it again. Attaching this project's marked
+device (the picker, or an agent for a leftover) makes it that lane's ADE device
+again (`origin: created`) and rewrites the marker. Another project's ADE device
+attaches as `attached`, marker untouched, so this project never deletes it; an
+agent may not attach one at all. Detaching an ATTACHED device uninstalls the
+apps ADE installed on it in the background and leaves its power state as it was.
 
 `ade apple device-cleanup` and the picker's **Clean up** run it on demand, with
-`--power-off-idle`.
+`--power-off-idle`. A requested power-off always runs, even when a background
+pass is already in flight. For an agent caller, the power-off reaches only its
+own lane's device. When the power-off is skipped as a whole (Simulator.app is
+open, or `ps` failed), the result says so in `powerOffSkipped` and the toast
+tells the user.
 
 ### Idle power-off
 
@@ -121,7 +155,10 @@ resolves the lane, including the pane's status poll while it is on screen, and o
 every tick while this process streams, records, tests or launches on the device.
 It is a file, not memory, so the desktop and the brain see each other's use. A
 running `xcodebuild`, `simctl` or `xctest` that names the device by udid or
-`name=` also counts. Attached devices are never powered off by the timer.
+`name=` also counts. While Simulator.app is running, nothing is powered off: a
+person may be driving a device in its window, which leaves no trace ADE can
+read. The power-off names the udid the pass checked. Attached devices are never
+powered off by the timer.
 
 ### Tests
 
@@ -129,7 +166,7 @@ running `xcodebuild`, `simctl` or `xctest` that names the device by udid or
 `-parallel-testing-enabled NO`, DerivedData in the lane's cache, and a result
 bundle under `.ade/cache/ios-simulator/test-results` (the newest three kept).
 Output streams to `.ade/cache/ios-simulator/test-logs/<stamp>.log`. One run at a
-time per service (`APPLE_TEST_RUN_BUSY`). A failing test resolves with
+time per ADE runtime (`APPLE_TEST_RUN_BUSY`), claimed before the device boots. A failing test resolves with
 `passed: false`, the failing lines and the log path. Default timeout 30 minutes,
 at most 2 hours.
 
@@ -174,7 +211,7 @@ session that still reads a device no lane holds.
 **One lane owns a device at a time.** `device-attach` on a simulator another
 lane holds MOVES the binding rather than adding a second one: the losing lane's
 stream and session are released, its row is re-keyed to the new lane in one
-statement, and `origin`/`template_udid` travel with the device so an ADE device stays
+statement, and `origin`/`ade_installed_bundle_ids` travel with the device so an ADE device stays
 ADE's to delete. The simulator is NOT powered off — the new owner is about to
 drive it. The losing lane gets `apple.device.state` `phase: "released"` and
 re-lists, which lands it on the picker. Attaching the device a lane already

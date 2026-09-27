@@ -27,7 +27,7 @@ import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
  *   installed with everything on it. This is what "how do I unclaim?" was
  *   missing. While a session is live it confirms first: releasing ends that
  *   session, which the pane's own running path also gates behind a confirm.
- * - **Delete device…** — only ever offered for an ADE CLONE. It is the one
+ * - **Delete device…** — only ever offered for a device ADE MADE. It is the one
  *   action that frees disk and destroys data, so it lives behind the same
  *   two-step inline confirmation the device picker uses. An attached simulator
  *   never gets the row at all (ADE only detaches what it did not create).

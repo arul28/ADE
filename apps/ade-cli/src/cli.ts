@@ -11953,15 +11953,16 @@ function buildIosSimulatorPlan(
     };
   }
   if (sub === "test" || sub === "tests") {
-    const readList = (names: string[]): string[] => {
-      const values: string[] = [];
-      for (let index = 0; index < args.length; index += 1) {
-        if (names.includes(args[index]!) && args[index + 1]) values.push(...args[index + 1]!.split(","));
-      }
-      return values.map((value) => value.trim()).filter(Boolean);
-    };
+    // Each value is read ONCE: `readValue` consumes the flag from `args`.
+    const readList = (names: string[]): string[] =>
+      readRepeatedValues(args, names).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+    const targetId = readValue(args, ["--target"]);
+    const scheme = readValue(args, ["--scheme"]);
+    const projectPath = readValue(args, ["--project", "--xcodeproj", "--workspace"]);
+    const testPlan = readValue(args, ["--test-plan"]);
     const onlyTesting = readList(["--only", "--only-testing"]);
     const skipTesting = readList(["--skip", "--skip-testing"]);
+    const buildOnly = readFlag(args, ["--build-only", "--build-for-testing"]);
     const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
     const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.runTests");
     return {
@@ -11974,30 +11975,17 @@ function buildIosSimulatorPlan(
           ...(laneId ? { laneId } : {}),
           ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
           ...rootArgs(),
-          ...(readValue(args, ["--target"]) ? { targetId: readValue(args, ["--target"]) } : {}),
-          ...(readValue(args, ["--scheme"]) ? { scheme: readValue(args, ["--scheme"]) } : {}),
-          ...(readValue(args, ["--project", "--xcodeproj", "--workspace"])
-            ? { projectPath: readValue(args, ["--project", "--xcodeproj", "--workspace"]) }
-            : {}),
-          ...(readValue(args, ["--test-plan"]) ? { testPlan: readValue(args, ["--test-plan"]) } : {}),
+          ...(targetId ? { targetId } : {}),
+          ...(scheme ? { scheme } : {}),
+          ...(projectPath ? { projectPath } : {}),
+          ...(testPlan ? { testPlan } : {}),
           ...(onlyTesting.length ? { onlyTesting } : {}),
           ...(skipTesting.length ? { skipTesting } : {}),
-          ...(readFlag(args, ["--build-only", "--build-for-testing"]) ? { buildOnly: true } : {}),
+          ...(buildOnly ? { buildOnly: true } : {}),
           ...(timeoutMs == null ? {} : { timeoutMs }),
         })),
       ],
     };
-  }
-  if (sub === "device-attach") {
-    const simulator = requireValue(
-      readValue(args, ["--simulator", "--device", "--udid"]) ??
-        firstPositional(args),
-      "--simulator",
-    );
-    return iosAction("Apple device attach", "deviceAttach", {
-      simulator,
-      ...(laneId ? { laneId } : {}),
-    });
   }
   if (sub === "start") {
     // The value flags first: `firstPositional` would otherwise eat their values.

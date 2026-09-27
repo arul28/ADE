@@ -37,7 +37,7 @@ export const IOS_SIMULATOR_LAUNCH_TIMEOUT_MS = 17 * 60_000;
 export const IOS_SIMULATOR_PREVIEW_TIMEOUT_MS = 10 * 60_000;
 
 /**
- * Device lifecycle: create clones a template (`simctl clone`, 120s), delete
+ * Device lifecycle: create makes a new device (`simctl create`, 120s), delete
  * shuts the device down (60s) then deletes it (120s), start waits on
  * `simctl bootstatus` (90s), stop shuts down (60s). Without a budget of its own
  * each ran on the 30s default, so the renderer rejected while the device was
@@ -71,6 +71,8 @@ export const IOS_SIMULATOR_PREVIEW_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_PREVIEW_TIMEOUT_MS - 30_000;
 export const IOS_SIMULATOR_RUN_TESTS_REMOTE_TRANSPORT_TIMEOUT_MS =
   IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS - 30_000;
+export const IOS_SIMULATOR_DEVICE_CLEANUP_REMOTE_TRANSPORT_TIMEOUT_MS =
+  IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS - 30_000;
 export const LOCAL_RUNTIME_ACTION_TIMEOUT_MS = 30_000;
 export const LOCAL_RUNTIME_FILE_ACTION_TIMEOUT_MS = 8_000;
 export const LOCAL_RUNTIME_SYNC_TIMEOUT_MS = 30_000;

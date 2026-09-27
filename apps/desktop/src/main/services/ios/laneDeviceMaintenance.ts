@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AppleDeviceCleanupResult, AppleLaneDevice } from "../../../shared/types/iosSimulator";
 import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
-import { appleDeviceDataRoot, parseAppleDeviceSet, type LaneDeviceRegistry } from "./laneDeviceRegistry";
+import { appleDeviceDataRoot, parseSimctlDevices } from "./appleSimulatorCatalog";
+import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
 
 /**
  * The two background jobs that keep lane devices from piling up.
@@ -16,7 +17,9 @@ import { appleDeviceDataRoot, parseAppleDeviceSet, type LaneDeviceRegistry } fro
  *   devices use. Booting again takes seconds.
  *
  * Only ADE's own devices are powered off. An attached device is the user's,
- * and Xcode or a test run may be using it without ADE seeing any of it.
+ * and Xcode or a test run may be using it without ADE seeing any of it. While
+ * Simulator.app is running, nothing is powered off: a person may be driving a
+ * device in its window, and that leaves no trace ADE can read.
  *
  * "Touched" is recorded in a file in the device's own directory
  * (`ade-last-activity`), not in memory: the desktop and the brain can each run
@@ -45,6 +48,11 @@ export function appleIdlePowerOffMs(env: NodeJS.ProcessEnv = process.env): numbe
   const minutes = Number(raw);
   if (!Number.isFinite(minutes) || minutes < 0) return DEFAULT_IDLE_MS;
   return minutes * 60_000;
+}
+
+/** Simulator.app is running: `ps` shows its main executable. */
+export function simulatorAppRunning(psOutput: string): boolean {
+  return psOutput.split("\n").some((line) => /Simulator\.app\/Contents\/MacOS\/Simulator(\s|$)/u.test(line));
 }
 
 /**
@@ -118,19 +126,29 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
   /**
    * Power off every ADE device that is booted and idle. Returns what it
    * powered off. With `force`, "idle" means "nothing is using it right now",
-   * whatever the last activity was.
+   * whatever the last activity was. `onlyUdids` limits the pass: an agent's
+   * request may power off its own lane's device and nobody else's.
    */
-  const runIdlePass = async (options: { force?: boolean } = {}): Promise<AppleDeviceCleanupResult["poweredOff"]> => {
+  type IdlePassResult = {
+    poweredOff: AppleDeviceCleanupResult["poweredOff"];
+    skipped: AppleDeviceCleanupResult["powerOffSkipped"];
+  };
+  const runIdlePass = async (
+    options: { force?: boolean; onlyUdids?: ReadonlySet<string> | null } = {},
+  ): Promise<IdlePassResult> => {
     const poweredOff: AppleDeviceCleanupResult["poweredOff"] = [];
-    if (!options.force && idleMs <= 0) return poweredOff;
-    const devices = deps.laneDevices.list().filter((device) => isAdeOwnedLaneDevice(device.origin));
-    if (!devices.length) return poweredOff;
+    const done = (skipped: IdlePassResult["skipped"] = null): IdlePassResult => ({ poweredOff, skipped });
+    if (!options.force && idleMs <= 0) return done();
+    const devices = deps.laneDevices.list().filter((device) => (
+      isAdeOwnedLaneDevice(device.origin) && (!options.onlyUdids || options.onlyUdids.has(device.udid))
+    ));
+    if (!devices.length) return done();
     let states: Map<string, { state: string }>;
     try {
       const { stdout } = await deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 });
-      states = parseAppleDeviceSet(stdout);
+      states = parseSimctlDevices(stdout);
     } catch {
-      return poweredOff;
+      return done();
     }
     let psOutput: string | null = null;
     for (const device of devices) {
@@ -144,7 +162,13 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       if (psOutput === null) {
         psOutput = await deps.run("ps", ["-axo", "command="], { timeoutMs: 10_000 })
           .then((result) => result.stdout)
-          .catch(() => "");
+          .catch(() => null);
+        // No process list means no way to tell what else uses the devices.
+        if (psOutput === null) return done("process-list-unavailable");
+        if (simulatorAppRunning(psOutput)) {
+          deps.logger.debug("apple.lane_device_idle_skipped_simulator_app", {});
+          return done("simulator-app-open");
+        }
       }
       if (externalToolUsesDevice(psOutput, device)) {
         touch(device.udid);
@@ -166,21 +190,35 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
         });
       }
     }
-    return poweredOff;
+    return done();
   };
 
-  /** One cleanup pass at a time; a second caller waits for the one in flight. */
-  const runCleanup = (options: { powerOffIdle?: boolean } = {}): Promise<AppleDeviceCleanupResult> => {
-    if (cleanupRunning) return cleanupRunning;
-    const pass = (async () => {
-      const result = await deps.laneDevices.reconcile();
-      if (options.powerOffIdle) result.poweredOff.push(...await runIdlePass({ force: true }));
-      return result;
-    })().finally(() => {
+  /**
+   * The cleanup pass. One reconcile at a time: a second caller shares the one
+   * in flight. A requested power-off always runs after it, so a Clean up that
+   * lands during a background pass still powers off what it was asked to.
+   */
+  const runCleanup = async (
+    options: { powerOffIdle?: boolean; onlyUdids?: ReadonlySet<string> | null } = {},
+  ): Promise<AppleDeviceCleanupResult> => {
+    const pass = cleanupRunning ?? deps.laneDevices.reconcile().finally(() => {
       cleanupRunning = null;
     });
     cleanupRunning = pass;
-    return pass;
+    const reconciled = await pass;
+    const result: AppleDeviceCleanupResult = {
+      deleted: [...reconciled.deleted],
+      poweredOff: [...reconciled.poweredOff],
+      forgottenRows: [...reconciled.forgottenRows],
+      released: [...reconciled.released],
+      errors: [...reconciled.errors],
+    };
+    if (options.powerOffIdle) {
+      const idle = await runIdlePass({ force: true, onlyUdids: options.onlyUdids ?? null });
+      result.poweredOff.push(...idle.poweredOff);
+      result.powerOffSkipped = idle.skipped;
+    }
+    return result;
   };
 
   const start = (): void => {

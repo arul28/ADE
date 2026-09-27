@@ -1485,6 +1485,14 @@ export function isAdeOwnedLaneDevice(origin: AppleLaneDeviceOrigin): boolean {
   return origin !== "attached";
 }
 
+/** Narrow an untyped value (a sync payload, a row) to a lane-device origin. */
+export function isAppleLaneDeviceOrigin(value: unknown): value is AppleLaneDeviceOrigin {
+  return value === "created" || value === "clone" || value === "attached";
+}
+
+/** A runtime and a device type, by identifier: what a new lane device is made from. */
+export type AppleNewDeviceSpec = { runtime: string; deviceType: string };
+
 /**
  * The one device a lane owns.
  *
@@ -1499,7 +1507,6 @@ export type AppleLaneDevice = {
   family: AppleLaneDeviceFamily;
   runtime: string;
   createdAt: string;
-  templateUdid: string | null;
 };
 
 /**
@@ -1572,13 +1579,17 @@ export type AppleDeviceCleanupResult = {
   forgottenRows: Array<{ laneId: string; udid: string }>;
   /** Devices of lanes that ended, released (attached devices: powered off, ADE's apps uninstalled). */
   released: Array<{ laneId: string; udid: string }>;
-  /** Anything that went wrong; a failed step never stops the pass. */
+  /** Anything that went wrong; a failed step never stops the pass. `udid: null` means the device list could not be read. */
   errors: Array<{ udid: string | null; message: string }>;
+  /** Why the requested power-off did nothing, when it was skipped as a whole. */
+  powerOffSkipped?: "simulator-app-open" | "process-list-unavailable" | null;
 };
 
 export type AppleDeviceCleanupArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
+  /** Set by the RPC server for agent callers: `powerOffIdle` then reaches the caller's lane device only. */
+  agentCaller?: boolean | null;
   /** Also power off idle ADE devices now, instead of waiting for the timer. */
   powerOffIdle?: boolean | null;
 };
@@ -1667,12 +1678,13 @@ export type AppleDeviceListArgs = {
  * the picker's Start/Open/Create actions and for `ade apple start`.
  *
  * `udid` names an installed simulator to attach when the lane owns nothing.
- * `create.sourceUdid` clones that simulator for the lane instead. Neither is
- * consulted when the lane already owns a device: that device is started.
+ * `create` makes a new device for the lane instead (see `AppleDeviceCreateArgs`;
+ * `sourceUdid` copies a simulator's model and runtime, never its data). Neither
+ * is consulted when the lane already owns a device: that device is started.
  *
- * For an agent caller (`agentCaller`), `udid` must be the lane's own device,
- * and a lane with no device and no `udid` gets a fresh clone, the same one
- * `deviceCreate` makes.
+ * For an agent caller (`agentCaller`), `udid` may name a simulator no lane
+ * holds (the user named it) but never another lane's, and a lane with no
+ * device and no `udid` gets a new one, the same one `deviceCreate` makes.
  */
 export type AppleDeviceStartArgs = {
   laneId?: string | null;
@@ -1750,6 +1762,8 @@ export type AppleDeviceListResult = {
   disk?: AppleDeviceDiskUsage | null;
   /** Present only when `runtimes` was asked for. */
   runtimes?: AppleInstalledRuntime[] | null;
+  /** Where the Create control starts: the service's own default runtime and model. With `runtimes`. */
+  defaultNewDevice?: AppleNewDeviceSpec | null;
   /**
    * Who each installed simulator belongs to, from lane rows and ADE's marker
    * files. Present with `disk`, because the storage view is what reads it.
