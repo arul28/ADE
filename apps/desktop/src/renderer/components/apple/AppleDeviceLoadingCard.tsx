@@ -27,17 +27,19 @@ export const APPLE_LOADING_SLOW_SENTENCE =
   "Still booting — the first boot of a simulator can take a minute.";
 
 /**
- * "Installed simulator · {model} · {runtime}", with the parts that exist.
+ * "Installed simulator · {model} · {runtime}", with the parts that exist, or
+ * "New device · …" for one the lane is making now.
  *
- * The first word is load-bearing: every device this card can be showing came
- * from the machine's own installed runtimes, and saying so is what stops the
- * wait reading as a download.
+ * The first words are load-bearing: every device this card can be showing
+ * comes from the machine's own installed runtimes, and saying so is what stops
+ * the wait reading as a download.
  */
 export function appleLoadingSubtitle(
   model: string | null | undefined,
   runtime: string | null | undefined,
+  isNew = false,
 ): string {
-  return ["Installed simulator", model, runtime]
+  return [isNew ? "New device" : "Installed simulator", model, runtime]
     .filter((part): part is string => Boolean(part && part.trim()))
     .join(" · ");
 }
@@ -86,11 +88,14 @@ export function AppleDeviceLoadingCard({
   runtime,
   model,
   family,
+  isNew = false,
   stage,
   error,
   onRetry,
 }: {
   name: string;
+  /** The device is being made now, from an installed runtime. */
+  isNew?: boolean;
   runtime: string | null;
   /** The model, when the name is a rename that hides it. */
   model?: string | null;
@@ -109,7 +114,7 @@ export function AppleDeviceLoadingCard({
     ? Math.floor(elapsedMs / 1_000)
     : null;
   const slow = !failed && elapsedMs >= APPLE_LOADING_SLOW_AFTER_MS;
-  const subtitle = appleLoadingSubtitle(model, runtime);
+  const subtitle = appleLoadingSubtitle(model, runtime, isNew);
   return (
     <div
       role={failed ? "alert" : "status"}

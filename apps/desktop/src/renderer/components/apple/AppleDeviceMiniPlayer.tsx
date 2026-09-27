@@ -144,6 +144,18 @@ function AppleMiniPlayerFrameView({
     if (streaming) releaseAppleMiniPlayerHandoverHold();
   }, [streaming]);
 
+  // The lane gave the device up (detached, deleted, taken over): there is
+  // nothing left to show, so the player closes instead of holding a last frame
+  // of a simulator that may no longer exist.
+  useEffect(() => {
+    const unsubscribe = window.ade?.iosSimulator?.onEvent?.((event) => {
+      if (event.type !== "apple.device.state" || event.phase !== "released") return;
+      if (event.udid !== target.deviceUdid) return;
+      closeAppleMiniPlayer(target.deviceUdid);
+    }, pinRef.current);
+    return () => unsubscribe?.();
+  }, [target.deviceUdid, pinRef]);
+
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {
     if (stream.frameVersion > 0) setPoster(null);

@@ -509,7 +509,10 @@ export function AppleDevicePane({
     start({ laneId, chatSessionId: sessionId, udid }, udid);
   }, [laneId, sessionId, start]);
 
+  // What Create asked for, so the loading card can name it before it exists.
+  const creatingSpecRef = useRef<AppleNewDeviceSpec | null>(null);
   const createDevice = useCallback((spec: AppleNewDeviceSpec) => {
+    creatingSpecRef.current = spec;
     start({ laneId, chatSessionId: sessionId, create: { runtime: spec.runtime, deviceType: spec.deviceType } }, "create");
   }, [laneId, sessionId, start]);
 
@@ -819,10 +822,11 @@ export function AppleDevicePane({
       case "starting":
         return (
           <AppleDeviceLoadingCard
-            name={pendingStart === "create" ? "New simulator" : startingName()}
+            name={startingName()}
             runtime={startingRuntime()}
             model={startingIdentity().model}
             family={startingIdentity().family}
+            isNew={pendingStart === "create"}
             /* Without a start in flight the device is already up and only the
                video is connecting; "Booting device" there read as ADE powering
                the simulator on by itself. */
@@ -907,13 +911,26 @@ export function AppleDevicePane({
     }
   }
 
+  /** The runtime and model Create asked for, by name, while that device is being made. */
+  function creatingNames(): { runtime: string | null; model: string | null; family: AppleDeviceFamilyId } | null {
+    const spec = pendingStart === "create" ? creatingSpecRef.current : null;
+    if (!spec) return null;
+    const runtime = runtimes.find((entry) => entry.identifier === spec.runtime) ?? null;
+    const type = runtime?.deviceTypes.find((entry) => entry.identifier === spec.deviceType) ?? null;
+    return { runtime: runtime?.name ?? null, model: type?.name ?? null, family: type?.family ?? "iphone" };
+  }
+
   function startingName(): string {
+    const creating = creatingNames();
+    if (creating) return creating.model ? `new ${creating.model}` : "new simulator";
     if (laneDevice) return laneDevice.name;
     const match = installed.find((entry) => entry.udid === pendingStart);
     return match?.name ?? "Simulator";
   }
 
   function startingRuntime(): string | null {
+    const creating = creatingNames();
+    if (creating) return creating.runtime;
     if (laneDevice) return laneDevice.runtime;
     return installed.find((entry) => entry.udid === pendingStart)?.runtime ?? null;
   }
@@ -925,6 +942,9 @@ export function AppleDevicePane({
    * fixed.
    */
   function startingIdentity(): { family: AppleDeviceFamilyId; model: string | null } {
+    const creating = creatingNames();
+    // The name already says the model.
+    if (creating) return { family: creating.family, model: null };
     const record = installed.find(
       (entry) => entry.udid === (laneDevice?.udid ?? pendingStart),
     );
