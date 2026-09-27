@@ -20,8 +20,9 @@ import {
 import {
   APPLE_DEVICE_MARKER_GRACE_MS,
   appleMarkerIsProject,
+  appleSimulatorOwnership,
   listAppleDeviceMarkers,
-  looksLikeAdeDeviceName,
+  removeAppleDeviceMarker,
   readAppleDeviceMarker,
   writeAppleDeviceMarker,
   type AppleDeviceMarker,
@@ -36,13 +37,14 @@ import {
   pickAppleDeviceSpec,
   type SimctlListedDevice,
 } from "./appleSimulatorCatalog";
-import { endLaneDeviceOnDisk, uninstallAdeApps } from "./laneDeviceRelease";
+import { endLaneDeviceRow, uninstallAdeApps } from "./laneDeviceRelease";
 import {
   LANE_APPLE_DEVICES_TABLE,
   LANE_DEVICE_COLUMNS,
   readLaneAppleDevice,
   readLaneAppleDeviceRecord,
   rowToDevice,
+  writeAdeInstalledBundleIds,
   type LaneDeviceRow,
   type LaneDeviceStore,
 } from "./laneDeviceRows";
@@ -176,11 +178,16 @@ export type LaneDeviceRegistry = {
    */
   deviceDelete(args: { laneId: string; udid?: string | null }): Promise<void>;
   /**
-   * Forget the lane's device and touch no simulator: nothing is deleted and
-   * nothing is powered off now. An ADE device's marker is stamped
-   * `detachedAt`, so it becomes a leftover that the cleanup pass deletes after
-   * the grace period unless a lane picks it again. Returns what was detached,
-   * or null when the lane had no device.
+   * Forget the lane's device. Nothing is deleted now.
+   *
+   * - An ADE device's marker is stamped `detachedAt`: it becomes a leftover
+   *   that the cleanup pass deletes after the grace period unless a lane picks
+   *   it again.
+   * - An attached device loses the apps ADE installed, in the background, and
+   *   its power state is left as it was. The work stops if a lane takes the
+   *   device again meanwhile; a failure is logged, not retried.
+   *
+   * Returns what was detached, or null when the lane had no device.
    */
   deviceDetach(args: { laneId: string }): Promise<AppleLaneDevice | null>;
   /**
@@ -243,18 +250,6 @@ export function appleLaneDeviceName(input: {
     if (!taken.has(candidate)) return candidate;
   }
   return `${base} (${Date.now()})`;
-}
-
-/**
- * Does this string name the device the lane already holds?
- *
- * The same udid-then-name precedence `deviceAttach` matches installed
- * simulators with, so "attach the device I already have" is recognised without
- * a `simctl` call — and so a re-attach is never mistaken for a takeover of
- * somebody else's device.
- */
-export function namesLaneDevice(device: AppleLaneDevice, wanted: string): boolean {
-  return matchesSimulatorName(device, wanted);
 }
 
 export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDeviceRegistry {
@@ -413,10 +408,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       const list = new Set(record?.adeInstalledBundleIds ?? []);
       if (list.has(bundleId)) return;
       list.add(bundleId);
-      deps.store.run(
-        `update ${LANE_APPLE_DEVICES_TABLE} set ade_installed_bundle_ids = ? where lane_id = ? and udid = ?`,
-        [JSON.stringify([...list]), holder.laneId, udid],
-      );
+      writeAdeInstalledBundleIds(deps.store, holder.laneId, udid, [...list]);
     } catch (error) {
       deps.logger.debug("apple.installed_app_note_failed", {
         udid,
@@ -480,7 +472,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
    * id, so the renderer decides how to word "a lane we cannot name".
    */
   const ownersFor = (laneId: string | null): AppleSimulatorOwner[] =>
-    readAll().map((device) => ({
+    readAll().filter((device) => device.laneId === laneId || isLaneLive(device.laneId)).map((device) => ({
       udid: device.udid,
       laneId: device.laneId,
       laneName: laneNameFor(device.laneId),
@@ -604,7 +596,9 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       // Already ours. An attach of the device this lane holds is the state the
       // caller asked for, so it is answered, not refused and not moved —
       // checked before `simctl` is consulted, because it needs no device list.
-      if (namesLaneDevice(existing, wanted)) return existing;
+      // The same udid-then-name precedence the installed list is matched
+      // with, so a re-attach is never mistaken for a takeover.
+      if (matchesSimulatorName(existing, wanted)) return existing;
       throw new AppleDeviceExistsError(existing);
     }
     const installed = await deps.listInstalledSimulators();
@@ -625,7 +619,11 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
      * meant to end it. Two lanes believing they own one simulator is how one
      * powers it off under the other.
      */
-    const holders = readAll().filter((device) => device.udid === match.udid && device.laneId !== laneId);
+    // Live lanes only: a lane that ended keeps its row just until its release
+    // finishes, and must not block, or be moved from, like a lane at work.
+    const holders = readAll().filter((device) => (
+      device.udid === match.udid && device.laneId !== laneId && isLaneLive(device.laneId)
+    ));
     /*
      * An agent may attach an installed simulator that no lane holds: that is
      * the user naming a device for the lane ("use my iPhone 17 Pro"). It may
@@ -669,7 +667,8 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
        * forever when the new lane is archived. A device with this project's
        * marker and no holder (a detached leftover) is ADE's for the same
        * reason. Another project's ADE device is NOT: that project may still
-       * hold it, so here it is only ever attached, and never deleted.
+       * hold it, so here it is only ever attached, never deleted, and loses the
+       * marker that would let that project's cleanup delete it.
        * `createdAt` is the opposite — it dates the BINDING, so it is now.
        */
       origin: previous?.origin ?? (marker && !otherProject ? "created" : "attached"),
@@ -677,6 +676,18 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       runtime: match.runtime,
       createdAt: now().toISOString(),
     };
+    // Another project's device becomes the user's: without its marker, that
+    // project's cleanup pass can no longer delete it out from under this lane.
+    if (otherProject) {
+      try {
+        removeAppleDeviceMarker(dataRoot(), device.udid);
+      } catch (error) {
+        deps.logger.warn?.("apple.lane_device_marker_remove_failed", {
+          udid: device.udid,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     // An ADE device of this project now belongs to this lane: the marker says
     // so, and a detached leftover stops being one.
     if (isAdeOwnedLaneDevice(device.origin) && !otherProject) {
@@ -774,24 +785,13 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
   };
 
   /** Who each installed simulator belongs to, for the storage view. */
-  const ownershipFor = (installed: AppleInstalledSimulator[]): AppleSimulatorOwnershipInfo[] => {
-    const rows = new Set(readAll().map((device) => device.udid));
-    const root = dataRoot();
-    const projectRoot = deps.projectRoot?.trim() || null;
-    return installed.map((device) => {
-      const marker = readAppleDeviceMarker(root, device.udid);
-      let ownership: AppleSimulatorOwnershipInfo["ownership"] = "unknown";
-      if (rows.has(device.udid)) ownership = "lane";
-      else if (marker && projectRoot && !appleMarkerIsProject(marker, projectRoot)) ownership = "ade-other-project";
-      else if (marker) ownership = "ade-orphan";
-      return {
-        udid: device.udid,
-        ownership,
-        markerLaneId: marker?.laneId ?? null,
-        looksLikeAde: !marker && looksLikeAdeDeviceName(device.name),
-      };
+  const ownershipFor = (installed: AppleInstalledSimulator[]): AppleSimulatorOwnershipInfo[] =>
+    appleSimulatorOwnership({
+      installed,
+      heldUdids: new Set(readAll().map((device) => device.udid)),
+      dataRoot: dataRoot(),
+      projectRoot: deps.projectRoot?.trim() || null,
     });
-  };
 
   /** A lane row holds this udid right now. Read fresh: the pass awaits between devices. */
   const heldNow = (udid: string): boolean => readAll().some((device) => device.udid === udid);
@@ -822,39 +822,26 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
         }
         continue;
       }
-      if (!isLaneLive(row.laneId)) {
+      if (!isLaneLive(row.laneId) && deps.store) {
         try {
-          // A live lane bound to the same udid keeps the device; this lane only
-          // lets go of its row.
-          const shared = readAll().some((other) => other.udid === row.udid && other.laneId !== row.laneId);
-          let deleted = false;
-          let complete = true;
-          if (!shared) {
-            await deps.releaseDeviceHolds?.(row.udid).catch(() => undefined);
-            const record = deps.store ? readLaneAppleDeviceRecord(deps.store, row.laneId) : null;
-            const ended = await endLaneDeviceOnDisk({
-              device: row,
-              adeInstalledBundleIds: record?.adeInstalledBundleIds ?? [],
-              run: deps.run,
-              powerOff: deps.powerOffDevice,
-              logger: deps.logger,
-            });
-            ({ deleted, complete } = ended);
-            if (!complete && deps.store && !isAdeOwnedLaneDevice(row.origin)) {
-              deps.store.run(
-                `update ${LANE_APPLE_DEVICES_TABLE} set ade_installed_bundle_ids = ? where lane_id = ? and udid = ?`,
-                [JSON.stringify(ended.remainingBundleIds), row.laneId, row.udid],
-              );
-            }
-          }
-          if (!complete) {
+          await deps.releaseDeviceHolds?.(row.udid).catch(() => undefined);
+          // A retry: the lane's archive or delete already tried once, or the
+          // host that ran it had no simulator service.
+          const ended = await endLaneDeviceRow({
+            store: deps.store,
+            laneId: row.laneId,
+            run: deps.run,
+            powerOff: deps.powerOffDevice,
+            retry: true,
+            logger: deps.logger,
+          });
+          if (ended && !ended.complete) {
             // Kept, so the next pass tries again.
-            result.errors.push({ udid: row.udid, message: `The device of ended lane ${row.laneId} could not be fully released yet.` });
-            continue;
+            result.errors.push({ udid: row.udid, message: `The device of ended lane ${row.laneId} could not be deleted yet.` });
+          } else if (ended) {
+            result.released.push({ laneId: row.laneId, udid: row.udid });
+            if (ended.deleted) result.deleted.push({ udid: row.udid, name: row.name, reason: "lane ended" });
           }
-          forget(row.laneId);
-          result.released.push({ laneId: row.laneId, udid: row.udid });
-          if (deleted) result.deleted.push({ udid: row.udid, name: row.name, reason: "lane ended" });
         } catch (error) {
           result.errors.push({ udid: row.udid, message: errorText(error) });
         }
@@ -974,7 +961,9 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
           run: deps.run,
           powerOff: deps.powerOffDevice,
           restorePower: true,
-          logger: { info: deps.logger.info, ...(deps.logger.warn ? { warn: deps.logger.warn } : {}) },
+          // Stop the moment a lane takes the device again.
+          stillFree: () => !heldNow(device.udid),
+          logger: deps.logger,
         }).catch(() => undefined);
       }
       // An ADE device no lane holds is a leftover. Stamp it, so the cleanup

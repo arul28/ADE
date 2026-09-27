@@ -87,8 +87,13 @@ stopped first through `teardownDeps.iosSimulatorService.stopForLane`):
   ending lane only drops its row and the device is left alone.
 - When the delete fails, or an app ADE installed is still there after the
   uninstall, the row is kept (with the apps still left). The lane has ended, so
-  the cleanup pass tries again. The row is removed by lane AND udid, so a new
-  device an unarchived lane got meanwhile is never the one removed.
+  the cleanup pass tries again. An attached device gets one retry, which leaves
+  its power as it found it; an app still there after that, or one whose state
+  cannot be read, is logged and left, so a user's device is never booted and
+  powered off every pass. The row is removed by lane AND udid, so a new device
+  an unarchived lane got meanwhile is never the one removed. While a row waits
+  for its retry, the lane counts as ended: it blocks no attach and shows as no
+  device's owner.
 - The lane's build cache, `<worktree>/.ade/cache/ios-simulator/DerivedData`, is
   deleted. So are test logs and result bundles beside it.
 - Recordings stay on archive (they are proof) and go on delete.

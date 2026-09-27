@@ -2963,7 +2963,16 @@ export function createLaneService({
             run: runAppleCommand,
             powerOff: bareSimulatorPowerOff(runAppleCommand),
             logger,
-          }).catch(() => undefined);
+          }).then((ended) => {
+            // The duplicate's row is gone, so nothing retries this; say what is left.
+            if (!ended.complete) {
+              logger.warn("lane.merge.apple_device_left", {
+                laneId: duplicateId,
+                udid: orphan.device.udid,
+                remainingBundleIds: ended.remainingBundleIds,
+              });
+            }
+          }, () => undefined);
         }, 0);
       }
     } else {
