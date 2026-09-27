@@ -62,6 +62,7 @@ export class AppleDeviceOwnedByLaneError extends Error {
 export type AppleDeviceNotLaneOwnedReason =
   | { kind: "other-lane"; laneLabel: string }
   | { kind: "other-project" }
+  | { kind: "other-project-unknown" }
   | { kind: "running" }
   | { kind: "not-created" };
 
@@ -82,7 +83,8 @@ export class AppleDeviceNotLaneOwnedError extends Error {
       + "otherwise use this lane's own device (`ade apple device-create` makes one).";
     const explain: Record<AppleDeviceNotLaneOwnedReason["kind"], [string, string]> = {
       "other-lane": [`belongs to lane ${reason.kind === "other-lane" ? reason.laneLabel : ""}`, OWN_DEVICE],
-      "other-project": ["is an ADE device of another project, which may be using it", OWN_DEVICE],
+      "other-project": ["is an ADE device that a lane of another ADE project is using", OWN_DEVICE],
+      "other-project-unknown": ["is an ADE device of another project, and ADE could not check whether that project still uses it", OWN_DEVICE],
       running: ["is not this lane's device and it is already running; another lane, a test run or the user may be using it", ATTACH_FIRST],
       "not-created": ["is not this lane's device", ATTACH_FIRST],
     };

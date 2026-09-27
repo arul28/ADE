@@ -97,23 +97,21 @@ export function looksLikeAdeDeviceName(name: string): boolean {
   return /^ADE(\s|·|$)/u.test(name.trim());
 }
 
-/** Remove the marker: the device stops being ADE's, and no cleanup pass will delete it. */
-export function removeAppleDeviceMarker(dataRoot: string, udid: string): void {
-  fs.rmSync(appleDeviceMarkerPath(dataRoot, udid), { force: true });
-}
-
 /** Who each installed simulator belongs to, for the storage view: a lane, ADE (this or another project), or unknown. */
 export function appleSimulatorOwnership(input: {
   installed: readonly AppleInstalledSimulator[];
   heldUdids: ReadonlySet<string>;
   dataRoot: string;
   projectRoot: string | null;
+  /** Another project still uses (or may use) this device of its own. */
+  foreignInUse: (marker: AppleDeviceMarker, udid: string) => boolean;
 }): AppleSimulatorOwnershipInfo[] {
   return input.installed.map((device) => {
     const marker = readAppleDeviceMarker(input.dataRoot, device.udid);
     let ownership: AppleSimulatorOwnershipInfo["ownership"] = "unknown";
+    const foreign = Boolean(marker && input.projectRoot && !appleMarkerIsProject(marker, input.projectRoot));
     if (input.heldUdids.has(device.udid)) ownership = "lane";
-    else if (marker && input.projectRoot && !appleMarkerIsProject(marker, input.projectRoot)) ownership = "ade-other-project";
+    else if (marker && foreign && input.foreignInUse(marker, device.udid)) ownership = "ade-other-project";
     else if (marker) ownership = "ade-orphan";
     return {
       udid: device.udid,
@@ -122,4 +120,41 @@ export function appleSimulatorOwnership(input: {
       looksLikeAde: !marker && looksLikeAdeDeviceName(device.name),
     };
   });
+}
+
+/**
+ * Does the project named in the marker still use the device?
+ *
+ * Read from that project's own database, read-only: one lane row holding the
+ * udid, with a lane that is not archived, means `held`. `gone` when the
+ * project, or its database, is no longer on disk. `unknown` when the database
+ * is there but could not be read (locked, older schema): nothing is decided on
+ * a guess.
+ */
+export function appleMarkerProjectHolds(
+  marker: AppleDeviceMarker,
+  udid: string,
+  openDatabase: (dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown }; close: () => void },
+): "held" | "free" | "gone" | "unknown" {
+  const dbPath = path.join(marker.projectRoot, ".ade", "ade.db");
+  if (!fs.existsSync(marker.projectRoot) || !fs.existsSync(dbPath)) return "gone";
+  let db: ReturnType<typeof openDatabase> | null = null;
+  try {
+    db = openDatabase(dbPath);
+    const row = db.prepare(
+      `select 1 as one from lane_apple_devices d
+         join lanes l on l.id = d.lane_id
+        where d.udid = ? and coalesce(l.status, '') != 'archived'
+        limit 1`,
+    ).get(udid);
+    return row ? "held" : "free";
+  } catch {
+    return "unknown";
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Closing a read-only handle has nothing to lose.
+    }
+  }
 }
