@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { AppleInstalledSimulator, AppleSimulatorOwnershipInfo } from "../../../shared/types/iosSimulator";
 import { pathsEqual } from "../shared/pathCompare";
 
 /**
@@ -94,4 +95,31 @@ export function appleMarkerIsProject(marker: AppleDeviceMarker, projectRoot: str
 /** `ADE · lane`, `ADE Repro`: a name ADE made, or a person named after it. Evidence only for the storage view. */
 export function looksLikeAdeDeviceName(name: string): boolean {
   return /^ADE(\s|·|$)/u.test(name.trim());
+}
+
+/** Remove the marker: the device stops being ADE's, and no cleanup pass will delete it. */
+export function removeAppleDeviceMarker(dataRoot: string, udid: string): void {
+  fs.rmSync(appleDeviceMarkerPath(dataRoot, udid), { force: true });
+}
+
+/** Who each installed simulator belongs to, for the storage view: a lane, ADE (this or another project), or unknown. */
+export function appleSimulatorOwnership(input: {
+  installed: readonly AppleInstalledSimulator[];
+  heldUdids: ReadonlySet<string>;
+  dataRoot: string;
+  projectRoot: string | null;
+}): AppleSimulatorOwnershipInfo[] {
+  return input.installed.map((device) => {
+    const marker = readAppleDeviceMarker(input.dataRoot, device.udid);
+    let ownership: AppleSimulatorOwnershipInfo["ownership"] = "unknown";
+    if (input.heldUdids.has(device.udid)) ownership = "lane";
+    else if (marker && input.projectRoot && !appleMarkerIsProject(marker, input.projectRoot)) ownership = "ade-other-project";
+    else if (marker) ownership = "ade-orphan";
+    return {
+      udid: device.udid,
+      ownership,
+      markerLaneId: marker?.laneId ?? null,
+      looksLikeAde: !marker && looksLikeAdeDeviceName(device.name),
+    };
+  });
 }

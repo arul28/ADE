@@ -2631,6 +2631,23 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     },
   });
 
+  /**
+   * Run `install`, and record the app as ADE's on an attached lane device only
+   * when it was certainly absent before and is present after. An app the user
+   * already had is theirs, even after ADE installs a new build over it; a check
+   * that could not answer counts as "they had it"; and a build that failed
+   * installed nothing.
+   */
+  const installTracked = async <T,>(udid: string, bundleId: string | null, install: () => Promise<T>): Promise<T> => {
+    if (!bundleId || !laneDevices.tracksInstallsOn(udid)) return install();
+    const before = await appleAppOnDevice(run, udid, bundleId);
+    const result = await install();
+    if (before === "absent" && (await appleAppOnDevice(run, udid, bundleId)) === "present") {
+      laneDevices.noteAppInstalled({ udid, bundleId });
+    }
+    return result;
+  };
+
   /** Detach, delete, takeover and the picker's delete, over the registry above. */
   const lifecycle = createLaneDeviceLifecycle<LaneRuntime>({
     laneDevices,
@@ -3114,7 +3131,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const computeListDevices = async (): Promise<IosSimulatorDevice[]> => {
-    if (process.platform !== "darwin" || !cachedCommandExists("xcrun")) return [];
     const devices: IosSimulatorDevice[] = (await listInstalledSimulators())
       .map(({ udid, name, runtime, state }) => ({ udid, name, runtime, state, isAvailable: true }));
     return devices.sort((a, b) => {
@@ -6222,23 +6238,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   /* ───────────────────────── tests ───────────────────────── */
-
-  /**
-   * Run `install`, and record the app as ADE's on an attached lane device only
-   * when it was certainly absent before and is present after. An app the user
-   * already had is theirs, even after ADE installs a new build over it; a check
-   * that could not answer counts as "they had it"; and a build that failed
-   * installed nothing.
-   */
-  const installTracked = async <T,>(udid: string, bundleId: string | null, install: () => Promise<T>): Promise<T> => {
-    const track = Boolean(bundleId) && laneDevices.tracksInstallsOn(udid);
-    const before = track ? await appleAppOnDevice(run, udid, bundleId!) : "unknown";
-    const result = await install();
-    if (before === "absent" && (await appleAppOnDevice(run, udid, bundleId!)) === "present") {
-      laneDevices.noteAppInstalled({ udid, bundleId: bundleId! });
-    }
-    return result;
-  };
 
   /** The one test run this service allows at a time: the lane and scheme, for the busy message. */
   let testRunInFlight: string | null = null;

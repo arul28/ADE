@@ -110,6 +110,25 @@ function helperAvailable(status: IosSimulatorStatus | null): boolean {
   return helper ? helper.available : true;
 }
 
+/** The Clean up toast's tone and words: what happened, per docs/design/notices.md. */
+function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: number; summary: string | null }): {
+  tone: "success" | "warning" | "error";
+  title: string;
+  message?: string;
+} {
+  if (input.listUnreadable) {
+    return { tone: "error", title: "Could not read the simulator list", message: "Nothing was cleaned up. The ADE log has the details." };
+  }
+  if (input.deviceErrors) {
+    return {
+      tone: input.summary ? "warning" : "error",
+      title: input.summary ?? "Simulators were not cleaned up",
+      message: `${input.deviceErrors} could not be cleaned up yet. The ADE log has the details.`,
+    };
+  }
+  return { tone: "success", title: input.summary ?? "No simulators to clean up" };
+}
+
 /** Why Clean up powered nothing off, in the words the toast uses. */
 const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOffSkipped"]>, string> = {
   "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
@@ -513,24 +532,16 @@ export function AppleDevicePane({
         const deviceErrors = result.errors.filter((entry) => entry.udid !== null).length;
         const skippedWhy = result.powerOffSkipped ? CLEANUP_SKIP_REASON[result.powerOffSkipped] : null;
         // Counts only. The raw simctl errors are in the log, not in the toast.
-        if (listUnreadable) {
-          showToast({ id: "apple-device-cleanup", tone: "warning", title: "Could not read the simulator list", message: "Nothing was cleaned up. The ADE log has the details.", durationMs: 18_000 });
-        } else if (deviceErrors) {
-          showToast({
-            id: "apple-device-cleanup",
-            tone: "warning",
-            title: parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : "Simulators could not be cleaned up",
-            message: `${deviceErrors} could not be cleaned up. The ADE log has the details.`,
-            durationMs: 18_000,
-          });
-        } else {
-          showToast({
-            id: "apple-device-cleanup",
-            tone: "success",
-            title: parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : "No simulators to clean up",
-            ...(skippedWhy ? { message: skippedWhy } : {}),
-          });
-        }
+        const summary = parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : null;
+        const notice = cleanupNotice({ listUnreadable, deviceErrors, summary });
+        const message = [notice.message, skippedWhy].filter(Boolean).join(" ");
+        showToast({
+          id: "apple-device-cleanup",
+          tone: notice.tone,
+          title: notice.title,
+          ...(message ? { message } : {}),
+          ...(notice.tone === "success" ? {} : { durationMs: 18_000 }),
+        });
       })
       .catch((cause: unknown) => setError(cause))
       .finally(() => {

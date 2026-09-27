@@ -109,3 +109,24 @@ export function anotherLaneHoldsUdid(store: Pick<LaneDeviceStore, "get">, udid: 
     [udid, laneId],
   ));
 }
+
+/** Save the apps ADE installed on an attached lane device. */
+export function writeAdeInstalledBundleIds(
+  store: Pick<LaneDeviceStore, "run">,
+  laneId: string,
+  udid: string,
+  bundleIds: readonly string[],
+): void {
+  store.run(
+    `update ${LANE_APPLE_DEVICES_TABLE} set ade_installed_bundle_ids = ? where lane_id = ? and udid = ?`,
+    [JSON.stringify([...bundleIds]), laneId, udid],
+  );
+}
+
+/**
+ * Drop one lane's row, keyed by lane AND udid: a new device the lane got in
+ * the meantime (an unarchive) is never the row removed.
+ */
+export function forgetLaneDeviceRow(store: Pick<LaneDeviceStore, "run">, laneId: string, udid: string): void {
+  store.run(`delete from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ? and udid = ?`, [laneId, udid]);
+}
