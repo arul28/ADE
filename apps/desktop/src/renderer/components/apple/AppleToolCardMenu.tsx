@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowSquareOut, DotsThree, Eject, Play } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { showToast } from "../app/toast/toastStore";
 import { Button } from "../ui/Button";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../ui/paneMenuTokens";
@@ -59,7 +60,7 @@ export function AppleToolCardMenu({
   // `starting` counts as "already coming up": offering Boot mid-boot would
   // queue a second start. The one useful action then is to watch it.
   const comingUp = device.state !== "off";
-  const isClone = device.origin === "clone";
+  const isAdeDevice = isAdeOwnedLaneDevice(device.origin);
 
   const run = useCallback((action: string, task: () => Promise<unknown>, after?: () => void) => {
     if (pending) return;
@@ -174,7 +175,7 @@ export function AppleToolCardMenu({
               Release device
             </DropdownMenu.Item>
           )}
-          {isClone ? (
+          {isAdeDevice ? (
             <>
               <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
               <DangerConfirmMenuItem

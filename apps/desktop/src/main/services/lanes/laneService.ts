@@ -97,7 +97,12 @@ import {
   resolveAppliedAutoLaneBranchFragment,
 } from "../../../shared/laneNameFallback";
 
-import { releaseLaneAppleDevice } from "../ios/laneDeviceRegistry";
+import {
+  appleLaneDerivedDataPath,
+  endLaneDeviceOnDisk,
+  readLaneAppleDevice,
+  releaseLaneAppleDevice,
+} from "../ios/laneDeviceRegistry";
 
 /** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
 const execFileAsync = promisify(execFileCallback);
@@ -1374,6 +1379,14 @@ export type LaneDeleteTeardownDeps = {
    */
   appControlService?: {
     stopForLane: (laneId: string) => Promise<unknown>;
+  };
+  /**
+   * The lane's Apple device session in this process: its recording, stream and
+   * chat claim. The device itself is deleted (or, if attached, released) on
+   * disk by `releaseLaneAppleDevice`, which needs no service.
+   */
+  iosSimulatorService?: {
+    stopForLane: (laneId: string) => Promise<void>;
   };
 };
 
@@ -2926,7 +2939,16 @@ export function createLaneService({
       [keeperId],
     );
     if (keeperHasAppleDevice) {
+      // Both lanes had a device. The keeper's stays; the duplicate's is deleted
+      // after this transaction, not just forgotten — a dropped row with its
+      // simulator left on disk is exactly how a device leaks.
+      const orphan = readLaneAppleDevice(db, duplicateId);
       db.run("delete from lane_apple_devices where lane_id = ?", [duplicateId]);
+      if (orphan && process.platform === "darwin") {
+        setTimeout(() => {
+          void endLaneDeviceOnDisk({ device: orphan, run: runAppleCommand, store: db, logger }).catch(() => undefined);
+        }, 0);
+      }
     } else {
       db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     }
@@ -4507,6 +4529,52 @@ export function createLaneService({
    * still bound to the stack is how services came back up half-dead.
    * `archiveAndReclaim` passes nothing and runs its own teardown later.
    */
+  /** `simctl` for the Apple device release, outside any simulator service. */
+  const runAppleCommand = async (
+    command: string,
+    commandArgs: string[],
+    options?: { timeoutMs?: number },
+  ): Promise<{ stdout: string; stderr: string }> => {
+    const result = await execFileAsync(command, commandArgs, {
+      timeout: options?.timeoutMs ?? 30_000,
+      // No console window on Windows, and no argv shell parsing on any
+      // platform — the simctl arguments are literal.
+      windowsHide: true,
+    });
+    return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
+  };
+
+  /**
+   * The lane's Apple device and build cache, on archive and on delete.
+   *
+   * Not awaited by the caller: `simctl delete` can take tens of seconds on a
+   * large device set, and the lane change is already done. An ADE device is
+   * deleted with all its data; an attached one is released. See
+   * `releaseLaneAppleDevice`.
+   */
+  const releaseAppleSideOfLane = (
+    laneId: string,
+    options: { worktreePath: string | null; removeRecordings: boolean },
+  ): void => {
+    void releaseLaneAppleDevice({
+      laneId,
+      projectRoot,
+      store: db,
+      run: runAppleCommand,
+      removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),
+      removeRecordings: options.removeRecordings,
+      derivedDataDirectories: options.worktreePath && path.resolve(options.worktreePath) !== path.resolve(projectRoot)
+        ? [appleLaneDerivedDataPath(options.worktreePath)]
+        : [],
+      logger,
+    }).catch((error: unknown) => {
+      logger.warn("lane.apple_release_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   const archiveLaneCore = async (
     laneId: string,
     row: LaneRow,
@@ -4520,6 +4588,10 @@ export function createLaneService({
     const now = new Date().toISOString();
     db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
     invalidateLanePathCaches();
+    // An archived lane keeps nothing on the Apple side but its recordings: the
+    // device (if ADE made it) and the build cache are deleted, and unarchiving
+    // makes a new device on the next ask.
+    releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: false });
     broadcastLifecycleEvent({
       type: "lane-archived",
       laneId,
@@ -4570,6 +4642,9 @@ export function createLaneService({
     try {
       await teardownDeps?.appControlService?.stopForLane(laneId);
     } catch (error) { warn("stop_app_control", error); }
+    try {
+      await teardownDeps?.iosSimulatorService?.stopForLane(laneId);
+    } catch (error) { warn("stop_apple_device", error); }
   };
 
   // Named so a few methods (branch-drift resolution) can delegate to sibling
@@ -7767,6 +7842,16 @@ export function createLaneService({
             error: error instanceof Error ? error.message : String(error),
           });
         }
+        // The same for the lane's Apple device session, so its stream and
+        // recording end before the device is deleted under them.
+        try {
+          await teardownDeps?.iosSimulatorService?.stopForLane(laneId);
+        } catch (error) {
+          logger.warn("lane.delete.stop_apple_device_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };
@@ -7999,28 +8084,13 @@ export function createLaneService({
             throw error;
           }
           const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
-          // The lane's Apple device and its recordings go with it. Not awaited:
-          // `simctl delete` can take tens of seconds on a large device set and
-          // the lane row is already gone, so blocking the delete on it would
-          // only make the progress UI look wedged. It deletes a CLONE and only
-          // detaches an attached device — ADE never deletes a simulator it did
-          // not create.
-          void releaseLaneAppleDevice({
-            laneId,
-            projectRoot,
-            store: db,
-            run: async (command, commandArgs, options) => {
-              const result = await execFileAsync(command, commandArgs, {
-                timeout: options?.timeoutMs ?? 30_000,
-                // No console window on Windows, and no argv shell parsing on any
-                // platform — the simctl arguments are literal.
-                windowsHide: true,
-              });
-              return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
-            },
-            removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),
-            logger,
-          });
+          // The lane's Apple device, build cache and recordings go with it.
+          // Not awaited: `simctl delete` can take tens of seconds on a large
+          // device set and the lane row is already gone, so blocking the delete
+          // on it would only make the progress UI look wedged. It deletes an
+          // ADE device and only releases an attached one — ADE never deletes a
+          // simulator it did not create.
+          releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: true });
           if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
           return removedProofFiles === laneArtifactFiles.length
             ? { detail: `${removedProofFiles} proof file(s) removed` }

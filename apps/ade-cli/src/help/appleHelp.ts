@@ -833,24 +833,73 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "device-create": `${ADE_BANNER}
   Apple device: device-create
 
-  Clones an installed simulator for this lane. With no --from, uses the
-  project's last-used installed simulator, else the newest installed iPhone.
-  Never downloads a runtime. Fails with APPLE_NO_INSTALLED_SIMULATORS when
-  none are installed (open Xcode ▸ Settings ▸ Components).
+  Makes a new, empty device for this lane from an installed runtime. Nothing
+  is copied from another simulator. Defaults: the newest installed iOS runtime,
+  and the device type this project used last, else the newest iPhone.
+  ADE deletes the device, and all its data, when the lane is archived or
+  deleted. Never downloads a runtime: APPLE_NO_INSTALLED_SIMULATORS when none
+  is installed, APPLE_RUNTIME_NOT_INSTALLED when the one you named is not.
+  Run "device-list --runtimes" to see what this Mac has.
 
     $ ade --socket apple device-create --text
-    $ ade --socket apple device-create --from "iPhone 17" --name "iPhone 17 — lane-ab3" --text
+    $ ade --socket apple device-create --runtime "iOS 26.3" --device-type "iPhone 17e" --text
+    $ ade --socket apple device-create --from "iPhone 17 Pro" --text
 
   Flags:
-    --from, --simulator <id>  Installed simulator to clone (udid or name).
-    --name <name>             Clone name; defaults to "<source> — <lane>".
-    --lane, --lane-id <id>    Lane that will own the clone.
+    --runtime <id|name>          Runtime, e.g. "iOS 26.3".
+    --device-type, --model <id|name>  Device type, e.g. "iPhone 17 Pro".
+    --from, --simulator <id>     Copy this installed simulator's model and runtime (not its data).
+    --name <name>                Device name; defaults to "ADE · <lane>".
+    --lane, --lane-id <id>       Lane that will own the device.
+`,
+  "device-cleanup": `${ADE_BANNER}
+  Apple device: device-cleanup
+
+  Runs the cleanup pass now (ADE also runs it every 15 minutes):
+  deletes ADE devices that no live lane holds, releases the devices of lanes
+  that were archived or deleted, and drops lane records whose simulator is
+  gone. It only deletes a device ADE made (one with ADE's marker). The
+  user's own simulators are never touched. Alias: cleanup.
+
+  Idle ADE devices are powered off after 30 minutes with no use
+  (ADE_APPLE_IDLE_POWER_OFF_MINUTES; 0 turns it off). --power-off-idle
+  powers off every ADE device nothing is using now.
+
+    $ ade --socket apple device-cleanup --text
+    $ ade --socket apple device-cleanup --power-off-idle --text
+`,
+  test: `${ADE_BANNER}
+  Apple device: test
+
+  Runs "xcodebuild test" on this lane's own device. DerivedData goes to the
+  lane's cache (<worktree>/.ade/cache/ios-simulator/DerivedData), which ADE
+  deletes with the lane. Parallel testing is off, and one test run goes at a
+  time on this Mac (APPLE_TEST_RUN_BUSY). A failing test is a result, not an
+  error: the output says passed: false with the failures and the log path.
+  Use this instead of running xcodebuild or "simctl create" by hand. Alias: tests.
+
+    $ ade --socket apple test --scheme ADE --text
+    $ ade --socket apple test --target <id> --only ADETests/SyncTests --text
+    $ ade --socket apple test --scheme ADE --build-only --text
+
+  Flags:
+    --target <id>                 Launch target id from "apps"; tests its project and scheme.
+    --scheme <name>               Scheme to test.
+    --project, --workspace <path> .xcodeproj or .xcworkspace, relative to the build root.
+    --test-plan <name>            Test plan.
+    --only, --only-testing <ids>  Comma-separated -only-testing identifiers.
+    --skip, --skip-testing <ids>  Comma-separated -skip-testing identifiers.
+    --build-only                  build-for-testing, no run.
+    --timeout-ms <n>              Default 30 minutes, at most 2 hours.
+    --lane, --lane-id <id>        Lane whose worktree and device to use.
 `,
   "device-attach": `${ADE_BANNER}
   Apple device: device-attach
 
-  Binds an existing installed simulator to this lane without cloning. ADE
-  never deletes an attached simulator.
+  Binds an existing installed simulator to this lane. ADE never deletes an
+  attached simulator. When the lane ends, ADE powers it off and uninstalls
+  only the apps ADE put on it. An agent may attach a simulator the user named,
+  but never one another lane holds (APPLE_DEVICE_NOT_LANE_OWNED).
 
     $ ade --socket apple device-attach --simulator <udid|name> --text
 
@@ -861,19 +910,21 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "start": `${ADE_BANNER}
   Apple device: start
 
-  Brings the lane's device up in one step: attaches (or clones, with
-  --create) when the lane owns no device yet, boots it if it is shut down,
+  Brings the lane's device up in one step: attaches (--udid) or makes a new
+  device (--runtime / --device-type / --create) when the lane owns no device
+  yet, boots it if it is shut down,
   waits for simctl bootstatus, then starts the live view. Progress arrives
   as apple.device.state events (starting → booted → streaming). Unlike
   device-attach and device-create, this boots.
 
     $ ade --socket apple start --text
     $ ade --socket apple start --udid <udid> --text
-    $ ade --socket apple start --create <sourceUdid> --text
+    $ ade --socket apple start --runtime "iOS 26.3" --device-type "iPhone 17e" --text
 
   Flags:
     --udid, --simulator, --device <id>  Installed simulator to attach when the lane has none.
-    --create <sourceUdid>               Clone this installed simulator for the lane instead.
+    --runtime, --device-type <value>    Make a new device from this runtime / model instead.
+    --create <sourceUdid>               Make a new device with this simulator's model and runtime.
     --lane, --lane-id <id>              Lane that owns (or will own) the device.
 `,
   "device-list": `${ADE_BANNER}
@@ -882,10 +933,14 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Lists installed simulators and/or the one device this lane owns.
 
     $ ade --socket apple device-list --installed --text
+    $ ade --socket apple device-list --runtimes --text
+    $ ade --socket apple device-list --disk --text
     $ ade --socket apple device-list --text
 
   Flags:
     --installed            Installed simulators for a picker. ADE never downloads one.
+    --runtimes             Installed runtimes and the device types each one runs.
+    --disk, --storage      Disk use per device, and who each device belongs to.
     --lane, --lane-id <id> The lane whose device to report; defaults to $ADE_LANE_ID.
 `,
   stop: `${ADE_BANNER}
@@ -912,8 +967,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Apple device: device-detach
 
   The lane gives up its device. The simulator stays installed, keeps its power
-  state, and shows as a free device in the picker. Nothing is deleted, clone
-  or attached. Use "device-delete" to remove a clone. Alias: detach.
+  state, and shows as a free device in the picker. Nothing is deleted. Use
+  "device-delete" to remove the lane's ADE device. Alias: detach.
 
   Refused while another chat is driving the device, like stop.
 
@@ -928,7 +983,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "device-delete": `${ADE_BANNER}
   Apple device: device-delete
 
-  Deletes this lane's cloned simulator. Attached devices refuse unless --force,
+  Deletes this lane's ADE device and all its data. Attached devices refuse unless --force,
   and --force only detaches them — ADE never deletes a simulator it did not create.
   Refused while another chat is driving the device, like stop. --force does
   not change this; only --ignore-ownership does. To keep the simulator, use
@@ -1101,6 +1156,8 @@ export const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "power-off": "stop",
   poweroff: "stop",
   detach: "device-detach",
+  cleanup: "device-cleanup",
+  tests: "test",
   capture: "screenshot",
   promote: "proof",
   screen: "snapshot",

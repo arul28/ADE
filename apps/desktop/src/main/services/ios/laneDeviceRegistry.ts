@@ -1,39 +1,55 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { appleRecordingsDirectory } from "./recording/appleRecordingsStore";
 import { bareSimulatorPowerOff } from "./simulatorPower";
 
 import type {
+  AppleDeviceCleanupResult,
   AppleDeviceDiskUsage,
   AppleDeviceListResult,
+  AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
   AppleLaneDeviceFamily,
+  AppleLaneDeviceOrigin,
+  AppleSimulatorDeviceType,
   AppleSimulatorOwner,
+  AppleSimulatorOwnershipInfo,
 } from "../../../shared/types/iosSimulator";
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_DEVICE_NOT_LANE_OWNED_CODE,
   APPLE_DEVICE_OWNED_BY_LANE_CODE,
-  APPLE_TEMPLATE_BOOTED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
+  APPLE_RUNTIME_NOT_INSTALLED_CODE,
+  isAdeOwnedLaneDevice,
 } from "../../../shared/types/iosSimulator";
 
 /**
  * One simulator per lane, many per machine.
  *
- * A lane gets no device until it is asked for. The first ask clones the
- * project's last-used installed simulator (else the newest installed iPhone)
- * with `simctl clone` and names the clone for the lane, so two lanes never
- * share a screen and a lane's device is recognisable in Xcode's own device
- * list. A lane may instead ATTACH an existing simulator, which binds without
- * cloning — and which is why delete has two behaviours: ADE deletes what it
+ * A lane gets no device until it is asked for. The first ask makes a NEW,
+ * empty device (`simctl create`) from an installed runtime and names it for
+ * the lane, so two lanes never share a screen or each other's app data, and a
+ * lane's device is recognisable in Xcode's own device list. Nothing is copied:
+ * each lane builds and installs its own version of the app anyway, and a copy
+ * of another device only carried that device's gigabytes of data and state.
+ *
+ * ADE writes a marker file into every device it makes (`appleDeviceMarkerPath`).
+ * The marker, not only the database row, is what proves a device is ADE's: a
+ * row can be lost, and without the marker a leaked device looks exactly like
+ * the user's own and is kept forever. The cleanup pass (`reconcile`) deletes a
+ * marked device that no live lane holds.
+ *
+ * A lane may instead ATTACH an existing simulator, which binds without making
+ * one — and which is why delete has two behaviours: ADE deletes what it
  * created and never deletes what it did not.
  *
  * ADE never downloads a runtime. `simctl` will happily fetch several gigabytes
  * for a runtime that is merely *known*; a lane asking for a device must not
- * start that, so every template comes from the installed list and an empty list
+ * start that, so every runtime comes from the installed list and an empty list
  * is a refusal (`APPLE_NO_INSTALLED_SIMULATORS`) rather than a download.
  */
 
@@ -80,12 +96,12 @@ export type AppleDeviceNotLaneOwnedReason =
   | { kind: "not-created" };
 
 /**
- * An agent asked to attach a simulator its lane did not get from ADE.
+ * An agent asked for a simulator its lane may not use.
  *
- * Agents use only their lane's own device. A booted simulator may be another
- * lane's live view, an `xcodebuild test` run, or the user's; a stopped one may
- * be the user's and gets booted by the next test run that names it. A clone is
- * the lane's alone, so the refusal always points at creating one.
+ * An agent may attach an installed simulator no lane holds (the user named it),
+ * but never one another lane holds. For every other verb it drives only its
+ * lane's own device, so a foreign udid is refused and the refusal points at
+ * attaching it or at making the lane's own device.
  */
 export class AppleDeviceNotLaneOwnedError extends Error {
   readonly code = APPLE_DEVICE_NOT_LANE_OWNED_CODE;
@@ -95,28 +111,49 @@ export class AppleDeviceNotLaneOwnedError extends Error {
       ? `belongs to lane ${reason.laneLabel}`
       : reason.kind === "running"
         ? "is not this lane's device and it is already running; another lane, a test run or the user may be using it"
-        : "is not this lane's device, and agents only use a device ADE created for their lane";
-    super(
-      `${APPLE_DEVICE_NOT_LANE_OWNED_CODE}: Simulator ${simulator.name} (${simulator.udid}) ${why}. `
-        + "Create this lane's own device with `ade apple device-create` "
-        + "(or `ade apple start --create <udid>` to clone a specific one).",
-    );
+        : "is not this lane's device";
+    const next = reason.kind === "other-lane"
+      ? "Use this lane's own device: `ade apple device-create` makes one."
+      : "If the user named it, attach it first with `ade apple device-attach --simulator <udid>`; "
+        + "otherwise use this lane's own device (`ade apple device-create` makes one).";
+    super(`${APPLE_DEVICE_NOT_LANE_OWNED_CODE}: Simulator ${simulator.name} (${simulator.udid}) ${why}. ${next}`);
     this.name = "AppleDeviceNotLaneOwnedError";
   }
 }
 
-export class AppleTemplateBootedError extends Error {
-  readonly code = APPLE_TEMPLATE_BOOTED_CODE;
+export class AppleRuntimeNotInstalledError extends Error {
+  readonly code = APPLE_RUNTIME_NOT_INSTALLED_CODE;
 
-  constructor(readonly template: AppleInstalledSimulator) {
-    super(`${APPLE_TEMPLATE_BOOTED_CODE}: ${template.name} (${template.udid}) is running, and simctl cannot clone a booted device. Name a stopped simulator to copy from, or power this one off if nobody is using it.`);
-    this.name = "AppleTemplateBootedError";
+  constructor(what: string, installed: string[]) {
+    super(
+      `${APPLE_RUNTIME_NOT_INSTALLED_CODE}: ${what} is not installed on this Mac, and ADE never downloads one. `
+        + (installed.length ? `Installed: ${installed.join(", ")}.` : "Install one from Xcode ▸ Settings ▸ Components."),
+    );
+    this.name = "AppleRuntimeNotInstalledError";
   }
 }
 
 export const LANE_APPLE_DEVICES_TABLE = "lane_apple_devices" as const;
-/** KV key holding the project's last-used template, per the contracts file. */
-export const APPLE_LAST_TEMPLATE_KEY = "apple:last-template-udid" as const;
+/** KV key holding the device type this project made its last lane device from. */
+export const APPLE_LAST_DEVICE_TYPE_KEY = "apple:last-device-type" as const;
+/**
+ * KV key: udid → bundle ids ADE installed on an ATTACHED device.
+ *
+ * An attached device is the user's, so ADE never deletes it. What ADE put on
+ * it is ADE's, and that is where the disk goes (app data, not iOS), so it is
+ * uninstalled when the lane lets the device go.
+ */
+export const APPLE_ADE_INSTALLED_APPS_KEY = "apple:ade-installed-apps" as const;
+/** The file ADE writes into each device directory it creates. */
+export const APPLE_DEVICE_MARKER_FILE = "ade-lane-device.json" as const;
+/**
+ * A marked device younger than this is never deleted by the cleanup pass. The
+ * marker is written before the lane row, so a create in flight has a marker and
+ * no row for a moment.
+ */
+const MARKER_GRACE_MS = 5 * 60_000;
+/** See `endLaneDeviceOnDisk`: the wait between the last uninstall and the power-off. */
+const UNINSTALL_SETTLE_MS = 5_000;
 
 type RunCommand = (
   command: string,
@@ -144,6 +181,22 @@ export type LaneDeviceRegistryDeps = {
   powerOffDevice: (udid: string) => Promise<unknown>;
   /** Every installed, available simulator on this Mac. */
   listInstalledSimulators: () => Promise<AppleInstalledSimulator[]>;
+  /**
+   * Every installed runtime and the device types it runs. Defaults to
+   * `simctl list runtimes available --json`.
+   */
+  listInstalledRuntimes?: (() => Promise<AppleInstalledRuntime[]>) | null;
+  /**
+   * The project this registry serves. Written into each device's marker, and
+   * the cleanup pass only deletes marked devices of this project (or of a
+   * project that no longer exists on disk).
+   */
+  projectRoot?: string | null;
+  /**
+   * Stop every stream, hub session and recording that reads this device,
+   * before the cleanup pass powers it off or deletes it. The host's; optional.
+   */
+  releaseDeviceHolds?: ((udid: string) => Promise<void>) | null;
   /** Human name for a lane, used in the clone's name. Null falls back to the id. */
   resolveLaneName?: ((laneId: string) => string | null) | null;
   /** The lanes DB. Omitted in hosts that have none; the registry then keeps rows in memory. */
@@ -172,8 +225,16 @@ export type LaneDeviceRegistryDeps = {
   now?: () => Date;
 };
 
+export type LaneDeviceCreateArgs = {
+  laneId: string;
+  from?: string | null;
+  runtime?: string | null;
+  deviceType?: string | null;
+  name?: string | null;
+};
+
 export type LaneDeviceRegistry = {
-  deviceCreate(args: { laneId: string; from?: string | null; name?: string | null }): Promise<AppleLaneDevice>;
+  deviceCreate(args: LaneDeviceCreateArgs): Promise<AppleLaneDevice>;
   /**
    * Bind an installed simulator to a lane.
    *
@@ -189,9 +250,10 @@ export type LaneDeviceRegistry = {
     installed?: boolean | null;
     laneId?: string | null;
     disk?: boolean | null;
+    runtimes?: boolean | null;
   }): Promise<AppleDeviceListResult>;
   /**
-   * Delete the lane's clone. An attached device is always refused: ADE never
+   * Delete the lane's ADE device. An attached device is always refused: ADE never
    * deletes a simulator it did not create. Detaching one is `deviceDetach`.
    *
    * With `udid`, only that device: when the lane holds another one by now,
@@ -220,6 +282,24 @@ export type LaneDeviceRegistry = {
   list(): AppleLaneDevice[];
   /** Create on first ask — what `launch` and `open-device` call. */
   ensure(args: { laneId: string }): Promise<AppleLaneDevice>;
+  /**
+   * Bring the rows, the marker files and the real device set back into line.
+   *
+   * - A row whose simulator no longer exists is dropped.
+   * - A row whose lane ended (archived, deleted, or merged away) is released:
+   *   an ADE device is deleted; an attached one is powered off and loses only
+   *   the apps ADE installed.
+   * - A marked ADE device of this project that no live lane holds is deleted.
+   * - A row for an ADE device that has no marker (made before markers) gets one.
+   *
+   * Never throws; each failure is one entry in `errors`. Refuses to delete
+   * anything when the device set cannot be read.
+   */
+  reconcile(): Promise<AppleDeviceCleanupResult>;
+  /** Remember that ADE installed `bundleId` on `udid`, when `udid` is an attached lane device. */
+  noteAppInstalled(args: { udid: string; bundleId: string }): void;
+  /** True when the lane row exists and is not archived. Unknown (no store) reads as true. */
+  isLaneLive(laneId: string): boolean;
 };
 
 /**
@@ -289,61 +369,180 @@ export function parseAppleDeviceDiskUsage(input: {
   return { totalBytes: total ?? sum, devices };
 }
 
+type SimctlRuntimesJson = {
+  runtimes?: Array<{
+    identifier?: string;
+    name?: string;
+    version?: string;
+    platform?: string;
+    isAvailable?: boolean;
+    supportedDeviceTypes?: Array<{ identifier?: string; name?: string; productFamily?: string }>;
+  }>;
+};
+
+/** `simctl list runtimes available --json` into the installed runtimes, iOS first and newest first. */
+export function parseAppleInstalledRuntimes(stdout: string): AppleInstalledRuntime[] {
+  const parsed = JSON.parse(stdout) as SimctlRuntimesJson;
+  const runtimes: AppleInstalledRuntime[] = [];
+  for (const runtime of parsed.runtimes ?? []) {
+    if (!runtime.identifier || !runtime.name || runtime.isAvailable === false) continue;
+    const deviceTypes: AppleSimulatorDeviceType[] = [];
+    for (const type of runtime.supportedDeviceTypes ?? []) {
+      if (!type.identifier || !type.name) continue;
+      deviceTypes.push({
+        identifier: type.identifier,
+        name: type.name,
+        family: appleDeviceFamily({ deviceTypeIdentifier: type.identifier, name: `${type.productFamily ?? ""} ${type.name}` }),
+      });
+    }
+    runtimes.push({
+      identifier: runtime.identifier,
+      name: runtime.name,
+      version: runtime.version ?? "",
+      platform: runtime.platform ?? runtime.name.split(" ")[0] ?? "",
+      deviceTypes,
+    });
+  }
+  return runtimes.sort((a, b) => {
+    const byPlatform = Number(b.platform === "iOS") - Number(a.platform === "iOS");
+    if (byPlatform !== 0) return byPlatform;
+    return appleRuntimeScore(b.version || b.name) - appleRuntimeScore(a.version || a.name);
+  });
+}
+
+const matchesName = (value: string, wanted: string): boolean =>
+  value === wanted || value.toLowerCase() === wanted.toLowerCase();
+
 /**
- * The template a fresh lane device is cloned from.
+ * The runtime and device type a new lane device is made from.
  *
- * Order is the locked one from the spec: an explicit `--from`, then the
- * project's last-used installed simulator, then the newest installed iPhone.
+ * Order: an explicit `runtime`/`deviceType`, then `from` (an installed
+ * simulator whose model and runtime to copy — never its data), then the newest
+ * installed iOS runtime with the device type this project used last, else the
+ * first iPhone that runtime lists (CoreSimulator lists the newest first).
  * Exported pure so the precedence is testable without `simctl`.
  */
-export function pickAppleTemplate(input: {
-  installed: AppleInstalledSimulator[];
+export function pickAppleDeviceSpec(input: {
+  runtimes: AppleInstalledRuntime[];
+  installed?: AppleInstalledSimulator[];
+  runtime?: string | null;
+  deviceType?: string | null;
   from?: string | null;
-  lastUsedUdid?: string | null;
-}): AppleInstalledSimulator | null {
-  const installed = input.installed.filter((device) => device.isAvailable);
-  if (!installed.length) return null;
+  lastDeviceType?: string | null;
+}): { runtime: AppleInstalledRuntime; deviceType: AppleSimulatorDeviceType } {
+  const runtimes = input.runtimes.filter((runtime) => runtime.deviceTypes.length > 0);
+  if (!runtimes.length) throw new AppleNoInstalledSimulatorsError();
+  const runtimeNames = runtimes.map((runtime) => runtime.name);
+  let wantedRuntime = input.runtime?.trim() || null;
+  let wantedType = input.deviceType?.trim() || null;
   const from = input.from?.trim();
   if (from) {
-    // An explicitly named template is the caller's choice, booted or not. The
-    // clone will fail if it is booted, and `create` says so by name.
-    return installed.find((device) => device.udid === from)
-      ?? installed.find((device) => device.name === from)
-      ?? installed.find((device) => device.name.toLowerCase() === from.toLowerCase())
-      ?? null;
+    const installed = input.installed ?? [];
+    const source = installed.find((device) => device.udid === from)
+      ?? installed.find((device) => matchesName(device.name, from));
+    if (!source) {
+      throw new Error(`No installed simulator matches ${from}. Run device-list --installed to see what this Mac has.`);
+    }
+    wantedRuntime ??= source.runtime;
+    wantedType ??= source.deviceTypeIdentifier;
   }
-  /*
-   * `simctl clone` cannot copy a BOOTED device — it fails with "Unable to
-   * clone device in current state: Booted" (error 405). Nothing here looked at
-   * state, so on a Mac whose newest iPhone happened to be running, every
-   * automatic pick chose the one device that could not be cloned, and
-   * `open-device` failed with a raw simctl error. Found by an agent testing
-   * the flow.
-   *
-   * Booted devices stay in the pool as a last resort so the caller gets the
-   * named error below rather than "no simulators installed", which would be
-   * false.
-   */
-  const cloneable = installed.filter((device) => device.state !== "Booted");
-  const candidates = cloneable.length ? cloneable : installed;
-  const lastUsed = input.lastUsedUdid?.trim();
-  if (lastUsed) {
-    const match = candidates.find((device) => device.udid === lastUsed);
-    if (match) return match;
+  const runtime = wantedRuntime
+    ? runtimes.find((candidate) => candidate.identifier === wantedRuntime
+      || matchesName(candidate.name, wantedRuntime)
+      || candidate.version === wantedRuntime)
+    : runtimes[0];
+  if (!runtime) throw new AppleRuntimeNotInstalledError(`Runtime ${wantedRuntime}`, runtimeNames);
+  const findType = (wanted: string) => runtime.deviceTypes.find((type) => type.identifier === wanted || matchesName(type.name, wanted));
+  if (wantedType) {
+    const type = findType(wantedType);
+    if (!type) {
+      throw new AppleRuntimeNotInstalledError(
+        `Device type ${wantedType} on ${runtime.name}`,
+        runtime.deviceTypes.slice(0, 8).map((candidate) => candidate.name),
+      );
+    }
+    return { runtime, deviceType: type };
   }
-  const phones = candidates.filter((device) => device.family === "iphone");
-  const pool = phones.length ? phones : candidates;
-  return [...pool].sort((a, b) => {
-    const byRuntime = appleRuntimeScore(b.runtime) - appleRuntimeScore(a.runtime);
-    if (byRuntime !== 0) return byRuntime;
-    return a.name.localeCompare(b.name);
-  })[0] ?? null;
+  const last = input.lastDeviceType?.trim();
+  const remembered = last ? findType(last) : undefined;
+  const deviceType = remembered
+    ?? runtime.deviceTypes.find((type) => type.family === "iphone")
+    ?? runtime.deviceTypes[0]!;
+  return { runtime, deviceType };
+}
+
+/** The marker ADE writes into a device directory it created. */
+export type AppleDeviceMarker = {
+  version: 1;
+  projectRoot: string;
+  laneId: string;
+  name: string;
+  createdAt: string;
+};
+
+export function appleDeviceMarkerPath(dataRoot: string, udid: string): string {
+  return path.join(dataRoot, udid, APPLE_DEVICE_MARKER_FILE);
+}
+
+export function readAppleDeviceMarker(dataRoot: string, udid: string): AppleDeviceMarker | null {
+  try {
+    const raw = JSON.parse(fs.readFileSync(appleDeviceMarkerPath(dataRoot, udid), "utf8")) as Partial<AppleDeviceMarker>;
+    if (typeof raw.projectRoot !== "string" || typeof raw.laneId !== "string") return null;
+    return {
+      version: 1,
+      projectRoot: raw.projectRoot,
+      laneId: raw.laneId,
+      name: typeof raw.name === "string" ? raw.name : "",
+      createdAt: typeof raw.createdAt === "string" ? raw.createdAt : "",
+    };
+  } catch {
+    return null;
+  }
 }
 
 /**
- * The clone's name.
+ * Write the marker. Only into a directory that exists: CoreSimulator creates it
+ * with the device, and a marker without its device would describe nothing.
+ */
+export function writeAppleDeviceMarker(dataRoot: string, udid: string, marker: AppleDeviceMarker): boolean {
+  const directory = path.join(dataRoot, udid);
+  if (!fs.existsSync(directory)) return false;
+  fs.writeFileSync(appleDeviceMarkerPath(dataRoot, udid), `${JSON.stringify(marker, null, 2)}\n`, "utf8");
+  return true;
+}
+
+/** Every marked device directory under the device store. Unreadable entries are skipped. */
+export function listAppleDeviceMarkers(dataRoot: string): Array<{ udid: string; marker: AppleDeviceMarker }> {
+  let entries: string[] = [];
+  try {
+    entries = fs.readdirSync(dataRoot);
+  } catch {
+    return [];
+  }
+  const found: Array<{ udid: string; marker: AppleDeviceMarker }> = [];
+  for (const udid of entries) {
+    if (!/^[0-9A-F-]{20,}$/iu.test(udid)) continue;
+    const marker = readAppleDeviceMarker(dataRoot, udid);
+    if (marker) found.push({ udid, marker });
+  }
+  return found;
+}
+
+/** Two project roots name the same project. Case and a trailing slash do not matter. */
+function sameProjectRoot(a: string, b: string): boolean {
+  const normalize = (value: string) => path.resolve(value).replace(/\/+$/u, "").toLowerCase();
+  return normalize(a) === normalize(b);
+}
+
+/** `ADE · lane`, `ADE Repro`: a name ADE made, or a person named after it. Evidence only for the storage view. */
+export function looksLikeAdeDeviceName(name: string): boolean {
+  return /^ADE(\s|·|$)/u.test(name.trim());
+}
+
+/**
+ * The lane device's name.
  *
- * `ADE · <lane>` is the locked pattern: the separator makes an ADE clone
+ * `ADE · <lane>` is the locked pattern: the separator makes an ADE device
  * obvious in Xcode's own device list, which is the list a user reaches for when
  * something looks wrong. A collision gets a numeric suffix rather than being
  * refused — two lanes can legitimately carry the same display name.
@@ -393,12 +592,23 @@ type LaneDeviceRow = {
   template_udid: string | null;
 };
 
+/**
+ * Anything that is not `attached` is ADE's. An unknown value from a newer ADE
+ * reads as `clone` rather than as the user's, so it is still deleted with its
+ * lane instead of being kept forever.
+ */
+function rowOrigin(value: string): AppleLaneDeviceOrigin {
+  if (value === "attached") return "attached";
+  if (value === "created") return "created";
+  return "clone";
+}
+
 function rowToDevice(row: LaneDeviceRow): AppleLaneDevice {
   return {
     laneId: row.lane_id,
     udid: row.udid,
     name: row.name,
-    origin: row.origin === "attached" ? "attached" : "clone",
+    origin: rowOrigin(row.origin),
     family: row.family === "ipad" || row.family === "watch" ? row.family : "iphone",
     runtime: row.runtime,
     createdAt: row.created_at,
@@ -537,27 +747,95 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     deps.store.run(`delete from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ?`, [laneId]);
   };
 
-  const rememberTemplate = (udid: string): void => {
+  /**
+   * Mark a device as ADE's. Never fails the caller: a device without a marker
+   * is still deleted with its lane through the row; the marker is what finds it
+   * when the row is lost.
+   */
+  const writeMarker = (udid: string, marker: { laneId: string; name: string; createdAt: string }): void => {
+    const projectRoot = deps.projectRoot?.trim();
+    if (!projectRoot) return;
     try {
-      deps.store?.setJson(APPLE_LAST_TEMPLATE_KEY, udid);
+      writeAppleDeviceMarker(dataRoot(), udid, { version: 1, projectRoot, ...marker });
     } catch (error) {
-      deps.logger.debug("apple.template_remember_failed", {
+      deps.logger.warn?.("apple.lane_device_marker_write_failed", {
+        udid,
         error: error instanceof Error ? error.message : String(error),
       });
     }
   };
 
-  const lastTemplate = (): string | null => {
+  const isLaneLive = (laneId: string): boolean => {
+    if (!deps.store) return true;
     try {
-      const value = deps.store?.getJson<string>(APPLE_LAST_TEMPLATE_KEY);
+      const row = deps.store.get<{ status: string | null }>("select status from lanes where id = ?", [laneId]);
+      return Boolean(row) && row?.status !== "archived";
+    } catch {
+      // A read that failed says nothing about the lane. Treat it as live, so
+      // nothing is deleted on a guess.
+      return true;
+    }
+  };
+
+  const readInstalledApps = (): Record<string, string[]> => {
+    try {
+      const value = deps.store?.getJson<Record<string, string[]>>(APPLE_ADE_INSTALLED_APPS_KEY);
+      return value && typeof value === "object" ? value : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const noteAppInstalled = (args: { udid: string; bundleId: string }): void => {
+    const udid = args.udid.trim();
+    const bundleId = args.bundleId.trim();
+    if (!udid || !bundleId || !deps.store) return;
+    // Only an attached device needs this. An ADE device is deleted whole.
+    const holder = readAll().find((device) => device.udid === udid);
+    if (!holder || holder.origin !== "attached") return;
+    const apps = readInstalledApps();
+    const list = new Set(apps[udid] ?? []);
+    if (list.has(bundleId)) return;
+    list.add(bundleId);
+    try {
+      deps.store.setJson(APPLE_ADE_INSTALLED_APPS_KEY, { ...apps, [udid]: [...list] });
+    } catch (error) {
+      deps.logger.debug("apple.installed_app_note_failed", {
+        udid,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const rememberDeviceType = (identifier: string): void => {
+    try {
+      deps.store?.setJson(APPLE_LAST_DEVICE_TYPE_KEY, identifier);
+    } catch (error) {
+      deps.logger.debug("apple.device_type_remember_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const lastDeviceType = (): string | null => {
+    try {
+      const value = deps.store?.getJson<string>(APPLE_LAST_DEVICE_TYPE_KEY);
       return typeof value === "string" && value.trim() ? value.trim() : null;
     } catch {
       return null;
     }
   };
 
+  const dataRoot = (): string => deps.deviceDataRoot?.trim() || appleDeviceDataRoot();
+
+  const listRuntimes = async (): Promise<AppleInstalledRuntime[]> => {
+    if (deps.listInstalledRuntimes) return deps.listInstalledRuntimes();
+    const { stdout } = await deps.run("xcrun", ["simctl", "list", "runtimes", "available", "--json"], { timeoutMs: 30_000 });
+    return parseAppleInstalledRuntimes(stdout);
+  };
+
   /**
-   * The lane's display name, for the clone's name.
+   * The lane's display name, for the device's name.
    *
    * Read straight from the `lanes` table when no resolver was injected: the
    * hosts hand this registry the same database the lane row lives in, and a
@@ -639,51 +917,64 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     return trimmed;
   };
 
-  const create = async (args: { laneId: string; from?: string | null; name?: string | null }): Promise<AppleLaneDevice> => {
+  const create = async (args: LaneDeviceCreateArgs): Promise<AppleLaneDevice> => {
     const laneId = requireLaneId(args.laneId);
     const existing = readOne(laneId);
     if (existing) throw new AppleDeviceExistsError(existing);
-    const installed = await deps.listInstalledSimulators();
-    const template = pickAppleTemplate({ installed, from: args.from, lastUsedUdid: lastTemplate() });
-    if (!template) {
-      if (args.from?.trim() && installed.length) {
-        throw new Error(`No installed simulator matches ${args.from.trim()}. Run device-list --installed to see what this Mac has.`);
-      }
-      throw new AppleNoInstalledSimulatorsError();
-    }
-    /*
-     * Reached when every installed simulator is booted, or when the caller
-     * named a booted one. `simctl clone` fails on a booted device with a bare
-     * "Unable to clone device in current state: Booted", which tells the reader
-     * nothing about what to do next.
-     */
-    if (template.state === "Booted") throw new AppleTemplateBootedError(template);
+    const [runtimes, installed] = await Promise.all([
+      listRuntimes(),
+      // Only `from` and the name collision check need it.
+      deps.listInstalledSimulators(),
+    ]);
+    const spec = pickAppleDeviceSpec({
+      runtimes,
+      installed,
+      runtime: args.runtime,
+      deviceType: args.deviceType,
+      from: args.from,
+      lastDeviceType: lastDeviceType(),
+    });
     const name = appleLaneDeviceName({
       laneId,
       laneName: laneNameFor(laneId),
       requested: args.name,
       taken: installed.map((device) => device.name),
     });
-    // `simctl clone` prints the new udid and nothing else. Anything on stderr
+    // `simctl create` prints the new udid and nothing else. Anything on stderr
     // is a warning, not the answer, which is why only stdout is parsed.
-    const { stdout } = await deps.run("xcrun", ["simctl", "clone", template.udid, name], { timeoutMs: 120_000 });
+    const { stdout } = await deps.run(
+      "xcrun",
+      ["simctl", "create", name, spec.deviceType.identifier, spec.runtime.identifier],
+      { timeoutMs: 120_000 },
+    );
     const udid = stdout.trim().split(/\s+/).filter(Boolean).pop() ?? "";
     if (!udid) {
-      throw new Error(`simctl clone did not report a udid for ${name}. Check \`xcrun simctl list devices\` and try again.`);
+      throw new Error(`simctl create did not report a udid for ${name}. Check \`xcrun simctl list devices\` and try again.`);
     }
+    const createdAt = now().toISOString();
+    // The marker first, then the row: a crash between the two leaves a marked
+    // device with no row, which the cleanup pass re-adopts or deletes. The other
+    // order would leave an unmarked device, which nothing would ever delete.
+    writeMarker(udid, { laneId, name, createdAt });
     const device: AppleLaneDevice = {
       laneId,
       udid,
       name,
-      origin: "clone",
-      family: template.family,
-      runtime: template.runtime,
-      createdAt: now().toISOString(),
-      templateUdid: template.udid,
+      origin: "created",
+      family: spec.deviceType.family,
+      runtime: spec.runtime.name,
+      createdAt,
+      templateUdid: null,
     };
     write(device);
-    rememberTemplate(template.udid);
-    deps.logger.info("apple.lane_device_created", { laneId, udid, name, templateUdid: template.udid });
+    rememberDeviceType(spec.deviceType.identifier);
+    deps.logger.info("apple.lane_device_created", {
+      laneId,
+      udid,
+      name,
+      runtime: spec.runtime.identifier,
+      deviceType: spec.deviceType.identifier,
+    });
     return device;
   };
 
@@ -719,25 +1010,19 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
      */
     const holders = readAll().filter((device) => device.udid === match.udid && device.laneId !== laneId);
     /*
-     * An agent never attaches a simulator it did not get from ADE, running or
-     * not. A running one may be another lane's view, a test run or the user's;
-     * a stopped one may be the user's own, and the next test run that names it
-     * boots it under the agent. A clone costs one simulator's disk and cannot
-     * collide with anyone, so that is what the refusal offers. The user keeps
-     * attach and takeover through the picker, which never sets this.
+     * An agent may attach an installed simulator that no lane holds: that is
+     * the user naming a device for the lane ("use my iPhone 17 Pro"). It may
+     * never take one another lane holds — that is a takeover, and a takeover
+     * stays the user's, through the picker, which never sets this flag.
      */
-    if (args.agentCaller) {
-      const holder = holders[0] ?? null;
-      const reason: AppleDeviceNotLaneOwnedReason = holder
-        ? { kind: "other-lane", laneLabel: laneNameFor(holder.laneId) ?? holder.laneId }
-        : match.state === "Booted"
-          ? { kind: "running" }
-          : { kind: "not-created" };
+    if (args.agentCaller && holders.length) {
+      const holder = holders[0]!;
+      const reason: AppleDeviceNotLaneOwnedReason = { kind: "other-lane", laneLabel: laneNameFor(holder.laneId) ?? holder.laneId };
       deps.logger.info("apple.lane_device_attach_refused_agent", {
         laneId,
         udid: match.udid,
         reason: reason.kind,
-        ...(holder ? { holderLaneId: holder.laneId } : {}),
+        holderLaneId: holder.laneId,
       });
       throw new AppleDeviceNotLaneOwnedError(match, reason);
     }
@@ -821,7 +1106,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     }
     // ADE does not delete a simulator it did not create: a user's own device
     // being erased because a lane was archived is not a recoverable mistake.
-    if (device.origin === "attached") throw new AppleDeviceAttachedNotDeletableError(device);
+    if (!isAdeOwnedLaneDevice(device.origin)) throw new AppleDeviceAttachedNotDeletableError(device);
     await deps.powerOffDevice(device.udid).catch((error: unknown) => {
       deps.logger.debug("apple.lane_device_shutdown_failed", {
         laneId,
@@ -871,6 +1156,136 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     deps.logger.info("apple.installed_device_deleted", { udid });
   };
 
+  /** Who each installed simulator belongs to, for the storage view. */
+  const ownershipFor = (installed: AppleInstalledSimulator[]): AppleSimulatorOwnershipInfo[] => {
+    const rows = new Set(readAll().map((device) => device.udid));
+    const root = dataRoot();
+    const projectRoot = deps.projectRoot?.trim() || null;
+    return installed.map((device) => {
+      const marker = readAppleDeviceMarker(root, device.udid);
+      const ownership: AppleSimulatorOwnershipInfo["ownership"] = rows.has(device.udid)
+        ? "lane"
+        : marker
+          ? projectRoot && !sameProjectRoot(marker.projectRoot, projectRoot)
+            ? "ade-other-project"
+            : "ade-orphan"
+          : "unknown";
+      return {
+        udid: device.udid,
+        ownership,
+        markerLaneId: marker?.laneId ?? null,
+        looksLikeAde: !marker && looksLikeAdeDeviceName(device.name),
+      };
+    });
+  };
+
+  /** Delete a device ADE made that no lane holds. Every step is best effort; true when simctl deleted it. */
+  const deleteUnheldAdeDevice = async (udid: string): Promise<boolean> => {
+    await deps.releaseDeviceHolds?.(udid).catch(() => undefined);
+    await deps.powerOffDevice(udid).catch(() => undefined);
+    await deps.run("xcrun", ["simctl", "delete", udid], { timeoutMs: 120_000 });
+    return true;
+  };
+
+  const reconcile = async (): Promise<AppleDeviceCleanupResult> => {
+    const result: AppleDeviceCleanupResult = { deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] };
+    const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+    let all: Map<string, { name: string; state: string; runtime: string }>;
+    try {
+      const { stdout } = await deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 });
+      all = parseAppleDeviceSet(stdout);
+    } catch (error) {
+      // Nothing is deleted on a device set ADE could not read: an empty answer
+      // would otherwise read as "every row's simulator is gone".
+      result.errors.push({ udid: null, message: `Could not read the simulator list: ${errorText(error)}` });
+      return result;
+    }
+    const root = dataRoot();
+
+    for (const row of readAll()) {
+      if (!all.has(row.udid)) {
+        // Deleted outside ADE (Xcode, `simctl delete`). The row is all that is left.
+        try {
+          forget(row.laneId);
+          result.forgottenRows.push({ laneId: row.laneId, udid: row.udid });
+        } catch (error) {
+          result.errors.push({ udid: row.udid, message: errorText(error) });
+        }
+        continue;
+      }
+      if (!isLaneLive(row.laneId)) {
+        try {
+          await deps.releaseDeviceHolds?.(row.udid).catch(() => undefined);
+          const ended = await endLaneDeviceOnDisk({ device: row, run: deps.run, store: deps.store ?? null, logger: deps.logger });
+          forget(row.laneId);
+          result.released.push({ laneId: row.laneId, udid: row.udid });
+          if (ended.deleted) result.deleted.push({ udid: row.udid, name: row.name, reason: "lane ended" });
+        } catch (error) {
+          result.errors.push({ udid: row.udid, message: errorText(error) });
+        }
+        continue;
+      }
+      // A device made before markers existed: give it one, so a lost row can
+      // no longer turn it into a device nobody deletes.
+      if (isAdeOwnedLaneDevice(row.origin) && !readAppleDeviceMarker(root, row.udid)) {
+        writeMarker(row.udid, { laneId: row.laneId, name: row.name, createdAt: row.createdAt });
+      }
+    }
+
+    const held = new Set(readAll().map((device) => device.udid));
+    const projectRoot = deps.projectRoot?.trim() || null;
+    const nowMs = now().getTime();
+    for (const { udid, marker } of listAppleDeviceMarkers(root)) {
+      if (held.has(udid)) continue;
+      const listed = all.get(udid);
+      if (!listed) continue;
+      const ours = projectRoot ? sameProjectRoot(marker.projectRoot, projectRoot) : false;
+      const projectGone = !fs.existsSync(path.join(marker.projectRoot, ".ade"));
+      if (!ours && !projectGone) continue;
+      const createdMs = Date.parse(marker.createdAt);
+      if (Number.isFinite(createdMs) && nowMs - createdMs < MARKER_GRACE_MS) continue;
+      if (ours && isLaneLive(marker.laneId) && !readOne(marker.laneId)) {
+        // The lane is still here and lost only its row. Give the device back.
+        try {
+          write({
+            laneId: marker.laneId,
+            udid,
+            name: listed.name,
+            origin: "created",
+            family: appleDeviceFamily({ name: listed.name }),
+            runtime: listed.runtime,
+            createdAt: marker.createdAt || now().toISOString(),
+            templateUdid: null,
+          });
+          held.add(udid);
+          deps.logger.info("apple.lane_device_readopted", { laneId: marker.laneId, udid });
+        } catch (error) {
+          result.errors.push({ udid, message: errorText(error) });
+        }
+        continue;
+      }
+      try {
+        await deleteUnheldAdeDevice(udid);
+        result.deleted.push({
+          udid,
+          name: listed.name,
+          reason: projectGone && !ours ? "its project no longer exists" : "no live lane holds it",
+        });
+      } catch (error) {
+        result.errors.push({ udid, message: errorText(error) });
+      }
+    }
+    if (result.deleted.length || result.forgottenRows.length || result.released.length || result.errors.length) {
+      deps.logger.info("apple.lane_devices_reconciled", {
+        deleted: result.deleted.map((entry) => entry.udid),
+        forgottenRows: result.forgottenRows.length,
+        released: result.released.length,
+        errors: result.errors.length,
+      });
+    }
+    return result;
+  };
+
   return {
     deviceCreate: create,
     deviceAttach: attach,
@@ -879,12 +1294,21 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       const wantInstalled = args.installed !== false;
       const installed = wantInstalled ? await deps.listInstalledSimulators() : [];
       const laneId = args.laneId?.trim() || null;
+      const [disk, runtimes] = await Promise.all([
+        args.disk ? measureDisk() : Promise.resolve(null),
+        args.runtimes ? listRuntimes().catch(() => []) : Promise.resolve(null),
+      ]);
       return {
         installed,
         lane: laneId ? readOne(laneId) : null,
         owners: ownersFor(laneId),
         laneId,
-        disk: args.disk ? await measureDisk() : null,
+        disk,
+        ...(runtimes ? { runtimes } : {}),
+        // The storage read asks with `installed: false`; ownership still needs the list.
+        ...(args.disk
+          ? { ownership: ownershipFor(wantInstalled ? installed : await deps.listInstalledSimulators().catch(() => [])) }
+          : {}),
       };
     },
     deviceDelete: remove,
@@ -904,49 +1328,161 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       if (existing) return existing;
       return create({ laneId });
     },
+    reconcile,
+    noteAppInstalled,
+    isLaneLive,
   };
+}
+
+/** `simctl list devices --json`, every device including unavailable ones, by udid. */
+export function parseAppleDeviceSet(stdout: string): Map<string, { name: string; state: string; runtime: string }> {
+  const parsed = JSON.parse(stdout) as { devices?: Record<string, Array<{ udid?: string; name?: string; state?: string }>> };
+  if (!parsed || typeof parsed.devices !== "object" || parsed.devices === null) {
+    throw new Error("simctl list devices returned no device set");
+  }
+  const all = new Map<string, { name: string; state: string; runtime: string }>();
+  for (const [runtime, devices] of Object.entries(parsed.devices)) {
+    const runtimeName = (runtime.split(".").pop() ?? runtime).replace(/^([A-Za-z]+)-(\d+)-(\d+)$/u, "$1 $2.$3");
+    for (const device of devices ?? []) {
+      if (!device.udid) continue;
+      all.set(device.udid, { name: device.name ?? device.udid, state: device.state ?? "Unknown", runtime: runtimeName });
+    }
+  }
+  return all;
+}
+
+/**
+ * What ending a lane does to its device on disk.
+ *
+ * - An ADE device is powered off and deleted, with all its data.
+ * - An attached device is the user's. It keeps everything the user put on it:
+ *   ADE uninstalls only the apps ADE installed (their data is where the space
+ *   goes), then powers it off. `simctl uninstall` needs a booted device, so a
+ *   device that is off is booted for the uninstall and powered off again.
+ *
+ * Each step is best effort. Returns what happened.
+ */
+export async function endLaneDeviceOnDisk(input: {
+  device: AppleLaneDevice;
+  run: RunCommand;
+  store?: Pick<LaneDeviceStore, "getJson" | "setJson"> | null;
+  logger: { warn?: (event: string, data?: Record<string, unknown>) => void; info: (event: string, data?: Record<string, unknown>) => void };
+}): Promise<{ deleted: boolean; poweredOff: boolean; uninstalled: string[] }> {
+  const { device, run, logger } = input;
+  const powerOff = bareSimulatorPowerOff(run);
+  const warn = (event: string, error: unknown) => logger.warn?.(event, {
+    laneId: device.laneId,
+    udid: device.udid,
+    error: error instanceof Error ? error.message : String(error),
+  });
+  if (isAdeOwnedLaneDevice(device.origin)) {
+    await powerOff(device.udid).catch(() => false);
+    try {
+      await run("xcrun", ["simctl", "delete", device.udid], { timeoutMs: 120_000 });
+      return { deleted: true, poweredOff: true, uninstalled: [] };
+    } catch (error) {
+      warn("lane.end.apple_device_delete_failed", error);
+      return { deleted: false, poweredOff: true, uninstalled: [] };
+    }
+  }
+  let apps: Record<string, string[]> = {};
+  try {
+    apps = input.store?.getJson<Record<string, string[]>>(APPLE_ADE_INSTALLED_APPS_KEY) ?? {};
+  } catch {
+    apps = {};
+  }
+  const bundleIds = apps[device.udid] ?? [];
+  const uninstalled: string[] = [];
+  if (bundleIds.length) {
+    const state = await run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 })
+      .then((result) => parseAppleDeviceSet(result.stdout).get(device.udid)?.state ?? null)
+      .catch(() => null);
+    if (state !== "Booted") {
+      await run("xcrun", ["simctl", "boot", device.udid], { timeoutMs: 120_000 }).catch(() => undefined);
+      await run("xcrun", ["simctl", "bootstatus", device.udid, "-b"], { timeoutMs: 180_000 }).catch(() => undefined);
+    }
+    for (const bundleId of bundleIds) {
+      try {
+        await run("xcrun", ["simctl", "uninstall", device.udid, bundleId], { timeoutMs: 60_000 });
+        uninstalled.push(bundleId);
+      } catch (error) {
+        warn("lane.end.apple_app_uninstall_failed", error);
+      }
+    }
+    /*
+     * Let the uninstall settle before the power goes. Measured on iOS 26.3: a
+     * `simctl shutdown` straight after `simctl uninstall` sometimes brings the
+     * app back on the next boot, although `listapps` said it was gone. Five
+     * seconds between the two kept it gone in every run.
+     */
+    if (uninstalled.length) await new Promise((resolve) => setTimeout(resolve, UNINSTALL_SETTLE_MS));
+    try {
+      const { [device.udid]: _dropped, ...rest } = apps;
+      input.store?.setJson(APPLE_ADE_INSTALLED_APPS_KEY, rest);
+    } catch (error) {
+      warn("lane.end.apple_installed_apps_forget_failed", error);
+    }
+  }
+  const poweredOff = await powerOff(device.udid).catch(() => false);
+  logger.info("lane.end.apple_attached_device_released", { laneId: device.laneId, udid: device.udid, uninstalled });
+  return { deleted: false, poweredOff, uninstalled };
 }
 
 /**
  * Everything a deleted or archived lane owns on the Apple side.
  *
- * Called from `laneService`'s delete cascade, right next to
- * `removeLaneArtifactFiles`, and deliberately standalone rather than a method
- * on the simulator service: lane deletion runs in hosts that never constructed
- * one (the headless brain with `--chat-only`, the reap-vanished-worktrees
- * sweep), and a lane whose clone survived because no service happened to be
- * alive is a simulator nobody will ever delete.
+ * Called from `laneService`'s archive and delete paths, and deliberately
+ * standalone rather than a method on the simulator service: lane archive and
+ * deletion run in hosts that never constructed one (the headless brain with
+ * `--chat-only`, the reap-vanished-worktrees sweep), and a lane whose device
+ * survived because no service happened to be alive is a simulator nobody will
+ * ever delete. The cleanup pass catches what this misses.
  *
- * Two rules, both from the spec and both load-bearing:
+ * The rules:
  *
- * - A `clone` is ADE's and is deleted. An `attached` device is the user's and
- *   is only ever detached — ADE never deletes a simulator it did not create.
- * - Failures are logged, never thrown. This runs inside a delete that has
- *   already removed the worktree; aborting it would leave the lane half-gone.
+ * - An ADE device (`created`, or `clone` from before) is deleted with all its
+ *   data — on archive AND on delete. An unarchived lane gets a new device.
+ * - An `attached` device is the user's: powered off, the apps ADE installed
+ *   uninstalled, and unbound. ADE never deletes a simulator it did not create.
+ * - The lane's build cache (`derivedDataDirectories`) goes too; the next build
+ *   rebuilds it.
+ * - Recordings go only when `removeRecordings` (lane delete). An archived lane
+ *   keeps its proof.
+ * - Failures are logged, never thrown. This runs inside an archive or delete
+ *   that has already happened; aborting it would leave the lane half-gone.
  *
  * Fire-and-forget by design: the caller does not await it, because a
  * `simctl delete` can take tens of seconds on a large device set and the lane
- * row is already gone.
+ * change is already done.
  */
 export async function releaseLaneAppleDevice(input: {
   laneId: string;
   projectRoot: string;
-  store: Pick<LaneDeviceStore, "get" | "run">;
+  store: Pick<LaneDeviceStore, "get" | "run"> & Partial<Pick<LaneDeviceStore, "getJson" | "setJson">>;
   run: RunCommand;
   removeDirectory: (directory: string) => Promise<void>;
+  /** Default true. False on archive, which keeps the lane's recordings. */
+  removeRecordings?: boolean;
+  /** The lane's DerivedData caches, deleted whole. */
+  derivedDataDirectories?: string[];
   logger: {
     info: (event: string, data?: Record<string, unknown>) => void;
     warn: (event: string, data?: Record<string, unknown>) => void;
   };
-}): Promise<{ deletedUdid: string | null; detachedUdid: string | null; removedRecordings: boolean }> {
+}): Promise<{ deletedUdid: string | null; detachedUdid: string | null; removedRecordings: boolean; removedDerivedData: number }> {
   const laneId = input.laneId.trim();
-  const result = { deletedUdid: null as string | null, detachedUdid: null as string | null, removedRecordings: false };
+  const result = {
+    deletedUdid: null as string | null,
+    detachedUdid: null as string | null,
+    removedRecordings: false,
+    removedDerivedData: 0,
+  };
   if (!laneId) return result;
 
   let row: LaneDeviceRow | null = null;
   try {
     row = input.store.get<LaneDeviceRow>(
-      `select lane_id, udid, name, origin, family, runtime, created_at, template_udid from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ?`,
+      `select ${LANE_DEVICE_COLUMNS} from ${LANE_APPLE_DEVICES_TABLE} where lane_id = ?`,
       [laneId],
     );
   } catch (error) {
@@ -960,20 +1496,18 @@ export async function releaseLaneAppleDevice(input: {
 
   if (row) {
     const device = rowToDevice(row);
-    if (device.origin === "clone" && process.platform === "darwin") {
-      // Powered off first, as `remove` does, through the same power path.
-      await bareSimulatorPowerOff(input.run)(device.udid).catch(() => false);
-      try {
-        await input.run("xcrun", ["simctl", "delete", device.udid], { timeoutMs: 120_000 });
-        result.deletedUdid = device.udid;
-      } catch (error) {
-        input.logger.warn("lane.delete.apple_device_delete_failed", {
-          laneId,
-          udid: device.udid,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    } else if (device.origin === "attached") {
+    if (process.platform === "darwin") {
+      const ended = await endLaneDeviceOnDisk({
+        device,
+        run: input.run,
+        store: input.store.getJson && input.store.setJson
+          ? { getJson: input.store.getJson.bind(input.store), setJson: input.store.setJson.bind(input.store) } as Pick<LaneDeviceStore, "getJson" | "setJson">
+          : null,
+        logger: input.logger,
+      });
+      if (ended.deleted) result.deletedUdid = device.udid;
+      else if (!isAdeOwnedLaneDevice(device.origin)) result.detachedUdid = device.udid;
+    } else if (!isAdeOwnedLaneDevice(device.origin)) {
       result.detachedUdid = device.udid;
     }
     try {
@@ -986,20 +1520,40 @@ export async function releaseLaneAppleDevice(input: {
     }
   }
 
-  const recordingsDir = appleRecordingsDirectory(input.projectRoot, laneId);
-  try {
-    await input.removeDirectory(recordingsDir);
-    result.removedRecordings = true;
-  } catch (error) {
-    input.logger.warn("lane.delete.apple_recordings_remove_failed", {
-      laneId,
-      recordingsDir,
-      error: error instanceof Error ? error.message : String(error),
-    });
+  for (const directory of input.derivedDataDirectories ?? []) {
+    try {
+      await input.removeDirectory(directory);
+      result.removedDerivedData += 1;
+    } catch (error) {
+      input.logger.warn("lane.end.apple_derived_data_remove_failed", {
+        laneId,
+        directory,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
-  if (result.deletedUdid || result.detachedUdid || result.removedRecordings) {
-    input.logger.info("lane.delete.apple_device_released", { laneId, ...result });
+  if (input.removeRecordings !== false) {
+    const recordingsDir = appleRecordingsDirectory(input.projectRoot, laneId);
+    try {
+      await input.removeDirectory(recordingsDir);
+      result.removedRecordings = true;
+    } catch (error) {
+      input.logger.warn("lane.delete.apple_recordings_remove_failed", {
+        laneId,
+        recordingsDir,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  if (result.deletedUdid || result.detachedUdid || result.removedRecordings || result.removedDerivedData) {
+    input.logger.info("lane.end.apple_device_released", { laneId, ...result });
   }
   return result;
+}
+
+/** Where `ade apple` builds and tests put DerivedData for one build root (a lane worktree). */
+export function appleLaneDerivedDataPath(buildRoot: string): string {
+  return path.join(buildRoot, ".ade", "cache", "ios-simulator", "DerivedData");
 }

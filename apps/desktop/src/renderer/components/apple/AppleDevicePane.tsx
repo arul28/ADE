@@ -28,6 +28,8 @@ import {
 } from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
+import type { AppleNewDeviceSpec } from "./applePickerInventory";
+import { showToast } from "../app/toast/toastStore";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
@@ -166,7 +168,9 @@ export function AppleDevicePane({
     laneDevice,
     owners,
     disk,
+    ownership,
     measuringDisk,
+    runtimes,
     refreshing,
     bootedRead,
     refreshList,
@@ -478,9 +482,36 @@ export function AppleDevicePane({
     start({ laneId, chatSessionId: sessionId, udid }, udid);
   }, [laneId, sessionId, start]);
 
-  const createDevice = useCallback((sourceUdid: string) => {
-    start({ laneId, chatSessionId: sessionId, create: { sourceUdid } }, "create");
+  const createDevice = useCallback((spec: AppleNewDeviceSpec) => {
+    start({ laneId, chatSessionId: sessionId, create: { runtime: spec.runtime, deviceType: spec.deviceType } }, "create");
   }, [laneId, sessionId, start]);
+
+  /**
+   * The storage section's Clean up: the cleanup pass, plus powering off every
+   * idle ADE device. The toast says what it did; the list is re-read after.
+   */
+  const [cleaning, setCleaning] = useState(false);
+  const cleanupDevices = useCallback(() => {
+    setCleaning(true);
+    void window.ade.iosSimulator
+      .deviceCleanup({ ...(laneId ? { laneId } : {}), powerOffIdle: true }, runtimePinRef.current)
+      .then((result) => {
+        const parts = [
+          result.deleted.length ? `${result.deleted.length} deleted` : null,
+          result.poweredOff.length ? `${result.poweredOff.length} powered off` : null,
+          result.released.length ? `${result.released.length} released` : null,
+        ].filter(Boolean);
+        showToast({
+          title: parts.length ? `Simulators: ${parts.join(", ")}` : "Nothing to clean up",
+          ...(result.errors.length ? { message: result.errors.map((entry) => entry.message).join("\n"), tone: "error" as const } : {}),
+        });
+      })
+      .catch((cause: unknown) => setError(cause))
+      .finally(() => {
+        setCleaning(false);
+        refreshList();
+      });
+  }, [laneId, refreshList]);
 
   /**
    * Delete a simulator from the picker's per-device menu.
@@ -734,11 +765,14 @@ export function AppleDevicePane({
             laneDevice={laneDevice}
             disk={disk}
             measuringDisk={measuringDisk}
+            runtimes={runtimes}
+            ownership={ownership}
             pending={pendingStart}
-            lastUsedUdid={laneDevice?.templateUdid ?? null}
             refreshing={refreshing}
             onStart={startInstalled}
             onCreate={createDevice}
+            onCleanup={cleanupDevices}
+            cleaning={cleaning}
             onDelete={deleteInstalled}
             onRefresh={refreshList}
             playing={!hidden}

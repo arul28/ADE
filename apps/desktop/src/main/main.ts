@@ -4751,7 +4751,14 @@ app.whenReady().then(async () => {
       recordingDeps: { artifactFiler: computerUseArtifactBrokerService },
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
+      // Lane-device cleanup and idle power-off for this project.
+      backgroundMaintenance: true,
     });
+    // An archived or deleted lane lets go of its Apple device session here;
+    // the device itself goes in `releaseLaneAppleDevice`.
+    laneTeardownDeps.iosSimulatorService = {
+      stopForLane: (laneId: string) => iosSimulatorService.stopForLane(laneId),
+    };
     /**
      * Brain-side video forwarder for this embedded host.
      *

@@ -1530,8 +1530,17 @@ export async function createAdeRuntime(args: {
           accentColor: () => ADE_ACCENT_COLOR,
         },
         onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
+        // Lane-device cleanup and idle power-off for this project.
+        backgroundMaintenance: true,
       });
     teardown.push(() => iosSimulatorService?.dispose());
+    if (iosSimulatorService) {
+      // An archived or deleted lane lets go of its Apple device session here;
+      // the device itself goes in `releaseLaneAppleDevice`.
+      laneTeardownDeps.iosSimulatorService = {
+        stopForLane: (laneId: string) => iosSimulatorService.stopForLane(laneId),
+      };
+    }
     /**
      * Brain-side video forwarder for remote viewers.
      *

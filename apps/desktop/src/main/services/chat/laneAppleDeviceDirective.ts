@@ -49,6 +49,7 @@ export function buildLaneAppleDeviceDirective(device: LaneAppleDeviceRef): strin
     `This lane's Apple device is ${name} (${udid}), shown live in the ADE tools pane. Drive it with \`"$ADE_CLI_PATH" apple <command>\` (skill \`ade-apple\`; \`"$ADE_CLI_PATH" apple --help\`); \`$ADE_CLI_PATH\` is the ADE that launched you.`,
     "Video proof: `\"$ADE_CLI_PATH\" apple record-start --text`, then `\"$ADE_CLI_PATH\" apple record-stop --text` (files to this chat's proof drawer automatically). Screenshot: `\"$ADE_CLI_PATH\" apple screenshot --out shot.png --text`.",
     "Never run `open -a Simulator`, AppleScript/System Events, or `xcrun simctl io … recordVideo`/`screenshot` for this device.",
+    "Tests: `\"$ADE_CLI_PATH\" apple test --scheme <scheme> --text` runs xcodebuild test on this device. Never make a simulator with `simctl create`/`clone`; this lane has one. If you run `xcodebuild` yourself, pass `-derivedDataPath .ade/cache/ios-simulator/DerivedData` so the build stays in this lane.",
     "If recording fails, say so. Never attach an older recording or a file you did not just record.",
     "Check each step before you report it: an ok result only means the input was sent. Confirm with `\"$ADE_CLI_PATH\" apple foreground`, `snapshot` or `assert-visible`, and report only what you saw. If a step did not work, say which one.",
     "To show the device to the user, run `\"$ADE_CLI_PATH\" apple show`.",

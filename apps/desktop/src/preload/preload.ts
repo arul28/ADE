@@ -816,6 +816,8 @@ import type {
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceDetachArgs,
+  AppleDeviceCleanupArgs,
+  AppleDeviceCleanupResult,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -8554,6 +8556,13 @@ const adeBridge = {
       pin?: OpenProjectBinding | null,
     ): Promise<void> =>
       callIosSimulatorMutation(pin, "deviceDeleteInstalled", args, IPC.iosSimulatorDeviceDeleteInstalled),
+
+    /** The storage view's "Clean up": delete leftover ADE devices, release ended lanes. */
+    deviceCleanup: (
+      args: AppleDeviceCleanupArgs = {},
+      pin?: OpenProjectBinding | null,
+    ): Promise<AppleDeviceCleanupResult> =>
+      callIosSimulatorMutation(pin, "deviceCleanup", args, IPC.iosSimulatorDeviceCleanup),
 
     /**
      * One decoded frame from the running stream.

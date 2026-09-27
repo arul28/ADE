@@ -1,5 +1,6 @@
 import type {
   AppleDeviceDiskUsage,
+  AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
   AppleSimulatorOwner,
@@ -87,63 +88,21 @@ export function partitionApplePickerDevices(input: ApplePickerPartitionInput): A
   };
 }
 
-/** Udids another lane holds. */
-function appleUdidsHeldElsewhere(
-  owners: readonly AppleSimulatorOwner[] | null | undefined,
-): Set<string> {
-  return new Set((owners ?? []).filter((owner) => !owner.mine).map((owner) => owner.udid));
-}
+/** The runtime and model the Create control starts on. */
+export type AppleNewDeviceSpec = { runtime: string; deviceType: string };
 
 /**
- * A device a copy can be made from: not booted (`simctl clone` refuses a
- * booted device) and not held by another lane.
+ * The Create control's resting choice: the newest installed iOS runtime (the
+ * service lists it first), and the first iPhone that runtime runs, which is
+ * the newest one. The service applies the same default when nothing is named.
  */
-export function isAppleCloneSource(
-  simulator: Pick<AppleInstalledSimulator, "udid" | "state">,
-  heldElsewhere: Pick<ReadonlySet<string>, "has">,
-): boolean {
-  return simulator.state !== "Booted" && !heldElsewhere.has(simulator.udid);
-}
-
-/**
- * Which device the Create control starts on.
- *
- * `pickAppleTemplate`'s precedence on the service side — the project's
- * last-used template, then the newest iPhone, then the newest anything — with
- * two candidates ruled out first, both for reasons `simctl` enforces or the
- * picker just learned:
- *
- * - A BOOTED device cannot be cloned. `simctl clone` refuses with "Unable to
- *   clone device in current state: Booted", so defaulting to one hands the
- *   user a button that cannot work.
- * - A device another LANE owns is not this page's to copy by default. It can
- *   still be chosen deliberately; it is not the resting position.
- *
- * Both are preferences, not prohibitions: if every installed device is booted
- * or owned, the full pool comes back, because a control with no default is
- * worse than one whose default the service will explain.
- *
- * This is a TEMPLATE to copy and says nothing about ownership. The fallback
- * that must never exist is a hero card, not a pre-selected clone source.
- */
-export function appleDefaultTemplateUdid(input: {
-  installed: readonly AppleInstalledSimulator[];
-  lastUsedUdid?: string | null;
-  owners?: readonly AppleSimulatorOwner[] | null;
-}): string {
-  const heldElsewhere = appleUdidsHeldElsewhere(input.owners);
-  const cloneable = input.installed.filter((entry) => isAppleCloneSource(entry, heldElsewhere));
-  // The last used template only wins while it is still cloneable.
-  const lastUsed = input.lastUsedUdid?.trim();
-  if (lastUsed && cloneable.some((entry) => entry.udid === lastUsed)) return lastUsed;
-  const candidates = cloneable.length > 0 ? cloneable : input.installed;
-  const phones = candidates.filter((entry) => entry.family === "iphone");
-  const pool = phones.length > 0 ? phones : candidates;
-  const newest = [...pool].sort((a, b) => {
-    const byRuntime = b.runtime.localeCompare(a.runtime, undefined, { numeric: true });
-    return byRuntime !== 0 ? byRuntime : a.name.localeCompare(b.name);
-  })[0];
-  return newest?.udid ?? "";
+export function appleDefaultNewDeviceSpec(
+  runtimes: readonly AppleInstalledRuntime[] | null | undefined,
+): AppleNewDeviceSpec | null {
+  const runtime = (runtimes ?? []).find((entry) => entry.deviceTypes.length > 0);
+  if (!runtime) return null;
+  const type = runtime.deviceTypes.find((entry) => entry.family === "iphone") ?? runtime.deviceTypes[0]!;
+  return { runtime: runtime.identifier, deviceType: type.identifier };
 }
 
 /**
@@ -163,6 +122,11 @@ function appleDiskLabel(bytes: number): string | null {
   if (bytes < KIB ** 3) return `${Math.round(bytes / KIB ** 2)} MB`;
   if (bytes < KIB ** 4) return `${(bytes / KIB ** 3).toFixed(1)} GB`;
   return `${(bytes / KIB ** 4).toFixed(1)} TB`;
+}
+
+/** The store's measured total, or null when nothing measured it. */
+export function appleDiskTotalLabel(disk: AppleDeviceDiskUsage | null | undefined): string | null {
+  return disk ? appleDiskLabel(disk.totalBytes) : null;
 }
 
 /** One device's measured cost, or null when nothing measured it. */

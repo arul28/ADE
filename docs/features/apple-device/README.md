@@ -1,7 +1,7 @@
 # Apple device
 
 ADE drives a per-lane Apple simulator from the Work tab's Apple Development tool and from
-`ade apple`. It clones or attaches an installed simulator, builds and launches
+`ade apple`. It makes a new device for the lane (or attaches one the user names), builds and launches
 the selected app, streams the device framebuffer through a vendored Swift
 helper, and turns gestures into simulator input or context items for the
 active chat. Agent launches stay in the background.
@@ -51,12 +51,87 @@ worktree is a hard failure (`IOS_SIMULATOR_LANE_NOT_RESOLVED`).
 ### Per-lane devices
 
 A lane gets no device until asked: the user asks from Apple Development, or an
-agent runs `launch` / `open-device` / `device-create`. First ask clones the
-project's last-used installed simulator (else newest installed iPhone) via
-`simctl clone`, named for the lane. A lane may instead `device-attach` an
-existing simulator without cloning. Only installed simulators/runtimes —
-`APPLE_NO_INSTALLED_SIMULATORS` with a hint naming Xcode ▸ Settings ▸
-Components if none exist.
+agent runs `launch` / `open-device` / `start` / `test` / `device-create`.
+First ask makes a NEW, empty device with `simctl create` from an installed
+runtime, named `ADE · <lane>`. Nothing is copied from another simulator: each
+lane builds and installs its own version of the app from its own worktree, so a
+copy only carried another device's data and sign-ins, and cost that device's
+size on disk. Defaults: the newest installed iOS runtime, and the device type
+this project used last (KV `apple:last-device-type`), else the newest iPhone.
+The picker offers the runtime (when there is more than one) and the model;
+`device-create --runtime --device-type` does the same from the CLI. Only
+installed runtimes — `APPLE_NO_INSTALLED_SIMULATORS` when none exist,
+`APPLE_RUNTIME_NOT_INSTALLED` when the one named is not there. A lane may
+instead `device-attach` an installed simulator the user names.
+
+`origin` on the lane row is `created` for a device ADE made, `clone` for one
+made before this change (treated exactly the same), and `attached` for the
+user's own simulator (`isAdeOwnedLaneDevice`).
+
+### When a lane ends
+
+Archive and delete both end the lane's hold on its device
+(`releaseLaneAppleDevice`, called from `laneService`; the live session is
+stopped first through `teardownDeps.iosSimulatorService.stopForLane`):
+
+- An ADE device is powered off and deleted, with all its data.
+- An attached device is the user's. ADE uninstalls only the apps ADE installed
+  on it (recorded per udid in KV `apple:ade-installed-apps` at install time),
+  powers it off, and unbinds it. ADE never deletes it.
+- The lane's build cache, `<worktree>/.ade/cache/ios-simulator/DerivedData`, is
+  deleted. So are test logs and result bundles beside it.
+- Recordings stay on archive (they are proof) and go on delete.
+
+An unarchived lane gets a new device on the next ask. When a duplicate lane is
+merged into its keeper and both had a device, the duplicate's device is deleted,
+not just forgotten.
+
+### Ownership marker and the cleanup pass
+
+Every device ADE makes carries a marker file,
+`~/Library/Developer/CoreSimulator/Devices/<udid>/ade-lane-device.json`
+(`projectRoot`, `laneId`, `name`, `createdAt`). The marker, not only the row,
+proves a device is ADE's: a row can be lost, and an unmarked leaked device looks
+exactly like the user's own. Rows for devices made before markers existed get
+one on the first cleanup pass.
+
+The cleanup pass (`registry.reconcile`, `laneDeviceMaintenance.ts`) runs one
+minute after the service starts and every 15 minutes in the hosts that pass
+`backgroundMaintenance: true` (the desktop and the brain). It never deletes
+anything when `simctl list` cannot be read.
+
+- A row whose simulator no longer exists is dropped.
+- A row whose lane is archived or gone is released, as above.
+- A marked device of this project that no live lane holds is deleted (or
+  re-adopted, when its lane is live and lost only its row). A marked device of a
+  project whose root no longer exists is deleted too. A marker younger than
+  five minutes is skipped, because create writes the marker before the row.
+
+`ade apple device-cleanup` and the picker's **Clean up** run it on demand, with
+`--power-off-idle`.
+
+### Idle power-off
+
+A booted ADE device that nothing touched for 30 minutes is powered off through
+`deviceStop` (`ADE_APPLE_IDLE_POWER_OFF_MINUTES`, `0` turns it off). A booted
+simulator holds several gigabytes of memory; on a Mac that is short of it, swap
+grows on the same disk the devices use. "Touched" is the mtime of
+`<device dir>/ade-last-activity`, written (at most once a minute) whenever a call
+resolves the lane, including the pane's status poll while it is on screen, and on
+every tick while this process streams, records, tests or launches on the device.
+It is a file, not memory, so the desktop and the brain see each other's use. A
+running `xcodebuild`, `simctl` or `xctest` that names the device by udid or
+`name=` also counts. Attached devices are never powered off by the timer.
+
+### Tests
+
+`ade apple test` (`runTests`) runs `xcodebuild test` on the lane's device with
+`-parallel-testing-enabled NO`, DerivedData in the lane's cache, and a result
+bundle under `.ade/cache/ios-simulator/test-results` (the newest three kept).
+Output streams to `.ade/cache/ios-simulator/test-logs/<stamp>.log`. One run at a
+time per service (`APPLE_TEST_RUN_BUSY`). A failing test resolves with
+`passed: false`, the failing lines and the log path. Default timeout 30 minutes,
+at most 2 hours.
 
 The verbs that end a lane's hold on its device live in
 `laneDeviceLifecycle.ts`. Each one tears down the recording, the stream, the
@@ -65,10 +140,10 @@ chat claim and the hub session in the same order.
 - `device-detach` (`deviceDetach`) gives up the lane's device and leaves the
   simulator installed, with its power state unchanged. The device then shows
   as free in the picker. Agents may call it.
-- `device-delete` (`deviceDelete`) removes a clone. The registry powers the
-  clone off first. An attached device is refused unless `--force`, and
+- `device-delete` (`deviceDelete`) removes an ADE device. The registry powers the
+  device off first. An attached device is refused unless `--force`, and
   `--force` only detaches it. ADE never deletes a simulator it did not create.
-  The clone is also deleted on lane archive.
+  The device is also deleted on lane archive and delete.
 - Both verbs use the same owner rule as `stop` (`deviceStop`). They are
   refused while another chat drives the device, unless the caller passes
   `--ignore-ownership`. For detach, `--force` also passes. For delete,
@@ -99,27 +174,28 @@ session that still reads a device no lane holds.
 **One lane owns a device at a time.** `device-attach` on a simulator another
 lane holds MOVES the binding rather than adding a second one: the losing lane's
 stream and session are released, its row is re-keyed to the new lane in one
-statement, and `origin`/`template_udid` travel with the device so a clone stays
+statement, and `origin`/`template_udid` travel with the device so an ADE device stays
 ADE's to delete. The simulator is NOT powered off — the new owner is about to
 drive it. The losing lane gets `apple.device.state` `phase: "released"` and
 re-lists, which lands it on the picker. Attaching the device a lane already
 holds is answered as-is; the picker only offers this behind a confirmation that
 names the lane being interrupted.
 
-**Agents use only their lane's own device.** The takeover and plain attach
-above are the user's, through the picker. For an agent caller, the RPC server
-sets `agentCaller: true` on every `ios_simulator` call (a caller cannot set or
-clear it), and the registry then refuses `device-attach` and `start --udid`
-for any simulator the lane does not already hold, with
-`APPLE_DEVICE_NOT_LANE_OWNED`. That covers a device another lane holds, a
-booted device (a test run or the user may be using it), and a stopped device
-ADE did not create (the user's own, which the next test run may boot). Nothing
-is bound, released or booted. The refusal names the fix:
-`ade apple device-create`, or `ade apple start --create <udid>`. An agent's
-`start` on a lane with no device and no udid clones the project's last-used
-stopped simulator, like `device-create`, and boots only the clone. A clone is
-a new simulator on disk (its data directory grows as it is used) and is
-deleted when the lane is archived.
+**Agents use only their lane's own device.** The takeover is the user's,
+through the picker. For an agent caller, the RPC server sets `agentCaller: true`
+on every `ios_simulator` call (a caller cannot set or clear it). The rules:
+
+- An agent may make its lane's ONE device without asking (`start`, `launch`,
+  `open-device`, `test` and `device-create` do it). A second is
+  `APPLE_DEVICE_EXISTS`.
+- An agent may `device-attach` (or `start --udid`) an installed simulator that
+  no lane holds — the user naming a device for the lane. A simulator another
+  lane holds is refused with `APPLE_DEVICE_NOT_LANE_OWNED`, and nothing is
+  bound, released or booted.
+- The skill and the device hint tell agents never to make a simulator with
+  `simctl create`/`clone` and to keep any hand-run `xcodebuild` DerivedData in
+  the lane's cache. ADE cannot block a raw `simctl` call; the cleanup pass and
+  the storage view make such a device visible.
 
 Every other device verb follows the same rule for an agent
 (`guardAgentDeviceActions` in `iosSimulatorService.ts`): `launch`, input,
@@ -128,7 +204,7 @@ run on the lane's device only. A `--device`/`--udid` naming another simulator
 is refused with `APPLE_DEVICE_NOT_LANE_OWNED`, and so is `stop --udid`. With no
 lane device there is no "first booted iPhone" fallback: the call is refused
 with a message naming `ade apple start`, except `launch` and `open-device`,
-which create the lane's clone. User clients keep the fallback.
+which create the lane's device. User clients keep the fallback.
 
 "Agent caller" means a chat, run, step or attempt identity, or an `ade`
 process with no chat identity (`ade-cli:<pid>` / `ade-rpc-stdio-proxy:<pid>`
@@ -164,7 +240,7 @@ is no separate column.
   `stream-start`, `open-device` and `launch` power a device on.
 - The **tools card** names the lane's device and its power state
   (`{name} · Running | Starting | Shut down`) and carries a corner menu that
-  boots, opens, releases, or — for an ADE clone only — deletes the device
+  boots, opens, releases, or — for an ADE device only — deletes the device
   without opening the pane. Releasing a device with a live session confirms
   first. The mark beside each lane in the Work session list is green while the
   device is booted and muted while it is claimed but off.
@@ -183,7 +259,7 @@ zooming the camera.
 
 The whole mode is capability-gated by `appleDeviceSupportsDuo`, which the pane
 feeds the CoreSimulator **type identifier** only. The lane device's display name
-is deliberately not a gate input: for an ADE clone it is `ADE · <lane>`, so a
+is deliberately not a gate input: for an ADE device it is `ADE · <lane>`, so a
 lane named e.g. `duo-hinge` would otherwise mark a rigid iPhone as foldable. A
 device that does not fold gets no `duo` prop, the procedural body is never
 built, and the imported GLB path (and its per-frame work) is byte-for-byte
@@ -232,7 +308,8 @@ minimized" for that chat.
 | `apps/desktop/scripts/build-sim-helper.mjs` | Builds `resources/native/ade-sim-helper` for macOS dist. |
 | `apps/desktop/src/main/services/ios/` | Device lifecycle, launch, screenshots, helper transport, recording, Preview Lab. Preload namespace stays `iosSimulator`. |
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The `ios_simulator` service: app sessions, input, streams, screenshots, and the wiring of the modules below. |
-| `apps/desktop/src/main/services/ios/laneDeviceRegistry.ts` | One device per lane: clone, attach, takeover, and the `lane_apple_devices` rows. |
+| `apps/desktop/src/main/services/ios/laneDeviceRegistry.ts` | One device per lane: create, attach, takeover, the `lane_apple_devices` rows, the ownership marker, the cleanup pass (`reconcile`), and `releaseLaneAppleDevice` / `endLaneDeviceOnDisk` for a lane that ends. |
+| `apps/desktop/src/main/services/ios/laneDeviceMaintenance.ts` | The background cleanup timer and idle power-off, with the shared activity file. |
 | `apps/desktop/src/main/services/ios/laneDeviceLifecycle.ts` | `deviceDetach`, `deviceDelete`, the takeover release, and `deviceDeleteInstalled`. Runs each verb's teardown in one order. |
 | `apps/desktop/src/main/services/ios/simulatorPower.ts` | The one place ADE boots or powers off a simulator. It resets the helper session, stops a recording, and drops the cached `simctl list`. |
 | `apps/desktop/src/main/services/ios/iosDeviceHub.ts`, `simHelperClient.ts` | Device sessions, and the NDJSON client that supervises the helper. |
@@ -249,7 +326,7 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
 | `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `appleDuoScene.ts` | The foldable "Duo" mode: the pure posture state machine, panel rotations, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder. Capability-gated; unused on non-foldable devices. |
-| `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds). |
+| `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |
 | `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
 | `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |
 | `apps/desktop/src/renderer/components/apple/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the device picker. |
@@ -295,17 +372,19 @@ and `--bitrate-kbps` survive on `stream-start`.
 ### New verbs
 
 ```bash
-ade --socket apple device-create [--from <simulator>] [--name <name>] --text
+ade --socket apple device-create [--runtime <r>] [--device-type <t>] [--from <simulator>] [--name <name>] --text
 ade --socket apple device-attach --simulator <udid|name> --text
-ade --socket apple device-list [--installed] [--lane <lane-id>] --text
+ade --socket apple device-list [--installed] [--runtimes] [--disk] [--lane <lane-id>] --text
 ade --socket apple device-delete [--force] --text
+ade --socket apple device-cleanup [--power-off-idle] --text
+ade --socket apple test [--target <id>|--scheme <s>] [--only <ids>] [--build-only] --text
 
 ade --socket apple record-start [--overlays on|off] [--label <text>] [--keep-idle] [--max-seconds <n>] --text
 ade --socket apple record-stop [--keep|--discard] --text
 ade --socket apple record-list --text
 ade --socket apple record-delete --id <id> --text
 
-ade --socket apple start [--udid <lane device udid>|--create <sourceUdid>] --text
+ade --socket apple start [--udid <udid>|--runtime <r> --device-type <t>|--create <sourceUdid>] --text
 ade --socket apple stop [--force] --text
 ade --socket apple device-detach [--force] --text
 ade --socket apple show [--floating] --text
@@ -412,12 +491,14 @@ forwarded.
 
 | Subcommand (aliases) | Action | Flags |
 |---|---|---|
-| `device-create` | `deviceCreate` | `--from/--simulator`, `--name`, `--lane` |
+| `device-create` | `deviceCreate` | `--runtime`, `--device-type/--model`, `--from/--simulator`, `--name`, `--lane` |
+| `device-cleanup` (`cleanup`) | `deviceCleanup` | `--power-off-idle` |
+| `test` (`tests`) | `runTests` | `--target`, `--scheme`, `--project/--workspace`, `--test-plan`, `--only`, `--skip`, `--build-only`, `--timeout-ms`, `--lane` |
 | `device-attach` | `deviceAttach` | `--simulator/--device/--udid` (required), `--lane` |
-| `device-list` | `deviceList` | `--installed`, `--lane <lane-id>` (defaults to `$ADE_LANE_ID`) |
+| `device-list` | `deviceList` | `--installed`, `--runtimes`, `--disk`, `--lane <lane-id>` (defaults to `$ADE_LANE_ID`) |
 | `device-detach` (`detach`) | `deviceDetach` | `--force`, `--ignore-ownership`, `--chat-session`, `--lane` |
 | `device-delete` | `deviceDelete` | `--force`, `--ignore-ownership`, `--chat-session`, `--lane` |
-| `start` | `deviceStart` | `--udid`, `--create`, `--lane` |
+| `start` | `deviceStart` | `--udid`, `--runtime`, `--device-type`, `--create`, `--lane` |
 | `stop` (`device-stop`, `power-off`, `poweroff`) | `deviceStop` | `--udid/--device`, `--force`, `--ignore-ownership`, `--chat-session`, `--lane` |
 | `type` (`text`) | `typeText` | positional text or `--value`, `--submit`, `--device` |
 | `key` | `typeText` | positional `return\|enter\|tab`, `--device` |
@@ -514,6 +595,9 @@ recording. With no `outDir` the bundle lands in
 | State | What to do |
 |---|---|
 | No installed simulator | Open Xcode ▸ Settings ▸ Components. ADE never downloads one. |
+| `APPLE_RUNTIME_NOT_INSTALLED` | The runtime or model named is not on this Mac; the message lists what is. |
+| `APPLE_TEST_RUN_BUSY` | Another `apple test` is running. Wait, then run again. |
+| Disk full of simulators | Open Apple Development's picker and press **Clean up**, or run `ade apple device-cleanup --power-off-idle`. Delete an "Old ADE?" device from its own menu. |
 | `APPLE_HELPER_UNAVAILABLE` | The vendored helper binary is missing from `resources/native/ade-sim-helper`. |
 | `APPLE_STREAM_NOT_RUNNING` | `frame` needs a live stream. Use `screenshot`, or `stream-start` first. |
 | `APPLE_DEVICE_OFF` | A viewer asked to watch a device that is off. Watching never boots; `apple start` does. |

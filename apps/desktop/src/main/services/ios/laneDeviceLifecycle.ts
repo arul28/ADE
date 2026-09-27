@@ -259,5 +259,5 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
     deps.invalidateStatus(runtime);
   };
 
-  return { releaseLaneHold, deviceDetach, deviceDelete, deviceDeleteInstalled };
+  return { releaseLaneHold, releaseUnlanedHolds, deviceDetach, deviceDelete, deviceDeleteInstalled };
 }
