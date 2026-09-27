@@ -663,7 +663,7 @@ function CreateSection({
           </Button>
         </div>
         <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-          A new, empty device. Nothing is copied or downloaded. ADE deletes it when this lane is archived or deleted.
+          Starts empty. Nothing is copied or downloaded. Deleted with the lane.
         </p>
       </div>
     </section>
@@ -741,7 +741,7 @@ function StorageSection({
           ) : null}
         </div>
         <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-          Clean up deletes ADE devices that no lane holds and powers off idle ones. It never deletes your own simulators.
+          Removes ADE's leftover devices and powers off idle ones. Your own simulators are never touched.
         </p>
       </div>
     </section>
