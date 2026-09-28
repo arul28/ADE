@@ -13649,9 +13649,11 @@ describe("ADE CLI", () => {
       "AAA-BBB",
     ]);
     expect(attached).toMatchObject({
+      domain: "ios_simulator",
       action: "deviceAttach",
       args: { simulator: "AAA-BBB" },
     });
+    expect(() => iosSimActionArgs(["apple", "device-attach"])).toThrow(/requires --simulator/);
 
     const listed = iosSimActionArgs(["apple", "device-list", "--installed"]);
     expect(listed).toMatchObject({
@@ -13675,6 +13677,20 @@ describe("ADE CLI", () => {
     expect(startedOwned).toMatchObject({ action: "deviceStart" });
     expect((startedOwned as { args: Record<string, unknown> }).args).not.toHaveProperty("udid");
     expect(() => buildCliPlan(["apple", "start", "--udid", "A", "--create", "B"])).toThrow(/not both/);
+
+    const cleanup = iosSimActionArgs(["apple", "device-cleanup", "--power-off-idle", "--lane", "lane-a"]);
+    expect(cleanup).toMatchObject({
+      action: "deviceCleanup",
+      args: { laneId: "lane-a", powerOffIdle: true },
+    });
+
+    const tests = iosSimActionArgs([
+      "apple", "test", "--scheme", "ADE", "--only", "ADETests/SyncTests", "--only", "ADETests/AuthTests",
+    ]);
+    expect(tests).toMatchObject({
+      action: "runTests",
+      args: { scheme: "ADE", onlyTesting: ["ADETests/SyncTests", "ADETests/AuthTests"] },
+    });
 
     const deleted = iosSimActionArgs(["apple", "device-delete", "--force"]);
     expect(deleted).toMatchObject({

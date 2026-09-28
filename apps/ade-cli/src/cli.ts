@@ -11937,6 +11937,17 @@ function buildIosSimulatorPlan(
       ...(name ? { name } : {}),
     });
   }
+  if (sub === "device-attach") {
+    const simulator =
+      readValue(args, ["--simulator", "--device", "--udid"]) ?? firstPositional(args);
+    if (!simulator) {
+      throw new CliUsageError("device-attach requires --simulator <udid|name>.");
+    }
+    return iosAction("Apple device attach", "deviceAttach", {
+      ...(laneId ? { laneId } : {}),
+      simulator,
+    });
+  }
   if (sub === "device-cleanup" || sub === "cleanup") {
     const powerOffIdle = readFlag(args, ["--power-off-idle", "--power-off"]);
     const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.deviceCleanup");

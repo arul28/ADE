@@ -2686,11 +2686,7 @@ describe("iosSimulatorService device tool targeting", () => {
 });
 
 describe("iosSimulatorService boot contract", () => {
-  /**
-   * A `run` mock that keeps the installed list honest: a `simctl clone`
-   * appends the clone as Shutdown, and `simctl boot` flips a device to Booted,
-   * so `resolveDevice` after either sees what the real `simctl` would report.
-   */
+  /** A `run` mock that keeps the installed device and runtime lists honest. */
   function bootAwareRun(options: { bootError?: string | null; onShutdown?: (udid: string) => void; onBoot?: (udid: string) => void } = {}) {
     const devices = [
       { name: "iPhone 17 Pro", udid: "device-1", state: "Booted", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" },
@@ -2703,9 +2699,22 @@ describe("iosSimulatorService boot contract", () => {
       if (joined === "xcrun simctl list devices available --json") {
         return { stdout: JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-3": devices } }), stderr: "" };
       }
-      if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "clone") {
-        devices.push({ name: commandArgs[3] ?? "clone", udid: "device-clone", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
-        return { stdout: "device-clone\n", stderr: "" };
+      if (joined === "xcrun simctl list runtimes available --json") {
+        return { stdout: JSON.stringify({ runtimes: [{
+          identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-3",
+          name: "iOS 26.3",
+          version: "26.3",
+          platform: "iOS",
+          isAvailable: true,
+          supportedDeviceTypes: [
+            { identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", name: "iPhone 17 Pro", productFamily: "iPhone" },
+            { identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17", name: "iPhone 17", productFamily: "iPhone" },
+          ],
+        }] }), stderr: "" };
+      }
+      if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "create") {
+        devices.push({ name: commandArgs[2] ?? "ADE · lane", udid: "device-created", state: "Shutdown", isAvailable: true, deviceTypeIdentifier: commandArgs[3] ?? "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro" });
+        return { stdout: "device-created\n", stderr: "" };
       }
       if (command === "xcrun" && commandArgs[0] === "simctl" && commandArgs[1] === "shutdown") {
         options.onShutdown?.(commandArgs[2] ?? "");
@@ -2841,26 +2850,26 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("deviceDetach returns a lane to the picker and keeps its clone installed and running", async () => {
+  it("deviceDetach returns a lane to the picker and leaves its created device installed and powered as-is", async () => {
     // The off card's "Choose another device" (owner decision D2): one click,
     // and it must never delete a simulator.
     const { service, calls, events, dispose } = setup();
     try {
-      await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-2" } });
+      await service.deviceStart({ laneId: "lane-b", create: { runtime: "iOS 26.3", deviceType: "iPhone 17 Pro" } });
 
       const detached = await service.deviceDetach({ laneId: "lane-b" });
 
-      expect(detached).toMatchObject({ udid: "device-clone", origin: "clone", laneId: "lane-b" });
-      expect(calls).not.toContain("xcrun simctl delete device-clone");
-      expect(calls).not.toContain("xcrun simctl shutdown device-clone");
+      expect(detached).toMatchObject({ udid: "device-created", origin: "created", laneId: "lane-b" });
+      expect(calls).not.toContain("xcrun simctl delete device-created");
+      expect(calls).not.toContain("xcrun simctl shutdown device-created");
       const list = await service.deviceList({ laneId: "lane-b" });
       expect(list.lane).toBeNull();
-      expect(list.installed.map((device) => device.udid)).toContain("device-clone");
+      expect(list.installed.map((device) => device.udid)).toContain("device-created");
       expect(service.getStreamStatus({ laneId: "lane-b" }).running).toBe(false);
       expect(events).toContainEqual(expect.objectContaining({
         type: "apple.device.state",
         laneId: "lane-b",
-        udid: "device-clone",
+        udid: "device-created",
         phase: "released",
       }));
       // Nothing left to detach.
@@ -2876,16 +2885,16 @@ describe("iosSimulatorService boot contract", () => {
     // request must be refused rather than applied to the wrong device.
     const { service, calls, dispose } = setup();
     try {
-      await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-2" } });
+      await service.deviceStart({ laneId: "lane-b", create: { runtime: "iOS 26.3", deviceType: "iPhone 17 Pro" } });
 
       await expect(service.deviceDetach({ laneId: "lane-b", udid: "some-other-udid" }))
         .rejects.toThrow(/APPLE_DEVICE_CHANGED/);
       // Still bound: the refusal changed nothing.
-      expect((await service.deviceList({ laneId: "lane-b" })).lane?.udid).toBe("device-clone");
+      expect((await service.deviceList({ laneId: "lane-b" })).lane?.udid).toBe("device-created");
 
       await expect(service.deviceDelete({ laneId: "lane-b", udid: "some-other-udid", ignoreOwnership: true }))
         .rejects.toThrow(/APPLE_DEVICE_CHANGED/);
-      expect(calls).not.toContain("xcrun simctl delete device-clone");
+      expect(calls).not.toContain("xcrun simctl delete device-created");
     } finally {
       dispose();
     }
@@ -3381,43 +3390,38 @@ describe("iosSimulatorService boot contract", () => {
     }
   });
 
-  it("deviceStart clones the source when asked to create", async () => {
+  it("deviceStart creates a new empty device from an installed runtime", async () => {
     const { service, calls, phases, dispose } = setup();
     try {
-      // `device-2`, the STOPPED one. This named `device-1` and passed only
-      // because the mock does not enforce what simctl does: cloning a booted
-      // device fails with error 405, "Unable to clone device in current state:
-      // Booted" — verified against the real `simctl` (exit 149, nothing
-      // created). So the old expectation could not happen on a Mac.
-      const status = await service.deviceStart({ laneId: "lane-b", create: { sourceUdid: "device-2" } });
-      expect(status.deviceUdid).toBe("device-clone");
-      expect(calls.some((call) => call.startsWith("xcrun simctl clone device-2 "))).toBe(true);
-      expect(calls).toContain("xcrun simctl boot device-clone");
+      const status = await service.deviceStart({ laneId: "lane-b", create: { runtime: "iOS 26.3", deviceType: "iPhone 17 Pro" } });
+      expect(status.deviceUdid).toBe("device-created");
+      expect(calls.some((call) => call.startsWith("xcrun simctl create ADE · lane-b "))).toBe(true);
+      expect(calls).toContain("xcrun simctl boot device-created");
       expect(phases()).toEqual(["starting", "booted", "streaming"]);
       const owned = await service.deviceList({ laneId: "lane-b", installed: false });
-      expect(owned.lane).toMatchObject({ udid: "device-clone", origin: "clone" });
+      expect(owned.lane).toMatchObject({ udid: "device-created", origin: "created" });
     } finally {
       dispose();
     }
   });
 
-  it("deleting a lane's clone powers it off once, through the power path", async () => {
+  it("deleting a lane's created device powers it off once, through the power path", async () => {
     let sentAtShutdown: string[] = [];
     const { service, calls, helper, dispose } = setup({
       onShutdown: () => { sentAtShutdown = helper.sent.map((command) => `${String(command.type)} ${String(command.udid ?? "")}`); },
     });
     try {
-      await service.deviceStart({ laneId: "lane-a", create: { sourceUdid: "device-2" } });
+      await service.deviceStart({ laneId: "lane-a", create: { runtime: "iOS 26.3", deviceType: "iPhone 17 Pro" } });
       calls.length = 0;
 
       await service.deviceDelete({ laneId: "lane-a", ignoreOwnership: true });
 
       // One shutdown, not the power path's plus a raw one from the registry.
-      expect(calls.filter((call) => call === "xcrun simctl shutdown device-clone")).toHaveLength(1);
+      expect(calls.filter((call) => call === "xcrun simctl shutdown device-created")).toHaveLength(1);
       // The helper was reset before the power went.
-      expect(sentAtShutdown).toContain("device-reset device-clone");
-      const shutdownAt = calls.indexOf("xcrun simctl shutdown device-clone");
-      const deleteAt = calls.indexOf("xcrun simctl delete device-clone");
+      expect(sentAtShutdown).toContain("device-reset device-created");
+      const shutdownAt = calls.indexOf("xcrun simctl shutdown device-created");
+      const deleteAt = calls.indexOf("xcrun simctl delete device-created");
       expect(deleteAt).toBeGreaterThan(shutdownAt);
       expect((await service.deviceList({ laneId: "lane-a", installed: false })).lane).toBeNull();
     } finally {
@@ -3459,32 +3463,38 @@ describe("iosSimulatorService boot contract", () => {
       await expect(service.screenshot({ laneId: "lane-f", deviceUdid: "device-1", agentCaller: true } as never))
         .rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED: .*already running/);
       expect(helper.sent.filter((command) => command.type === "touch")).toEqual([]);
-      // device-1 is booted and no lane holds it: another session's test run.
+      // A device that another lane holds remains unavailable to this agent.
+      await service.deviceStart({ laneId: "lane-a", udid: "device-2" });
+      const phasesBeforeRefusals = phases();
       for (const refused of [
-        () => service.deviceStart({ laneId: "lane-f", udid: "device-1", agentCaller: true }),
-        () => service.deviceAttach({ laneId: "lane-f", simulator: "device-1", agentCaller: true }),
+        () => service.deviceStart({ laneId: "lane-f", udid: "device-2", agentCaller: true }),
+        () => service.deviceAttach({ laneId: "lane-f", simulator: "device-2", agentCaller: true }),
       ]) {
-        await expect(refused()).rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED: .*already running/);
+        await expect(refused()).rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED/);
       }
       expect((await service.deviceList({ laneId: "lane-f", installed: false })).lane).toBeNull();
-      expect(phases()).toEqual([]);
-      expect(calls.some((call) => call.startsWith("xcrun simctl boot"))).toBe(false);
+      expect(phases()).toEqual(phasesBeforeRefusals);
+      expect(calls).not.toContain("xcrun simctl boot device-1");
 
-      // With no udid the lane gets its own clone of a STOPPED simulator, and
-      // only the clone is booted.
+      // An agent may attach a named simulator that no lane holds, even if it
+      // is already booted by an external tool such as xcodebuild.
+      const attached = await service.deviceAttach({ laneId: "lane-g", simulator: "device-1", agentCaller: true });
+      expect(attached).toMatchObject({ laneId: "lane-g", udid: "device-1", origin: "attached" });
+
+      // With no device, the lane creates and boots its own empty simulator.
       const status = await service.deviceStart({ laneId: "lane-f", agentCaller: true });
-      expect(status.deviceUdid).toBe("device-clone");
-      expect(calls.some((call) => call.startsWith("xcrun simctl clone device-2 "))).toBe(true);
-      expect(calls.filter((call) => call.startsWith("xcrun simctl boot "))).toEqual(["xcrun simctl boot device-clone"]);
+      expect(status.deviceUdid).toBe("device-created");
+      expect(calls.some((call) => call.startsWith("xcrun simctl create ADE · lane-f "))).toBe(true);
+      expect(calls.filter((call) => call.startsWith("xcrun simctl boot "))).toEqual(["xcrun simctl boot device-2", "xcrun simctl boot device-created"]);
 
       // Its own device, by udid, is fine.
-      const again = await service.deviceStart({ laneId: "lane-f", udid: "device-clone", agentCaller: true });
-      expect(again.deviceUdid).toBe("device-clone");
+      const again = await service.deviceStart({ laneId: "lane-f", udid: "device-created", agentCaller: true });
+      expect(again.deviceUdid).toBe("device-created");
 
       // Once it has one, an agent's input lands on it and only on it.
       await service.tap({ laneId: "lane-f", x: 1, y: 1, agentCaller: true } as never);
       expect(helper.sent.filter((command) => command.type === "touch").map((command) => command.udid))
-        .toEqual(["device-clone", "device-clone"]);
+        .toEqual(["device-created", "device-created"]);
       await expect(service.tap({ laneId: "lane-f", deviceUdid: "device-1", x: 1, y: 1, agentCaller: true } as never))
         .rejects.toThrow(/APPLE_DEVICE_NOT_LANE_OWNED/);
       await expect(service.deviceStop({ laneId: "lane-f", udid: "device-1", agentCaller: true } as never))
