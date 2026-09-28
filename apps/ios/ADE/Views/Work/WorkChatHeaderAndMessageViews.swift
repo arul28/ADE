@@ -1004,20 +1004,20 @@ func workDoneTurnTokenLine(_ usage: WorkUsageSummary?) -> String? {
 /// sources (its tools and files moved up to the fold row). A usage-limit turn
 /// collapses to one quiet `Paused · usage limit · 4m` line with its token
 /// usage behind a details toggle. The tools and files toggles open the turn's
-/// activity sheet (desktop expands them inline).
+/// lists inline, and the proof chip opens the turn's filmstrip, as on desktop.
+/// The context meter lives in the composer (desktop parity).
 struct WorkTurnEndMarkerView: View {
   let marker: WorkTurnEndMarker
-  var toolCount: Int = 0
-  var fileStat: (count: Int, additions: Int, deletions: Int)? = nil
-  var onOpenActivity: (() -> Void)? = nil
-  /// The context meter rides the latest turn's line on the phone; desktop
-  /// shows it in the composer.
-  var usageViewModel: WorkContextUsageViewModel? = nil
-  var modelLabel: String? = nil
-  var compact: WorkContextCompactControl = .hidden
-  var onCompact: (() -> Void)? = nil
+  var work: WorkTurnWorkDisclosure = .none
+  var onToggleWork: (WorkTurnWorkSection) -> Void = { _ in }
+  var onToggleWorkItem: (String) -> Void = { _ in }
+  var proofOpen = false
+  var onToggleProof: (() -> Void)? = nil
+  /// Loaded previews by artifact id, for the filmstrip thumbnails.
+  var proofContent: [String: WorkLoadedArtifactContent] = [:]
+  var onLoadProof: (ComputerUseArtifactSummary) -> Void = { _ in }
+  var onOpenProofDrawer: (() -> Void)? = nil
 
-  @State private var contextUsagePresented = false
   @State private var usageLimitDetailsExpanded = false
 
   private var status: String {
@@ -1054,8 +1054,8 @@ struct WorkTurnEndMarkerView: View {
     if let tokenLine { parts.append(tokenLine) }
     if marker.proofCount > 0 { parts.append("\(marker.proofCount) proof") }
     if marker.sourceCount > 0 { parts.append(workPluralCount(marker.sourceCount, "source")) }
-    if showsWorkToggles, let work = workFormatTurnWorkSummaryLabel(toolCount: toolCount, fileCount: fileStat?.count ?? 0) {
-      parts.append(work)
+    if showsWorkToggles, let summary = workFormatTurnWorkSummaryLabel(toolCount: work.toolCount, fileCount: work.fileStat?.count ?? 0) {
+      parts.append(summary)
     }
     return parts.joined(separator: ". ")
   }
@@ -1079,10 +1079,15 @@ struct WorkTurnEndMarkerView: View {
           }
         }
         .lineLimit(1)
-        .layoutPriority(1)
-        Spacer(minLength: 4)
-        if showsWorkToggles { workToggles }
-        if let usageViewModel { contextMeter(usageViewModel) }
+        // Desktop keeps the line on one row and lets the time/usage side clip
+        // (`overflow-hidden`) so the toggles always fit; laid out at its ideal
+        // width, pinned leading, and clipped to what the toggles leave.
+        .fixedSize(horizontal: true, vertical: false)
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+        .clipped()
+        if showsWorkToggles {
+          WorkTurnWorkToggles(disclosure: work, filesLabelSuffix: "", onToggle: onToggleWork)
+        }
       }
       .font(.caption2)
       .foregroundStyle(ADEColor.textMuted)
@@ -1096,6 +1101,17 @@ struct WorkTurnEndMarkerView: View {
             Rectangle().fill(ADEColor.glassBorder).frame(width: 0.6)
           }
           .padding(.bottom, 6)
+      }
+      if showsWorkToggles, work.open != nil {
+        WorkTurnWorkInlineDetails(disclosure: work, onToggleItem: onToggleWorkItem)
+      }
+      if proofOpen, !marker.proofArtifacts.isEmpty {
+        WorkTurnProofFilmstrip(
+          artifacts: marker.proofArtifacts,
+          content: proofContent,
+          onLoad: onLoadProof,
+          onOpen: onOpenProofDrawer
+        )
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1157,7 +1173,16 @@ struct WorkTurnEndMarkerView: View {
   @ViewBuilder
   private var chips: some View {
     if marker.proofCount > 0 {
-      chip(icon: "cube", text: "\(marker.proofCount) proof")
+      Button {
+        onToggleProof?()
+      } label: {
+        chip(icon: "cube", text: "\(marker.proofCount) proof")
+          .frame(minHeight: 44)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(onToggleProof == nil)
+      .accessibilityLabel("\(proofOpen ? "Hide" : "Show") the proof captured in this turn")
     }
     if marker.sourceCount > 0 {
       chip(icon: "globe", text: workPluralCount(marker.sourceCount, "source"))
@@ -1206,67 +1231,6 @@ struct WorkTurnEndMarkerView: View {
     .font(.caption2.monospacedDigit())
     .fixedSize(horizontal: true, vertical: false)
     .layoutPriority(-1)
-  }
-
-  @ViewBuilder
-  private var workToggles: some View {
-    HStack(spacing: 10) {
-      if toolCount > 0 {
-        workToggle {
-          Image(systemName: "wrench.fill").font(.system(size: 9, weight: .bold))
-          Text("\(toolCount)").monospacedDigit()
-          Text(toolCount == 1 ? "tool" : "tools")
-        }
-      }
-      if let fileStat, fileStat.count > 0 {
-        workToggle {
-          Image(systemName: "plusminus").font(.system(size: 9, weight: .bold))
-          Text(workPluralCount(fileStat.count, "file"))
-          if fileStat.additions > 0 { Text("+\(fileStat.additions)").monospacedDigit().foregroundStyle(ADEColor.success.opacity(0.85)) }
-          if fileStat.deletions > 0 { Text("−\(fileStat.deletions)").monospacedDigit().foregroundStyle(ADEColor.danger.opacity(0.85)) }
-        }
-      }
-    }
-    .fixedSize()
-  }
-
-  private func workToggle<Label: View>(@ViewBuilder label: () -> Label) -> some View {
-    Button {
-      onOpenActivity?()
-    } label: {
-      HStack(spacing: 3) {
-        label()
-        Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold)).opacity(0.7)
-      }
-      .font(.caption2)
-      .foregroundStyle(ADEColor.textSecondary)
-      .frame(minHeight: 44)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
-    .disabled(onOpenActivity == nil)
-  }
-
-  private func contextMeter(_ usage: WorkContextUsageViewModel) -> some View {
-    WorkContextUsageMeter(usage: usage, isPresented: $contextUsagePresented)
-      .popover(
-        isPresented: $contextUsagePresented,
-        attachmentAnchor: .rect(.bounds),
-        arrowEdge: .bottom
-      ) {
-        WorkContextUsagePopover(
-          usage: usage,
-          modelLabel: modelLabel ?? marker.modelLabel,
-          compact: compact,
-          onCompact: {
-            contextUsagePresented = false
-            onCompact?()
-          }
-        )
-        .presentationCompactAdaptation(.popover)
-        .presentationBackground(ADEColor.surfaceBackground)
-      }
-      .layoutPriority(2)
   }
 
   private var separator: some View {

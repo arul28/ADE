@@ -67,6 +67,8 @@ struct ChatThreadTimelineFold {
     var sparseIndices: [Int]
     /// Event-card input for `sparse`, reasoning cards pre-merged.
     var reasoning: ChatThreadReasoningCoalescer
+    /// Reasoning card durations over `transcript[..<count]`.
+    var reasoningTiming: WorkReasoningTimingFold
   }
 
   private struct SubagentOutputs {
@@ -190,6 +192,7 @@ struct ChatThreadTimelineFold {
       componentRefolds.append("turnEnds")
     }
     var signature = resume?.signature ?? WorkTimelineSignatureFold()
+    var reasoningTiming = resume?.reasoningTiming ?? WorkReasoningTimingFold()
     var latestTimestamp = resume?.latestTimestamp
     var sourceIndices = resume?.sourceIndices ?? []
     var assistantTextIndicesByTurn = resume?.assistantTextIndicesByTurn ?? [:]
@@ -232,7 +235,8 @@ struct ChatThreadTimelineFold {
         assistantTextIndicesByTurn: assistantTextIndicesByTurn,
         sparse: Array(sparse.prefix(sparseCount)),
         sparseIndices: Array(sparseIndices.prefix(sparseCount)),
-        reasoning: checkpointReasoning
+        reasoning: checkpointReasoning,
+        reasoningTiming: reasoningTiming
       )
     }
     for index in start..<count {
@@ -242,6 +246,7 @@ struct ChatThreadTimelineFold {
       tools.consume(envelope)
       turnEnds.consume(envelope)
       signature.combine(envelope)
+      reasoningTiming.consume(envelope)
       latestTimestamp = workLatestTranscriptTimestamp(latestTimestamp, envelope.timestamp)
       switch envelope.event {
       case .sources:
@@ -268,13 +273,16 @@ struct ChatThreadTimelineFold {
 
     let toolCards = tools.cards.filter(workMobileShowsToolCardInTimeline)
     let taskList = buildWorkChatTaskListSnapshot(from: sparse)
-    let eventCards = buildWorkEventCards(
-      from: reasoning.rows,
-      suppressedItemIds: suppressedItemIds,
-      taskList: taskList,
-      taskListSessionId: transcript.last?.sessionId
+    let eventCards = workStampReasoningDurations(
+      buildWorkEventCards(
+        from: reasoning.rows,
+        suppressedItemIds: suppressedItemIds,
+        taskList: taskList,
+        taskListSessionId: transcript.last?.sessionId
+      )
+        .filter { $0.kind != "toolUseSummary" },
+      timing: reasoningTiming
     )
-      .filter { $0.kind != "toolUseSummary" }
     let sourceList = sourceList(
       transcript: transcript,
       sourceIndices: sourceIndices,

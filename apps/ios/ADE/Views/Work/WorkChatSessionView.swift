@@ -122,6 +122,10 @@ struct WorkChatOpeningSessionPlaceholder: View {
 /// dropped history page must not strand the reader on top of history they
 /// already have — that combination is what turned one timed-out page into a
 /// transcript that would not scroll again.
+/// Cap on back-to-back older pages that add no rows, so a transcript of one
+/// enormous turn cannot pull its whole history in one burst.
+let workChatOlderHistoryEmptyPageChainLimit = 8
+
 func workChatShouldRequestOlderHistory(
   distanceFromTop: CGFloat,
   triggerArmed: Bool,
@@ -306,8 +310,6 @@ struct WorkChatTranscriptRowInputs: Equatable {
   var latestReasoningCardId: String?
   var latestTurnEndTurnId: String?
   var viewportHeightBucket: Int
-  /// Hash of what the latest turn-end marker reads (send state, gates, usage).
-  var turnEndState: Int
   /// The reader's card open/closed overrides. Each row folds in only the
   /// overrides for ids it draws (see `workTimelineEntryExpansionSignature`),
   /// so opening one card re-measures that card's row and nothing else.
@@ -315,15 +317,22 @@ struct WorkChatTranscriptRowInputs: Equatable {
 }
 
 /// The part of the reader's expansion overrides that one timeline entry
-/// draws: the entry's own id, its card's id, and — for the grouped panels —
-/// its members' and files' ids. Nil when none apply, so an untouched row's
-/// revision is exactly its base.
+/// draws: the entry's own id, its card's id, for the grouped panels its
+/// members' and files' ids, and for a turn line its proof and tools/files lists
+/// (plus the rows opened inside them). Nil when none apply, so an untouched
+/// row's revision is exactly its base.
 func workTimelineEntryExpansionSignature(
   _ entry: WorkTimelineEntry,
   expansion: WorkCardExpansionState
 ) -> Int? {
   guard !expansion.expandedIds.isEmpty || !expansion.collapsedIds.isEmpty else { return nil }
   var owned: Set<String> = [entry.id]
+  var ownedPrefix: String?
+  func ownTurnWork(_ turnKey: String) {
+    owned.insert(workTurnWorkExpansionId(.tools, turnKey: turnKey))
+    owned.insert(workTurnWorkExpansionId(.files, turnKey: turnKey))
+    ownedPrefix = workTurnWorkItemExpansionPrefix(turnKey: turnKey)
+  }
   switch entry.payload {
   case .toolCard(let card): owned.insert(card.id)
   case .commandCard(let card): owned.insert(card.id)
@@ -333,7 +342,12 @@ func workTimelineEntryExpansionSignature(
   case .adeCard(let card): owned.insert(card.id)
   case .artifact(let artifact): owned.insert(artifact.id)
   case .backgroundJobRun(let run): owned.insert(run.id)
-  case .turnFold(let model): owned.insert(model.id)
+  case .turnFold(let model):
+    owned.insert(model.id)
+    ownTurnWork(model.turnEndTurnId ?? model.turnId)
+  case .turnEndMarker(let marker):
+    owned.insert(workTurnProofExpansionId(turnId: marker.turnId))
+    ownTurnWork(marker.turnId)
   case .toolGroup(let group):
     owned.insert(group.id)
     for member in group.members { owned.insert(member.id) }
@@ -343,7 +357,10 @@ func workTimelineEntryExpansionSignature(
   default:
     break
   }
-  let expanded = expansion.expandedIds.intersection(owned)
+  var expanded = expansion.expandedIds.intersection(owned)
+  if let ownedPrefix {
+    for id in expansion.expandedIds where id.hasPrefix(ownedPrefix) { expanded.insert(id) }
+  }
   let collapsed = expansion.collapsedIds.intersection(owned)
   guard !expanded.isEmpty || !collapsed.isEmpty else { return nil }
   var hasher = Hasher()
@@ -393,12 +410,6 @@ func workChatTranscriptRowRevision(
     // `transcriptInteractionRevision`), not part of this row's revision.
     hasher.combine(inputs.viewportHeightBucket)
     touched = true
-  case .turnEndMarker(let marker):
-    if marker.turnId == inputs.latestTurnEndTurnId {
-      hasher.combine(inputs.isStreamingTurn)
-      hasher.combine(inputs.turnEndState)
-      touched = true
-    }
   default:
     break
   }
@@ -462,6 +473,12 @@ struct WorkChatSessionView: View {
   @State var olderHistoryLoadInFlight = false
   @State var olderHistoryLoadError: String?
   @State var olderHistoryTriggerArmed = true
+  /// Consecutive older pages that added no timeline rows (see
+  /// `requestEarlierTimelineEntries`).
+  @State var olderHistoryEmptyPageChain = 0
+  /// The visible row count a reveal of buffered history asked for; cleared
+  /// when a frame with at least that many rows lands.
+  @State var olderRevealRequestedCount: Int?
   @State var olderHistoryAutomaticContinuationPending = false
   @State var olderHistoryLoadTask: Task<Void, Never>?
   let isLive: Bool
@@ -1218,22 +1235,8 @@ struct WorkChatSessionView: View {
       latestReasoningCardId: frame?.latestReasoningCardId,
       latestTurnEndTurnId: timelineSnapshot.latestTurnEndTurnId,
       viewportHeightBucket: Int(transcriptVisibleHeight.rounded()),
-      turnEndState: latestTurnEndRowState,
       cardExpansion: cardExpansionSnapshot
     )
-  }
-
-  /// What the latest turn-end marker (context meter + compact control) reads
-  /// from outside its own row model.
-  private var latestTurnEndRowState: Int {
-    var hasher = Hasher()
-    hasher.combine(sending)
-    hasher.combine(sendingSnapshot)
-    hasher.combine(sessionStatus)
-    hasher.combine(canSendMessages)
-    hasher.combine(hasPendingInputGate)
-    hasher.combine(transcript.count)
-    return hasher.finalize()
   }
 
   @ViewBuilder
@@ -1325,6 +1328,31 @@ struct WorkChatSessionView: View {
       .id("chat-streaming-status")
       .frame(maxWidth: .infinity, alignment: .leading)
     }
+  }
+
+  /// The composer's context meter (desktop `ContextUsageDial`). Recomputed
+  /// only when the engine's `usageRevision` moves (a `tokens`, `done` or
+  /// compaction row), never per streamed delta.
+  var composerContextMeter: WorkComposerContextMeterModel? {
+    guard let usage = contextUsageViewModelCache.value(
+      sessionId: session.id,
+      transcript: transcript,
+      transcriptRenderSignature: frame?.usageRevision ?? 0,
+      provider: chatSummaryContext.provider,
+      fallbackContextWindow: chatSummaryContext.contextWindowFallback
+    ) else { return nil }
+    let compact = workResolveContextCompactControl(
+      provider: chatSummaryContext.provider,
+      usageState: usage.state,
+      canSend: canSendMessages,
+      pendingInput: hasPendingInputGate,
+      turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active"
+    )
+    return WorkComposerContextMeterModel(
+      usage: usage,
+      modelLabel: chatSummaryContext.modelLabel,
+      compact: compact
+    )
   }
 
   /// Single desktop-shaped composer card: text field on top, chip strip and
@@ -1464,6 +1492,12 @@ struct WorkChatSessionView: View {
 
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
+        contextMeter: composerContextMeter,
+        onCompactContext: { [onSend] in
+          Task { @MainActor in
+            _ = await onSend("/compact", [], .queue)
+          }
+        },
         sessionId: session.id,
         isPersonalChat: isPersonalChat,
         laneId: session.laneId,
@@ -1919,6 +1953,31 @@ struct WorkChatSessionView: View {
       transcriptScroller.scrollToLatest(animated: false, reason: "history-reset")
       unreadBelowCount = 0
     }
+    // A reveal of buffered (already loaded) history is on screen: arm the
+    // trigger again, the way a finished host page does. Without this a long
+    // thread, whose older rows are mostly already in memory, stopped at the
+    // top after the first reveal (round 6).
+    if let requested = olderRevealRequestedCount, frame.visibleTimelineCount >= requested {
+      olderRevealRequestedCount = nil
+      olderHistoryTriggerArmed = true
+      ScrollDiagnostics.shared.event("thread.olderReveal", [
+        "visible": frame.visibleTimelineCount,
+        "prepended": frame.prependedTimelineCount,
+        "hidden": hiddenTimelineCount,
+        "hasMore": frame.hasOlderHistory,
+      ])
+      // Revealed rows that added nothing above (they joined a folded turn)
+      // leave the reader parked at the top: continue, capped.
+      if frame.prependedTimelineCount == 0,
+         hiddenTimelineCount > 0 || canRequestOlderTranscriptHistory,
+         olderHistoryEmptyPageChain < workChatOlderHistoryEmptyPageChainLimit {
+        olderHistoryEmptyPageChain += 1
+        olderHistoryTriggerArmed = false
+        requestEarlierTimelineEntries(automatically: true)
+      } else {
+        olderHistoryEmptyPageChain = 0
+      }
+    }
   }
 
   /// Haptics and sheet presenters, split from `body` for type-checker budget.
@@ -2237,6 +2296,9 @@ func workChatActiveSendCapability(
 
 private struct WorkChatComposerCard: View {
   let chatSummary: WorkChatSummaryRenderContext
+  /// The context meter rides the composer, as on desktop.
+  let contextMeter: WorkComposerContextMeterModel?
+  let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
   let laneId: String
@@ -2274,6 +2336,8 @@ private struct WorkChatComposerCard: View {
   var body: some View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
+      contextMeter: contextMeter,
+      onCompactContext: onCompactContext,
       sessionId: sessionId,
       isPersonalChat: isPersonalChat,
       laneId: laneId,
@@ -2307,6 +2371,8 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: WorkChatSummaryRenderContext
+  let contextMeter: WorkComposerContextMeterModel?
+  let onCompactContext: () -> Void
   let sessionId: String
   let isPersonalChat: Bool
   let laneId: String
@@ -2639,6 +2705,13 @@ private struct WorkChatComposerDraftInput: View {
         DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
       },
       trailing: {
+        if !isDictating, let contextMeter {
+          WorkComposerContextMeter(
+            model: contextMeter,
+            onCompact: contextMeter.compact == .ready ? onCompactContext : nil
+          )
+        }
+
         composerDictationControl
 
         if !isDictating {

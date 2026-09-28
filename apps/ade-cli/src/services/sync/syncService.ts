@@ -1870,6 +1870,11 @@ export function createSyncService(args: SyncServiceArgs) {
       return remoteCommandService.getDescriptor(action);
     },
 
+    /** Every registered remote-command descriptor, for a routing ingress to advertise. */
+    getRemoteCommandDescriptors() {
+      return remoteCommandService.getDescriptors();
+    },
+
     /**
      * Ends every Mac Desktop and App Control viewer a closed sync socket held
      * on this project, and gives back the Mac Desktop input leases it took

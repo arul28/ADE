@@ -58,12 +58,21 @@ extension WorkRootListScreen {
     // while missing roster rows make Work live immediately without adding a
     // second database or per-lane network fan-out.
     let activeRoster = syncService.activeProject.flatMap { syncService.rosterProject(for: $0) }
-    let rosterProjection = overlayActiveProjectRoster(
+    let activeRosterProjection = overlayActiveProjectRoster(
       localSessions: localSessions,
       localLanes: localLanes,
       roster: activeRoster,
       identitySessionIds: identitySessionIds
     )
+    // The same repository's chats on the other paired machines (the desktop
+    // Work board's union). Their row actions route to their own machine.
+    let remoteMerge = workMergeRemoteMachineRows(
+      sessions: activeRosterProjection.sessions,
+      lanes: activeRosterProjection.lanes,
+      remote: localProjectionIsCurrent ? inputs.remoteMachineRepos : []
+    )
+    syncService.setWorkListRemoteChats(remoteMerge.remoteChats)
+    let rosterProjection = (sessions: remoteMerge.sessions, lanes: remoteMerge.lanes)
     // Chats launched into a lane that is still being set up: a row under the
     // launch's lane until the real session row lands, then only the status line.
     let launchProjection = workOverlayChatLaunches(
@@ -218,6 +227,8 @@ extension WorkRootListScreen {
     lastWorkProjectionReloadRevision = nil
     lastWorkLocalProjectionReload = .distantPast
     lastCoalescedChatSummaryRefresh = .distantPast
+    bookkeeping.summaryLaneSignatures = [:]
+    bookkeeping.lastFullChatSummarySweep = .distantPast
   }
 
   @MainActor
@@ -299,6 +310,8 @@ extension WorkRootListScreen {
       Task { await syncService.refreshLaneGithubPrItems(force: refreshRemote) }
       if isLive {
         lastCoalescedChatSummaryRefresh = Date()
+        bookkeeping.lastFullChatSummarySweep = Date()
+        bookkeeping.summaryLaneSignatures = workLaneSessionSignatures(projection.sessions)
         await refreshChatSummaries(for: projection.lanes, projectId: requestedProjectId)
       }
       if errorMessage != nil {
@@ -383,7 +396,29 @@ extension WorkRootListScreen {
         let minimumSummaryRefreshInterval = syncService.prefersReducedSyncLoad ? 8.0 : 2.6
         if now.timeIntervalSince(lastCoalescedChatSummaryRefresh) >= minimumSummaryRefreshInterval {
           lastCoalescedChatSummaryRefresh = now
-          await refreshChatSummaries(for: projection.lanes, projectId: requestedProjectId)
+          // A CRDT tick only needs the lanes whose chats changed. Most ticks
+          // are other tables (lanes, PRs, state snapshots): asking every lane
+          // for its chat list on each of them was ~1 request every 4 s idle.
+          let fullSweep = now.timeIntervalSince(bookkeeping.lastFullChatSummarySweep) >= workChatSummaryFullSweepInterval
+          let signatures = workLaneSessionSignatures(projection.sessions)
+          let changed = workLanesNeedingSummaryRefresh(
+            signatures: signatures,
+            previous: bookkeeping.summaryLaneSignatures,
+            sessions: projection.sessions,
+            summaries: chatSummaries
+          )
+          if fullSweep || !changed.isEmpty {
+            if fullSweep { bookkeeping.lastFullChatSummarySweep = now }
+            bookkeeping.summaryLaneSignatures = signatures
+            ScrollDiagnostics.shared.event("work.summaryRefresh", [
+              "lanes": fullSweep ? projection.lanes.count : changed.count,
+              "full": fullSweep,
+            ])
+            await refreshChatSummaries(
+              for: fullSweep ? projection.lanes : projection.lanes.filter { changed.contains($0.id) },
+              projectId: requestedProjectId
+            )
+          }
         }
       }
       if errorMessage != nil {
@@ -721,11 +756,26 @@ extension WorkRootListScreen {
     guard !navigationMutationPending else { return }
     navigationMutationPending = true
     clearWokeMarkerOnVisit(session)
+    ChatOpenCloseTiming.openTapped(sessionId: session.id)
     selectedSessionTransitionId = session.id
+    // A row from another machine opens through that machine; it is not
+    // restored at launch (the restore path opens focused-machine chats).
+    let remoteChat: WorkChatCrossProjectContext? = session.laneId.hasPrefix("fleet|")
+      ? syncService.remoteMachineChat(sessionId: session.id).map { remote in
+        WorkChatCrossProjectContext(
+          projectId: remote.projectId,
+          projectRootPath: remote.rootPath.isEmpty ? nil : remote.rootPath,
+          displayName: "",
+          machineKey: remote.machineKey
+        )
+      }
+      : nil
     Task { @MainActor in
       await Task.yield()
-      path.append(WorkSessionRoute(sessionId: session.id))
-      syncService.persistOpenWorkSessionRoute(sessionId: session.id)
+      path.append(WorkSessionRoute(sessionId: session.id, remoteChat: remoteChat))
+      if remoteChat == nil {
+        syncService.persistOpenWorkSessionRoute(sessionId: session.id)
+      }
       navigationMutationPending = false
     }
   }
@@ -1048,4 +1098,53 @@ fileprivate func laneRefreshPriorityRank(
   if selectedLaneId != "all" && laneId == selectedLaneId { return 0 }
   if priorityLaneIds.contains(laneId) { return 1 }
   return 2
+}
+
+/// How often the Work list refreshes every lane's chat summaries even when no
+/// session row changed (summary-only changes: model, mode, identity).
+let workChatSummaryFullSweepInterval: TimeInterval = 60
+
+/// Fingerprint of each lane's session rows, over the fields a chat summary
+/// reflects. Streaming output changes `lastOutputPreview`, so a live lane
+/// still refreshes on the normal cadence.
+func workLaneSessionSignatures(_ sessions: [TerminalSessionSummary]) -> [String: Int] {
+  var hashers: [String: Hasher] = [:]
+  for session in sessions.sorted(by: { $0.id < $1.id }) {
+    var hasher = hashers[session.laneId] ?? Hasher()
+    hasher.combine(session.id)
+    hasher.combine(session.title)
+    hasher.combine(session.status)
+    hasher.combine(session.lastActivityAt)
+    hasher.combine(session.endedAt)
+    hasher.combine(session.archivedAt)
+    hasher.combine(session.settledAt)
+    hasher.combine(session.settleOverride)
+    hasher.combine(session.attentionRequestedAt)
+    hasher.combine(session.activityStatusChangedAt)
+    hasher.combine(session.lastTurnFailedAt)
+    hasher.combine(session.snoozedUntil)
+    hasher.combine(session.wokeAt)
+    hasher.combine(session.pinned)
+    hasher.combine(session.lastOutputPreview)
+    hashers[session.laneId] = hasher
+  }
+  return hashers.mapValues { $0.finalize() }
+}
+
+/// Lanes to refresh on a CRDT tick: rows changed, lane is new, or a chat
+/// session in it has no summary yet.
+func workLanesNeedingSummaryRefresh(
+  signatures: [String: Int],
+  previous: [String: Int],
+  sessions: [TerminalSessionSummary],
+  summaries: [String: AgentChatSessionSummary]
+) -> Set<String> {
+  var lanes = Set(signatures.compactMap { laneId, signature in
+    previous[laneId] == signature ? nil : laneId
+  })
+  for session in sessions where session.archivedAt == nil && summaries[session.id] == nil
+    && isChatSession(session) {
+    lanes.insert(session.laneId)
+  }
+  return lanes
 }

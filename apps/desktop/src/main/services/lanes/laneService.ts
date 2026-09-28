@@ -2083,6 +2083,19 @@ export function createLaneService({
       updated_at: now,
       last_checked_out_at: options.lastCheckedOutAt !== undefined ? options.lastCheckedOutAt : existing?.last_checked_out_at ?? null,
     };
+    // An upsert that changes nothing writes nothing. Bumping `updated_at` alone
+    // is a replicated write (cr-sqlite ships it to every synced peer), and the
+    // lane status refresh calls this for every lane on every pass.
+    if (
+      existing
+      && existing.branch_ref === profile.branch_ref
+      && existing.base_ref === profile.base_ref
+      && (existing.parent_lane_id ?? null) === (profile.parent_lane_id ?? null)
+      && (existing.source_branch_ref ?? null) === (profile.source_branch_ref ?? null)
+      && (existing.last_checked_out_at ?? null) === (profile.last_checked_out_at ?? null)
+    ) {
+      return toLaneBranchProfile(existing);
+    }
     if (existing) {
       db.run(
         `

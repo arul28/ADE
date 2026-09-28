@@ -4970,8 +4970,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes) && payload.maxBytes > 0
       ? payload.maxBytes
       : undefined;
+    // chatLogV2 durable cursor, same meaning as `chat_history.beforeSequence`:
+    // rows with `sequence < beforeSequence`, taking precedence over the byte
+    // cursor. Advertised as the `chatHistoryPageBySequence` hello feature.
+    const beforeSequence = historyPageBeforeSequence(payload.beforeSequence);
     return await agentChatService.getChatEventHistoryPage(sessionId, {
       beforeOffset,
+      ...(beforeSequence != null ? { beforeSequence } : {}),
       ...(maxBytes != null ? { maxBytes } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     });
@@ -5124,6 +5129,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog(parseChatModelCatalogArgs(payload)));
 
+}
+
+/** A `beforeSequence` history cursor: a non-negative integer, else absent. */
+export function historyPageBeforeSequence(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {

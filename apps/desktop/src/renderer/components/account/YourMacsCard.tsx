@@ -5,6 +5,7 @@ import {
   CaretDown,
   CaretRight,
   DesktopTower,
+  DeviceMobile,
   DotsThreeVertical,
   Laptop,
 } from "@phosphor-icons/react";
@@ -112,6 +113,11 @@ import {
 } from "../../webclient/workspace/webWorkspaceModel";
 
 const MACHINES_REFRESH_MS = 30_000;
+/**
+ * The ADE iPhone app holds live connections to at most this many computers at
+ * once (the one in focus plus three). Keep in step with the iOS fleet limit.
+ */
+const MOBILE_LIVE_MACHINE_LIMIT = 4;
 const ACCOUNT_MENU_WIDTH = 200;
 
 type AccountBridge = {
@@ -897,6 +903,20 @@ export function YourMacsCard() {
                 <BrainRepairButton repair={repair} height={30} disabled={reconnecting} />
               </div>
             ) : undefined,
+          }}
+        />
+      ) : null}
+
+      {rows.length > MOBILE_LIVE_MACHINE_LIMIT ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "12px 18px" }}
+          model={{
+            id: "mobile-live-machine-limit",
+            tone: "info",
+            icon: <DeviceMobile size={16} weight="duotone" />,
+            title: `The ADE phone app keeps ${MOBILE_LIVE_MACHINE_LIMIT} computers live at a time`,
+            detail: "The others show their last update and connect when you open them on your phone.",
           }}
         />
       ) : null}

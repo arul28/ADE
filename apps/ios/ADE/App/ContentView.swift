@@ -523,6 +523,12 @@ private struct WorkSessionNavigationModifier: ViewModifier {
     // changes; onChange alone misses the initial value before this root mounts.
     content.task(id: syncService.requestedWorkSessionNavigation?.id) {
       guard let request = syncService.requestedWorkSessionNavigation else { return }
+      // A chat another live machine already streams opens in the Hub through
+      // that machine's roster connection: no focus switch, no socket teardown.
+      if request.origin == .external, syncService.fleetChatTarget(for: request) != nil {
+        syncService.showProjectHub()
+        return
+      }
       // The session id is what lets the guard recover the owning machine of a
       // link that names none — every widget link minted by an already-installed
       // build is one of those. Only an externally-minted request offers it:

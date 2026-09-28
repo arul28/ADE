@@ -387,6 +387,10 @@
 		C5B00000000000000000000C /* SSHPairingViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000C /* SSHPairingViewModel.swift */; };
 		C5B00000000000000000000D /* SSHPairingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000D /* SSHPairingView.swift */; };
 		C5B00000000000000000000E /* SSHBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C5A00000000000000000000E /* SSHBootstrapTests.swift */; };
+		E20000000000000000000F01 /* MachineConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F01 /* MachineConnection.swift */; };
+		E20000000000000000000F02 /* MachineFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F02 /* MachineFleet.swift */; };
+		E20000000000000000000F03 /* HubMachineSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F03 /* HubMachineSections.swift */; };
+		E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F04 /* WorkRemoteMachineRows.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -797,6 +801,10 @@
 		FA000000000000000000AB01 /* AppleDeviceStreamTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceStreamTests.swift; path = ADETests/AppleDeviceStreamTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2D0 /* WorkCardExpansionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkCardExpansionTests.swift; path = ADETests/WorkCardExpansionTests.swift; sourceTree = "<group>"; };
 		FA000000000000000000C2C4 /* WorkLiveRosterHydrationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLiveRosterHydrationTests.swift; path = ADETests/WorkLiveRosterHydrationTests.swift; sourceTree = "<group>"; };
+		D20000000000000000000F01 /* MachineConnection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineConnection.swift; path = ADE/Services/MachineConnection.swift; sourceTree = "<group>"; };
+		D20000000000000000000F02 /* MachineFleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineFleet.swift; path = ADE/Services/MachineFleet.swift; sourceTree = "<group>"; };
+		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
+		D20000000000000000000F04 /* WorkRemoteMachineRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteMachineRows.swift; path = ADE/Views/Work/WorkRemoteMachineRows.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -953,6 +961,7 @@
 			isa = PBXGroup;
 			children = (
 				D20000000000000000000050 /* HubScreen.swift */,
+				D20000000000000000000F03 /* HubMachineSections.swift */,
 				AC8000000000000000000001 /* ProjectHostRecoveryScreen.swift */,
 				D20000000000000000000051 /* HubComponents.swift */,
 				D20000000000000000000054 /* HubActivityState.swift */,
@@ -1062,6 +1071,7 @@
 				0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */,
 				A10000000000000000000020 /* WorkBrowserHelpers.swift */,
 				D10000000000000000000022 /* WorkRootScreen.swift */,
+				D20000000000000000000F04 /* WorkRemoteMachineRows.swift */,
 				D10000000000000000000023 /* WorkRootScreen+Actions.swift */,
 				D10000000000000000000024 /* WorkRootComponents.swift */,
 				D10000000000000000000F02 /* WorkSessionRowCard.swift */,
@@ -1202,6 +1212,8 @@
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
+				D20000000000000000000F02 /* MachineFleet.swift */,
+				D20000000000000000000F01 /* MachineConnection.swift */,
 				B70000000000000000000001 /* SyncRecoveryPolicy.swift */,
 				B7000000000000000000009A /* PendingSessionSettleStates.swift */,
 				B7000000000000000000009E /* PendingAttentionClearStates.swift */,
@@ -1799,6 +1811,8 @@
 				E20000000000000000000C26 /* ChatThreadTimelineFold.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,
 				28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */,
+				E20000000000000000000F02 /* MachineFleet.swift in Sources */,
+				E20000000000000000000F01 /* MachineConnection.swift in Sources */,
 				F10000000000000000000101 /* ChatToolResultCache.swift in Sources */,
 				C5B000000000000000000001 /* MobileTrustResetPolicy.swift in Sources */,
 				C5B00000000000000000001F /* PairedHostCredentialState.swift in Sources */,
@@ -1842,6 +1856,7 @@
 				E2000000000000000000004F /* RemoteRosterModels.swift in Sources */,
 				CA1A00000000000000000011 /* ChatLaunchModels.swift in Sources */,
 				E20000000000000000000050 /* HubScreen.swift in Sources */,
+				E20000000000000000000F03 /* HubMachineSections.swift in Sources */,
 				AC8100000000000000000001 /* ProjectHostRecoveryScreen.swift in Sources */,
 				E20000000000000000000051 /* HubComponents.swift in Sources */,
 				E20000000000000000000054 /* HubActivityState.swift in Sources */,
@@ -1928,6 +1943,7 @@
 				56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */,
 				B10000000000000000000020 /* WorkBrowserHelpers.swift in Sources */,
 				E10000000000000000000022 /* WorkRootScreen.swift in Sources */,
+				E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */,
 				E10000000000000000000023 /* WorkRootScreen+Actions.swift in Sources */,
 				E10000000000000000000024 /* WorkRootComponents.swift in Sources */,
 				E10000000000000000000F02 /* WorkSessionRowCard.swift in Sources */,

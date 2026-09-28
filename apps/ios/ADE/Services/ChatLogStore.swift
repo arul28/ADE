@@ -651,6 +651,16 @@ actor ChatLogStore {
         return false
       }
     )
+    // A chat at its byte budget has had (or is about to have) its oldest rows
+    // trimmed. Older builds could then record "no older history" after the
+    // trim, and the chat stopped paging at its cached rows (round 8). Report
+    // "may have older" so the next scroll-back asks the host, which answers
+    // with an empty last page when the top really was reached.
+    if var trimmedCandidate = meta, !trimmedCandidate.hasOlder,
+       trimmedCandidate.bytes * 10 >= perChatByteBudget * 9 {
+      trimmedCandidate.hasOlder = true
+      meta = trimmedCandidate
+    }
     return meta
   }
 

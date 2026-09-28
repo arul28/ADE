@@ -766,6 +766,10 @@ struct SettingsMachinesSection: View {
   let syncService: SyncService
   let onPairWithPin: (DiscoveredSyncHost) -> Void
   @ObservedObject private var account = AccountService.shared
+  /// Live state of every machine other than the focused one (the Hub shows
+  /// all machines' projects; this is where the user sees and manages them).
+  @EnvironmentObject private var machineFleet: MachineFleet
+  @State private var keepLivePrompt: HubKeepLivePrompt?
 
   @State private var seeAllPresented = false
   @State private var renamingMachine: AccountMachine?
@@ -914,6 +918,14 @@ struct SettingsMachinesSection: View {
     VStack(alignment: .leading, spacing: 12) {
       SettingsSectionHeader(label: "MACHINES")
 
+      // The phone keeps live updates for a limited number of machines.
+      if machineFleet.pairedMachineCount > MachineFleet.liveMachineLimit {
+        HubMachineLimitNotice(
+          pairedMachineCount: machineFleet.pairedMachineCount,
+          pausedCount: machineFleet.machines.filter { $0.state == .paused }.count
+        )
+      }
+
       if all.isEmpty {
         Text("No machines yet. Add one below.")
           .font(.caption)
@@ -957,6 +969,20 @@ struct SettingsMachinesSection: View {
     }
     .sheet(isPresented: $seeAllPresented) {
       allMachinesSheet
+        .environmentObject(machineFleet)
+    }
+    .confirmationDialog(
+      keepLivePrompt.map { "Keep \($0.machineName) live?" } ?? "",
+      isPresented: Binding(get: { keepLivePrompt != nil }, set: { if !$0 { keepLivePrompt = nil } }),
+      titleVisibility: .visible,
+      presenting: keepLivePrompt
+    ) { prompt in
+      Button("Keep \(prompt.machineName) live") {
+        machineFleet.keepLive(machineKey: prompt.machineKey)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: { prompt in
+      Text("The phone keeps live updates for \(MachineFleet.liveMachineLimit) machines at a time. \(prompt.pausedName) will pause and show its last update.")
     }
     .sheet(item: $renamingMachine) { machine in
       SettingsMachineRenameSheet(machine: machine)
@@ -1018,8 +1044,41 @@ struct SettingsMachinesSection: View {
             Label("Rename", systemImage: "pencil")
           }
         }
+        if let fleetMachine = fleetMachine(for: entry) {
+          if fleetMachine.state == .paused {
+            Button {
+              requestKeepLive(fleetMachine)
+            } label: {
+              Label("Keep live", systemImage: "bolt.fill")
+            }
+          } else if fleetMachine.isPinned {
+            Button {
+              machineFleet.stopKeepingLive(machineKey: fleetMachine.machineKey)
+            } label: {
+              Label("Stop keeping live", systemImage: "bolt.slash")
+            }
+          }
+          if hubMachineCanRetry(fleetMachine.state) {
+            Button {
+              machineFleet.retry(machineKey: fleetMachine.machineKey)
+            } label: {
+              Label("Try again", systemImage: "arrow.clockwise")
+            }
+          }
+        }
       }
       .opacity(tappable || entry.isCurrent ? 1 : 0.72)
+
+      // The Hub lists every machine's chats; this line says how fresh this
+      // machine's are.
+      if !entry.isCurrent, let fleetMachine = fleetMachine(for: entry) {
+        Text(hubMachineStateLabel(fleetMachine.state, lastUpdateAt: fleetMachine.lastUpdateAt))
+          .font(.caption)
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .padding(.horizontal, 12)
+          .padding(.top, 4)
+      }
 
       if let error = rowErrors[entry.id] {
         VStack(alignment: .leading, spacing: 7) {
@@ -1061,6 +1120,30 @@ struct SettingsMachinesSection: View {
       affordance: rowAffordance(entry, isConnecting: isConnecting),
       surface: .row
     )
+  }
+
+  /// The fleet's view of this machine (its roster connection), keyed like
+  /// saved profiles: `machine:<device id>`.
+  private func fleetMachine(for entry: Entry) -> MachineFleet.Machine? {
+    let identity: String?
+    switch entry.kind {
+    case .account(let machine): identity = machine.deviceId
+    case .saved(let host): identity = host.hostIdentity
+    }
+    guard let identity = fleetNonEmpty(identity) else { return nil }
+    return machineFleet.machine(for: "machine:\(identity.lowercased())")
+  }
+
+  private func requestKeepLive(_ machine: MachineFleet.Machine) {
+    if let wouldPause = machineFleet.machineThatWouldPause(forKeepingLive: machine.machineKey) {
+      keepLivePrompt = HubKeepLivePrompt(
+        machineKey: machine.machineKey,
+        machineName: machine.name,
+        pausedName: wouldPause.name
+      )
+    } else {
+      machineFleet.keepLive(machineKey: machine.machineKey)
+    }
   }
 
   private func accountMachine(from entry: Entry) -> AccountMachine? {

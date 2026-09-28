@@ -212,8 +212,19 @@ final class WorkChatTranscriptCell: UICollectionViewCell {
     }
     if contentSizeInvalidated { ScrollDiagnostics.shared.count(.transcriptCellRemeasure) }
     contentSizeInvalidated = false
+    let measureStart = CACurrentMediaTime()
     let measured = ScrollDiagnostics.shared.measure(.transcriptCellMeasure) {
       super.preferredLayoutAttributesFitting(layoutAttributes)
+    }
+    // Name the rows that cost more than a frame to measure (the older-page
+    // prepend spikes are single 25-55 ms measurements).
+    let measureMs = (CACurrentMediaTime() - measureStart) * 1000
+    if measureMs > 16, ScrollDiagnostics.isEnabled {
+      ScrollDiagnostics.shared.event("thread.slowMeasure", [
+        "row": String((cacheKey?.rowId ?? "?").prefix(80)),
+        "ms": Int(measureMs),
+        "height": Int(measured.frame.height),
+      ])
     }
     if let cacheKey, cacheKey.width == measured.frame.width {
       heightCache?.store(measured.frame.height, for: cacheKey)

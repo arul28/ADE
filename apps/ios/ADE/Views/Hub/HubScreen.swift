@@ -19,6 +19,12 @@ func hubProjectIdsCollapsedByDefault(
 // no-machine / connecting states are preserved here.
 struct HubScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
+  // Every other machine's projects, lanes and chats folded into this one list
+  // (owner, 2026-09-25: one list of projects, chats from all machines inside).
+  @State private var fleetMerge = HubFleetMerge()
+  /// A project that lives only on another machine while the phone focuses it.
+  @State private var switchingRemoteProjectId: String?
   @State private var addProjectSheetPresented = false
   @State private var collapsedProjectIds: Set<String> = []
   @State private var collapsedLaneKeys: Set<String> = []
@@ -61,7 +67,8 @@ struct HubScreen: View {
   @Environment(\.scenePhase) private var scenePhase
 
   private var isNoMachineBlankState: Bool {
-    syncService.connectionState == .disconnected || syncService.connectionState == .error
+    (syncService.connectionState == .disconnected || syncService.connectionState == .error)
+      && fleetMerge.extraProjects.isEmpty
   }
 
   private var canShowProjects: Bool {
@@ -158,6 +165,19 @@ struct HubScreen: View {
   private func handleRequestedWorkSessionNavigation() {
     guard openChatTarget == nil,
           let request = syncService.requestedWorkSessionNavigation else { return }
+    if request.origin == .external, let fleetTarget = syncService.fleetChatTarget(for: request) {
+      openChatTarget = HubChatTarget(
+        project: fleetTarget.project.asRemoteMachineProjectSummary,
+        lane: fleetTarget.lane,
+        chat: fleetTarget.chat,
+        machineKey: fleetTarget.machineKey
+      )
+      if request.attentionItemId != nil {
+        Task { await AccountService.shared.acknowledgeAttentionNavigation(request.attentionItemId) }
+      }
+      syncService.requestedWorkSessionNavigation = nil
+      return
+    }
     // ContentView and Work observe the same request concurrently during a root
     // transition. Hub only consumes requests assigned to Hub by the shared
     // decision table; active-project rows remain for Work to open.
@@ -207,7 +227,7 @@ struct HubScreen: View {
         chatsAttentionCount: chatsAttentionCount,
         onOpenChats: { personalChatsPresented = true }
       )
-      if canShowProjects && !syncService.projects.isEmpty {
+      if (canShowProjects && !syncService.projects.isEmpty) || !fleetMerge.extraProjects.isEmpty {
         HubRosterFilterBar(counts: hubRosterFilterCounts, selection: $rosterFilter)
           .padding(.horizontal, 16)
           .padding(.bottom, 8)
@@ -220,7 +240,7 @@ struct HubScreen: View {
           // so the list never blanks to a full-screen connecting swap (M12).
           if !canShowProjects && hubProjectPresentations.isEmpty {
             HubConnectingCard()
-          } else if syncService.projects.isEmpty {
+          } else if syncService.projects.isEmpty && hubProjectPresentations.isEmpty {
             HubEmptyProjectsCard()
           } else if filteredHubProjectPresentations.isEmpty {
             HubRosterFilterEmptyState(filter: rosterFilter)
@@ -238,25 +258,27 @@ struct HubScreen: View {
                   guard honoursCollapse else { return }
                   withAnimation(.easeOut(duration: 0.16)) { toggle(&collapsedProjectIds, project.id) }
                 },
-                onOpenProject: { syncService.selectProject(project) },
-                onOpenChat: { chat, lane in
-                  openChatTarget = HubChatTarget(project: project, lane: lane, chat: chat)
-                },
+                onOpenProject: { openHubProject(project) },
+                onOpenChat: { chat, lane in openHubChat(chat, lane: lane, project: project) },
                 onViewLaneInWork: { lane in
                   Task { @MainActor in
-                    await syncService.openProjectForHubChat(project)
-                    syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: lane.id)
+                    guard let laneId = await openLaneProject(lane, project: project) else { return }
+                    syncService.requestedWorkLaneNavigation = WorkLaneNavigationRequest(laneId: laneId)
                   }
                 },
                 onViewLaneInLanes: { lane in
                   Task { @MainActor in
-                    await syncService.openProjectForHubChat(project)
-                    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: lane.id)
+                    guard let laneId = await openLaneProject(lane, project: project) else { return }
+                    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
                   }
                 },
                 onArchiveChat: { chat in runRosterChatAction("chat.archive", chat: chat, project: project) },
                 onDeleteChat: { chat in runRosterChatAction("chat.delete", chat: chat, project: project) },
-                onForget: { syncService.forgetProject(project) }
+                onForget: {
+                  // A project that lives only on another machine is forgotten there.
+                  guard fleetMerge.projectOwners[project.id] == nil else { return }
+                  syncService.forgetProject(project)
+                }
               )
               .equatable()
               .draggable(project.id)
@@ -342,6 +364,55 @@ struct HubScreen: View {
     // restores identically after opening a project and returning.
     .onChange(of: collapsedProjectIds) { _, _ in persistHubLayout() }
     .onChange(of: collapsedLaneKeys) { _, _ in persistHubLayout() }
+    .task(id: machineFleet.machines) { rebuildHubProjectPresentations() }
+    .onChange(of: switchingRemoteProjectId) { _, _ in rebuildHubProjectPresentations() }
+  }
+
+  // MARK: Other machines, folded in
+
+  private func openHubProject(_ project: MobileProjectSummary) {
+    guard let owner = fleetMerge.projectOwners[project.id] else {
+      syncService.selectProject(project)
+      return
+    }
+    // Lives only on another machine: focus that machine, then open it there.
+    switchingRemoteProjectId = project.id
+    Task { @MainActor in
+      await syncService.openProject(owner.project, onMachine: owner.machineKey)
+      if switchingRemoteProjectId == project.id { switchingRemoteProjectId = nil }
+    }
+  }
+
+  private func openHubChat(_ chat: RemoteRosterChat, lane: RemoteRosterLane?, project: MobileProjectSummary) {
+    guard let owner = fleetMerge.chatOwners[chat.id] else {
+      openChatTarget = HubChatTarget(project: project, lane: lane, chat: chat)
+      return
+    }
+    // The chat's own lane id on its machine, not the Hub's namespaced one.
+    var ownChat = chat
+    if let ownLane = owner.lane { ownChat.laneId = ownLane.id }
+    let state = machineFleet.machine(for: owner.machineKey)?.state
+    if state == .live || state == .connecting {
+      openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat, machineKey: owner.machineKey)
+      return
+    }
+    // No live roster connection to that machine (paused, offline, or an older
+    // ADE there): focus the machine, then open the chat the ordinary way.
+    Task { @MainActor in
+      guard await syncService.switchFocus(toMachineKey: owner.machineKey) else { return }
+      openChatTarget = HubChatTarget(project: owner.project, lane: owner.lane, chat: ownChat)
+    }
+  }
+
+  /// Opens the project a lane belongs to (focusing its machine when needed)
+  /// and returns the lane's id on that machine.
+  private func openLaneProject(_ lane: RemoteRosterLane, project: MobileProjectSummary) async -> String? {
+    if let owner = fleetMerge.laneOwners[lane.id] {
+      await syncService.openProject(owner.project, onMachine: owner.machineKey)
+      return owner.lane?.id
+    }
+    await syncService.openProjectForHubChat(project)
+    return lane.id
   }
 
   private var foreignLaunchRefreshActive: Bool {
@@ -485,12 +556,36 @@ struct HubScreen: View {
   }
 
   private func rebuildHubProjectPresentations() {
-    let nextPresentations = hubProjects.map { project in
+    let focusedProjects = hubProjects
+    let focusedRosters = focusedProjects.map { (project: $0, roster: rosterEntry(for: $0)) }
+    let merge = hubMergeFleetRosters(focused: focusedRosters, machines: machineFleet.machines)
+    if merge != fleetMerge { fleetMerge = merge }
+    var nextPresentations = focusedRosters.map { entry in
       buildHubProjectPresentation(
-        project: project,
-        roster: rosterEntry(for: project),
-        isActive: syncService.isActiveProject(project),
-        isSwitching: syncService.isSwitchingProject(project)
+        project: entry.project,
+        roster: merge.mergedRosters[entry.project.id] ?? entry.roster,
+        isActive: syncService.isActiveProject(entry.project),
+        isSwitching: syncService.isSwitchingProject(entry.project)
+      )
+    }
+    // Projects that live only on other machines, in the saved order when the
+    // user placed them, else by name after the focused machine's.
+    let rankById = Dictionary(projectOrder.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+    let extras = merge.extraProjects.sorted { lhs, rhs in
+      switch (rankById[lhs.summary.id], rankById[rhs.summary.id]) {
+      case let (l?, r?): return l < r
+      case (.some, .none): return true
+      case (.none, .some): return false
+      case (.none, .none):
+        return lhs.summary.displayName.localizedCaseInsensitiveCompare(rhs.summary.displayName) == .orderedAscending
+      }
+    }
+    nextPresentations += extras.map { extra in
+      buildHubProjectPresentation(
+        project: extra.summary,
+        roster: extra.roster,
+        isActive: false,
+        isSwitching: switchingRemoteProjectId == extra.summary.id
       )
     }
     if nextPresentations != hubProjectPresentations {
@@ -628,8 +723,13 @@ struct HubScreen: View {
   }
 
   private func runRosterChatAction(_ action: String, chat: RemoteRosterChat, project: MobileProjectSummary) {
+    let owner = fleetMerge.chatOwners[chat.id]
     Task { @MainActor in
-      try? await syncService.performRosterChatAction(action, sessionId: chat.id, project: project)
+      if let owner {
+        try? await syncService.performRosterChatAction(action, sessionId: chat.id, project: owner.project, onMachine: owner.machineKey)
+      } else {
+        try? await syncService.performRosterChatAction(action, sessionId: chat.id, project: project)
+      }
     }
   }
 }
@@ -641,6 +741,9 @@ struct HubChatTarget: Identifiable, Equatable {
   let project: MobileProjectSummary
   let lane: RemoteRosterLane?
   let chat: RemoteRosterChat
+  /// Set when the chat lives on another paired machine: it opens through that
+  /// machine's roster connection and never activates the project.
+  var machineKey: String? = nil
 }
 
 // MARK: - Persisted layout

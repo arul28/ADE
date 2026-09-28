@@ -781,8 +781,8 @@ private let syncTerminalSubscriptionMaxBytes = 240_000
 /// real scrollback instead of a trimmed preview string.
 private let syncTerminalStreamMaxBytes = 512_000
 private let syncTerminalHistoryMaxBytes = 262_144
-private let syncChatSubscriptionMaxBytes = 256 * 1024
-private let syncChatHistoryTailPageMaxBytes = 600_000
+let syncChatSubscriptionMaxBytes = 256 * 1024
+let syncChatHistoryTailPageMaxBytes = 600_000
 // A bounded tail keeps chat switches instant on constrained routes. Complete
 // reasoning remains reachable through the same byte-cursor paging contract.
 private let syncReducedLoadChatSubscriptionMaxBytes = 256 * 1024
@@ -1841,10 +1841,10 @@ enum SyncWireCompressionCodec: String {
   case gzip
   case deflate
 }
-private let syncApplicationCompressionCodecs = [SyncWireCompressionCodec.deflate.rawValue]
-private let syncApplicationCompressionThresholdBytes = 512
+let syncApplicationCompressionCodecs = [SyncWireCompressionCodec.deflate.rawValue]
+let syncApplicationCompressionThresholdBytes = 512
 private let syncEnvelopeChunkReassemblyTimeoutSeconds: TimeInterval = 30
-private let syncDefaultMaxFrameBytes = 720 * 1024
+let syncDefaultMaxFrameBytes = 720 * 1024
 private let syncProtocolVersion = 1
 private let syncProtocolMinSupported = 1
 
@@ -4259,6 +4259,8 @@ final class SyncService: ObservableObject {
     registry.transport = self
     return registry
   }()
+  /// Host pages `chat.getChatEventHistoryPage` by durable sequence.
+  private(set) var supportsChatHistoryPageBySequence = false
   /// Host advertised `chatLogV2`: durable `sinceSequence`/`generation` resume,
   /// `beforeSequence` history paging, generation tokens, pinned events.
   private(set) var supportsChatLogV2 = false
@@ -4339,7 +4341,27 @@ final class SyncService: ObservableObject {
   private let pathMonitor = NWPathMonitor()
   private let pathMonitorQueue = DispatchQueue(label: "com.ade.sync.network-path")
   private let tailnetDiscovery = SyncTailnetProbe()
-  private var socket: URLSessionWebSocketTask?
+  private var socket: URLSessionWebSocketTask? {
+    didSet {
+      // The machine behind a new socket is unknown until its hello is applied.
+      // Until then the fleet must not send a roster hello anywhere: the host
+      // keeps one socket per phone per machine, and a later roster hello to
+      // the same machine would close this one.
+      guard socket !== oldValue else { return }
+      focusedSocketMachineKey = nil
+      machineFleet?.focusedConnectionChanged()
+    }
+  }
+  /// Bumped when the connection of a machine that owns an open remote chat
+  /// changes phase, so the chat's reachability gates re-evaluate.
+  @Published private(set) var fleetChatRevision = 0
+  /// Storage key of the machine the focused socket is attached to, recorded
+  /// when its hello is applied; nil while no socket or before the hello.
+  private(set) var focusedSocketMachineKey: String?
+  /// Machines the focused connection is dialing right now.
+  private(set) var focusedDialingMachineKeys: Set<String> = []
+  /// The roster connections to every other live machine. Not owned here.
+  weak var machineFleet: MachineFleet?
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
   private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?, projectId: String?)] = []
@@ -4558,6 +4580,15 @@ final class SyncService: ObservableObject {
   /// same-project case, so it adds no work when the feature is unused. Every
   /// chat read/write for a listed session routes to that project.
   private var chatCommandScopeBySession: [String: SyncChatCommandScope] = [:]
+  /// Chats that live on ANOTHER paired machine (opened from the Hub or the
+  /// Work tab's same-repo rows). Every read, write and stream for these goes
+  /// through that machine's `MachineConnection`, never the focused socket.
+  private var remoteMachineChatsBySession: [String: SyncRemoteMachineChat] = [:]
+  /// Remote chats registered by an open chat screen, and by the Work list's
+  /// cross-machine rows. An entry leaves `remoteMachineChatsBySession` only
+  /// when neither owner holds it.
+  private var viewOwnedRemoteChatIds: Set<String> = []
+  private var workListRemoteChats: [String: SyncRemoteMachineChat] = [:]
   private var projectSelectionTask: Task<Void, Never>?
   private var projectSelectionGeneration: UInt64 = 0
   private var healthyConnectionSampleCount = 0
@@ -5243,8 +5274,10 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func refreshProjectCatalog(preferRemoteSelection: Bool = false) {
-    let cachedProjects = database.listMobileProjects().filter { !isProjectHidden($0) }
+  /// `cachedRows`: the project rows, already read off the main actor (the
+  /// post-changeset refresh). Nil reads them here.
+  func refreshProjectCatalog(preferRemoteSelection: Bool = false, cachedRows: [MobileProjectSummary]? = nil) {
+    let cachedProjects = (cachedRows ?? database.listMobileProjects()).filter { !isProjectHidden($0) }
     let remoteCatalog = deduplicatedRemoteProjectCatalog()
     let hasRemoteCatalog = !remoteCatalog.isEmpty
     var mergedById = Dictionary(uniqueKeysWithValues: remoteCatalog.map { ($0.id, $0) })
@@ -6282,15 +6315,29 @@ final class SyncService: ObservableObject {
         || touchedTables.contains(where: Self.tableAffectsProofArtifactsProjection)
       let affectsActiveSessions = affectsAll || touchedTables.contains(where: Self.tableAffectsActiveSessionsSnapshot)
 
+      // Read off the main actor. The SQLite connection is serialized, and the
+      // next changeset batch applies on a background thread: a main-actor
+      // read here waited for that whole apply (the 55-120 ms frames with no
+      // view work in them, rounds 8-9).
+      let database = self.database
+      let prefetched = await Task.detached(priority: .userInitiated) {
+        (
+          projects: affectsProjectCatalog ? database.listMobileProjects() : nil,
+          sessions: affectsActiveSessions ? database.fetchSessions() : nil
+        )
+      }.value
+      // No cancellation check here: the pending tables were already taken
+      // above, so a newer change arriving during the read must not drop them.
+
       if affectsProjectCatalog {
-        self.refreshProjectCatalog()
+        self.refreshProjectCatalog(cachedRows: prefetched.projects)
       }
       if affectsAnyProjection {
         localStateRevision += 1
         self.bumpProjectionRevisions(for: touchedTables, laneDetailIds: laneDetailIds)
       }
       if affectsActiveSessions {
-        self.refreshActiveSessionsAndSnapshot()
+        self.refreshActiveSessionsAndSnapshot(rows: prefetched.sessions)
       }
     }
   }
@@ -9385,6 +9432,7 @@ final class SyncService: ObservableObject {
     // The machine's cached chat logs go with its pairing (edge case 19).
     if let machineKey = (activeHostProfile ?? loadProfile()).flatMap({ profileStorageKey($0) }) {
       chatThreadRegistry.purgeMachine(machineKey)
+      machineFleet?.savedMachinesChanged()
     }
     // Best-effort: drop this device from the relay and end any Live Activity
     // before we tear down the pairing credentials.
@@ -9430,6 +9478,7 @@ final class SyncService: ObservableObject {
 
     keychain.clearToken(hostKey: key)
     chatThreadRegistry.purgeMachine(key)
+    machineFleet?.savedMachinesChanged()
     if let removedProfile = profiles[key] {
       for legacyKey in legacyProfileStorageKeys(removedProfile) {
         keychain.clearToken(hostKey: legacyKey)
@@ -9511,6 +9560,7 @@ final class SyncService: ObservableObject {
     for (key, profile) in owned {
       keychain.clearToken(hostKey: key)
       chatThreadRegistry.purgeMachine(key)
+      machineFleet?.savedMachinesChanged()
       for legacyKey in legacyProfileStorageKeys(profile) {
         keychain.clearToken(hostKey: legacyKey)
       }
@@ -12391,6 +12441,12 @@ final class SyncService: ObservableObject {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
     chatCommandScopeBySession.removeValue(forKey: trimmedSessionId)
+    viewOwnedRemoteChatIds.remove(trimmedSessionId)
+    if let listEntry = workListRemoteChats[trimmedSessionId] {
+      remoteMachineChatsBySession[trimmedSessionId] = listEntry
+    } else {
+      remoteMachineChatsBySession.removeValue(forKey: trimmedSessionId)
+    }
   }
 
   func clearPersonalChatScope(sessionId: String) {
@@ -12404,6 +12460,12 @@ final class SyncService: ObservableObject {
   /// The foreign project a chat command for this session must target, or
   /// (nil, nil) for the active project (the common case).
   private func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
+    // A chat on another machine carries a machine marker in its project id.
+    // `sendCommand` strips it and forwards to that machine; it never reaches
+    // a host (see `syncFleetRoute`).
+    if let remote = remoteMachineChatsBySession[sessionId] {
+      return (syncFleetMarkedProjectId(machineKey: remote.machineKey, projectId: remote.projectId), remote.rootPath)
+    }
     guard case let .foreignProject(projectId, projectRootPath) = chatCommandScopeBySession[sessionId] else {
       return (nil, nil)
     }
@@ -12426,15 +12488,24 @@ final class SyncService: ObservableObject {
   }
 
   func supportsChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
-    supportsRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.supportsAction(projectAction)
+    }
+    return supportsRemoteAction(chatActionName(projectAction, sessionId: sessionId))
   }
 
   func canInvokeChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
-    canInvokeRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.isLive && connection.supportsAction(projectAction)
+    }
+    return canInvokeRemoteAction(chatActionName(projectAction, sessionId: sessionId))
   }
 
   func isChatRemoteActionQueueable(_ projectAction: String, sessionId: String) -> Bool {
-    isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
+    // Commands for another machine are never queued: a queued command could
+    // replay later to whichever machine is focused then.
+    if isRemoteMachineChat(sessionId: sessionId) { return false }
+    return isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
   }
 
   /// Presence-gated Cursor Cloud inbound sync. The host polls cursor.com only
@@ -12469,6 +12540,9 @@ final class SyncService: ObservableObject {
   /// merely desired): events are flowing into its thread engine right now.
   func chatSubscriptionIsLive(sessionId: String) -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      return remoteChatConnection(for: trimmedSessionId)?.chatSubscriptionIsLive(trimmedSessionId) == true
+    }
     return canSendLiveRequests()
       && supportsChatStreaming
       && subscribedChatSessionIds.contains(trimmedSessionId)
@@ -12486,6 +12560,15 @@ final class SyncService: ObservableObject {
   ) -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return false }
+    if let remote = remoteMachineChatsBySession[trimmedSessionId] {
+      guard let connection = machineFleet?.connection(for: remote.machineKey) else { return false }
+      return connection.subscribeChat(
+        sessionId: trimmedSessionId,
+        projectId: remote.projectId,
+        rootPath: remote.rootPath,
+        requestSnapshot: requestSnapshot
+      )
+    }
     let wasSubscribed = subscribedChatSessionIds.contains(trimmedSessionId)
     retainChatEventSubscription(sessionId: trimmedSessionId)
     let needsRemoteActivation = chatSubscriptionsNeedingRemoteActivation.contains(trimmedSessionId)
@@ -12547,6 +12630,17 @@ final class SyncService: ObservableObject {
   func retainChatEventSubscription(sessionId: String) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    // A chat on another machine never joins the focused socket's
+    // subscriptions: a reconnect would subscribe it on the wrong machine.
+    if let remote = remoteMachineChatsBySession[trimmedSessionId] {
+      _ = machineFleet?.connection(for: remote.machineKey)?.subscribeChat(
+        sessionId: trimmedSessionId,
+        projectId: remote.projectId,
+        rootPath: remote.rootPath,
+        requestSnapshot: false
+      )
+      return
+    }
     cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
     if subscribedChatSessionIds.insert(trimmedSessionId).inserted {
       chatSubscriptionsNeedingRemoteActivation.insert(trimmedSessionId)
@@ -12565,6 +12659,9 @@ final class SyncService: ObservableObject {
 
   func isFullChatEventSnapshotPending(sessionId: String) -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      return remoteChatConnection(for: trimmedSessionId)?.pendingSnapshotSessionIds.contains(trimmedSessionId) == true
+    }
     guard canSendLiveRequests(),
           let recentRequest = recentFullChatSnapshotRequestBySession[trimmedSessionId]
     else {
@@ -12577,9 +12674,11 @@ final class SyncService: ObservableObject {
   /// chat pane renders an explicit failure with Retry rather than an empty
   /// transcript, so a dropped subscribe can no longer read as "no messages".
   func isFullChatEventSnapshotStalled(sessionId: String) -> Bool {
-    stalledChatSnapshotSessionIds.contains(
-      sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    )
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      return remoteChatConnection(for: trimmedSessionId)?.stalledChatSessionIds.contains(trimmedSessionId) == true
+    }
+    return stalledChatSnapshotSessionIds.contains(trimmedSessionId)
   }
 
   /// Re-request a snapshot after a stall, from the user tapping Retry. Clears
@@ -12588,6 +12687,10 @@ final class SyncService: ObservableObject {
   func retryFullChatEventSnapshot(sessionId: String) async {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      remoteChatConnection(for: trimmedSessionId)?.requestChatSnapshot(sessionId: trimmedSessionId)
+      return
+    }
     chatSnapshotResendAttemptsBySession.removeValue(forKey: trimmedSessionId)
     stalledChatSnapshotSessionIds.remove(trimmedSessionId)
     recentFullChatSnapshotRequestBySession.removeValue(forKey: trimmedSessionId)
@@ -12649,6 +12752,10 @@ final class SyncService: ObservableObject {
   func unsubscribeFromChatEvents(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    if let remote = remoteMachineChatsBySession[trimmedSessionId] {
+      machineFleet?.connection(for: remote.machineKey)?.unsubscribeChat(sessionId: trimmedSessionId)
+      return
+    }
     cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
     performChatEventUnsubscribe(sessionId: trimmedSessionId)
   }
@@ -12661,6 +12768,12 @@ final class SyncService: ObservableObject {
     delayNanoseconds: UInt64 = 120_000_000_000
   ) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let remote = remoteMachineChatsBySession[trimmedSessionId] {
+      // The engine keeps the thread on disk and resumes from its durable
+      // sequence, so a chat on another machine unsubscribes at once.
+      machineFleet?.connection(for: remote.machineKey)?.unsubscribeChat(sessionId: trimmedSessionId)
+      return
+    }
     guard !trimmedSessionId.isEmpty,
           subscribedChatSessionIds.contains(trimmedSessionId)
     else { return }
@@ -12703,7 +12816,10 @@ final class SyncService: ObservableObject {
   }
 
   func supportsSubscribedChatHistory(sessionId: String) -> Bool {
-    supportsChatHistoryPaging && subscribedChatSessionIds.contains(sessionId)
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.supportsChatHistoryPaging && connection.isChatSubscribed(sessionId)
+    }
+    return supportsChatHistoryPaging && subscribedChatSessionIds.contains(sessionId)
   }
 
   func chatSubscriptionPayloads() -> [[String: Any]] {
@@ -17026,14 +17142,14 @@ final class SyncService: ObservableObject {
     var upgradeCeiling: SyncConnectionRouteKind?
   }
 
-  private func connectUsingProfile(
-    _ profile: HostConnectionProfile,
-    token: String,
-    connectAttemptGeneration: UInt64,
-    preferLiveCandidatesOnly: Bool,
-    publishConnecting: Bool,
-    replacement: SyncConnectionReplacement? = nil
-  ) async throws -> (host: String, port: Int) {
+  /// The ranked endpoint attempts for a profile: live discovery ports, saved
+  /// and live direct routes, relay routes, route memory for this network, and
+  /// last-good stickiness. Pure of connection state, so the focused connect and
+  /// a fleet (roster) dial rank candidates the same way.
+  func endpointAttemptPlan(
+    for profile: HostConnectionProfile,
+    preferLiveCandidatesOnly: Bool
+  ) throws -> [SyncConnectionEndpointAttempt] {
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
@@ -17074,7 +17190,6 @@ final class SyncService: ObservableObject {
     let liveDirectAddressSet = Set(
       matchingDiscovery.flatMap(\.addresses) + matchingDiscovery.compactMap(\.tailscaleAddress)
     )
-    markConnectAttemptStarted(connectAttemptGeneration)
     let racedDirectAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
       ? syncStalePortRecoveryEndpointAttempts(addresses: addresses, ports: portCandidates)
       : syncConnectionEndpointAttempts(addresses: addresses, ports: portCandidates)
@@ -17093,7 +17208,7 @@ final class SyncService: ObservableObject {
     // to a different one. Both are reorderings of the vetted set, so neither can
     // reintroduce a candidate that address or relay-authorization policy
     // already rejected.
-    var orderedEndpointAttempts = syncEndpointAttemptsHoisting(
+    let orderedEndpointAttempts = syncEndpointAttemptsHoisting(
       rankedAttempts,
       preferredAddresses: [
         syncRememberedEndpoint(
@@ -17103,6 +17218,35 @@ final class SyncService: ObservableObject {
         profile.lastSuccessfulAddress,
       ].compactMap { $0 }
     )
+    return orderedEndpointAttempts
+  }
+
+  private func connectUsingProfile(
+    _ profile: HostConnectionProfile,
+    token: String,
+    connectAttemptGeneration: UInt64,
+    preferLiveCandidatesOnly: Bool,
+    publishConnecting: Bool,
+    replacement: SyncConnectionReplacement? = nil
+  ) async throws -> (host: String, port: Int) {
+    // Stop any roster connection to this machine BEFORE dialing it: the host
+    // keeps one socket per phone per machine.
+    let dialingMachineKey = profileStorageKey(profile)
+    if let dialingMachineKey {
+      focusedDialingMachineKeys.insert(dialingMachineKey)
+      machineFleet?.focusedWillDial(machineKey: dialingMachineKey)
+    }
+    defer {
+      if let dialingMachineKey {
+        focusedDialingMachineKeys.remove(dialingMachineKey)
+        machineFleet?.focusedConnectionChanged()
+      }
+    }
+    var orderedEndpointAttempts = try endpointAttemptPlan(
+      for: profile,
+      preferLiveCandidatesOnly: preferLiveCandidatesOnly
+    )
+    markConnectAttemptStarted(connectAttemptGeneration)
     if let upgradeCeiling = replacement?.upgradeCeiling {
       orderedEndpointAttempts = orderedEndpointAttempts.filter {
         syncConnectionRouteKind($0.address) < upgradeCeiling
@@ -17201,10 +17345,15 @@ final class SyncService: ObservableObject {
     _ candidates: [SyncConnectionRaceScheduledCandidate],
     profile: HostConnectionProfile,
     pairedSecret: String,
-    connectAttemptGeneration: UInt64
+    connectAttemptGeneration: UInt64,
+    fleetDial: SyncFleetDialContext? = nil
   ) async throws -> AuthenticatedConnectionCandidate {
     guard !candidates.isEmpty else { throw noConnectableAddressError() }
-    raceFailedEndpoints = (connectAttemptGeneration, [])
+    // A fleet (roster) dial never touches the focused connection's endpoint
+    // bookkeeping: that state belongs to the focused machine's profile.
+    if fleetDial == nil {
+      raceFailedEndpoints = (connectAttemptGeneration, [])
+    }
     let connectionAttempt = makeConnectionAttemptMetadata()
     // Captured before the group so the detached budget task reads the attempt's
     // deadline rather than reaching back into the actor for it.
@@ -17221,7 +17370,8 @@ final class SyncService: ObservableObject {
             profile: profile,
             pairedSecret: pairedSecret,
             connectAttemptGeneration: connectAttemptGeneration,
-            connectionAttempt: connectionAttempt
+            connectionAttempt: connectionAttempt,
+            fleetDial: fleetDial
           )
         }
       }
@@ -17281,7 +17431,8 @@ final class SyncService: ObservableObject {
             if pairingFailure != nil {
               lastPairingFailure = marked
             }
-            if syncEndpointFailureIsMeaningful(marked),
+            if fleetDial == nil,
+               syncEndpointFailureIsMeaningful(marked),
                raceFailedEndpoints.generation == connectAttemptGeneration {
               raceFailedEndpoints.addresses.append(endpoint.address)
             }
@@ -17315,7 +17466,8 @@ final class SyncService: ObservableObject {
                 profile: profile,
                 pairedSecret: pairedSecret,
                 connectAttemptGeneration: connectAttemptGeneration,
-                connectionAttempt: connectionAttempt
+                connectionAttempt: connectionAttempt,
+                fleetDial: fleetDial
               )
             }
           }
@@ -17343,7 +17495,8 @@ final class SyncService: ObservableObject {
     profile: HostConnectionProfile,
     pairedSecret: String,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    fleetDial: SyncFleetDialContext? = nil
   ) async -> AuthenticatedConnectionRaceEvent {
     do {
       if candidate.delayNanoseconds > 0 {
@@ -17354,7 +17507,8 @@ final class SyncService: ObservableObject {
         profile: profile,
         pairedSecret: pairedSecret,
         connectAttemptGeneration: connectAttemptGeneration,
-        connectionAttempt: connectionAttempt
+        connectionAttempt: connectionAttempt,
+        fleetDial: fleetDial
       )
       return .authenticated(authenticated)
     } catch {
@@ -17367,9 +17521,10 @@ final class SyncService: ObservableObject {
     profile: HostConnectionProfile,
     pairedSecret: String,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    fleetDial: SyncFleetDialContext? = nil
   ) async throws -> AuthenticatedConnectionCandidate {
-    guard isCurrentConnectAttempt(connectAttemptGeneration) else { throw CancellationError() }
+    guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial) else { throw CancellationError() }
     let endpoint = candidate.endpoint
     let isRelay = syncIsFullWebSocketRoute(endpoint.address)
     let parsed = syncParseRouteEndpoint(endpoint.address)
@@ -17402,10 +17557,11 @@ final class SyncService: ObservableObject {
           profile: profile,
           pairedSecret: pairedSecret,
           connectAttemptGeneration: connectAttemptGeneration,
-          connectionAttempt: connectionAttempt
+          connectionAttempt: connectionAttempt,
+          fleetDial: fleetDial
         )
       } catch SyncRelayReadyNegotiationError.retryLegacySocket {
-        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+        guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
           throw CancellationError()
         }
         guard syncRelayLegacyRedialAllowed(
@@ -17438,7 +17594,8 @@ final class SyncService: ObservableObject {
       profile: profile,
       pairedSecret: pairedSecret,
       connectAttemptGeneration: connectAttemptGeneration,
-      connectionAttempt: connectionAttempt
+      connectionAttempt: connectionAttempt,
+      fleetDial: fleetDial
     )
   }
 
@@ -17450,7 +17607,8 @@ final class SyncService: ObservableObject {
     profile: HostConnectionProfile,
     pairedSecret: String,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    fleetDial: SyncFleetDialContext? = nil
   ) async throws -> AuthenticatedConnectionCandidate {
     let dialKey = isRelay ? syncRelayMachineKey(from: url.absoluteString) : nil
     var dialToken: UUID?
@@ -17478,7 +17636,7 @@ final class SyncService: ObservableObject {
         // every exit from this scope, including the early throws below.
         async let pendingRelaySession = relaySessionForCandidate(required: needsRelaySession)
         try await awaitSocketOpen(candidateTask)
-        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+        guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
           throw CancellationError()
         }
 
@@ -17505,7 +17663,7 @@ final class SyncService: ObservableObject {
         if awaitsRelayReadyV2 {
           try await awaitRelayCandidateReady(mailbox: mailbox)
         }
-        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+        guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
           throw CancellationError()
         }
 
@@ -17547,7 +17705,7 @@ final class SyncService: ObservableObject {
           type: "hello",
           requestId: requestId,
           payload: [
-            "peer": currentPeerMetadata(connectionAttempt: connectionAttempt),
+            "peer": fleetDial?.peerMetadata(connectionAttempt) ?? currentPeerMetadata(connectionAttempt: connectionAttempt),
             "compression": syncApplicationCompressionCodecs,
             "auth": auth,
           ]
@@ -19503,6 +19661,7 @@ final class SyncService: ObservableObject {
     supportsChatHistoryPaging = featureEnabled("chatHistoryPaging", "chat_history_paging")
     supportsChatLogV2 = featureEnabled("chatLogV2", "chat_log_v2")
     supportsCrossProjectChat = featureEnabled("crossProjectChat", "cross_project_chat")
+    supportsChatHistoryPageBySequence = featureEnabled("chatHistoryPageBySequence", "chat_history_page_by_sequence")
     supportsPersonalChats = false
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
@@ -19701,6 +19860,8 @@ final class SyncService: ObservableObject {
       relayAccountOwnerId: activeHostProfile?.relayAccountOwnerId
     )
     saveProfile(profile)
+    focusedSocketMachineKey = profileStorageKey(profile)
+    machineFleet?.focusedConnectionChanged()
     resetOutboundCursorStateForActiveProject()
     if !supportsChangesetAck {
       pendingOutboundChangeset = nil
@@ -21522,6 +21683,18 @@ final class SyncService: ObservableObject {
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
+    if let route = try syncFleetRoute(action: action, args: args, targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath) {
+      return try await route.connection.sendCommand(
+        action: action,
+        args: args,
+        projectId: route.projectId,
+        projectRootPath: route.rootPath,
+        timeoutNanoseconds: timeoutNanoseconds
+      )
+    }
+    // A machine marker for the focused machine itself (it became focused
+    // while its chat was open): use the plain project id.
+    let targetProjectId = syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId
     let runtimeScoped = commandIsRuntimeScoped(action)
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
@@ -21571,6 +21744,20 @@ final class SyncService: ObservableObject {
     fallbackToActiveProjectScope: Bool = true,
     attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
+    // A command for a chat on another machine goes to that machine now or
+    // fails. It is never queued for a later replay to the focused machine.
+    if let route = try syncFleetRoute(action: action, args: args, targetProjectId: targetProjectId, targetProjectRootPath: targetProjectRootPath) {
+      return try await route.connection.sendCommand(
+        action: action,
+        args: args,
+        projectId: route.projectId,
+        projectRootPath: route.rootPath,
+        timeoutNanoseconds: timeoutNanoseconds
+      )
+    }
+    // A machine marker for the focused machine itself (it became focused
+    // while its chat was open): use the plain project id.
+    let targetProjectId = syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
@@ -22082,6 +22269,12 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     targetProjectId: String? = nil
   ) async throws -> Any {
+    // A file read made on behalf of a chat on another machine (proof
+    // artifacts) goes to that machine. See `SyncFleetTaskRoute`.
+    if let remote = SyncFleetTaskRoute.chat,
+       let route = try fleetRouteForTaskChat(remote) {
+      return try await route.connection.fileRequest(action: action, args: args)
+    }
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: Self.fileRequestOfflineErrorCode, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
     }
@@ -22438,14 +22631,16 @@ extension SyncService {
   /// Recompute `activeSessions` from the local `TerminalSessionSummary` roster
   /// and schedule a debounced snapshot write so widgets + live activities pick
   /// up the delta.
-  func refreshActiveSessionsAndSnapshot() {
+  /// `rows`: the session rows, already read off the main actor (the
+  /// post-changeset refresh). Nil reads them here.
+  func refreshActiveSessionsAndSnapshot(rows: [TerminalSessionSummary]? = nil) {
     // Through the chokepoint: this drops `.settled` rows below, and a plain
     // settle the user just tapped must disappear from the widget and Live
     // Activity immediately rather than waiting for the host's changeset. (A
     // "Dismiss & settle" still waits: `needs_you` outranks the settled tier and
     // the overlay does not touch the attention columns, which only the host
     // clears.)
-    let sessions = localSessions()
+    let sessions = rows.map { overlayLocalSessions($0) } ?? localSessions()
     let now = Date()
 
     // `activeSessions` holds every relevant chat session — running,
@@ -24024,6 +24219,13 @@ extension SyncService: ChatThreadTransport {
   /// session is routed to right now. Nil before a machine is known.
   func chatThreadKey(for sessionId: String) -> ChatThreadKey? {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let remote = remoteMachineChatsBySession[trimmedSessionId] {
+      return ChatThreadKey(
+        machineKey: remote.machineKey,
+        sessionId: trimmedSessionId,
+        scope: .crossProject(projectId: remote.projectId, rootPath: remote.rootPath)
+      )
+    }
     guard !trimmedSessionId.isEmpty,
           let profile = activeHostProfile,
           let machineKey = profileStorageKey(profile)
@@ -24041,6 +24243,10 @@ extension SyncService: ChatThreadTransport {
   }
 
   func chatThreadRequestSnapshot(_ key: ChatThreadKey, reason: String) {
+    if let connection = fleetConnection(forThreadKey: key) {
+      connection.requestChatSnapshot(sessionId: key.sessionId)
+      return
+    }
     syncChatLog.notice(
       "thread_snapshot_request session=\(key.sessionId, privacy: .public) reason=\(reason, privacy: .public)"
     )
@@ -24065,8 +24271,10 @@ extension SyncService: ChatThreadTransport {
     _ key: ChatThreadKey,
     request: ChatThreadOlderRequest
   ) async throws -> ChatThreadOlderPageInput {
+    if let connection = fleetConnection(forThreadKey: key) {
+      return try await connection.fetchOlderPage(sessionId: key.sessionId, request: request)
+    }
     let sessionId = key.sessionId
-    let raw: Any
     if supportsChatHistoryPaging, subscribedChatSessionIds.contains(sessionId) {
       let requestId = makeRequestId()
       var payload = chatSubscriptionPayload(sessionId: sessionId, maxBytes: nil, includeSinceSeq: false)
@@ -24077,7 +24285,7 @@ extension SyncService: ChatThreadTransport {
         payload["beforeOffset"] = max(0, offset)
       }
       payload["maxBytes"] = syncChatHistoryTailPageMaxBytes
-      raw = try await awaitResponse(
+      let raw = try await awaitResponse(
         requestId: requestId,
         disconnectOnTimeout: false,
         timeoutMessage: "Timed out loading earlier chat messages.",
@@ -24085,24 +24293,47 @@ extension SyncService: ChatThreadTransport {
       ) {
         self.sendEnvelope(type: "chat_history", requestId: requestId, payload: payload)
       }
-    } else {
-      guard case .beforeOffset(let offset) = request else {
-        throw NSError(
-          domain: "ADE",
-          code: 27,
-          userInfo: [NSLocalizedDescriptionKey: "Open the chat to load earlier messages."]
-        )
-      }
-      let scope = chatCommandScope(for: sessionId)
-      raw = try await sendCommand(
-        action: chatActionName("chat.getChatEventHistoryPage", sessionId: sessionId),
-        args: ["sessionId": sessionId, "beforeOffset": offset, "maxBytes": syncChatHistoryTailPageMaxBytes],
-        disconnectOnTimeout: false,
-        timeoutNanoseconds: 8_000_000_000,
-        targetProjectId: scope.projectId,
-        targetProjectRootPath: scope.rootPath
+      let decoded = try await decodeOlderPage(raw, sessionId: sessionId)
+      // The socket handler that got this request cannot serve it (brain
+      // fallback handler, scope mismatch). The command path can.
+      guard decoded.unavailable, canFetchOlderPageByCommand(request) else { return decoded }
+      ScrollDiagnostics.shared.event("thread.olderPage.fallback", ["session": sessionId, "reason": "unavailable"])
+    }
+    guard canFetchOlderPageByCommand(request) else {
+      throw NSError(
+        domain: "ADE",
+        code: 27,
+        userInfo: [NSLocalizedDescriptionKey: "Open the chat to load earlier messages."]
       )
     }
+    var args: [String: Any] = ["sessionId": sessionId, "maxBytes": syncChatHistoryTailPageMaxBytes]
+    switch request {
+    case .beforeSequence(let sequence): args["beforeSequence"] = sequence
+    case .beforeOffset(let offset): args["beforeOffset"] = offset
+    }
+    let scope = chatCommandScope(for: sessionId)
+    let raw = try await sendCommand(
+      action: chatActionName("chat.getChatEventHistoryPage", sessionId: sessionId),
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    return try await decodeOlderPage(raw, sessionId: sessionId)
+  }
+
+  /// The history command pages by byte offset everywhere, and by durable
+  /// sequence only on hosts that advertise `chatHistoryPageBySequence` (an
+  /// older host would ignore the field and return the newest page).
+  private func canFetchOlderPageByCommand(_ request: ChatThreadOlderRequest) -> Bool {
+    switch request {
+    case .beforeOffset: return true
+    case .beforeSequence: return supportsChatHistoryPageBySequence
+    }
+  }
+
+  private func decodeOlderPage(_ raw: Any, sessionId: String) async throws -> ChatThreadOlderPageInput {
     let decoded = await Task.detached(priority: .userInitiated) {
       chatThreadDecodeOlderPage(raw, requestedSessionId: sessionId)
     }.value
@@ -24180,5 +24411,479 @@ extension SyncService: ChatThreadTransport {
       machineKey: machineKey,
       generationBySessionId: generationBySessionId
     )
+  }
+}
+
+// MARK: - Machine fleet seams (multi-machine phase 2/3)
+//
+// `SyncService` stays the FOCUSED machine's full connection. `MachineFleet`
+// keeps one light roster connection to each other live machine. These seams let
+// a fleet connection dial with exactly the focused connection's candidate
+// ranking, race, relay negotiation, DPoP proof and relay account token, without
+// touching the focused connection's own state.
+
+/// Makes a candidate race a fleet (roster) dial: its own staleness check and a
+/// roster-only peer description in the hello.
+struct SyncFleetDialContext {
+  let isCurrent: @MainActor () -> Bool
+  let peerMetadata: @MainActor (SyncConnectionAttemptMetadata) -> [String: Any]
+}
+
+struct SyncFleetDialResult {
+  let task: URLSessionWebSocketTask
+  let helloPayload: [String: Any]
+  let address: String
+  let negotiatedReadyV2: Bool
+}
+
+/// One saved, credentialed machine the fleet may keep live.
+struct SyncFleetMachineProfile: Equatable {
+  let machineKey: String
+  let profile: HostConnectionProfile
+  var displayName: String {
+    fleetNonEmpty(profile.hostName) ?? "Machine"
+  }
+}
+
+extension SyncService {
+  func dialAttemptIsCurrent(_ generation: UInt64, _ fleetDial: SyncFleetDialContext?) -> Bool {
+    if let fleetDial { return fleetDial.isCurrent() }
+    return isCurrentConnectAttempt(generation)
+  }
+
+  /// Storage key of the focused machine (the active profile), if any.
+  var focusedMachineKey: String? {
+    activeHostProfile.flatMap(profileStorageKey)
+  }
+
+  func machineKey(for profile: HostConnectionProfile) -> String? {
+    profileStorageKey(profile)
+  }
+
+  /// Machines a roster connection must never dial right now: the focused
+  /// machine, the machine the focused socket is attached to, and any machine
+  /// the focused connection is dialing.
+  var fleetBlockedMachineKeys: Set<String> {
+    var keys = focusedDialingMachineKeys
+    if let focusedMachineKey { keys.insert(focusedMachineKey) }
+    if let focusedSocketMachineKey { keys.insert(focusedSocketMachineKey) }
+    return keys
+  }
+
+  /// True while a focused socket exists but its machine is not known yet. No
+  /// roster hello may be sent anywhere during this window.
+  var fleetHelloOnHold: Bool {
+    socket != nil && focusedSocketMachineKey == nil
+  }
+
+  /// Every saved machine with a usable credential, keyed by machine storage
+  /// key, most recently used first. Profiles without a stable key are skipped.
+  func fleetMachineProfiles() -> [SyncFleetMachineProfile] {
+    var seen = Set<String>()
+    return loadSavedProfiles().values
+      .sorted { shouldPreferProfile($0, over: $1) }
+      .compactMap { profile -> SyncFleetMachineProfile? in
+        guard profile.authKind == "paired",
+              let key = profileStorageKey(profile),
+              seen.insert(key).inserted,
+              tokenForProfile(profile) != nil
+        else { return nil }
+        return SyncFleetMachineProfile(machineKey: key, profile: profile)
+      }
+  }
+
+  func fleetToken(for profile: HostConnectionProfile) -> String? {
+    tokenForProfile(profile)
+  }
+
+  /// The roster cache key `SyncService` uses for this machine while it is
+  /// focused (`rosterCacheKey`), so a machine keeps one offline roster whether
+  /// it is focused or a fleet member.
+  func fleetRosterCacheKey(for profile: HostConnectionProfile) -> String? {
+    let host: String
+    if let identity = normalizedHostStorageKey(profile.hostIdentity)
+      ?? normalizedHostStorageKey(profile.lastHostDeviceId) {
+      host = identity
+    } else if let address = normalizedHostStorageKey(profile.lastSuccessfulAddress) {
+      host = "\(address):\(profile.port)"
+    } else if let name = normalizedHostStorageKey(profile.hostName) {
+      host = "\(name):\(profile.port)"
+    } else {
+      return nil
+    }
+    return "ade.roster.cache.v2.\(Data(host.utf8).base64EncodedString())"
+  }
+
+  /// A fleet dial error that means the pairing itself was rejected by the
+  /// machine it belongs to. A fleet connection stops and asks the user; it
+  /// never forgets the pairing (only the focused connection may do that).
+  func fleetErrorIsPairingRejection(_ error: Error) -> Bool {
+    shouldInvalidateSavedPairing(for: error)
+  }
+
+  /// Roster-only hello peer: no replica cursor, no changeset capabilities.
+  /// Hosts that know `syncRole: "roster"` never replicate to this socket.
+  func fleetPeerMetadata(connectionAttempt: SyncConnectionAttemptMetadata) -> [String: Any] {
+    var metadata = currentPeerMetadata(connectionAttempt: connectionAttempt)
+    metadata["syncRole"] = "roster"
+    metadata["dbVersion"] = 0
+    metadata.removeValue(forKey: "dbVersionBySite")
+    metadata["capabilities"] = [
+      "chunkedEnvelopes",
+      "binaryEnvelopes",
+      "foldedReplay",
+      "mobileChatSlimV1",
+    ]
+    return metadata
+  }
+
+  /// Dial and authenticate a roster connection to a non-focused machine.
+  /// `isCurrent` must turn false as soon as the dial is stale or the machine
+  /// became focused; it is checked before the hello is sent.
+  func dialFleetConnection(
+    profile: HostConnectionProfile,
+    token: String,
+    isCurrent: @escaping @MainActor () -> Bool
+  ) async throws -> SyncFleetDialResult {
+    let attempts = try endpointAttemptPlan(for: profile, preferLiveCandidatesOnly: false)
+    guard !attempts.isEmpty else { throw noConnectableAddressError() }
+    let plan = syncConnectionRaceCandidatePlan(rankedAttempts: attempts)
+    let context = SyncFleetDialContext(
+      isCurrent: isCurrent,
+      peerMetadata: { [weak self] attempt in
+        self?.fleetPeerMetadata(connectionAttempt: attempt) ?? [:]
+      }
+    )
+    let candidate = try await raceAuthenticatedConnectionCandidates(
+      plan,
+      profile: profile,
+      pairedSecret: token,
+      connectAttemptGeneration: 0,
+      fleetDial: context
+    )
+    guard isCurrent() else {
+      candidate.task.cancel(with: .goingAway, reason: nil)
+      throw CancellationError()
+    }
+    let address = candidate.scheduled.endpoint.address
+    if syncIsFullWebSocketRoute(address),
+       let requirement = syncRelayReconnectAuthorizationRequirement(
+         usedAuthorization: candidate.relayAuthorization,
+         currentAuthorization: AccountService.shared.currentPairingAuthorization,
+         relayAccountOwnerId: profile.relayAccountOwnerId
+       ) {
+      candidate.task.cancel(with: .goingAway, reason: nil)
+      throw requirement
+    }
+    return SyncFleetDialResult(
+      task: candidate.task,
+      helloPayload: candidate.helloPayload,
+      address: address,
+      negotiatedReadyV2: candidate.negotiatedReadyV2
+    )
+  }
+}
+
+// MARK: - Routing chats that live on another machine
+
+/// A chat on another paired machine, and the project it belongs to there.
+struct SyncRemoteMachineChat: Hashable {
+  let machineKey: String
+  let projectId: String
+  let rootPath: String
+}
+
+/// Routes the work of one async task to a chat's machine. The chat screen of a
+/// chat on another machine runs its artifact reads inside
+/// `SyncFleetTaskRoute.$chat.withValue(...)`, so calls that carry no session id
+/// (file reads by artifact id) still reach the right machine.
+enum SyncFleetTaskRoute {
+  @TaskLocal static var chat: SyncRemoteMachineChat?
+}
+
+struct SyncFleetCommandRoute {
+  let connection: MachineConnection
+  let projectId: String?
+  let rootPath: String?
+}
+
+private let syncFleetMarkerSeparator: Character = "\u{1}"
+
+/// A project id that also names its machine. Only `chatCommandScope(for:)`
+/// makes one, and only `syncFleetRoute` reads it: the command goes to that
+/// machine with the plain project id, so the marker never reaches a host.
+func syncFleetMarkedProjectId(machineKey: String, projectId: String) -> String {
+  "fleet\(syncFleetMarkerSeparator)\(machineKey)\(syncFleetMarkerSeparator)\(projectId)"
+}
+
+func syncFleetParseMarkedProjectId(_ value: String?) -> (machineKey: String, projectId: String)? {
+  guard let value, value.hasPrefix("fleet\(syncFleetMarkerSeparator)") else { return nil }
+  let parts = value.split(separator: syncFleetMarkerSeparator, maxSplits: 2, omittingEmptySubsequences: false)
+  guard parts.count == 3, !parts[1].isEmpty else { return nil }
+  return (String(parts[1]), String(parts[2]))
+}
+
+extension SyncService {
+  /// Route this chat's reads, writes and stream to another paired machine.
+  /// Falls back to the focused-machine cross-project scope when the machine is
+  /// in fact the focused one.
+  func setRemoteMachineChatScope(
+    sessionId: String,
+    machineKey: String,
+    projectId: String,
+    projectRootPath: String?
+  ) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    if machineKey == focusedMachineKey {
+      remoteMachineChatsBySession.removeValue(forKey: trimmedSessionId)
+      setCrossProjectChatScope(sessionId: trimmedSessionId, projectId: projectId, projectRootPath: projectRootPath)
+      return
+    }
+    chatCommandScopeBySession.removeValue(forKey: trimmedSessionId)
+    viewOwnedRemoteChatIds.insert(trimmedSessionId)
+    remoteMachineChatsBySession[trimmedSessionId] = SyncRemoteMachineChat(
+      machineKey: machineKey,
+      projectId: projectId,
+      rootPath: syncNormalizedProjectRootScope(projectRootPath) ?? projectRootPath ?? ""
+    )
+  }
+
+  /// The Work list's cross-machine rows: their row actions (archive, pin,
+  /// settle, rename) must reach the chat's own machine too.
+  func setWorkListRemoteChats(_ chats: [String: SyncRemoteMachineChat]) {
+    let focusedKey = focusedMachineKey
+    let next = chats.filter { $0.value.machineKey != focusedKey }
+    guard next != workListRemoteChats else { return }
+    for sessionId in workListRemoteChats.keys where next[sessionId] == nil && !viewOwnedRemoteChatIds.contains(sessionId) {
+      remoteMachineChatsBySession.removeValue(forKey: sessionId)
+    }
+    for (sessionId, entry) in next where !viewOwnedRemoteChatIds.contains(sessionId) {
+      remoteMachineChatsBySession[sessionId] = entry
+    }
+    workListRemoteChats = next
+  }
+
+  func isRemoteMachineChat(sessionId: String) -> Bool {
+    remoteMachineChatsBySession[sessionId.trimmingCharacters(in: .whitespacesAndNewlines)] != nil
+  }
+
+  func remoteMachineChat(sessionId: String) -> SyncRemoteMachineChat? {
+    remoteMachineChatsBySession[sessionId.trimmingCharacters(in: .whitespacesAndNewlines)]
+  }
+
+  func remoteChatConnection(for sessionId: String) -> MachineConnection? {
+    guard let remote = remoteMachineChatsBySession[sessionId.trimmingCharacters(in: .whitespacesAndNewlines)] else {
+      return nil
+    }
+    return machineFleet?.connection(for: remote.machineKey)
+  }
+
+  /// The roster connection that serves a thread key, or nil when the key
+  /// belongs to the focused machine.
+  func fleetConnection(forThreadKey key: ChatThreadKey) -> MachineConnection? {
+    guard key.machineKey != focusedMachineKey else { return nil }
+    return machineFleet?.connection(for: key.machineKey)
+  }
+
+  /// Decide whether a command goes to another machine. Throws when it must go
+  /// to a machine that is not connected: it must never fall through to the
+  /// focused machine, where the same project id can name a different project.
+  func syncFleetRoute(
+    action: String,
+    args: [String: Any],
+    targetProjectId: String?,
+    targetProjectRootPath: String?
+  ) throws -> SyncFleetCommandRoute? {
+    if let marked = syncFleetParseMarkedProjectId(targetProjectId) {
+      return try fleetRoute(machineKey: marked.machineKey, projectId: marked.projectId, rootPath: targetProjectRootPath)
+    }
+    guard !remoteMachineChatsBySession.isEmpty else { return nil }
+    var sessionIds: [String] = []
+    if let sessionId = args["sessionId"] as? String { sessionIds.append(sessionId) }
+    if let many = args["sessionIds"] as? [String] { sessionIds.append(contentsOf: many) }
+    if (args["ownerKind"] as? String) == "chat_session", let ownerId = args["ownerId"] as? String {
+      sessionIds.append(ownerId)
+    }
+    for sessionId in sessionIds {
+      if let remote = remoteMachineChatsBySession[sessionId.trimmingCharacters(in: .whitespacesAndNewlines)] {
+        return try fleetRoute(machineKey: remote.machineKey, projectId: remote.projectId, rootPath: remote.rootPath)
+      }
+    }
+    if let remote = SyncFleetTaskRoute.chat, remote.machineKey != focusedMachineKey {
+      return try fleetRouteForTaskChat(remote)
+    }
+    return nil
+  }
+
+  func fleetRouteForTaskChat(_ remote: SyncRemoteMachineChat) throws -> SyncFleetCommandRoute? {
+    try fleetRoute(machineKey: remote.machineKey, projectId: remote.projectId, rootPath: remote.rootPath)
+  }
+
+  private func fleetRoute(machineKey: String, projectId: String, rootPath: String?) throws -> SyncFleetCommandRoute? {
+    // The chat's machine became the focused one: the focused path serves it.
+    guard machineKey != focusedMachineKey else { return nil }
+    guard let connection = machineFleet?.connection(for: machineKey) else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not paired with this phone any more."])
+    }
+    guard connection.isLive else {
+      let name = connection.hostName ?? "That machine"
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach \(name) right now."])
+    }
+    let root = rootPath.flatMap { $0.isEmpty ? nil : $0 }
+    return SyncFleetCommandRoute(connection: connection, projectId: projectId, rootPath: root)
+  }
+}
+
+extension SyncService {
+  /// `chatLogV2` for the machine that owns this chat.
+  func chatSupportsLogV2(sessionId: String) -> Bool {
+    if isRemoteMachineChat(sessionId: sessionId) {
+      return remoteChatConnection(for: sessionId)?.supportsChatLogV2 == true
+    }
+    return supportsChatLogV2
+  }
+
+  /// Whether the machine that owns this chat is reachable right now.
+  func chatHostIsReachable(sessionId: String) -> Bool {
+    if isRemoteMachineChat(sessionId: sessionId) {
+      return remoteChatConnection(for: sessionId)?.isLive == true
+    }
+    return connectionState == .connected
+  }
+
+  /// The machine name to show under a chat's title.
+  func chatMachineName(sessionId: String) -> String? {
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.hostName ?? syncNonEmpty(connection.profile.hostName)
+    }
+    return hostName ?? activeHostProfile?.hostName
+  }
+
+  /// A remote machine's connection changed phase. Only chats open on that
+  /// machine care, so the focused observers re-render only then.
+  func fleetConnectionPhaseChanged(machineKey: String) {
+    guard remoteMachineChatsBySession.values.contains(where: { $0.machineKey == machineKey }) else { return }
+    fleetChatRevision &+= 1
+  }
+}
+
+// MARK: - Hub actions on other machines
+
+extension SyncService {
+  /// Make another paired machine the focused one (full sync). Returns true
+  /// when the phone attached to that machine.
+  @discardableResult
+  func switchFocus(toMachineKey machineKey: String) async -> Bool {
+    if machineKey == focusedMachineKey, connectionState == .connected { return true }
+    guard let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
+          let host = discoveredHost(fromSavedProfile: entry.profile)
+    else {
+      lastConnectAttemptFailure = SyncConnectAttemptFailure(
+        message: "This saved machine no longer has pairing credentials. Pair again from Settings."
+      )
+      return false
+    }
+    // Leave the previous machine's project; the Hub is the landing surface.
+    projectHubPresented = true
+    return await reconnect(toSavedHost: host)
+  }
+
+  /// Open a project that lives on another machine: focus that machine, then
+  /// select the project from its catalog.
+  func openProject(_ project: MobileProjectSummary, onMachine machineKey: String) async {
+    guard await switchFocus(toMachineKey: machineKey) else { return }
+    let root = normalizedProjectRoot(project.rootPath)
+    let match = projects.first { candidate in
+      candidate.id == project.id
+        || (root != nil && normalizedProjectRoot(candidate.rootPath) == root)
+    }
+    selectProject(match ?? project)
+  }
+
+  /// Archive / unarchive / delete a chat on another machine from the Hub.
+  func performRosterChatAction(
+    _ action: String,
+    sessionId: String,
+    project: MobileProjectSummary,
+    onMachine machineKey: String
+  ) async throws {
+    guard machineKey != focusedMachineKey else {
+      try await performRosterChatAction(action, sessionId: sessionId, project: project)
+      return
+    }
+    guard let route = try fleetRouteForTaskChat(SyncRemoteMachineChat(
+      machineKey: machineKey,
+      projectId: project.id,
+      rootPath: project.rootPath ?? ""
+    )) else {
+      try await performRosterChatAction(action, sessionId: sessionId, project: project)
+      return
+    }
+    _ = try await route.connection.sendCommand(
+      action: action,
+      args: ["sessionId": sessionId],
+      projectId: route.projectId,
+      projectRootPath: route.rootPath
+    )
+    route.connection.requestRosterSnapshot()
+  }
+}
+
+extension RemoteRosterProject {
+  /// A project summary for a roster project on another machine. That machine's
+  /// catalog is not on this phone; the roster carries what the Hub needs.
+  var asRemoteMachineProjectSummary: MobileProjectSummary {
+    MobileProjectSummary(
+      id: projectId,
+      displayName: displayName,
+      rootPath: rootPath,
+      lastOpenedAt: lastOpenedAt,
+      iconDataUrl: iconDataUrl,
+      laneCount: lanes.count,
+      isAvailable: true,
+      isCached: false,
+      isOpen: booted
+    )
+  }
+}
+
+// MARK: - Links into another machine's chat
+
+struct SyncFleetChatTarget: Equatable {
+  let machineKey: String
+  let project: RemoteRosterProject
+  let lane: RemoteRosterLane?
+  let chat: RemoteRosterChat
+}
+
+extension SyncService {
+  /// A chat that a roster connection to another machine knows about. A link
+  /// (push, widget, Activity) to it opens through that connection instead of
+  /// switching the phone's focus. Only machines the link may name: the named
+  /// machine, or any fleet machine when the link names none.
+  func fleetChatTarget(for request: WorkSessionNavigationRequest) -> SyncFleetChatTarget? {
+    guard let fleet = machineFleet else { return nil }
+    let focusedKey = focusedMachineKey
+    // The link names an account machine; its fleet key is its device id.
+    var namedFleetKey: String?
+    if let named = request.accountMachineKey.flatMap(syncNonEmpty) {
+      guard let deviceId = syncAccountMachineNavigationTarget(
+        rawMachineKey: named,
+        machines: AccountService.shared.machines
+      ).flatMap({ syncNonEmpty($0.deviceId) }) else { return nil }
+      namedFleetKey = "machine:\(deviceId.lowercased())"
+    }
+    for machine in fleet.machines where machine.machineKey != focusedKey {
+      if let namedFleetKey, machine.machineKey != namedFleetKey { continue }
+      for project in machine.projects {
+        guard let chat = project.chats.first(where: {
+          $0.id == request.sessionId && $0.isChatTool && !$0.isIdentityChat
+        }) else { continue }
+        let lane = project.lanes.first { $0.id == chat.laneId }
+        return SyncFleetChatTarget(machineKey: machine.machineKey, project: project, lane: lane, chat: chat)
+      }
+    }
+    return nil
   }
 }

@@ -83,6 +83,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
 import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
@@ -21696,6 +21697,58 @@ async function runServe(
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
       getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
       personalChatScope,
+      // The same roster, transcript resolver and project routing a project
+      // sync host gets below, so a phone's roster socket that lands here while
+      // no project host is attached sees the same roster and chats. Every
+      // closure runs only after `activityRosterProvider` and `scopeRegistry`
+      // are assigned (the handler serves nothing before the listener starts).
+      rosterProvider: {
+        buildSnapshot: () => activityRosterProvider.buildSnapshot(),
+      },
+      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      projectCommandRouter: {
+        resolveProjectId: ({ projectId, projectRootPath }) => {
+          const records = projectRegistry.list();
+          const byId = projectId?.trim()
+            ? records.find((record) => record.projectId === projectId.trim())
+            : undefined;
+          if (byId) return byId.projectId;
+          const byRoot = projectRootPath?.trim()
+            ? records.find((record) => pathsEqual(record.rootPath, path.resolve(projectRootPath.trim())))
+            : undefined;
+          return byRoot?.projectId ?? null;
+        },
+        listDescriptors: async () => {
+          // Read from a project that is already running; never boot one just
+          // to answer a hello.
+          for (const record of projectRegistry.list()) {
+            const booted = scopeRegistry.getIfBooted(record.projectId);
+            if (!booted) continue;
+            const scope = await Promise.race([
+              booted.catch(() => null),
+              new Promise<null>((resolve) => {
+                const timer = setTimeout(() => resolve(null), 250);
+                timer.unref?.();
+              }),
+            ]);
+            const descriptors = scope?.runtime.syncService?.getRemoteCommandDescriptors();
+            if (descriptors && descriptors.length > 0) return descriptors;
+          }
+          return [];
+        },
+        getDescriptor: async (projectId, action) => {
+          const scope = await scopeRegistry.get(projectId);
+          return scope.runtime.syncService?.getRemoteCommandDescriptor(action) ?? null;
+        },
+        execute: async (payload, context) => {
+          const scope = await scopeRegistry.get(payload.projectId);
+          const syncService = scope.runtime.syncService;
+          if (!syncService) {
+            throw new Error(`Phone sync is not available for project ${payload.projectId}.`);
+          }
+          return await syncService.executeRemoteCommand(payload, context);
+        },
+      },
       captureRecoveryAnalytics: ({ outcome, surface }) => {
         brainProductAnalytics?.capture({
           event: "ade_feature_used",

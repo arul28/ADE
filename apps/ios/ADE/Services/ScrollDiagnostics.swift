@@ -52,6 +52,10 @@ final class ScrollDiagnostics {
     /// A transcript row measured off screen while the reader was idle, so it
     /// scrolls in as a cache hit instead of measuring mid-scroll.
     case transcriptPremeasure
+    /// `WorkSessionDestinationView.init` (engine attach included).
+    case destinationInit
+    /// One evaluation of the chat destination's root body.
+    case destinationBody
   }
 
   private struct ProbeStat {
@@ -111,6 +115,12 @@ final class ScrollDiagnostics {
       }
     }
     write(["event": "start", "maxFps": UIScreen.main.maximumFramesPerSecond, "device": Self.deviceModel])
+    // Main-thread waits for the database queue (reported on the main thread).
+    DatabaseService.mainThreadWaitReporter = { waitedMs, caller in
+      MainActor.assumeIsolated {
+        ScrollDiagnostics.shared.event("db.mainWait", ["ms": Int(waitedMs), "caller": caller])
+      }
+    }
     #if DEBUG
     startBenchPublisherIfRequested()
     #endif
@@ -346,9 +356,25 @@ final class ScrollDiagnostics {
 
   // MARK: Log file
 
+  /// The log files on disk: this launch's, then the previous launch's.
+  static var logFileURLs: [URL] {
+    guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return [] }
+    return ["scroll-diagnostics.jsonl", "scroll-diagnostics-prev.jsonl"]
+      .map { documents.appendingPathComponent($0) }
+      .filter { FileManager.default.fileExists(atPath: $0.path) }
+  }
+
   private func openLog() {
     guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return }
     let url = documents.appendingPathComponent("scroll-diagnostics.jsonl")
+    // One launch per file: the previous launch's log moves aside. A log that
+    // grew across many launches (8.6 MB) could not be copied off the phone
+    // over Wi-Fi.
+    let previous = documents.appendingPathComponent("scroll-diagnostics-prev.jsonl")
+    if FileManager.default.fileExists(atPath: url.path) {
+      try? FileManager.default.removeItem(at: previous)
+      try? FileManager.default.moveItem(at: url, to: previous)
+    }
     if !FileManager.default.fileExists(atPath: url.path) {
       FileManager.default.createFile(atPath: url.path, contents: nil)
     }
@@ -383,5 +409,25 @@ private final class DisplayLinkProxy: NSObject {
 
   @objc func tick(_ link: CADisplayLink) {
     owner?.tick(link)
+  }
+}
+
+/// Chat open timing for the frame-spike hunt: tap -> destination on screen.
+@MainActor
+enum ChatOpenCloseTiming {
+  private static var openStartedAt: (sessionId: String, at: CFTimeInterval)?
+
+  static func openTapped(sessionId: String) {
+    guard ScrollDiagnostics.isEnabled else { return }
+    openStartedAt = (sessionId, CACurrentMediaTime())
+  }
+
+  static func destinationAppeared(sessionId: String) {
+    guard let started = openStartedAt, started.sessionId == sessionId else { return }
+    openStartedAt = nil
+    ScrollDiagnostics.shared.event("chat.open", [
+      "session": sessionId,
+      "toAppearMs": Int((CACurrentMediaTime() - started.at) * 1000),
+    ])
   }
 }

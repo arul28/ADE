@@ -588,8 +588,15 @@ export class PersonalChatScope {
       case "getEventHistoryPage": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
+        // chatLogV2 durable cursor; takes precedence over the byte cursor.
+        const beforeSequence = typeof args.beforeSequence === "number"
+          && Number.isInteger(args.beforeSequence)
+          && args.beforeSequence >= 0
+          ? args.beforeSequence
+          : null;
         result = await service.getChatEventHistoryPage(sessionId, {
           beforeOffset: Number(args.beforeOffset),
+          ...(beforeSequence != null ? { beforeSequence } : {}),
           ...(typeof args.maxBytes === "number" ? { maxBytes: args.maxBytes } : {}),
           ...(signal ? { signal } : {}),
         });

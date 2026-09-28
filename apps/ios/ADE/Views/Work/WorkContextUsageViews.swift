@@ -124,6 +124,43 @@ struct WorkContextUsageMeter: View {
   }
 }
 
+/// What the composer's context meter draws: the desktop `ContextUsageDial`
+/// that sits in the composer, with the compact action in its popover.
+struct WorkComposerContextMeterModel: Equatable {
+  let usage: WorkContextUsageViewModel
+  let modelLabel: String?
+  let compact: WorkContextCompactControl
+}
+
+/// The composer's context meter: the ring, and the usage popover it opens.
+struct WorkComposerContextMeter: View {
+  let model: WorkComposerContextMeterModel
+  let onCompact: (() -> Void)?
+
+  @State private var presented = false
+
+  var body: some View {
+    WorkContextUsageMeter(usage: model.usage, isPresented: $presented)
+      .popover(
+        isPresented: $presented,
+        attachmentAnchor: .rect(.bounds),
+        arrowEdge: .bottom
+      ) {
+        WorkContextUsagePopover(
+          usage: model.usage,
+          modelLabel: model.modelLabel,
+          compact: model.compact,
+          onCompact: {
+            presented = false
+            onCompact?()
+          }
+        )
+        .presentationCompactAdaptation(.popover)
+        .presentationBackground(ADEColor.surfaceBackground)
+      }
+  }
+}
+
 struct WorkContextUsagePopover: View {
   let usage: WorkContextUsageViewModel
   let modelLabel: String?
