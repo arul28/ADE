@@ -21,6 +21,7 @@ import type {
   AcpProviderDiagnostics,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
+import { openCodeProviderDisplayName, openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
   getLocalProviderDefaultEndpoint,
@@ -658,9 +659,9 @@ export function ProvidersSection({
 
     for (const p of opencodeProviders) {
       upsert(p.id, {
-        // OpenCode 2.0 calls its own model service "OpenCode Console"; users
-        // know it as Zen, and the Console is only the account behind it.
-        name: p.id === "opencode" ? "OpenCode Zen" : p.name,
+        // The host names OpenCode's own services; a summary from an older
+        // host still carries OpenCode's name for them.
+        name: openCodeProviderDisplayName(p.id, p.name),
         modelCount: p.modelCount,
         connected: p.connected,
         signedIn: p.signedIn === true,
@@ -732,14 +733,14 @@ export function ProvidersSection({
     () => (detailProviderId ? openCodeCatalog.find((p) => p.id === detailProviderId) ?? null : null),
     [detailProviderId, openCodeCatalog],
   );
-  // OpenCode Go has no sign-in of its own; it comes with the opencode.ai
-  // account sign-in on the `opencode` (Zen) provider.
-  const openCodeGoSignIn = useMemo(() => {
-    if (detailProvider?.id !== "opencode-go") return undefined;
-    const zen = openCodeCatalog.find((p) => p.id === "opencode");
-    if (!zen?.methods.some((m) => m.type === "oauth")) return undefined;
-    return { providerId: zen.id, providerName: zen.name, methods: zen.methods };
-  }, [detailProvider?.id, openCodeCatalog]);
+  // A provider with no sign-in of its own (OpenCode Go) signs in through
+  // another one's methods.
+  const detailSignInVia = useMemo(() => {
+    const viaId = detailProvider ? openCodeSignInViaProvider(detailProvider.id) : null;
+    const via = viaId ? openCodeCatalog.find((p) => p.id === viaId) : undefined;
+    if (!via?.methods.some((m) => m.type === "oauth")) return undefined;
+    return { providerId: via.id, providerName: via.name, methods: via.methods };
+  }, [detailProvider, openCodeCatalog]);
   const openProviderDetail = useCallback((id: string) => {
     // Always use the unified provider modal (OAuth + API key), including Kimi.
     setDetailProviderId(id);
@@ -1266,7 +1267,7 @@ export function ProvidersSection({
       {detailProvider ? (
         <OpenCodeProviderDetailModal
           provider={detailProvider}
-          signInVia={openCodeGoSignIn}
+          signInVia={detailSignInVia}
           keySource={apiKeySources.get(detailProvider.id)
             ?? (storedProviders.includes(detailProvider.id) ? "store" : detailProvider.credentialSource)}
           verification={verificationByProvider[detailProvider.id]}

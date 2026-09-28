@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import type {
   AgentChatPermissionMode,
@@ -6,22 +5,26 @@ import type {
   ProjectConfigFile,
 } from "../../../shared/types";
 import { ADE_OPENCODE_LAUNCH_ENV, readOpenCodeLaunchIntent } from "../../../shared/cliLaunch";
-import { decodeOpenCodeRegistryId, getModelById } from "../../../shared/modelRegistry";
+import { decodeOpenCodeRegistryId, getModelById, resolveOpenCodeFastEffortSelection } from "../../../shared/modelRegistry";
 import { commandArrayToLine, parseCommandLine } from "../../../shared/shell";
 import type { Logger } from "../logging/logger";
-import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { buildCodingAgentSystemPrompt } from "../ai/tools/systemPrompt";
 import { adePromptAgentSkillRoots } from "../skills/agentSkillRuntimeService";
 import {
+  adeOpenCodeMode,
   buildOpenCodeConfig,
-  mapPermissionModeToOpenCodeAgent,
+  openCodeAgentFor,
   openCodeSessionRulesFor,
   resolveOpenCodeModelRef,
-  type OpenCodeAgentProfile,
 } from "./openCodeConfig";
-import { resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
+import { readOpenCodeDb, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
 import { lastOpenCodeDiscoveredLocalModels } from "./openCodeInventory";
-import { applyOpenCodeSessionContext, isOpenCodeNotFoundError, type OpenCodeModelRef } from "./openCodeSession";
+import {
+  applyOpenCodeSessionContext,
+  isOpenCodeNotFoundError,
+  openCodeSessionEnvironment,
+  type OpenCodeModelRef,
+} from "./openCodeSession";
 import { acquireOpenCodeServer, type OpenCodeServerLease } from "./openCodeServer";
 
 /**
@@ -42,22 +45,6 @@ import { acquireOpenCodeServer, type OpenCodeServerLease } from "./openCodeServe
  * `opencode --session <id>`.
  */
 
-type PromptPermissionMode = "plan" | "edit" | "full-auto" | "provider-config";
-
-/**
- * `config-toml` is kept distinct rather than folded into `edit`.
- *
- * It means "use my own OpenCode configuration", and ADE sets no agent for it,
- * so claiming edit mode would assert a policy ADE did not set and the user's
- * config may not grant.
- */
-function normalizePromptPermissionMode(mode: AgentChatPermissionMode | null | undefined): PromptPermissionMode {
-  if (mode === "plan") return "plan";
-  if (mode === "full-auto") return "full-auto";
-  if (mode === "config-toml") return "provider-config";
-  return "edit";
-}
-
 /**
  * The ADE instruction contract a tracked OpenCode terminal session receives.
  *
@@ -70,11 +57,12 @@ export function buildOpenCodeAdeInstructions(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   sessionActivityGuidance?: string | null;
 }): string {
-  const mode = normalizePromptPermissionMode(args.permissionMode);
-  // The shared builder has no "defer to the provider" tier, so `provider-config`
-  // borrows edit's shape and then supersedes its permission sentence below
-  // rather than leaving a claim ADE did not make standing.
-  const harnessMode = mode === "provider-config" ? "edit" : mode;
+  // `config-toml` means "use my own OpenCode configuration": ADE sets no agent
+  // for it, so claiming edit mode would assert a policy ADE did not set. The
+  // shared builder has no "defer to the provider" tier, so it borrows edit's
+  // shape and the permission sentence is superseded below.
+  const providerConfig = args.permissionMode === "config-toml";
+  const harnessMode = adeOpenCodeMode(args.permissionMode) ?? "edit";
   return [
     "# ADE session instructions",
     "",
@@ -86,7 +74,7 @@ export function buildOpenCodeAdeInstructions(args: {
       runtime: "opencode",
       adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
     }),
-    ...(mode === "provider-config"
+    ...(providerConfig
       ? [
           "",
           "## Permission policy",
@@ -176,46 +164,34 @@ function parseOpenCodeCommandLine(startupCommand: string): { command: string; ar
   return { command, args };
 }
 
+/**
+ * The terminal's model and effort as an OpenCode model reference. A registry
+ * model resolves its effort variant exactly as a chat does; a bare
+ * `provider/model` the registry does not know sends the effort as its variant.
+ */
 function modelRefFor(model: string | null | undefined, reasoningEffort: string | null | undefined): OpenCodeModelRef | null {
   const trimmed = model?.trim();
   if (!trimmed) return null;
+  const effort = reasoningEffort?.trim() || null;
   const descriptor = getModelById(trimmed);
-  let ref: { providerID: string; id: string } | null = descriptor ? resolveOpenCodeModelRef(descriptor) : null;
-  if (!ref) {
-    const decoded = decodeOpenCodeRegistryId(trimmed);
-    if (decoded) ref = { providerID: decoded.openCodeProviderId, id: decoded.openCodeModelId };
+  if (descriptor) {
+    const base = resolveOpenCodeModelRef(descriptor);
+    const selection = resolveOpenCodeFastEffortSelection(descriptor, { fastMode: false, reasoningEffort: effort });
+    return {
+      providerID: base.providerID,
+      id: selection.modelId ?? base.id,
+      ...(selection.variant ? { variant: selection.variant } : {}),
+    };
   }
+  let ref: { providerID: string; id: string } | null = null;
+  const decoded = decodeOpenCodeRegistryId(trimmed);
+  if (decoded) ref = { providerID: decoded.openCodeProviderId, id: decoded.openCodeModelId };
   if (!ref) {
     const slash = trimmed.indexOf("/");
     if (slash <= 0 || slash === trimmed.length - 1) return null;
     ref = { providerID: trimmed.slice(0, slash), id: trimmed.slice(slash + 1) };
   }
-  const effort = reasoningEffort?.trim();
-  const variant = effort ? descriptor?.openCodeVariantKeys?.[effort] ?? effort : undefined;
-  return { ...ref, ...(variant ? { variant } : {}) };
-}
-
-function agentFor(mode: AgentChatPermissionMode | null | undefined): OpenCodeAgentProfile | null {
-  if (!mode || mode === "config-toml") return null;
-  if (mode === "plan" || mode === "full-auto") return mapPermissionModeToOpenCodeAgent(mode);
-  return mapPermissionModeToOpenCodeAgent("edit");
-}
-
-/** Keys that must never reach the agent's shell commands. */
-const SESSION_ENV_EXCLUDED = new Set(["OPENCODE_SERVER_PASSWORD", "OPENCODE_PASSWORD", ADE_OPENCODE_LAUNCH_ENV]);
-
-/**
- * The agent's shell commands run in the server process, not in the TUI, so
- * the terminal's own environment (ADE identity, lane context, PATH) is handed
- * to the session explicitly — what the 1.x TUI's in-process agent inherited.
- */
-function sessionEnvironmentFrom(env: NodeJS.ProcessEnv): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value !== "string" || SESSION_ENV_EXCLUDED.has(key)) continue;
-    out[key] = value;
-  }
-  return out;
+  return { ...ref, ...(effort ? { variant: effort } : {}) };
 }
 
 export type OpenCodeTerminalAttachment = {
@@ -253,7 +229,7 @@ export async function attachOpenCodeTerminal(args: {
   if (!direct && !line) return null;
   const intent = readOpenCodeLaunchIntent(args.startupCommand, args.env as Record<string, string | undefined>);
   const permissionMode = args.permissionMode ?? intent?.permissionMode ?? null;
-  const agent = agentFor(permissionMode);
+  const agent = openCodeAgentFor(permissionMode);
   // With no ADE mode the TUI's own agent rules apply, so the session keeps none.
   const sessionRules = agent ? openCodeSessionRulesFor(permissionMode).rules : null;
   const model = modelRefFor(args.model ?? intent?.model, args.reasoningEffort ?? intent?.reasoningEffort);
@@ -314,7 +290,10 @@ export async function attachOpenCodeTerminal(args: {
           permissionMode,
           sessionActivityGuidance: args.sessionActivityGuidance,
         }),
-        environment: sessionEnvironmentFrom(args.env),
+        // The agent's shell commands run in the server process, not in the TUI,
+        // so the terminal's own environment (ADE identity, lane context, PATH)
+        // is handed to the session explicitly.
+        environment: openCodeSessionEnvironment(args.env),
       });
     } catch (error) {
       // The TUI still works without ADE's context; say so rather than fail the launch.
@@ -357,12 +336,7 @@ export function listAdeOpenCodeSessions(limit = 80): Array<{
   createdAt: number | null;
   updatedAt: number | null;
 }> {
-  const dbPath = resolveAdeOpenCodeDbPath();
-  if (!fs.existsSync(dbPath)) return [];
-  let db: ReturnType<typeof openReadOnlyDatabase> | null = null;
-  try {
-    db = openReadOnlyDatabase(dbPath);
-    db.exec("PRAGMA busy_timeout = 0");
+  return readOpenCodeDb(resolveAdeOpenCodeDbPath(), [], (db) => {
     const rows = db.prepare(`
       SELECT id AS id, directory AS directory, time_created AS createdAt, time_updated AS updatedAt
         FROM session_v2
@@ -379,13 +353,5 @@ export function listAdeOpenCodeSessions(limit = 80): Array<{
         updatedAt: typeof row.updatedAt === "number" ? row.updatedAt : null,
       }];
     });
-  } catch {
-    return [];
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      // Closing a read-only handle cannot lose anything.
-    }
-  }
+  });
 }

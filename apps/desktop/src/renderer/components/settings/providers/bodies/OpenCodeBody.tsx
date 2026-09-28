@@ -25,6 +25,11 @@ import {
   parseLocalProviderFromModelId,
 } from "../../../../../shared/modelRegistry";
 import {
+  isOpenCodeHouseProvider,
+  OPENCODE_HOUSE_PROVIDER_IDS,
+  type OpenCodeHouseProviderId,
+} from "../../../../../shared/opencodeProviders";
+import {
   ProviderGrid,
   ProviderSearchField,
   ProviderTile,
@@ -94,22 +99,21 @@ function TileStatusLine({ connected, modelCount }: { connected: boolean; modelCo
   );
 }
 
-/** OpenCode's own services, pinned above the catalog instead of found by search. */
-const OPENCODE_HOUSE_IDS = ["opencode", "opencode-go"] as const;
-
-const OPENCODE_HOUSE_BLURB: Record<(typeof OPENCODE_HOUSE_IDS)[number], string> = {
+/** OpenCode's own services are pinned above the catalog instead of found by search. */
+const OPENCODE_HOUSE_BLURB: Record<OpenCodeHouseProviderId, string> = {
   opencode: "Free models now. Sign in with your opencode.ai account for the paid ones.",
   "opencode-go": "$10/month subscription for open coding models. Comes with your opencode.ai sign-in.",
 };
 
 function OpenCodeHouseCard({
+  id,
   provider,
   onOpen,
 }: {
+  id: OpenCodeHouseProviderId;
   provider: OpenCodeProviderDetail;
   onOpen: () => void;
 }) {
-  const id = provider.id as (typeof OPENCODE_HOUSE_IDS)[number];
   const signedIn = provider.signedIn === true || provider.hasKey;
   // Zen serves free models to anyone, so "connected" alone is not a sign-in.
   const connected = id === "opencode" ? signedIn : provider.connected;
@@ -351,9 +355,10 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
     );
   }
 
-  const isHouseRow = (id: string): boolean => (OPENCODE_HOUSE_IDS as readonly string[]).includes(id);
-  const houseRows = OPENCODE_HOUSE_IDS.flatMap((id) => ctx.openCodeCatalog.filter((row) => row.id === id));
-  const connectedRows = ctx.connectedOpenCodeProviders.filter((row) => !isHouseRow(row.id));
+  const houseRows = OPENCODE_HOUSE_PROVIDER_IDS.flatMap((id) => (
+    ctx.openCodeCatalog.filter((row) => row.id === id).map((row) => ({ id, row }))
+  ));
+  const connectedRows = ctx.connectedOpenCodeProviders.filter((row) => !isOpenCodeHouseProvider(row.id));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
@@ -379,8 +384,8 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           <div style={SECTION_LABEL_STYLE}>OpenCode</div>
           <ProviderGrid>
-            {houseRows.map((row) => (
-              <OpenCodeHouseCard key={row.id} provider={row} onOpen={() => ctx.actions.openOpenCodeProviderDetail(row.id)} />
+            {houseRows.map(({ id, row }) => (
+              <OpenCodeHouseCard key={id} id={id} provider={row} onOpen={() => ctx.actions.openOpenCodeProviderDetail(id)} />
             ))}
           </ProviderGrid>
         </div>
@@ -415,7 +420,7 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
           <>
             <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>Popular</div>
             <ProviderGrid>
-              {ctx.popularOpenCodeProviders.filter((row) => !isHouseRow(row.id)).map((row) => (
+              {ctx.popularOpenCodeProviders.filter((row) => !isOpenCodeHouseProvider(row.id)).map((row) => (
                 <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => ctx.actions.openOpenCodeProviderDetail(row.id)} />
               ))}
             </ProviderGrid>

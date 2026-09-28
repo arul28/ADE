@@ -35,8 +35,8 @@ export function loadOpenCodeStoreEvents(args: {
     if (!messages.length) return null;
     const events = store.schema === "v2"
       ? openCodeV2MessagesToEvents(messages, args.options, args.fallbackBaseMs)
-      : openCodeExportToEvents(v1MessagesAsExport(messages), args.options, args.fallbackBaseMs);
-    return events ? { events, truncated } : null;
+      : openCodeV1MessagesToEvents(messages, args.options, args.fallbackBaseMs);
+    return { events, truncated };
   } catch {
     return null;
   } finally {
@@ -44,50 +44,34 @@ export function loadOpenCodeStoreEvents(args: {
   }
 }
 
-/** 1.x rows in the `{ messages: [{ info, parts }] }` shape its `export` printed. */
-function v1MessagesAsExport(messages: readonly OpenCodeStoreMessageRow[]): unknown {
-  return {
-    messages: messages.map((message) => {
-      const info = parseJson(message.data);
-      return {
-        info: { ...(isRecord(info) ? info : {}), id: message.id },
-        parts: (message.parts ?? []).map((part) => {
-          const parsed = parseJson(part.data);
-          return { ...(isRecord(parsed) ? parsed : {}), id: part.id };
-        }),
-      };
-    }),
-  };
-}
-
 /**
- * A 1.x session (`{ messages: [{ info, parts }] }`) as content events. User and
- * assistant `text` parts, `reasoning` parts, and `tool` parts (`callID`,
- * `tool`, `state { status, input, output, error }`) map one to one; step
- * markers, patches, snapshots and synthetic user parts are dropped.
+ * 1.x `message` rows (the role inside each message's JSON) with their `part`
+ * rows as content events. User and assistant `text` parts, `reasoning` parts,
+ * and `tool` parts (`callID`, `tool`, `state { status, input, output, error }`)
+ * map one to one; step markers, patches, snapshots and synthetic user parts
+ * are dropped.
  */
-export function openCodeExportToEvents(
-  exported: unknown,
+export function openCodeV1MessagesToEvents(
+  messages: readonly Pick<OpenCodeStoreMessageRow, "id" | "data" | "parts">[],
   options: ExternalChatHistoryImportOptions,
   fallbackBaseMs: number,
-): AgentChatEventEnvelope[] | null {
-  if (!isRecord(exported) || !Array.isArray(exported.messages)) return null;
+): AgentChatEventEnvelope[] {
   const sink = new EnvelopeSink(options);
   let tick = 0;
-  for (const entry of exported.messages) {
-    if (!isRecord(entry) || !isRecord(entry.info)) continue;
-    const info = entry.info;
+  for (const message of messages) {
+    const parsed = parseJson(message.data);
+    const info = isRecord(parsed) ? parsed : {};
     const role = str(info.role);
-    const messageId = str(info.id) ?? `opencode:${tick}`;
+    const messageId = message.id;
     const created = isRecord(info.time) ? info.time.created : null;
-    const parts = Array.isArray(entry.parts) ? entry.parts : [];
     const userTexts: string[] = [];
-    parts.forEach((part, partIndex) => {
+    (message.parts ?? []).forEach((row) => {
       tick += 1;
+      const part = parseJson(row.data);
       if (!isRecord(part)) return;
       const partTime = isRecord(part.time) ? part.time.start : null;
       const timestamp = toIso(partTime ?? created, fallbackBaseMs + tick);
-      const partId = str(part.id) ?? `${messageId}:${partIndex}`;
+      const partId = row.id;
       const type = str(part.type);
       if (role === "user") {
         if (type === "text" && part.synthetic !== true && part.ignored !== true) userTexts.push(str(part.text) ?? "");

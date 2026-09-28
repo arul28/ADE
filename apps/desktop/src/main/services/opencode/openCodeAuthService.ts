@@ -25,7 +25,7 @@ import { deleteApiKey as deleteStoredApiKey, storeApiKey as storeStoredApiKey } 
 import {
   mapOpenCodeIntegrationAuthMethods,
   openCodeAuthMethodsFromIntegrations,
-  openCodeFormAnswer,
+  openCodeMethodFormAnswer,
 } from "./openCodeAuthMethods";
 import { buildOpenCodeConfig } from "./openCodeConfig";
 import { readOpenCodeCredentials } from "./openCodeCredentials";
@@ -249,7 +249,7 @@ export async function startOAuth(
     if (!selected || selected.source.type !== "oauth") {
       throw new Error("That sign-in method is no longer offered by OpenCode. Reopen the provider and try again.");
     }
-    const answer = openCodeFormAnswer(selected.source, inputs);
+    const answer = openCodeMethodFormAnswer(selected.source, inputs);
     const attempt = (await lease.client.integration.oauth.connect({
       integrationID: providerId,
       methodID: selected.source.id,

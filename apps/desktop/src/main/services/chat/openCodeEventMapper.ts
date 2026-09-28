@@ -1,4 +1,4 @@
-import type { OpenCodeEvent } from "@opencode/client";
+import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
 import type { AgentChatEvent, AgentChatSubagentTranscriptMessage } from "../../../shared/types/chat";
 import { classifyProviderRetryCause, formatProviderRetryActivityDetail } from "../../../shared/providerRetryPresentation";
 import { openCodeWebToolSourceRefs } from "./chatSourceAdapters";
@@ -39,8 +39,6 @@ export type OpenCodeMappedEvent = {
 };
 
 export type OpenCodeStructuredError = { type: string; message: string; status?: number };
-
-type EventOf<T extends OpenCodeEvent["type"]> = Extract<OpenCodeEvent, { type: T }>;
 
 /** The session id any OpenCode event concerns, or null for server-wide events. */
 export function openCodeEventSessionId(event: OpenCodeEvent): string | null {
@@ -157,7 +155,7 @@ export function createOpenCodeTurnMapper(args: {
   const map = (event: OpenCodeEvent): OpenCodeMappedEvent[] => {
     switch (event.type) {
       case "session.step.started": {
-        const data = (event as EventOf<"session.step.started">).data;
+        const data = event.data;
         stepNumber += 1;
         if (data.model?.providerID && data.model.id) {
           servedModel = { providerID: data.model.providerID, modelID: data.model.id };
@@ -170,34 +168,34 @@ export function createOpenCodeTurnMapper(args: {
         ];
       }
       case "session.text.delta": {
-        const data = (event as EventOf<"session.text.delta">).data;
+        const data = event.data;
         return onText("text", data.assistantMessageID, data.ordinal, data.delta);
       }
       case "session.text.ended": {
-        const data = (event as EventOf<"session.text.ended">).data;
+        const data = event.data;
         return onTextEnded("text", data.assistantMessageID, data.ordinal, data.text);
       }
       case "session.reasoning.delta": {
-        const data = (event as EventOf<"session.reasoning.delta">).data;
+        const data = event.data;
         return onText("reasoning", data.assistantMessageID, data.ordinal, data.delta);
       }
       case "session.reasoning.ended": {
-        const data = (event as EventOf<"session.reasoning.ended">).data;
+        const data = event.data;
         return onTextEnded("reasoning", data.assistantMessageID, data.ordinal, data.text);
       }
       case "session.tool.input.started": {
-        const data = (event as EventOf<"session.tool.input.started">).data;
+        const data = event.data;
         toolNames.set(data.id, data.name);
         const next = deps.activityForToolName(data.name);
         return [activity(next.activity, next.detail), toolCall(data.id)];
       }
       case "session.tool.called": {
-        const data = (event as EventOf<"session.tool.called">).data;
+        const data = event.data;
         toolInputs.set(data.id, data.input);
         return [toolCall(data.id)];
       }
       case "session.tool.progress": {
-        const data = (event as EventOf<"session.tool.progress">).data;
+        const data = event.data;
         const childId = (data.metadata as { sessionID?: unknown } | undefined)?.sessionID;
         if (typeof childId === "string" && childId) {
           childByCall.set(data.id, childId);
@@ -206,7 +204,7 @@ export function createOpenCodeTurnMapper(args: {
         return [];
       }
       case "session.tool.success": {
-        const data = (event as EventOf<"session.tool.success">).data;
+        const data = event.data;
         if (toolFinished.has(data.id)) return [];
         toolFinished.add(data.id);
         const tool = toolNames.get(data.id) ?? "tool";
@@ -239,7 +237,7 @@ export function createOpenCodeTurnMapper(args: {
         }];
       }
       case "session.tool.failed": {
-        const data = (event as EventOf<"session.tool.failed">).data;
+        const data = event.data;
         if (toolFinished.has(data.id)) return [];
         toolFinished.add(data.id);
         const tool = toolNames.get(data.id) ?? "tool";
@@ -260,7 +258,7 @@ export function createOpenCodeTurnMapper(args: {
         ];
       }
       case "session.step.ended": {
-        const data = (event as EventOf<"session.step.ended">).data;
+        const data = event.data;
         const step = recordOpenCodeStepFinish(usage, `step:${data.assistantMessageID}`, data, { describesContext: true });
         const out: OpenCodeMappedEvent[] = [];
         const live = buildOpenCodeLiveContextUsage(step, args.contextWindow, args.model, turnId);
@@ -283,22 +281,22 @@ export function createOpenCodeTurnMapper(args: {
         return out;
       }
       case "session.step.failed": {
-        const data = (event as EventOf<"session.step.failed">).data;
+        const data = event.data;
         if (data.tokens) recordOpenCodeStepFinish(usage, `step:${data.assistantMessageID}`, data, { describesContext: true });
         lastStepError = data.error ?? null;
         return [];
       }
       case "session.compaction.started": {
-        const data = (event as EventOf<"session.compaction.started">).data;
+        const data = event.data;
         return [{ event: { type: "context_compact", trigger: data.reason, state: "started", turnId } }];
       }
       case "session.compaction.ended": {
-        const data = (event as EventOf<"session.compaction.ended">).data;
+        const data = event.data;
         if (data.tokens) recordOpenCodeStepFinish(usage, `compaction:${stepNumber}`, data, { describesContext: false });
         return [{ event: { type: "context_compact", trigger: data.reason, state: "completed", turnId } }];
       }
       case "session.compaction.failed": {
-        const data = (event as EventOf<"session.compaction.failed">).data;
+        const data = event.data;
         return [{
           event: {
             type: "system_notice",
@@ -311,7 +309,7 @@ export function createOpenCodeTurnMapper(args: {
         }];
       }
       case "session.retry.scheduled": {
-        const data = (event as EventOf<"session.retry.scheduled">).data;
+        const data = event.data;
         const delayMs = Math.max(0, data.at - Date.now());
         return [{
           liveOnly: true,
@@ -346,7 +344,7 @@ export function createOpenCodeTurnMapper(args: {
   };
 }
 
-type SessionMessageInfo = Awaited<ReturnType<import("@opencode/client").OpenCodeClient["message"]["list"]>>["data"][number];
+type SessionMessageInfo = Awaited<ReturnType<OpenCodeClient["message"]["list"]>>["data"][number];
 
 function toIso(ms: number | undefined): string | undefined {
   return typeof ms === "number" && Number.isFinite(ms) && ms > 0 ? new Date(ms).toISOString() : undefined;

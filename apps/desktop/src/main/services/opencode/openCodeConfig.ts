@@ -149,24 +149,36 @@ export function buildOpenCodePermissions(mode: PermissionMode | "helper"): OpenC
 }
 
 /**
+ * The ADE mode an OpenCode permission mode maps to, or null for none.
+ * `config-toml` (and no mode at all) defers to the user's own OpenCode config,
+ * so ADE sets neither an agent nor session rules for it; any other value runs
+ * as edit.
+ */
+export function adeOpenCodeMode(mode: string | null | undefined): PermissionMode | null {
+  if (!mode || mode === "config-toml") return null;
+  return mode === "plan" || mode === "full-auto" ? mode : "edit";
+}
+
+/**
  * The rules ADE puts on the session itself. OpenCode gives a child session its
  * parent's session rules, but not its parent's agent rules, so without these a
- * `general` subagent in edit mode writes files with no ask. `config-toml` defers
- * to the user's own config, so it clears them.
+ * `general` subagent in edit mode writes files with no ask.
  */
 export function openCodeSessionRulesFor(mode: string | null | undefined): {
   key: string;
   rules: OpenCodePermissionRule[];
 } {
-  if (!mode || mode === "config-toml") return { key: "none", rules: [] };
-  const effective = mode === "plan" || mode === "full-auto" ? mode : "edit";
+  const effective = adeOpenCodeMode(mode);
+  if (!effective) return { key: "none", rules: [] };
   return { key: effective, rules: buildOpenCodePermissions(effective) };
 }
 
-export function mapPermissionModeToOpenCodeAgent(mode: PermissionMode): OpenCodeAgentProfile {
-  if (mode === "plan") return "ade-plan";
-  if (mode === "full-auto") return "ade-full-auto";
-  return "ade-edit";
+/** The ADE agent a session runs under for a permission mode, or null when ADE sets none. */
+export function openCodeAgentFor(mode: string | null | undefined): OpenCodeAgentProfile | null {
+  const effective = adeOpenCodeMode(mode);
+  if (effective === "plan") return "ade-plan";
+  if (effective === "full-auto") return "ade-full-auto";
+  return effective ? "ade-edit" : null;
 }
 
 function normalizeProviderModelId(descriptor: ModelDescriptor): string {

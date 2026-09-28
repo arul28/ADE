@@ -64,9 +64,8 @@ export function OpenCodeProviderDetailModal({
   onDeleteKey: () => Promise<void>;
   onVerifyKey: () => Promise<void>;
   /**
-   * Sign in through another provider's methods. OpenCode Go has no sign-in of
-   * its own: it comes with the opencode.ai account sign-in (`opencode auth
-   * login opencode`), which belongs to the `opencode` provider.
+   * Sign in through another provider's methods, for a provider with no sign-in
+   * of its own (`openCodeSignInViaProvider` in `shared/opencodeProviders.ts`).
    */
   signInVia?: { providerId: string; providerName: string; methods: OpenCodeProviderAuthMethod[] };
 }) {

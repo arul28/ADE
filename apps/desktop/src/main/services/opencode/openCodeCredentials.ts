@@ -31,17 +31,37 @@ function textOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+type ReadOnlyOpenCodeDb = ReturnType<typeof openReadOnlyDatabase>;
+
+/**
+ * Run `read` against an OpenCode store opened read-only. A missing or
+ * unreadable store answers `fallback`. A running server may hold the write
+ * lock, so a busy store answers at once rather than waiting.
+ */
+export function readOpenCodeDb<T>(dbPath: string, fallback: T, read: (db: ReadOnlyOpenCodeDb) => T): T {
+  if (!fs.existsSync(dbPath)) return fallback;
+  let db: ReadOnlyOpenCodeDb | null = null;
+  try {
+    db = openReadOnlyDatabase(dbPath);
+    db.exec("PRAGMA busy_timeout = 0");
+    return read(db);
+  } catch {
+    return fallback;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Closing a read-only handle cannot lose anything.
+    }
+  }
+}
+
 /**
  * Every credential row, active ones first. A missing, locked, or older store
  * (no `credential` table) reads as none — never an error.
  */
 export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPath()): OpenCodeCredentialSummary[] {
-  if (!fs.existsSync(dbPath)) return [];
-  let db: ReturnType<typeof openReadOnlyDatabase> | null = null;
-  try {
-    db = openReadOnlyDatabase(dbPath);
-    // A running server may hold the write lock; answer at once rather than wait.
-    db.exec("PRAGMA busy_timeout = 0");
+  return readOpenCodeDb(dbPath, [], (db) => {
     const rows = db.prepare(`
       SELECT id AS id,
              integration_id AS integrationId,
@@ -72,13 +92,5 @@ export function readOpenCodeCredentials(dbPath: string = resolveAdeOpenCodeDbPat
       });
     }
     return out;
-  } catch {
-    return [];
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      // Closing a read-only handle cannot lose anything.
-    }
-  }
+  });
 }

@@ -1,11 +1,10 @@
-import fs from "node:fs";
 import path from "node:path";
 import { isLocalProviderFamily, openCodeRegistryIdFor } from "../../../shared/modelRegistry";
+import { isOpenCodeHouseProvider } from "../../../shared/opencodeProviders";
 import { urlOriginOnly } from "../../../shared/remoteLoopbackUrl";
 import type { AgentChatEvent, AgentChatUsageAccount } from "../../../shared/types/chat";
-import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { resolveAdeOpenCodeStoreDir } from "../../../shared/opencodeDataHome";
-import { readOpenCodeCredentials } from "../opencode/openCodeCredentials";
+import { readOpenCodeCredentials, readOpenCodeDb } from "../opencode/openCodeCredentials";
 import { asRecord, evictOldestEntries, finiteNumberOrNull, positiveCountOrZero } from "../shared/utils";
 import { contextPercentage, liveContextUsageEvent } from "./liveContextUsageEvent";
 
@@ -86,6 +85,17 @@ export function recordOpenCodeStepFinish(
   turn.steps.set(partId, step);
   if (options.describesContext) turn.lastContextStep = step;
   return step;
+}
+
+/** Every token and the reported cost across the recorded steps (a subagent's running total). */
+export function openCodeUsageTotals(turn: OpenCodeTurnUsage): { totalTokens: number; costUsd: number } {
+  let totalTokens = 0;
+  let costUsd = 0;
+  for (const step of turn.steps.values()) {
+    totalTokens += step.input + step.output + step.reasoning + step.cacheRead + step.cacheWrite;
+    costUsd += step.cost ?? 0;
+  }
+  return { totalTokens, costUsd };
 }
 
 /**
@@ -193,8 +203,6 @@ export function resolveOpenCodeServedModel(
 /** Only the non-secret fields of one stored credential. */
 export type OpenCodeAuthEntry = { type: string | null; accountId: string | null };
 
-const OPENCODE_PLAN_PROVIDERS = new Set(["opencode", "opencode-go"]);
-
 /**
  * Maps OpenCode's credential for the upstream provider to an account. Local
  * servers are free and named by endpoint; OpenCode Zen/Go are OpenCode's own
@@ -221,7 +229,7 @@ export function resolveOpenCodeUsageAccount(args: {
       ...(endpoint ? { endpoint } : {}),
     };
   }
-  if (OPENCODE_PLAN_PROVIDERS.has(upstream)) {
+  if (isOpenCodeHouseProvider(upstream)) {
     return {
       provider: "opencode",
       kind: "subscription",
@@ -259,13 +267,8 @@ export function readOpenCodeAuthEntries(dbPath: string): Map<string, OpenCodeAut
  * a token column.
  */
 export function readOpenCodePlanEmail(dbPath: string): string | null {
-  if (!fs.existsSync(dbPath)) return null;
-  let db: ReturnType<typeof openReadOnlyDatabase> | null = null;
-  try {
-    db = openReadOnlyDatabase(dbPath);
-    // A running OpenCode may hold a write lock; answer "no email" at once
-    // rather than wait on it (the answer is cached for minutes either way).
-    db.exec("PRAGMA busy_timeout = 0");
+  // The answer is cached for minutes, so a locked store answers "no email".
+  return readOpenCodeDb(dbPath, null, (db) => {
     const row = db.prepare(`
       SELECT a.email AS email
         FROM account a
@@ -275,15 +278,7 @@ export function readOpenCodePlanEmail(dbPath: string): string | null {
     `).get() as { email?: unknown } | undefined;
     const email = typeof row?.email === "string" ? row.email.trim() : "";
     return email || null;
-  } catch {
-    return null;
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      // Closing a read-only handle cannot lose anything.
-    }
-  }
+  });
 }
 
 const OPENCODE_ACCOUNT_CACHE_TTL_MS = 5 * 60_000;
@@ -363,7 +358,7 @@ export function createOpenCodeUsageAccountResolver(options: {
       return resolveOpenCodeUsageAccount({ providerID, auth: null, localEndpoint: localEndpoint(providerID) });
     }
     const dirs = dataDirs ?? defaultDataDirs();
-    if (OPENCODE_PLAN_PROVIDERS.has(providerID)) {
+    if (isOpenCodeHouseProvider(providerID)) {
       return resolveOpenCodeUsageAccount({ providerID, auth: null, planEmail: planEmail(dirs) });
     }
     return resolveOpenCodeUsageAccount({ providerID, auth: authEntries(dirs).get(providerID) ?? null });

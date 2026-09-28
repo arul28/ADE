@@ -4,6 +4,7 @@ import {
   type ModelDescriptor,
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
+import { openCodeHouseProviderName } from "../../../../shared/opencodeProviders";
 
 /**
  * What a model IS, in the words a person would use.
@@ -59,12 +60,6 @@ export function runsOnLabel(model: ModelDescriptor): string {
   return isLocalModel(model) || model.isCliWrapped ? "This computer" : "The provider's servers";
 }
 
-/** OpenCode's own services, named as Settings names them. */
-const OPENCODE_SUB_PROVIDER_LABELS: Record<string, string> = {
-  opencode: "OpenCode Zen",
-  "opencode-go": "OpenCode Go",
-};
-
 export function subProviderLabel(model: ModelDescriptor): string | null {
   const sub = (model as ModelDescriptor & { subProvider?: string }).subProvider;
   if (typeof sub === "string" && sub.trim().length) return sub.trim();
@@ -76,7 +71,8 @@ export function subProviderLabel(model: ModelDescriptor): string | null {
   if (model.providerRoute === "opencode" && model.openCodeProviderId) {
     // Rows shown inside the OpenCode rail; "via OpenCode" was redundant.
     const id = model.openCodeProviderId;
-    return OPENCODE_SUB_PROVIDER_LABELS[id] ?? id.charAt(0).toUpperCase() + id.slice(1);
+    // OpenCode's own services read as Settings names them.
+    return openCodeHouseProviderName(id) ?? id.charAt(0).toUpperCase() + id.slice(1);
   }
   return null;
 }

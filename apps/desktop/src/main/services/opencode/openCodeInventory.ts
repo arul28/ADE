@@ -17,6 +17,7 @@ import {
   type OpenCodeFastRoute,
   type OpenCodeFastRoutes,
 } from "../../../shared/modelRegistry";
+import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { stableStringify } from "../shared/utils";
 import { openCodeAuthMethodsFromIntegrations, type OpenCodeIntegrationInfo } from "./openCodeAuthMethods";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
@@ -238,7 +239,11 @@ function readPersistedInventoryFile(): PersistedInventoryFile {
         passiveConfigFingerprint: entry.passiveConfigFingerprint,
         stale: entry.stale === true,
         modelIds: entry.modelIds,
-        providers: (entry.providers as OpenCodeProviderInfo[]).map(stripEphemeralCredentialSource),
+        // A cache written before a house service was renamed still shows ADE's name.
+        providers: (entry.providers as OpenCodeProviderInfo[]).map((provider) => ({
+          ...stripEphemeralCredentialSource(provider),
+          name: openCodeProviderDisplayName(provider.id, provider.name),
+        })),
         registryDescriptors: entry.registryDescriptors as ModelDescriptor[],
         authMethods,
       };
@@ -701,7 +706,7 @@ function buildInventory(args: {
     const count = modelCounts.get(id) ?? 0;
     providerInfos.push({
       id,
-      name,
+      name: openCodeProviderDisplayName(id, name),
       connected: connected.has(id) || hasConnection,
       ...(hasConnection ? { signedIn: true } : {}),
       modelCount: count,

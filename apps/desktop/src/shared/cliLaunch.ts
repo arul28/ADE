@@ -1938,10 +1938,10 @@ function parseOpenCodeLaunchIntent(value: string | null | undefined): OpenCodeLa
     const parsed = JSON.parse(value) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
     const record = parsed as Record<string, unknown>;
+    // The intent rides a persisted command line, so a mode outside the union is dropped.
+    const permissionMode = typeof record.permissionMode === "string" ? record.permissionMode.trim() : null;
     return {
-      ...(typeof record.permissionMode === "string" && record.permissionMode.trim()
-        ? { permissionMode: record.permissionMode.trim() as AgentChatPermissionMode }
-        : {}),
+      ...(isTrackedCliPermissionMode(permissionMode) ? { permissionMode } : {}),
       ...(typeof record.model === "string" && record.model.trim() ? { model: record.model.trim() } : {}),
       ...(typeof record.reasoningEffort === "string" && record.reasoningEffort.trim()
         ? { reasoningEffort: record.reasoningEffort.trim() }

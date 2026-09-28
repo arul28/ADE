@@ -5,8 +5,9 @@ import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
 import { resolveUserOpenCodeDataRoot } from "../../../shared/opencodeDataHome";
 import type { Logger } from "../logging/logger";
-import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
+import { ADE_OPENCODE_LAUNCH_ENV } from "../../../shared/cliLaunch";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
+import { readOpenCodeDb } from "./openCodeCredentials";
 import {
   buildOpenCodeConfig,
   openCodeProfileFor,
@@ -23,11 +24,8 @@ import { acquireOpenCodeServer, type OpenCodeServerLease, type OpenCodeServerOwn
  * one-shot helper prompts.
  */
 
-export type OpenCodePromptFile = {
-  path: string;
-  mime: string;
-  filename?: string;
-};
+/** A file part of an OpenCode prompt. */
+export type OpenCodePromptFile = { uri: string; name?: string };
 
 export type OpenCodeModelRef = { providerID: string; id: string; variant?: string };
 
@@ -80,12 +78,7 @@ export function ensureOpenCodeAvailable(): void {
 function personalStoreHasSession(sessionId: string): boolean {
   const root = resolveUserOpenCodeDataRoot();
   if (!root) return false;
-  const dbPath = path.join(root, "opencode.db");
-  if (!fs.existsSync(dbPath)) return false;
-  let db: ReturnType<typeof openReadOnlyDatabase> | null = null;
-  try {
-    db = openReadOnlyDatabase(dbPath);
-    db.exec("PRAGMA busy_timeout = 0");
+  return readOpenCodeDb(path.join(root, "opencode.db"), false, (db) => {
     for (const table of ["session", "session_v2"]) {
       try {
         const row = db.prepare(`SELECT 1 AS hit FROM ${table} WHERE id = ? LIMIT 1`).get(sessionId) as { hit?: number } | undefined;
@@ -95,22 +88,35 @@ function personalStoreHasSession(sessionId: string): boolean {
       }
     }
     return false;
-  } catch {
-    return false;
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      // Closing a read-only handle cannot lose anything.
-    }
-  }
+  });
 }
 
-export function buildOpenCodePromptFiles(files: readonly OpenCodePromptFile[] | undefined): Array<{ uri: string; name?: string }> {
-  return (files ?? []).map((file) => ({
-    uri: pathToFileURL(file.path).toString(),
-    ...(file.filename ? { name: file.filename } : {}),
-  }));
+/**
+ * Local files as OpenCode prompt file parts. A path that is gone from disk
+ * cannot be sent as a file part, so it is left out; the caller names every
+ * attachment in the prompt text.
+ */
+export function openCodePromptFiles(filePaths: readonly string[]): OpenCodePromptFile[] {
+  return filePaths
+    .filter((filePath) => Boolean(filePath) && fs.existsSync(filePath))
+    .map((filePath) => ({ uri: pathToFileURL(filePath).toString(), name: path.basename(filePath) }));
+}
+
+/** Keys that must never reach an agent's shell commands. */
+const SESSION_ENV_EXCLUDED = new Set(["OPENCODE_SERVER_PASSWORD", "OPENCODE_PASSWORD", ADE_OPENCODE_LAUNCH_ENV]);
+
+/**
+ * An environment as the variables OpenCode runs a session's shell commands
+ * with: string values only, and never the server password or ADE's launch
+ * intent.
+ */
+export function openCodeSessionEnvironment(env: Record<string, string | undefined>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || SESSION_ENV_EXCLUDED.has(key)) continue;
+    out[key] = value;
+  }
+  return out;
 }
 
 /**
@@ -248,7 +254,6 @@ export async function runOpenCodeTextPrompt(args: {
   modelDescriptor: ModelDescriptor;
   prompt: string;
   system?: string;
-  files?: OpenCodePromptFile[];
   agent?: OpenCodeAgentProfile;
   signal?: AbortSignal;
   logger?: Logger | null;
@@ -285,7 +290,6 @@ export async function runOpenCodeTextPrompt(args: {
     await client.session.prompt({
       sessionID: sessionId,
       text: args.prompt,
-      ...(args.files?.length ? { files: buildOpenCodePromptFiles(args.files) } : {}),
     });
     await client.session.wait({ sessionID: sessionId }, args.signal ? { signal: args.signal } : undefined);
     if (args.signal?.aborted) throw new Error("OpenCode prompt aborted.");

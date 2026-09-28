@@ -907,7 +907,7 @@ import {
 import type { OpenCodeEvent } from "@opencode/client";
 import {
   buildOpenCodeConfig,
-  mapPermissionModeToOpenCodeAgent,
+  openCodeAgentFor,
   openCodeSessionRulesFor,
   PERSONAL_OPENCODE_PROFILE,
   resolveOpenCodeModelRef,
@@ -918,19 +918,35 @@ import { acquireOpenCodeServer, SHARED_OPENCODE_PROFILE } from "../opencode/open
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
   applyOpenCodeSessionContext,
-  buildOpenCodePromptFiles,
-  isOpenCodeTaggedError,
+  isOpenCodeNotFoundError,
+  openCodePromptFiles,
+  openCodeSessionEnvironment,
   OpenCodeSessionInPersonalStoreError,
   startOpenCodeChatSession,
   type OpenCodeModelRef,
-  type OpenCodePromptFile,
   type OpenCodeSessionHandle,
 } from "../opencode/openCodeSession";
+import {
+  buildOpenCodePermissionRequest,
+  mapOpenCodeChildEvent,
+  openCodeChildBlocked,
+  openCodeChildSettled,
+  openCodeChildStarted,
+  rememberOpenCodeSubagentCall,
+  type OpenCodeChildSessions,
+  type OpenCodePermissionAsk,
+  type OpenCodeSubagent,
+  type OpenCodeSubagentCall,
+} from "./openCodeChildSessions";
+import {
+  openCodeFormAnswer,
+  openCodeFormQuestions,
+  type OpenCodeFormField,
+} from "../opencode/openCodeForms";
 import {
   createOpenCodeTurnMapper,
   mapOpenCodeMessagesToTranscript,
   openCodeEventSessionId,
-  type OpenCodeStructuredError,
   type OpenCodeTurnMapper,
 } from "./openCodeEventMapper";
 import { lastOpenCodeDiscoveredLocalModels, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
@@ -2650,14 +2666,13 @@ type PendingOpenCodeApproval = {
   requestId: string;
   /** Session that owns the ask: the chat's own, or a child (subagent) session. */
   sessionId: string;
-  request?: PendingInputRequest;
+  request: PendingInputRequest;
 };
 
 /** An OpenCode question (`question` tool) waiting on ADE's question card. */
 type PendingOpenCodeForm = {
   formId: string;
   sessionId: string;
-  fieldKeys: string[];
 };
 
 /**
@@ -2677,14 +2692,6 @@ async function replyToOpenCodePendingApproval(
   });
 }
 
-/** Best-effort rejection used by teardown and interrupt, where failures are ignorable. */
-async function rejectOpenCodePendingApproval(
-  handle: OpenCodeSessionHandle,
-  pending: PendingOpenCodeApproval,
-): Promise<void> {
-  await replyToOpenCodePendingApproval(handle, pending, "reject");
-}
-
 
 /**
  * One OpenCode execution as an ADE turn. OpenCode runs an execution until its
@@ -2693,8 +2700,6 @@ async function rejectOpenCodePendingApproval(
  */
 type OpenCodeActiveTurn = {
   turnId: string;
-  /** "ade": ADE sent the prompt. "opencode": OpenCode started it (a background child finished). */
-  origin: "ade" | "opencode";
   mapper: OpenCodeTurnMapper;
   startedAt: number;
   /** The model ADE asked for, to name a served-model fallback in `done`. */
@@ -2711,14 +2716,6 @@ type OpenCodeActiveTurn = {
 type OpenCodeInboxRow = QueuedSteer & {
   inboxId: string;
   delivery: "steer" | "queue";
-};
-
-type OpenCodeSubagent = {
-  description: string;
-  turnId: string;
-  model: string | null;
-  settled: boolean;
-  usage: { totalTokens: number; costUsd: number };
 };
 
 type OpenCodeRuntime = {
@@ -2756,6 +2753,8 @@ type OpenCodeRuntime = {
   preserveQueuedSteersOnInterrupt?: boolean;
   /** Child sessions of this chat's session (subagents), including nested ones. */
   subagents: Map<string, OpenCodeSubagent>;
+  /** `subagent` calls of the parent whose child session has not appeared yet. */
+  pendingSubagentCalls: OpenCodeSubagentCall[];
   stopListening: () => void;
 };
 
@@ -4408,38 +4407,7 @@ type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _rootPath: string;
 };
 
-/**
- * Resolve chat attachments into OpenCode prompt files. A file that does not
- * exist on disk cannot be sent as a file part on either API, so it comes back
- * in `unsent` for the caller to name in the prompt text instead of dropping it
- * silently. Shared by the running-turn send (v1 parts) and the inline steer
- * (v2 `{uri}` input) so the two cannot disagree about what "attached" means.
- */
-function toOpenCodePromptFiles(
-  resolvedAttachments: readonly ResolvedAgentChatFileRef[],
-): { files: OpenCodePromptFile[]; unsent: ResolvedAgentChatFileRef[] } {
-  const files: OpenCodePromptFile[] = [];
-  const unsent: ResolvedAgentChatFileRef[] = [];
-  for (const attachment of resolvedAttachments) {
-    const filePath = attachment._resolvedPath;
-    if (filePath && fs.existsSync(filePath)) {
-      files.push({
-        path: filePath,
-        mime: inferAttachmentMediaType(attachment),
-        filename: path.basename(filePath),
-      });
-    } else {
-      unsent.push(attachment);
-    }
-  }
-  return { files, unsent };
-}
-
-/**
- * Name attachments the prompt cannot carry as file parts. One formatter for the
- * running-turn v1 send and the v2 inline steer so the two never diverge on how a
- * dropped attachment is described.
- */
+/** Name every attachment in the prompt text, including any that could not be sent as a file part. */
 function formatAttachedContextHint(
   items: ReadonlyArray<{ type: string; path: string }>,
 ): string {
@@ -15371,29 +15339,11 @@ export function createAgentChatService(args: {
     // Discover loaded local models so OpenCode's provider config includes them.
     // inspectLocalProvider results are cached (30s TTL) so this is near-instant
     // when aiIntegrationService has already probed recently.
-    const discoveredLocalModels: DiscoveredLocalModelEntry[] = [];
+    const discoveredLocalModels = await discoverOpenCodeLocalModels(auth);
     const openCodePresetPlan = resolveSessionLaunchPlan(managed);
     const openCodePresetProviders = openCodePresetPlan?.openCodeProvider
       ? { [openCodePresetPlan.openCodeProvider.id]: openCodePresetPlan.openCodeProvider.block }
       : null;
-    const localProviderConfigs = configSnapshot.effective.ai?.localProviders ?? {};
-    for (const family of ["ollama", "lmstudio"] as const) {
-      const providerSettings = localProviderConfigs[family];
-      if (providerSettings?.enabled === false) continue;
-      const localAuth = auth.find(
-        (a): a is Extract<typeof a, { type: "local" }> =>
-          a.type === "local" && a.provider === family,
-      );
-      const endpoint = localAuth?.endpoint ?? providerSettings?.endpoint ?? getLocalProviderDefaultEndpoint(family);
-      try {
-        const inspection = await inspectLocalProvider(family, endpoint);
-        for (const m of inspection.loadedModels) {
-          discoveredLocalModels.push({ provider: m.provider, modelId: m.modelId });
-        }
-      } catch {
-        // Non-fatal — provider may be offline
-      }
-    }
     // A caller-requested strict MCP surface needs its own isolation: OpenCode
     // has no per-server switch, so the only way to withhold the user's servers
     // is a dedicated server with an ADE-authored config and the project config
@@ -15435,7 +15385,7 @@ export function createAgentChatService(args: {
       permissionMode: permMode,
       modelDescriptor: descriptor,
     };
-    const agent = permMode === "config-toml" ? null : mapPermissionModeToOpenCodeAgent(permMode);
+    const agent = openCodeAgentFor(permMode);
     const model = openCodeModelRefFor(managed, descriptor);
     const instructions = buildOpenCodeSessionInstructions(managed, runtimeShell.permissionMode);
     let handle: OpenCodeSessionHandle;
@@ -15459,7 +15409,9 @@ export function createAgentChatService(args: {
         title: manualSessionTitleForRuntime(managed),
         sessionId: persisted?.providerSessionId,
         instructions,
-        environment: openCodeSessionEnvironment(managed),
+        // The same shell environment every other provider's agent gets, so `ade`
+        // resolves and knows which chat, lane, and workspace it acts for.
+        environment: openCodeSessionEnvironment(buildAgentRuntimeEnv(managed)),
         ownerKind: "chat",
         ownerId: managed.session.id,
         logger,
@@ -15488,6 +15440,7 @@ export function createAgentChatService(args: {
       inboxOutcomes: new Map(),
       interrupted: false,
       subagents: new Map(),
+      pendingSubagentCalls: [],
       stopListening: () => {},
     };
     runtime.stopListening = handle.lease.listen({
@@ -21982,10 +21935,6 @@ export function createAgentChatService(args: {
     });
   };
 
-  const setOpenCodeRuntimeBusy = (runtime: OpenCodeRuntime, busy: boolean): void => {
-    runtime.busy = busy;
-  };
-
   /**
    * Cancel one provider's input cards that are still waiting on the user.
    *
@@ -22100,11 +22049,11 @@ export function createAgentChatService(args: {
       managed,
       runtime.pendingApprovals,
       (pending) => {
-        rejectOpenCodePendingApproval(runtime.handle, pending).catch(() => {});
+        replyToOpenCodePendingApproval(runtime.handle, pending, "reject").catch(() => {});
       },
       (pending) => ({
-        turnId: pending.request?.turnId ?? null,
-        questions: pending.request?.questions ?? [],
+        turnId: pending.request.turnId ?? null,
+        questions: pending.request.questions,
       }),
     );
   };
@@ -29498,11 +29447,6 @@ export function createAgentChatService(args: {
     }
   };
 
-  // ── Streaming turn for OpenCode runtime ──
-
-  /** Chat, model, and effort triples already warned that Fast did not apply. */
-  const loggedOpenCodeFastFallbacks = new Set<string>();
-
   // ── OpenCode 2.0 runtime ──
   //
   // A chat's runtime listens to its OpenCode session for its whole life, not
@@ -29511,6 +29455,9 @@ export function createAgentChatService(args: {
   // execution. One execution is one ADE turn.
 
   const OPENCODE_EXECUTION_START_TIMEOUT_MS = 20_000;
+
+  /** Chat, model, and effort triples already warned that Fast did not apply. */
+  const loggedOpenCodeFastFallbacks = new Set<string>();
 
   const openCodeMapperDeps = {
     activityForToolName,
@@ -29561,20 +29508,6 @@ export function createAgentChatService(args: {
     ),
   });
 
-  /**
-   * The shell environment OpenCode runs this chat's commands with: the same
-   * one every other provider's agent shell gets, so `ade` resolves and knows
-   * which chat, lane, and workspace it acts for.
-   */
-  const openCodeSessionEnvironment = (managed: ManagedChatSession): Record<string, string> => {
-    const env = buildAgentRuntimeEnv(managed);
-    const out: Record<string, string> = {};
-    for (const [key, value] of Object.entries(env)) {
-      if (typeof value === "string") out[key] = value;
-    }
-    return out;
-  };
-
   const sameOpenCodeModel = (a: OpenCodeModelRef | null, b: OpenCodeModelRef): boolean =>
     Boolean(a && a.providerID === b.providerID && a.id === b.id && (a.variant ?? null) === (b.variant ?? null));
 
@@ -29582,7 +29515,8 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: OpenCodeRuntime,
     args: {
-      origin: OpenCodeActiveTurn["origin"];
+      /** "ade": ADE sent the prompt. "opencode": OpenCode started it (a background child finished). */
+      origin: "ade" | "opencode";
       turnId?: string;
       requestedModel?: { providerID: string; modelID: string };
       laneDirectiveKey?: string | null;
@@ -29596,7 +29530,6 @@ export function createAgentChatService(args: {
     const model = runtime.model ?? openCodeModelRefFor(managed, runtime.modelDescriptor);
     const turn: OpenCodeActiveTurn = {
       turnId,
-      origin: args.origin,
       mapper: createOpenCodeTurnMapper({
         turnId,
         deps: openCodeMapperDeps,
@@ -29615,7 +29548,7 @@ export function createAgentChatService(args: {
     runtime.activeTurnId = turnId;
     runtime.interrupted = false;
     runtime.preserveQueuedSteersOnInterrupt = false;
-    setOpenCodeRuntimeBusy(runtime, true);
+    runtime.busy = true;
     setSessionActive(managed);
     if (args.origin === "opencode") {
       // No user message opened this turn: OpenCode resumed on its own.
@@ -29659,8 +29592,8 @@ export function createAgentChatService(args: {
     runtime.activeTurn = null;
     runtime.activeTurnId = null;
     // A `subagent` call whose child never appeared must not name the next turn's child.
-    pendingOpenCodeSubagentCalls.delete(runtime);
-    setOpenCodeRuntimeBusy(runtime, false);
+    runtime.pendingSubagentCalls = [];
+    runtime.busy = false;
     const { turnId } = turn;
     void emitTurnDiffSummaryIfChanged(managed, turnId);
     markSessionIdleWithFreshCache(managed);
@@ -29729,65 +29662,34 @@ export function createAgentChatService(args: {
     turn.settle();
   };
 
-  const openCodeFormFieldsToPendingQuestions = (fields: readonly unknown[]): PendingInputQuestion[] => {
-    const questions: PendingInputQuestion[] = [];
-    fields.forEach((raw, index) => {
-      const field = asRecord(raw);
-      if (!field || typeof field.key !== "string" || field.hidden === true) return;
-      const title = typeof field.title === "string" && field.title.trim() ? field.title.trim() : null;
-      const description = typeof field.description === "string" && field.description.trim()
-        ? field.description.trim()
-        : null;
-      const optionList = Array.isArray(field.options) ? field.options : [];
-      const options = field.type === "boolean"
-        ? [{ label: "Yes", value: "true" }, { label: "No", value: "false" }]
-        : optionList.flatMap((entry) => {
-          const option = asRecord(entry);
-          if (!option || typeof option.value !== "string") return [];
-          const label = typeof option.label === "string" && option.label.trim() ? option.label.trim() : option.value;
-          return [{
-            label,
-            value: option.value,
-            ...(typeof option.description === "string" && option.description.trim()
-              ? { description: option.description.trim() }
-              : {}),
-          }];
-        });
-      const external = field.type === "external" && typeof field.url === "string" ? field.url : null;
-      questions.push({
-        id: field.key,
-        header: title ?? `Question ${index + 1}`,
-        question: [description ?? title ?? "OpenCode needs an answer.", external ? `(${external})` : null]
-          .filter(Boolean)
-          .join(" "),
-        ...(field.type === "multiselect" ? { multiSelect: true } : {}),
-        allowsFreeform: field.custom !== false || options.length === 0,
-        ...(options.length ? { options } : {}),
-      });
-    });
-    return questions;
+  /** The child-session state of a runtime, as the pure child tracker reads it. */
+  const openCodeChildState = (runtime: OpenCodeRuntime): OpenCodeChildSessions => ({
+    parentSessionId: runtime.handle.sessionId,
+    subagents: runtime.subagents,
+    pendingSubagentCalls: runtime.pendingSubagentCalls,
+    callForChild: (childId) => runtime.activeTurn?.mapper.callForChildSession(childId) ?? null,
+  });
+
+  const emitOpenCodeChildEvent = (managed: ManagedChatSession, event: AgentChatEvent | null): void => {
+    if (event) emitChatEvent(managed, event);
   };
 
-  /** One answer per field key, typed the way the field expects. */
-  const buildOpenCodeFormAnswer = (
-    fields: readonly unknown[],
-    response: { answers: Record<string, string[]>; responseText: string | null },
-  ): Record<string, string | number | boolean | string[]> => {
-    const answer: Record<string, string | number | boolean | string[]> = {};
-    for (const raw of fields) {
-      const field = asRecord(raw);
-      if (!field || typeof field.key !== "string" || field.type === "external") continue;
-      const picked = ownQuestionValue(response.answers, field.key) ?? [];
-      const values = picked.length ? picked : response.responseText?.trim() ? [response.responseText.trim()] : [];
-      if (!values.length) continue;
-      if (field.type === "multiselect") answer[field.key] = values;
-      else if (field.type === "boolean") answer[field.key] = values[0] === "true";
-      else if (field.type === "number" || field.type === "integer") {
-        const parsed = Number(values[0]);
-        if (Number.isFinite(parsed)) answer[field.key] = parsed;
-      } else answer[field.key] = values[0]!;
-    }
-    return answer;
+  const onOpenCodeChildCreated = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    child: Parameters<typeof openCodeChildStarted>[1],
+  ): void => {
+    emitOpenCodeChildEvent(managed, openCodeChildStarted(openCodeChildState(runtime), child, runtime.activeTurnId ?? randomUUID()));
+  };
+
+  const settleOpenCodeChild = (
+    managed: ManagedChatSession,
+    runtime: OpenCodeRuntime,
+    childId: string,
+    status: "completed" | "failed" | "stopped",
+    summary: string,
+  ): void => {
+    emitOpenCodeChildEvent(managed, openCodeChildSettled(openCodeChildState(runtime), childId, status, summary));
   };
 
   /** Mark a child (subagent) blocked on an ask, or clear it. */
@@ -29797,61 +29699,27 @@ export function createAgentChatService(args: {
     childId: string,
     reason: string | null,
   ): void => {
-    const child = runtime.subagents.get(childId);
-    if (!child) return;
-    emitChatEvent(managed, {
-      type: "subagent_progress",
-      taskId: childId,
-      parentToolUseId: runtime.activeTurn?.mapper.callForChildSession(childId) ?? null,
-      description: child.description,
-      summary: reason ? `Waiting for approval — ${reason}` : child.description,
-      blockedReason: reason,
-      turnId: child.turnId,
-    });
+    emitOpenCodeChildEvent(managed, openCodeChildBlocked(openCodeChildState(runtime), childId, reason));
   };
 
   const onOpenCodePermissionAsked = (
     managed: ManagedChatSession,
     runtime: OpenCodeRuntime,
-    ask: Extract<OpenCodeEvent, { type: "permission.asked" }>["data"],
+    ask: OpenCodePermissionAsk,
   ): void => {
-    const action = ask.action.trim().toLowerCase();
-    const resources = ask.resources ?? [];
-    const description = ask.message?.trim()
-      || (resources.length ? `${action}: ${resources.join(", ")}` : action || "Approval required");
     const child = ask.sessionID !== runtime.handle.sessionId ? runtime.subagents.get(ask.sessionID) : undefined;
-    // A child ask is attributed to its subagent, so the card and status read
-    // "Subagent X is waiting", not an anonymous parent ask.
-    const attributed = child ? `${child.description} · ${description}` : description;
-    const category: PendingOpenCodeApproval["category"] = action === "shell" ? "bash" : "write";
-    const itemId = ask.source?.id ?? ask.id;
-    const request: PendingInputRequest = {
-      requestId: ask.id,
-      itemId,
-      source: "opencode",
-      kind: "approval",
-      description: attributed,
-      questions: [],
-      allowsFreeform: false,
-      blocking: true,
-      canProceedWithoutAnswer: false,
-      providerMetadata: {
-        type: action,
-        resources,
-        metadata: ask.metadata ?? {},
-        callId: ask.source?.id ?? null,
-        childSessionId: child ? ask.sessionID : null,
-      },
-      turnId: runtime.activeTurnId ?? undefined,
-    };
+    const { itemId, category, description, request } = buildOpenCodePermissionRequest(ask, {
+      child,
+      turnId: runtime.activeTurnId,
+    });
     // Keyed by the card's item id, which is what an answer carries back. One
     // tool call asks one thing at a time (an external-directory ask is answered
     // before the edit ask that follows it), so the key does not collide.
     runtime.pendingApprovals.set(itemId, { category, requestId: ask.id, sessionId: ask.sessionID, request });
-    if (child) emitOpenCodeChildBlocked(managed, runtime, ask.sessionID, attributed);
+    if (child) emitOpenCodeChildBlocked(managed, runtime, ask.sessionID, description);
     emitPendingInputRequest(managed, request, {
       kind: category === "bash" ? "command" : "file_change",
-      description: attributed,
+      description,
       detail: ask.metadata ?? {},
     });
   };
@@ -29868,8 +29736,8 @@ export function createAgentChatService(args: {
     emitPendingInputResolved(managed, {
       itemId,
       decision: replied.reply === "reject" ? "decline" : "accept",
-      questions: pending.request?.questions ?? [],
-      turnId: pending.request?.turnId ?? null,
+      questions: pending.request.questions,
+      turnId: pending.request.turnId ?? null,
     });
     if (pending.sessionId !== runtime.handle.sessionId) {
       emitOpenCodeChildBlocked(managed, runtime, pending.sessionId, null);
@@ -29884,16 +29752,11 @@ export function createAgentChatService(args: {
   const onOpenCodeFormCreated = (
     managed: ManagedChatSession,
     runtime: OpenCodeRuntime,
-    form: Extract<OpenCodeEvent, { type: "form.created" }>["data"]["form"],
+    form: { id: string; sessionID: string; fields: readonly OpenCodeFormField[] },
   ): void => {
-    const fields = form.fields as readonly unknown[];
-    const questions = openCodeFormFieldsToPendingQuestions(fields);
+    const questions = openCodeFormQuestions(form.fields);
     const child = form.sessionID !== runtime.handle.sessionId ? runtime.subagents.get(form.sessionID) : undefined;
-    runtime.pendingForms.set(form.id, {
-      formId: form.id,
-      sessionId: form.sessionID,
-      fieldKeys: questions.map((question) => question.id),
-    });
+    runtime.pendingForms.set(form.id, { formId: form.id, sessionId: form.sessionID });
     const firstQuestion = questions[0];
     if (child) emitOpenCodeChildBlocked(managed, runtime, form.sessionID, firstQuestion?.question ?? "Waiting for an answer");
     const cancelForm = async (): Promise<void> => {
@@ -29916,10 +29779,15 @@ export function createAgentChatService(args: {
         await cancelForm();
         return;
       }
+      // One answer per field key; a free-text reply stands in for a field with none.
+      const freeform = response.responseText?.trim();
       await runtime.handle.client.session.form.reply({
         sessionID: form.sessionID,
         formID: form.id,
-        answer: buildOpenCodeFormAnswer(fields, response),
+        answer: openCodeFormAnswer(form.fields, (key) => {
+          const picked = ownQuestionValue(response.answers, key) ?? [];
+          return picked.length ? picked : freeform ? [freeform] : [];
+        }),
       });
     })().catch(async (error) => {
       if (runtime.interrupted) return;
@@ -29958,133 +29826,27 @@ export function createAgentChatService(args: {
     if (sessionId !== runtime.handle.sessionId) emitOpenCodeChildBlocked(managed, runtime, sessionId, null);
   };
 
-  /** Subagent calls the parent made whose child session has not appeared yet. */
-  const pendingOpenCodeSubagentCalls = new WeakMap<OpenCodeRuntime, Array<{ callId: string; description: string }>>();
-
-  const onOpenCodeChildCreated = (
-    managed: ManagedChatSession,
-    runtime: OpenCodeRuntime,
-    child: Extract<OpenCodeEvent, { type: "session.created" }>["data"],
-  ): void => {
-    if (runtime.subagents.has(child.sessionID)) return;
-    const pendingCalls = pendingOpenCodeSubagentCalls.get(runtime) ?? [];
-    const call = child.parentID === runtime.handle.sessionId ? pendingCalls.shift() : undefined;
-    const model = child.model?.providerID && child.model.id ? `${child.model.providerID}/${child.model.id}` : null;
-    const description = call?.description ?? (child.agent ? `${child.agent} subagent` : "Subagent");
-    const turnId = runtime.activeTurnId ?? randomUUID();
-    runtime.subagents.set(child.sessionID, {
-      description,
-      turnId,
-      model,
-      settled: false,
-      usage: { totalTokens: 0, costUsd: 0 },
-    });
-    emitChatEvent(managed, {
-      type: "subagent_started",
-      taskId: child.sessionID,
-      parentToolUseId: call?.callId ?? null,
-      description,
-      turnId,
-      ...optionalSubagentModelFields(model),
-    });
-  };
-
-  const settleOpenCodeChild = (
-    managed: ManagedChatSession,
-    runtime: OpenCodeRuntime,
-    childId: string,
-    status: "completed" | "failed" | "stopped",
-    summary: string,
-  ): void => {
-    const child = runtime.subagents.get(childId);
-    if (!child || child.settled) return;
-    child.settled = true;
-    const usage = child.usage.totalTokens > 0
-      ? { totalTokens: child.usage.totalTokens, ...(child.usage.costUsd > 0 ? { costUsd: child.usage.costUsd } : {}) }
-      : undefined;
-    emitChatEvent(managed, {
-      type: "subagent_result",
-      taskId: childId,
-      parentToolUseId: runtime.activeTurn?.mapper.callForChildSession(childId) ?? null,
-      status,
-      summary,
-      finalSummary: summary,
-      ...(usage ? { usage } : {}),
-      turnId: child.turnId,
-    });
-  };
-
-  const openCodeChildLastText = new WeakMap<OpenCodeSubagent, string>();
-
-  const handleOpenCodeChildEvent = (
-    managed: ManagedChatSession,
-    runtime: OpenCodeRuntime,
-    childId: string,
-    child: OpenCodeSubagent,
-    event: OpenCodeEvent,
-  ): void => {
+  /**
+   * Asks and forms, for the chat's own session or a tracked child alike.
+   * Returns false for any other event.
+   */
+  const handleOpenCodeAskEvent = (managed: ManagedChatSession, runtime: OpenCodeRuntime, event: OpenCodeEvent): boolean => {
     switch (event.type) {
-      case "session.text.ended":
-        openCodeChildLastText.set(child, event.data.text);
-        return;
-      case "session.step.ended": {
-        const tokens = event.data.tokens;
-        child.usage.totalTokens += (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0)
-          + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0);
-        child.usage.costUsd += typeof event.data.cost === "number" ? event.data.cost : 0;
-        emitChatEvent(managed, {
-          type: "subagent_progress",
-          taskId: childId,
-          parentToolUseId: runtime.activeTurn?.mapper.callForChildSession(childId) ?? null,
-          description: child.description,
-          summary: child.description,
-          usage: { totalTokens: child.usage.totalTokens, ...(child.usage.costUsd > 0 ? { costUsd: child.usage.costUsd } : {}) },
-          turnId: child.turnId,
-        });
-        return;
-      }
-      case "session.execution.started":
-        // A finished child continued by id is running again.
-        if (child.settled) {
-          child.settled = false;
-          emitChatEvent(managed, {
-            type: "subagent_progress",
-            taskId: childId,
-            parentToolUseId: null,
-            description: child.description,
-            summary: child.description,
-            turnId: child.turnId,
-          });
-        }
-        return;
-      case "session.execution.succeeded":
-        settleOpenCodeChild(managed, runtime, childId, "completed", openCodeChildLastText.get(child)?.trim() || child.description);
-        return;
-      case "session.execution.failed":
-        settleOpenCodeChild(managed, runtime, childId, "failed", event.data.error?.message || "Subagent failed");
-        return;
-      case "session.execution.interrupted":
-        settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent stopped");
-        return;
-      case "session.deleted":
-        settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent session deleted");
-        runtime.subagents.delete(childId);
-        return;
       case "permission.asked":
         onOpenCodePermissionAsked(managed, runtime, event.data);
-        return;
+        return true;
       case "permission.replied":
         onOpenCodePermissionReplied(managed, runtime, event.data);
-        return;
+        return true;
       case "form.created":
         onOpenCodeFormCreated(managed, runtime, event.data.form);
-        return;
+        return true;
       case "form.replied":
       case "form.cancelled":
         onOpenCodeFormSettled(managed, runtime, event.data.id, event.data.sessionID);
-        return;
+        return true;
       default:
-        return;
+        return false;
     }
   };
 
@@ -30156,9 +29918,13 @@ export function createAgentChatService(args: {
     }
     const sessionId = openCodeEventSessionId(event);
     if (!sessionId) return;
-    if (sessionId !== parentId) {
-      const child = runtime.subagents.get(sessionId);
-      if (child) handleOpenCodeChildEvent(managed, runtime, sessionId, child, event);
+    const child = sessionId === parentId ? undefined : runtime.subagents.get(sessionId);
+    if (sessionId !== parentId && !child) return;
+    if (handleOpenCodeAskEvent(managed, runtime, event)) return;
+    if (child) {
+      for (const mapped of mapOpenCodeChildEvent(openCodeChildState(runtime), sessionId, child, event)) {
+        emitChatEvent(managed, mapped);
+      }
       return;
     }
 
@@ -30185,19 +29951,6 @@ export function createAgentChatService(args: {
       case "session.renamed":
         adoptRuntimeSessionTitle(managed, event.data.title, "opencode_session_renamed");
         return;
-      case "permission.asked":
-        onOpenCodePermissionAsked(managed, runtime, event.data);
-        return;
-      case "permission.replied":
-        onOpenCodePermissionReplied(managed, runtime, event.data);
-        return;
-      case "form.created":
-        onOpenCodeFormCreated(managed, runtime, event.data.form);
-        return;
-      case "form.replied":
-      case "form.cancelled":
-        onOpenCodeFormSettled(managed, runtime, event.data.id, event.data.sessionID);
-        return;
       default:
         break;
     }
@@ -30211,13 +29964,7 @@ export function createAgentChatService(args: {
     // A `subagent` call's child session appears right after it; remember the
     // call so the child's card links to it and carries its description.
     if (event.type === "session.tool.called" && turn.mapper.toolName(event.data.id) === "subagent") {
-      const input = asRecord(event.data.input);
-      const description = typeof input?.description === "string" && input.description.trim()
-        ? input.description.trim()
-        : typeof input?.agent === "string" ? `${input.agent} subagent` : "Subagent";
-      const calls = pendingOpenCodeSubagentCalls.get(runtime) ?? [];
-      calls.push({ callId: event.data.id, description });
-      pendingOpenCodeSubagentCalls.set(runtime, calls);
+      rememberOpenCodeSubagentCall(openCodeChildState(runtime), event.data.id, event.data.input);
     }
   };
 
@@ -30230,9 +29977,9 @@ export function createAgentChatService(args: {
   const reconcileOpenCodeRuntime = async (managed: ManagedChatSession, runtime: OpenCodeRuntime): Promise<void> => {
     if (managed.runtime !== runtime) return;
     const client = runtime.handle.client;
-    let active: Record<string, unknown>;
+    let active: Awaited<ReturnType<typeof client.session.active>>;
     try {
-      active = await client.session.active() as unknown as Record<string, unknown>;
+      active = await client.session.active();
     } catch (error) {
       logger.warn("agent_chat.opencode_reconcile_failed", {
         sessionId: managed.session.id,
@@ -30303,7 +30050,7 @@ export function createAgentChatService(args: {
         parentID: info.parentID,
         ...(info.agent ? { agent: info.agent } : {}),
         ...(info.model ? { model: info.model } : {}),
-      } as Extract<OpenCodeEvent, { type: "session.created" }>["data"]);
+      });
       return true;
     };
     const requests = await client.permission.request
@@ -30320,8 +30067,7 @@ export function createAgentChatService(args: {
       for (const form of forms ?? []) {
         if (managed.runtime !== runtime) return;
         if (runtime.pendingForms.has(form.id)) continue;
-        // `form.list` and `form.created` carry one wire shape; the client generates it twice.
-        onOpenCodeFormCreated(managed, runtime, form as unknown as Extract<OpenCodeEvent, { type: "form.created" }>["data"]["form"]);
+        onOpenCodeFormCreated(managed, runtime, form);
       }
     }
   };
@@ -30425,7 +30171,7 @@ export function createAgentChatService(args: {
     try {
       // Agent (permissions) and model (with the effort/Fast variant) live on the
       // OpenCode session; only a change is sent.
-      const agent = runtime.permissionMode === "config-toml" ? null : mapPermissionModeToOpenCodeAgent(runtime.permissionMode);
+      const agent = openCodeAgentFor(runtime.permissionMode);
       if (agent && agent !== runtime.agent) {
         await client.session.switchAgent({ sessionID, agent });
         runtime.agent = agent;
@@ -30448,7 +30194,7 @@ export function createAgentChatService(args: {
       const providerSlashCommand = args.providerSlashCommand === true;
       const attachmentHint = formatAttachedContextHint(attachments);
       const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
-      const files = buildOpenCodePromptFiles(toOpenCodePromptFiles(resolvedAttachments).files);
+      const files = openCodePromptFiles(resolvedAttachments.map((attachment) => attachment._resolvedPath));
       const slash = providerSlashCommand ? /^\/(\S+)\s*([\s\S]*)$/.exec(args.promptText.trim()) : null;
       if (slash) {
         await client.session.command({
@@ -30471,7 +30217,7 @@ export function createAgentChatService(args: {
       }, OPENCODE_EXECUTION_START_TIMEOUT_MS);
       startWatchdog.unref?.();
     } catch (error) {
-      if (error instanceof OpenCodeSessionInPersonalStoreError || isOpenCodeTaggedError(error, "SessionNotFoundError")) {
+      if (error instanceof OpenCodeSessionInPersonalStoreError || isOpenCodeNotFoundError(error)) {
         managed.runtimeInvalidated = true;
       }
       finishOpenCodeTurn(managed, runtime, { status: "failed", error });
@@ -43211,7 +42957,7 @@ export function createAgentChatService(args: {
       const openTurn = managed.runtime.activeTurn;
       managed.runtime.activeTurn = null;
       managed.runtime.activeTurnId = null;
-      setOpenCodeRuntimeBusy(managed.runtime, false);
+      managed.runtime.busy = false;
       openTurn?.settle();
     }
     if (managed.runtime?.kind === "claude" && !isBusyError) {
@@ -48994,7 +48740,7 @@ export function createAgentChatService(args: {
         emitSteerUserRow(managed, row, delivery === "steer" ? "accepted" : "queued", turnId);
         persistChatState(managed);
         try {
-          const files = buildOpenCodePromptFiles(toOpenCodePromptFiles(preparedSteer.resolvedAttachments).files);
+          const files = openCodePromptFiles(preparedSteer.resolvedAttachments.map((attachment) => attachment._resolvedPath));
           const text = [buildChatContextAttachmentPrompt(preparedSteer.contextAttachments) || null, preparedSteer.submittedText]
             .filter((section): section is string => Boolean(section))
             .join("\n\n");
@@ -53741,7 +53487,7 @@ export function createAgentChatService(args: {
         }
       } else if (runtime?.kind === "opencode") {
         for (const [itemId, pending] of runtime.pendingApprovals) {
-          rememberPendingItem(itemId, pending.request?.turnId);
+          rememberPendingItem(itemId, pending.request.turnId);
         }
       } else if (runtime?.kind === "cursor" || runtime?.kind === "droid") {
         for (const itemId of runtime.permissionWaiters.keys()) {
@@ -54598,8 +54344,10 @@ export function createAgentChatService(args: {
     return modelCatalogContainsRefreshProvider(catalog, refreshProvider, cursorSource);
   };
 
-  const discoverOpenCodeLocalModels = async (): Promise<DiscoveredLocalModelEntry[]> => {
-    const auth = await detectAuth();
+  const discoverOpenCodeLocalModels = async (
+    knownAuth?: Awaited<ReturnType<typeof detectAuth>>,
+  ): Promise<DiscoveredLocalModelEntry[]> => {
+    const auth = knownAuth ?? await detectAuth();
     const snapshot = projectConfigService.get();
     const localProviderConfigs = snapshot.effective.ai?.localProviders ?? {};
     const discoveredLocalModels: DiscoveredLocalModelEntry[] = [];
