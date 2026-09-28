@@ -72,6 +72,9 @@ export function WorkToolPickerBackdrop({
   // change with the theme instead of staying violet.
   const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
+  // The app's own Reduce-motion preference, so it stops this mesh too and not
+  // only the CSS the `data-motion` attribute covers.
+  const reduceMotion = useAppStore((s) => s.interfacePreferences.reduceMotion);
   const palette = useMemo(() => {
     const resolved = resolveThemeById(themeId, customThemes);
     if (resolved.source === "builtin" && STYLESHEET_THEME_IDS.includes(resolved.id)) return undefined;
@@ -103,6 +106,7 @@ export function WorkToolPickerBackdrop({
       canvas,
       theme,
       palette,
+      reduceMotion,
       playing: playingRef.current,
       clockOrigin,
       field,
@@ -113,7 +117,7 @@ export function WorkToolPickerBackdrop({
       renderer?.dispose();
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
-  }, [theme, palette, clockOrigin, field, webglRefused, motionEpoch]);
+  }, [theme, palette, reduceMotion, clockOrigin, field, webglRefused, motionEpoch]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);

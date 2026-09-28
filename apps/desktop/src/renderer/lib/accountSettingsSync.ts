@@ -46,7 +46,7 @@ import type {
 } from "../../shared/types/accountSettings";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
-import { themeIdForMode, type AdeTheme } from "../../shared/theme";
+import type { AdeTheme } from "../../shared/theme";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -112,17 +112,15 @@ function pref<Value>(
  * travel.
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
-  // `theme` is the painted base mode, which a machine that follows the system
-  // derives from its own OS. Applying it as a choice would let two machines in
-  // different OS modes overwrite each other's theme, so it only moves the
-  // chosen family to the matching variant on a machine that picks by hand.
-  pref("theme", (state) => state.theme, (state, value) => {
-    if (!state.themeFollowsSystem) state.setTheme(themeIdForMode(state.themeId, value));
-  }),
-  // The active theme's id travels with the base mode so "themes follow you to
-  // another machine" is true for a custom theme, not just dark/light. A custom
-  // id whose definition has not landed yet paints as the default until its row
-  // arrives; `setTheme` keeps the id rather than resolving it.
+  // The chosen theme id is the account preference; the painted base mode is
+  // NOT synced. A machine that follows the system derives `theme` from its own
+  // OS, so syncing it would let one machine's OS event overwrite another
+  // machine's manual choice. `themeId` carries the family and variant, and the
+  // flag below carries the mode policy, so `setTheme` reconstructs `theme` on
+  // the receiving machine from the two values that really are choices.
+  //
+  // A custom id whose definition has not landed yet paints as the default until
+  // its row arrives; `setTheme` keeps the id rather than resolving it.
   pref("themeId", (state) => state.themeId, (state, value) => state.setTheme(value)),
   // Custom themes are one account-scoped list, like harness presets: the whole
   // list is one value under one key, so newer-wins applies to the list and two

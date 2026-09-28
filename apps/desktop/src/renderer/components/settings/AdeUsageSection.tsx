@@ -1044,15 +1044,6 @@ export function AdeUsageSection() {
               </div>
             </SettingsSection>
 
-            {/* Pooled live limits belong to the account scope only: "This
-                machine" and "This project" are single-environment views, and
-                the top-bar popover already carries this machine's limits. */}
-            {scope === "account" && stats?.liveQuota ? (
-              <SettingsSection title="Live limits" description="Every signed-in machine, pooled. The top bar shows this one.">
-                <UsagePooledLimits environments={stats.liveQuota.environments} />
-              </SettingsSection>
-            ) : null}
-
             {machines.length > 0 ? (
               <SettingsSplit
                 ratio="start-wide"
@@ -1086,6 +1077,17 @@ export function AdeUsageSection() {
             ) : null}
           </>
         )}
+
+        {/* Pooled live limits belong to the account scope only: "This machine"
+            and "This project" are single-environment views, and the top-bar
+            popover already carries this machine's limits. Rendered outside the
+            historical empty state: live quota is a current reading, so an empty
+            date range must not hide a working account's limits. */}
+        {scope === "account" && stats?.liveQuota ? (
+          <SettingsSection title="Live limits" description="Every signed-in machine, pooled. The top bar shows this one.">
+            <UsagePooledLimits environments={stats.liveQuota.environments} />
+          </SettingsSection>
+        ) : null}
       </div>
     </SettingsColumn>
   );

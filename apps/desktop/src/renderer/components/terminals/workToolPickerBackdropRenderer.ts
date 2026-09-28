@@ -85,6 +85,13 @@ export function createBackdropRenderer(options: {
   /** When false, the last frame stays on the canvas and the loop does not run. */
   playing?: boolean;
   /**
+   * The app's own Reduce-motion preference. It is OR'd with the OS
+   * `prefers-reduced-motion` query — either one stops the loop and the cursor
+   * swirl — so the setting reaches this canvas and not only the CSS the
+   * `data-motion` attribute covers.
+   */
+  reduceMotion?: boolean;
+  /**
    * The `performance.now()` value the animation clock counts from. Canvases
    * that share an origin and a size draw the same frame, so several
    * clipped slices of one wide field read as one continuous gradient.
@@ -224,7 +231,7 @@ export function createBackdropRenderer(options: {
   context.uniform4f(uniform.cursor, 0, UNIFORMS.cursorStrength, UNIFORMS.cursorRadius, 0);
   context.uniform4f(uniform.view, 0, 0, 1, 1);
 
-  const reduceMotion = matches("(prefers-reduced-motion: reduce)");
+  const reduceMotion = matches("(prefers-reduced-motion: reduce)") || options.reduceMotion === true;
   // A trackpad or a mouse can swirl the mesh. A touchscreen cannot hover, so
   // the "cursor" there is a tap that would yank the background sideways.
   const cursorEnabled = !reduceMotion && matches("(hover: hover)") && matches("(pointer: fine)");
