@@ -2198,84 +2198,64 @@ export function TopBar({
 
   const anyConnectionActive = remoteConnected || syncConnected || webConnected;
 
-  const renderHeaderStatusControls = useCallback(
-    (options?: { menuLayout?: boolean; onActivate?: () => void; section?: "integrations" | "usage" | "connections" }) => {
-      const menuLayout = options?.menuLayout === true;
-      const wrapActivate = (handler: () => void) => () => {
-        handler();
-        options?.onActivate?.();
-      };
+  const renderDesktopIntegrationControls = () => (
+    <>
+      <CursorCloudQuickViewButton />
+      <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
+    </>
+  );
 
-      // On the hosted client the machine IS the connection: the chip names it,
-      // and its popover is where machines are managed now that the Hub is gone.
-      const connectionsChip = webMode ? (
-        <React.Suspense fallback={null}>
-          <WebConnectionsChip />
-        </React.Suspense>
-      ) : (
+  const renderDesktopUsageControl = () => usageHeaderPreferences.showInHeader
+    ? <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
+    : null;
+
+  const renderWebConnectionsControl = () => (
+    <React.Suspense fallback={null}>
+      <WebConnectionsChip />
+    </React.Suspense>
+  );
+
+  const renderDesktopConnectionsControl = () => webMode
+    ? renderWebConnectionsControl()
+    : (
+      <ShellConnectionChip
+        label="Connections"
+        connected={anyConnectionActive}
+        title="Machines, mobile, and web clients"
+        ariaExpanded={connectionsOpen}
+        onClick={() => (connectionsOpen ? closeConnections() : openConnections("machines"))}
+        icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+        trailing={<HeaderAccountAvatar />}
+      />
+    );
+
+  const renderCompactStatusMenu = (onActivate: () => void) => (
+    <div className="flex flex-col gap-0.5">
+      <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={onActivate} />
+      <LinearQuickViewButton variant="menu-row" onMenuActivate={onActivate} onOpenHarnessSettings={openHarnessSettings} />
+      {usageHeaderPreferences.showInHeader ? (
+        <HeaderUsageControl
+          variant="menu-row"
+          onMenuActivate={onActivate}
+          deferInitialRead={Boolean(remoteBinding)}
+        />
+      ) : null}
+      {webMode ? renderWebConnectionsControl() : (
         <ShellConnectionChip
-          layout={menuLayout ? "menu-row" : "chip"}
+          layout="menu-row"
           label="Connections"
           connected={anyConnectionActive}
           title="Machines, mobile, and web clients"
           ariaExpanded={connectionsOpen}
-          onClick={
-            menuLayout
-              ? wrapActivate(() => openConnections("machines"))
-              : () => (connectionsOpen ? closeConnections() : openConnections("machines"))
-          }
-          icon={(
-            <Plugs
-              size={12}
-              weight="regular"
-              className="shrink-0 opacity-85"
-            />
-          )}
+          onClick={() => {
+            openConnections("machines");
+            onActivate();
+          }}
+          icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
           trailing={<HeaderAccountAvatar />}
         />
-      );
-
-      if (menuLayout) {
-        return (
-          <div className="flex flex-col gap-0.5">
-            <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
-            <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} onOpenHarnessSettings={openHarnessSettings} />
-            {usageHeaderPreferences.showInHeader ? (
-              <HeaderUsageControl
-                variant="menu-row"
-                onMenuActivate={options?.onActivate}
-                deferInitialRead={Boolean(remoteBinding)}
-              />
-            ) : null}
-            {connectionsChip}
-          </div>
-        );
-      }
-
-      return (
-        <>
-          {options?.section !== "usage" && options?.section !== "connections" ? (
-            <>
-              <CursorCloudQuickViewButton />
-              <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
-            </>
-          ) : null}
-          {usageHeaderPreferences.showInHeader && options?.section !== "integrations" && options?.section !== "connections" ? (
-            <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
-          ) : null}
-          {options?.section !== "integrations" && options?.section !== "usage" ? connectionsChip : null}
-        </>
-      );
-    },
-    [
-      anyConnectionActive,
-      closeConnections,
-      connectionsOpen,
-      openConnections,
-      remoteBinding,
-      usageHeaderPreferences.showInHeader,
-      webMode,
-    ],
+      )}
+    </div>
   );
 
   const transitionTargetName = projectTransition?.rootPath
@@ -2801,6 +2781,7 @@ export function TopBar({
 
       {projectTransitionLabel ? (
         <div
+          aria-live="polite"
           className={cn(
             "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
             "text-[11px] font-medium",
@@ -2867,8 +2848,8 @@ export function TopBar({
         <GlobalVoiceCaptureIndicator />
 
         <div className="hidden md:flex items-center gap-1.5">
-          {renderHeaderStatusControls({ section: "integrations" })}
-          {renderHeaderStatusControls({ section: "usage" })}
+          {renderDesktopIntegrationControls()}
+          {renderDesktopUsageControl()}
         </div>
 
         {/* Account-wide Activity — the one place every machine's work surfaces,
@@ -2876,7 +2857,7 @@ export function TopBar({
         <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
         <div className="hidden md:flex items-center gap-1.5">
-          {renderHeaderStatusControls({ section: "connections" })}
+          {renderDesktopConnectionsControl()}
         </div>
 
         <HeaderStatusMenu
@@ -2884,7 +2865,7 @@ export function TopBar({
           syncConnected={syncConnected || (!webMode && webConnected)}
           showSyncControl={showSyncControl}
         >
-          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+          {renderCompactStatusMenu}
         </HeaderStatusMenu>
       </div>
 

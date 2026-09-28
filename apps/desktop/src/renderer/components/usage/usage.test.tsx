@@ -37,6 +37,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+import { setUsageHeaderVisible } from "./usageHeaderPreferences";
 
 type UsageComponentTestBridge = {
   app: Pick<Window["ade"]["app"], "openExternal" | "onProjectBindingChanged">;
@@ -1212,6 +1213,7 @@ describe("usage components", () => {
 
   describe("HeaderUsageControl", () => {
     beforeEach(() => {
+      setUsageHeaderVisible(true);
       useAppStore.setState({ theme: "dark" });
       vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeEmptySnapshot());
       vi.mocked(window.ade.usage.refresh).mockResolvedValue(makeHeaderUsageSnapshot());
@@ -1251,6 +1253,27 @@ describe("usage components", () => {
       expect(screen.queryByText("wk")).toBeNull();
       expect(screen.queryByText("9%")).toBeNull();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    });
+
+    it("hides a provider from the compact header while keeping it in the expanded limits panel", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.refresh).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
+        claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
+        codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
+      }));
+
+      render(<HeaderUsageControl />);
+      await waitFor(() => expect(document.querySelector('[data-usage-provider="claude"]')).not.toBeNull());
+      fireEvent.click(screen.getByRole("button", { name: /Usage ·/ }));
+
+      fireEvent.click(await screen.findByRole("button", { name: "Hide Claude in usage bar" }));
+
+      await waitFor(() => expect(document.querySelector('[data-usage-provider="claude"]')).toBeNull());
+      expect(document.querySelector('[data-usage-provider="codex"]')).not.toBeNull();
+      expect(document.querySelector('[data-provider-limits="claude"]')).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Show Claude in usage bar" })).toBeTruthy();
     });
 
     it("defers the cached usage and provider reads until opened", async () => {
