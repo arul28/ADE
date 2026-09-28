@@ -1142,7 +1142,7 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
        "claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5-api",
        "opencode/anthropic/claude-sonnet-5-5":
     return "anthropic/claude-sonnet-5-5"
-  case "claude-sonnet-5", "anthropic/claude-sonnet-5",
+  case "claude-sonnet-5", "sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "anthropic/claude-sonnet-5"
@@ -1184,7 +1184,7 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
        "claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5-api",
        "opencode/anthropic/claude-sonnet-5-5":
     return "claude-sonnet-5-5"
-  case "claude-sonnet-5", "anthropic/claude-sonnet-5",
+  case "claude-sonnet-5", "sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "claude-sonnet-5"
@@ -1331,7 +1331,7 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
        "anthropic/claude-sonnet-5-5", "claude-sonnet-5-5",
        "opencode/anthropic/claude-sonnet-5-5":
     return "Claude Sonnet 5.5"
-  case "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
+  case "anthropic/claude-sonnet-5", "claude-sonnet-5", "sonnet-5", "cursor/claude-4.6-sonnet-medium",
        "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "Claude Sonnet 5"

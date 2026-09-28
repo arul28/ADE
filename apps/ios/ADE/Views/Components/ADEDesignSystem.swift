@@ -295,7 +295,7 @@ enum ADEColor {
       append("claude-sonnet-5-5")
       append("opencode/anthropic/claude-sonnet-5-5")
       append("sonnet")
-    case "anthropic/claude-sonnet-5", "claude-sonnet-5",
+    case "anthropic/claude-sonnet-5", "claude-sonnet-5", "sonnet-5",
          "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
          "opencode/anthropic/claude-sonnet-5":
       append("anthropic/claude-sonnet-5")
