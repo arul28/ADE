@@ -153,11 +153,13 @@ export async function runXcodebuildTests(input: {
     });
   } finally {
     // Closed or failed, either ends the wait: a stream that errored never closes cleanly.
-    await new Promise<void>((resolve) => {
-      log.once("close", () => resolve());
-      log.once("error", () => resolve());
-      log.end();
-    });
+    if (!log.destroyed) {
+      await new Promise<void>((resolve) => {
+        log.once("close", () => resolve());
+        log.once("error", () => resolve());
+        log.end();
+      });
+    }
   }
   const output = await fs.promises.readFile(logPath, "utf8").catch(() => "");
   return {

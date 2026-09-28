@@ -6,6 +6,7 @@ import { bareSimulatorPowerOff, createSimulatorPower } from "./simulatorPower";
 import {
   appleLaneDeviceName,
   createLaneDeviceRegistry,
+  type LaneDeviceRegistry,
 } from "./laneDeviceRegistry";
 import {
   appleDeviceDataRoot,
@@ -127,6 +128,20 @@ describe("laneDeviceRegistry pure helpers", () => {
     expect(selected.runtime.identifier).toBe(RUNTIMES[0]!.identifier);
     expect(selected.deviceType.identifier).toBe(RUNTIMES[0]!.deviceTypes[1]!.identifier);
     expect(pickAppleDeviceSpec({ runtimes: RUNTIMES }).deviceType.family).toBe("iphone");
+  });
+
+  it("defaults only to an installed iOS runtime", () => {
+    const watchRuntime: AppleInstalledRuntime = {
+      ...RUNTIMES[0]!,
+      identifier: "com.apple.CoreSimulator.SimRuntime.watchOS-26-3",
+      name: "watchOS 26.3",
+      platform: "watchOS",
+    };
+
+    expect(pickAppleDeviceSpec({ runtimes: [watchRuntime, ...RUNTIMES] }).runtime.platform).toBe("iOS");
+    expect(() => pickAppleDeviceSpec({ runtimes: [watchRuntime] })).toThrowError(
+      expect.objectContaining({ code: APPLE_NO_INSTALLED_SIMULATORS_CODE }),
+    );
   });
 
   it("names a lane device and suffixes a collision", () => {
@@ -466,7 +481,7 @@ describe("releaseLaneAppleDevice", () => {
         created_at: new Date().toISOString(),
       },
     });
-    const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const run = vi.fn(async (_command: string, _args: string[]) => ({ stdout: "", stderr: "" }));
     const powerOff = vi.fn(async () => {
       store.rows["lane-2"] = {
         lane_id: "lane-2",
@@ -647,22 +662,27 @@ describe("releaseLaneAppleDevice", () => {
         template_udid: null,
       },
     });
-    const run = vi.fn(async () => { throw new Error("simctl exploded"); });
+    const run = vi.fn(async (_command: string, _args: string[]) => { throw new Error("simctl exploded"); });
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
 
-    const result = await releaseLaneAppleDevice({
-      laneId: "lane-1",
-      projectRoot: "/repo",
-      store,
-      run: run as never,
-      // A lane delete that has already removed the worktree must not abort
-      // because cleanup failed.
-      removeDirectory: async () => { throw new Error("EACCES"); },
-      logger: noopLogger,
-    });
+    try {
+      const result = await releaseLaneAppleDevice({
+        laneId: "lane-1",
+        projectRoot: "/repo",
+        store,
+        run: run as never,
+        // A lane delete that has already removed the worktree must not abort
+        // because cleanup failed.
+        removeDirectory: async () => { throw new Error("EACCES"); },
+        logger: noopLogger,
+      });
 
-    expect(result).toEqual({ deletedUdid: null, detachedUdid: "users-own", removedRecordings: false, removedDerivedData: 0 });
-    expect(run.mock.calls.map((call) => (call[1] as string[]).slice(0, 2))).toEqual([["simctl", "shutdown"]]);
-    expect(store.rows["lane-1"]).toBeUndefined();
+      expect(result).toEqual({ deletedUdid: null, detachedUdid: "users-own", removedRecordings: false, removedDerivedData: 0 });
+      expect(run.mock.calls.map((call) => call[1].slice(0, 2))).toEqual([["simctl", "shutdown"]]);
+      expect(store.rows["lane-1"]).toBeUndefined();
+    } finally {
+      platformSpy.mockRestore();
+    }
   });
 });
 
@@ -963,7 +983,7 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
 
   it.each([["busy", "Booted"], ["free", "Shutdown"]] as const)(
     "lets an agent attach a named simulator no lane holds, including %s",
-    async (udid) => {
+    async (udid, _state) => {
       const { registry, store } = takeoverRegistry();
       const device = await registry.deviceAttach({ laneId: "lane-b", simulator: udid, agentCaller: true });
       expect(device).toMatchObject({ laneId: "lane-b", udid, origin: "attached" });
@@ -1088,7 +1108,6 @@ describe("lane device lifecycle", () => {
     family: "iphone",
     runtime: "iOS 26.3",
     createdAt: "2026-09-23T00:00:00.000Z",
-    templateUdid: "device-2",
   };
 
   function setup(initialOwner: string | null) {

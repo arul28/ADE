@@ -2962,6 +2962,14 @@ export function createLaneService({
             adeInstalledBundleIds: orphan.adeInstalledBundleIds,
             run: runAppleCommand,
             powerOff: bareSimulatorPowerOff(runAppleCommand),
+            stillFree: () => {
+              try {
+                return !readLaneAppleDeviceRecord(db, duplicateId)
+                  && !anotherLaneHoldsUdid(db, orphan.device.udid, duplicateId);
+              } catch {
+                return false;
+              }
+            },
             logger,
           }).then((ended) => {
             // The duplicate's row is gone, so nothing retries this; say what is left.

@@ -42,7 +42,6 @@ function laneDevice(udid: string): AppleLaneDevice {
     family: "iphone",
     runtime: "iOS 26.3",
     createdAt: "2026-09-21T00:00:00.000Z",
-    templateUdid: null,
   };
 }
 
