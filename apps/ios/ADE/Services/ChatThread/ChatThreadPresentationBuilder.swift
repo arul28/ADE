@@ -117,35 +117,12 @@ func workChatTranscriptRowRevision(_ entry: WorkTimelineRenderEntry) -> Int {
   hasher.combine(entry.timestamp)
   switch entry.payload {
   case .entry(let timelineEntry):
-    hasher.combine(timelineEntry.id)
-    hasher.combine(timelineEntry.timestamp)
-    hasher.combine(timelineEntry.rank)
-    // Messages take the digest-based fast path below; every other card kind
-    // hashes its whole model, so an in-place update (a tool card gaining its
-    // result, a subagent card gaining a summary, a pending-input card gaining
-    // a resolution) reconfigures the cell and re-measures its height instead
-    // of leaving a stale card on screen.
-    guard case .message(let message) = timelineEntry.payload else {
-      hasher.combine(timelineEntry.payload)
-      return hasher.finalize()
-    }
-    hasher.combine(message.id)
-    hasher.combine(message.role)
-    hasher.combine(message.steerId)
-    hasher.combine(message.deliveryState)
-    hasher.combine(message.processed)
-    hasher.combine(message.unprocessedResolution?.action)
-    hasher.combine(message.unprocessedResolution?.state)
-    hasher.combine(message.unprocessedResolution?.resolvedAt)
-    workTimelineCombineMessageTextSignature(message, into: &hasher)
-    if let preview = message.assistantPreview {
-      // A preview is a pure function of the message text, and the text is
-      // already in this hash. Its shape is enough to separate two previews of
-      // the same message — no need to hash the rendered text, which is
-      // O(message) on every refresh.
-      hasher.combine(preview.totalLineCount)
-      hasher.combine(preview.usesMonospacedRendering)
-    }
+    workCombineTimelineEntryRowSignature(timelineEntry, into: &hasher)
+  case .userSegment(let model):
+    workCombineTimelineEntryRowSignature(model.entry, into: &hasher)
+    hasher.combine(model.segment.index)
+    hasher.combine(model.segment.count)
+    hasher.combine(model.segment.text.utf8.count)
   case .assistantMarkdownBlock(let model):
     hasher.combine(model.id)
     hasher.combine(model.messageId)
@@ -166,6 +143,41 @@ func workChatTranscriptRowRevision(_ entry: WorkTimelineRenderEntry) -> Int {
     hasher.combine(model.accessibilityLabel)
   }
   return hasher.finalize()
+}
+
+/// The row signature of one timeline entry. Shared by a whole entry row and
+/// by each piece of a split user message, so both reconfigure on the same
+/// changes.
+private func workCombineTimelineEntryRowSignature(_ timelineEntry: WorkTimelineEntry, into hasher: inout Hasher) {
+  hasher.combine(timelineEntry.id)
+  hasher.combine(timelineEntry.timestamp)
+  hasher.combine(timelineEntry.rank)
+  // Messages take the digest-based fast path below; every other card kind
+  // hashes its whole model, so an in-place update (a tool card gaining its
+  // result, a subagent card gaining a summary, a pending-input card gaining
+  // a resolution) reconfigures the cell and re-measures its height instead
+  // of leaving a stale card on screen.
+  guard case .message(let message) = timelineEntry.payload else {
+    hasher.combine(timelineEntry.payload)
+    return
+  }
+  hasher.combine(message.id)
+  hasher.combine(message.role)
+  hasher.combine(message.steerId)
+  hasher.combine(message.deliveryState)
+  hasher.combine(message.processed)
+  hasher.combine(message.unprocessedResolution?.action)
+  hasher.combine(message.unprocessedResolution?.state)
+  hasher.combine(message.unprocessedResolution?.resolvedAt)
+  workTimelineCombineMessageTextSignature(message, into: &hasher)
+  if let preview = message.assistantPreview {
+    // A preview is a pure function of the message text, and the text is
+    // already in this hash. Its shape is enough to separate two previews of
+    // the same message — no need to hash the rendered text, which is
+    // O(message) on every refresh.
+    hasher.combine(preview.totalLineCount)
+    hasher.combine(preview.usesMonospacedRendering)
+  }
 }
 
 /// Prefers the digest the snapshot fold stamped on the message; only messages
@@ -233,6 +245,60 @@ private func workLatestAssistantMessageId(in timeline: [WorkTimelineEntry]) -> S
   return nil
 }
 
+/// A user message at least this long renders as several rows, split at
+/// paragraph breaks into pieces of about `workUserSegmentTargetCharacters`.
+/// A pasted 5,000–7,000 pt prompt cost up to 59 ms to measure as one row. The
+/// pieces draw as one bubble (`WorkChatMessageBubble.userSegment`).
+let workUserSplitCharacterThreshold = 2_000
+let workUserSegmentTargetCharacters = 1_200
+
+private final class WorkUserSegmentsCacheBox: NSObject {
+  let value: [WorkUserBubbleSegment]
+  init(_ value: [WorkUserBubbleSegment]) { self.value = value }
+}
+
+private let workUserSegmentsCache: NSCache<NSString, WorkUserSegmentsCacheBox> = {
+  let cache = NSCache<NSString, WorkUserSegmentsCacheBox>()
+  cache.countLimit = 64
+  return cache
+}()
+
+/// The pieces of a long user message, or nil when it renders as one row.
+/// Splits only at blank lines, so no paragraph (and no fenced block written
+/// without blank lines) is cut. A message with no usable break stays whole.
+func workUserMessageSegments(_ message: WorkChatMessage) -> [WorkUserBubbleSegment]? {
+  let text = message.markdown
+  guard text.utf8.count >= workUserSplitCharacterThreshold else { return nil }
+  let key = (message.markdownDigest ?? workStableDigest(text)) as NSString
+  if let cached = workUserSegmentsCache.object(forKey: key) {
+    return cached.value.count > 1 ? cached.value : nil
+  }
+  var pieces: [String] = []
+  var current = ""
+  for paragraph in text.components(separatedBy: "\n\n") {
+    if !current.isEmpty, current.utf8.count >= workUserSegmentTargetCharacters {
+      pieces.append(current)
+      current = ""
+    }
+    current = current.isEmpty ? paragraph : current + "\n\n" + paragraph
+  }
+  if !current.isEmpty { pieces.append(current) }
+  pieces = pieces
+    .map { $0.trimmingCharacters(in: .newlines) }
+    .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+  let segments = pieces.enumerated().map { index, piece in
+    WorkUserBubbleSegment(index: index, count: pieces.count, text: piece)
+  }
+  workUserSegmentsCache.setObject(WorkUserSegmentsCacheBox(segments), forKey: key)
+  return segments.count > 1 ? segments : nil
+}
+
+/// A finished answer at least this long renders as one row per markdown
+/// block, like the latest answer. As one row, a 4,000–7,000 pt answer cost
+/// 25–60 ms to measure on the main thread when an older page came in; a block
+/// row measures one block. Shorter answers stay one row (fewer cells).
+let workAssistantSplitCharacterThreshold = 1_500
+
 func workTimelineRenderEntries(
   from entries: [WorkTimelineEntry],
   streamingAssistantMessageId: String?,
@@ -242,6 +308,20 @@ func workTimelineRenderEntries(
   rendered.reserveCapacity(entries.count)
 
   for entry in entries {
+    if case .message(let message) = entry.payload,
+       message.role == "user",
+       let segments = workUserMessageSegments(message) {
+      for segment in segments {
+        let id = segment.index == 0 ? entry.id : "\(entry.id)-part\(segment.index)"
+        rendered.append(WorkTimelineRenderEntry(
+          id: id,
+          sourceEntryId: entry.id,
+          timestamp: entry.timestamp,
+          payload: .userSegment(WorkUserSegmentRenderModel(entry: entry, message: message, segment: segment))
+        ))
+      }
+      continue
+    }
     guard case .message(let message) = entry.payload,
           message.role == "assistant"
     else {
@@ -258,6 +338,7 @@ func workTimelineRenderEntries(
     let shouldSplitAssistantMessage = (
       message.id == streamingAssistantMessageId
       || message.id == splitAssistantMessageId
+      || preview.totalCharacterCount >= workAssistantSplitCharacterThreshold
     )
     guard shouldSplitAssistantMessage else {
       rendered.append(WorkTimelineRenderEntry(
@@ -299,7 +380,14 @@ func workTimelineRenderEntries(
           cacheKey: "\(message.id):preview",
           appendOnly: true
         )
-        : parseMarkdownBlocks(preview.text)
+        : parseMarkdownBlocks(
+          preview.text,
+          // The fold's digest hashes `markdown`; it names `preview.text` only
+          // when normalizing line endings changed nothing (same length).
+          digest: message.markdownRevision == 0 && preview.text.utf8.count == message.markdown.utf8.count
+            ? message.markdownDigest
+            : nil
+        )
       rendered.reserveCapacity(rendered.count + blocks.count)
       let streamingTailBlockId = message.id == streamingAssistantMessageId ? blocks.last?.id : nil
       for block in blocks {

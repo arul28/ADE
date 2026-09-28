@@ -408,8 +408,11 @@ struct WorkMarkdownBlock: Identifiable, Equatable {
   }
 }
 
-func parseMarkdownBlocks(_ markdown: String) -> [WorkMarkdownBlock] {
-  let key = workStableDigest(markdown) as NSString
+/// `digest` is `workStableDigest(markdown)` when the caller already has it
+/// (the fold stamps it on finished messages); it saves hashing the whole text
+/// on every presentation build.
+func parseMarkdownBlocks(_ markdown: String, digest: String? = nil) -> [WorkMarkdownBlock] {
+  let key = (digest ?? workStableDigest(markdown)) as NSString
   if let cached = workMarkdownBlocksCache.object(forKey: key) {
     return cached.value
   }

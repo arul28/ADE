@@ -63,6 +63,29 @@ afterEach(() => {
   }
 });
 
+/**
+ * Kills a supervisor started detached through Start-Process. Its pid record is
+ * the only handle on it, and one read races the supervisor's first
+ * Write-PidRecord: when the read lost, the supervisor was never killed and
+ * kept restarting its child for the rest of the run, holding the temp tree
+ * open (EBUSY on unlink) and starving every later suite. So wait for the
+ * record before giving up on the kill.
+ */
+async function killDetachedSupervisor(pidPath: string): Promise<void> {
+  const killDeadline = Date.now() + 15_000;
+  let record = readWindowsServicePidRecord({ pidPath });
+  while (!record?.supervisorPid && Date.now() < killDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    record = readWindowsServicePidRecord({ pidPath });
+  }
+  if (record?.supervisorPid) {
+    spawnChildSync("taskkill.exe", ["/PID", String(record.supervisorPid), "/T", "/F"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+  }
+}
+
 function makeTempHome(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
@@ -323,28 +346,91 @@ describe("Windows background service helpers", () => {
           args: ["quoted \"value\"", "O'Brien", "100% & $HOME", "naïve-東京-🚀"],
         });
       } finally {
-        // The supervisor is detached via Start-Process, so this pid record is
-        // the only handle on it. Reading it once races the supervisor's first
-        // Write-PidRecord: when the read lost, the supervisor was never killed
-        // and kept restarting its child for the rest of the run, holding the
-        // temp tree open (EBUSY on unlink) and starving every later suite.
-        // Wait for the record before giving up on the kill.
-        const pidPath = `${launcherPath}.pid.json`;
-        const killDeadline = Date.now() + 15_000;
-        let record = readWindowsServicePidRecord({ pidPath });
-        while (!record?.supervisorPid && Date.now() < killDeadline) {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-          record = readWindowsServicePidRecord({ pidPath });
-        }
-        if (record?.supervisorPid) {
-          spawnChildSync("taskkill.exe", ["/PID", String(record.supervisorPid), "/T", "/F"], {
-            encoding: "utf8",
-            windowsHide: true,
-          });
-        }
+        await killDetachedSupervisor(`${launcherPath}.pid.json`);
       }
     },
     90_000,
+  );
+
+  // The drain is C# compiled by Add-Type at supervisor start, so only a real
+  // Windows PowerShell run can prove it compiles, never blocks the brain on a
+  // full pipe, splits a line with no newline, keeps stderr, and rotates.
+  (process.platform === "win32" ? it : it.skip)(
+    "drains the brain's stdout and stderr into a bounded, rotating output log",
+    async () => {
+      const home = makeTempHome("ade windows brain output-");
+      const launcherPath = path.join(home, "brain-service.ps1");
+      const outputLogPath = path.join(home, "brain-output.log");
+      const donePath = path.join(home, "child-done");
+      // ~220 KB of lines first (past the 64 KiB rotation floor, so the log
+      // rotates; only one previous file is kept, so the lines checked below
+      // come last), then 20,000 chars with no newline, then stderr. The child
+      // then stays alive (a finished child would be restarted and write
+      // everything again).
+      const childScript = [
+        "const fs = require('node:fs');",
+        "for (let i = 0; i < 2000; i += 1) process.stdout.write(`line-${i} ${'x'.repeat(72)}\\n`);",
+        "process.stdout.write('L'.repeat(20000));",
+        "process.stdout.write('\\n');",
+        "process.stderr.write('stderr-marker\\n');",
+        "process.stdout.write('last-line\\n', () => fs.writeFileSync(process.env.ADE_TEST_DONE, 'ok'));",
+        "setInterval(() => {}, 1000);",
+      ].join(" ");
+      fs.writeFileSync(
+        launcherPath,
+        `\uFEFF${renderWindowsServiceLauncher({
+          command: process.execPath,
+          args: ["-e", childScript],
+          env: { ADE_TEST_DONE: donePath },
+        }, {
+          pidPath: `${launcherPath}.pid.json`,
+          initialRestartDelayMs: 100,
+          brainOutputLogPath: outputLogPath,
+          brainOutputMaxBytes: 64 * 1024,
+        })}`,
+        "utf8",
+      );
+
+      const bootstrap = spawnChildSync(
+        windowsPowerShellCommand(),
+        buildWindowsStartLauncherArgs(launcherPath),
+        { encoding: "utf8", windowsHide: true },
+      );
+      try {
+        expect(bootstrap.status).toBe(0);
+        const readLog = (): string =>
+          [`${outputLogPath}.1`, outputLogPath]
+            .filter((file) => fs.existsSync(file))
+            .map((file) => fs.readFileSync(file, "utf8"))
+            .join("");
+        // The child's done file only says its writes returned; the drain
+        // threads (one per stream) append after that, so wait for both.
+        const drained = (log: string): boolean =>
+          log.includes(" out last-line") && log.includes(" err stderr-marker");
+        const deadline = Date.now() + 60_000;
+        while (!drained(readLog()) && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        expect(fs.existsSync(donePath)).toBe(true);
+        const lines = readLog().split("\r\n").filter(Boolean);
+        expect(lines.some((line) => line.endsWith(" err stderr-marker"))).toBe(true);
+        expect(lines.some((line) => line.endsWith(" out last-line"))).toBe(true);
+        // The no-newline line comes out in bounded pieces (a pending buffer
+        // under 8,192 chars plus one 8,192-char read), and none of it is lost.
+        const longPieces = lines
+          .map((line) => /^\S+ out (L+)$/.exec(line)?.[1] ?? null)
+          .filter((piece): piece is string => piece !== null);
+        expect(longPieces.length).toBeGreaterThan(1);
+        expect(longPieces.every((piece) => piece.length < 2 * 8192)).toBe(true);
+        expect(longPieces.join("").length).toBe(20000);
+        // Rotation: one previous file, and the live file stays near the cap.
+        expect(fs.existsSync(`${outputLogPath}.1`)).toBe(true);
+        expect(fs.statSync(outputLogPath).size).toBeLessThan(64 * 1024 + 16 * 1024);
+      } finally {
+        await killDetachedSupervisor(`${launcherPath}.pid.json`);
+      }
+    },
+    120_000,
   );
 
   it("registers and starts the per-user background service without Task Scheduler", async () => {

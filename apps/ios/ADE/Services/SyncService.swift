@@ -703,14 +703,14 @@ enum InitialHydrationGate {
   static func waitForProjectRow(
     timeoutNanoseconds: UInt64 = defaultTimeoutNanoseconds,
     pollIntervalNanoseconds: UInt64 = defaultPollIntervalNanoseconds,
-    currentProjectId: () -> String?,
+    currentProjectId: () async -> String?,
     shouldContinue: () -> Bool = { true },
     sleep: @escaping (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) }
   ) async throws {
     guard shouldContinue() else {
       throw CancellationError()
     }
-    guard currentProjectId() == nil else { return }
+    guard await currentProjectId() == nil else { return }
 
     var waited: UInt64 = 0
     while waited < timeoutNanoseconds {
@@ -719,7 +719,7 @@ enum InitialHydrationGate {
         throw CancellationError()
       }
       waited += pollIntervalNanoseconds
-      if currentProjectId() != nil {
+      if await currentProjectId() != nil {
         return
       }
     }
@@ -5425,6 +5425,31 @@ final class SyncService: ObservableObject {
     }
     guard let activeProjectRootPath else { return nil }
     return candidates.first { normalizedProjectRoot($0.rootPath) == activeProjectRootPath }
+  }
+
+  /// `ensureActiveProjectCacheRowForHydration` for the connect path: the
+  /// row check and the write run off the main actor, because a catch-up batch
+  /// holds the database queue right after a connect.
+  private func ensureActiveProjectCacheRowForHydrationOffMain() async throws {
+    guard let activeProjectId else { return }
+    if await readDatabaseOffMain({ $0.hasProject(id: activeProjectId) }) { return }
+    guard self.activeProjectId == activeProjectId,
+          let project = activeProjectCatalogEntryForHydration() else {
+      return
+    }
+    let database = self.database
+    try await Task.detached(priority: .userInitiated) {
+      try database.upsertMobileProjectCache(project)
+    }.value
+    let rows = await readDatabaseOffMain { $0.listMobileProjects() }
+    refreshProjectCatalog(preferRemoteSelection: true, cachedRows: rows)
+  }
+
+  /// One database read on a detached task. A changeset batch applies under
+  /// the database queue for the whole batch, so a main-actor read waits it out.
+  func readDatabaseOffMain<T>(_ read: @escaping (DatabaseService) -> T) async -> T {
+    let database = self.database
+    return await Task.detached(priority: .userInitiated) { read(database) }.value
   }
 
   private func ensureActiveProjectCacheRowForHydration() throws {
@@ -22032,11 +22057,16 @@ final class SyncService: ObservableObject {
     }
 
     do {
-      try ensureActiveProjectCacheRowForHydration()
+      try await ensureActiveProjectCacheRowForHydrationOffMain()
+      // Polled while the first catch-up batch applies, and that batch holds the
+      // database queue: a main-actor read here waited out the batch (14–83 ms
+      // frames right after a connect). The reads run off main; the main-actor
+      // state they are matched against is read here.
       try await InitialHydrationGate.waitForProjectRow(
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
-            let cachedProjects = self.database.listMobileProjects().filter { !self.isProjectHidden($0) }
+            let cachedProjects = await self.readDatabaseOffMain { $0.listMobileProjects() }
+              .filter { !self.isProjectHidden($0) }
             guard cachedProjects.count == 1, let onlyProject = cachedProjects.first else {
               return nil
             }
@@ -22048,7 +22078,10 @@ final class SyncService: ObservableObject {
             }
             return onlyProject.id
           }
-          return self.database.hasProject(id: activeProjectId) ? activeProjectId : nil
+          let hasRow = await self.readDatabaseOffMain { $0.hasProject(id: activeProjectId) }
+          // The selection can move while the read is off main.
+          guard self.activeProjectId == activeProjectId else { return nil }
+          return hasRow ? activeProjectId : nil
         },
         shouldContinue: { self.isCurrentConnectionGeneration(connectionGeneration) }
       )
@@ -22071,23 +22104,25 @@ final class SyncService: ObservableObject {
     }
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
+    let projectRows = await readDatabaseOffMain { $0.listMobileProjects() }
+    guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     if activeProjectId == nil {
-      let cachedProjects = database.listMobileProjects().filter { !isProjectHidden($0) }
+      let cachedProjects = projectRows.filter { !isProjectHidden($0) }
       if cachedProjects.count == 1, let onlyProject = cachedProjects.first {
         if supportsProjectCatalog {
           guard remoteProjectCatalog.count == 1,
                 remoteProjectCatalog.first?.id == onlyProject.id else {
-            refreshProjectCatalog()
+            refreshProjectCatalog(cachedRows: projectRows)
             return
           }
         }
         setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
       } else {
-        refreshProjectCatalog()
+        refreshProjectCatalog(cachedRows: projectRows)
         return
       }
     }
-    refreshProjectCatalog()
+    refreshProjectCatalog(cachedRows: projectRows)
     // Lanes, work sessions and PRs are three independent host round trips.
     // Awaiting them in series cost the sum of three latencies on every project
     // switch — tolerable on LAN, punishing over relay. `async let` overlaps

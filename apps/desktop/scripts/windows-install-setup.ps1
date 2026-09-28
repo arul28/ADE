@@ -116,7 +116,12 @@ try {
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE terminal command installer exited with code $LASTEXITCODE."
   }
-  & $cliWrapper serve --install-service
+  # `brain start`, NOT `serve --install-service`: the latter registers the
+  # service at whatever ADE_DEFAULT_ROLE happens to be, which is unset here,
+  # so the brain came up as role `agent` and refused the desktop app and the
+  # phone (role `cto`) until the app re-registered it. `brain start` pins
+  # `cto`, the same as `install-runtime.ps1`.
+  & $cliWrapper brain start
   if ($LASTEXITCODE -ne 0) {
     throw "The ADE per-user brain startup installer exited with code $LASTEXITCODE."
   }
@@ -124,8 +129,13 @@ try {
   $setupError = $_
   $rollbackErrors = [Collections.Generic.List[string]]::new()
   if ($serviceStateKnown) {
-    $rollbackServiceFlag = if ($previousServiceInstalled) { "--install-service" } else { "--uninstall-service" }
-    & $cliWrapper serve $rollbackServiceFlag 2>$null | Out-Null
+    # Restoring an installed service goes through `brain start` for the same
+    # `cto` reason as the install step above.
+    if ($previousServiceInstalled) {
+      & $cliWrapper brain start 2>$null | Out-Null
+    } else {
+      & $cliWrapper serve --uninstall-service 2>$null | Out-Null
+    }
     if ($LASTEXITCODE -ne 0) {
       $rollbackErrors.Add("could not restore the previous brain startup state (exit $LASTEXITCODE)")
     } elseif ($previousServiceInstalled -and -not $previousServiceRunning) {

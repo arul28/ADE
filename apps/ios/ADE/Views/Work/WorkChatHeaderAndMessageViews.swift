@@ -294,6 +294,7 @@ struct WorkChatMessageBubble: View, Equatable {
     lhs.message == rhs.message
       && lhs.isStreaming == rhs.isStreaming
       && lhs.maxUserBubbleWidth == rhs.maxUserBubbleWidth
+      && lhs.userSegment == rhs.userSegment
   }
 
   let message: WorkChatMessage
@@ -304,6 +305,11 @@ struct WorkChatMessageBubble: View, Equatable {
   /// Computed once by the parent transcript view. Avoids installing one
   /// GeometryReader per user row while preserving the desktop-style max width.
   var maxUserBubbleWidth: CGFloat? = nil
+  /// Set when this row draws one piece of a long user message. The pieces are
+  /// separate transcript rows that draw as one bubble: only the outer ends are
+  /// rounded, the fill runs through the row margins between them, and the
+  /// attachments, delivery badge and actions sit under the last piece.
+  var userSegment: WorkUserBubbleSegment? = nil
   var onRunUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
   var onEditUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
   var onDismissUnprocessed: (@MainActor (WorkChatMessage) async throws -> Void)? = nil
@@ -426,10 +432,14 @@ struct WorkChatMessageBubble: View, Equatable {
     // drop shadow. Attachments render inside the same bubble (not below it).
     // Capped at ~92% of the measured column width on mobile so long prompts
     // use more horizontal space and less vertical scroll.
-    let attachments = message.attachments ?? []
+    let segment = userSegment
+    let isLastPiece = segment?.isLast ?? true
+    let attachments = isLastPiece ? (message.attachments ?? []) : []
     let hasAttachments = !attachments.isEmpty
-    let hasText = !message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let bubbleText = segment?.text ?? message.markdown
+    let hasText = !bubbleText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     let maxBubbleWidth = maxUserBubbleWidth ?? 360
+    let shape = WorkUserBubbleShape(segment: segment)
 
     return HStack(alignment: .top, spacing: 8) {
       Spacer(minLength: 0)
@@ -437,7 +447,7 @@ struct WorkChatMessageBubble: View, Equatable {
         if hasText || hasAttachments {
           VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
             if hasText {
-              WorkChipMessageText(text: message.markdown)
+              WorkChipMessageText(text: bubbleText)
             }
             if hasAttachments {
               WorkChatAttachmentTray(
@@ -448,22 +458,35 @@ struct WorkChatMessageBubble: View, Equatable {
             }
           }
           .padding(.horizontal, 16)
-          .padding(.vertical, 8)
-          .background(userBubbleFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .padding(.top, segment?.isFirst == false ? 0 : 8)
+          .padding(.bottom, isLastPiece ? 8 : 0)
+          // Every piece spans the full bubble width, so a short last
+          // paragraph does not leave a ragged edge.
+          .frame(maxWidth: segment == nil ? nil : .infinity, alignment: .leading)
+          .background(alignment: .top) {
+            // Through the row margins at a join (see `WorkUserBubbleShape`).
+            shape.fill(userBubbleFill)
+              .padding(.top, -shape.extensionAbove)
+              .padding(.bottom, -shape.extensionBelow)
+          }
+          .overlay {
+            WorkUserBubbleOutline(segment: segment)
               .stroke(userBubbleBorder, lineWidth: 0.8)
-          )
+              .padding(.top, -shape.extensionAbove)
+              .padding(.bottom, -shape.extensionBelow)
+          }
           .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityElement(children: .combine)
           .accessibilityLabel(userMessageAccessibilityLabel)
+          // One accessibility element per message: the first piece speaks it.
+          .accessibilityHidden(segment.map { !$0.isFirst } ?? false)
         }
-        if let deliveryBadge {
+        if isLastPiece, let deliveryBadge {
           WorkDeliveryBadge(state: deliveryBadge)
             .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
         }
-        if message.deliveryState == "unprocessed" {
+        if isLastPiece, message.deliveryState == "unprocessed" {
           WorkUnprocessedMessageActions(
             message: message,
             onRun: onRunUnprocessed,
@@ -624,6 +647,69 @@ func workChipAttributedMessage(
 ///
 /// The raw text is never rewritten. "Copy message" in the bubble's context menu
 /// still copies `message.markdown` verbatim, which is the canonical token form.
+/// The fill of a user bubble, or of one piece of a split user message.
+///
+/// Transcript rows sit `rowSpacing / 2` (7 pt) inside their cell on each side,
+/// so two pieces are 14 pt apart. A piece extends its fill 7 pt into each
+/// margin at a join, and the two pieces meet with no gap.
+struct WorkUserBubbleShape: Shape {
+  static let cornerRadius: CGFloat = 16
+  static let joinExtension: CGFloat = 7
+
+  let segment: WorkUserBubbleSegment?
+
+  var extensionAbove: CGFloat { segment.map { $0.isFirst ? 0 : Self.joinExtension } ?? 0 }
+  var extensionBelow: CGFloat { segment.map { $0.isLast ? 0 : Self.joinExtension } ?? 0 }
+
+  func path(in rect: CGRect) -> Path {
+    let top = segment?.isFirst ?? true ? Self.cornerRadius : 0
+    let bottom = segment?.isLast ?? true ? Self.cornerRadius : 0
+    return UnevenRoundedRectangle(
+      topLeadingRadius: top,
+      bottomLeadingRadius: bottom,
+      bottomTrailingRadius: bottom,
+      topTrailingRadius: top,
+      // A split piece uses circular corners, the same arcs its outline draws.
+      style: segment == nil ? .continuous : .circular
+    ).path(in: rect)
+  }
+}
+
+/// The border of a user bubble. A piece of a split message leaves its join
+/// edges open, so no line crosses the bubble between two pieces.
+struct WorkUserBubbleOutline: Shape {
+  let segment: WorkUserBubbleSegment?
+
+  func path(in rect: CGRect) -> Path {
+    guard let segment, !(segment.isFirst && segment.isLast) else {
+      return RoundedRectangle(cornerRadius: WorkUserBubbleShape.cornerRadius, style: .continuous).path(in: rect)
+    }
+    let r = min(WorkUserBubbleShape.cornerRadius, rect.width / 2, rect.height / 2)
+    var path = Path()
+    // Leading edge, top to bottom.
+    if segment.isFirst {
+      path.move(to: CGPoint(x: rect.minX, y: rect.minY + r))
+    } else {
+      path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+    }
+    if segment.isLast {
+      path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.maxY), tangent2End: CGPoint(x: rect.maxX, y: rect.maxY), radius: r)
+      path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.maxY), tangent2End: CGPoint(x: rect.maxX, y: rect.minY), radius: r)
+    } else {
+      path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+      path.move(to: CGPoint(x: rect.maxX, y: rect.maxY))
+    }
+    // Trailing edge, bottom to top.
+    if segment.isFirst {
+      path.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY), tangent2End: CGPoint(x: rect.minX, y: rect.minY), radius: r)
+      path.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY), tangent2End: CGPoint(x: rect.minX, y: rect.maxY), radius: r)
+    } else {
+      path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+    }
+    return path
+  }
+}
+
 struct WorkChipMessageText: View {
   let text: String
   var foreground: Color = .white

@@ -355,19 +355,48 @@ final class ChatThreadEngineTests: XCTestCase {
 
   // MARK: - 6. Steers, resolutions, retractions
 
+  /// A steer the host wrote as `queued`, then as settled (`delivered`, or a
+  /// Claude `inline` steer) under the same steerId, is one message in the
+  /// thread and nothing in the queued strip — whichever way the rows reach
+  /// the engine. The cached and snapshot paths are the idle reopen that once
+  /// showed a delivered steer as queued and dropped it from the thread.
   func testGraduatedQueuedSteerRendersOnce() async {
-    let engine = makeEngine()
-    await engine.ingest(snapshot([user(1, "start", turn: "t1"), text(2, "working", turn: "t1")]))
-    _ = await engine.flush()
-
-    await engine.ingest(.live([user(3, "also do this", turn: "t1", steerId: "s1", delivery: "queued")]))
-    let queued = await engine.flush()
-    XCTAssertEqual(queued?.pendingSteers.map(\.id), ["s1"])
-
-    await engine.ingest(.live([user(4, "also do this", turn: "t2", steerId: "s1", delivery: "delivered")]))
-    let frame = await engine.flush()
-    XCTAssertEqual(frame?.pendingSteers.map(\.id), [])
-    XCTAssertEqual(messages(frame).filter { $0.role == "user" && $0.markdown == "also do this" }.count, 1)
+    enum Path: CaseIterable { case live, snapshot, cachedThenSnapshot }
+    for delivery in ["delivered", "inline"] {
+      for path in Path.allCases {
+        let context = "delivery=\(delivery) path=\(path)"
+        let engine = makeEngine()
+        let head = [user(1, "start", turn: "t1"), text(2, "working", turn: "t1")]
+        let queued = user(3, "also do this", turn: "t1", steerId: "s1", delivery: "queued")
+        let settled = user(4, "also do this", turn: "t2", steerId: "s1", delivery: delivery)
+        let tail = text(5, "done both", turn: "t2")
+        var frame: ChatThreadFrame?
+        switch path {
+        case .live:
+          await engine.ingest(snapshot(head))
+          _ = await engine.flush()
+          await engine.ingest(.live([queued]))
+          let queuedFrame = await engine.flush()
+          XCTAssertEqual(queuedFrame?.pendingSteers.map(\.id), ["s1"], context)
+          await engine.ingest(.live([settled, tail]))
+          frame = await engine.flush()
+        case .snapshot:
+          await engine.ingest(snapshot(head + [queued, settled, tail]))
+          frame = await engine.flush()
+        case .cachedThenSnapshot:
+          await engine.ingest(.cached(meta: nil, events: (head + [queued, settled, tail]).map(stored)))
+          _ = await engine.flush()
+          await engine.ingest(snapshot(head + [queued, settled, tail]))
+          frame = await engine.flush()
+        }
+        XCTAssertEqual(frame?.pendingSteers.map(\.id), [], context)
+        XCTAssertEqual(
+          messages(frame).filter { $0.role == "user" && $0.markdown == "also do this" }.count,
+          1,
+          context
+        )
+      }
+    }
   }
 
   func testUserMessageResolutionAttachesToItsMessage() async {
