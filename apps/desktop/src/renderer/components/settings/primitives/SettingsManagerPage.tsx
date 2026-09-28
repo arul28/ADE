@@ -92,38 +92,12 @@ export function SettingsManagerTable({
   children: React.ReactNode;
 }) {
   const template = columns.map((column) => column.width ?? "minmax(120px, 1fr)").join(" ");
+  // No frame and no header strip: the section already provides the card, and a
+  // bordered table inside a bordered card is a box in a box. The rows are just
+  // a list; the column tracks keep everything aligned without shouting.
   return (
-    <div
-      style={{
-        border: `1px solid ${COLORS.outlineBorder}`,
-        borderRadius: 8,
-        overflowX: "auto",
-        background: "var(--color-card)",
-      }}
-    >
+    <div style={{ overflowX: "auto" }}>
       <div style={{ [COLUMNS_VAR]: template, minWidth } as React.CSSProperties}>
-        <div
-          role="row"
-          style={{
-            display: "grid",
-            gridTemplateColumns: `var(${COLUMNS_VAR})`,
-            gap: 12,
-            alignItems: "center",
-            padding: "9px 12px",
-            borderBottom: `1px solid ${COLORS.outlineBorder}`,
-            color: COLORS.textMuted,
-            fontFamily: SANS_FONT,
-            fontSize: 10,
-            fontWeight: 700,
-            textTransform: "uppercase",
-          }}
-        >
-          {columns.map((column) => (
-            <span key={column.label} style={{ textAlign: column.align ?? "left" }}>
-              {column.label}
-            </span>
-          ))}
-        </div>
         {children}
       </div>
     </div>

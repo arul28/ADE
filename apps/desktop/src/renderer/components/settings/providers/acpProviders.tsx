@@ -8,7 +8,7 @@
  * four near-identical descriptors.
  */
 import React, { useCallback, useEffect, useState } from "react";
-import { CheckCircle, Info, XCircle } from "@phosphor-icons/react";
+import { CheckCircle, FolderSimple, Info, Key, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
@@ -98,12 +98,12 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
   {
     ...ACP_PROVIDER_METADATA.devin,
     id: "devin",
-    tagline: "Uses your Devin account through the devin CLI.",
+    tagline: "Your local Devin CLI.",
     logoFamily: "devin",
     installCommand: "curl -fsSL https://cli.devin.ai/install.sh | bash",
-    credentialSource: "Signed in through `devin auth login` (browser OAuth, any Devin account), or WINDSURF_API_KEY. ADE does not write Devin's config.",
-    setup: "Install the Devin CLI (`brew install --cask devin-cli`, or the install command) and run `devin auth login`. ADE reuses that login and never writes Devin's config. Devin discovers AGENTS.md and .agents/skills/ in the lane itself, so ADE guidance reaches it without prompt injection.",
-    degradation: "Devin CLI does not yet expose account Knowledge, Playbooks, or Secrets to local sessions.",
+    credentialSource: "`devin auth login`, or WINDSURF_API_KEY.",
+    setup: "Install the devin CLI, then run `devin auth login`.",
+    degradation: "No org Knowledge, Playbooks, or Secrets in local sessions.",
   },
 ];
 
@@ -201,17 +201,18 @@ function acpFacts(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provide
   const binary = diagnostics?.binaryPath ?? connectionPath;
   const configHome = diagnostics?.configHome ?? null;
   return [
-    ...(binary ? [{ label: "Binary", value: binary, mono: true }] : []),
+    ...(binary ? [{ label: "Binary", value: binary, mono: true, icon: <Terminal size={12} weight="bold" /> }] : []),
     ...(configHome
       ? [{
           label: spec.configHomeEnv ? `Config home (${spec.configHomeEnv})` : "Config home",
           value: configHome,
           mono: true,
+          icon: <FolderSimple size={12} weight="bold" />,
         }]
       : []),
-    { label: "Credentials", value: spec.credentialSource },
-    { label: "Setup", value: spec.setup },
-    ...(spec.degradation ? [{ label: "Known limitation", value: spec.degradation }] : []),
+    { label: "Credentials", value: spec.credentialSource, icon: <Key size={12} weight="bold" /> },
+    { label: "Setup", value: spec.setup, icon: <Wrench size={12} weight="bold" /> },
+    ...(spec.degradation ? [{ label: "Known limitation", value: spec.degradation, icon: <Warning size={12} weight="bold" /> }] : []),
   ];
 }
 
@@ -400,16 +401,9 @@ function DevinBody() {
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <SubsectionTitle>Devin Cloud</SubsectionTitle>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        The API token that powers the Devin fleet, mirrored chats, and sending
-        work to Devin's cloud VMs. Paste a Personal Access Token
-        (<span style={{ fontFamily: MONO_FONT }}>cog_…</span>) from
-        app.devin.ai → Settings → API, which acts as you; a service-user key
-        (<span style={{ fontFamily: MONO_FONT }}>cog_…</span>, Settings →
-        Devin API → Service users) for automation, ideally with an "Act as
-        user" id below; or a legacy personal key
-        (<span style={{ fontFamily: MONO_FONT }}>apk_user_…</span>) where v3 is
-        unavailable. On Enterprise plans PATs are off by default — use a service
-        user there.
+        Paste a token from app.devin.ai → Settings → API. A Personal Access
+        Token (<span style={{ fontFamily: MONO_FONT }}>cog_…</span>) acts as
+        you; a service-user key is for automation.
       </div>
       {auth?.configured ? (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -467,11 +461,8 @@ function DevinBody() {
             style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
           />
           <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.4 }}>
-            Org id is auto-discovered for Personal Access Tokens; service users
-            and personal/team accounts must paste it — visible in your Devin
-            settings and session URLs (or via devin auth status). The act-as
-            user id is only needed on a service-user key so sessions land in
-            that person's list and usage.
+            Org id: auto-discovered for PATs; paste it for service users.
+            Act-as user: only for service-user keys.
           </div>
         </div>
       )}

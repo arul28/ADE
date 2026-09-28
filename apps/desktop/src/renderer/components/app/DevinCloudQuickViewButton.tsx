@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 import type { DevinCloudAuthStatus } from "../../../shared/types";
-import devinMark from "../../assets/provider-logos/devin.svg";
+import { DevinMark } from "../shared/ProviderLogos";
 import { useAppStore } from "../../state/appStore";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
@@ -209,16 +209,10 @@ export function DevinCloudQuickViewButton({
     onMenuActivate?.();
   };
 
-  const iconSize = variant === "menu-row" ? 12 : 13;
-  const icon = (
-    <img
-      src={devinMark}
-      alt=""
-      aria-hidden
-      className="rounded-[3px]"
-      style={{ width: iconSize, height: iconSize }}
-    />
-  );
+  // The glyph sits inside a 24px viewBox with padding, so it needs a couple
+  // more px than Cursor's mark to read the same size in the bar.
+  const iconSize = variant === "menu-row" ? 13 : 20;
+  const icon = <DevinMark size={iconSize} className={variant === "icon" ? "text-fg/80" : undefined} />;
 
   return (
     <>

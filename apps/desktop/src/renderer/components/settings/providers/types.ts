@@ -79,6 +79,8 @@ export type ProviderFact = {
   value: string;
   /** Paths and commands only. */
   mono?: boolean;
+  /** Small leading glyph, so a fact reads as an item and not a line of text. */
+  icon?: React.ReactNode;
 };
 
 /** Everything a descriptor, tile, or body can read or do. */
