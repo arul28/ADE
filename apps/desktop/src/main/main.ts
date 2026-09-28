@@ -1722,7 +1722,9 @@ app.whenReady().then(async () => {
         (win) => !win.isDestroyed()
           && (windowProjectRoots.has(win.id) || windowProjectBindings.has(win.id)),
       );
-      return appWindows.find((win) => windowKnownLocalProjectRoots.get(win.id)?.has(normalizedRoot))
+      const knowsRoot = (win: BrowserWindow) =>
+        [...(windowKnownLocalProjectRoots.get(win.id) ?? [])].some((root) => pathsEqual(root, normalizedRoot));
+      return appWindows.find(knowsRoot)
         ?? appWindows.find((win) => win.isFocused())
         ?? appWindows[0]
         ?? null;

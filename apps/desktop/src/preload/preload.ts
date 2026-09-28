@@ -2356,21 +2356,6 @@ function appControlNeedsProjectRuntime(action: string): Promise<never> {
 }
 
 /**
- * The built-in browser never routes on a pin.
- *
- * The browser is a `WebContentsView` owned by THIS desktop's main process, so
- * unlike the simulator or App Control there is no browser on the pinned machine
- * to drive. Every `builtInBrowser.*` call is local IPC, scoped by the
- * `projectRoot` in its args; a remote pin only changes what `localhost` means
- * (`withLocalizedBrowserUrl`). A local pin must not go through that checkout's
- * runtime either: the runtime's browser gate admits only an agent's own chat
- * (with its actor capability), so this window — a person's client with no chat
- * identity — was refused every call ("built-in browser access is limited to the
- * caller's own session") whenever its session sat on a different local binding
- * than the tab, e.g. this computer's lane shown in a tab bound to another machine.
- */
-
-/**
  * Rewrite a browser call's `url` onto a forward when the chat is pinned to
  * another machine. Non-loopback URLs, and every local pin, pass through
  * unchanged — this is the only place a remote pin changes a browser argument.
@@ -3917,7 +3902,7 @@ function untrackBuiltInBrowserPreviewStream(tabId: string): void {
 
 function subscribeBuiltInBrowserEvents(
   cb: (payload: BuiltInBrowserEventPayload) => void,
-  pin?: OpenProjectBinding | null,
+  _pin?: OpenProjectBinding | null,
 ): () => void {
   // Unlike every sibling panel, the built-in browser is hosted by THIS desktop's
   // main process (it owns a WebContentsView); the runtime daemon only proxies
@@ -3927,7 +3912,6 @@ function subscribeBuiltInBrowserEvents(
   // every pin, local or remote, reads the local IPC stream. What a remote pin
   // adds is `subscribeBuiltInBrowserRemoteRequests`: `ade browser open` run on
   // that machine has no browser of its own and hands the URL here instead.
-  void pin;
   return builtInBrowserEventFanout(cb);
 }
 
@@ -9362,6 +9346,20 @@ const adeBridge = {
       ),
     onEvent: subscribeAppControlEvents,
   },
+  /**
+   * Browser actions are local IPC, scoped by the `projectRoot` in their args.
+   *
+   * The browser is a `WebContentsView` owned by THIS desktop's main process, so
+   * unlike the simulator or App Control there is no browser on the pinned machine
+   * to drive. The pin only localizes URLs: on a remote pin a loopback URL is
+   * rewritten onto a port forward (`withLocalizedBrowserUrl`), and
+   * `acknowledgeRemoteRequest` deliberately answers the pinned daemon. A local pin
+   * must not go through that checkout's runtime: the runtime's browser gate admits
+   * only an agent's own chat (with its actor capability), so this window — a
+   * person's client with no chat identity — was refused every call whenever its
+   * session sat on another binding than the tab. Methods keep their `pin`
+   * parameter so every call site stays uniform.
+   */
   builtInBrowser: {
     getStatus: async (
       args: BuiltInBrowserProjectScopeArgs = {},
@@ -9559,8 +9557,6 @@ const adeBridge = {
       args: BuiltInBrowserTabTargetArgs = {},
       _pin?: OpenProjectBinding | null,
     ): Promise<BuiltInBrowserScreenshotResult> =>
-      // A pinned runtime answers on the agent contract (no tab = a rejected
-      // request), so its success is tagged here to keep one shape for callers.
       ipcRenderer.invoke(IPC.builtInBrowserCaptureScreenshot, args),
     selectPoint: async (
       args: BuiltInBrowserSelectPointArgs,
@@ -9581,13 +9577,8 @@ const adeBridge = {
         () => ipcRenderer.invoke(IPC.builtInBrowserClearSelection, args),
       ),
     /**
-     * Human hand-back. Deliberately NOT routed through a locally-pinned
-     * runtime, unlike every other browser call. The handed-off tab is this
-     * Electron process's own `WebContentsView`, and the daemon round-trip
-     * cannot reach it: `adeRpcServer` only accepts `endHandoff` from a user
-     * client (no `chatSessionId`), and `desktopBridgeServer` then refuses that
-     * same caller for having no chat capability. Routing it locally is the only
-     * shape where `Hand back` actually works on a local pin; the agent-facing
+     * Human hand-back. Local IPC like every other browser call: the handed-off
+     * tab is this Electron process's own `WebContentsView`, and the agent-facing
      * gate is unaffected because agents never reach this preload surface.
      */
     endHandoff: async (

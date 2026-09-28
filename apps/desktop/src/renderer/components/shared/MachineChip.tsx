@@ -7,11 +7,10 @@ import type { MachineChipModel } from "../../state/laneMachineRouting";
  * The machine chip for a row that belongs to one machine: a lane, a PR's lane,
  * an automation rule, a history event. One neutral identity pill everywhere.
  *
- * Unlike the Work sidebar's amber `LaneMachineMarker`, which flags only other
- * machines' lanes, this goes on every row (this computer's included) once the
- * project spans more than one machine (`shouldShowMachineChips`), because a
- * list across machines needs the owner on each row; amber would read as a
- * warning on every row. An offline machine's chip is greyed and its tooltip
+ * Unlike the Work sidebar's `LaneMachineMarker`, which appears only for an
+ * offline machine's lanes, this goes on every row (this computer's included)
+ * once the project spans more than one machine (`shouldShowMachineChips`),
+ * because a list across machines needs the owner on each row. An offline machine's chip is greyed and its tooltip
  * says so. Build the model with `machineChipFor`.
  */
 export function MachineChip({

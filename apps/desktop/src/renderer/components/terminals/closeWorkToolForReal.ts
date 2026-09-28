@@ -55,11 +55,15 @@ export function closeWorkToolForReal(
       // collection, and "close the browser" means the collection. A tab that
       // is recording stays: an agent is filming proof in it, and closing the
       // pane ended that recording with the tab and threw the video away.
-      void browser.getStatus(undefined, pin)
+      // Scoped to the pinned checkout exactly as the panel scopes itself:
+      // browser calls are local IPC, so the pin alone no longer picks the
+      // collection, and an unscoped close would empty the window's own project.
+      const scope = runtimePin?.rootPath ? { projectRoot: runtimePin.rootPath } : {};
+      void browser.getStatus(scope, pin)
         .then((status) => Promise.all(
           status.tabs
             .filter((tab) => !tab.recording)
-            .map((tab) => browser.closeTab({ tabId: tab.id }, pin)),
+            .map((tab) => browser.closeTab({ ...scope, tabId: tab.id }, pin)),
         ))
         .catch((error) => logCloseFailure(tool, error));
       return;

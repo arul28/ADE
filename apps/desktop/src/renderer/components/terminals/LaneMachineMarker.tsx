@@ -1,6 +1,6 @@
 import React from "react";
 import { CloudCheck, DesktopTower } from "@phosphor-icons/react";
-import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
+import { isMachineMarkerShown, type CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
 /**
@@ -15,7 +15,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
  * `mode: "name"`.
  */
 export function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }) {
-  if (marker.online) return null;
+  if (!isMachineMarkerShown(marker)) return null;
   return (
     <SmartTooltip
       forceEnabled

@@ -2995,12 +2995,11 @@ export const SessionListPane = React.memo(function SessionListPane({
         })}`)}
       />
     ) : null;
-    // Never populated for a lane on the Mac you're sitting at — the marker says
-    // exactly one thing, "this work isn't here", and no lane type is exempt.
-    // Note this list is the ACTIVE BINDING's lanes, which is not necessarily
-    // this machine: bind the tab to another Mac and every lane here is marked.
+    // Never populated for a lane on the Mac you're sitting at. Note this list is
+    // the ACTIVE BINDING's lanes, which is not necessarily this machine; the
+    // marker only draws while its machine is offline (`isMachineMarkerShown`).
     const machineMarker = markersByLaneId.get(lane.id) ?? null;
-    // A header that names the machine makes every row beneath it a repetition.
+    // A header that marks the machine makes every row beneath it a repetition.
     // A headerless lane has no such header, so its lone card carries the marker
     // itself — handed down explicitly below rather than suppressed here.
     const suppressMachineChip = Boolean(machineMarker) && !headerless;

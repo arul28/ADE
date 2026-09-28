@@ -219,10 +219,11 @@ export type CrossMachineUnion = {
  * against — and that exception is worth being explicit about rather than
  * implicit in a second component.
  *
- * The glyph is amber, in an amber pill. Amber is machine identity everywhere in
- * ADE (top bar, connections panel, Activity pane, session hover card), and
- * `SessionCard` states the rule directly: amber appears exactly once per row, on
- * the machine tower, because that glyph is identity and never status.
+ * Only an OFFLINE machine's marker is drawn (`isMachineMarkerShown`): a dimmed
+ * tower that says why those rows went quiet. An online machine's work just works
+ * wherever it lives, and the top bar's connection dot already says the machines
+ * are linked. Online markers are still resolved, because the session hover card
+ * names the machine and the Files pane labels whose disk it shows.
  */
 export type CrossMachineLaneMarker = {
   machineId: string;
@@ -814,11 +815,15 @@ export function orderCrossMachineRows(
     .map(({ row }) => row);
 }
 
+/** Whether a marker is drawn at all: only for a machine that is offline. */
+export function isMachineMarkerShown(marker: CrossMachineLaneMarker): boolean {
+  return !marker.online;
+}
+
 /**
  * Resolves the marker for every lane that is not on this physical Mac. Rows on
- * this machine get no entry at all — "work isn't here" is the only thing the
- * marker communicates, so on a single-machine setup this map is empty and the
- * header is untouched.
+ * this machine get no entry at all, so on a single-machine setup this map is
+ * empty. Whether a resolved marker is drawn is `isMachineMarkerShown`'s call.
  *
  * Note what this does NOT consult: `isActiveBinding`. A lane on the machine the
  * project tab happens to point at is still foreign work if you are sitting at a

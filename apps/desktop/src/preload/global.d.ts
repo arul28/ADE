@@ -3063,6 +3063,10 @@ declare global {
          */
         holdFrames?: () => () => void;
       };
+      /**
+       * Always local IPC scoped by `projectRoot`; the optional `pin` only
+       * localizes loopback URLs for a remote machine (see preload).
+       */
       builtInBrowser: {
         getStatus: (
           args?: BuiltInBrowserProjectScopeArgs,

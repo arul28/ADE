@@ -28,7 +28,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
-import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
+import { isMachineMarkerShown, type CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import {
   canonicalInputFromSummary,
   sanitizeTerminalInlineText,
@@ -749,26 +749,24 @@ export const SessionCard = React.memo(function SessionCard({
 
      Two reasons it moved. It is the one part of line 1 whose width is fixed, so
      on the left it pushed the elastic lane name around by a constant; and a run
-     of singleton cards down the sidebar now aligns its glyphs in a single
-     column, which is what makes "three of these are elsewhere, one is here"
-     readable at a glance instead of row by row.
+     of singleton cards down the sidebar aligns its glyphs in a single column.
 
      Deliberately an inline element rather than `LaneMachineMarker`: that
      component wraps itself in its own SmartTooltip with a focusable trigger, and
      this row already owns a hover card and a click target. The visual identity
-     is identical — amber tower, amber pill — and the name is carried by the
-     hover card's machine row rather than inline, per the glyph-only rule.
+     matches it — a dimmed tower in a neutral pill — and the name is carried by
+     the hover card's machine row rather than inline, per the glyph-only rule.
 
-     Offline only. An online machine's session just works wherever it lives —
+     Offline only (`isMachineMarkerShown`). An online machine's session just works wherever it lives —
      the connection dot in the top bar already says the machines are linked —
      so badging every other machine's row was noise, and relative to the tab's
      binding it even badged this computer's own sessions. The glyph survives
      only where it explains something: rows that went quiet and can't act. */
-  const machineGlyph = machineMarker && !machineMarker.online && !suppressMachineChip ? (
+  const machineGlyph = machineMarker && isMachineMarkerShown(machineMarker) && !suppressMachineChip ? (
     <span
       data-session-machine={machineMarker.machineName}
       data-machine-id={machineMarker.machineId}
-      data-machine-online={machineMarker.online ? "true" : "false"}
+      data-machine-online="false"
       /* Same attribute `LaneMachineMarker` exposes, on purpose: a badge can live
          on a lane header OR on the card standing in for one, and "is this row
          badged" must be a single selector rather than two that drift. */
