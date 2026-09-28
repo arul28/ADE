@@ -882,7 +882,14 @@ test("declares os and cpu so npm installs exactly one package", () => {
     assert.deepEqual(manifest.os, [entry.os]);
     assert.deepEqual(manifest.cpu, [entry.cpu]);
     assert.equal(manifest.license, "AGPL-3.0-only");
-    assert.deepEqual(manifest.files, ["bin", "native", "LICENSE", EXCEPTION_FILE_NAME, "README.md"]);
+    // The macOS packages carry the signing kit (entitlements + Mach-O manifest);
+    // the other platforms ship no signing material.
+    assert.deepEqual(
+      manifest.files,
+      entry.os === "darwin"
+        ? ["bin", "native", "signing", "LICENSE", EXCEPTION_FILE_NAME, "README.md"]
+        : ["bin", "native", "LICENSE", EXCEPTION_FILE_NAME, "README.md"],
+    );
     // An exports map would gate `require.resolve("<name>/package.json")`, which
     // is exactly how the SDK finds the package.
     assert.equal(manifest.exports, undefined);

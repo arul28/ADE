@@ -46,10 +46,12 @@ export type PermissionPreset = "always-allow" | "default";
  *   3. `sandboxRoot` containment, for commands and file writes only
  *   4. `fallback`
  *
- * On Codex only rungs 3 and 4 exist. The three tool fields are Claude-only —
- * nothing on the Codex path reads them — so a Codex decision is `sandboxRoot`
- * containment and then `fallback`, and the command text is never consulted.
- * Read `thread.permissionCapability.residual` rather than assuming a rung.
+ * On Codex the three tool fields apply to MCP tool calls only: a call Codex
+ * raises as an elicitation is judged by `deniedTools`, then `allowedTools` /
+ * `autoApproveMcpServers` on `mcp:<server>:<tool>`, then `fallback`. Commands
+ * and file writes reach only rungs 3 and 4 — `sandboxRoot` containment then
+ * `fallback` — and the command text is never consulted. Read
+ * `thread.permissionCapability.residual` rather than assuming a rung.
  *
  * `fallback` is required. A policy with no fallback has no obvious default, and
  * guessing "ask" would silently park the turn for a host that built no approval

@@ -932,17 +932,26 @@ describe("thread.setModel", () => {
     const thread = await client.threads.open("switcher", {
       provider: "claude",
       model: "claude-sonnet-4-5",
+      permissions: { fallback: "ask" },
     });
 
     const selection = await thread.setModel("gpt-5-codex");
 
     // The runtime's answer is authoritative: it resolves the catalog id to a
-    // provider GROUP, which a caller cannot infer from the id string.
-    expect(selection).toEqual({
+    // provider GROUP, which a caller cannot infer from the id string. N6 also
+    // returns the display name and the four capability reports the switch
+    // produced, so a caller learns the Claude `enforced` policy is now a Codex
+    // `best-effort` one instead of leaving the stale guarantee on screen.
+    expect(selection).toMatchObject({
       modelId: "gpt-5-codex",
       provider: "codex",
       model: "gpt-5-codex",
+      displayName: "GPT-5 Codex",
     });
+    expect(selection.capabilities.permissionCapability).toMatchObject({ level: "best-effort" });
+    expect(selection.capabilities.mcpCapability).toBeNull();
+    expect(selection.capabilities.instructionsCapability).toBeNull();
+    expect(selection.capabilities.settingSourcesCapability).toBeNull();
     // Verified against the runtime's own state, not the SDK's cache — the
     // switch has to have actually landed server-side.
     expect(runtime.sessions.get(thread.id)?.provider).toBe("codex");
@@ -1624,6 +1633,34 @@ describe("approvals", () => {
       "decline",
     ]);
     expect(runtime.approvals[2]).toMatchObject({ itemId: "i3", responseText: "not this time" });
+  });
+
+  it("declines an approval the policy's approvalTimeoutMs leaves unanswered", async () => {
+    // Opt-in only: the SDK owns this clock, so the host does not have to build a
+    // timer to keep a turn from parking forever on a card nobody answered.
+    const runtime = await startRuntime();
+    const logs: string[] = [];
+    const client = await connect(runtime, { logger: (line) => logs.push(line) });
+    const thread = await client.threads.open("a", {
+      provider: "codex",
+      model: "m",
+      permissions: { fallback: "ask", approvalTimeoutMs: 30 },
+    });
+
+    runtime.emitChatEvent(thread.id, {
+      type: "approval_request",
+      itemId: "i1",
+      requestKind: "approval",
+      kind: "command",
+      description: "Run `ls`",
+    });
+
+    await waitForAsync(
+      async () =>
+        runtime.approvals.some((entry) => entry.itemId === "i1" && entry.decision === "decline"),
+      "the SDK to decline the timed-out approval",
+    );
+    expect(logs.some((line) => line.includes("approvalTimeoutMs"))).toBe(true);
   });
 
   it("throws approval_not_found rather than sending a silent no-op", async () => {

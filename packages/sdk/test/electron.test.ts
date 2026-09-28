@@ -210,10 +210,10 @@ class FakeClient {
 }
 
 /** Wire a fake renderer to a fake main process through the real preload code. */
-function createHarness(opts: RegisterAdeIpcOptions = {}) {
+function createHarness(opts: RegisterAdeIpcOptions = {}, getClient?: () => FakeClient) {
   const ipcMain = new FakeIpcMain();
-  const client = new FakeClient();
-  const dispose = registerAdeIpc(ipcMain as any, client as any, opts);
+  const client = getClient ? getClient() : new FakeClient();
+  const dispose = registerAdeIpc(ipcMain as any, (getClient ?? client) as any, opts);
   const prefix = opts.channelPrefix?.trim() || "ade";
 
   /**
@@ -925,5 +925,148 @@ describe("structuredClone round trips", () => {
     expect(structuredClone(error as unknown as Record<string, unknown>)).not.toBeInstanceOf(
       AdeError,
     );
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Open-option authority (N5 / N6)                                             */
+/* -------------------------------------------------------------------------- */
+
+describe("open option authority", () => {
+  it("forwards only the four renderer-chosen fields and drops the rest", async () => {
+    const harness = createHarness();
+    const window = harness.attachWindow(1);
+
+    await window.client.threads.open("a", {
+      provider: "claude",
+      model: "m",
+      title: "T",
+      reasoningEffort: "medium",
+      cwd: "/tmp/work",
+      loadUserMcpServers: false,
+      settingSources: "project",
+      instructions: { mode: "append", text: "x" },
+      permissions: "always-allow",
+      mcpServers: { notes: { type: "stdio", command: "node" } },
+    });
+
+    // N5: a compromised renderer must not reach cwd, permissions, instructions,
+    // settingSources or mcpServers through the bridge. Only the four fields it is
+    // allowed to choose cross; the openOptions hook is how a host configures the
+    // rest. This is the whole security boundary, so pin the exact field set.
+    expect(harness.client.openCalls).toHaveLength(1);
+    expect(harness.client.openCalls[0]!.opts).toEqual({
+      provider: "claude",
+      model: "m",
+      title: "T",
+      reasoningEffort: "medium",
+    });
+  });
+
+  it("drops a non-string value for an allowed field rather than forwarding it", async () => {
+    const harness = createHarness();
+    const window = harness.attachWindow(1);
+    await window.client.threads.open("a", { provider: "claude", model: "m", title: 42 });
+    expect(harness.client.openCalls[0]!.opts).toEqual({ provider: "claude", model: "m" });
+  });
+
+  it("uses the openOptions hook's result and ignores the renderer's options", async () => {
+    const seen: { key: string; rendererOptions: unknown }[] = [];
+    const harness = createHarness({
+      openOptions: (key, rendererOptions) => {
+        seen.push({ key, rendererOptions });
+        return { provider: "codex", model: "gpt-5-codex", cwd: "/host/work", loadUserMcpServers: false };
+      },
+    });
+    const window = harness.attachWindow(1);
+
+    await window.client.threads.open("a", { provider: "claude", model: "m", permissions: "always-allow" });
+
+    // The renderer's provider/model/`permissions` must not survive the hook: a
+    // host that pins its threads to one provider and one policy keeps them.
+    expect(harness.client.openCalls[0]!.opts).toEqual({
+      provider: "codex",
+      model: "gpt-5-codex",
+      cwd: "/host/work",
+      loadUserMcpServers: false,
+    });
+    expect(seen).toEqual([
+      { key: "a", rendererOptions: { provider: "claude", model: "m", permissions: "always-allow" } },
+    ]);
+  });
+
+  it("refuses a model allowModel rejects, before the SDK is called", async () => {
+    const harness = createHarness({ allowModel: (_key, selection) => selection.modelId !== "blocked" });
+    const window = harness.attachWindow(1);
+
+    await expect(
+      window.client.threads.open("a", { provider: "claude", model: "blocked" }),
+    ).rejects.toMatchObject({ code: "unauthorized" });
+    expect(harness.client.openCalls).toHaveLength(0);
+
+    await expect(window.client.threads.open("a", { provider: "claude", model: "ok" })).resolves.toBeTruthy();
+    expect(harness.client.openCalls[0]!.opts).toEqual({ provider: "claude", model: "ok" });
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Client swap                                                                 */
+/* -------------------------------------------------------------------------- */
+
+describe("client swap", () => {
+  it("moves a renderer onto the new client: reopens keys and reattaches subscriptions", async () => {
+    const first = new FakeClient();
+    let current = first;
+    const harness = createHarness({}, () => current);
+    const window = harness.attachWindow(1);
+
+    const thread = await window.client.threads.open("a", { provider: "claude", model: "m" });
+    const seen: number[] = [];
+    thread.on("event", (row) => seen.push(row.sequence!));
+    await flush();
+    expect(first.threadListenerCount()).toBe(1);
+
+    const next = new FakeClient();
+    current = next;
+    // Any bridge call re-reads the client source and performs the move first.
+    await window.client.providers.status();
+    await flush();
+
+    // The key is reopened on the new client with the options the renderer had
+    // sent, and the subscription moved with it.
+    expect(next.openCalls.map((call) => call.key)).toEqual(["a"]);
+    expect(next.openCalls[0]!.opts).toEqual({ provider: "claude", model: "m" });
+    expect(first.threadListenerCount()).toBe(0);
+    expect(next.threadListenerCount()).toBe(1);
+
+    // The renderer's handle still receives from the new client's thread.
+    next.threads_.get("a")!.emit(envelope("s", 7));
+    expect(seen).toEqual([7]);
+  });
+
+  it("drops only the key allowThreadKey refuses on a swap and keeps the rest", async () => {
+    const first = new FakeClient();
+    let current = first;
+    let denyB = false;
+    const harness = createHarness(
+      { allowThreadKey: (key) => !(denyB && key === "b") },
+      () => current,
+    );
+    const window = harness.attachWindow(1);
+
+    await window.client.threads.open("a", { provider: "claude", model: "m" });
+    await window.client.threads.open("b", { provider: "claude", model: "m" });
+    expect(first.threads_.size).toBe(2);
+
+    denyB = true;
+    const next = new FakeClient();
+    current = next;
+    await window.client.providers.status();
+    await flush();
+
+    // The gate is re-run for every key against the new client: "b" is refused
+    // and dropped, and its refusal does not stop "a" from moving.
+    expect(next.openCalls.map((call) => call.key)).toEqual(["a"]);
+    expect(next.threads_.has("b")).toBe(false);
   });
 });

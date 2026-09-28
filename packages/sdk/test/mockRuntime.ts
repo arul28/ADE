@@ -660,7 +660,7 @@ function permissionCapabilityFor(args: Record<string, unknown>): Record<string, 
     return {
       level: "best-effort",
       mechanism: "approvalPolicy on-request + workspace-write sandbox",
-      residual: "Codex does not gate plain MCP tool calls, so allowedTools does not apply to them",
+      residual: "Codex gates MCP tool calls through an elicitation; commands and file changes reach sandboxRoot and fallback only",
     };
   }
   return {
