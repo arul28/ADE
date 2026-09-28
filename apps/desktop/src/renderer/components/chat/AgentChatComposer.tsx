@@ -2068,7 +2068,7 @@ export function AgentChatComposer({
   const cloudFileAttachmentsDelivered = cloudLaunch?.provider === "devin";
   // Cursor-only controls (the service-tier picker) key off this, so a Devin
   // cloud chat must not turn it on.
-  const cursorCloudSessionActive = (cloudModeActive && cloudLaunch?.provider === "cursor") || cursorRuntime === "cloud";
+  const cursorCloudSessionActive = (cloudModeActive || cursorRuntime === "cloud") && cloudLaunch?.provider !== "devin";
   const promptStashRef = useRef<ComposerPromptStashHandle>(null);
   const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);

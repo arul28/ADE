@@ -247,7 +247,7 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
       chat.laneId === args.laneId
       && (
         (chat.status === "active" && (Boolean(chat.devinSessionId) || Boolean(chat.cursorCloudAgentId)))
-        || (Boolean(chat.devinCloud) && !chat.devinSessionId && Date.now() - Date.parse(chat.startedAt) < LAUNCH_SETTLE_MS)
+        || (Boolean(chat.devinCloud) && !chat.devinSessionId && chat.status !== "ended" && Date.now() - Date.parse(chat.startedAt) < LAUNCH_SETTLE_MS)
       ));
     if (running) throw new Error(ONE_AGENT_PER_LANE_MESSAGE);
     const lane = (await lanesById()).get(args.laneId);
