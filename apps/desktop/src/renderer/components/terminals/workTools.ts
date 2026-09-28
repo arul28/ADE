@@ -199,6 +199,11 @@ export type WorkToolContext = {
    * wrong on a Mac whose driver did not ship.
    */
   macDesktopUnsupportedReason?: string | null;
+  /**
+   * The lane lives on a provider's cloud VM, not an ADE machine. Tools that
+   * drive a real machine have nothing to drive there.
+   */
+  cloudLane?: "devin" | "cursor" | null;
 };
 
 export type WorkToolAvailability =
@@ -252,10 +257,19 @@ export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext)
   return context.isWebClient && WEB_READ_ONLY_TOOL_IDS.has(id);
 }
 
+const CLOUD_MACHINE_TOOLS = new Set<WorkSidebarTab>(["ios", "mac-desktop", "app-control"]);
+
 export function workToolAvailability(
   id: WorkSidebarTab,
   context: WorkToolContext,
 ): WorkToolAvailability {
+  if (context.cloudLane && CLOUD_MACHINE_TOOLS.has(id)) {
+    const cloud = context.cloudLane === "devin" ? "Devin Cloud" : "Cursor Cloud";
+    return {
+      available: false,
+      reason: `This lane lives on ${cloud}. This tool drives a real machine, and the lane's machine is ${cloud}'s VM.`,
+    };
+  }
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
   if (id === "ios" && !context.supportsIosSimulator) {
     return { available: false, reason: IOS_RUNTIME_UNSUPPORTED_REASON };

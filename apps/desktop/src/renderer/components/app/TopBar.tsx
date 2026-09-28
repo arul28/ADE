@@ -64,7 +64,7 @@ import { AutoUpdateControl } from "./AutoUpdateControl";
 import { ChannelBadge } from "./ChannelBadge";
 import { HeaderSheet } from "./HeaderSheet";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
-import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
+import { CloudAgentsQuickViewButton } from "./cloudAgents/CloudAgentsQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import {
@@ -1989,7 +1989,8 @@ export function TopBar({
 
   const renderDesktopIntegrationControls = () => (
     <>
-      <CursorCloudQuickViewButton showTrigger={projectSurfaceVisible} />
+      <CloudAgentsQuickViewButton provider="devin" showTrigger={projectSurfaceVisible} />
+      <CloudAgentsQuickViewButton provider="cursor" showTrigger={projectSurfaceVisible} />
       <LinearQuickViewButton
         onOpenHarnessSettings={openHarnessSettings}
         showTrigger={projectSurfaceVisible}
@@ -2023,7 +2024,14 @@ export function TopBar({
 
   const renderCompactStatusMenu = (onActivate: () => void) => (
     <div className="flex flex-col gap-0.5">
-      <CursorCloudQuickViewButton
+      <CloudAgentsQuickViewButton
+        provider="devin"
+        variant="menu-row"
+        onMenuActivate={onActivate}
+        showTrigger={projectSurfaceVisible}
+      />
+      <CloudAgentsQuickViewButton
+        provider="cursor"
         variant="menu-row"
         onMenuActivate={onActivate}
         showTrigger={projectSurfaceVisible}

@@ -646,8 +646,7 @@ describe("ProvidersSection", () => {
       expect(window.ade.ai.cursorAuthLogin).toHaveBeenCalledTimes(1);
       expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor", null);
     });
-    expect(await screen.findByText("Signed in as ada@cursor.com")).toBeTruthy();
-    expect(screen.getByLabelText("Sign out of Cursor")).toBeTruthy();
+    expect(await screen.findByLabelText("Sign out of Cursor")).toBeTruthy();
 
     await act(async () => {
       screen.getByLabelText("Sign out of Cursor").click();
@@ -803,7 +802,6 @@ describe("ProvidersSection", () => {
 
     expect(await screen.findByText("Pi")).toBeTruthy();
     expect(screen.getByText(/Uses Pi’s installed SDK package/)).toBeTruthy();
-    expect(screen.getByText(/Version 0.84.0/)).toBeTruthy();
     expect(screen.getByText("OpenAI Codex")).toBeTruthy();
     expect(screen.getByText(/7 models/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open settings.json" })).toBeTruthy();

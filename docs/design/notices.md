@@ -162,6 +162,7 @@ Pick a named layer and never type a z-index:
 | `hud` | 130 | The CTO voice-call HUD; above sheets so End call stays clickable |
 | `floatingBanner` | 140 | Floating top-center banners |
 | `dialog` | 200 | `Dialog` panel and scrim |
+| `dialogPopover` | 205 | An anchored menu or picker opened from inside a dialog; below nested confirms |
 | `nestedDialog` | 210 | A confirm or prompt raised from inside another dialog |
 | `toast` | 250 | `ToastViewport`; above dialogs so a toast raised from a dialog is visible |
 | `tooltip` | 300 | Tooltips and hover cards, including ones inside dialogs |

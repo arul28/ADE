@@ -1,5 +1,5 @@
 import React from "react";
-import { DesktopTower } from "@phosphor-icons/react";
+import { CloudCheck, DesktopTower } from "@phosphor-icons/react";
 import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
@@ -50,6 +50,35 @@ export function LaneMachineMarker({ marker }: { marker: CrossMachineLaneMarker }
           className={cn("shrink-0", marker.online ? "text-amber-400/85" : "text-muted-fg/45")}
         />
         {marker.mode === "name" ? <span className="max-w-24 truncate">{marker.machineName}</span> : null}
+      </span>
+    </SmartTooltip>
+  );
+}
+
+/**
+ * Machine marker for a cloud lane: the lane's machine is a provider's VM, so
+ * the header names that cloud the way it would name another Mac. Sky, not
+ * amber — it is a cloud, not one of your machines.
+ */
+export function LaneCloudMarker({ provider }: { provider: "devin" | "cursor" }) {
+  const name = provider === "devin" ? "Devin Cloud" : "Cursor Cloud";
+  return (
+    <SmartTooltip
+      forceEnabled
+      content={{
+        label: name,
+        description: `This lane lives on ${name}. Its chats run on the cloud VM and push to the lane's branch; ADE keeps a synced copy here.`,
+      }}
+    >
+      <span
+        role="img"
+        tabIndex={0}
+        aria-label={name}
+        data-lane-cloud={provider}
+        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-sky-400/25 bg-sky-400/[0.08] px-1.5 py-px text-[10px] font-medium leading-none text-sky-100/85"
+      >
+        <CloudCheck size={10} weight="fill" className="shrink-0 text-sky-300" />
+        <span>{name}</span>
       </span>
     </SmartTooltip>
   );

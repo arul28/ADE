@@ -291,6 +291,7 @@ import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } 
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
+import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { getSourceFaviconService } from "../../../../desktop/src/main/services/chat/sourceFaviconService";
 import {
@@ -551,6 +552,7 @@ type SyncRemoteCommandServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
+  cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
@@ -3397,6 +3399,7 @@ const MODEL_CATALOG_REFRESH_PROVIDERS = new Set<AgentChatModelCatalogRefreshProv
   "kimi",
   "grok",
   "copilot",
+  "devin",
 ]);
 
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
@@ -3905,6 +3908,39 @@ async function unarchiveLaneWithRuntimeSetup(
     });
   }
   return { ok: true };
+}
+
+async function resolveChatCreateArgs<T extends AgentChatCreateArgs>(
+  service: ReturnType<typeof createAgentChatService>,
+  payload: T,
+): Promise<T> {
+  if (payload.model.trim().length > 0) return payload;
+  const available = await service.getAvailableModels({
+    provider: payload.provider,
+    // ACP providers are here for the same reason as OpenCode/Pi: their model
+    // rows are gated on a CLI auth pass, and `activateRuntime` refreshes that
+    // pass. It does not spawn an agent for them.
+    ...(
+      payload.provider === "opencode"
+      || payload.provider === "pi"
+      || payload.provider === "qwen"
+      || payload.provider === "kimi"
+      || payload.provider === "grok"
+      || payload.provider === "copilot"
+      || payload.provider === "devin"
+        ? { activateRuntime: true }
+        : {}
+    ),
+  });
+  const chosen = available[0];
+  if (!chosen) {
+    throw new Error(`No configured ${payload.provider} chat model is available on the host.`);
+  }
+  return {
+    ...payload,
+    model: chosen.id,
+    ...(!payload.modelId && chosen.modelId ? { modelId: chosen.modelId } : {}),
+  };
 }
 
 function sessionStatusBucket(argsIn: {
@@ -6529,6 +6565,61 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       requireString(payload.agentId, "ai.cursorCloudStopRun requires agentId."),
     );
   });
+
+  // Cloud agents (Devin Cloud and Cursor Cloud): one contract for both
+  // providers, the same one the desktop reaches over `ade.cloudAgents.*`. The
+  // list is read-only; open can create a lane and a chat, and stop, archive
+  // and launch act on the provider, so those are refused for viewers and run
+  // now rather than queue.
+  const cloudAgents = () => requireService(args.cloudAgentsService, "Cloud agents are not available.");
+  register("ai.listCloudAgents", { viewerAllowed: true }, async (payload) =>
+    cloudAgents().list({
+      provider: requireCloudAgentProvider(payload.provider, "ai.listCloudAgents"),
+      ...(payload.force === true ? { force: true } : {}),
+    }));
+  register("ai.openCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().open({
+      provider: requireCloudAgentProvider(payload.provider, "ai.openCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.openCloudAgent"),
+    }));
+  register("ai.stopCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().stop({
+      provider: requireCloudAgentProvider(payload.provider, "ai.stopCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.stopCloudAgent"),
+    }));
+  register("ai.archiveCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().archive({
+      provider: requireCloudAgentProvider(payload.provider, "ai.archiveCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.archiveCloudAgent"),
+      archived: payload.archived !== false,
+    }));
+  register("ai.launchCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const prompt = requireString(payload.prompt, "ai.launchCloudAgent requires prompt.");
+    if (prompt.length > 100_000) throw new Error("ai.launchCloudAgent prompt is too long.");
+    const shortOptional = (value: unknown, name: string): string | null => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      if (value.length > 256) throw new Error(`ai.launchCloudAgent ${name} is too long.`);
+      return value.trim();
+    };
+    return cloudAgents().launch({
+      provider: requireCloudAgentProvider(payload.provider, "ai.launchCloudAgent"),
+      prompt,
+      model: shortOptional(payload.model, "model"),
+      platform: shortOptional(payload.platform, "platform"),
+      laneId: shortOptional(payload.laneId, "laneId"),
+    });
+  });
+}
+
+function requireCloudAgentProvider(value: unknown, action: string): "devin" | "cursor" {
+  if (value === "devin" || value === "cursor") return value;
+  throw new Error(`${action} requires provider 'devin' or 'cursor'.`);
+}
+
+function requireCloudAgentId(value: unknown, action: string): string {
+  const id = requireString(value, `${action} requires id.`).trim();
+  if (id.length > 256) throw new Error(`${action} id is too long.`);
+  return id;
 }
 
 export type PrRefreshSnapshotScope = "all" | "active" | "none";

@@ -1051,7 +1051,7 @@ export type AiFeatureUsageRow = {
 
 export type AiDetectedAuth = {
   type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-  cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
+  cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   provider?: string;
   source?: "config" | "env" | "store" | "file";
   endpointSource?: "auto" | "config";
@@ -1085,7 +1085,7 @@ export type AiProviderConnectionSource = {
 };
 
 export type AiProviderConnectionStatus = {
-  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot";
+  provider: "claude" | "codex" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
   authAvailable: boolean;
   runtimeDetected: boolean;
   runtimeAvailable: boolean;
@@ -1116,6 +1116,7 @@ export type AiProviderConnections = {
   kimi?: AiProviderConnectionStatus;
   grok?: AiProviderConnectionStatus;
   copilot?: AiProviderConnectionStatus;
+  devin?: AiProviderConnectionStatus;
 };
 
 /**
@@ -1126,7 +1127,7 @@ export type AiProviderConnections = {
  * meaningful next to one that does.
  */
 export type AcpProviderDiagnostics = {
-  provider: "qwen" | "kimi" | "grok" | "copilot";
+  provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
   /** Null when nothing was found — the bare command name is a guess, not a path. */
   binaryPath: string | null;
   binarySource: "env" | "auth" | "path" | "common-dir" | "fallback-command";
@@ -1746,6 +1747,7 @@ export type AiSettingsStatus = {
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AiModelDescriptor[];
@@ -1756,6 +1758,7 @@ export type AiSettingsStatus = {
     kimi?: AiModelDescriptor[];
     grok?: AiModelDescriptor[];
     copilot?: AiModelDescriptor[];
+    devin?: AiModelDescriptor[];
   };
   features: AiFeatureUsageRow[];
   detectedAuth?: AiDetectedAuth[];
@@ -1832,6 +1835,7 @@ export type AiProviderPermissions = {
   kimi?: AgentChatPermissionMode;
   grok?: AgentChatPermissionMode;
   copilot?: AgentChatPermissionMode;
+  devin?: AgentChatPermissionMode;
   codexSandbox?: "read-only" | "workspace-write" | "danger-full-access";
   writablePaths?: string[];
   allowedTools?: string[];
@@ -1972,6 +1976,7 @@ export type AiIntegrationStatus = {
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AgentChatModelInfo[];
@@ -1982,6 +1987,7 @@ export type AiIntegrationStatus = {
     kimi?: AgentChatModelInfo[];
     grok?: AgentChatModelInfo[];
     copilot?: AgentChatModelInfo[];
+    devin?: AgentChatModelInfo[];
   };
   // OpenCode/runtime-backed fields
   detectedAuth?: AiDetectedAuth[];

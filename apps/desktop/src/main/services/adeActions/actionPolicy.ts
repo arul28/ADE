@@ -767,6 +767,11 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "resolveCursorCloudAgentLane",
     "pullCursorCloudAgentIntoLane",
     "stopCursorCloudAgentRun",
+    "listCloudAgents",
+    "openCloudAgent",
+    "stopCloudAgent",
+    "archiveCloudAgent",
+    "launchCloudAgent",
   ],
   onboarding: [
     "complete",

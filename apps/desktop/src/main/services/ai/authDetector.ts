@@ -17,7 +17,7 @@ import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { loadQwenUserSettings } from "./qwenUserSettings";
-import { grokConfigHome } from "../shared/providerConfigHomes";
+import { devinCredentialFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -33,13 +33,14 @@ type CliName =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 /**
  * CLIs ADE reaches over the Agent Client Protocol. Their auth state is read
  * from disk, not from a spawn: see `inspectAcpCliCredentials`.
  */
-const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot"] as const;
+const ACP_CLI_NAMES = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 type AcpCliName = (typeof ACP_CLI_NAMES)[number];
 
 function isAcpCliName(cli: CliName): cli is AcpCliName {
@@ -119,6 +120,9 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   kimi: [],
   grok: [],
   copilot: [],
+  // `devin auth status` is a real, non-interactive subcommand; the
+  // protocol-level handshake is still authoritative.
+  devin: [["auth", "status"], ["--version"]],
 };
 
 /**
@@ -162,6 +166,28 @@ async function inspectAcpCliCredentials(
   if (cli === "kimi") {
     const root = dir(env.KIMI_CODE_HOME, ".kimi-code");
     return { authenticated: await fileExists(path.join(root, "config.toml")), verified: false };
+  }
+
+  if (cli === "devin") {
+    // Devin reads WINDSURF_API_KEY first, then the login `devin auth login`
+    // leaves in `credentials.toml` under the XDG data dir — the same list
+    // the ACP account reader checks. A Windsurf key saved on the Devin
+    // provider page counts too: the ACP spawn exports it to the CLI.
+    if (env.WINDSURF_API_KEY?.trim()) return { authenticated: true, verified: false };
+    for (const file of devinCredentialFiles({ env, homeDir: home })) {
+      if (await fileExists(file)) {
+        return { authenticated: true, verified: false };
+      }
+    }
+    try {
+      const { getApiCredentialKey } = await import("./apiKeyStore");
+      if (getApiCredentialKey("devin-cli")?.trim()) {
+        return { authenticated: true, verified: false };
+      }
+    } catch {
+      // The store is Electron-main scoped; probes elsewhere keep disk auth.
+    }
+    return { authenticated: false, verified: false };
   }
 
   // Copilot's durable login is normally keychain/session-state backed, not a

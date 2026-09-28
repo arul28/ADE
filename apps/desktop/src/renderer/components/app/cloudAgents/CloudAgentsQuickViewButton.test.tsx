@@ -3,12 +3,8 @@
 import React from "react";
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAppStore } from "../../state/appStore";
-import { CursorCloudQuickViewButton } from "./CursorCloudQuickViewButton";
-
-vi.mock("./CursorCloudFleetModal", () => ({
-  CursorCloudFleetModal: () => <div data-testid="cursor-cloud-fleet-modal" />,
-}));
+import { useAppStore } from "../../../state/appStore";
+import { CloudAgentsQuickViewButton } from "./CloudAgentsQuickViewButton";
 
 function cursorStatus(authAvailable: boolean) {
   return {
@@ -43,7 +39,7 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
       },
     };
 
-    render(<CursorCloudQuickViewButton />);
+    render(<CloudAgentsQuickViewButton provider="cursor" />);
     await act(async () => {
       vi.advanceTimersByTime(2_000);
       for (let i = 0; i < 5; i += 1) await Promise.resolve();
@@ -72,7 +68,7 @@ describe("Cursor Cloud connection-gated shell entry point", () => {
       },
     } as any);
 
-    render(<CursorCloudQuickViewButton />);
+    render(<CloudAgentsQuickViewButton provider="cursor" />);
     await act(async () => {
       vi.advanceTimersByTime(2_000);
       for (let i = 0; i < 5; i += 1) await Promise.resolve();

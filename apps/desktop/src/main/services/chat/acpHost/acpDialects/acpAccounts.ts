@@ -7,13 +7,13 @@
  * The account email is not read here; ADE's quota service fills it.
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { AgentChatUsageAccount } from "../../../../../shared/types";
 import { loopbackOrigin } from "../../../../../shared/remoteLoopbackUrl";
 import { parseQwenUserSettings } from "../../../ai/qwenUserSettings";
 import { resolveKimiCodeLogin } from "../../../shared/kimiCodeLogin";
-import { grokConfigHome, qwenConfigHome } from "../../../shared/providerConfigHomes";
+import { devinCredentialFiles, grokConfigHome, qwenConfigHome } from "../../../shared/providerConfigHomes";
 import { asRecord, toOptionalString } from "../../../shared/utils";
 
 function readText(filePath: string): string | null {
@@ -72,6 +72,20 @@ export function readKimiAccount({ env }: { env: NodeJS.ProcessEnv }): AgentChatU
   if (resolveKimiCodeLogin({ env })) return { provider: "kimi", kind: "subscription" };
   if (hasEnv(env, "MOONSHOT_API_KEY")) return { provider: "kimi", kind: "api_key" };
   return { provider: "kimi", kind: "unknown" };
+}
+
+/**
+ * Devin: `devin auth login` stores the user's Devin login in
+ * `credentials.toml` under the XDG data dir (`~/.local/share/devin`). Only
+ * existence is checked — the token stays unread. `WINDSURF_API_KEY` is the
+ * API-key path.
+ */
+export function readDevinAccount({ env }: { env: NodeJS.ProcessEnv }): AgentChatUsageAccount {
+  if (devinCredentialFiles({ env }).some((file) => existsSync(file))) {
+    return { provider: "devin", kind: "subscription" };
+  }
+  if (hasEnv(env, "WINDSURF_API_KEY")) return { provider: "devin", kind: "api_key" };
+  return { provider: "devin", kind: "unknown" };
 }
 
 /** Qwen's auth type for a signed-in Qwen account, as opposed to an API key. */

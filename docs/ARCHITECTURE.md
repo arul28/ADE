@@ -981,6 +981,7 @@ ade.ai.*                     # AI integration status + provider auth (storeApiKe
                              # `value` argument is in the IPC redaction set.
                              # See features/chat/README.md for the channel table + fan-out wiring.
 ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories, listAgents, listRuns, getAgent, createRun, followUp, streamRun, cancelRun, archiveAgent / unarchiveAgent / deleteAgent, listArtifacts / downloadArtifact, openChat (mirror an existing cloud agent into an ADE chat session), watchMirror (presence-gated inbound hydrate; poll only while a client is looking), plus the account-wide fleet view backed by cursorCloudFleetService: cursorCloudFleet / cursorCloudPullIntoLane / cursorCloudResolveLane / cursorCloudStopRun and the onCursorCloudFleetEvent push that re-broadcasts each terminal relay delivery (FINISHED/ERROR) so the top-bar fleet view refreshes with no polling timer. The same four actions are registered on the ai ADE action domain and as optional ai.cursorCloudFleet* sync remote commands, so iOS and hosted web drive one host-side implementation (pull mutates host worktrees, so it is refused for read-only viewers and never queued)
+ade.cloudAgents.*            # provider-neutral cloud agents (Devin Cloud over `devin acp --cloud`, Cursor Cloud): list, open, stop, archive, launch; also sync remote commands ai.*CloudAgent* for the web client
 ade.automations.*
 ade.tests.*
 ade.projectConfig.*          # local project config get/validate/save/diff; no trust gate

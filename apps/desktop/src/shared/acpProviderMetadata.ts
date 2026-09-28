@@ -4,7 +4,7 @@
  * labels, login commands, and config-home names have one owner.
  */
 
-export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "copilot"] as const;
+export const ACP_PROVIDER_IDS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 export type AcpProviderId = (typeof ACP_PROVIDER_IDS)[number];
 
 /**
@@ -52,5 +52,12 @@ export const ACP_PROVIDER_METADATA: Readonly<Record<AcpProviderId, AcpProviderMe
     loginCommand: "copilot login",
     loginHint: "copilot login",
     configHomeEnv: "COPILOT_HOME",
+  },
+  devin: {
+    label: "Devin",
+    statusLabel: "Devin",
+    loginCommand: "devin auth login",
+    loginHint: "devin auth login or set WINDSURF_API_KEY",
+    configHomeEnv: null,
   },
 };

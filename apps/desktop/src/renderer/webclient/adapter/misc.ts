@@ -3,6 +3,12 @@ import {
   peerToRuntimeDeviceState,
   type AgentChatSession,
   type AiConfig,
+  type CloudAgentArchiveArgs,
+  type CloudAgentLaunchArgs,
+  type CloudAgentList,
+  type CloudAgentListArgs,
+  type CloudAgentOpenResult,
+  type CloudAgentRef,
   type CtoAttentionState,
   type CtoSnapshot,
   type CursorAgentUsage,
@@ -53,6 +59,7 @@ export type MiscNamespaces = {
   projectSecrets: AdeNamespace<"projectSecrets">;
   transcription: AdeNamespace<"transcription">;
   agentTools: AdeNamespace<"agentTools">;
+  cloudAgents: AdeNamespace<"cloudAgents">;
   adeCli: AdeNamespace<"adeCli">;
   devTools: AdeNamespace<"devTools">;
   localhost: AdeNamespace<"localhost">;
@@ -761,6 +768,25 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
+    cloudAgents: {
+      list: (args: CloudAgentListArgs) =>
+        call<CloudAgentList>("ai.listCloudAgents", args, {
+          provider: args.provider,
+          items: [],
+          fetchedAt: new Date(0).toISOString(),
+          capabilities: { stop: false, archive: false, vmShell: false, web: false },
+          unavailableReason: "Cloud agents are unavailable: the host is offline or runs an older ADE.",
+          models: [],
+        }),
+      open: (args: CloudAgentRef) =>
+        call<CloudAgentOpenResult>("ai.openCloudAgent", args, unavailableOnHost("Opening a cloud agent requires the host desktop."), false),
+      stop: (args: CloudAgentRef) =>
+        call<{ stopped: true }>("ai.stopCloudAgent", args, unavailableOnHost("Stopping a cloud agent requires the host desktop."), false),
+      archive: (args: CloudAgentArchiveArgs) =>
+        call<{ archived: boolean }>("ai.archiveCloudAgent", args, unavailableOnHost("Archiving a cloud agent requires the host desktop."), false),
+      launch: (args: CloudAgentLaunchArgs) =>
+        call<CloudAgentOpenResult>("ai.launchCloudAgent", args, unavailableOnHost("Launching a cloud agent requires the host desktop."), false),
+    },
     adeCli: ({
       getStatus: async () => ({ installed: false, path: null, version: null }),
       installForUser: async () => ({ installed: false, path: null, error: "unsupported" }),

@@ -2297,6 +2297,7 @@ export type SyncCliLaunchProvider =
   | "kimi"
   | "grok"
   | "copilot"
+  | "devin"
   | "shell";
 
 export type SyncStartCliSessionArgs = {
@@ -2668,6 +2669,11 @@ export type SyncRemoteCommandAction =
   | "ai.cursorCloudResolveLane"
   | "ai.cursorCloudPullIntoLane"
   | "ai.cursorCloudStopRun"
+  | "ai.listCloudAgents"
+  | "ai.openCloudAgent"
+  | "ai.stopCloudAgent"
+  | "ai.archiveCloudAgent"
+  | "ai.launchCloudAgent"
   | "prs.list"
   | "prs.listOpenForRepo"
   | "prs.refresh"

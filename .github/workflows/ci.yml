@@ -120,6 +120,10 @@ jobs:
             packages/chat-ui/node_modules
           key: nm-v3-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json','packages/sdk/package-lock.json','packages/chat-ui/package-lock.json') }}
       - run: cd apps/desktop && npm run typecheck
+        env:
+          # tsc on the desktop codebase sits near Node's default ~4GB heap;
+          # the lint script already needs --max-old-space-size=8192.
+          NODE_OPTIONS: --max-old-space-size=8192
 
   typecheck-ade-cli:
     needs: install

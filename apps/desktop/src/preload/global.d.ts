@@ -374,6 +374,12 @@ import type {
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
+  CloudAgentArchiveArgs,
+  CloudAgentLaunchArgs,
+  CloudAgentList,
+  CloudAgentListArgs,
+  CloudAgentOpenResult,
+  CloudAgentRef,
   AdeCliInstallResult,
   AdeCliStatus,
   OpenCodeRuntimeSnapshot,
@@ -1345,7 +1351,7 @@ declare global {
          * have it and callers must guard before reaching for it.
          */
         acpProviderDiagnostics?: (args: {
-          provider: "qwen" | "kimi" | "grok" | "copilot";
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
           runDoctor?: boolean;
         }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
         /**
@@ -1353,7 +1359,7 @@ declare global {
          * older host that predates it leaves this undefined.
          */
         acpProviderUpdate?: (args: {
-          provider: "qwen" | "kimi" | "grok" | "copilot";
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
         }, pin?: OpenProjectBinding | null) => Promise<AcpProviderUpdateResult>;
         opencodeAuthMethods: (pin?: OpenProjectBinding | null) => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
@@ -1520,6 +1526,14 @@ declare global {
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         getCloudRelayStatus: () => Promise<SyncCloudRelayStatus>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
+      };
+      /** Devin Cloud sessions and Cursor Cloud agents, one contract for both panels. */
+      cloudAgents: {
+        list: (args: CloudAgentListArgs) => Promise<CloudAgentList>;
+        open: (args: CloudAgentRef) => Promise<CloudAgentOpenResult>;
+        stop: (args: CloudAgentRef) => Promise<{ stopped: true }>;
+        archive: (args: CloudAgentArchiveArgs) => Promise<{ archived: boolean }>;
+        launch: (args: CloudAgentLaunchArgs) => Promise<CloudAgentOpenResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;

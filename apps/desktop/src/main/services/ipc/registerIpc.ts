@@ -707,6 +707,12 @@ import type {
   CursorCloudFleetResult,
   CursorCloudFleetEvent,
   CursorCloudPullIntoLaneResult,
+  CloudAgentArchiveArgs,
+  CloudAgentLaunchArgs,
+  CloudAgentList,
+  CloudAgentListArgs,
+  CloudAgentOpenResult,
+  CloudAgentRef,
   CursorAgentUsage,
   CursorAgentUsageRequest,
   AgentToolsCacheSnapshot,
@@ -883,6 +889,7 @@ import type { createAutomationIngressService } from "../automations/automationIn
 import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
 import type { CursorCloudIngressService } from "../automations/cursorCloudIngressService";
 import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
+import type { CloudAgentsService } from "../chat/cloudAgentsService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
 import { createSessionBoardMoveActions } from "../adeActions/sessionBoardMove";
@@ -1200,6 +1207,7 @@ export type AppContext = {
   linearIngressService?: LinearIngressService | null;
   cursorCloudIngressService?: CursorCloudIngressService | null;
   cursorCloudFleetService?: CursorCloudFleetService | null;
+  cloudAgentsService?: CloudAgentsService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
   projectSecretService?: ReturnType<typeof createProjectSecretService> | null;
@@ -5803,6 +5811,32 @@ export function registerIpc({
       return { subscriptionId: `cursor-cloud-stream-${agentId}-${runId}` };
     },
   );
+
+  ipcMain.handle(IPC.cloudAgentsList, async (_event, arg: CloudAgentListArgs): Promise<CloudAgentList> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["cloudAgentsService"] as const);
+    return await ctx.cloudAgentsService.list(arg);
+  });
+  ipcMain.handle(IPC.cloudAgentsOpen, async (_event, arg: CloudAgentRef): Promise<CloudAgentOpenResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["cloudAgentsService"] as const);
+    return await ctx.cloudAgentsService.open(arg);
+  });
+  ipcMain.handle(IPC.cloudAgentsStop, async (_event, arg: CloudAgentRef): Promise<{ stopped: true }> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["cloudAgentsService"] as const);
+    return await ctx.cloudAgentsService.stop(arg);
+  });
+  ipcMain.handle(IPC.cloudAgentsLaunch, async (_event, arg: CloudAgentLaunchArgs): Promise<CloudAgentOpenResult> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["cloudAgentsService"] as const);
+    return await ctx.cloudAgentsService.launch(arg);
+  });
+  ipcMain.handle(IPC.cloudAgentsArchive, async (_event, arg: CloudAgentArchiveArgs): Promise<{ archived: boolean }> => {
+    const ctx = getCtx();
+    requireAppContextServices(ctx, ["cloudAgentsService"] as const);
+    return await ctx.cloudAgentsService.archive(arg);
+  });
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const params = {

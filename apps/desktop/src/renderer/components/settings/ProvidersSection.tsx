@@ -1222,7 +1222,6 @@ export function ProvidersSection({
           <ProviderDetailPage
             descriptor={selectedDescriptor}
             ctx={ctx}
-            onBack={() => selectProvider(null)}
           />
         </div>
       ) : (

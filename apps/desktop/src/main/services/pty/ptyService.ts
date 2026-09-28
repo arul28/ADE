@@ -1386,10 +1386,12 @@ function normalizeToolType(raw: unknown): TerminalToolType | null {
     "kimi",
     "grok",
     "copilot",
+    "devin",
     "qwen-chat",
     "kimi-chat",
     "grok-chat",
     "copilot-chat",
+    "devin-chat",
     "aider",
     "continue",
     "other",
@@ -1682,7 +1684,8 @@ function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
     || toolType === "qwen-chat"
     || toolType === "kimi-chat"
     || toolType === "grok-chat"
-    || toolType === "copilot-chat";
+    || toolType === "copilot-chat"
+    || toolType === "devin-chat";
 }
 
 function inferSessionCwdFromTranscriptPath(transcriptPath: string | null | undefined): string | null {

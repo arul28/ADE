@@ -193,6 +193,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
   const handoffLaunchJobsScopeKey = useMemo(
     () => buildHandoffLaunchJobsScopeKey({ projectBinding, projectRoot }),
@@ -492,14 +493,26 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         sessionId,
         laneId,
       });
-      if (laneId && !runtimePin) work.selectLane(laneId);
-      work.focusSession(sessionId);
-      work.openSessionTab(sessionId);
-      work.setSelectedSessionId(sessionId);
+      const focus = () => {
+        if (laneId && !runtimePin) work.selectLane(laneId);
+        work.focusSession(sessionId);
+        work.openSessionTab(sessionId);
+        work.setSelectedSessionId(sessionId);
+      };
+      focus();
+      // A chat created a moment ago (a cloud agent opened from its panel, often
+      // in a lane that is also new) is not in the loaded list yet. Load it,
+      // then focus again so the pane binds to the real session.
+      if (!session) {
+        void Promise.all([
+          refreshLanes().catch(() => undefined),
+          work.refresh({ force: true }).catch(() => undefined),
+        ]).then(focus);
+      }
     };
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
-  }, [machineRouter, resolveSessionRuntimePin, work]);
+  }, [machineRouter, refreshLanes, resolveSessionRuntimePin, work]);
 
   const handleGoToLane = useCallback(
     (

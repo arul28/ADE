@@ -12,6 +12,7 @@ describe("model picker provider order", () => {
       "claude",
       "codex",
       "cursor",
+      "devin",
       "opencode",
       "pi",
       "copilot",

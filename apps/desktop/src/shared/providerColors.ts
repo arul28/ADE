@@ -29,6 +29,7 @@ export const PROVIDER_COLOR_TABLE = {
     openclaw: { light: "#B45309", dark: "#E0A82E" },
     xai: { light: "#3F3F46", dark: "#B4B4BD" },
     grok: { light: "#3F3F46", dark: "#B4B4BD" },
+    devin: { light: "#1F1F1F", dark: "#A1A1AA" },
   },
   usageFallback: [
     { light: "#2563EB", dark: "#60A5FA" },
@@ -59,6 +60,7 @@ export const PROVIDER_COLOR_TABLE = {
     meta: "#3B82F6",
     qwen: "#6D4AFF",
     moonshot: "#1F1F1F",
+    devin: "#1F1F1F",
   },
   group: {
     claude: "#D97757",
@@ -73,6 +75,7 @@ export const PROVIDER_COLOR_TABLE = {
     opencode: "#A78BFA",
     ollama: "#A1A1AA",
     lmstudio: "#9F7BEA",
+    devin: "#A1A1AA",
   },
   chat: {
     claude: "#D97706",
@@ -91,6 +94,7 @@ export const PROVIDER_COLOR_TABLE = {
     xai: "#DC2626",
     grok: "#DC2626",
     groq: "#06B6D4",
+    devin: "#181C25",
   },
   localModel: {
     ollama: "#71717A",
@@ -114,6 +118,7 @@ export const PROVIDER_COLOR_TABLE = {
     kimi: "#1F1F1F",
     grok: "#DC2626",
     copilot: "#8B5CF6",
+    devin: "#1F1F1F",
   },
   dynamic: {
     pi: "#181C25",
@@ -149,6 +154,7 @@ export const PROVIDER_COLOR_TABLE = {
     qwen: "#6D4AFF",
     kimi: "#1F1F1F",
     copilot: "#3FB950",
+    devin: "#A1A1AA",
   },
   defaults: {
     badge: "#A78BFA",

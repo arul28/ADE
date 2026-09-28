@@ -136,7 +136,7 @@ export function isProviderRetryTurnBoundary(event: AgentChatEvent): boolean {
 
 function providerFromRetryText(message: string): string {
   const lower = message.toLowerCase();
-  for (const provider of ["claude", "codex", "opencode", "cursor", "droid", "pi", "qwen", "kimi", "grok", "copilot"]) {
+  for (const provider of ["claude", "codex", "opencode", "cursor", "droid", "pi", "qwen", "kimi", "grok", "copilot", "devin"]) {
     if (lower.includes(provider)) return provider;
   }
   return "provider";

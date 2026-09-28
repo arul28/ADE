@@ -27,6 +27,8 @@ import { lobeProviderIconSrc } from "../../lib/lobeProviderIconSrc";
 import { cn } from "../ui/cn";
 import droidMarkSrc from "../../assets/provider-logos/droid.svg";
 import piMarkSrc from "../../assets/provider-logos/pi.svg";
+import devinMarkSrc from "../../assets/provider-logos/devin.svg";
+import devinGlyphSrc from "../../assets/provider-logos/devin-glyph.svg";
 
 type LogoProps = { size?: number; className?: string };
 
@@ -77,6 +79,40 @@ export function DroidLogo({ size = 16, className }: LogoProps) {
 
 export function PiLogo({ size = 16, className }: LogoProps) {
   return <LobeStaticMark src={piMarkSrc} size={size} className={className} />;
+}
+
+export function DevinLogo({ size = 16, className }: LogoProps) {
+  return <LobeStaticMark src={devinMarkSrc} size={size} className={cn("rounded-[3px]", className)} />;
+}
+
+/**
+ * The bare Cognition glyph with no tile/box, tinted by the surrounding text
+ * color. Used where the mark sits inline next to other providers' bare marks
+ * (the top-bar quick-view), so it reads at the same weight as Cursor Cloud
+ * rather than as a tiny boxed app icon.
+ */
+export function DevinMark({ size = 15, className }: LogoProps) {
+  const mask = `url(${devinGlyphSrc})`;
+  return (
+    <span
+      aria-hidden
+      data-devin-mark
+      className={cn("inline-block shrink-0", className)}
+      style={{
+        width: size,
+        height: size,
+        backgroundColor: "currentColor",
+        WebkitMaskImage: mask,
+        WebkitMaskSize: "contain",
+        WebkitMaskRepeat: "no-repeat",
+        WebkitMaskPosition: "center",
+        maskImage: mask,
+        maskSize: "contain",
+        maskRepeat: "no-repeat",
+        maskPosition: "center",
+      }}
+    />
+  );
 }
 
 function CursorSubscriptionModelMark({ providerModelId, size, className }: { providerModelId: string; size: number; className?: string }) {
@@ -174,6 +210,8 @@ export function ProviderLogo({
       return <DroidLogo size={size} className={className} />;
     case "pi":
       return <PiLogo size={size} className={className} />;
+    case "devin":
+      return <DevinLogo size={size} className={className} />;
     case "opencode":
     case "opencode-go":
       return <OpenCode.Avatar size={size} className={c} />;

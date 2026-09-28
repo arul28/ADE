@@ -556,6 +556,21 @@ export type AcpDialectBase = {
    */
   readonly servedModelMismatchNote?: string;
 
+  /**
+   * Config option that carries the model when the dialect selects it through a
+   * config option rather than `session/set_model`. Defaults to `model`; Devin
+   * Cloud names it `devin_version`.
+   */
+  readonly modelConfigOptionId?: string;
+
+  /**
+   * True when user messages the agent reports outside an ADE-dispatched turn
+   * are real messages ADE has not seen: a replayed history on first attach, or
+   * a message someone sent from the provider's own web app. Inside an ADE turn
+   * they are the echo of ADE's own send and stay dropped.
+   */
+  readonly echoRemoteUserMessages?: boolean;
+
   /** Absent when the agent takes no reasoning effort through a config option. */
   readonly reasoningEffortOption?: AcpReasoningEffortOption;
 

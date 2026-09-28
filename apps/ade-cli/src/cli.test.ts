@@ -3951,7 +3951,7 @@ describe("ADE CLI", () => {
         "shell",
         "--print-config",
       ]),
-    ).toThrow(/provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, or copilot/);
+    ).toThrow(/provider must be one of claude, codex, cursor, droid, opencode, pi, qwen, kimi, grok, copilot, or devin/);
   });
 
   it("accepts a mis-cased provider when starting a CLI session", () => {

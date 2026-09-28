@@ -23,6 +23,7 @@ export * from "./macDesktop";
 export * from "./builtInBrowser";
 export * from "./builtInBrowserLoginImport";
 export * from "./config";
+export * from "./cloudAgents";
 export * from "./automations";
 export * from "./packs";
 export * from "./usage";

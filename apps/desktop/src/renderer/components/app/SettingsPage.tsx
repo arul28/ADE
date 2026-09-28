@@ -2,6 +2,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import {
+  ArrowLeft,
   Bell,
   Brain,
   ChartLineUp,
@@ -812,6 +813,17 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)
     ?? tabs[0];
+  // A provider detail (or Harnesses) is a sub-view of the Providers tab. The
+  // shell header owns the back affordance so it sits on the title row rather
+  // than floating below it.
+  const subViewOpen = Boolean(searchParams.get("provider")?.trim()) || searchParams.get("harnesses") === "1";
+  const closeSubView = () => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("provider");
+    next.delete("harnesses");
+    const search = next.toString();
+    navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
+  };
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
 
@@ -942,8 +954,19 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
               flexWrap: "wrap",
             }}
           >
-            <div style={{ minWidth: 0 }}>
-              {machinePageScope ? <SettingsMachineEyebrow page={machinePageScope} /> : null}
+            <div style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+              {subViewOpen ? (
+                <button
+                  type="button"
+                  aria-label="Back"
+                  onClick={closeSubView}
+                  style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 28, height: 28, border: "none", background: "transparent", color: COLORS.textMuted, cursor: "pointer", flexShrink: 0, marginLeft: -6 }}
+                >
+                  <ArrowLeft size={18} weight="bold" />
+                </button>
+              ) : null}
+              <div style={{ minWidth: 0 }}>
+                {machinePageScope ? <SettingsMachineEyebrow page={machinePageScope} /> : null}
               <h1
                 style={{
                   margin: 0,
@@ -965,6 +988,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
                   {activeTab.description}
                 </p>
               ) : null}
+              </div>
             </div>
 
             <label

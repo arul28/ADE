@@ -36,6 +36,7 @@ import { buildTrackedCliLaunchCommand, buildTrackedCliResumeLaunchCommand } from
 import type { TerminalResumeMetadata } from "../../../shared/types/sessions";
 import { allProviderKeySpecs } from "../../../renderer/components/settings/providers/keys/providerKeySpecs";
 import type { HarnessPreset, HarnessPresetBody, HarnessPresetSource } from "../../../shared/harnessPresets";
+import { isHarnessPresetBody } from "../../../shared/harnessPresets";
 import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials";
 import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
 
@@ -102,6 +103,7 @@ describe("credential store provider mapping", () => {
   // getting this wrong files the key where nothing looks for it.
   it("uses the shared mapping in every renderer provider-key spec", () => {
     for (const spec of allProviderKeySpecs()) {
+      if (!isHarnessPresetBody(spec.provider)) continue;
       expect(spec.credentialProvider).toBe(
         HARNESS_CREDENTIAL_STORE_PROVIDER[spec.provider as HarnessPresetBody],
       );

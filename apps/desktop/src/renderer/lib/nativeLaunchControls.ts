@@ -33,7 +33,8 @@ type ChatRuntimeProviderKey =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 type CliProvider = ChatRuntimeProviderKey;
 
 export function defaultNativeControls(profile: ChatSurfaceProfile = "standard"): NativeControlState {

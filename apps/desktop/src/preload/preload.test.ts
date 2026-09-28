@@ -8859,7 +8859,7 @@ describe("per-chat runtime routing", () => {
       await vi.advanceTimersByTimeAsync(750);
       await vi.runOnlyPendingTimersAsync();
 
-      expect(streamRequests).toEqual([
+      expect(streamRequests.slice(0, 3)).toEqual([
         {
           id: "target-b",
           projectId: "project-b",

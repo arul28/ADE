@@ -6480,6 +6480,10 @@ describe("CTO-gated Linear sync commands", () => {
         // both are host state mutations refused to read-only viewers.
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
+        "ai.openCloudAgent",
+        "ai.stopCloudAgent",
+        "ai.archiveCloudAgent",
+        "ai.launchCloudAgent",
         // Resuming spends a provider turn, so it is a host mutation a
         // read-only viewer never gets to make.
         "chat.resumeUsageLimitNow",
@@ -6506,6 +6510,10 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
         "ai.cursorCloudStopRun",
+        "ai.openCloudAgent",
+        "ai.stopCloudAgent",
+        "ai.archiveCloudAgent",
+        "ai.launchCloudAgent",
         "macDesktop.start",
         "macDesktop.stop",
         "macDesktop.takeControl",

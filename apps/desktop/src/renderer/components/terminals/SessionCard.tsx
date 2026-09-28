@@ -5,6 +5,7 @@ import {
   CircleNotch,
   Clock,
   CloudArrowUp,
+  CloudCheck,
   DesktopTower,
   DownloadSimple,
   GitPullRequest,
@@ -413,6 +414,7 @@ export const SessionCard = React.memo(function SessionCard({
   machineMarker = null,
   laneAppleDevice = null,
   laneMacDesktop = false,
+  laneCloud = null,
   laneAppControl = false,
   laneBrowserTabs = 0,
   suppressMachineChip = false,
@@ -483,6 +485,8 @@ export const SessionCard = React.memo(function SessionCard({
   laneAppleDevice?: LaneAppleDevice | null;
   /** The card's lane holds a Mac Desktop display. Shown like `laneAppleDevice`. */
   laneMacDesktop?: boolean;
+  /** A headerless lane that lives on a cloud: its card carries the cloud mark. */
+  laneCloud?: "devin" | "cursor" | null;
   /** The card's lane has a live App Control app. Shown like `laneAppleDevice`. */
   laneAppControl?: boolean;
   /** Browser tabs an agent of the card's lane owns. Shown like `laneAppleDevice`. */
@@ -782,6 +786,19 @@ export const SessionCard = React.memo(function SessionCard({
         className={cn("shrink-0", machineMarker.online ? "text-amber-400/85" : "text-muted-fg/45")}
         aria-hidden
       />
+    </span>
+  ) : null;
+
+  const cloudName = laneCloud === "devin" ? "Devin Cloud" : laneCloud === "cursor" ? "Cursor Cloud" : null;
+  const cloudGlyph = cloudName ? (
+    <span
+      data-lane-cloud={laneCloud}
+      role="img"
+      aria-label={`Lane lives on ${cloudName}`}
+      title={`Lane lives on ${cloudName}`}
+      className="inline-flex shrink-0 items-center rounded-full border border-sky-400/25 bg-sky-400/[0.08] px-1 py-px leading-none"
+    >
+      <CloudCheck size={10} weight="fill" className="shrink-0 text-sky-300" aria-hidden />
     </span>
   ) : null;
 
@@ -1417,6 +1434,7 @@ export const SessionCard = React.memo(function SessionCard({
           {browserPresenceGlyph}
           {/* Compact rows have no line 1, so this is their only seat for it —
               same precedent as `compactLineageGlyph` directly above. */}
+          {cloudGlyph}
           {machineGlyph}
           {gridIndicator}
           {indicatorGlyph}
@@ -1436,6 +1454,7 @@ export const SessionCard = React.memo(function SessionCard({
               </React.Fragment>
             ))}
             {browserPresenceGlyph}
+            {cloudGlyph}
             {machineGlyph}
             {gridIndicator}
             {indicatorGlyph}

@@ -46,6 +46,7 @@ import {
 } from "../../../shared/modelRegistry";
 import { disabledProviderSet } from "../../../shared/providerEnablement";
 import { presetSourceLabel } from "../../../shared/harnessPresets";
+import { getCachedDevinModels, warmDevinModels } from "./devinModelsDiscovery";
 import { readHarnessPresetsOrEmpty } from "../chat/harnessPresetSettings";
 import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
@@ -81,6 +82,7 @@ import { parseStructuredOutput } from "./utils";
 import {
   deleteApiKey as deleteStoredApiKey,
   getAllApiKeys,
+  getApiKey as getStoredApiKey,
   getApiKeyStoreStatus,
   listStoredProviders,
   storeApiKey as storeStoredApiKey,
@@ -162,6 +164,7 @@ export type AiIntegrationStatus = {
     kimi?: boolean;
     grok?: boolean;
     copilot?: boolean;
+    devin?: boolean;
   };
   models: {
     claude: AgentModelDescriptor[];
@@ -172,10 +175,11 @@ export type AiIntegrationStatus = {
     kimi?: AgentModelDescriptor[];
     grok?: AgentModelDescriptor[];
     copilot?: AgentModelDescriptor[];
+    devin?: AgentModelDescriptor[];
   };
   detectedAuth?: Array<{
     type: "cli-subscription" | "api-key" | "oauth" | "openrouter" | "local";
-    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot";
+    cli?: "claude" | "codex" | "cursor" | "droid" | "qwen" | "kimi" | "grok" | "copilot" | "devin";
     provider?: string;
     source?: "config" | "env" | "store" | "file";
     endpointSource?: "auto" | "config";
@@ -1008,6 +1012,7 @@ export const ACP_STATUS_FAMILIES = {
   kimi: "moonshot",
   grok: "xai",
   copilot: "github-copilot",
+  devin: "devin",
 } as const;
 
 function buildStatusModelLists(
@@ -1027,6 +1032,7 @@ function buildStatusModelLists(
     kimi: availability.kimi ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.kimi) : [],
     grok: availability.grok ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.grok) : [],
     copilot: availability.copilot ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.copilot) : [],
+    devin: availability.devin ? agentModelsFromAvailable(available, ACP_STATUS_FAMILIES.devin) : [],
   };
 }
 
@@ -1153,6 +1159,7 @@ export function createAiIntegrationService(args: {
       ["kimi", ACP_STATUS_FAMILIES.kimi],
       ["grok", ACP_STATUS_FAMILIES.grok],
       ["copilot", ACP_STATUS_FAMILIES.copilot],
+      ["devin", ACP_STATUS_FAMILIES.devin],
     ] as const;
     for (const [provider, family] of acpModelFamilies) {
       const health = getProviderRuntimeHealth(provider);
@@ -1165,6 +1172,19 @@ export function createAiIntegrationService(args: {
         !(descriptor.isCliWrapped && descriptor.family === family)
       );
       if (!hasAuth) continue;
+      if (provider === "devin") {
+        // `devin models list` is the account's real catalog, ahead of the
+        // curated family picks. Serve the cached rows; warm once in the
+        // background when cold so this read never blocks on a subprocess.
+        const discovered = getCachedDevinModels();
+        if (discovered?.length) {
+          mergeDynamicAcpModelDescriptors("devin", discovered);
+        } else {
+          void warmDevinModels().then((rows) => {
+            if (rows.length) mergeDynamicAcpModelDescriptors("devin", rows);
+          });
+        }
+      }
       available.push(...listAcpModelDescriptorsForProvider(provider, {
         ...(provider === "qwen" && qwenSettings.models.length
           ? { configuredModelIds: qwenSettings.models.map((model) => model.id) }
@@ -2071,7 +2091,7 @@ export function createAiIntegrationService(args: {
           // detectAuth -> detectAllAuth already called detectCliAuthStatuses() and
           // populated the cache, so this reads instantly from cache:
           const cliStatuses = timeSyncPhase("read_cli_auth_cache", () => getCachedCliAuthStatuses());
-          const installedAcp = ( ["qwen", "kimi", "grok", "copilot"] as const)
+          const installedAcp = ( ["qwen", "kimi", "grok", "copilot", "devin"] as const)
             .filter((provider) => cliStatuses.some((status) => status.cli === provider && status.installed));
           // The disk heuristic proves only that a provider left credentials on
           // disk. A forced Settings refresh must wait for the ACP handshake so
@@ -2087,7 +2107,7 @@ export function createAiIntegrationService(args: {
               }))
             : {};
           const runtimeReadyAcpProviders = new Set<string>();
-          for (const provider of ["qwen", "kimi", "grok", "copilot"] as const) {
+          for (const provider of ["qwen", "kimi", "grok", "copilot", "devin"] as const) {
             const probe = acpProbeResults[provider];
             const health = getProviderRuntimeHealth(provider);
             if (probe?.state === "ready" || health?.state === "ready") {
@@ -2101,7 +2121,7 @@ export function createAiIntegrationService(args: {
             const cli = cliStatuses.find((status) => status.cli === provider);
             authForModels.push({
               type: "cli-subscription",
-              cli: provider as "qwen" | "kimi" | "grok" | "copilot",
+              cli: provider as "qwen" | "kimi" | "grok" | "copilot" | "devin",
               path: cli?.path ?? provider,
               authenticated: true,
               verified: true,
@@ -2148,6 +2168,7 @@ export function createAiIntegrationService(args: {
             kimi: enabled("kimi") && Boolean(providerConnections.kimi?.runtimeAvailable),
             grok: enabled("grok") && Boolean(providerConnections.grok?.runtimeAvailable),
             copilot: enabled("copilot") && Boolean(providerConnections.copilot?.runtimeAvailable),
+            devin: enabled("devin") && Boolean(providerConnections.devin?.runtimeAvailable),
           };
           const runtimeFilteredAvailable = timeSyncPhase("filter_available_models", () => available.filter((descriptor) => {
             // API/local rows are not owned by any one provider tile (they reach
@@ -2162,6 +2183,7 @@ export function createAiIntegrationService(args: {
             if (descriptor.family === ACP_STATUS_FAMILIES.kimi) return availability.kimi === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.grok) return availability.grok === true;
             if (descriptor.family === ACP_STATUS_FAMILIES.copilot) return availability.copilot === true;
+            if (descriptor.family === ACP_STATUS_FAMILIES.devin) return availability.devin === true;
             return true;
           }));
 
@@ -2348,6 +2370,7 @@ export function createAiIntegrationService(args: {
     getCursorAgentUsage,
     listCursorCloudArtifacts,
     downloadCursorCloudArtifact,
+
 
     getAvailabilityAsync,
     resolveModelForTask,

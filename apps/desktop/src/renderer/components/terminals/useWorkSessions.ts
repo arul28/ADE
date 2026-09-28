@@ -47,6 +47,8 @@ import {
   shouldRefreshSessionListForChatEvent,
   subscribeWorkChatSessionCreated,
 } from "../../lib/chatSessionEvents";
+import { laneCloudProvider } from "../../../shared/cloudLanes";
+import { normalizeDevinCloudSessionId } from "../../../shared/devinCloud";
 import {
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
@@ -2227,6 +2229,30 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const launchPtySession = useCallback(
     async (args: WorkPtyLaunchArgs): Promise<WorkPtyLaunchResult> => {
+      // A cloud lane's machine is its cloud. A shell there is a shell on the
+      // cloud VM — Devin's, through `devin ssh` into the lane's latest session —
+      // and Cursor Cloud has no shell to open at all.
+      if (args.profile === "shell" && args.command === undefined && args.startupCommand === undefined) {
+        const cloud = laneCloudProvider(lanes.find((lane) => lane.id === args.laneId));
+        if (cloud === "cursor") {
+          throw new Error("This lane lives on Cursor Cloud, which has no shell. Open the agent on cursor.com to take over its desktop.");
+        }
+        if (cloud === "devin") {
+          const chats = await window.ade.agentChat.list({ laneId: args.laneId }).catch(() => []);
+          const latest = chats
+            .filter((chat) => Boolean(chat.devinSessionId))
+            .sort((a, b) => Date.parse(b.lastActivityAt) - Date.parse(a.lastActivityAt))[0];
+          if (!latest?.devinSessionId) {
+            throw new Error("This lane lives on Devin Cloud. Start a Devin chat here first; the shell opens on its VM.");
+          }
+          args = {
+            ...args,
+            title: args.title ?? "Devin VM",
+            command: "devin",
+            args: ["ssh", normalizeDevinCloudSessionId(latest.devinSessionId), "-o", "StrictHostKeyChecking=accept-new"],
+          };
+        }
+      }
       // resolveLaunchFields preserves caller intent: any caller-supplied
       // startupCommand/command/args is used as-is, never mixed with defaults
       // from the other fields. Only when the caller passes none of them do

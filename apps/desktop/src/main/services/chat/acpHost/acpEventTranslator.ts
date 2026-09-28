@@ -17,6 +17,7 @@
  */
 
 import { hasNonEmptyRecord } from "../../../../shared/agentObservationNormalizers";
+import { stripDevinCloudBranchPin } from "../../../../shared/devinCloud";
 import type { AgentChatEvent, AgentChatPlanStep, ChatSourceRef } from "../../../../shared/types";
 import { boundChatSourceRefs } from "../../../../shared/chatSources";
 import { acpResourceLinkSourceRef, acpToolSourceRefs } from "../chatSourceAdapters";
@@ -93,7 +94,7 @@ export type AcpTranslatorCallbacks = {
     currentModeId: string | null;
   }) => void;
   /** Fired for `session_info_update`. Carries the agent's own session title. */
-  onSessionInfo?: (info: { title: string | null; updatedAt: string | null }) => void;
+  onSessionInfo?: (info: { title: string | null; updatedAt: string | null; meta?: Record<string, unknown> | null }) => void;
   /** Fired for every usage sample the dialect could read. */
   onUsage?: (sample: AcpUsageSample) => void;
   /**
@@ -108,6 +109,8 @@ export type AcpEventTranslatorOptions = {
   readUsage?: ((update: Extract<AcpSessionUpdate, { sessionUpdate: "usage_update" }>) => AcpUsageSample | null) | null;
   /** Keeps only the slash commands ADE should offer in its picker. */
   includeSlashCommand?: (command: AcpAvailableCommand) => boolean;
+  /** See `AcpDialectBase.echoRemoteUserMessages`. */
+  echoRemoteUserMessages?: boolean;
   callbacks?: AcpTranslatorCallbacks;
 };
 
@@ -123,6 +126,18 @@ export type AcpEventTranslator = {
   /** Forget per-turn state. Session-scoped state (slash dedupe) survives. */
   resetTurnState(): void;
 };
+
+/**
+ * A chunk that is a whole message, from an agent that marks them so. Devin's
+ * relay stamps every event with an id and `streaming: false` when the chunk is
+ * complete; without an id each such message would run into the previous one.
+ */
+function completeMessageEventId(update: { _meta?: unknown }): string | null {
+  const meta = update._meta && typeof update._meta === "object" ? update._meta as Record<string, unknown> : null;
+  if (!meta || meta["cognition.ai/streaming"] !== false) return null;
+  const id = meta["cognition.ai/eventId"];
+  return typeof id === "string" && id.length ? id : null;
+}
 
 function textOfContentBlock(block: AcpContentBlock): string {
   switch (block.type) {
@@ -260,6 +275,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
   let activeThoughtMessageId: string | null = null;
   const textByMessageId = new Map<string, string>();
   let lastSlashSignature: string | null = null;
+  const echoedUserMessageIds = new Set<string>();
 
   const withTurn = <T extends object>(event: T): T & { turnId?: string } =>
     (turnId ? { ...event, turnId } : event) as T & { turnId?: string };
@@ -425,13 +441,31 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
 
   const translate = (update: AcpSessionUpdate): AgentChatEvent[] => {
     switch (update.sessionUpdate) {
-      case "user_message_chunk":
-        // ADE already owns the user's message. Echoing it would duplicate the
-        // bubble on every replay.
-        return [];
+      case "user_message_chunk": {
+        // ADE already owns the user's message inside its own turn; echoing it
+        // would duplicate the bubble. Outside one, a dialect that says so is
+        // reporting a message ADE never saw (a replayed history, or a message
+        // sent from the provider's web app), and dropping it loses half the
+        // conversation.
+        if (turnId || !options.echoRemoteUserMessages) return [];
+        // A replayed turn ADE sent carries its branch pin; show what the user wrote.
+        const text = stripDevinCloudBranchPin(textOfContentBlock(update.content)).trim();
+        if (!text.length) return [];
+        const meta = (update as { _meta?: Record<string, unknown> })._meta ?? null;
+        const eventId = meta && typeof meta["cognition.ai/eventId"] === "string"
+          ? meta["cognition.ai/eventId"] as string
+          : null;
+        const messageId = eventId ?? update.messageId ?? `remote-user-${++syntheticMessageCounter}`;
+        if (echoedUserMessageIds.has(messageId)) return [];
+        echoedUserMessageIds.add(messageId);
+        return [{ type: "user_message", text, messageId, runtime: "cloud" }];
+      }
 
       case "agent_message_chunk": {
-        const messageId = messageIdFor("text", update.messageId);
+        // Devin links its own terminal buffers as `devin:///terminal_contents/…`.
+        // They resolve only inside Devin, so as chat text they are noise.
+        if (update.content.type === "resource_link" && /^devin:/i.test(update.content.uri)) return [];
+        const messageId = messageIdFor("text", update.messageId ?? completeMessageEventId(update));
         let text = textOfContentBlock(update.content);
         if (!text.length) return [];
         if (acpResourceLinkSourceRef(update.content)) {
@@ -448,7 +482,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
       case "agent_thought_chunk": {
         const text = textOfContentBlock(update.content);
         if (!text.length) return [];
-        const messageId = messageIdFor("thought", update.messageId);
+        const messageId = messageIdFor("thought", update.messageId ?? completeMessageEventId(update));
         return [withTurn({ type: "reasoning" as const, text, itemId: messageId })];
       }
 
@@ -614,6 +648,7 @@ export function createAcpEventTranslator(options: AcpEventTranslatorOptions = {}
         options.callbacks?.onSessionInfo?.({
           title: update.title ?? null,
           updatedAt: update.updatedAt ?? null,
+          meta: update._meta && typeof update._meta === "object" ? update._meta as Record<string, unknown> : null,
         });
         return [];
 

@@ -4821,6 +4821,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       cursorCloudOpenChat: resolvedArg({ sessionId: "", session: null } as any),
       cursorCloudWatchMirror: resolvedArg(undefined),
     },
+    cloudAgents: {
+      list: async (args: { provider: "devin" | "cursor" }) => ({
+        provider: args.provider,
+        items: [],
+        fetchedAt: new Date().toISOString(),
+        capabilities: { stop: false, archive: false, vmShell: false, web: false },
+        unavailableReason: null,
+        models: [],
+      }),
+      open: resolvedArg({ chatSessionId: "", laneId: "", laneName: null, createdLane: false }),
+      stop: resolvedArg({ stopped: true as const }),
+      archive: async (args: { archived: boolean }) => ({ archived: args.archived }),
+      launch: resolvedArg({ chatSessionId: "", laneId: "", laneName: null, createdLane: false }),
+    },
     agentTools: {
       detect: resolved([]),
     },
@@ -5807,6 +5821,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         return mockAgentChatSummaryFromSession(session) ?? null;
       },
       create: resolvedArg({ id: "mock" }),
+      launchCli: resolvedArg({ sessionId: "mock-cli", ptyId: "mock-pty", pid: null, attachedLinearIssueIds: [] } as any),
       suggestLaneName: resolvedArg("browser-mock-chat"),
       generateAutoLaneIdentity: async (args: any = {}) => ({
         laneTitle: String(args.fallbackName ?? "Browser Mock Chat"),

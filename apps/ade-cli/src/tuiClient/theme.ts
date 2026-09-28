@@ -61,6 +61,7 @@ const COPILOT = "#A855F7";
 const QWEN = "#6D4AFF";
 const KIMI = "#F0F0F2";
 const GROK = "#DC2626";
+const DEVIN = "#2563EB";
 
 const TOOL = "cyan";
 const REASONING = T4;
@@ -106,6 +107,7 @@ const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   kimi: { glyph: "◐", wordmark: "Kimi", color: KIMI, label: "Kimi" },
   grok: { glyph: "✧", wordmark: "Grok", color: GROK, label: "Grok" },
   copilot: { glyph: "⌬", wordmark: "Copilot", color: COPILOT, label: "GitHub Copilot" },
+  devin: { glyph: "◆", wordmark: "Devin", color: DEVIN, label: "Devin" },
   ollama: { glyph: "◕", wordmark: "Ollama", color: OLLAMA, label: "Ollama" },
   lmstudio: { glyph: "≋", wordmark: "LM Studio", color: LMSTUDIO, label: "LM Studio" },
 };

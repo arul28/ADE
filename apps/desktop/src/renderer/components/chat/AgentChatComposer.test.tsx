@@ -18,7 +18,7 @@ import {
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE,
-  cursorCloudSendBlock,
+  resolveCloudSendBlock,
   HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
 } from "./AgentChatComposer";
 import {
@@ -3926,8 +3926,13 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
       modelId: "cursor/composer-cloud",
       availableModelIds: ["cursor/composer-cloud"],
       draft: "Run this in the cloud.",
-      cursorCloudCanLaunch: true,
-      cursorCloudModeActive: true,
+      cloudLaunch: {
+        provider: "cursor" as const,
+        canLaunch: true,
+        active: true,
+        modelReady: true,
+        hasEligibleModels: true,
+      },
       ...overrides,
     };
   }
@@ -3937,8 +3942,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     const onSubmitToCloud = vi.fn();
     renderComposer(cloudProps({
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud,
@@ -3958,8 +3962,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     const onSubmitToCloud = vi.fn();
     renderComposer(cloudProps({
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: false,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false, hasEligibleModels: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud,
@@ -3977,8 +3980,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     renderComposer(cloudProps({
       modelId: "",
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud: vi.fn(),
@@ -3994,8 +3996,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmit = vi.fn();
     const onSubmitToCloud = vi.fn().mockReturnValue(true);
     renderComposer(cloudProps({
-      cursorCloudModelReady: true,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: cloudProps().cloudLaunch,
       onSubmit,
       onSubmitToCloud,
     }));
@@ -4008,19 +4009,19 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
   });
 });
 
-describe("cursorCloudSendBlock", () => {
+describe("resolveCloudSendBlock", () => {
   it("names the unloaded catalog first, then the ineligible model, then empty content", () => {
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: false,
       modelReady: false,
       hasContent: false,
     })).toEqual({ reason: CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE, notify: true });
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: false,
       hasContent: true,
     })).toEqual({ reason: CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE, notify: true });
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: true,
       hasContent: false,
@@ -4028,7 +4029,7 @@ describe("cursorCloudSendBlock", () => {
   });
 
   it("lets a ready cloud send through", () => {
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: true,
       hasContent: true,

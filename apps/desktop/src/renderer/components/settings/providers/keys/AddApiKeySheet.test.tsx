@@ -39,6 +39,7 @@ const EXPECTED: Record<SettingsProviderId, { endpoint: boolean; protocol: boolea
   kimi: { endpoint: false, protocol: false, models: false, providerId: false },
   grok: { endpoint: false, protocol: false, models: false, providerId: false },
   copilot: { endpoint: false, protocol: false, models: false, providerId: false },
+  devin: { endpoint: false, protocol: false, models: false, providerId: false },
 };
 
 describe("AddApiKeySheet", () => {

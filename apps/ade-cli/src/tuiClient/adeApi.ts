@@ -460,6 +460,7 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "kimi-chat",
   "grok-chat",
   "copilot-chat",
+  "devin-chat",
 ]);
 
 const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([
@@ -555,7 +556,7 @@ export async function signalTerminal(
 /** Provider CLIs the TUI can launch as tracked terminal sessions. */
 export type CliTerminalProvider = Extract<
   AdeCodeProvider,
-  "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot"
+  "claude" | "codex" | "cursor" | "droid" | "opencode" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin"
 >;
 
 export type StartCliTerminalSessionResult = {

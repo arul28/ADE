@@ -234,6 +234,12 @@ import type {
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
+  CloudAgentArchiveArgs,
+  CloudAgentLaunchArgs,
+  CloudAgentList,
+  CloudAgentListArgs,
+  CloudAgentOpenResult,
+  CloudAgentRef,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncCloudRelayStatus,
@@ -5146,7 +5152,7 @@ const adeBridge = {
           ),
       ),
     acpProviderDiagnostics: async (args: {
-      provider: "qwen" | "kimi" | "grok" | "copilot";
+      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
       runDoctor?: boolean;
     }, pin?: OpenProjectBinding | null): Promise<AcpProviderDiagnostics> =>
       // Unpinned stays on desktop IPC: it reports on the CLIs installed on the
@@ -5157,7 +5163,7 @@ const adeBridge = {
         ? callPinnedRuntimeAction<AcpProviderDiagnostics>(pin, "ai", "acpProviderDiagnostics", { args })
         : ipcRenderer.invoke(IPC.aiAcpProviderDiagnostics, args),
     acpProviderUpdate: async (args: {
-      provider: "qwen" | "kimi" | "grok" | "copilot";
+      provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
     }, pin?: OpenProjectBinding | null): Promise<AcpProviderUpdateResult> =>
       // Same rule as diagnostics: unpinned updates This computer's CLI, a pin
       // updates the named machine's.
@@ -5670,6 +5676,28 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.syncEvent, listener);
       };
     },
+  },
+  cloudAgents: {
+    list: async (args: CloudAgentListArgs): Promise<CloudAgentList> =>
+      callProjectRuntimeActionOr("ai", "listCloudAgents", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsList, args),
+      ),
+    open: async (args: CloudAgentRef): Promise<CloudAgentOpenResult> =>
+      callProjectRuntimeActionOr("ai", "openCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsOpen, args),
+      ),
+    stop: async (args: CloudAgentRef): Promise<{ stopped: true }> =>
+      callProjectRuntimeActionOr("ai", "stopCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsStop, args),
+      ),
+    launch: async (args: CloudAgentLaunchArgs): Promise<CloudAgentOpenResult> =>
+      callProjectRuntimeActionOr("ai", "launchCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsLaunch, args),
+      ),
+    archive: async (args: CloudAgentArchiveArgs): Promise<{ archived: boolean }> =>
+      callProjectRuntimeActionOr("ai", "archiveCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsArchive, args),
+      ),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> =>

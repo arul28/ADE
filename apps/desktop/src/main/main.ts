@@ -326,6 +326,8 @@ import { createLinearAccessTokenGetter, createLinearIngressService } from "./ser
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import { createCursorCloudIngressService } from "./services/automations/cursorCloudIngressService";
 import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
+import { createCloudAgentsServiceFromHost } from "./services/chat/cloudAgentsService";
+import { resolveDevinCloudBinary } from "./services/chat/devinCloudBinary";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
@@ -4579,6 +4581,18 @@ app.whenReady().then(async () => {
         return { state: status.state, lastEventAt: status.lastEventAt };
       },
     });
+
+    const cloudAgentsService = createCloudAgentsServiceFromHost({
+      projectRoot,
+      logger,
+      laneService,
+      getAgentChatService: () => agentChatService,
+      cursorFleet: cursorCloudFleetService,
+      archiveCursorAgent: (agentId) => aiIntegrationService.archiveCursorCloudAgent(agentId),
+      unarchiveCursorAgent: (agentId) => aiIntegrationService.unarchiveCursorCloudAgent(agentId),
+      cursorCreateRun: (args) => aiIntegrationService.createCursorCloudRun({ ...args, workOnCurrentBranch: true }),
+      resolveDevinBinary: resolveDevinCloudBinary,
+    });
     automationService?.setCursorCloudIngressAvailable(() => {
       const status = cursorCloudIngressService.getStatus();
       return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
@@ -5018,6 +5032,7 @@ app.whenReady().then(async () => {
       getAppleRemoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       agentChatService,
       cursorCloudFleetService,
+      cloudAgentsService,
       ctoStateService,
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
@@ -5507,6 +5522,7 @@ app.whenReady().then(async () => {
       linearIngressService,
       cursorCloudIngressService,
       cursorCloudFleetService,
+      cloudAgentsService,
       feedbackReporterService,
       usageTrackingService,
       storageInsightsService,

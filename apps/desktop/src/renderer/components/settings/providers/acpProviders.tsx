@@ -8,6 +8,7 @@
  * four near-identical descriptors.
  */
 import React from "react";
+import { FolderSimple, Key, Terminal, Warning, Wrench } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
@@ -93,6 +94,16 @@ export const ACP_PROVIDER_SPECS: readonly AcpProviderSpec[] = [
     installCommand: `npm install -g ${COPILOT_NPM_PACKAGE_SPEC}`,
     credentialSource: "Signed in through `copilot login`; the free plan includes the CLI. ADE does not write ~/.copilot.",
     setup: "Install the Copilot CLI and run `copilot login`. ADE reuses that GitHub login and never writes Copilot's config.json. Cancelled turns can still look finished on Copilot's side; ADE marks them stopped.",
+  },
+  {
+    ...ACP_PROVIDER_METADATA.devin,
+    id: "devin",
+    tagline: "Your local Devin CLI.",
+    logoFamily: "devin",
+    installCommand: "curl -fsSL https://cli.devin.ai/install.sh | bash",
+    credentialSource: "`devin auth login`, or WINDSURF_API_KEY.",
+    setup: "Install the devin CLI, then run `devin auth login`.",
+    degradation: "No org Knowledge, Playbooks, or Secrets in local sessions.",
   },
 ];
 
@@ -190,17 +201,18 @@ function acpFacts(ctx: ProvidersViewContext, id: AcpSettingsProviderId): Provide
   const binary = diagnostics?.binaryPath ?? connectionPath;
   const configHome = diagnostics?.configHome ?? null;
   return [
-    ...(binary ? [{ label: "Binary", value: binary, mono: true }] : []),
+    ...(binary ? [{ label: "Binary", value: binary, mono: true, icon: <Terminal size={12} weight="bold" /> }] : []),
     ...(configHome
       ? [{
           label: spec.configHomeEnv ? `Config home (${spec.configHomeEnv})` : "Config home",
           value: configHome,
           mono: true,
+          icon: <FolderSimple size={12} weight="bold" />,
         }]
       : []),
-    { label: "Credentials", value: spec.credentialSource },
-    { label: "Setup", value: spec.setup },
-    ...(spec.degradation ? [{ label: "Known limitation", value: spec.degradation }] : []),
+    { label: "Credentials", value: spec.credentialSource, icon: <Key size={12} weight="bold" /> },
+    { label: "Setup", value: spec.setup, icon: <Wrench size={12} weight="bold" /> },
+    ...(spec.degradation ? [{ label: "Known limitation", value: spec.degradation, icon: <Warning size={12} weight="bold" /> }] : []),
   ];
 }
 
@@ -325,6 +337,25 @@ function KimiBody() {
 }
 
 /**
+ * Devin Cloud rides the same CLI login as local Devin (`devin acp --cloud`),
+ * so there is nothing extra to configure here — the page only says so and
+ * points at where cloud sessions live.
+ */
+function DevinBody() {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <SubsectionTitle>Devin Cloud</SubsectionTitle>
+      <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+        Devin Cloud uses your Devin CLI login
+        (<span style={{ fontFamily: MONO_FONT }}>devin auth login</span>) — no
+        API token needed. Cloud sessions appear in the Devin Cloud panel in the
+        top bar.
+      </div>
+    </div>
+  );
+}
+
+/**
  * Grok's update advisory.
  *
  * ADE launches Grok with `--no-auto-update`, so nothing else surfaces a stale
@@ -391,7 +422,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
     // chip on its own.
     preview: providerTierIsPreview(spec.id),
     // All four share one permission vocabulary because they share one host.
-    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : "qwen", isCliWrapped: true, key: spec.id },
+    permissions: { family: spec.id === "kimi" ? "moonshot" : spec.id === "grok" ? "xai" : spec.id === "copilot" ? "github-copilot" : spec.id === "devin" ? "devin" : "qwen", isCliWrapped: true, key: spec.id },
     status: (ctx) => acpStatus(ctx, spec.id),
     models: (ctx) => acpModels(ctx, spec.id),
     version: (ctx) => acpVersion(ctx, spec.id),
@@ -402,6 +433,7 @@ function buildAcpDescriptor(spec: AcpProviderSpec): ProviderDescriptor {
       ? { Diagnostics: ({ ctx }: { ctx: ProvidersViewContext }) => <AcpDiagnostics ctx={ctx} id={spec.id} /> }
       : {}),
     ...(spec.id === "kimi" ? { Body: KimiBody } : {}),
+    ...(spec.id === "devin" ? { Body: DevinBody } : {}),
     ...(spec.id === "grok"
       ? { Body: ({ ctx }: { ctx: ProvidersViewContext }) => <GrokUpdateBody ctx={ctx} /> }
       : {}),

@@ -220,6 +220,21 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
     legacyDefaultSlot: false,
     note: null,
   },
+  devin: {
+    provider: "devin",
+    // The Windsurf API key the Devin CLI falls back to is stored under its own
+    // `devin-cli` credential id, not the provider's default `devin` slot.
+    credentialProvider: "devin-cli",
+    keyEnvVar: "WINDSURF_API_KEY",
+    keyHelp: "A Windsurf API key. The Devin CLI signs in with it when `devin auth login` has not run.",
+    endpoint: null,
+    protocol: false,
+    models: false,
+    providerId: false,
+    verifiable: false,
+    legacyDefaultSlot: false,
+    note: "Devin's browser sign-in (`devin auth login`) covers every account and needs no key. Only headless setups need WINDSURF_API_KEY.",
+  },
 };
 
 export function providerKeySpec(provider: SettingsProviderId): ProviderKeySpec {

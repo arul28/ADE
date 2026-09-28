@@ -31,8 +31,19 @@ export const Z_LAYERS = {
   hud: 130,
   /** Floating top-center banners. */
   floatingBanner: 140,
+  /**
+   * A full-viewport app surface (the Mac Desktop fullscreen view). Below
+   * dialogs and toasts so a confirm or picker raised from inside it works.
+   */
+  fullscreenTakeover: 150,
   /** Modal dialogs and their scrim. */
   dialog: 200,
+  /**
+   * A menu or popover anchored inside a dialog (a row's "More" menu). The
+   * app's `popover` layer sits under the dialog scrim, and `nestedDialog` is
+   * for modal confirms, which a menu must stay beneath.
+   */
+  dialogPopover: 205,
   /** A confirm/prompt raised from inside another dialog. */
   nestedDialog: 210,
   /** Bottom-right toast viewport; above dialogs so a dialog's own result toast shows. */

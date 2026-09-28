@@ -31,16 +31,17 @@ export const PROVIDER_ORDER: readonly AdeCodeProvider[] = MODEL_PICKER_PROVIDER_
 const RAIL_PROVIDER_ORDER: readonly AdeCodeProvider[] = PROVIDER_ORDER;
 
 /**
- * The four ACP providers. They report through the same optional
+ * The ACP providers. They report through the same optional
  * `availableProviders` / `providerConnections` / `models` slots, so one list
  * drives the greying arm instead of four copies of it. Mirrors
  * `ACP_PICKER_FAMILIES` in desktop's useProviderAuthStatus.
  */
-const ACP_PROVIDERS: readonly Extract<AdeCodeProvider, "qwen" | "kimi" | "grok" | "copilot">[] = [
+const ACP_PROVIDERS: readonly Extract<AdeCodeProvider, "qwen" | "kimi" | "grok" | "copilot" | "devin">[] = [
   "qwen",
   "kimi",
   "grok",
   "copilot",
+  "devin",
 ];
 
 function isAcpProvider(provider: AdeCodeProvider): provider is (typeof ACP_PROVIDERS)[number] {
@@ -168,6 +169,7 @@ const PROVIDER_BY_CATALOG_GROUP: Record<ProviderGroupKey, AdeCodeProvider> = {
   kimi: "kimi",
   grok: "grok",
   copilot: "copilot",
+  devin: "devin",
   opencode: "opencode",
   ollama: "ollama",
   lmstudio: "lmstudio",

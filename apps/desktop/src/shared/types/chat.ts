@@ -81,7 +81,7 @@ export type AgentChatProvider =
  * one session-config shape, so surfaces branch on this list instead of naming
  * the four providers again.
  */
-export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot"] as const;
+export const ACP_CHAT_PROVIDERS = ["qwen", "kimi", "grok", "copilot", "devin"] as const;
 export type AcpChatProvider = (typeof ACP_CHAT_PROVIDERS)[number];
 
 /**
@@ -866,6 +866,28 @@ export type AgentChatCompletionReport = {
 };
 
 export type AgentChatRuntime = "local" | "cloud";
+
+/**
+ * A Devin Cloud chat driven live over `devin acp --cloud` (the ACP relay).
+ * Present means the chat's turns run on a Devin VM through the ACP host.
+ */
+export type AgentChatDevinCloudConfig = {
+  transport: "acp";
+  /** `devin_version` config value: the cloud model (`devin-2-5`, `devin_lite`, `devin-swe-2-low`, …). */
+  version: string | null;
+  /** VM OS: `linux` | `macos` | `windows`. Null = Devin's default. */
+  platform: string | null;
+  /** `owner/repo` the session clones. */
+  repo: string | null;
+  /** The lane branch every turn is pinned to. */
+  branch: string | null;
+  /**
+   * True once the VM stands on `branch`: after the first turn carried the full
+   * branch instructions, or when the session was opened from a pull request
+   * whose head is the branch. Until then the next turn carries them.
+   */
+  pinned?: boolean;
+};
 
 export type AgentChatTextPhase = "commentary" | "final_answer";
 
@@ -2624,6 +2646,12 @@ export type AgentChatSession = {
   cursorRuntime?: AgentChatRuntime;
   /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
   cursorPromotedTurnId?: string;
+  /** Durable Devin cloud session id once this session has been promoted to cloud. */
+  devinSessionId?: string;
+  /** Default runtime for new turns in this session (set on promotion). */
+  devinRuntime?: AgentChatRuntime;
+  /** Set on Devin Cloud chats driven over the ACP relay. */
+  devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -2769,6 +2797,9 @@ export type AgentChatSessionSummary = {
   cursorCloudAgentId?: string;
   cursorRuntime?: AgentChatRuntime;
   cursorPromotedTurnId?: string;
+  devinSessionId?: string;
+  devinRuntime?: AgentChatRuntime;
+  devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   /**
    * The spawning chat's identity, when it had one — `"cto"` for work the CTO
@@ -3244,7 +3275,8 @@ export type AgentChatModelCatalogRefreshProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
@@ -3471,6 +3503,11 @@ export type AgentChatCreateArgs = {
   reasoningEffort?: string | null;
   fastMode?: boolean;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /**
+   * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
+   * a Devin VM; `provider` must be `devin`.
+   */
+  devinCloud?: AgentChatDevinCloudConfig | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
@@ -3655,7 +3692,8 @@ export type AgentChatCliLaunchProvider =
   | "qwen"
   | "kimi"
   | "grok"
-  | "copilot";
+  | "copilot"
+  | "devin";
 
 /**
  * Launch a tracked CLI/terminal agent (not the in-process chat SDK) with one or
