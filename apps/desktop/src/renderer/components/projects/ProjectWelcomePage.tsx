@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowCounterClockwise, ChatCircleDots, Plus, Trash } from "@phosphor-icons/react";
+import {
+  ArrowCounterClockwise,
+  ChatCircleDots,
+  Plus,
+  Trash,
+} from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
-import {
-  COLORS,
-  LABEL_STYLE,
-  MONO_FONT,
-  outlineButton,
-  primaryButton,
-} from "../lanes/laneDesignTokens";
+import { COLORS } from "../lanes/laneDesignTokens";
 import { CommandPalette } from "../app/CommandPalette";
 import { Banner } from "../ui/notice";
 import { dismissToast, showToast } from "../app/toast/toastStore";
@@ -21,7 +20,11 @@ import {
 import { isWebClientMode } from "../../lib/webClientMode";
 import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
 import { webRecentProjects } from "../../webclient/workspace/webWorkspaceModel";
-import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
+import {
+  RecentProjectRow,
+  type WebRowChrome,
+} from "./ProjectWelcomeWebRows";
+import { WelcomeSideColumn } from "./ProjectWelcomeSidePanels";
 import {
   WebAddProjectNotice,
   WebZeroMachines,
@@ -33,6 +36,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
 } from "../../../shared/types";
+import "./ProjectWelcomePage.css";
 
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
@@ -99,6 +103,23 @@ export function ProjectWelcomePage() {
     null,
   );
   const [isDragOver, setIsDragOver] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  // The side column folds into a tabbed strip when the page itself is narrow
+  // (the page can sit in a pane, so this is the page's width, not the window's).
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    // Measure the page, not the body: the body narrows itself in the
+    // one-column layout, which would latch this state on.
+    const element = pageRef.current;
+    if (!element || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width ?? element.clientWidth;
+      setNarrow(width < 880);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
   const forgetTimerRef = useRef<number | null>(null);
   const dragDepthRef = useRef(0);
 
@@ -434,8 +455,42 @@ export function ProjectWelcomePage() {
     [switchProjectToPath],
   );
 
+  const rows = useMemo(() => visibleProjectGroups.map((group) => {
+    const primary = group.primary;
+    const rp = {
+      ...primary.summary,
+      pinned: group.pinned,
+    };
+    return { group, rp, key: recentKey(rp) };
+  }), [visibleProjectGroups]);
+
+  const focusRowButton = useCallback((index: number) => {
+    const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]');
+    buttons?.[index]?.focus();
+  }, []);
+
+  // Arrow keys walk the rows once focus is on one of them.
+  const handleListKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
+    const target = event.target as HTMLElement;
+    if (target.dataset.welcomeRow !== "true") return;
+    const buttons = [...(listRef.current?.querySelectorAll<HTMLButtonElement>('[data-welcome-row="true"]') ?? [])];
+    const index = buttons.indexOf(target as HTMLButtonElement);
+    if (index < 0) return;
+    event.preventDefault();
+    const next = event.key === "ArrowDown"
+      ? Math.min(index + 1, buttons.length - 1)
+      : Math.max(index - 1, 0);
+    focusRowButton(next);
+  }, [focusRowButton]);
+
+  const hasProjects = visibleProjectGroups.length > 0;
+  const showSide = !webMode || webMachines.length > 0;
+
   return (
     <div
+      ref={pageRef}
+      className="ade-welcome"
       onDragEnter={(event) => {
         event.preventDefault();
         dragDepthRef.current += 1;
@@ -452,15 +507,8 @@ export function ProjectWelcomePage() {
       onDrop={handleDropFolder}
       data-ade-web-welcome={webMode ? "true" : undefined}
       style={{
-        position: "relative",
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        height: "100%",
         // The window gradient paints over this base; see the backdrop below.
         background: COLORS.pageBg,
-        isolation: "isolate",
-        overflow: "hidden",
         outline: isDragOver
           ? "2px dashed color-mix(in srgb, var(--color-accent) 70%, transparent)"
           : "none",
@@ -473,44 +521,12 @@ export function ProjectWelcomePage() {
         <WorkToolPickerBackdrop theme={theme} field="window" />
       </div>
       <style>
-        {`@keyframes ade-recent-dot-pulse {
-            0%, 100% { opacity: 1; transform: scale(1); }
-            50% { opacity: 0.4; transform: scale(0.7); }
-          }
-          @keyframes ade-recent-spin {
-            to { transform: rotate(360deg); }
-          }
-          @keyframes ade-welcome-mark {
+        {`@keyframes ade-welcome-mark {
             from { opacity: 0; transform: translateY(8px) scale(0.985); }
             to { opacity: 1; transform: none; }
           }
-          @keyframes ade-recent-shimmer {
-            from { transform: translateX(-60%); }
-            to { transform: translateX(160%); }
-          }
-          /* A cached row says so by shimmering until live data replaces it. */
-          [data-ade-stale="true"] { overflow: hidden; border-radius: 12px; }
-          [data-ade-stale="true"]::after {
-            content: "";
-            position: absolute;
-            inset: 0;
-            width: 45%;
-            pointer-events: none;
-            background: linear-gradient(
-              90deg,
-              transparent,
-              color-mix(in srgb, var(--color-accent) 9%, transparent),
-              transparent
-            );
-            animation: ade-recent-shimmer 2.4s ease-in-out infinite;
-          }
           @media (prefers-reduced-motion: reduce) {
-            [data-ade-stale="true"]::after { animation: none; opacity: 0.35; }
             [data-ade-welcome-motion] { animation: none !important; }
-          }
-          @media (pointer: coarse) {
-            [data-ade-web-welcome] [role="menuitem"],
-            [data-ade-web-welcome] [role="button"] { min-height: 44px; }
           }`}
       </style>
       {isDragOver ? (
@@ -519,152 +535,74 @@ export function ProjectWelcomePage() {
           style={{
             position: "absolute",
             inset: 16,
-            borderRadius: 16,
+            borderRadius: 12,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
             background:
               "color-mix(in srgb, var(--color-accent) 10%, transparent)",
             color: COLORS.accent,
-            fontFamily: MONO_FONT,
-            fontSize: 13,
-            fontWeight: 700,
-            letterSpacing: "0.08em",
-            textTransform: "uppercase",
+            fontSize: 14,
+            fontWeight: 600,
             zIndex: 30,
             pointerEvents: "none",
           }}
         >
-          Drop a folder to open
+          Drop a folder to open it
         </div>
       ) : null}
-      {/* Keep the entry actions and project list in the first viewport. */}
-      <div
-        aria-hidden
-        style={{ flex: "0 0 auto", height: webMode ? 16 : 24 }}
-      />
 
-      {/* Pinned header: logo + add button */}
-      <div
-        style={{
-          flexShrink: 0,
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: webMode ? 12 : 18,
-          paddingBottom: webMode ? 8 : 14,
-        }}
-      >
-        <div style={{ textAlign: "center", maxWidth: 520 }}>
-          <div
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              marginBottom: webMode ? 4 : 16,
-              filter:
-                "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
+      {/* Header: logo + the two ways in */}
+      <div className="ade-welcome-head">
+        <img
+          src="./logo.png"
+          alt="ADE Logo"
+          className="ade-welcome-logo"
+          data-ade-welcome-motion={webMode ? "true" : undefined}
+          style={webMode
+            ? { animation: "ade-welcome-mark 620ms cubic-bezier(0.16, 1, 0.3, 1) both" }
+            : undefined}
+        />
+
+        <div className="ade-welcome-actions">
+          <button
+            type="button"
+            className="ade-welcome-button"
+            data-variant="primary"
+            data-remote-ready={connectedRemoteCount > 0 ? "true" : undefined}
+            data-tour="project.welcomeAddButton"
+            disabled={webMode && !activeWebMachine}
+            title={
+              webMode && !activeWebMachine
+                ? "Connect a machine first — projects are added on the machine that hosts them."
+                : undefined
+            }
+            onClick={() => {
+              if (!webMode) {
+                setProjectBrowserOpen(true);
+                return;
+              }
+              setWebAddProjectNoticeOpen(true);
             }}
           >
-            <img
-              src="./logo.png"
-              alt="ADE Logo"
-              data-ade-welcome-motion={webMode ? "true" : undefined}
-              style={{
-                width: webMode ? 220 : 280,
-                height: webMode ? 110 : 150,
-                objectFit: "contain",
-                maxWidth: "72vw",
-                ...(webMode
-                  ? { animation: "ade-welcome-mark 620ms cubic-bezier(0.16, 1, 0.3, 1) both" }
-                  : {}),
-              }}
-            />
-          </div>
-        </div>
-
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: webMode ? -4 : -8 }}>
-        <button
-          type="button"
-          data-tour="project.welcomeAddButton"
-          disabled={webMode && !activeWebMachine}
-          title={
-            webMode && !activeWebMachine
-              ? "Connect a machine first — projects are added on the machine that hosts them."
-              : undefined
-          }
-          onClick={() => {
-            if (!webMode) {
-              setProjectBrowserOpen(true);
-              return;
-            }
-            setWebAddProjectNoticeOpen(true);
-          }}
-          style={{
-            ...primaryButton({ height: 42, padding: "0 24px", fontSize: 12 }),
-            opacity: webMode && !activeWebMachine ? 0.5 : 1,
-            gap: 12,
-            border:
-              connectedRemoteCount > 0
-                ? "1px solid rgba(245,158,11,0.72)"
-                : undefined,
-            boxShadow:
-              connectedRemoteCount > 0
-                ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
-                : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
-            transition: "transform 0.2s ease, box-shadow 0.2s ease",
-          }}
-          onMouseEnter={(event) => {
-            event.currentTarget.style.transform = "translateY(-2px)";
-            event.currentTarget.style.boxShadow =
-              connectedRemoteCount > 0
-                ? "0 0 0 1px rgba(245,158,11,0.38), 0 8px 34px rgba(245,158,11,0.34)"
-                : `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.transform = "none";
-            event.currentTarget.style.boxShadow =
-              connectedRemoteCount > 0
-                ? "0 0 0 1px rgba(245,158,11,0.24), 0 6px 28px rgba(245,158,11,0.24)"
-                : `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
-          }}
-        >
-          <Plus size={20} weight="bold" />
-          ADD PROJECT
-        </button>
-        <button
-          type="button"
-          disabled={webMode && !activeWebMachine}
-          onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
-          style={{
-            ...outlineButton({ height: 42, padding: "0 18px", fontSize: 11 }),
-            opacity: webMode && !activeWebMachine ? 0.5 : 1,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 9,
-            color: COLORS.textPrimary,
-            border: `1px solid ${COLORS.border}`,
-            background: "color-mix(in srgb, var(--color-surface-raised) 88%, transparent)",
-            boxShadow: `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`,
-            transition: "transform 0.2s ease, box-shadow 0.2s ease",
-          }}
-          onMouseEnter={(event) => {
-            event.currentTarget.style.transform = "translateY(-2px)";
-            event.currentTarget.style.boxShadow = `0 6px 24px color-mix(in srgb, var(--color-accent) 60%, transparent)`;
-          }}
-          onMouseLeave={(event) => {
-            event.currentTarget.style.transform = "none";
-            event.currentTarget.style.boxShadow = `0 4px 20px color-mix(in srgb, var(--color-accent) 40%, transparent)`;
-          }}
-        >
-          <ChatCircleDots size={18} weight="duotone" />
-          CHAT WITHOUT A PROJECT
-          {webMode && activeWebMachine ? (
-            <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>
-              · {activeWebMachine.name}
-            </span>
-          ) : null}
-        </button>
+            <Plus size={15} weight="bold" />
+            Add project
+          </button>
+          <button
+            type="button"
+            className="ade-welcome-button"
+            data-variant="secondary"
+            disabled={webMode && !activeWebMachine}
+            onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
+          >
+            <ChatCircleDots size={15} weight="regular" />
+            Chat without a project
+            {webMode && activeWebMachine ? (
+              <span style={{ color: COLORS.textMuted, fontWeight: 400 }}>
+                on {activeWebMachine.name}
+              </span>
+            ) : null}
+          </button>
         </div>
         {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
           <WebAddProjectNotice
@@ -678,7 +616,7 @@ export function ProjectWelcomePage() {
         {rowError ? (
           <Banner
             layout="inline"
-            style={{ maxWidth: 440, width: "100%" }}
+            style={{ maxWidth: 520, width: "100%" }}
             model={{
               id: "welcome-row-error",
               tone: "error",
@@ -690,46 +628,21 @@ export function ProjectWelcomePage() {
         {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
       </div>
 
-      {/* Scrollable recent projects list */}
-      {visibleProjectGroups.length > 0 ? (
-        <div style={{ flex: "1 1 auto", minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
-          <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 40 }}>
+      <div
+        className="ade-welcome-body"
+        data-single={showSide ? undefined : "true"}
+        data-narrow={showSide && narrow ? "true" : undefined}
+      >
+        <section className="ade-welcome-plane ade-welcome-main" aria-label="Recent projects">
+          {hasProjects ? (
             <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between",
-                gap: 12,
-                marginBottom: 10,
-                padding: "0 2px",
-              }}
+              id="ade-welcome-project-list"
+              ref={listRef}
+              className="ade-welcome-list"
+              onKeyDown={handleListKeyDown}
             >
-              <span style={{ ...LABEL_STYLE, color: COLORS.textSecondary }}>
-                RECENT PROJECTS
-              </span>
-              {connectedRemoteCount > 0 ? (
-                <span
-                  style={{
-                    ...LABEL_STYLE,
-                    color: "#FBBF24",
-                    fontFamily: MONO_FONT,
-                    fontSize: 9,
-                    letterSpacing: "0.04em",
-                  }}
-                >
-                  {connectedRemoteCount} remote device
-                  {connectedRemoteCount === 1 ? "" : "s"} available
-                </span>
-              ) : null}
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {visibleProjectGroups.map((group) => {
+              {rows.map(({ group, rp, key }) => {
                 const primary = group.primary;
-                const rp = {
-                  ...primary.summary,
-                  pinned: group.pinned,
-                };
-                const key = recentKey(rp);
                 const isRemote = rp.kind === "remote" && Boolean(rp.remote);
                 const targetId = rp.remote?.targetId;
                 const baseState = isRemote && targetId
@@ -785,11 +698,25 @@ export function ProjectWelcomePage() {
                 );
               })}
             </div>
-          </div>
-        </div>
-      ) : (
-        <div aria-hidden style={{ flex: "1 1 auto" }} />
-      )}
+          ) : (
+            <div className="ade-welcome-empty">
+              <strong>No projects yet</strong>
+              {webMode
+                ? "Projects you open on your machines show up here."
+                : "Add a folder or clone a repository to get started. You can also drop a folder anywhere on this page."}
+            </div>
+          )}
+        </section>
+
+        {showSide ? (
+          <WelcomeSideColumn
+            webMode={webMode}
+            remoteSnapshot={remoteSnapshot}
+            webMachines={webMachines}
+            narrow={narrow}
+          />
+        ) : null}
+      </div>
 
       {mergeTarget ? (
         <MergeWorktreeProjectDialog

@@ -256,6 +256,8 @@ import {
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
 import { createPrEventFanout } from "./prEventFanout";
+import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
+import type { CtoActionCaller } from "./adeRpcServer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 
 /** One warm-runtime budget for every project scope this brain opens. */
@@ -1438,6 +1440,8 @@ export async function createAdeRuntime(args: {
       dismiss: (args) => rebaseSuggestionService.dismiss(args),
     };
 
+    // Set once the runtime below is assembled; the CTO's home-machine actions read it.
+    let runtimeForCtoActions: AdeRuntime | null = null;
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
@@ -1445,11 +1449,42 @@ export async function createAdeRuntime(args: {
         ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
         : null,
     });
+    const ctoAppVersion = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0";
+    // The CTO's generic actions on this machine run through the same RPC
+    // dispatcher, under the same CTO caller identity, as they would from
+    // another machine. Built once, when the runtime exists and a tool needs it.
+    let ctoLocalActionCaller: Promise<CtoActionCaller> | null = null;
+    const getCtoLocalActionCaller = (): Promise<CtoActionCaller> | null => {
+      const runtime = runtimeForCtoActions;
+      if (!runtime) return null;
+      ctoLocalActionCaller ??= import("./adeRpcServer")
+        .then(({ createCtoActionCaller }) => createCtoActionCaller({ runtime, serverVersion: ctoAppVersion }))
+        .catch((error) => {
+          ctoLocalActionCaller = null;
+          throw error;
+        });
+      return ctoLocalActionCaller;
+    };
+    // The CTO acting on the account's other machines, for this project's
+    // repository there. Built when the CTO's tools are, and reads nothing from
+    // the account until one of them reaches another machine.
+    let ctoCrossMachine: ReturnType<typeof createCtoCrossMachineBridge> | null = null;
+    const getCtoCrossMachine = () => {
+      ctoCrossMachine ??= createCtoCrossMachineBridge({
+        projectRoot,
+        appVersion: ctoAppVersion,
+        logger,
+        getLocalActionCaller: getCtoLocalActionCaller,
+        getAccess: () => ctoStateService.getCrossMachineAccess(),
+      });
+      return ctoCrossMachine;
+    };
     const ctoStateService = createCtoStateService({
       db,
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
+      capabilities: { crossMachine: true },
       // Resolved on every refresh, not captured here: the chat and automation
       // services are constructed further down, so the live block must read
       // them through a thunk rather than pin whatever was null at this point.
@@ -1461,6 +1496,9 @@ export async function createAdeRuntime(args: {
           prService: headlessLinearServices.prService,
           automationService: automationServiceRef,
           listChats: chat.listSessions,
+          // Only a bridge the CTO's tools already built: the live-state block
+          // must not be what starts reading the account directory.
+          crossMachine: ctoCrossMachine,
         };
       },
     });
@@ -1912,6 +1950,10 @@ export async function createAdeRuntime(args: {
         aiIntegrationService,
         ctoStateService,
         ctoMemoryService,
+        // The CTO acting on the account's other machines, for this project's
+        // repository there. Built on first use: most CTO turns never leave the
+        // home machine, and a project with no CTO turns never pays for it.
+        getCtoCrossMachine,
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
@@ -2954,6 +2996,7 @@ export async function createAdeRuntime(args: {
     automationService?.bindAdeActionRegistry(
       createAutomationAdeActionLookup(() => getAdeActionDomainServices(runtime)),
     );
+    runtimeForCtoActions = runtime;
 
     usageTrackingService.start();
     runtimeCreated = true;

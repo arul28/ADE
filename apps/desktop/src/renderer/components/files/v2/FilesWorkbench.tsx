@@ -51,7 +51,14 @@ import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingR
 import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
-import { WorkspacePicker } from "./WorkspacePicker";
+import { WorkspacePicker, type WorkspacePickerMachineGroup } from "./WorkspacePicker";
+import {
+  machineBlockedReason,
+  machineChipFor,
+  shouldShowMachineChips,
+  useAllMachineLanes,
+  type MachineChipModel,
+} from "../../../state/laneMachineRouting";
 import { CreatePromptModal } from "./overlays";
 import { FilesSearchPanel } from "./FilesSearchPanel";
 import { setPendingReveal } from "./pendingReveals";
@@ -181,7 +188,7 @@ export function FilesWorkbench({
   /**
    * Machine this workbench should start on, for hosts that already know it —
    * the Work tools pane, whose chat may live on another machine. Navigation
-   * requests still repin as before; this only supplies the starting machine.
+   * requests still repin; this only supplies the starting machine.
    */
   pin?: OpenProjectBinding | null;
 }) {
@@ -201,6 +208,16 @@ export function FilesWorkbench({
    * same per-call routing chats and PR reads already use.
    */
   const [machinePin, setMachinePin] = useState<OpenProjectBinding | null>(seedPin);
+  /**
+   * A lane picked on some machine, waiting for that machine's roster. Picking
+   * a lane moves Files to the lane's machine (`pinKey`, null = the tab's), and
+   * the lane's workspace is selected only once the roster has been re-listed
+   * for that machine — never matched against the previous machine's list.
+   */
+  const [pendingLaneTarget, setPendingLaneTarget] = useState<{ pinKey: string | null; laneId: string } | null>(null);
+  // The routed Files tab lists every machine's lanes; the Work tools pane
+  // follows its chat's machine instead and does not join the union here.
+  const allMachineLanes = useAllMachineLanes(active && !embedded);
   // The Files API with this machine already bound to it. Identity changes only
   // when the machine does, so every callback and effect below can depend on it
   // honestly — see `pinnedFilesApi.ts` for why a ref could not.
@@ -589,6 +606,62 @@ export function FilesWorkbench({
     [workspaceId],
   );
 
+  /* ---- Lanes on every machine (routed Files tab) ---- */
+
+  const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
+  const currentMachineChip = useMemo<MachineChipModel | null>(() => {
+    const machine = machinePin
+      ? allMachineLanes.machines.find((candidate) => candidate.binding?.key === machinePin.key) ?? null
+      : allMachineLanes.machines[0] ?? null;
+    if (machine) return machineChipFor(machine);
+    if (!machinePin) return null;
+    return {
+      machineId: machinePin.kind === "remote" ? machinePin.targetId : machinePin.key,
+      machineName: machinePin.kind === "remote" ? machinePin.runtimeName : machinePin.displayName,
+      online: true,
+      isThisMachine: machinePin.kind === "local",
+    };
+  }, [allMachineLanes.machines, machinePin]);
+
+  /** Every other machine's lanes, keyed by an opaque option value. */
+  const otherMachineLanes = useMemo(() => {
+    const targets = new Map<string, { machineId: string; laneId: string }>();
+    const groups: WorkspacePickerMachineGroup[] = [];
+    if (embedded || !multiMachine || !currentMachineChip) return { groups, targets };
+    for (const machine of allMachineLanes.machines) {
+      if (machine.machineId === currentMachineChip.machineId) continue;
+      const lanes = allMachineLanes.lanes.filter((row) => row.machineId === machine.machineId);
+      if (lanes.length === 0) continue;
+      groups.push({
+        machine: machineChipFor(machine),
+        disabledReason: machineBlockedReason(machine),
+        lanes: lanes.map((row) => {
+          const value = `lane-on-machine:${targets.size}`;
+          targets.set(value, { machineId: machine.machineId, laneId: row.lane.id });
+          return { value, name: row.lane.name, branchRef: row.lane.branchRef ?? null };
+        }),
+      });
+    }
+    return { groups, targets };
+  }, [allMachineLanes, currentMachineChip, embedded, multiMachine]);
+
+  /**
+   * Move Files to the picked lane's machine. The pin comes from the machine
+   * that reports the lane (null for the tab's own machine), so file reads and
+   * writes can only ever reach the lane's own worktree.
+   */
+  const pickOtherMachineLane = useCallback((value: string) => {
+    const target = otherMachineLanes.targets.get(value);
+    if (!target) return;
+    const machine = allMachineLanes.machinesById.get(target.machineId);
+    if (!machine || !machine.online) return;
+    const nextPin = machine.pin;
+    if (!machine.isActiveBinding && !nextPin) return;
+    setError(null);
+    setMachinePin((current) => (current?.key === nextPin?.key ? current : nextPin));
+    setPendingLaneTarget({ pinKey: nextPin?.key ?? null, laneId: target.laneId });
+  }, [allMachineLanes.machinesById, otherMachineLanes.targets]);
+
   /**
    * Leave the pinned machine and go back to the one this tab is bound to.
    * Offered wherever the machine chip is, because a pin is entered by clicking
@@ -745,13 +818,41 @@ export function FilesWorkbench({
     if (!workspaces.length) return;
     const laneChanged = lastGlobalLaneIdRef.current !== globalLaneId;
     lastGlobalLaneIdRef.current = globalLaneId;
+    // The selected lane is a lane on the tab's machine. While Files reads
+    // another machine, that id must not be matched against its roster (a lane
+    // id can exist on both); go back to the tab's machine for it instead.
+    if (laneChanged && machinePin && !embedded && globalLaneId) {
+      setMachinePin(null);
+      setPendingLaneTarget({ pinKey: null, laneId: globalLaneId });
+      return;
+    }
     const current = workspaceIdRef.current;
     if (!laneChanged && current && workspaces.some((candidate) => candidate.id === current)) return;
     const next = defaultFilesWorkspaceId(workspaces, globalLaneId) || current;
     if (next && next !== current) {
       setWorkspaceId(next);
     }
+    // `machinePin`/`embedded` are read only to divert a lane change above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaces, globalLaneId]);
+
+  // Land a picked lane once its machine's roster is listed. Declared after the
+  // global-lane effect so its selection wins in the same commit.
+  useEffect(() => {
+    if (!pendingLaneTarget) return;
+    if ((machinePin?.key ?? null) !== pendingLaneTarget.pinKey) return;
+    if (workspacesListedCacheKey !== projectCacheKey) return;
+    const target = workspaces.find((candidate) => candidate.kind !== "primary" && candidate.laneId === pendingLaneTarget.laneId)
+      ?? workspaces.find((candidate) => candidate.laneId === pendingLaneTarget.laneId)
+      ?? null;
+    setPendingLaneTarget(null);
+    if (target) {
+      setError(null);
+      setWorkspaceId(target.id);
+    } else {
+      setError("That lane's workspace is not available on its machine.");
+    }
+  }, [machinePin, pendingLaneTarget, projectCacheKey, workspaces, workspacesListedCacheKey]);
 
   /* ---- Editor model lifetime ---- */
 
@@ -1081,6 +1182,18 @@ export function FilesWorkbench({
     const requestedPin = navigationOpenRequest.pin ?? null;
     setMachinePin((current) => (current?.key === requestedPin?.key ? current : requestedPin));
   }, [active, navigationOpenRequest]);
+
+  // A request that names only a lane (and its machine): select that lane's
+  // workspace once the machine's roster is in.
+  useEffect(() => {
+    if (!active || !navigationOpenRequest || navigationOpenRequest.path || navigationOpenRequest.searchQuery) return;
+    const laneId = navigationOpenRequest.laneId;
+    if (!laneId) return;
+    const key = `navigation-lane:${navigationOpenRequest.nonce}:${laneId}`;
+    if (handledOpenKeysRef.current.has(key)) return;
+    markOpenRequestHandled(key);
+    setPendingLaneTarget({ pinKey: navigationOpenRequest.pin?.key ?? null, laneId });
+  }, [active, markOpenRequestHandled, navigationOpenRequest]);
 
   useEffect(() => {
     if (!active || !navigationOpenRequest?.searchQuery || !workspacesLoaded) return;
@@ -1550,7 +1663,15 @@ export function FilesWorkbench({
       }}
     >
       {!embedded ? (
-        <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={selectWorkspace} />
+        <WorkspacePicker
+          workspaces={workspaces}
+          workspaceId={workspaceId}
+          onChange={selectWorkspace}
+          // Chip rule shared with every tab: more than one machine → chips.
+          machine={multiMachine ? currentMachineChip : null}
+          otherMachines={otherMachineLanes.groups}
+          onPickOtherMachineLane={pickOtherMachineLane}
+        />
       ) : null}
       <div className="min-h-0 flex-1">
         <FilesExplorer
@@ -1637,14 +1758,18 @@ export function FilesWorkbench({
               ? "Files on this machine. Edits save there."
               : "This machine is offline, so its files can't be opened."}
           </span>
-          <button
-            type="button"
-            onClick={clearMachinePin}
-            className="shrink-0 text-[11px] underline-offset-2 hover:underline"
-            style={{ color: COLORS.textMuted }}
-          >
-            Back to this computer
-          </button>
+          {/* The routed tab changes machine by picking a lane in the picker;
+              only the embedded pane (no picker) keeps an explicit way back. */}
+          {embedded ? (
+            <button
+              type="button"
+              onClick={clearMachinePin}
+              className="shrink-0 text-[11px] underline-offset-2 hover:underline"
+              style={{ color: COLORS.textMuted }}
+            >
+              Back to this computer
+            </button>
+          ) : null}
         </div>
       ) : null}
       {error ? (

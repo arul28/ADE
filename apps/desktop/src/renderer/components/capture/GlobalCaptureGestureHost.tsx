@@ -13,6 +13,7 @@ import { filesProjectSessionKey } from "../files/treeHelpers";
 import { useEditorGroupsStore } from "../files/v2/editorGroupsStore";
 import { supportsCaptureGesturePlatform } from "../../lib/platform";
 import { subscribeVoiceState } from "../cto/useCtoVoiceCall";
+import { cachedCtoHomeResolution, waitForCtoHomeResolution } from "../../state/ctoHome";
 import { composeCurrentViewState, formatCurrentViewState } from "./currentViewState";
 import { encodeUtf8Base64 } from "../../lib/base64";
 import { Banner } from "../ui/notice/Banner";
@@ -106,7 +107,24 @@ export function GlobalCaptureGestureHost() {
 
   const deliverToComposer = useCallback(async (shot: CaptureGestureShot): Promise<void> => {
     const ade = window.ade;
-    const session = await ade?.cto?.ensureSession().catch(() => null);
+    // The CTO lives on its home machine. Use the page's own resolution of it;
+    // without one, open the CTO (which resolves it) rather than guess, because
+    // guessing would wake a CTO on whichever machine the tab is bound to.
+    const scopeKey = selectActiveProjectStateKey(useAppStore.getState());
+    let home = cachedCtoHomeResolution(scopeKey);
+    if (!home) {
+      if (locationRef.current.pathname !== "/cto") navigate("/cto");
+      home = await waitForCtoHomeResolution(scopeKey, 8_000);
+    }
+    if (!home || home.status !== "resolved") {
+      if (locationRef.current.pathname !== "/cto") navigate("/cto");
+      setNotice(home?.status === "unreachable"
+        ? `The CTO runs on ${home.machineName || "another machine"}, which can't be reached right now.`
+        : "The CTO is still opening. Try the capture again in a moment.");
+      return;
+    }
+    const ctoPin = home.pin;
+    const session = await ade?.cto?.ensureSession({}, ctoPin).catch(() => null);
     if (!session?.id) {
       setNotice("The CTO chat is still waking up. Try the capture again in a moment.");
       return;
@@ -123,13 +141,13 @@ export function GlobalCaptureGestureHost() {
         // anything that round-trips this through `fetch(dataUrl)` fails.
         data: plan.image.data,
         filename: plan.image.filename,
-      });
+      }, ctoPin);
       staged.push({ path: savedImage.path, type: "image" });
       if (plan.context) {
         const savedContext = await ade.agentChat.saveTempAttachment({
           data: plan.context.data,
           filename: plan.context.filename,
-        });
+        }, ctoPin);
         staged.push({ path: savedContext.path, type: "file" });
       }
     } catch (error) {

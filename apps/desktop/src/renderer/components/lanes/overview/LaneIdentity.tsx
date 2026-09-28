@@ -71,6 +71,7 @@ export function LaneIdentity({
   createdBy,
   active,
   canReveal,
+  revealUnavailableReason = null,
   onStartChat,
   onOpenFiles,
   onReveal,
@@ -86,6 +87,11 @@ export function LaneIdentity({
   createdBy: { provider: string | null; title: string | null } | null;
   active: boolean;
   canReveal: boolean;
+  /**
+   * Why reveal is shown but disabled ("On Mac Studio"): the lane's folder is on
+   * another machine, and reveal only opens this Mac's Finder.
+   */
+  revealUnavailableReason?: string | null;
   onStartChat: (() => void) | null;
   onOpenFiles: () => void;
   onReveal: () => void;
@@ -120,6 +126,15 @@ export function LaneIdentity({
             </WorkToolChromeButton>
             {canReveal ? (
               <WorkToolChromeButton label={revealLabel} onClick={onReveal} testId="lane-reveal">
+                <FolderOpen size={16} />
+              </WorkToolChromeButton>
+            ) : revealUnavailableReason ? (
+              <WorkToolChromeButton
+                label={`${revealLabel} · ${revealUnavailableReason}`}
+                onClick={() => {}}
+                disabled
+                testId="lane-reveal"
+              >
                 <FolderOpen size={16} />
               </WorkToolChromeButton>
             ) : null}

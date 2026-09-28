@@ -378,7 +378,7 @@ describe("CtoPage settings", () => {
       // model is the one the stub marks as lacking one, so the switch turns it
       // off rather than asking the chat service for a mode that does not exist.
       fastMode: false,
-    });
+    }, null);
   });
 
   it("keeps Fast mode in settings and updates the locked CTO session", async () => {
@@ -393,7 +393,7 @@ describe("CtoPage settings", () => {
     await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
       sessionId: "cto-session",
       fastMode: true,
-    }));
+    }, null));
   });
 
   /**
@@ -469,7 +469,7 @@ describe("CtoPage settings", () => {
             reasoningEffort: "high",
           },
         },
-      });
+      }, null);
       await waitFor(() => expect(updateSession).toHaveBeenCalledTimes(1));
       expect(cto.readPrefs()).toMatchObject({
         modelId: "anthropic/claude-opus-4-8",
@@ -633,7 +633,7 @@ describe("CtoPage settings", () => {
     await waitFor(() => expect(updateSession).toHaveBeenCalledWith({
       sessionId: "cto-session",
       fastMode: false,
-    }));
+    }, null));
   });
 });
 
@@ -679,7 +679,7 @@ describe("CtoMemoryPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(updateMemory).toHaveBeenCalledTimes(1));
-    expect(updateMemory).toHaveBeenCalledWith({ memory: "# Facts\n- ships on Fridays\n- prefers pnpm" });
+    expect(updateMemory).toHaveBeenCalledWith({ memory: "# Facts\n- ships on Fridays\n- prefers pnpm" }, null);
   });
 
   it("lays the brief, facts, and directed threads out as fields and rows", async () => {

@@ -32,13 +32,11 @@ export function LaneMachineSelector({
   disabled?: boolean;
 }) {
   /*
-   * Load balancing is an explicit choice, not the dialog's silent default.
-   * Selecting a non-bound machine rebinds the whole app tab, and doing that
-   * merely because a dialog opened would move the window under the user. The
-   * Auto card offers the least-loaded machine in one click; picking a named
-   * machine below is the way to force one. With fewer than two machines able
-   * to host this repo there is nothing to balance, so the card is absent and
-   * the default is unchanged.
+   * The machine is always an explicit choice; `selectedMachineId` is "" until
+   * one is made and no card reads as selected. The Auto card offers the
+   * least-loaded machine in one click; picking a named machine below forces
+   * one. With fewer than two machines able to host this repo there is nothing
+   * to balance, so the card is absent.
    */
   const eligibleCount = machines.filter(canCreateLaneOnMachine).length;
   const autoMachine = eligibleCount >= 2
@@ -47,6 +45,11 @@ export function LaneMachineSelector({
   return (
     <section className={SECTION_CLASS_NAME} data-tour="lanes.createDialog.machine">
       <span className={LABEL_CLASS_NAME}>Create on</span>
+      {!selectedMachineId ? (
+        <span className="ml-2 text-[10px] text-amber-300/80" data-testid="lane-machine-selector-required">
+          Choose a machine
+        </span>
+      ) : null}
       {autoMachine ? (
         <button
           type="button"

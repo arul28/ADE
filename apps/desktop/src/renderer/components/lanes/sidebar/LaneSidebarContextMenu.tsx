@@ -1,4 +1,4 @@
-import type { LaneSummary } from "../../../../shared/types";
+import type { LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { resolveOpenInTarget } from "../../../../shared/editorTargets";
 import { useAppStore } from "../../../state/appStore";
 import { LaneMenuGroups } from "../LaneContextMenu";
@@ -22,6 +22,7 @@ export function LaneSidebarContextMenu({
   selectLane,
   onAppearanceChanged,
   onStartChatInLane,
+  runtimePin = null,
 }: {
   menu: { laneId: string; x: number; y: number };
   lanesById: Map<string, LaneSummary>;
@@ -33,17 +34,25 @@ export function LaneSidebarContextMenu({
   selectLane: (laneId: string) => void;
   onAppearanceChanged: () => void | Promise<void>;
   onStartChatInLane: (laneId: string) => void;
+  /**
+   * The lane's machine when it is not the tab's. `menu.laneId` and `lanesById`
+   * are then that machine's own ids, and every write the menu makes is pinned
+   * there. Reveal is not offered: it resolves the lane on the tab's machine.
+   */
+  runtimePin?: OpenProjectBinding | null;
 }) {
-  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const boundIsRemote = useAppStore((s) => s.projectBinding?.kind === "remote");
   const projectBinding = useAppStore((s) => s.projectBinding);
+  const isRemoteProject = runtimePin ? true : boundIsRemote;
   const lane = lanesById.get(menu.laneId) ?? null;
-  const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: projectBinding });
+  const openIn = resolveOpenInTarget({ worktreePath: lane?.worktreePath, binding: runtimePin ?? projectBinding });
   const args: LaneMenuArgs = {
     laneId: menu.laneId,
     lane,
     lanesById,
     visibleLaneIds: selectedLaneIds.includes(menu.laneId) ? selectedLaneIds : [],
     isRemoteProject,
+    runtimePin,
     onClose,
     onManage,
     selectLane,

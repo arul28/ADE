@@ -15,6 +15,7 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import type { TimelineEvent } from "./timelineTypes";
 import { getStatusClasses, getEventMeta, CATEGORY_META } from "./eventTaxonomy";
+import { EventMachineChip } from "./EventMachineChip";
 import { relativeWhen, formatDate, formatDurationMs } from "../../lib/format";
 
 /* ─── helpers ─────────────────────────────────────────────────────── */
@@ -80,7 +81,7 @@ function ShaButton({ sha }: { sha: string | null }) {
 type EventDetailPanelProps = {
   event: TimelineEvent | null;
   onClose: () => void;
-  onNavigateToLane?: (laneId: string) => void;
+  onNavigateToLane?: (laneId: string, machineId?: string | null) => void;
   navigate?: (path: string) => void;
 };
 
@@ -129,7 +130,7 @@ function PanelContent({
 }: {
   event: TimelineEvent;
   onClose: () => void;
-  onNavigateToLane?: (laneId: string) => void;
+  onNavigateToLane?: (laneId: string, machineId?: string | null) => void;
   navigate?: (path: string) => void;
   metadataExpanded: boolean;
   setMetadataExpanded: (v: boolean) => void;
@@ -289,12 +290,13 @@ function PanelContent({
               <span className="font-mono text-[11px] text-fg">
                 {event.laneName ?? event.laneId}
               </span>
+              <EventMachineChip event={event} />
             </span>
             {onNavigateToLane && (
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={() => onNavigateToLane(event.laneId!)}
+                onClick={() => onNavigateToLane(event.laneId!, event.machine && !event.machine.isActiveBinding ? event.machine.machineId : null)}
               >
                 <span className="inline-flex items-center gap-1">
                   Open Lane
@@ -359,7 +361,9 @@ function PanelContent({
 
       {/* ── Action buttons ────────────────────────────────────── */}
       <div className="mt-auto flex flex-wrap items-center gap-2 p-3 pt-4">
-        {event.postHeadSha && event.laneId && navigate ? (
+        {/* The commit graph reads the bound machine's worktrees; a commit
+            recorded on another machine can't be opened there. */}
+        {event.postHeadSha && event.laneId && navigate && event.machine?.isActiveBinding !== false ? (
           <Button
             variant="outline"
             size="sm"
@@ -383,7 +387,9 @@ function PanelContent({
             </span>
           </Button>
         ) : null}
-        {event.category === "session" && event.laneId && navigate ? (
+        {/* The Work deep link names a lane by bare id; for another machine's
+            lane, "Open Lane" (which carries the machine) is the way there. */}
+        {event.category === "session" && event.laneId && navigate && event.machine?.isActiveBinding !== false ? (
           <Button
             variant="outline"
             size="sm"
@@ -399,7 +405,7 @@ function PanelContent({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => onNavigateToLane(event.laneId!)}
+            onClick={() => onNavigateToLane(event.laneId!, event.machine && !event.machine.isActiveBinding ? event.machine.machineId : null)}
           >
             <span className="inline-flex items-center gap-1">
               <ArrowSquareOut size={10} weight="bold" />

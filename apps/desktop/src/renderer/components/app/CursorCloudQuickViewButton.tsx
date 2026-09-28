@@ -78,9 +78,12 @@ function readCursorVisibilityCached(
 export function CursorCloudQuickViewButton({
   variant = "icon",
   onMenuActivate,
+  showTrigger = true,
 }: {
   variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
+  /** False hides the button (and its fleet modal) while staying mounted. */
+  showTrigger?: boolean;
 } = {}) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
@@ -220,7 +223,13 @@ export function CursorCloudQuickViewButton({
     };
   }, [occludesNativeBrowser]);
 
-  if (!visible) return null;
+  // Leaving the project surface closes the fleet modal rather than parking it
+  // to reappear on return.
+  useEffect(() => {
+    if (!showTrigger) setOpen(false);
+  }, [showTrigger]);
+
+  if (!visible || !showTrigger) return null;
 
   const handleToggle = () => {
     setOpen((current) => !current);

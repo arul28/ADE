@@ -74,6 +74,18 @@ vi.mock("../../../state/appStore", () => ({
   // empty slice map is the honest fixture.
   useRootAppStore: (selector: (state: { crossMachineLanesByMachineId: Record<string, unknown> }) => unknown) =>
     selector({ crossMachineLanesByMachineId: {} }),
+  // Pure derivation used by the cross-machine lane sync hook; the fixture's
+  // project is always local, so its rootPath is the state key.
+  selectActiveProjectStateKey: (state: { project?: { rootPath?: string | null } | null }) =>
+    state.project?.rootPath ?? null,
+  // The cross-machine lane sync effect writes scope results back through the
+  // root store. Nothing here exercises that sync (the fixture is always
+  // local), so a stub getState/applyCrossMachineLaneScope is enough.
+  rootAppStoreApi: {
+    getState: () => ({ applyCrossMachineLaneScope: vi.fn(), crossMachineLanesByMachineId: {} }),
+    setState: vi.fn(),
+    subscribe: vi.fn(() => () => {}),
+  },
 }));
 
 vi.mock("../FilesExplorer", () => ({
@@ -403,9 +415,10 @@ describe("FilesWorkbench", () => {
         pin,
       );
     });
-    // Whose disk this is has to be visible, and there has to be a way back.
+    // Whose disk this is has to be visible. On the routed tab, the way back is
+    // picking a lane on this machine in the picker, not a dedicated button
+    // (that button is embedded-pane-only, see FilesWorkbench.tsx).
     expect(screen.getByText(/Mac Studio/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: /back to this computer/i })).toBeTruthy();
   });
 
   it("reveals a directory in the tree instead of trying to open it as a file", async () => {
@@ -603,9 +616,13 @@ describe("FilesWorkbench", () => {
     // the pin was *now* rather than what it was at subscribe time. Leaving the
     // pinned machine is exactly when those differ: the stop then went to this
     // computer and the remote chokidar watcher was never closed.
+    // The "Back to this computer" exit only exists on the embedded pane now —
+    // the routed tab clears a pin by picking a lane on this machine instead —
+    // but the unpin-must-stop-the-right-watcher contract itself is unchanged.
     const view = render(
       <FilesWorkbench
         active
+        embedded
         navigationOpenRequest={{
           path: "src/from-chat.ts",
           laneId: "lane-b",

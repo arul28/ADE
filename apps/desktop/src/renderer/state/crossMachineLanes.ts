@@ -2140,48 +2140,17 @@ export function resetCrossMachineLaneSyncForTest(): void {
 // ── React entry point ───────────────────────────────────────────────────────
 
 /**
- * The one subscription for the union. Every other surface reads the union out of
- * the store as derived state; nothing else opens its own feed.
- *
- * The returned object is memoized on the store slices it derives from, so a tick
- * that changes nothing hands back identical references and re-renders nothing.
+ * Joins the shared, ref-counted union sync for the active project tab's repo,
+ * without deriving any rows. Every surface that shows other machines' lanes
+ * (Work, Lanes, Files) mounts this while visible; the runtime below keeps ONE
+ * set of subscriptions and one bounded refresh across all of them, so a second
+ * consumer adds no reads.
  */
-export function useCrossMachineLaneUnion(
-  active = true,
-  localSessions?: readonly TerminalSessionSummary[],
-  workLaneSortMode: WorkLaneSortMode = "created",
-  workLaneOrder: readonly string[] = EMPTY_WORK_LANE_ORDER,
-): CrossMachineUnion {
-  // Stabilized by CONTENT, not by the array's identity. The caller's roster is
-  // replaced wholesale by every session poll (~5s while anything is running),
-  // so deriving a fresh Set per tick would hand `buildCrossMachineLaneRows` a
-  // changed input and rebuild every foreign row, its marker map, and its
-  // ordering on a timer — the memo below exists precisely to make an unchanged
-  // tick free. Compared rather than serialized into a key because a session id
-  // is not guaranteed UUID-shaped (imported and handoff sessions carry ids ADE
-  // did not mint), so any separator a join picked would be an assumption about
-  // their contents.
-  const localSessionIdsRef = useRef<ReadonlySet<string>>(EMPTY_SESSION_IDS);
-  const localSessionIds = useMemo(() => {
-    if (!localSessions) return undefined;
-    const previous = localSessionIdsRef.current;
-    // Compared set-to-set rather than array-to-set: a roster that ever repeated
-    // an id would never match its own cached set, and the only symptom would be
-    // this cache silently never hitting again — the exact churn it exists to
-    // prevent, invisible.
-    const next: ReadonlySet<string> = new Set(localSessions.map((session) => session.id));
-    if (next.size === previous.size && [...next].every((id) => previous.has(id))) {
-      return previous;
-    }
-    localSessionIdsRef.current = next;
-    return next;
-  }, [localSessions]);
-  const localLanes = useAppStore((state) => state.lanes);
+export function useCrossMachineLaneSync(active = true): void {
   const projectBinding = useAppStore((state) => state.projectBinding);
   const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
   const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
   const projectDisplayName = useAppStore((state) => state.project?.displayName ?? null);
-  const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
   const [localRepoIdentity, setLocalRepoIdentity] = useState<{
     scopeKey: string | null;
     originUrl: string | null;
@@ -2340,6 +2309,49 @@ export function useCrossMachineLaneUnion(
     },
     [active, boundProjectId, boundTargetId, repoDisplayName, repoOriginUrl, scopeKey, thisMachineBinding],
   );
+}
+
+/**
+ * The one subscription for the union. Every other surface reads the union out of
+ * the store as derived state; nothing else opens its own feed.
+ *
+ * The returned object is memoized on the store slices it derives from, so a tick
+ * that changes nothing hands back identical references and re-renders nothing.
+ */
+export function useCrossMachineLaneUnion(
+  active = true,
+  localSessions?: readonly TerminalSessionSummary[],
+  workLaneSortMode: WorkLaneSortMode = "created",
+  workLaneOrder: readonly string[] = EMPTY_WORK_LANE_ORDER,
+): CrossMachineUnion {
+  // Stabilized by CONTENT, not by the array's identity. The caller's roster is
+  // replaced wholesale by every session poll (~5s while anything is running),
+  // so deriving a fresh Set per tick would hand `buildCrossMachineLaneRows` a
+  // changed input and rebuild every foreign row, its marker map, and its
+  // ordering on a timer — the memo below exists precisely to make an unchanged
+  // tick free. Compared rather than serialized into a key because a session id
+  // is not guaranteed UUID-shaped (imported and handoff sessions carry ids ADE
+  // did not mint), so any separator a join picked would be an assumption about
+  // their contents.
+  const localSessionIdsRef = useRef<ReadonlySet<string>>(EMPTY_SESSION_IDS);
+  const localSessionIds = useMemo(() => {
+    if (!localSessions) return undefined;
+    const previous = localSessionIdsRef.current;
+    // Compared set-to-set rather than array-to-set: a roster that ever repeated
+    // an id would never match its own cached set, and the only symptom would be
+    // this cache silently never hitting again — the exact churn it exists to
+    // prevent, invisible.
+    const next: ReadonlySet<string> = new Set(localSessions.map((session) => session.id));
+    if (next.size === previous.size && [...next].every((id) => previous.has(id))) {
+      return previous;
+    }
+    localSessionIdsRef.current = next;
+    return next;
+  }, [localSessions]);
+  const localLanes = useAppStore((state) => state.lanes);
+  const projectBinding = useAppStore((state) => state.projectBinding);
+  const machines = useRootAppStore((state) => state.crossMachineLanesByMachineId);
+  useCrossMachineLaneSync(active);
 
   const rows = useMemo(
     () => buildCrossMachineLaneRows({

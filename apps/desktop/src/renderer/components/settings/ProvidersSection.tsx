@@ -56,6 +56,7 @@ import { availableProviderDescriptors, providerDescriptor, providerStatusFor } f
 import { useProviderAccountCounts } from "./providers/accounts/useProviderInstances";
 import { ProviderDetailPage } from "./providers/ProviderDetailPage";
 import { ProviderSignInModal } from "./providers/ProviderSignInModal";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { acpLoginCommand, acpProviderLabel } from "./providers/acpProviders";
 import {
   AlertBanner,
@@ -351,6 +352,10 @@ export function ProvidersSection({
 } = {}) {
   const navigate = useNavigate();
   const usageHeaderPreferences = useUsageHeaderPreferences();
+  // The machine whose providers this page shows. Every runtime call below
+  // carries `pin` (null = the tab's binding); the page is
+  // remounted per machine, so a pin never changes under a live closure.
+  const { pin } = useSettingsMachineScope();
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -437,10 +442,10 @@ export function ProvidersSection({
         window.ade.ai.getStatus({
           force: options?.force === true,
           refreshOpenCodeInventory: options?.refreshOpenCodeInventory === true,
-        }),
-        window.ade.ai.listApiKeys(),
-        window.ade.projectConfig.get(),
-        window.ade.ai.cursorAuthStatus().catch(() => null),
+        }, pin),
+        window.ade.ai.listApiKeys(pin),
+        window.ade.projectConfig.get(pin),
+        window.ade.ai.cursorAuthStatus(pin).catch(() => null),
       ]);
       statusKnownRef.current = true;
       setStatusLoadError(null);
@@ -468,11 +473,11 @@ export function ProvidersSection({
         setLoading(false);
       }
     }
-  }, [editingLocalProvider, savingLocalProvider]);
+  }, [editingLocalProvider, pin, savingLocalProvider]);
 
   const loadAuthMethods = useCallback(async () => {
     try {
-      const result = await window.ade.ai.opencodeAuthMethods();
+      const result = await window.ade.ai.opencodeAuthMethods(pin);
       setAuthMethods(result.methods ?? {});
       setAuthMethodsError(null);
     } catch (err) {
@@ -480,7 +485,7 @@ export function ProvidersSection({
       // wipe SuperGrok / ChatGPT OAuth rows mid-session.
       setAuthMethodsError(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     // Cold paint is disk auth only. OpenCode inventory is a spawn and shares
@@ -523,11 +528,15 @@ export function ProvidersSection({
       if (event.state === "success") {
         setNotice(event.email ? `Signed in as ${event.email}.` : "Signed in with Cursor.");
       }
-    });
+    }, pin);
     return unsubscribe;
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   useEffect(() => {
+    // A convenience refresh when this machine's chats change model state.
+    // Another machine's chat feed is not subscribed here; its status refreshes
+    // on open and on every action instead.
+    if (pin) return undefined;
     const unsubscribe = window.ade.agentChat.onEvent((envelope) => {
       if (!shouldRefreshAiStatusForChatEvent(envelope)) return;
       if (pendingRefreshTimerRef.current != null) return;
@@ -543,7 +552,7 @@ export function ProvidersSection({
         pendingRefreshTimerRef.current = null;
       }
     };
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const detectedAuth = useMemo(() => status?.detectedAuth ?? [], [status?.detectedAuth]);
   // Keep provider tiles neutral while the status payload is unavailable. A
@@ -753,12 +762,12 @@ export function ProvidersSection({
     setNotice(null);
     try {
       if (options?.alsoOpenCode) {
-        const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider });
+        const result = await window.ade.ai.clearOpencodeProviderKey({ providerId: provider }, pin);
         if (!result.ok) {
           throw new Error(result.error || "OpenCode could not remove the provider key.");
         }
       }
-      await window.ade.ai.deleteApiKey(provider);
+      await window.ade.ai.deleteApiKey(provider, pin);
       invalidateAiDiscoveryCache();
       const label =
         API_KEY_PROVIDERS.find((row) => row.provider === provider)?.label
@@ -775,7 +784,7 @@ export function ProvidersSection({
       // Re-throw so nested modals (detail overlay) can show the failure in-dialog.
       throw err instanceof Error ? err : new Error(String(err));
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const verifyApiKey = useCallback(async (provider: string) => {
     setError(null);
@@ -788,7 +797,7 @@ export function ProvidersSection({
     });
     try {
       invalidateAiDiscoveryCache();
-      const result = await window.ade.ai.verifyApiKey(provider);
+      const result = await window.ade.ai.verifyApiKey(provider, pin);
       invalidateAiDiscoveryCache();
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
       setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
@@ -802,21 +811,21 @@ export function ProvidersSection({
     } finally {
       setVerifyingProvider(null);
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const loginWithCursor = useCallback(async () => {
     setError(null);
     setNotice(null);
     setCursorLoginBusy(true);
     try {
-      const result = await window.ade.ai.cursorAuthLogin();
+      const result = await window.ade.ai.cursorAuthLogin(pin);
       if (!result.ok) {
         setError(result.error || "Cursor sign-in failed.");
         return;
       }
       setVerifyingProvider("cursor");
       invalidateAiDiscoveryCache();
-      const verification = await window.ade.ai.verifyApiKey("cursor");
+      const verification = await window.ade.ai.verifyApiKey("cursor", pin);
       invalidateAiDiscoveryCache();
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
       setVerificationByProvider((prev) => ({ ...prev, cursor: verification }));
@@ -832,13 +841,13 @@ export function ProvidersSection({
       setCursorLoginBusy(false);
       setVerifyingProvider(null);
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const logoutCursor = useCallback(async () => {
     setError(null);
     setNotice(null);
     try {
-      const result = await window.ade.ai.cursorAuthLogout();
+      const result = await window.ade.ai.cursorAuthLogout(pin);
       if (!result.ok) {
         setError(result.error || "Cursor sign-out failed.");
         return;
@@ -854,29 +863,29 @@ export function ProvidersSection({
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const cancelCursorLogin = useCallback(async () => {
     try {
-      await window.ade.ai.cursorAuthCancel();
+      await window.ade.ai.cursorAuthCancel(pin);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setCursorLoginBusy(false);
     }
-  }, []);
+  }, [pin]);
 
   const handleRefreshCatalog = useCallback(async () => {
     setRefreshingCatalog(true);
     try {
-      await window.ade.ai.refreshModelsDev();
+      await window.ade.ai.refreshModelsDev(pin);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshingCatalog(false);
     }
-  }, [refreshStatus]);
+  }, [pin, refreshStatus]);
 
   const handleSubscriptionConnected = useCallback(async (providerId: string, providerName: string) => {
     const before = status?.availableModelIds?.length ?? 0;
@@ -901,7 +910,7 @@ export function ProvidersSection({
     try {
       await window.ade.ai.updateConfig({
         customModelSlugs: slugs,
-      });
+      }, pin);
       invalidateAiDiscoveryCache();
       setNotice("Custom model slugs saved.");
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
@@ -910,7 +919,7 @@ export function ProvidersSection({
     } finally {
       setSavingAdvanced(false);
     }
-  }, [customModelSlugs, refreshStatus]);
+  }, [pin, customModelSlugs, refreshStatus]);
 
   const updateLocalProviderDraft = useCallback((
     provider: LocalProviderFamily,
@@ -952,7 +961,7 @@ export function ProvidersSection({
             preferredModelId: draft.preferredModelId.trim() || null,
           },
         } as AiConfig["localProviders"],
-      });
+      }, pin);
       invalidateAiDiscoveryCache();
       setNotice(`${LOCAL_PROVIDER_LABELS[provider]} settings saved.`);
       setEditingLocalProvider(null);
@@ -962,7 +971,7 @@ export function ProvidersSection({
     } finally {
       setSavingLocalProvider(null);
     }
-  }, [localProviderDrafts, refreshStatus]);
+  }, [pin, localProviderDrafts, refreshStatus]);
 
   const disabledProviders = useMemo(
     () => new Set((projectConfigSnapshot?.effective.ai?.disabledProviders ?? []).map((id) => id.toLowerCase())),
@@ -987,7 +996,7 @@ export function ProvidersSection({
           provider,
           disabled,
         ),
-      } as Partial<AiConfig>);
+      } as Partial<AiConfig>, pin);
       invalidateAiDiscoveryCache();
       setNotice(`${descriptor?.label ?? provider} ${disabled ? "disabled" : "enabled"}.`);
       await refreshStatus({ force: false, silent: true });
@@ -996,14 +1005,14 @@ export function ProvidersSection({
     } finally {
       setSavingDisabledFor(null);
     }
-  }, [projectConfigSnapshot, refreshStatus]);
+  }, [pin, projectConfigSnapshot, refreshStatus]);
 
   const loadAcpDiagnostics = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
     if (!read) return;
     setAcpDiagnosticsBusy(provider);
     try {
-      const result = await read({ provider });
+      const result = await read({ provider }, pin);
       setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
       setAcpDiagnosticsError((prev) => {
         const next = { ...prev };
@@ -1018,7 +1027,7 @@ export function ProvidersSection({
     } finally {
       setAcpDiagnosticsBusy((current) => (current === provider ? null : current));
     }
-  }, []);
+  }, [pin]);
 
   const runAcpDoctor = useCallback(async (provider: AcpSettingsProviderId) => {
     const read = window.ade.ai.acpProviderDiagnostics;
@@ -1028,7 +1037,7 @@ export function ProvidersSection({
     }
     setAcpDoctorBusy(provider);
     try {
-      const result = await read({ provider, runDoctor: true });
+      const result = await read({ provider, runDoctor: true }, pin);
       setAcpDiagnostics((prev) => ({ ...prev, [provider]: result }));
       setAcpDiagnosticsError((prev) => {
         const next = { ...prev };
@@ -1043,7 +1052,7 @@ export function ProvidersSection({
     } finally {
       setAcpDoctorBusy((current) => (current === provider ? null : current));
     }
-  }, []);
+  }, [pin]);
 
   const updateAcpProvider = useCallback(async (provider: AcpSettingsProviderId) => {
     const run = window.ade.ai.acpProviderUpdate;
@@ -1058,7 +1067,7 @@ export function ProvidersSection({
       return next;
     });
     try {
-      const result = await run({ provider });
+      const result = await run({ provider }, pin);
       if (!result.ok) throw new Error(result.message);
       setNotice(result.message);
       // Re-read the diagnostics so the advisory reflects the version the
@@ -1066,7 +1075,7 @@ export function ProvidersSection({
       const read = window.ade.ai.acpProviderDiagnostics;
       if (read) {
         try {
-          const diagnostics = await read({ provider });
+          const diagnostics = await read({ provider }, pin);
           setAcpDiagnostics((prev) => ({ ...prev, [provider]: diagnostics }));
         } catch {
           // The update succeeded; a failed re-read does not undo it.
@@ -1080,7 +1089,7 @@ export function ProvidersSection({
     } finally {
       setAcpUpdateBusy((current) => (current === provider ? null : current));
     }
-  }, []);
+  }, [pin]);
 
   const openSignInTerminal = useCallback((provider: SettingsProviderId) => {
     const command = acpLoginCommand(provider);
@@ -1291,7 +1300,7 @@ export function ProvidersSection({
           onConnected={() => void handleSubscriptionConnected(detailProvider.id, detailProvider.name)}
           onRetryAuthMethods={() => void loadAuthMethods()}
           onSaveKey={async (key) => {
-            const result = await window.ade.ai.setOpencodeProviderKey({ providerId: detailProvider.id, key });
+            const result = await window.ade.ai.setOpencodeProviderKey({ providerId: detailProvider.id, key }, pin);
             if (!result.ok) throw new Error(result.error || "OpenCode rejected the provider key.");
             invalidateAiDiscoveryCache();
             setVerificationByProvider((prev) => {

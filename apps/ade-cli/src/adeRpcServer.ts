@@ -31,6 +31,7 @@ import {
   getAdeActionDomainServices,
   isAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isSecretBearingAdeAction,
   isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
@@ -105,7 +106,12 @@ import {
   BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM,
 } from "./services/builtInBrowser/desktopBridgeMethods";
 import { FORWARDABLE_BUILT_IN_BROWSER_METHODS } from "./services/builtInBrowser/remoteBrowserForwarder";
-import { DESKTOP_CLIENT_NAMES, isDesktopClientName } from "../../desktop/src/shared/runtimeClientNames";
+import {
+  ctoCallerInitializeParams,
+  DESKTOP_CLIENT_NAMES,
+  isCtoRemoteClientName,
+  isDesktopClientName,
+} from "../../desktop/src/shared/runtimeClientNames";
 import { isSyntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
 import {
@@ -227,8 +233,17 @@ type SessionState = {
   };
 };
 
+/**
+ * Whether the caller is a person's client rather than an agent.
+ *
+ * A CTO acting through its action caller (`CTO_REMOTE_CLIENT_NAME`, from
+ * another machine or from this brain in process) is an agent here, whatever
+ * its identity looks like: it carries no chat, run or step id, but a model is
+ * driving it. So it cannot capture product analytics, answer a remote browser
+ * request, or pass any other user-client gate.
+ */
 function isUserClientSession(session: SessionState): boolean {
-  return !callerIdentityIsAgent(session.identity);
+  return !callerIdentityIsAgent(session.identity) && !isCtoRemoteClientName(session.clientName);
 }
 
 /**
@@ -3251,6 +3266,11 @@ function scopeChatAdeActionArgs(
  * where this provenance decides whether a completion may wake another agent. */
 const HOST_STAMPED_CHAT_ACTIONS = new Set(["messageSession", "sendMessage", "steer"]);
 
+/** Does a `cto_state.updateIdentity` patch set the cross-machine switch? */
+function ctoIdentityPatchTouchesCrossMachineAccess(patch: unknown): boolean {
+  return isRecord(patch) && Object.prototype.hasOwnProperty.call(patch, "crossMachineEnabled");
+}
+
 function withTrustedAgentProvenance(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3669,7 +3689,7 @@ async function resolveUnboundCallerLane(
  *   different `--lane` is refused naming both lanes. The primary lane does not
  *   bind, because its worktree is the project root, where a person runs `ade`
  *   to reach any lane.
- * - Outside every lane worktree it names the lane itself, as before.
+ * - Outside every lane worktree it names the lane itself.
  *
  * `callerRoot` is a claim too — a process can run from any directory — so this
  * keeps honest callers on their own lane; the stripping is the hard boundary.
@@ -5066,6 +5086,7 @@ async function runTool(args: {
     const exposedDomains = domains.filter((entry) => !DISABLED_ADE_ACTION_DOMAINS.has(entry));
     const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
     const isUserClient = isUserClientSession(session);
+    const ctoActionCaller = isCtoRemoteClientName(session.clientName);
     const actions = exposedDomains.flatMap((entry) => {
       const service = services[entry];
       if (!service) return [];
@@ -5073,6 +5094,7 @@ async function runTool(args: {
         .filter((action) => callerIsCto || !isCtoOnlyAdeAction(entry, action))
         .filter((action) => !isUserOnlyAdeAction(entry, action) || mayUseUserOnlyActions(session))
         .filter((action) => entry !== "analytics" || action !== "capture" || isUserClient)
+        .filter((action) => !ctoActionCaller || !isSecretBearingAdeAction(entry, action))
         .map((action) => {
           const contract = getAdeActionInputContract(entry, action);
           return {
@@ -5122,8 +5144,29 @@ async function runTool(args: {
     if (isCtoOnlyAdeAction(domain, action) && !callerHasRoleAtLeast(callerCtx.role, "cto")) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${domain}.${action}' requires elevated role.`);
     }
+    if (isCtoRemoteClientName(session.clientName) && isSecretBearingAdeAction(domain, action)) {
+      // The CTO's result lands in a model transcript. Its own tool refuses
+      // these first; this holds for a CTO on any ADE version.
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        `${domain}.${action} returns secrets, so the CTO can't run it. Ask the user to read it in Settings.`,
+      );
+    }
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
+    if (
+      domain === "cto_state"
+      && action === "updateIdentity"
+      && !mayUseUserOnlyActions(session)
+      && ctoIdentityPatchTouchesCrossMachineAccess(argsList?.[0] ?? (hasScalarArg ? toolArgs.arg : toolArgs.args))
+    ) {
+      // The switch that keeps the CTO off the user's other machines is the
+      // user's alone: an agent, or the CTO itself, must not turn it back on.
+      throw new JsonRpcError(
+        JsonRpcErrorCode.policyDenied,
+        "Only the user can change whether the CTO reaches other machines (Settings › CTO).",
+      );
+    }
     // Every chat action whose caller metadata lands in a persisted
     // `user_message` re-derives the spawn-dispatch stamp here, before any
     // role- or scope-specific branch. That stamp decides whether a child's
@@ -7964,4 +8007,42 @@ export function createAdeRpcRequestHandler(args: {
   handler.dispose = () => {};
 
   return handler;
+}
+
+export type CtoActionCaller = (
+  name: "run_ade_action" | "list_ade_actions",
+  actionArgs: Record<string, unknown>,
+) => Promise<unknown>;
+
+/**
+ * The CTO's generic actions on its own machine, through this dispatcher.
+ *
+ * The same caller another machine's brain sees over the paired channel
+ * (`ctoCallerInitializeParams`), so the home machine applies exactly the policy
+ * a remote target does: the allowlist, CTO-only and user-only rules, host
+ * provenance stamping, browser and work-tools scoping, the secret refusal, and
+ * the `lane.create` base default. Answers what `ade/actions/call` answers,
+ * including `{ ok: false, error }` for a refusal.
+ */
+export async function createCtoActionCaller(args: {
+  runtime: AdeRuntime;
+  serverVersion: string;
+}): Promise<CtoActionCaller> {
+  const handler = createAdeRpcRequestHandler(args);
+  await handler({
+    jsonrpc: "2.0",
+    id: "cto-action-caller-initialize",
+    method: "ade/initialize",
+    params: ctoCallerInitializeParams(args.serverVersion),
+  });
+  let sequence = 0;
+  return async (name, actionArgs) => {
+    sequence += 1;
+    return await handler({
+      jsonrpc: "2.0",
+      id: `cto-action-caller-${sequence}`,
+      method: "ade/actions/call",
+      params: { name, arguments: actionArgs },
+    });
+  };
 }

@@ -9,6 +9,7 @@ import {
   callerHasRoleAtLeast,
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
+  isSecretBearingAdeAction,
 } from "./actionPolicy";
 import type { AdeActionDomain } from "./domains";
 
@@ -437,6 +438,15 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
   });
 
+});
+
+describe("secret-bearing action policy", () => {
+  it("recognizes secret-returning actions while leaving metadata-only reads available", () => {
+    expect(isSecretBearingAdeAction("account_vault", "get")).toBe(true);
+    expect(isSecretBearingAdeAction("ai", "readPrivateKey")).toBe(true);
+    expect(isSecretBearingAdeAction("project_secret", "listSecretNames")).toBe(false);
+    expect(isSecretBearingAdeAction("lane", "list")).toBe(false);
+  });
 });
 
 describe("ADE_ACTION_ALLOWLIST shape", () => {

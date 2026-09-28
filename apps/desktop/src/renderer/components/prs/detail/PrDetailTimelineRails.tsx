@@ -128,6 +128,8 @@ type Props = {
     commitBody?: string;
     expectedHeadSha?: string;
   }) => void;
+  /** Set when merging must not run from here (e.g. the lane's owner is offline). */
+  mergeBlockedReason?: string | null;
   onUpdateBranch?: (strategy: UpdateBranchStrategy) => void;
   updateBranchBusy?: boolean;
   updateBranchNotice?: { tone: "success" | "error"; text: string } | null;
@@ -670,6 +672,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       onRerunChecks,
       mergeMethod,
       onMerge,
+      mergeBlockedReason = null,
       onUpdateBranch,
       updateBranchBusy,
       updateBranchNotice,
@@ -1089,6 +1092,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
               actionBusy={actionBusy}
               actions={mergeActions}
               onMerge={handleDialogMerge}
+              mergeBlockedReason={mergeBlockedReason}
               notice={updateBranchNotice}
               onClose={closeDock}
             />
@@ -1133,7 +1137,7 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
           content: <PrAssigneesCard detail={detail} onClose={closeDock} />,
         },
       ];
-    }, [actionBusy, closeDock, commentDraft, commitSnapshots, detail, handleDialogMerge, mergeActions, mergeMethod, nextStep, onAddComment, onRequestReviewers, onSetLabels, onSubmitReview, pr, reviewers, reviews, setCommentDraft, status, updateBranchNotice]);
+    }, [actionBusy, closeDock, commentDraft, commitSnapshots, detail, handleDialogMerge, mergeActions, mergeBlockedReason, mergeMethod, nextStep, onAddComment, onRequestReviewers, onSetLabels, onSubmitReview, pr, reviewers, reviews, setCommentDraft, status, updateBranchNotice]);
 
     return (
       <>

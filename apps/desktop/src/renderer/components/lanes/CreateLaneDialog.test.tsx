@@ -299,6 +299,26 @@ describe("CreateLaneDialog machine selection", () => {
     expect(onSelectMachine).toHaveBeenCalledWith("studio");
   });
 
+  it("does not submit while a required machine choice is missing", () => {
+    const onSubmit = vi.fn();
+    render(
+      <CreateLaneDialog
+        {...makeMachineProps({
+          machines: [thisMac, studio],
+          machineRequired: true,
+          onSelectMachine: vi.fn(),
+          onSubmit,
+        })}
+      />,
+    );
+
+    const create = screen.getAllByRole("button").find((button) => (button as HTMLButtonElement).disabled);
+    if (!create) throw new Error("Create action should be disabled until a machine is chosen");
+    expect((create as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(create);
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("keeps the machine vocabulary separate from the git base-source cards", () => {
     render(
       <CreateLaneDialog

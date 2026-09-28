@@ -7,6 +7,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import { COLORS, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
 import type { AgentChatCodexPlugin } from "../../../../../shared/types";
 import type { ProvidersViewContext } from "../types";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 
 function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
   switch (origin) {
@@ -24,6 +25,7 @@ function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
 }
 
 export function CodexBody(_props: { ctx: ProvidersViewContext }) {
+  const { pin } = useSettingsMachineScope();
   const [plugins, setPlugins] = useState<AgentChatCodexPlugin[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -32,14 +34,14 @@ export function CodexBody(_props: { ctx: ProvidersViewContext }) {
     setRefreshing(true);
     setError(null);
     try {
-      setPlugins(await window.ade.agentChat.listCodexPlugins({}));
+      setPlugins(await window.ade.agentChat.listCodexPlugins({}, pin));
     } catch (err: unknown) {
       setPlugins(null);
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     void loadPlugins();

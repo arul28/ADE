@@ -325,12 +325,11 @@ subscribing to the new one. A ref would have lied — a callback built before th
 pin arrived would read the current value, and a chokidar watcher could be left
 running on a remote host with nothing left to stop it.
 
-In the UI a pin is entered by clicking a file in a chat on another machine, not
-by choosing a machine. The workbench shows the amber machine chip
-(`LaneMachineMarker`) with "Files on this machine. Edits save there." — or, if
-that machine has gone offline, why the tree stopped answering — plus one
-obvious way out, **Back to this computer**. Picking any workspace from the
-bound machine clears the pin too.
+The workspace picker groups lanes by machine and labels each group. Choosing a
+lane on another machine pins the workbench to that lane's owner without
+rebinding the project tab. The workbench keeps the machine chip and an explicit
+way back to the tab's machine; an offline owner remains identifiable while its
+file actions are unavailable.
 
 ## Workspace model
 

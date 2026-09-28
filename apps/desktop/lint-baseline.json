@@ -66,9 +66,6 @@
     "apps/desktop/src/renderer/components/files/v2/FilesSearchPanel.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
-    "apps/desktop/src/renderer/components/history/HistoryGitContextMenu.tsx": {
-      "ade-ui/no-raw-z-index": 1
-    },
     "apps/desktop/src/renderer/components/lanes/CommitTimeline.tsx": {
       "ade-ui/no-raw-z-index": 1
     },
@@ -81,10 +78,6 @@
     "apps/desktop/src/renderer/components/lanes/LanePrHoverCard.tsx": {
       "ade-ui/no-fixed-overlay": 1,
       "ade-ui/no-raw-z-index": 1
-    },
-    "apps/desktop/src/renderer/components/lanes/LanesPage.tsx": {
-      "ade-ui/no-fixed-overlay": 2,
-      "ade-ui/no-raw-z-index": 2
     },
     "apps/desktop/src/renderer/components/lanes/LinearIssueBadge.tsx": {
       "ade-ui/no-raw-z-index": 1

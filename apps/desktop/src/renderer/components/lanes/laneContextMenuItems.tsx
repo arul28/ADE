@@ -242,7 +242,9 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
         onClose();
         void (async () => {
           const repo = await fetchRepoForCopy();
-          const pr = await window.ade.prs.getForLane(lane.id).catch(() => null);
+          const pr = await (runtimePin
+            ? window.ade.prs.getForLane(lane.id, runtimePin)
+            : window.ade.prs.getForLane(lane.id)).catch(() => null);
           const url = buildDeeplink(
             {
               kind: "lane",

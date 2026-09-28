@@ -139,6 +139,7 @@ export function CreateLaneDialog({
   selectedMachineId,
   onSelectMachine,
   onConnectMachine,
+  machineRequired = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -190,12 +191,18 @@ export function CreateLaneDialog({
   /**
    * Connected machines a lane can be created on. A lane owns its machine, so
    * this is the only place one is picked. Rendered only when there is more than
-   * one machine to choose from — a single-machine setup looks exactly as before.
+   * one machine to choose from; a single-machine setup shows no selector.
    */
   machines?: LaneMachineOption[];
+  /** "" (or omitted) while no machine is chosen. Never defaulted here. */
   selectedMachineId?: string;
   onSelectMachine?: (machineId: string) => void;
   onConnectMachine?: () => void;
+  /**
+   * The lane is really created, so the machine must be chosen before submit.
+   * The host pre-selects the only eligible machine; otherwise the user picks.
+   */
+  machineRequired?: boolean;
 }) {
   const baseBranchOptions = React.useMemo(
     () => listNewLaneBaseOptions(createBranches, createBaseSource),
@@ -217,7 +224,7 @@ export function CreateLaneDialog({
     return map;
   }, [lanes]);
 
-  // One machine behaves exactly as before: no selector, no extra chrome.
+  // One machine: no selector, no extra chrome.
   const machineOptions = machines ?? [];
   const showMachineSelector = machineOptions.length > 1 && !!onSelectMachine;
 
@@ -306,9 +313,16 @@ export function CreateLaneDialog({
     }
   }, [open, lanes, selectedColor, setSelectedColor]);
 
+  const machineMissing = Boolean(machineRequired) && !laneCreated && !selectedMachineId;
+  const machineHint = !machineMissing
+    ? null
+    : showMachineSelector
+      ? "Choose the machine this lane will live on."
+      : "No connected machine has this repository open.";
   const isSubmitDisabled = laneCreated
     ? !!busy
     : (busy
+      || machineMissing
       || !createLaneName.trim()
       || (createMode === "child" && !createParentLaneId)
       || (createMode === "primary" && (!selectedBaseBranchValid || loadingBranches))
@@ -338,6 +352,11 @@ export function CreateLaneDialog({
         <div className="space-y-3">
           {error ? (
             <Banner model={{ id: "create-lane-error", tone: "error", title: error }} layout="inline" />
+          ) : null}
+          {machineHint && !error ? (
+            <div className="text-right text-[11px] text-muted-fg/70" data-testid="create-lane-machine-hint">
+              {machineHint}
+            </div>
           ) : null}
           <div className="flex items-center justify-end gap-2">
             <Button
@@ -401,7 +420,7 @@ export function CreateLaneDialog({
         {showMachineSelector && onSelectMachine ? (
           <LaneMachineSelector
             machines={machineOptions}
-            selectedMachineId={selectedMachineId ?? machineOptions[0]?.id ?? ""}
+            selectedMachineId={selectedMachineId ?? ""}
             onSelectMachine={onSelectMachine}
             onConnectMachine={onConnectMachine}
             disabled={busy || laneCreated}

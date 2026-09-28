@@ -47,7 +47,8 @@ import {
 } from "./accountPresentation";
 import { AccentSwatchRow } from "./AccentSwatchRow";
 import { AddProviderAccountSheet } from "./AddProviderAccountSheet";
-import { useProviderInstances } from "./useProviderInstances";
+import { pinnedProviderInstances, useProviderInstances } from "./useProviderInstances";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { providerActionMessage } from "../providerErrorMessage";
 
 const SMART_BALANCE_HINT =
@@ -389,6 +390,8 @@ export function ProviderAccountsPanel({
   providerLabel: string;
 }) {
   const theme = useAppStore((state) => state.theme);
+  // Accounts belong to the machine the Settings page is showing.
+  const { pin } = useSettingsMachineScope();
   const brandColor = providerColor(provider, theme);
   const { instances, settings, loading, bridgeMissing, error, reload, saveSettings } =
     useProviderInstances(provider);
@@ -429,7 +432,7 @@ export function ProviderAccountsPanel({
 
   const onAction = useCallback(
     (action: RowMenuAction, instance: ProviderInstance) => {
-      const api = window.ade?.providerInstances;
+      const api = pinnedProviderInstances(pin);
       if (!api) return;
       if (action === "rename") {
         setAccentingId(null);
@@ -454,7 +457,7 @@ export function ProviderAccountsPanel({
         if (ok) void run(() => api.remove({ id: instance.id }));
       });
     },
-    [providerLabel, run],
+    [pin, providerLabel, run],
   );
 
   const onCommitRename = useCallback(
@@ -462,20 +465,20 @@ export function ProviderAccountsPanel({
       setRenamingId(null);
       const next = label.trim();
       if (!next || next === instance.label) return;
-      const api = window.ade?.providerInstances;
+      const api = pinnedProviderInstances(pin);
       if (!api) return;
       void run(() => api.rename({ id: instance.id, label: next }));
     },
-    [run],
+    [pin, run],
   );
 
   const onCommitAccent = useCallback(
     (instance: ProviderInstance, accent: string | null) => {
-      const api = window.ade?.providerInstances;
+      const api = pinnedProviderInstances(pin);
       if (!api) return;
       void run(() => api.setAccent({ id: instance.id, accentColor: accent }));
     },
-    [run],
+    [pin, run],
   );
 
   // A refusal is filed at the top of the panel, which on a machine with ten

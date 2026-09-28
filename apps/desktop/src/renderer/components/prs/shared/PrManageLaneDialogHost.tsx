@@ -1,4 +1,6 @@
-import { memo, useCallback, useState } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 
 import type { DeleteLaneArgs, LaneSummary } from "../../../../shared/types";
 import {
@@ -7,6 +9,8 @@ import {
   type LaneDeleteSelection,
 } from "../../lanes/ManageLaneDialog";
 import { useAppStore } from "../../../state/appStore";
+import { requestCrossMachineLanesForMachine, useLanesForPin } from "../../../state/crossMachineLanes";
+import { machineIdForBinding } from "../../../../shared/machineIdentity";
 
 export type PrManageLaneDialogHostProps = {
   open: boolean;
@@ -21,6 +25,17 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
 }: PrManageLaneDialogHostProps) {
   const lanes = useAppStore((state) => state.lanes ?? []);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
+  // The lane lives where the PR's runtime pin says; archive/delete run there.
+  const runtimePin = usePrRuntimePin();
+  const onPin = useMemo(() => pinArg(runtimePin), [runtimePin]);
+  // A pinned lane is resolved (parent, stack, children) against its own
+  // machine's lanes only; the tab machine may hold a same-id lane.
+  const ownerLanes = useLanesForPin(runtimePin);
+  const dialogLanes = ownerLanes ?? lanes;
+  const refreshOwnerLanes = useCallback(() => {
+    if (runtimePin) requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin));
+    else void refreshLanes({ includeStatus: false });
+  }, [refreshLanes, runtimePin]);
 
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
   const [deleteForce, setDeleteForce] = useState(true);
@@ -40,7 +55,9 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     setLaneActionError(null);
     try {
       await fn();
-      await refreshLanes({ includeStatus: false });
+      // Another machine's lane list lives in the union, not this tab's store.
+      if (runtimePin) requestCrossMachineLanesForMachine(machineIdForBinding(runtimePin));
+      else await refreshLanes({ includeStatus: false });
       onOpenChange(false);
     } catch (err) {
       setLaneActionError(err instanceof Error ? err.message : String(err));
@@ -49,14 +66,14 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       setLaneActionStatus(null);
       setLaneActionKind(null);
     }
-  }, [onOpenChange, refreshLanes]);
+  }, [onOpenChange, refreshLanes, runtimePin]);
 
   const handleArchive = useCallback(async () => {
     if (!lane || lane.laneType === "primary") return;
     await runLaneAction(async () => {
-      await window.ade.lanes.archive({ laneId: lane.id });
+      await window.ade.lanes.archive({ laneId: lane.id }, ...onPin);
     }, "Archiving lane…", "archive");
-  }, [lane, runLaneAction]);
+  }, [lane, onPin, runLaneAction]);
 
   const handleDelete = useCallback(async () => {
     if (!lane || lane.laneType === "primary") return;
@@ -70,10 +87,10 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     }
 
     await runLaneAction(async () => {
-      await window.ade.lanes.delete(args);
+      await window.ade.lanes.delete(args, ...onPin);
     }, "Deleting lane…", "delete");
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
-  }, [deleteForce, deleteSelection, lane, runLaneAction]);
+  }, [deleteForce, deleteSelection, lane, onPin, runLaneAction]);
 
   if (!open || !lane) return null;
 
@@ -82,7 +99,8 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       open={open}
       onOpenChange={onOpenChange}
       managedLane={lane}
-      allLanes={lanes}
+      allLanes={dialogLanes}
+      runtimePin={runtimePin}
       deleteSelection={deleteSelection}
       setDeleteSelection={setDeleteSelection}
       deleteForce={deleteForce}
@@ -93,8 +111,11 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       laneActionKind={laneActionKind}
       onArchive={() => { void handleArchive(); }}
       onDelete={() => { void handleDelete(); }}
-      onAppearanceChanged={() => { void refreshLanes({ includeStatus: false }); }}
-      onStackReorganized={() => { void refreshLanes(); }}
+      onAppearanceChanged={refreshOwnerLanes}
+      onStackReorganized={() => {
+        if (runtimePin) refreshOwnerLanes();
+        else void refreshLanes();
+      }}
     />
   );
 });

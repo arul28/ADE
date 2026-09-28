@@ -28,7 +28,9 @@ import type {
   AppResourceUsageSnapshot,
   LaneCleanupConfig,
   LaneReclaimRisk,
+  OpenProjectBinding,
 } from "../../../shared/types";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { SettingsCard, SettingsGroup, SettingsNumber } from "./primitives";
 import { showToast, type ToastTone } from "../app/toast/toastStore";
 import { SettingsDashboardPage } from "./primitives/SettingsDashboardPage";
@@ -78,8 +80,8 @@ import {
 /** One storage result at a time: a new outcome replaces the last in place. */
 const STORAGE_TOAST_ID = "settings-storage-result";
 
-type CompressNow = () => Promise<{ filesCompressed: number; savedBytes: number }>;
-type RunMaintenanceNow = () => Promise<MaintenanceRunReport>;
+type CompressNow = (pin?: OpenProjectBinding | null) => Promise<{ filesCompressed: number; savedBytes: number }>;
+type RunMaintenanceNow = (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
 type GetRuntimeHealth = () => Promise<RuntimeHealthSnapshot>;
 
 function getCompressNow(): CompressNow | undefined {
@@ -1011,6 +1013,10 @@ function StorageReviewPanel({
 // ---------------------------------------------------------------------------
 
 export function StorageSection() {
+  // Which machine's disk this is. Runtime actions carry `pin`; the plain-IPC
+  // reads (disk pressure, app resource usage, runtime health) only ever reach
+  // This computer, so they are skipped for any other machine.
+  const { pin, isThisMachine } = useSettingsMachineScope();
   const [snapshot, setSnapshot] = React.useState<StorageSnapshot | null>(null);
   const [pressureState, setPressureState] = React.useState<DiskPressureSnapshot["state"] | undefined>();
   const [laneIdByKey, setLaneIdByKey] = React.useState<Map<string, string>>(new Map());
@@ -1035,8 +1041,12 @@ export function StorageSection() {
   const policySaveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const compressNow = React.useMemo(() => getCompressNow(), []);
-  const runMaintenanceNow = React.useMemo(() => getRunMaintenanceNow(), []);
-  const runtimeHealthFn = React.useMemo(() => getRuntimeHealthFn(), []);
+  const runMaintenanceNowBridge = React.useMemo(() => getRunMaintenanceNow(), []);
+  const runMaintenanceNow = React.useMemo<(() => Promise<MaintenanceRunReport>) | undefined>(
+    () => (runMaintenanceNowBridge ? () => runMaintenanceNowBridge(pin) : undefined),
+    [pin, runMaintenanceNowBridge],
+  );
+  const runtimeHealthFn = React.useMemo(() => (isThisMachine ? getRuntimeHealthFn() : undefined), [isThisMachine]);
 
   const notify = React.useCallback((message: string, tone: ToastTone = "success") => {
     showToast({ id: STORAGE_TOAST_ID, title: message, tone, durationMs: 4500 });
@@ -1051,10 +1061,10 @@ export function StorageSection() {
     setError(null);
     try {
       const [snap, pressure, lanes, config] = await Promise.all([
-        window.ade.storage.getSnapshot({ forceRefresh: opts.force }),
-        window.ade.storage.getPressure().catch(() => null),
-        window.ade.lanes?.list?.({ includeArchived: true }).catch(() => []) ?? Promise.resolve([]),
-        window.ade.projectConfig.get(),
+        window.ade.storage.getSnapshot({ forceRefresh: opts.force }, pin),
+        isThisMachine ? window.ade.storage.getPressure().catch(() => null) : Promise.resolve(null),
+        window.ade.lanes?.list?.({ includeArchived: true }, pin).catch(() => []) ?? Promise.resolve([]),
+        window.ade.projectConfig.get(pin),
       ]);
       const ids = new Map<string, string>();
       const archivedAt = new Map<string, string | null>();
@@ -1079,17 +1089,17 @@ export function StorageSection() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, []);
+  }, [isThisMachine, pin]);
 
   const loadDiagnostics = React.useCallback(async () => {
     const [nextUsage, nextHealth] = await Promise.all([
-      getAppResourceUsageCoalesced(),
+      isThisMachine ? getAppResourceUsageCoalesced() : Promise.resolve(null),
       runtimeHealthFn ? runtimeHealthFn().catch(() => null) : Promise.resolve(null),
     ]);
     setUsage(nextUsage);
     setUsageReady(true);
     setRuntimeHealth(nextHealth);
-  }, [runtimeHealthFn]);
+  }, [isThisMachine, runtimeHealthFn]);
 
   React.useEffect(() => {
     void load();
@@ -1104,7 +1114,7 @@ export function StorageSection() {
     if (!compressNow) return;
     setCompressing(true);
     try {
-      const result = await compressNow();
+      const result = await compressNow(pin);
       notify(`Compressed ${result.filesCompressed} ${result.filesCompressed === 1 ? "file" : "files"}, freed ${formatBytes(result.savedBytes)}`);
       void load({ force: true, silent: true });
     } catch (err) {
@@ -1112,7 +1122,7 @@ export function StorageSection() {
     } finally {
       setCompressing(false);
     }
-  }, [compressNow, load, notify]);
+  }, [compressNow, load, notify, pin]);
 
   const runMaintenanceInline = React.useCallback(async () => {
     if (!runMaintenanceNow || maintenanceBusy) return;
@@ -1132,18 +1142,18 @@ export function StorageSection() {
   const savePolicy = React.useCallback(async (next: LaneCleanupConfig) => {
     setPolicyBusy(true);
     try {
-      const current = await window.ade.projectConfig.get();
+      const current = await window.ade.projectConfig.get(pin);
       await window.ade.projectConfig.save({
         shared: current.shared,
         local: { ...current.local, laneCleanup: next },
-      });
+      }, pin);
       void load({ force: true, silent: true });
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not save storage rules", "error");
     } finally {
       setPolicyBusy(false);
     }
-  }, [load, notify]);
+  }, [load, notify, pin]);
 
   /**
    * Storage rules save as you edit — there is no Save button anywhere in
@@ -1161,14 +1171,14 @@ export function StorageSection() {
 
   const openReclaim = React.useCallback(async (laneId: string) => {
     try {
-      const risk = await window.ade.lanes.getReclaimRisk({ laneId });
+      const risk = await window.ade.lanes.getReclaimRisk({ laneId }, pin);
       setReclaimConfirm("");
       setDiscardDirtyConfirmed(false);
       setReclaimRisk(risk);
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not review this lane", "error");
     }
-  }, [notify]);
+  }, [notify, pin]);
 
   const confirmReclaim = React.useCallback(async () => {
     if (!reclaimRisk || reclaimConfirm !== "RECLAIM" || (reclaimRisk.dirty && !discardDirtyConfirmed)) return;
@@ -1178,7 +1188,7 @@ export function StorageSection() {
         laneId: reclaimRisk.laneId,
         confirmation: "RECLAIM",
         ...(reclaimRisk.dirty && discardDirtyConfirmed ? { forceDirty: true } : {}),
-      });
+      }, pin);
       notify(`Reclaimed about ${formatBytes(result.reclaimedBytes)}. The lane, branch, and chats were kept.`);
       setReclaimRisk(null);
       setReclaimConfirm("");
@@ -1189,11 +1199,13 @@ export function StorageSection() {
     } finally {
       setReclaimBusy(false);
     }
-  }, [discardDirtyConfirmed, load, reclaimConfirm, reclaimRisk, notify]);
+  }, [discardDirtyConfirmed, load, reclaimConfirm, reclaimRisk, notify, pin]);
 
   const restoreLane = React.useCallback(async (laneId: string) => {
     try {
-      const result = await window.ade.lanes.unarchive({ laneId });
+      // The lane lives on the machine this page shows; its id only means
+      // something there.
+      const result = await window.ade.lanes.unarchive({ laneId }, pin);
       notify(
         result.setupWarning
           ? `Lane restored. Setup needs attention: ${result.setupWarning}`
@@ -1204,7 +1216,7 @@ export function StorageSection() {
     } catch (err) {
       notify(err instanceof Error ? err.message : "Could not restore this lane", "error");
     }
-  }, [load, notify]);
+  }, [load, notify, pin]);
 
   const onCleaned = React.useCallback((_result: StorageCleanupResult) => {
     void load({ force: true, silent: true });
@@ -1361,7 +1373,8 @@ export function StorageSection() {
               runtimeHealthAvailable={Boolean(runtimeHealthFn)}
             />
 
-            <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />
+            {/* Reads through unpinned simulator/file calls, so only for the tab's machine. */}
+            {pin ? null : <AppleRecordingsWarning projectRoot={snapshot.projectRoot} />}
 
             <MaintenanceJournal extras={extras} />
 

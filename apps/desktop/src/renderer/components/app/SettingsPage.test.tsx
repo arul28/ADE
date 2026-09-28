@@ -181,7 +181,10 @@ describe("SettingsPage", () => {
     expect(screen.getByText("account embedded")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    expect(rows.slice(0, 3)).toEqual(["Account", "Secrets", "Usage"]);
+    // Nav rows are grouped (Account/Project/Machines) now, so the first
+    // entries are the rest of the Account group, not a flat alphabetical or
+    // registration-order list.
+    expect(rows.slice(0, 3)).toEqual(["Account", "Appearance", "Chat"]);
   });
 
   it("carries feedback, help, zoom, and the identity row above the sections", async () => {

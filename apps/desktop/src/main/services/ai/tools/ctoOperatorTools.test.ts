@@ -1319,4 +1319,46 @@ describe("createCtoOperatorTools", () => {
       expect(result.error).toContain("scheduler offline");
     });
   });
+
+  it("routes generic machine actions by owner, confirms simulate, and refuses secret results", async () => {
+    const home = { machineId: "home-id", name: "Home", isThisMachine: true };
+    const studio = { machineId: "studio-id", name: "Studio", isThisMachine: false };
+    const runAction = vi.fn(async () => ({ lanes: [] }));
+    const requestApproval = vi.fn(async () => ({ approved: false, reason: "Not yet" }));
+    const crossMachine = {
+      homeMachine: () => home,
+      resolveMachine: vi.fn(async (query: string) => query === "Studio" ? studio : home),
+      listMachines: vi.fn(async () => ({ state: "ok", projectOrigin: null, machines: [] })),
+      runAction,
+      listActions: vi.fn(async () => ({ count: 0, actions: [] })),
+      peekRoster: () => null,
+    };
+    const tools = createCtoOperatorTools(buildDeps({
+      crossMachine: crossMachine as any,
+      requestApproval,
+    }));
+
+    const onHome = await tools.runMachineAction!.execute({ domain: "lane", action: "list" } as never) as any;
+    const onStudio = await tools.runMachineAction!.execute({
+      machine: "Studio",
+      domain: "lane",
+      action: "list",
+    } as never) as any;
+    const secret = await tools.runMachineAction!.execute({
+      domain: "account_vault",
+      action: "get",
+    } as never) as any;
+    const simulated = await tools.runMachineAction!.execute({
+      machine: "Studio",
+      domain: "automation_planner",
+      action: "simulate",
+    } as never) as any;
+
+    expect(onHome).toMatchObject({ success: true, machineId: "home-id", isThisMachine: true, readOnly: true });
+    expect(onStudio).toMatchObject({ success: true, machineId: "studio-id", isThisMachine: false, readOnly: true });
+    expect(secret).toMatchObject({ success: false });
+    expect(runAction).toHaveBeenCalledTimes(2);
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(simulated).toMatchObject({ success: false, error: "Declined by the user: Not yet" });
+  });
 });

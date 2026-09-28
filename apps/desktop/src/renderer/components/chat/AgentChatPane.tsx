@@ -134,6 +134,7 @@ import {
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   type ComposerDraftEditIntent,
+  type ComposerMachineChipAction,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
@@ -174,7 +175,7 @@ import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
-import { useForeignSessionLaneId } from "../../state/crossMachineLanes";
+import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -3452,6 +3453,7 @@ export function AgentChatPane({
   hideModelControls = false,
   hideWorkspaceChrome = false,
   hideSurfaceHeader = false,
+  machineChipAction = null,
   hideLaneToolDrawers = false,
   forceNewSession = false,
   forceDraftMode = false,
@@ -3518,6 +3520,8 @@ export function AgentChatPane({
   hideWorkspaceChrome?: boolean;
   /** Suppress the WorkSurfaceHeader row entirely (the host surface renders its own header, e.g. the CTO page). */
   hideSurfaceHeader?: boolean;
+  /** Host-owned action for the composer's machine chip (the CTO's home machine). */
+  machineChipAction?: ComposerMachineChipAction | null;
   /** Work owns these lane-scoped drawers; proof remains chat-scoped here. */
   hideLaneToolDrawers?: boolean;
   forceNewSession?: boolean;
@@ -6385,11 +6389,22 @@ export function AgentChatPane({
   // "Lane not found". Its branch is cut from the primary lane of the same repo, so cloud
   // readiness reads the primary lane's remote instead. The launch itself creates the
   // lane and pushes that branch before the agent starts.
+  //
+  // The lane and the pin must describe the same machine. The pin comes from
+  // `chatScopeLaneId`, and lookups use that machine's own lane list (empty,
+  // never the tab's, while a pinned machine's lanes are still loading); a lane
+  // that machine doesn't know is not read at all, rather than being sent to the
+  // tab's machine, where it can only fail as "Lane not found".
+  const chatMachineLanes = useLanesForPin(chatRuntimePin);
   const cloudReadinessLaneId = useMemo(() => {
-    if (!isAutoCreateLaneOptionId(draftLaunchTargetId)) return laneId;
-    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
-    return primary?.id ?? laneId;
-  }, [draftLaunchTargetId, laneId, lanes]);
+    const sourceLanes = chatMachineLanes ?? lanes;
+    if (isAutoCreateLaneOptionId(draftLaunchTargetId)) {
+      const primary = sourceLanes.find((lane) => lane.laneType === "primary") ?? null;
+      if (primary) return primary.id;
+    }
+    if (!chatScopeLaneId) return null;
+    return sourceLanes.some((lane) => lane.id === chatScopeLaneId) ? chatScopeLaneId : null;
+  }, [chatMachineLanes, chatScopeLaneId, draftLaunchTargetId, lanes]);
   const {
     remoteUrl: laneGitRemote,
     branch: laneGitBranch,
@@ -14443,6 +14458,7 @@ export function AgentChatPane({
             onPromptHistoryNavigate={handlePromptHistoryNavigate}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
+            machineChipAction={machineChipAction}
             cursorRuntime={cursorRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}

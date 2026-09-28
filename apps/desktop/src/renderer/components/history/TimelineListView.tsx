@@ -3,6 +3,7 @@ import * as PhosphorIcons from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import type { ColumnConfig, TimelineEvent, TimelineColumn } from "./timelineTypes";
 import { CATEGORY_META, getStatusClasses } from "./eventTaxonomy";
+import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
 import { relativeWhen, formatDurationMs } from "../../lib/format";
 
 /* ------------------------------------------------------------------ */
@@ -154,6 +155,7 @@ export function TimelineListView({
                   selected
                     ? "border-l-accent bg-white/[0.05]"
                     : "hover:bg-white/[0.03]",
+                  isEventMachineOffline(ev) && "opacity-50",
                 )}
               >
                 {show("graph") ? (
@@ -205,6 +207,7 @@ export function TimelineListView({
                     <span className="max-w-[72px] truncate">{ev.laneName}</span>
                   </span>
                 ) : null}
+                <EventMachineChip event={ev} compact />
 
                 {show("status") ? (
                   <span

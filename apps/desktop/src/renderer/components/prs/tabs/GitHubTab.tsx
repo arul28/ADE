@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import type {
-  CreateLaneFromPrBranchPreflightResult,
+  CreateLaneFromPrBranchResult,
   GitHubPrListItem,
   GitHubPrSnapshot,
   LaneSummary,
@@ -44,18 +44,14 @@ import {
   type GitHubTabWarmCache,
 } from "./githubTabModel";
 import {
-  CreateLaneFromPrBranchDialog,
   canCreateLaneFromPrBranch,
-  createLaneFromPrBranchApi,
-  createLaneFromPrBranchArgs,
-  createLaneFromPrBranchRequestKey,
   createLaneMappedLaneId,
   createLaneMappedLaneName,
   createLaneMappedPrId,
-  formatActionError,
   patchSnapshotWithMappedPr,
   upsertLaneSummary,
 } from "./GitHubTabCreateLaneDialog";
+import { openLaneOnMachinePath, useCreateLaneFromPrBranch } from "./useCreateLaneFromPrBranch";
 import { GitHubTabView } from "./GitHubTabView";
 import { normalizeGitHubTabSort, type GitHubTabSort } from "./prBlockedSort";
 import { useGitHubTabListModel } from "./useGitHubTabListModel";
@@ -63,6 +59,12 @@ import { useGitHubTabSelection } from "./useGitHubTabSelection";
 import { useGitHubTargetHistory } from "./useGitHubTargetHistory";
 import { settingsRouteFor } from "../../settings/settingsManifest";
 import { openLaneInLanesTabPath } from "../../../lib/laneNavigation";
+import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
+import {
+  PrMachineIndexProvider,
+  foreignLinkForItem,
+  usePrMachineIndex,
+} from "../state/prMachines";
 
 export type GitHubTabProps = {
   lanes: LaneSummary[];
@@ -78,6 +80,8 @@ export type GitHubTabProps = {
   onSortChange?: (sort: GitHubTabSort) => void;
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
+  /** False while the PRs tab is hidden; other machines are only read while it shows. */
+  active?: boolean;
 };
 
 export function GitHubTab({
@@ -92,8 +96,10 @@ export function GitHubTab({
   onSortChange,
   onRefreshAll,
   onOpenRebaseTab,
+  active = true,
 }: GitHubTabProps) {
   const navigate = useNavigate();
+  const machineIndex = usePrMachineIndex(active);
   const appStore = useAppStoreApi();
   const {
     prs,
@@ -130,11 +136,6 @@ export function GitHubTab({
   const [selectedItemIdsByFilter, setSelectedItemIdsByFilter] = React.useState<GitHubFilterSelectionMap>(
     () => initialGitHubFilterSelections(initialWarmCacheRef.current),
   );
-  const [createLaneItem, setCreateLaneItem] = React.useState<GitHubPrListItem | null>(null);
-  const [createLanePreflight, setCreateLanePreflight] = React.useState<CreateLaneFromPrBranchPreflightResult | null>(null);
-  const [createLaneLoading, setCreateLaneLoading] = React.useState(false);
-  const [createLaneBusy, setCreateLaneBusy] = React.useState(false);
-  const [createLaneError, setCreateLaneError] = React.useState<string | null>(null);
   const [syncing, setSyncing] = React.useState(false);
   const [loadingOlderHistory, setLoadingOlderHistory] = React.useState(false);
   const [loadingFilter, setLoadingFilter] = React.useState<GitHubFilter | null>(null);
@@ -143,8 +144,6 @@ export function GitHubTab({
   const [externalHistoryLoaded, setExternalHistoryLoaded] = React.useState(
     () => initialWarmCacheRef.current?.externalHistoryLoaded ?? false,
   );
-  const createLanePreflightRequestIdRef = React.useRef(0);
-  const createLanePreflightRequestRef = React.useRef<{ id: number; itemKey: string } | null>(null);
   const lastHandledSelectedRef = React.useRef<{ key: string | null; bucket: GitHubFilter | null } | undefined>(undefined);
   const lastSeenRowByCoordRef = React.useRef<Map<string, GitHubPrListItem>>(new Map());
   const pendingSelectedItemIdRef = React.useRef<string | null>(null);
@@ -512,7 +511,13 @@ export function GitHubTab({
   // local row arrives, treat it as coordinate-backed rather than manufacturing
   // a row-backed PR id that cannot be read from this machine.
   const selectedIsUnmapped = Boolean(selectedItem && !selectedLocalPr);
-  const missingLinkedPrId = selectedItem?.linkedPrId && !selectedLocalPr
+  // The lane lives on another machine. Its ids belong to that machine, so the
+  // tab machine is never asked about them.
+  const selectedForeignLink = React.useMemo(
+    () => (selectedItem ? foreignLinkForItem(machineIndex, selectedItem, Boolean(selectedLocalPr)) : null),
+    [machineIndex, selectedItem, selectedLocalPr],
+  );
+  const missingLinkedPrId = selectedItem?.linkedPrId && !selectedLocalPr && !selectedForeignLink
     ? selectedItem.linkedPrId
     : null;
 
@@ -537,7 +542,21 @@ export function GitHubTab({
     },
     [fallbackProjectId, syntheticUnmappedId, selectedItem, selectedIsUnmapped],
   );
-  const selectedDisplayPr = selectedLinkedPr ?? selectedUnmappedPr;
+  // A PR whose lane lives on another (reachable) machine is shown as the
+  // mapped PR it is — that machine's row, with every call pinned there. An
+  // offline owner falls back to GitHub's view by coordinates.
+  const selectedForeignRuntime = selectedForeignLink && selectedForeignLink.machine.online && selectedForeignLink.machine.pin
+    ? selectedForeignLink
+    : null;
+  const selectedForeignPr = React.useMemo((): PrWithConflicts | null => {
+    if (!selectedForeignRuntime) return null;
+    return {
+      ...selectedForeignRuntime.pr,
+      stack: selectedItem?.stack ?? selectedForeignRuntime.pr.stack ?? null,
+      conflictAnalysis: null,
+    };
+  }, [selectedForeignRuntime, selectedItem?.stack]);
+  const selectedDisplayPr = selectedLinkedPr ?? selectedForeignPr ?? selectedUnmappedPr;
 
   const selectedGithubCoords = React.useMemo(
     (): { repoOwner: string; repoName: string; githubPrNumber: number } | null =>
@@ -675,128 +694,105 @@ export function GitHubTab({
     }
   }, [displayedItems, filter, onSelectPr, selectedItemId, selectedItemIdsByFilter, selectedPrId, selectedPrTarget]);
 
-  const handleOpenCreateLaneFromPrBranch = React.useCallback((item: GitHubPrListItem | null = selectedItem) => {
-    if (!item) return;
-    const requestId = createLanePreflightRequestIdRef.current + 1;
-    const itemKey = createLaneFromPrBranchRequestKey(item);
-    createLanePreflightRequestIdRef.current = requestId;
-    createLanePreflightRequestRef.current = { id: requestId, itemKey };
-    const isCurrentPreflightRequest = () => {
-      const current = createLanePreflightRequestRef.current;
-      return current?.id === requestId && current.itemKey === itemKey;
-    };
-    setCreateLaneItem(item);
-    setCreateLanePreflight(null);
-    setCreateLaneError(null);
-    setCreateLaneLoading(true);
-    void createLaneFromPrBranchApi()
-      .preflightCreateLaneFromPrBranch(createLaneFromPrBranchArgs(item))
-      .then((result) => {
-        if (!isCurrentPreflightRequest()) return;
-        setCreateLanePreflight(result);
-      })
-      .catch((err) => {
-        if (!isCurrentPreflightRequest()) return;
-        setCreateLaneError(formatActionError(err));
-      })
-      .finally(() => {
-        if (!isCurrentPreflightRequest()) return;
-        setCreateLaneLoading(false);
-      });
-  }, [selectedItem]);
-
-  const handleCancelCreateLaneFromPrBranch = React.useCallback(() => {
-    if (createLaneBusy) return;
-    createLanePreflightRequestRef.current = null;
-    setCreateLaneItem(null);
-    setCreateLanePreflight(null);
-    setCreateLaneError(null);
-    setCreateLaneLoading(false);
-  }, [createLaneBusy]);
-
-  const handleConfirmCreateLaneFromPrBranch = React.useCallback(async (laneName: string) => {
-    if (!createLaneItem) return;
-    setCreateLaneBusy(true);
-    setCreateLaneError(null);
-    const createProjectRoot = projectRoot;
-    try {
-      const result = await createLaneFromPrBranchApi()
-        .createLaneFromPrBranch(createLaneFromPrBranchArgs(createLaneItem, laneName));
-      const mappedPrId = createLaneMappedPrId(result);
-      const mappedLaneId = createLaneMappedLaneId(result);
-      if (mappedPrId) {
-        setSnapshot((current) => current
-          ? patchSnapshotWithMappedPr(current, createLaneItem, {
-              mappedPrId,
-              laneId: mappedLaneId,
-              laneName: createLaneMappedLaneName(result),
-            })
-          : current);
-        setSelectedItemId(createLaneItem.id);
-        setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: createLaneItem.id }));
-        onSelectPr(mappedPrId, {
-          ...selectionTargetForItem(createLaneItem),
-          prId: mappedPrId,
-        });
-      }
-      setCreateLaneItem(null);
-      setCreateLanePreflight(null);
-      const createdLaneId = result.lane?.id ?? null;
-      const syncCreatedLane = createdLaneId
-        ? refreshLanes({ includeStatus: false, includeSnapshots: false })
-          .catch(() => {})
-          .then(() => {
-            const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
-            if (createProjectRoot && currentProjectRoot !== createProjectRoot) return;
-            appStore.setState((prev) => ({
-              lanes: upsertLaneSummary(prev.lanes, result.lane),
-              laneSnapshots: prev.laneSnapshots.map((snapshot) =>
-                snapshot.lane.id === result.lane.id ? { ...snapshot, lane: result.lane } : snapshot,
-              ),
-              lanesLoading: false,
-            }));
-            selectLane(result.lane.id);
+  // A lane created on the tab's own machine: map the PR row to it here, then
+  // open it on the Lanes tab.
+  const handleLaneCreatedOnTabMachine = React.useCallback(async (
+    result: CreateLaneFromPrBranchResult,
+    createLaneItem: GitHubPrListItem,
+    createProjectRoot: string | null,
+  ) => {
+    const mappedPrId = createLaneMappedPrId(result);
+    const mappedLaneId = createLaneMappedLaneId(result);
+    if (mappedPrId) {
+      setSnapshot((current) => current
+        ? patchSnapshotWithMappedPr(current, createLaneItem, {
+            mappedPrId,
+            laneId: mappedLaneId,
+            laneName: createLaneMappedLaneName(result),
           })
-        : Promise.resolve();
-      await Promise.all([
-        mappedPrId ? onRefreshAll({ prId: mappedPrId }).catch(() => {}) : onRefreshAll().catch(() => {}),
-        loadSnapshot({
-          force: true,
-          silent: true,
-          ...(externalHistoryLoadedRef.current || filterRef.current !== "open" ? { includeExternalClosed: true } : {}),
-        }).catch(() => null),
-        syncCreatedLane,
-      ]);
-      // Navigate last, after every PRs-side refresh has settled. The PRs tab
-      // rewrites its own route when its selection changes (a replace to
-      // `/prs?...`), so navigating earlier in this flow would be overwritten and
-      // strand the user on the PRs tab. The flow ends on the Lanes tab with the
-      // new lane open, where its new-chat button and git pane are. Skip it when
-      // the active project changed during creation: the lane belongs to the
-      // original project, and its id would resolve to nothing in the new one.
-      if (createdLaneId) {
-        const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
-        if (!createProjectRoot || currentProjectRoot === createProjectRoot) {
-          navigate(openLaneInLanesTabPath(createdLaneId));
-        }
-      }
-    } catch (err) {
-      setCreateLaneError(formatActionError(err));
-    } finally {
-      setCreateLaneBusy(false);
+        : current);
+      setSelectedItemId(createLaneItem.id);
+      setSelectedItemIdsByFilter((prev) => ({ ...prev, [filterRef.current]: createLaneItem.id }));
+      onSelectPr(mappedPrId, {
+        ...selectionTargetForItem(createLaneItem),
+        prId: mappedPrId,
+      });
     }
-  }, [appStore, createLaneItem, loadSnapshot, navigate, onRefreshAll, onSelectPr, projectRoot, refreshLanes, selectLane]);
+    const createdLaneId = result.lane?.id ?? null;
+    const syncCreatedLane = createdLaneId
+      ? refreshLanes({ includeStatus: false, includeSnapshots: false })
+        .catch(() => {})
+        .then(() => {
+          const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
+          if (createProjectRoot && currentProjectRoot !== createProjectRoot) return;
+          appStore.setState((prev) => ({
+            lanes: upsertLaneSummary(prev.lanes, result.lane),
+            laneSnapshots: prev.laneSnapshots.map((snapshot) =>
+              snapshot.lane.id === result.lane.id ? { ...snapshot, lane: result.lane } : snapshot,
+            ),
+            lanesLoading: false,
+          }));
+          selectLane(result.lane.id);
+        })
+      : Promise.resolve();
+    await Promise.all([
+      mappedPrId ? onRefreshAll({ prId: mappedPrId }).catch(() => {}) : onRefreshAll().catch(() => {}),
+      loadSnapshot({
+        force: true,
+        silent: true,
+        ...(externalHistoryLoadedRef.current || filterRef.current !== "open" ? { includeExternalClosed: true } : {}),
+      }).catch(() => null),
+      syncCreatedLane,
+    ]);
+    // Navigate last, after every PRs-side refresh has settled. The PRs tab
+    // rewrites its own route when its selection changes (a replace to
+    // `/prs?...`), so navigating earlier in this flow would be overwritten and
+    // strand the user on the PRs tab. The flow ends on the Lanes tab with the
+    // new lane open, where its new-chat button and git pane are. Skip it when
+    // the active project changed during creation: the lane belongs to the
+    // original project, and its id would resolve to nothing in the new one.
+    if (createdLaneId) {
+      const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
+      if (!createProjectRoot || currentProjectRoot === createProjectRoot) {
+        navigate(openLaneInLanesTabPath(createdLaneId));
+      }
+    }
+  }, [appStore, loadSnapshot, navigate, onRefreshAll, onSelectPr, refreshLanes, selectLane]);
+
+  const { open: handleOpenCreateLaneFromPrBranch, element: createLaneFromPrBranchElement } = useCreateLaneFromPrBranch({
+    machineIndex,
+    onCreatedOnTabMachine: handleLaneCreatedOnTabMachine,
+  });
 
   // The "open as lane" offer surfaced inside PrDetailPane. This used to also
   // carry a lane picker and a Map button; mapping is no longer something the
   // user resolves, so only the lane-creation action remains.
   const unmappedAffordance = React.useMemo((): UnmappedAffordance | null => {
-    if (!selectedItem || selectedItem.linkedPrId) return null;
+    if (!selectedItem) return null;
+    if (selectedForeignLink) {
+      const { lane, pr, machine, chip } = selectedForeignLink;
+      return {
+        canCreateLane: false,
+        onCreateLane: () => {},
+        foreignLane: {
+          laneName: lane?.name ?? pr.headBranch ?? "Lane",
+          laneColor: lane?.color ?? null,
+          machineName: machine.machineName,
+          chip,
+          offlineMessage: selectedForeignLink.offlineMessage,
+          // Lane ids are only unique per machine: the route names the machine.
+          onOpenLane: () => navigate(openLaneOnMachinePath(pr.laneId, machine.machineId)),
+        },
+      };
+    }
+    if (selectedItem.linkedPrId) return null;
+    // A lane for this branch on ANY machine already gives the PR a home.
+    const everyLane = machineIndex.allLanes.length > 0 ? machineIndex.allLanes : lanes;
     return {
-      canCreateLane: canCreateLaneFromPrBranch(selectedItem, lanes),
-      onCreateLane: () => handleOpenCreateLaneFromPrBranch(selectedItem),
+      canCreateLane: canCreateLaneFromPrBranch(selectedItem, everyLane),
+      onCreateLane: () => void handleOpenCreateLaneFromPrBranch(selectedItem),
     };
-  }, [handleOpenCreateLaneFromPrBranch, lanes, selectedItem]);
+  }, [handleOpenCreateLaneFromPrBranch, lanes, machineIndex.allLanes, navigate, selectedForeignLink, selectedItem]);
 
   // A stable callback, so the memoized rows do not re-render on each render.
   const handleRowActionDone = React.useCallback((prId: string) => {
@@ -804,7 +800,46 @@ export function GitHubTab({
     void handleSync(parseSyntheticGithubPrId(prId) ? {} : { prId });
   }, [handleSync]);
 
-  const detailPaneProps = selectedItem && selectedDisplayPr ? {
+  const foreignPaneRuntime = React.useMemo(() => {
+    const pin = selectedForeignRuntime?.machine.pin;
+    if (!selectedForeignRuntime || !pin) return null;
+    const { machine, pr } = selectedForeignRuntime;
+    return {
+      pin,
+      machineName: machine.machineName,
+      onOpenLane: () => navigate(openLaneOnMachinePath(pr.laneId, machine.machineId)),
+    };
+  }, [navigate, selectedForeignRuntime]);
+
+  const detailPaneProps = selectedItem && selectedDisplayPr && foreignPaneRuntime && selectedForeignRuntime ? {
+    pr: selectedDisplayPr,
+    // The owner machine answers these; the pane reads them with its pin.
+    status: null,
+    checks: [],
+    reviews: [],
+    comments: [],
+    snapshotHydration: null,
+    snapshotHydrationOwnedByContext: false,
+    liveDetailReady: false,
+    detailBusy: false,
+    lanes: [...(machineIndex.lanesByMachineId.get(selectedForeignRuntime.machine.machineId) ?? [])],
+    mergeMethod,
+    onRefresh: async (args?: { prId?: string; prIds?: string[] }) => {
+      // The owner's PR row refreshes on the owner; the union carries it back.
+      void args;
+      requestCrossMachineLanesForMachine(selectedForeignRuntime.machine.machineId);
+    },
+    onNavigate: navigate,
+    onOpenRebaseTab,
+    initialDetailTab: selectedDetailTab,
+    onDetailTabChange,
+    unmapped: false,
+    provisional: false,
+    githubCoords: null,
+    unmappedAffordance: null,
+    runtime: foreignPaneRuntime,
+    laneMachineChip: selectedForeignRuntime.chip,
+  } : selectedItem && selectedDisplayPr ? {
     pr: selectedDisplayPr,
     status: selectedLinkedPr ? detailStatus : null,
     checks: selectedLinkedPr ? detailChecks : [],
@@ -832,10 +867,16 @@ export function GitHubTab({
     provisional: Boolean(selectedPrTarget && !selectedTargetResolved),
     githubCoords: selectedIsUnmapped ? selectedGithubCoords : null,
     unmappedAffordance: selectedIsUnmapped && selectedTargetResolved ? unmappedAffordance : null,
+    laneMachineChip: selectedLinkedPr ? machineIndex.boundChip : null,
+    // The lane's owner is offline: a merge from here would skip its lane
+    // bookkeeping, so merging waits for that machine.
+    mergeBlockedReason: selectedForeignLink && !selectedForeignLink.machine.online
+      ? selectedForeignLink.offlineMessage
+      : null,
   } : null;
 
   return (
-    <>
+    <PrMachineIndexProvider value={machineIndex}>
       <GitHubTabView
         chrome={{
           searchQuery,
@@ -883,17 +924,7 @@ export function GitHubTab({
           onFilterChange: handleFilterChange,
         }}
       />
-      {createLaneItem ? (
-        <CreateLaneFromPrBranchDialog
-          item={createLaneItem}
-          preflight={createLanePreflight?.preflight ?? null}
-          loading={createLaneLoading}
-          busy={createLaneBusy}
-          error={createLaneError}
-          onCancel={handleCancelCreateLaneFromPrBranch}
-          onConfirm={handleConfirmCreateLaneFromPrBranch}
-        />
-      ) : null}
-    </>
+      {createLaneFromPrBranchElement}
+    </PrMachineIndexProvider>
   );
 }

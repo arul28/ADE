@@ -16,9 +16,22 @@ import type {
   ApiCredentialSummary,
 } from "../../../../../shared/types/apiCredentials";
 import { providerActionMessage } from "../providerErrorMessage";
+import type { OpenProjectBinding } from "../../../../../shared/types";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 
 function bridge() {
   return window.ade?.apiCredentials ?? null;
+}
+
+/**
+ * The pin for the key store. This computer's keys are read through desktop IPC
+ * (null); any other machine's through its own runtime. The
+ * two are different stores, so This computer must not switch paths just because
+ * the page happens to carry a local pin.
+ */
+export function useApiCredentialsPin(): OpenProjectBinding | null {
+  const { pin, isThisMachine } = useSettingsMachineScope();
+  return isThisMachine ? null : pin;
 }
 
 export type ApiCredentialsState = {
@@ -34,6 +47,7 @@ export type ApiCredentialsState = {
 };
 
 export function useApiCredentials(providers: readonly string[]): ApiCredentialsState {
+  const pin = useApiCredentialsPin();
   const [credentials, setCredentials] = useState<ApiCredentialSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [bridgeMissing, setBridgeMissing] = useState(false);
@@ -60,7 +74,7 @@ export function useApiCredentials(providers: readonly string[]): ApiCredentialsS
       return;
     }
     try {
-      const rows = await api.list({});
+      const rows = await api.list({}, pin);
       if (!aliveRef.current) return;
       setCredentials(rows.filter((row) => wanted.has(row.provider)));
       setError(null);
@@ -70,7 +84,7 @@ export function useApiCredentials(providers: readonly string[]): ApiCredentialsS
     } finally {
       if (aliveRef.current) setLoading(false);
     }
-  }, [wanted]);
+  }, [pin, wanted]);
 
   useEffect(() => {
     setLoading(true);
@@ -80,16 +94,16 @@ export function useApiCredentials(providers: readonly string[]): ApiCredentialsS
   const store = useCallback(async (args: ApiCredentialStoreArgs) => {
     const api = bridge();
     if (!api) throw new Error("This window cannot save API keys.");
-    await api.store(args);
+    await api.store(args, pin);
     await reload();
-  }, [reload]);
+  }, [pin, reload]);
 
   const remove = useCallback(async (provider: string, credentialId: string) => {
     const api = bridge();
     if (!api) throw new Error("This window cannot remove API keys.");
-    await api.remove({ provider, credentialId });
+    await api.remove({ provider, credentialId }, pin);
     await reload();
-  }, [reload]);
+  }, [pin, reload]);
 
   return { credentials, loading, bridgeMissing, error, reload, store, remove };
 }

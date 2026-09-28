@@ -496,6 +496,7 @@ describe("ProviderAccountsPanel", () => {
           args: ["/login"],
           env: { CLAUDE_CONFIG_DIR: "/home/claude-new" },
         }),
+        null,
       );
     });
 

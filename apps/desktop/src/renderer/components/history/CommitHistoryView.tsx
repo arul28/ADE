@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowClockwise, GitBranch, Warning } from "@phosphor-icons/react";
-import type { GitBranchSummary, GitCommitSummary } from "../../../shared/types";
+import type { GitBranchSummary, GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { EmptyState } from "../ui/EmptyState";
 import { relativeWhen } from "../../lib/format";
@@ -28,6 +28,9 @@ function formatTimelineError(err: unknown): string {
 
 type CommitHistoryViewProps = {
   laneId: string | null;
+  /** The lane's machine when it is not this tab's (null: the tab's machine). */
+  pin?: OpenProjectBinding | null;
+  remoteMachineName?: string | null;
   laneName: string | null;
   laneHasWorktree?: boolean;
   selectedSha: string | null;
@@ -38,6 +41,8 @@ type CommitHistoryViewProps = {
 
 export function CommitHistoryView({
   laneId,
+  pin = null,
+  remoteMachineName = null,
   laneName,
   laneHasWorktree = false,
   selectedSha,
@@ -64,8 +69,8 @@ export function CommitHistoryView({
     setError(null);
     try {
       const [rows, branchRows] = await Promise.all([
-        window.ade.git.listRecentCommits({ laneId, limit }),
-        window.ade.git.listBranches({ laneId }).catch(() => [] as GitBranchSummary[]),
+        window.ade.git.listRecentCommits({ laneId, limit }, pin),
+        window.ade.git.listBranches({ laneId }, pin).catch(() => [] as GitBranchSummary[]),
       ]);
       if (loadRequestSeq.current !== requestId) return;
       setCommits(rows);
@@ -80,7 +85,7 @@ export function CommitHistoryView({
         setLoading(false);
       }
     }
-  }, [laneId, limit]);
+  }, [laneId, limit, pin]);
 
   useEffect(() => {
     loadRequestSeq.current += 1;
@@ -328,6 +333,7 @@ export function CommitHistoryView({
                   commit={commit}
                   isHead={isHead}
                   hasWorktree={commitGitActionsEnabled}
+                  remoteMachineName={remoteMachineName}
                   onNotice={(m) => {
                     setNotice(m);
                     setActionError(null);

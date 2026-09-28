@@ -637,7 +637,66 @@ const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
  * rather than as an answer — and "where is this actually running" is a question
  * worth answering while you are typing into it.
  */
-function ComposerMachineChip({ machineName, cloud = false }: { machineName: string; cloud?: boolean }) {
+/**
+ * Lets a host surface turn the read-only machine chip into its own control.
+ *
+ * The CTO page uses it: the CTO lives on one home machine, and the chip that
+ * already says where this chat runs is the natural place to change that.
+ */
+export type ComposerMachineChipAction = {
+  onClick: () => void;
+  /** Full tooltip text, e.g. "Runs on Mac Studio. Click to change." */
+  tooltip: string;
+  /** The machine is unreachable; the chip reads dimmed with an offline dot. */
+  offline?: boolean;
+  /** One quiet line beside the chip (an update hint, for one). */
+  note?: string | null;
+};
+
+function ComposerMachineChip({
+  machineName,
+  cloud = false,
+  action = null,
+}: {
+  machineName: string;
+  cloud?: boolean;
+  action?: ComposerMachineChipAction | null;
+}) {
+  if (action) {
+    return (
+      <>
+        <SmartTooltip forceEnabled content={{ label: machineName, description: action.tooltip }}>
+          <button
+            type="button"
+            data-chat-composer-machine-chip="action"
+            aria-label={action.tooltip}
+            onClick={action.onClick}
+            className={cn(
+              "inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1 transition-colors",
+              "font-sans text-[9px] font-medium text-muted-fg/60 hover:bg-white/[0.05] hover:text-fg/85",
+              action.offline && "opacity-60",
+            )}
+            style={{ whiteSpace: "nowrap" }}
+          >
+            <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+            <span className="max-w-24 truncate">{machineName}</span>
+            {action.offline ? (
+              <span aria-hidden className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-fg/40" />
+            ) : null}
+          </button>
+        </SmartTooltip>
+        {action.note ? (
+          <span
+            data-chat-composer-machine-note
+            title={action.note}
+            className="min-w-0 max-w-[260px] truncate font-sans text-[9px] text-muted-fg/50"
+          >
+            {action.note}
+          </span>
+        ) : null}
+      </>
+    );
+  }
   return (
     <SmartTooltip
       forceEnabled
@@ -1663,6 +1722,7 @@ export function AgentChatComposer({
   onPromptHistoryNavigate,
   attachments,
   composerMachineBinding = null,
+  machineChipAction = null,
   cursorRuntime = null,
   modelRuntimePin = null,
   attachmentPersistenceUnavailableReason = null,
@@ -1837,6 +1897,8 @@ export function AgentChatComposer({
   attachments: AgentChatFileRef[];
   /** Effective runtime owning this composer and its prompt stashes. */
   composerMachineBinding?: OpenProjectBinding | null;
+  /** Makes the machine chip a host-owned control (the CTO's home machine). */
+  machineChipAction?: ComposerMachineChipAction | null;
   /** Cloud chats run on Cursor Cloud, not on this computer or a paired machine. */
   cursorRuntime?: "local" | "cloud" | null;
   /**
@@ -6214,6 +6276,7 @@ export function AgentChatComposer({
               <ComposerMachineChip
                 machineName={composerMachineName}
                 cloud={cursorRuntime === "cloud"}
+                action={cursorRuntime === "cloud" ? null : machineChipAction}
               />
             ) : null}
           </div>

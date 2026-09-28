@@ -193,8 +193,21 @@ export function buildCommitContextActions(args: {
   hasWorktree: boolean;
   /** When false, commit is visible via shared object db but not on this lane's branch history. */
   commitOnLaneHistory?: boolean;
+  /**
+   * Set when the lane lives on another machine. Its commits are read from
+   * there, but every action here runs on this machine's runtime, so only the
+   * copy-from-the-row actions stay enabled.
+   */
+  remoteMachineName?: string | null;
 }): HistoryGitAction[] {
-  const { commit, isHead, hasWorktree, commitOnLaneHistory = true } = args;
+  const { commit, isHead, hasWorktree, commitOnLaneHistory = true, remoteMachineName = null } = args;
+  if (remoteMachineName) {
+    const reason = `This lane is on ${remoteMachineName}; open it in Lanes to act on it`;
+    return buildCommitContextActions({ commit, isHead, hasWorktree: false }).map((action) =>
+      action.id === "copy_sha" || action.id === "copy_subject"
+        ? action
+        : { ...action, disabled: true, disabledReason: reason });
+  }
   const baseDisabled = !hasWorktree;
   const baseReason = baseDisabled ? "Lane worktree is missing" : undefined;
   const laneHistoryDisabled = hasWorktree && !commitOnLaneHistory;

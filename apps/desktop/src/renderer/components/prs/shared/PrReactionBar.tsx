@@ -1,4 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 
 import type { PrReactionContent, PrReviewThreadReaction } from "../../../../shared/types";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
@@ -47,6 +49,7 @@ export const PrReactionBar = memo(function PrReactionBar({
   viewerLogin: string | null;
   onError?: (error: unknown) => void;
 }) {
+  const onPin = pinArg(usePrRuntimePin());
   const canReact = Boolean(subjectId && viewerLogin && window.ade?.prs?.reactToComment);
   const subjectKey = `${prId}:${subjectId ?? ""}`;
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -80,7 +83,7 @@ export const PrReactionBar = memo(function PrReactionBar({
       { id: optimisticId, content, user: viewerLogin },
     ]);
     try {
-      await window.ade.prs.reactToComment({ prId, commentId: subjectId, content });
+      await window.ade.prs.reactToComment({ prId, commentId: subjectId, content }, ...onPin);
     } catch (error) {
       setLocalReactions((current) => current.filter((reaction) => reaction.id !== optimisticId));
       onError?.(error);

@@ -12,6 +12,8 @@ import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
+import { MachineChip } from "../../shared/MachineChip";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
   LANE_SIDEBAR_INDENT_PX,
   laneAgentToolType,
@@ -46,6 +48,22 @@ export type LaneSidebarRowProps = {
   parentHint?: string | null;
   /** Why the lane needs the user (PR failing, rebase broke…), or null. */
   needsYouReason?: string | null;
+  /**
+   * The machine chip, shown when the project has lanes on more than one
+   * machine. Null keeps the single-machine row unchanged.
+   */
+  machineChip?: MachineChipModel | null;
+  /**
+   * Set when the lane's machine cannot be reached ("<Machine> is offline").
+   * The row is dimmed, says why on hover, and offers no menu or drag.
+   */
+  disabledReason?: string | null;
+  /**
+   * The lane lives on a machine other than the tab's. Its `lane.id` is then a
+   * row key, not a lane id, so nothing here may treat it as one outside the
+   * page's own callbacks.
+   */
+  foreign?: boolean;
   onSelect: (laneId: string, event: React.MouseEvent) => void;
   onContextMenu: (laneId: string, event: React.MouseEvent) => void;
   onOpenPr: (pr: LaneTabPrTag) => void;
@@ -197,12 +215,16 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     creating,
     parentHint = null,
     needsYouReason = null,
+    machineChip = null,
+    disabledReason = null,
+    foreign = false,
     onSelect,
     onContextMenu,
     onOpenPr,
     onOpenAgent,
   } = props;
   const deleting = deleteStatusLabel != null;
+  const unreachable = disabledReason != null;
   const branch = laneBranchLabel(lane.branchRef);
   const lastActivityAt = laneLastActivityAt(lane, agents);
   const devicesOpen = lane.devicesOpen ?? [];
@@ -213,15 +235,19 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     <div
       role="option"
       aria-selected={selected}
-      aria-disabled={deleting || undefined}
+      aria-disabled={deleting || unreachable || undefined}
       data-lane-id={lane.id}
+      data-machine-id={machineChip?.machineId}
+      title={disabledReason ?? undefined}
       data-testid="lane-sidebar-row"
       data-tour={selected && lane.laneType !== "primary" && !deleting ? "lanes.laneTab" : undefined}
       tabIndex={-1}
       // Dragging a row out of ADE drops an "Open in ADE" link into chat apps.
-      draggable={!deleting}
+      // A foreign row's id is a row key; an ade:// link built from it would
+      // name no lane, so those rows are not draggable.
+      draggable={!deleting && !foreign}
       onDragStart={(event) => {
-        if (deleting) return;
+        if (deleting || foreign) return;
         const url = `ade://lane/${encodeURIComponent(lane.id)}`;
         const title = (lane.name || "ADE lane")
           .replace(/&/g, "&amp;")
@@ -243,6 +269,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
             ? "bg-fg/[0.05] ring-1 ring-inset ring-accent/35"
             : "hover:bg-fg/[0.045]",
         deleting && "cursor-not-allowed opacity-55",
+        !deleting && unreachable && "opacity-45",
         pulsing && "ade-lane-row-pulse",
       )}
       style={{
@@ -255,12 +282,12 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        if (deleting) return;
+        if (deleting || unreachable) return;
         onContextMenu(lane.id, event);
       }}
     >
       <IndentGuides indentLevel={indentLevel} />
-      <LaneMacDesktopPeek laneId={lane.id} />
+      {foreign ? null : <LaneMacDesktopPeek laneId={lane.id} />}
 
       <div className="flex h-4 min-w-0 items-center gap-1.5">
         <span
@@ -331,6 +358,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               </span>
             ) : null}
             {prs && prs.length > 0 ? <LaneSidebarPrChip prs={prs} onOpenPr={onOpenPr} /> : null}
+            {machineChip ? <MachineChip machine={machineChip} subject="This lane" /> : null}
           </>
         )}
       </div>

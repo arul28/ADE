@@ -42,6 +42,15 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 
 - `apps/desktop/src/shared/types/chat.ts` — `AgentChatIdentityKey`, now just the literal `"cto"`. The old `agent:<id>` worker identity keys are gone. It also owns `CTO_LIVE_REDIRECT_PROVIDERS` + `providerSupportsLiveRedirect()`, the CTO's provider-eligibility contract.
 - `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface. `createCtoOperatorTools()` is the single factory behind the tools a running CTO session can actually call (see [Operator tools on a live session](#operator-tools-on-a-live-session)). It includes the memory tools `saveMemory`, `searchMemory`, `readMemory`, and `readDiscoveries`, the pack loader `loadCtoTools`, the session-lifecycle tools described in [Session lifecycle tools](#session-lifecycle-tools), and the git tools whose mutating half refuses to default a lane (`resolveReadLaneId` vs `requireMutationLaneId`). It also owns `CtoOperatorTool` / `CtoOperatorToolMap` (a `Tool` plus its `pack` and derived `alwaysLoad`), `applyCtoToolPackVisibility()`, the `confirmDestructive` gate behind the optional `requestApproval` dep, and `redactConfigValues` — the redaction the `getProjectConfig` tool applies.
+- `apps/desktop/src/main/services/ai/tools/ctoCrossMachine.ts` and
+  `ctoCrossMachineTools.ts` — the CTO tool contract and implementation for
+  machine discovery, action discovery, and policy-checked action execution.
+- `apps/ade-cli/src/services/account/ctoCrossMachineBridge.ts` — the runtime
+  bridge that pools paired machine connections under the separate
+  `ade-cto-remote` caller identity.
+- `apps/desktop/src/renderer/components/cto/ctoHomeMachine.ts` and
+  `useCtoHome.tsx` — the selected CTO home machine and the account-setting
+  fallback used to persist it.
 - `apps/desktop/src/main/services/ai/tools/ctoToolPacks.ts` — the closed list of tool packs and nothing else: `CTO_TOOL_PACK_NAMES`, `CtoToolPack`, `CTO_TOOL_PACK_SCOPES` (one line per pack, reused verbatim by the capability manifest), `isCtoToolPack()`. It has **zero imports** on purpose, so the prompt builder can read pack names without dragging zod, the model registry, and the service graph in behind them — the same split as `domains.ts` versus the action registry.
 - `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind (`listIdentitySessions` / `ensureIdentitySession`), the memory flush hooks, the reconstruction-context injection, `refreshCtoLiveStateForTurn`, `seedCtoIntroTurn` (the opening turn), `ensureCtoMemoryGardenerJob` (the nightly gardening job), `resolveCtoExecutionLane` (where CTO-launched work runs), `buildCtoOperatorToolDeps` / `createCtoRuntimeToolMap` / `createCtoAdvertisedToolMap` plus the per-provider transports that register them, the per-session loaded-pack set `managed.ctoToolPacks`, and the canonical `getCtoAttention` probe (all detailed below).
 - `apps/desktop/src/main/services/chat/ctoTurnContext.ts` — the pure pieces of a CTO turn, out of `agentChatService` so they are testable without standing up the provider graph: `truncateTailToLineBoundary()` (tail-truncation that never keeps a partial line), `shouldInjectLaneMemoryContext()`, `readChildPullRequestNumber()`, and `formatCtoChildReportLine()`.
@@ -386,6 +395,22 @@ Two invariants keep this from breaking quietly:
   drops every lease in the map, so every teardown path releases the CTO one too.
 
 ### Where CTO-launched work runs
+
+The CTO also has a home machine, stored in account settings for this repository.
+Its machine chip opens the home-machine chooser, and all CTO calls stay pinned
+to that machine. When the runtime there predates cross-machine tools, the page
+shows an update hint. Settings exposes the user's cross-machine access switch;
+only the desktop user client can change it, and the phone sync command removes
+that field from incoming identity patches.
+
+The runtime bridge in `apps/ade-cli/src/services/account/ctoCrossMachineBridge.ts`
+reuses the paired-runtime connector with the distinct `ade-cto-remote` caller
+identity. It pools one connection per target, confirms mutating actions, refuses
+secret-bearing results on both the caller and target dispatch paths, and closes
+idle connections only when no action is in flight. The CTO's `listMachines`,
+`listMachineActions`, and `runMachineAction` tools can inspect its home machine
+or another account machine. The target runtime applies its own action policy;
+unknown actions are not forwarded around that gate.
 
 The CTO session is pinned to the project's **primary lane**, so a tool that
 silently defaults its lane would act on the primary worktree. Nothing the CTO
