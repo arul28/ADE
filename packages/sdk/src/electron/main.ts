@@ -28,12 +28,8 @@
 
 import { APPROVAL_DECISIONS, type ApprovalDecision } from "../approvals.js";
 import { AdeError, errorMessage } from "../errors.js";
-import type {
-  AdeChatClient,
-  AdeClientEvent,
-  ThreadOpenOptions,
-  ThreadResumeOptions,
-} from "../client.js";
+import type { AdeChatClient, ThreadOpenOptions, ThreadResumeOptions } from "../client.js";
+import { ADE_CLIENT_EVENTS } from "../clientEvents.js";
 import type { AdeThread, HistoryPageOptions, ThreadUpdate, ThreadUpdateOptions } from "../thread.js";
 import type { AgentChatEventEnvelope, AgentChatFileRef, ThreadSummary, Unsubscribe } from "../types.js";
 import {
@@ -126,13 +122,29 @@ export const ADE_IPC_RENDERER_OPEN_FIELDS = ["provider", "model", "title", "reas
  *
  * The function form is for a host that replaces its client — one per signed-in
  * account, disposed on sign-out. The bridge re-reads it on every call, and on
- * the first call after it changed it re-opens each renderer's threads on the
- * new client and moves their subscriptions across under the same ids, so the
- * renderer notices nothing. Events a replaced client would have pushed between
- * the swap and that first call are not replayed. A client with `autoRestart`
- * never changes identity and needs none of this.
+ * the first call after it changed it moves each renderer across before that
+ * call runs (a call that overlaps the move waits for it):
+ *   - every key the renderer had open is checked again against
+ *     `allowThreadKey` and reopened on the new client with options from the
+ *     `openOptions` hook run AGAIN for the new client (or, without a hook, the
+ *     renderer's own options filtered again) — never with options resolved for
+ *     the old client. A key refused or failing there is dropped, with one log
+ *     line, and its subscriptions end;
+ *   - every subscription — thread, client-event and provider-status — is
+ *     re-attached under the SAME id, so the renderer's handles keep working.
+ * Events a replaced client would have pushed between the swap and that first
+ * call are not replayed. A client with `autoRestart` never changes identity and
+ * needs none of this.
  */
 export type AdeChatClientSource = AdeChatClient | (() => AdeChatClient);
+
+/** One subscription a renderer holds, by the id it holds it under. */
+type SubscriptionEntry = {
+  kind: "thread" | "client" | "providers";
+  /** The thread key, for `kind: "thread"`. */
+  key?: string;
+  stop: Unsubscribe;
+};
 
 /** Per-renderer bookkeeping. One entry per live `webContents`. */
 type RendererEntry = {
@@ -141,16 +153,18 @@ type RendererEntry = {
   client: AdeChatClient | null;
   /** Threads this renderer opened, by key. */
   threads: Map<string, AdeThread>;
-  /** The options each key was opened with, so a client swap can reopen it. */
-  openedWith: Map<string, ThreadResumeOptions | undefined>;
-  /** Thread-event subscriptions by id → key, so a client swap can move them. */
-  threadSubscriptions: Map<string, string>;
-  /** Client-event subscription ids, moved across a client swap likewise. */
-  clientSubscriptions: Set<string>;
+  /**
+   * What the renderer SENT for each key it opened — raw, before the hook or
+   * the filter. A client swap resolves the options again from this, against
+   * the new client, rather than replaying options resolved for the old one.
+   */
+  rendererOptions: Map<string, unknown>;
   /** In-flight opens, so two overlapping opens of one key share a subscription. */
   opening: Map<string, Promise<AdeThread>>;
-  /** Live subscriptions, by the id the renderer holds. */
-  subscriptions: Map<string, Unsubscribe>;
+  /** Every live subscription, by the id the renderer holds. */
+  subscriptions: Map<string, SubscriptionEntry>;
+  /** The move onto a swapped client, while it runs. Every call waits for it. */
+  syncing: Promise<void> | null;
   /** Detaches the `destroyed` / navigation listeners. */
   detach: () => void;
   disposed: boolean;
@@ -276,6 +290,7 @@ export function registerAdeIpc(
   };
   const prefix = opts.channelPrefix?.trim() || ADE_DEFAULT_CHANNEL_PREFIX;
   const log = opts.logger ?? (() => {});
+  const { allowThreadKey } = opts;
   const renderers = new Map<number, RendererEntry>();
   let disposed = false;
 
@@ -295,19 +310,10 @@ export function registerAdeIpc(
     if (!entry || entry.disposed) return;
     entry.disposed = true;
     renderers.delete(id);
-    for (const unsubscribe of entry.subscriptions.values()) {
-      try {
-        unsubscribe();
-      } catch (error) {
-        log(`[ade-electron] unsubscribe failed: ${errorMessage(error)}`);
-      }
-    }
-    entry.subscriptions.clear();
+    for (const subscriptionId of [...entry.subscriptions.keys()]) releaseSubscription(entry, subscriptionId);
     entry.threads.clear();
     entry.opening.clear();
-    entry.openedWith.clear();
-    entry.threadSubscriptions.clear();
-    entry.clientSubscriptions.clear();
+    entry.rendererOptions.clear();
     entry.detach();
     log(`[ade-electron] released renderer ${id}`);
   }
@@ -332,11 +338,10 @@ export function registerAdeIpc(
       webContents,
       client: null,
       threads: new Map(),
-      openedWith: new Map(),
-      threadSubscriptions: new Map(),
-      clientSubscriptions: new Set(),
+      rendererOptions: new Map(),
       opening: new Map(),
       subscriptions: new Map(),
+      syncing: null,
       disposed: false,
       detach: () => {
         removeWebContentsListener(webContents, "destroyed", onDestroyed);
@@ -400,9 +405,16 @@ export function registerAdeIpc(
     return Object.keys(filtered).length > 0 ? (filtered as ThreadResumeOptions) : undefined;
   }
 
+  /**
+   * Open a key for a renderer on `client`, sharing an open already in flight.
+   * `raw` is what the renderer sent, kept so a client swap can resolve the
+   * options again.
+   */
   async function openThread(
     entry: RendererEntry,
+    client: AdeChatClient,
     key: string,
+    raw: unknown,
     options: ThreadResumeOptions | undefined,
   ): Promise<AdeThread> {
     const existing = entry.threads.get(key);
@@ -410,17 +422,14 @@ export function registerAdeIpc(
     const pending = entry.opening.get(key);
     if (pending) return pending;
 
-    const client = currentClient();
     // The SDK already collapses concurrent opens of one key into one session.
     // This collapses them again on the bridge so the main side never attaches
     // two listeners to that one session and broadcasts every envelope twice.
     const started = (async () => {
-      const thread = await (options
-        ? client.threads.open(key, options)
-        : client.threads.open(key));
+      const thread = await (options ? client.threads.open(key, options) : client.threads.open(key));
       if (!entry.disposed) {
         entry.threads.set(key, thread);
-        entry.openedWith.set(key, options);
+        entry.rendererOptions.set(key, raw);
       }
       return thread;
     })().finally(() => {
@@ -428,6 +437,19 @@ export function registerAdeIpc(
     });
     entry.opening.set(key, started);
     return started;
+  }
+
+  /** End one subscription and forget it. Safe on an id already released. */
+  function releaseSubscription(entry: RendererEntry, subscriptionId: string): void {
+    const subscription = entry.subscriptions.get(subscriptionId);
+    if (!subscription) return;
+    entry.subscriptions.delete(subscriptionId);
+    try {
+      subscription.stop();
+    } catch (error) {
+      // A client that was already disposed took its listeners with it.
+      log(`[ade-electron] unsubscribe ${subscriptionId} failed: ${errorMessage(error)}`);
+    }
   }
 
   /** Attach one main-side listener for a key's envelopes under a given id. */
@@ -441,86 +463,104 @@ export function registerAdeIpc(
     // `on("event" | "status" | "usage")` listeners onto this one and applies
     // the channel split locally, so twenty React components still cost the
     // main process one subscription.
-    const unsubscribe = thread.on("event", (envelope: AgentChatEventEnvelope) => {
+    const stop = thread.on("event", (envelope: AgentChatEventEnvelope) => {
       push(entry.webContents, { kind: "thread", subscriptionId, key, envelope });
     });
-    entry.subscriptions.set(subscriptionId, unsubscribe);
-    entry.threadSubscriptions.set(subscriptionId, key);
+    entry.subscriptions.set(subscriptionId, { kind: "thread", key, stop });
   }
 
   function attachClientSubscription(entry: RendererEntry, client: AdeChatClient, subscriptionId: string): void {
-    const events: AdeClientEvent[] = ["exit", "transport", "restart"];
-    const stops = events.map((event) =>
-      client.on(event, (payload: unknown) => {
-        push(entry.webContents, { kind: "client", subscriptionId, event, payload });
+    const stops = ADE_CLIENT_EVENTS.map((event) =>
+      client.on(event, (payload) => {
+        push(entry.webContents, { kind: "client", subscriptionId, event, payload } as AdeIpcEventPayload);
       }),
     );
-    entry.subscriptions.set(subscriptionId, () => {
-      for (const stop of stops) stop();
+    entry.subscriptions.set(subscriptionId, {
+      kind: "client",
+      stop: () => {
+        for (const stop of stops) stop();
+      },
     });
-    entry.clientSubscriptions.add(subscriptionId);
+  }
+
+  function attachProvidersSubscription(entry: RendererEntry, client: AdeChatClient, subscriptionId: string): void {
+    const stop = client.providers.onChange((statuses) => {
+      push(entry.webContents, { kind: "providers", subscriptionId, statuses });
+    });
+    entry.subscriptions.set(subscriptionId, { kind: "providers", stop });
   }
 
   /**
-   * Move a renderer onto the host's current client, when it changed.
+   * Bring a renderer onto the host's current client before a call runs.
    *
-   * Every thread the renderer had open is reopened on the new client with the
-   * options it was opened with, and every subscription is re-attached under the
-   * SAME id, so the renderer's handles keep working. A key the new client
-   * cannot open is dropped and its subscription released; the renderer's next
-   * call on it gets `thread_not_found`.
+   * A call that arrives while a move is in progress waits for it, so it never
+   * sees the half-moved state (no open threads yet) and fails with a spurious
+   * `thread_not_found`.
    */
   async function syncClient(entry: RendererEntry): Promise<void> {
+    while (entry.syncing) await entry.syncing;
     const client = currentClient();
     if (entry.client === client) return;
+    const move = moveToClient(entry, client).finally(() => {
+      entry.syncing = null;
+    });
+    entry.syncing = move;
+    await move;
+  }
+
+  /**
+   * Move a renderer onto a swapped client. See {@link AdeChatClientSource}.
+   *
+   * Each key is authorized and its options resolved AGAIN, for the new client:
+   * the old client's resolved options may carry the previous account's MCP
+   * credentials, and the host's gate may no longer admit the key at all.
+   */
+  async function moveToClient(entry: RendererEntry, client: AdeChatClient): Promise<void> {
     const previous = entry.client;
     entry.client = client;
     if (!previous) return;
     log(`[ade-electron] the host swapped its ADE client; moving renderer ${entry.webContents.id} across`);
-    const threadSubscriptions = [...entry.threadSubscriptions];
-    const clientSubscriptions = [...entry.clientSubscriptions];
-    for (const unsubscribe of entry.subscriptions.values()) {
-      try {
-        unsubscribe();
-      } catch {
-        // The old client may already be disposed; its listeners died with it.
-      }
-    }
-    entry.subscriptions.clear();
-    entry.threadSubscriptions.clear();
-    entry.clientSubscriptions.clear();
-    const openedWith = new Map(entry.openedWith);
+    const subscriptions = [...entry.subscriptions];
+    for (const [subscriptionId] of subscriptions) releaseSubscription(entry, subscriptionId);
+    const opened = [...entry.rendererOptions];
     entry.threads.clear();
-    entry.openedWith.clear();
-    for (const [key, options] of openedWith) {
+    entry.rendererOptions.clear();
+    for (const [key, raw] of opened) {
+      if (allowThreadKey && !allowThreadKey(key)) {
+        log(`[ade-electron] dropped "${key}" on the new client: allowThreadKey refused it; its subscriptions end`);
+        continue;
+      }
       try {
-        await openThread(entry, key, options);
+        await openThread(entry, client, key, raw, await hostOpenOptions(key, raw));
       } catch (error) {
-        log(`[ade-electron] could not reopen "${key}" on the new client: ${errorMessage(error)}`);
+        log(`[ade-electron] dropped "${key}" on the new client: ${errorMessage(error)}; its subscriptions end`);
       }
     }
-    for (const [subscriptionId, key] of threadSubscriptions) {
-      const thread = entry.threads.get(key);
-      if (thread) attachThreadSubscription(entry, thread, key, subscriptionId);
+    for (const [subscriptionId, subscription] of subscriptions) {
+      try {
+        if (subscription.kind === "client") {
+          attachClientSubscription(entry, client, subscriptionId);
+        } else if (subscription.kind === "providers") {
+          attachProvidersSubscription(entry, client, subscriptionId);
+        } else {
+          const thread = subscription.key !== undefined ? entry.threads.get(subscription.key) : undefined;
+          if (thread && subscription.key !== undefined) {
+            attachThreadSubscription(entry, thread, subscription.key, subscriptionId);
+          }
+        }
+      } catch (error) {
+        log(`[ade-electron] could not move subscription ${subscriptionId} to the new client: ${errorMessage(error)}`);
+      }
     }
-    for (const subscriptionId of clientSubscriptions) attachClientSubscription(entry, client, subscriptionId);
   }
 
   /** Forget a key on every renderer after the thread itself is gone. */
   function forgetKeyEverywhere(key: string): void {
     for (const entry of renderers.values()) {
       entry.threads.delete(key);
-      entry.openedWith.delete(key);
-      for (const [subscriptionId, subscribedKey] of [...entry.threadSubscriptions]) {
-        if (subscribedKey !== key) continue;
-        entry.threadSubscriptions.delete(subscriptionId);
-        const unsubscribe = entry.subscriptions.get(subscriptionId);
-        entry.subscriptions.delete(subscriptionId);
-        try {
-          unsubscribe?.();
-        } catch {
-          // Already released.
-        }
+      entry.rendererOptions.delete(key);
+      for (const [subscriptionId, subscription] of [...entry.subscriptions]) {
+        if (subscription.kind === "thread" && subscription.key === key) releaseSubscription(entry, subscriptionId);
       }
     }
   }
@@ -552,20 +592,12 @@ export function registerAdeIpc(
     "providers.refresh": () => currentClient().providers.refresh(),
     "providers.subscribe": (entry) => {
       const subscriptionId = nextSubscriptionId("providers");
-      const unsubscribe = currentClient().providers.onChange((statuses) => {
-        push(entry.webContents, { kind: "providers", subscriptionId, statuses });
-      });
-      entry.subscriptions.set(subscriptionId, unsubscribe);
+      attachProvidersSubscription(entry, currentClient(), subscriptionId);
       const result: AdeIpcSubscription = { subscriptionId };
       return result;
     },
     "providers.unsubscribe": (entry, args) => {
-      const subscriptionId = requireString(args[0], "subscriptionId");
-      const unsubscribe = entry.subscriptions.get(subscriptionId);
-      if (unsubscribe) {
-        entry.subscriptions.delete(subscriptionId);
-        unsubscribe();
-      }
+      releaseSubscription(entry, requireString(args[0], "subscriptionId"));
       return null;
     },
     "models.list": () => currentClient().models.list(),
@@ -577,19 +609,13 @@ export function registerAdeIpc(
       return result;
     },
     "client.unsubscribe": (entry, args) => {
-      const subscriptionId = requireString(args[0], "subscriptionId");
-      const unsubscribe = entry.subscriptions.get(subscriptionId);
-      entry.clientSubscriptions.delete(subscriptionId);
-      if (unsubscribe) {
-        entry.subscriptions.delete(subscriptionId);
-        unsubscribe();
-      }
+      releaseSubscription(entry, requireString(args[0], "subscriptionId"));
       return null;
     },
     "threads.open": async (entry, args) => {
       const key = requireString(args[0], "thread key");
       const options = await hostOpenOptions(key, args[1]);
-      const thread = await openThread(entry, key, options);
+      const thread = await openThread(entry, currentClient(), key, args[1], options);
       return snapshot(thread, key);
     },
     "threads.list": async () => {
@@ -598,8 +624,8 @@ export function registerAdeIpc(
       // gate refuses would only be a row the renderer can do nothing with, and
       // its title may itself be private. A chat with no key (created outside
       // the SDK) is left out for the same reason.
-      if (!opts.allowThreadKey) return rows;
-      return rows.filter((row) => row.key !== null && opts.allowThreadKey!(row.key));
+      if (!allowThreadKey) return rows;
+      return rows.filter((row) => row.key !== null && allowThreadKey(row.key));
     },
     "threads.delete": async (_entry, args) => {
       const key = requireString(args[0], "thread key");
@@ -704,13 +730,7 @@ export function registerAdeIpc(
       return result;
     },
     "thread.unsubscribe": (entry, args) => {
-      const subscriptionId = requireString(args[0], "subscriptionId");
-      entry.threadSubscriptions.delete(subscriptionId);
-      const unsubscribe = entry.subscriptions.get(subscriptionId);
-      if (unsubscribe) {
-        entry.subscriptions.delete(subscriptionId);
-        unsubscribe();
-      }
+      releaseSubscription(entry, requireString(args[0], "subscriptionId"));
       return null;
     },
   };
@@ -735,12 +755,13 @@ export function registerAdeIpc(
       if (opts.authorize && !(await opts.authorize(event, method, args))) {
         throw unauthorized(method);
       }
-      if (opts.allowThreadKey && ADE_IPC_THREAD_KEY_METHODS.has(known)) {
+      if (allowThreadKey && ADE_IPC_THREAD_KEY_METHODS.has(known)) {
         const key = typeof args[0] === "string" ? args[0] : "";
-        if (!opts.allowThreadKey(key)) throw unauthorized(method);
+        if (!allowThreadKey(key)) throw unauthorized(method);
       }
       const handler = handlers[known];
       const entry = rendererFor(event);
+      // Waits out a client-swap move already in progress for this renderer.
       await syncClient(entry);
       const value = await handler(entry, args);
       return { ok: true, value: value ?? null };

@@ -67,7 +67,11 @@ export type CreateAdeChatOptions = {
    * On a resume the SDK pushes the resolved servers to the runtime with
    * `updateSession`, so a rotated token takes effect on the next turn. That
    * needs a runtime advertising `capabilities.personalChats.updateMcpServers`;
-   * an older one keeps whatever it had and the SDK logs a warning.
+   * an older one keeps whatever it had and the SDK logs a warning. Two cases
+   * push nothing: when this callback supplies no value for any server that
+   * needs one (re-sending would replace the session's live credentials with
+   * none; logged), and when the resolved servers, values included, are the
+   * ones this client already sent for the thread.
    */
   mcpHeaders?: McpHeadersResolver;
   /**
@@ -82,7 +86,7 @@ export type CreateAdeChatOptions = {
    * working. The client object itself never changes.
    *
    * A turn in flight when the runtime died is NOT resumed: each live thread
-   * already received a synthetic `status` / `turnStatus: "error"` envelope,
+   * already received a synthetic `status` / `turnStatus: "failed"` envelope,
    * and the transcript keeps everything that was persisted.
    *
    * Not attempted after `dispose()`, and not in attach mode for a runtime the
@@ -126,6 +130,10 @@ export type ThreadRefreshOptions = {
    * old servers with a logged warning. On a recreate they are the servers the
    * new session is created with. On a create they are used when `mcpServers`
    * is absent. The stored record is updated either way — header names only.
+   *
+   * A map identical (header values included) to the one this client last sent
+   * for the key is not sent again, so a renderer that reloads and repeats the
+   * same `refresh` does not restart the provider.
    */
   mcpServers?: Record<string, McpServerConfig>;
 };
@@ -332,7 +340,9 @@ export type ThreadOpenOptions = {
  * created afresh from the record: `provider`, `model`, `cwd`, `instructions`,
  * `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` come
  * off the record, and a value passed here only fills a field the record lacks.
- * Before 0.3 the call's options won instead, which let any caller that could
+ * `permissions` means the stored policy or, for a key created on 0.3 or later
+ * with a preset, the stored preset; a key written before 0.3 with a preset has
+ * none on record, so the value passed here (or `"default"`) is used. Before 0.3 the call's options won instead, which let any caller that could
  * name a key — a renderer, over the Electron bridge — rebuild a lost thread
  * with a looser policy, another provider, or no MCP servers at all.
  *

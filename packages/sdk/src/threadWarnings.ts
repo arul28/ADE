@@ -191,6 +191,8 @@ export type ThreadResumeMismatchInput = {
     instructions?: AgentChatInstructions | undefined;
     settingSources?: string | undefined;
     permissionPolicy?: ThreadPermissionPolicy | undefined;
+    /** The stored preset, on a record that has one (0.3+) and no policy. */
+    permissionPreset?: string | undefined;
     mcpServers?: Record<string, unknown> | undefined;
     loadUserMcpServers?: boolean | undefined;
   };
@@ -240,7 +242,10 @@ export function threadResumeMismatchWarnings(input: ThreadResumeMismatchInput): 
   ) {
     lines.push(ignored("settingSources", stored.settingSources ?? "none"));
   }
-  if (supplied.permissions !== undefined && !sameJson(supplied.permissions, stored.permissionPolicy)) {
+  if (
+    supplied.permissions !== undefined &&
+    !sameJson(supplied.permissions, stored.permissionPolicy ?? stored.permissionPreset)
+  ) {
     lines.push(ignored("permissions", stored.permissionPolicy ? "the stored policy" : "the stored preset"));
   }
   // The tool surface, for the same reason as the four above and with a sharper

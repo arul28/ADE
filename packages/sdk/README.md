@@ -307,7 +307,7 @@ ade.on("restart", ({ attempt, ok }) => {});
 ```
 
 When the runtime exits, each live thread gets a synthetic
-`{ type: "status", turnStatus: "error", message, synthetic: true }` envelope.
+`{ type: "status", turnStatus: "failed", message, synthetic: true }` envelope.
 `autoRestart` (off by default; `true` = 5 attempts, 1 s doubling backoff)
 respawns the runtime and re-opens every live thread. The client object stays
 the same. A turn in flight is not resumed. See

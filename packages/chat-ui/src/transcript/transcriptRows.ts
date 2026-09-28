@@ -45,7 +45,7 @@ import type {
   ApprovalKind,
   ApprovalRequest,
   ChatEventMcpSource,
-  ChatResourceLink,
+  AgentChatResourceLink,
   ChatEventError,
   ChatEventReasoning,
   ChatEventStatus,
@@ -66,11 +66,8 @@ export type ToolChipRow = {
    * `{ server, tool }` for this call, one shape whatever the provider's
    * spelling (`mcp__srv__x`, `srv:x`, `mcp:srv:x`). Taken from the event's own
    * `mcp` field when the runtime sent one, else parsed from `tool`.
-   *
-   * Always set on rows `collapseTranscriptEvents` builds; optional in the type
-   * only so a hand-built row still type-checks.
    */
-  identity?: ToolIdentity;
+  identity: ToolIdentity;
   args: unknown;
   result?: unknown;
   /**
@@ -78,7 +75,7 @@ export type ToolChipRow = {
    * title?, mimeType? }`). Present only when the runtime passed them on; a host
    * builds "open this" actions from these rather than scraping the result text.
    */
-  resourceLinks?: ChatResourceLink[];
+  resourceLinks?: AgentChatResourceLink[];
   status: ToolCallStatus;
   turnId: string | null;
 };
@@ -260,14 +257,14 @@ function toolIdentityOf(tool: string, mcp: ChatEventMcpSource | undefined): Tool
   return parseToolIdentity(tool);
 }
 
-function readResourceLinks(value: unknown): ChatResourceLink[] | undefined {
+function readResourceLinks(value: unknown): AgentChatResourceLink[] | undefined {
   if (!Array.isArray(value)) return undefined;
-  const links: ChatResourceLink[] = [];
+  const links: AgentChatResourceLink[] = [];
   for (const entry of value) {
     const record = readRecord(entry);
     const uri = typeof record?.uri === "string" ? record.uri.trim() : "";
     if (!record || !uri) continue;
-    const link: ChatResourceLink = { uri };
+    const link: AgentChatResourceLink = { uri };
     if (typeof record.name === "string" && record.name) link.name = record.name;
     if (typeof record.title === "string" && record.title) link.title = record.title;
     if (typeof record.mimeType === "string" && record.mimeType) link.mimeType = record.mimeType;
@@ -316,8 +313,9 @@ function readTurnId(event: AgentChatEvent): string | null {
  * dropped and every unanswered approval would sit "pending" forever.
  *
  * Two endings count here: `done`, and a `status` whose `turnStatus` is
- * `completed`, `failed`, `interrupted`, or the SDK's synthetic `error` for a
- * runtime that exited mid-turn (no `done` follows that one).
+ * `completed`, `failed`, or `interrupted` — `failed` including the SDK's
+ * synthetic one (`synthetic: true`) for a runtime that exited mid-turn, which
+ * no `done` follows.
  *
  * `packages/sdk/src/thread.ts` applies the narrower `done`-only rule to the
  * same stream, and that difference is deliberate. The SDK's set decides whether
@@ -343,7 +341,6 @@ function turnEndingOf(event: AgentChatEvent | undefined): { turnId: string | nul
       turnStatus === "completed"
       || turnStatus === "failed"
       || turnStatus === "interrupted"
-      || turnStatus === "error"
     ) {
       return { turnId: readTurnId(event) };
     }
@@ -616,7 +613,7 @@ class RowCollapser {
         id: collapseKey,
         tool,
         identity:
-          event.mcp || !previousChip?.identity
+          event.mcp || !previousChip
             ? toolIdentityOf(event.tool || tool, event.mcp)
             : previousChip.identity,
         args: previousChip?.args,

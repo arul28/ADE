@@ -13,6 +13,7 @@
  * all, so anything that reaches it must be self-contained.
  */
 
+import type { AdeClientEvent, AdeClientEventMap } from "../clientEvents.js";
 import type {
   InstructionsCapability,
   PermissionCapability,
@@ -133,15 +134,18 @@ export type AdeIpcProvidersEvent = {
  * A pushed runtime lifecycle event for one `client.subscribe` subscription.
  *
  * `event` and `payload` are exactly what `AdeChatClient.on` delivers in the
- * main process (`AdeClientEventMap`). One subscription carries all three event
- * names; the renderer client splits them.
+ * main process: a union keyed by `AdeClientEventMap`, so narrowing on `event`
+ * types `payload`. One subscription carries every event name; the renderer
+ * client splits them.
  */
 export type AdeIpcClientEvent = {
-  kind: "client";
-  subscriptionId: string;
-  event: "exit" | "transport" | "restart";
-  payload: unknown;
-};
+  [E in AdeClientEvent]: {
+    kind: "client";
+    subscriptionId: string;
+    event: E;
+    payload: AdeClientEventMap[E];
+  };
+}[AdeClientEvent];
 
 export type AdeIpcEventPayload = AdeIpcThreadEvent | AdeIpcProvidersEvent | AdeIpcClientEvent;
 

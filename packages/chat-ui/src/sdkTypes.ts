@@ -88,11 +88,11 @@ export type ModelDescriptor = {
  * This can differ from the id the host asked for: a runtime resolves a retired
  * id forward to its successor, so `modelId` here may not be in the catalog the
  * picker shows. `displayName` is the runtime's name for it, and a UI should
- * prefer it over printing a raw id. Mirrors `ThreadModelSelection` in
+ * prefer it over printing a raw id. Mirrors the type of the same name in
  * `@ade-dev/sdk` >= 0.3; every field past `modelId` is optional so an older
  * SDK or a proxy that forwards less still fits.
  */
-export type ThreadModelInfo = {
+export type ThreadModelSelection = {
   modelId: string;
   displayName?: string | null;
   provider?: string;
@@ -130,8 +130,9 @@ export type ChatAttachment = {
   /**
    * How the runtime should hand the file to the model. `"image"` sends the
    * bytes as an image; `"file"` sends a path hint. Omit it and `adaptSdkClient`
-   * infers `"image"` from `mimeType` or the file extension (png, jpg, jpeg,
-   * gif, webp) and `"file"` for everything else.
+   * infers it with the runtime's rule (`inferAttachmentType`): an `image/*`
+   * `mimeType`, else an image extension on `uri` (bmp, gif, heic, heif, ico,
+   * jpeg, jpg, png, svg, tif, tiff, webp), else `"file"`.
    */
   type?: "file" | "image";
   /**
@@ -244,7 +245,7 @@ export type ChatEventToolCall = {
  * than left inside the result text. The runtime fills it when the provider
  * reports structured tool content.
  */
-export type ChatResourceLink = {
+export type AgentChatResourceLink = {
   uri: string;
   name?: string;
   title?: string;
@@ -261,7 +262,7 @@ export type ChatEventToolResult = {
   status?: ToolCallStatus;
   mcp?: ChatEventMcpSource;
   /** Structured MCP `resource_link` items, when the runtime passes them on. */
-  resourceLinks?: ChatResourceLink[];
+  resourceLinks?: AgentChatResourceLink[];
 };
 
 export type ChatEventError = {
@@ -274,13 +275,15 @@ export type ChatEventError = {
 
 export type ChatEventStatus = {
   type: "status";
-  /**
-   * `"error"` is the SDK's synthetic status for a runtime that went away
-   * mid-turn (`@ade-dev/sdk` >= 0.3). It ends the turn like `"failed"`.
-   */
-  turnStatus: "started" | "completed" | "interrupted" | "failed" | "error";
+  turnStatus: "started" | "completed" | "interrupted" | "failed";
   turnId?: string;
   message?: string;
+  /**
+   * Set only on the SDK's own `"failed"` status for a runtime that went away
+   * mid-turn (`@ade-dev/sdk` >= 0.3); the runtime never sends it. It ends the
+   * turn like any `"failed"`.
+   */
+  synthetic?: true;
 };
 
 /**
@@ -359,7 +362,7 @@ export type AgentChatEventEnvelope = {
 export type Unsubscribe = () => void;
 
 /** Options for one `historyPage` read. */
-export type HistoryPageRequest = {
+export type HistoryPageOptions = {
   /** Return envelopes strictly older than this sequence. Omit for the newest page. */
   beforeSequence?: number;
   /** Page size. The runtime caps it. */
@@ -367,7 +370,7 @@ export type HistoryPageRequest = {
 };
 
 /** One page of transcript history, oldest envelope first. */
-export type HistoryPage = {
+export type ThreadHistoryPage = {
   events: AgentChatEventEnvelope[];
   /** More envelopes exist before this page. */
   hasMore: boolean;
@@ -422,15 +425,15 @@ export interface AdeThread {
    * older pages on demand — and falls back to one `history()` read otherwise.
    * A client without it (an SDK before 0.3, a proxy) loads the whole window.
    */
-  historyPage?(request?: HistoryPageRequest): Promise<HistoryPage>;
+  historyPage?(request?: HistoryPageOptions): Promise<ThreadHistoryPage>;
   /**
-   * The model the runtime has this thread on, resolved (see `ThreadModelInfo`).
+   * The model the runtime has this thread on, resolved (see `ThreadModelSelection`).
    *
    * OPTIONAL: read after `open` and after every `setModel`. Absent or null on a
    * client that does not report it, and the UI then names the model from the
    * catalog alone.
    */
-  readonly model?: ThreadModelInfo | null;
+  readonly model?: ThreadModelSelection | null;
   on(type: "event", cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
   on(type: "usage", cb: (usage: ThreadUsage) => void): Unsubscribe;
   on(type: "status", cb: (status: ThreadStatus) => void): Unsubscribe;

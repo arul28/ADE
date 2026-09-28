@@ -705,7 +705,14 @@ export type AgentChatContextAttachment =
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 
-/** Infer whether a file path points to an image or a generic file. */
+/**
+ * Infer whether a file path points to an image or a generic file.
+ *
+ * The canonical image rule: a `mimeType` of `image/*` wins, then the path's
+ * extension. Twins that must apply the same rule word for word:
+ * `packages/sdk/src/attachments.ts` and the attachment inference in
+ * `packages/chat-ui/src/adapters/sdkClient.ts`. Change all three together.
+ */
 export function inferAttachmentType(
   filePath: string,
   mimeType?: string | null,
@@ -745,9 +752,15 @@ export function normalizeInboundFileRef(attachment: AgentChatFileRef): AgentChat
   };
 }
 
-/** The path hint a provider gets for an attachment whose bytes ADE did not send. */
-export function referenceOnlyAttachmentHint(pathValue: string): string {
-  return `[File attached: ${pathValue}]`;
+/**
+ * The path hint a provider gets for an attachment whose bytes ADE did not send
+ * (a `hydrate: false` reference, or a file a provider reads itself). Takes the
+ * resolved ref, so the agent always gets the absolute path ADE validated —
+ * a path relative to the caller's cwd means nothing to the agent's process.
+ * Falls back to the raw path only for a ref that was never resolved.
+ */
+export function referenceOnlyHintFor(attachment: { path: string; _resolvedPath?: string | null }): string {
+  return `[File attached: ${attachment._resolvedPath || attachment.path}]`;
 }
 
 /** Merge two attachment lists, deduplicating by path (last-write wins). */
@@ -1267,7 +1280,8 @@ export type AgentChatEvent =
        * MCP `resource_link` content items in this tool's result, as structured
        * data (`uri` always present), so a host can act on them without
        * scraping `result`. Present only when the provider hands ADE the MCP
-       * result content: Codex does; see `parseMcpResultResourceLinks`.
+       * result content: Codex does, and so does Claude for its `mcp__` tools;
+       * see `parseMcpResultResourceLinks`.
        */
       resourceLinks?: AgentChatResourceLink[];
       timedOutAfterMs?: number;

@@ -85,7 +85,7 @@ A turn ends a card when `done` arrives, or a `status` of `completed`, `failed` o
 
 When the file picker from `onRequestAttachment` returns, the composer merges its result with the **latest** list, not with the list from when the picker opened. So a file that the host staged while the picker was open (a drop, for example) is kept. The composer removes duplicates by `id`, and a remove click removes one `id`.
 
-Every attachment is sent with a `type`: `"image"` for png, jpg, jpeg, gif and webp (by MIME type, else by extension), and `"file"` for everything else. An image then reaches the model as an image. Set `hydrate: false` on an attachment to send only its path, so that the runtime never reads the bytes. See [Attachments](/sdk/threads#attachments).
+Every attachment is sent with a `type`: `"image"` when the MIME type is `image/*` or the extension is an image extension (bmp, gif, heic, heif, ico, jpeg, jpg, png, svg, tif, tiff, webp), and `"file"` for everything else. This is the same rule the runtime uses. An image then reaches the model as an image when the provider accepts that format; see [Attachments](/sdk/threads#attachments) for the limits. Set `hydrate: false` on an attachment to send only its path, so that the runtime never reads the bytes. See [Attachments](/sdk/threads#attachments).
 
 Submitting during a running turn is a steer, and staged attachments go with the steer. A steer with only attachments and no text is allowed.
 

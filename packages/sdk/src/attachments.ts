@@ -8,43 +8,51 @@ import type { AgentChatFileRef } from "./types.js";
  * every image an SDK host attached reached the model as a path. Inferring it
  * here, in one place, means a host that never heard of the field still gets
  * images delivered as images.
+ *
+ * ONE RULE, THREE COPIES. `inferAttachmentType` below is a word-for-word copy
+ * of the runtime's own `inferAttachmentType` (with `isImageAttachmentPath` and
+ * its extension table) in `apps/desktop/src/shared/types/chat.ts`, and
+ * `@ade-dev/chat-ui` carries the same copy in
+ * `packages/chat-ui/src/adapters/sdkClient.ts`. The SDK cannot import either
+ * (it ships with zero dependencies), so a change to the rule is made in all
+ * three places or none: a file the SDK typed differently from the runtime would
+ * be sent one way from a host and another way from ADE itself.
  */
 
-const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/gif",
-  "image/webp",
+/** The runtime's `IMAGE_ATTACHMENT_MEDIA_TYPES` keys: the extensions it reads as images. */
+const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".heif",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".svg",
+  ".tif",
+  ".tiff",
+  ".webp",
 ]);
 
-const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
-
-/**
- * The extension of the last path segment, lowercased, with the dot.
- *
- * Splits on both separators because the path may be a Windows path read on
- * any host, and a dot in a directory name must not count.
- */
-function extensionOf(filePath: string): string {
-  const base = filePath.split(/[\\/]/).pop() ?? "";
-  const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot).toLowerCase() : "";
+/** The runtime's `isImageAttachmentPath`: the last suffix of the path, lowercased. */
+function isImageAttachmentPath(filePath: string): boolean {
+  const extension = filePath.match(/\.[^./\\]+$/)?.[0]?.toLowerCase();
+  return extension ? IMAGE_EXTENSIONS.has(extension) : false;
 }
 
 /**
- * `"image"` for the formats both Claude and Codex accept as image input,
- * `"file"` for everything else.
+ * `"image"` or `"file"` for one attachment, by the runtime's rule.
  *
- * The mime type wins when present, because a host that set one read it from
- * the file; the extension is the fallback for a ref built from a path alone.
+ * Any `image/*` mime type means image. Otherwise — including for a non-image
+ * mime type, which does NOT force `"file"` — the path's extension decides:
+ * `.bmp .gif .heic .heif .ico .jpeg .jpg .png .svg .tif .tiff .webp` are
+ * images, everything else is a file. Same name, signature and answer as the
+ * runtime's `inferAttachmentType`.
  */
-export function inferAttachmentType(ref: Pick<AgentChatFileRef, "path" | "name" | "mimeType">): "file" | "image" {
-  const mime = typeof ref.mimeType === "string" ? ref.mimeType.trim().toLowerCase() : "";
-  if (mime) return IMAGE_MIME_TYPES.has(mime) ? "image" : "file";
-  const fromPath = typeof ref.path === "string" ? extensionOf(ref.path) : "";
-  const fromName = typeof ref.name === "string" ? extensionOf(ref.name) : "";
-  return IMAGE_EXTENSIONS.has(fromPath) || IMAGE_EXTENSIONS.has(fromName) ? "image" : "file";
+export function inferAttachmentType(filePath: string, mimeType?: string | null): "file" | "image" {
+  if (mimeType?.toLowerCase().startsWith("image/")) return "image";
+  return isImageAttachmentPath(filePath) ? "image" : "file";
 }
 
 /**
@@ -53,6 +61,8 @@ export function inferAttachmentType(ref: Pick<AgentChatFileRef, "path" | "name" 
  */
 export function completeAttachments(refs: readonly AgentChatFileRef[]): AgentChatFileRef[] {
   return refs.map((ref) =>
-    ref.type === "file" || ref.type === "image" ? { ...ref } : { ...ref, type: inferAttachmentType(ref) },
+    ref.type === "file" || ref.type === "image"
+      ? { ...ref }
+      : { ...ref, type: inferAttachmentType(typeof ref.path === "string" ? ref.path : "", ref.mimeType) },
   );
 }

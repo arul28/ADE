@@ -33,7 +33,7 @@
  * (`apps/desktop/src/shared/callerMcpServers.ts`).
  */
 
-export { createAdeChat } from "./client.js";
+export { createAdeChat, ADE_CLIENT_EVENTS } from "./client.js";
 export type {
   AdeChatClient,
   AdeClientEvent,
@@ -60,7 +60,7 @@ export type {
 export { SUPPORTED_RUNTIME_RANGE, checkRuntimeCompatibility } from "./compatibility.js";
 export { parseToolIdentity, type ToolIdentity } from "./toolIdentity.js";
 export { inferAttachmentType } from "./attachments.js";
-export type { McpHeadersResolver, StoredMcpServerConfig } from "./mcpHeaders.js";
+export type { McpHeadersResolver } from "./mcpHeaders.js";
 export {
   resolvePackagedRuntime,
   type PackagedRuntime,

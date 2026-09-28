@@ -317,7 +317,7 @@ try {
 
 ## Transport degradation and restarts
 
-**The runtime exits.** The client tells you. `client.on("exit" | "transport" | "restart", cb)` in main, or `ipcClient.on(...)` in a renderer, reports each event. Every live thread also gets a synthetic `status` envelope with `turnStatus: "error"`, so a transcript does not stay "running". Pass `autoRestart` to `createAdeChat` and the client respawns the runtime and re-opens every live thread. The client object stays the same, so the bridge keeps working with no change. See [Runtime](/sdk/runtime#when-the-runtime-exits).
+**The runtime exits.** The client tells you. `client.on("exit" | "transport" | "restart", cb)` in main, or `ipcClient.on(...)` in a renderer, reports each event. Every live thread also gets a synthetic `status` envelope with `turnStatus: "failed"`, so a transcript does not stay "running". Pass `autoRestart` to `createAdeChat` and the client respawns the runtime and re-opens every live thread. The client object stays the same, so the bridge keeps working with no change. See [Runtime](/sdk/runtime#when-the-runtime-exits).
 
 **`DoctorReport.events.mode`.** The push transport can silently become polling: `mode` reads `"push"` normally and `"drain"` when the SDK is polling instead. Nothing about the bridge changes — envelopes still arrive on the same channel — but latency does, so report `mode` in your diagnostics rather than assuming push.
 

@@ -1,3 +1,4 @@
+import { AdeError } from "./errors.js";
 import type { JsonRpcConnection } from "./jsonRpc.js";
 import type { EngineApprovalDecision } from "./approvals.js";
 import type {
@@ -10,6 +11,15 @@ import type {
   PendingInputsResult,
   PersonalChatCallResponse,
 } from "./types.js";
+
+/**
+ * Whether a summary says a turn is running: the runtime's `active` status, or a
+ * turn start it has not cleared. The one check every "refuse mid-turn" and
+ * "interrupt before a lifecycle action" decision reads.
+ */
+export function summaryTurnActive(summary: AgentChatSessionSummary | null | undefined): boolean {
+  return summary?.status === "active" || typeof summary?.currentTurnStartedAt === "string";
+}
 
 /**
  * Thin typed wrapper over the machine-scoped chat RPC.
@@ -35,12 +45,31 @@ export class PersonalChatsApi {
     this.connectionOf = typeof connection === "function" ? connection : () => connection;
   }
 
+  /**
+   * One `personalChats.call`, unwrapped.
+   *
+   * The engine refuses a bad argument (a `requestedCwd` outside the home, a
+   * malformed policy, a title of the wrong type) with a message that starts
+   * `invalid_argument:`, which the RPC layer delivers as a generic `rpc_error`.
+   * A caller cannot branch on prose, and the two cases are genuinely different
+   * — `rpc_error` says the runtime failed, `invalid_option` says the arguments
+   * were wrong — so that one refusal is translated here, for every action.
+   * Everything else passes through untouched.
+   */
   async call<T>(action: string, args?: unknown, timeoutMs?: number): Promise<T> {
-    const response = await this.connectionOf().request<PersonalChatCallResponse<T>>(
-      "personalChats.call",
-      { action, ...(args !== undefined ? { args } : {}) },
-      timeoutMs ? { timeoutMs } : {},
-    );
+    let response: PersonalChatCallResponse<T>;
+    try {
+      response = await this.connectionOf().request<PersonalChatCallResponse<T>>(
+        "personalChats.call",
+        { action, ...(args !== undefined ? { args } : {}) },
+        timeoutMs ? { timeoutMs } : {},
+      );
+    } catch (error) {
+      if (error instanceof AdeError && error.code === "rpc_error" && /invalid_argument:/.test(error.message)) {
+        throw new AdeError("invalid_option", error.message, { cause: error });
+      }
+      throw error;
+    }
     // Older/simpler handlers may answer with the bare result. Accept both
     // rather than crashing on a runtime that has not adopted the envelope.
     if (response && typeof response === "object" && "action" in response && "result" in response) {
@@ -135,8 +164,13 @@ export class PersonalChatsApi {
     return this.call<AgentChatModelCatalog>("modelCatalog", args, 120_000);
   }
 
-  updateSession(args: Record<string, unknown>): Promise<unknown> {
-    return this.call("updateSession", args);
+  /**
+   * Change a live session: title, model, reasoning, fast mode, MCP servers.
+   * The runtime answers with the session's summary after the change, or null
+   * when it has no summary to give.
+   */
+  updateSession(args: Record<string, unknown>): Promise<AgentChatSessionSummary | null> {
+    return this.call<AgentChatSessionSummary | null>("updateSession", args);
   }
 
   /**

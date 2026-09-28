@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { errorMessage } from "./errors.js";
 import { readStoredMcpServers, type StoredMcpServerConfig } from "./mcpHeaders.js";
-import type { ThreadPermissionPolicy } from "./permissions.js";
+import type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
 import type { AgentChatInstructions, AgentChatSettingSources } from "./types.js";
 
 /**
@@ -67,6 +67,16 @@ export type ThreadRecord = {
   cwd?: string;
   settingSources?: AgentChatSettingSources;
   permissionPolicy?: ThreadPermissionPolicy;
+  /**
+   * The permission PRESET this key was created with, when it was created with
+   * a preset rather than a policy. A recreate and a restart rebind reuse it
+   * with the same stored-wins precedence as `permissionPolicy`, so a key
+   * created `"default"` cannot be rebuilt `"always-allow"` by whoever names it
+   * next. Absent on records written before 0.3 (and whenever a policy is
+   * stored): those keep the older rule — the call's `permissions`, then
+   * `"default"`.
+   */
+  permissionPreset?: PermissionPreset;
 };
 
 type ThreadStoreFile = {
@@ -251,7 +261,9 @@ function normalize(value: unknown): { file: ThreadStoreFile; migrated: boolean }
         : {}),
       ...(isStoredPermissionPolicy(record.permissionPolicy)
         ? { permissionPolicy: record.permissionPolicy }
-        : {}),
+        : record.permissionPreset === "default" || record.permissionPreset === "always-allow"
+          ? { permissionPreset: record.permissionPreset }
+          : {}),
     };
   }
   return { file: { version: 1, threads }, migrated };

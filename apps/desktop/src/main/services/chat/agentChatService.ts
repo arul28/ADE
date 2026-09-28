@@ -254,6 +254,7 @@ import {
   writeFileAtomic,
   writeJsonWithPrevious,
 } from "../state/durableFile";
+import { sweepPersistedCallerMcpHeaderValues } from "./callerMcpHeaderSweep";
 import {
   readThreadPointerLedger,
   recordThreadPointerChange,
@@ -587,7 +588,7 @@ import {
   type AgentChatWorkflowProgress,
   attachmentIsReferenceOnly,
   normalizeInboundFileRef,
-  referenceOnlyAttachmentHint,
+  referenceOnlyHintFor,
 } from "../../../shared/types/chat";
 
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -1181,19 +1182,17 @@ import {
   CALLER_MCP_CAPABLE_PROVIDERS,
   callerMcpServersToCodexConfig,
   callerMcpServersToDroidList,
-  callerMcpServersMissingHeaders,
   callerMcpServersToInlineRecord,
   callerMcpServersToOpenCodeConfig,
-  callerMcpSupport,
-  callerMcpUnsupportedTransport,
+  callerMcpCapabilityFor,
+  callerMcpDeliveryProblem,
+  callerMcpMissingHeadersNotice,
   codexConfiguredMcpServerNames,
   codexDisabledMcpServerOverrides,
   normalizeCallerMcpCapability,
   normalizeCallerMcpServers,
   parseCallerMcpServers,
-  providerAcceptsCallerMcpServers,
   redactCallerMcpText,
-  resolveCallerMcpCapability,
   withholdCallerMcpHeaderValues,
   type CallerMcpServers,
 } from "../../../shared/callerMcpServers";
@@ -7400,7 +7399,7 @@ async function buildStreamingUserContent(
         continue;
       }
       if (attachmentIsReferenceOnly(attachment)) {
-        parts.push({ type: "text", text: `\n${referenceOnlyAttachmentHint(attachment.path)}` });
+        parts.push({ type: "text", text: `\n${referenceOnlyHintFor(attachment)}` });
         continue;
       }
       const data = await args.readAttachmentBytes(attachment);
@@ -9691,23 +9690,18 @@ export function createAgentChatService(args: {
    */
   const callerMcpServersForLaunch = (managed: ManagedChatSession): CallerMcpServers | null => {
     const servers = managed.session.mcpServers ?? null;
-    const missing = callerMcpServersMissingHeaders(servers);
-    if (!missing.length) {
+    const notice = callerMcpMissingHeadersNotice(servers);
+    if (!notice) {
       callerMcpMissingHeadersNoticeBySession.delete(managed.session.id);
       return servers;
     }
-    const key = missing.join("\u0000");
-    if (callerMcpMissingHeadersNoticeBySession.get(managed.session.id) !== key) {
-      callerMcpMissingHeadersNoticeBySession.set(managed.session.id, key);
+    if (callerMcpMissingHeadersNoticeBySession.get(managed.session.id) !== notice.key) {
+      callerMcpMissingHeadersNoticeBySession.set(managed.session.id, notice.key);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "warning",
         severity: "warning",
-        message:
-          `MCP ${missing.length > 1 ? "servers" : "server"} ${missing.map((name) => `'${name}'`).join(", ")} `
-          + "restarted without the headers the host supplied, because ADE does not store header values. "
-          + "The host must send the servers again (updateSession with mcpServers) before tools that need "
-          + "those credentials will work.",
+        message: notice.message,
       });
     }
     return servers;
@@ -10450,6 +10444,8 @@ export function createAgentChatService(args: {
       count: abandonedTempCount,
     });
   }
+  // Before any chat loads, so no persist can race the rewrite.
+  sweepPersistedCallerMcpHeaderValues(chatSessionsDir, logger);
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -10510,7 +10506,7 @@ export function createAgentChatService(args: {
     attachment: ResolvedAgentChatFileRef,
   ): { type: "text"; text: string; text_elements: [] } => ({
     type: "text",
-    text: referenceOnlyAttachmentHint(attachment._resolvedPath || attachment.path),
+    text: referenceOnlyHintFor(attachment),
     text_elements: [],
   });
 
@@ -15790,7 +15786,9 @@ export function createAgentChatService(args: {
     }
     const imagePaths: string[] = [];
     for (const attachment of (args.attachments ?? []).slice(0, 8)) {
-      if (attachment.type !== "image") continue;
+      // A reference-only attachment is a path the agent may open, not content
+      // the caller asked ADE to read — naming must not read it either.
+      if (attachment.type !== "image" || attachmentIsReferenceOnly(attachment)) continue;
       try {
         const root = path.isAbsolute(attachment.path) ? projectRoot : cwd;
         const resolved = resolvePathWithinRoot(root, attachment.path, { allowMissing: false });
@@ -30541,7 +30539,14 @@ export function createAgentChatService(args: {
       }
 
       const providerSlashCommand = args.providerSlashCommand === true;
-      const attachmentHint = formatAttachedContextHint(attachments);
+      // The resolved path, like every other attachment hint: a relative path
+      // means nothing once it reaches the model.
+      const attachmentHint = formatAttachedContextHint(
+        resolvedAttachments.map((attachment) => ({
+          type: attachment.type,
+          path: attachment._resolvedPath || attachment.path,
+        })),
+      );
       const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
       // OpenCode reads every file it is handed, so a reference-only attachment
       // is left to the path hint above instead.
@@ -39504,25 +39509,24 @@ export function createAgentChatService(args: {
     // existing chat unloadable.
     const callerMcpServers = parseCallerMcpServers(requestedMcpServers);
     const requireProviderAcceptsCallerMcpServers = (candidate: AgentChatProvider): void => {
-      if (!callerMcpServers) return;
-      if (!providerAcceptsCallerMcpServers(candidate)) {
-        throw new Error(
-          `Provider '${candidate}' cannot accept injected MCP servers: `
-          + `${callerMcpSupport(candidate)?.mechanism ?? "no MCP support"}. `
-          + "Create this chat without mcpServers, or pick a provider that supports "
-          + `them (${CALLER_MCP_CAPABLE_PROVIDERS.join(", ")}).`,
-        );
-      }
       // A provider that accepts servers can still lack a transport. Codex has
       // no SSE client — its config treats every `url` as streamable HTTP — so
       // an SSE server handed to it connects over the wrong protocol and fails
       // at first use with a transport error nobody can trace back to here.
-      const unsupported = callerMcpUnsupportedTransport(candidate, callerMcpServers);
-      if (unsupported) {
+      const problem = callerMcpDeliveryProblem(candidate, callerMcpServers);
+      if (problem?.kind === "provider") {
         throw new Error(
-          `Provider '${candidate}' has no '${unsupported.transport}' MCP transport, so `
-          + `${unsupported.names.map((name) => `'${name}'`).join(", ")} cannot be delivered. `
-          + `Use a supported transport for ${unsupported.names.length > 1 ? "those servers" : "that server"}, `
+          `Provider '${candidate}' cannot accept injected MCP servers: `
+          + `${problem.mechanism ?? "no MCP support"}. `
+          + "Create this chat without mcpServers, or pick a provider that supports "
+          + `them (${CALLER_MCP_CAPABLE_PROVIDERS.join(", ")}).`,
+        );
+      }
+      if (problem?.kind === "transport") {
+        throw new Error(
+          `Provider '${candidate}' has no '${problem.transport}' MCP transport, so `
+          + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered. `
+          + `Use a supported transport for ${problem.names.length > 1 ? "those servers" : "that server"}, `
           + "or pick a provider that speaks it.",
         );
       }
@@ -39630,12 +39634,10 @@ export function createAgentChatService(args: {
     // That caller asked for the default MCP surface, and an absent report is
     // how every consumer tells "no MCP was requested" from "here is what ADE
     // did with your request".
-    const callerMcpCapability = callerMcpServers || requestedStrictMcpConfig === true
-      ? resolveCallerMcpCapability(effectiveProvider, {
-        hasServers: callerMcpServers != null,
-        strictRequested: requestedStrictMcpConfig === true,
-      })
-      : null;
+    const callerMcpCapability = callerMcpCapabilityFor(effectiveProvider, {
+      servers: callerMcpServers,
+      strict: requestedStrictMcpConfig,
+    });
     // A structured permission policy is the SDK's third form of `permissions`,
     // alongside the two presets. It is normalized once here and persisted, so
     // every later read — the Claude tool gate, the Codex approval handlers, a
@@ -44488,7 +44490,7 @@ export function createAgentChatService(args: {
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       if (attachmentIsReferenceOnly(attachment)) {
-        blocks.push({ type: "text", text: referenceOnlyAttachmentHint(attachment.path) });
+        blocks.push({ type: "text", text: referenceOnlyHintFor(attachment) });
         continue;
       }
       try {
@@ -49349,7 +49351,7 @@ export function createAgentChatService(args: {
             .map((attachment) => attachment._resolvedPath));
           const referenceOnlyHints = preparedSteer.resolvedAttachments
             .filter(attachmentIsReferenceOnly)
-            .map((attachment) => referenceOnlyAttachmentHint(attachment._resolvedPath || attachment.path));
+            .map((attachment) => referenceOnlyHintFor(attachment));
           const text = [
             buildChatContextAttachmentPrompt(preparedSteer.contextAttachments) || null,
             preparedSteer.submittedText,
@@ -52693,6 +52695,7 @@ export function createAgentChatService(args: {
     const summaryCursorModeSnapshot = summaryCursorModeId === null
       ? undefined
       : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
+    const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -52760,9 +52763,7 @@ export function createAgentChatService(args: {
       // not tell "strict mode is enforced" from "the runtime ignored me".
       // Header values withheld here too: a summary fans out to every client
       // that lists chats, and the credential is the host's, not theirs.
-      ...(liveSession?.mcpServers || persisted?.mcpServers
-        ? { mcpServers: withholdCallerMcpHeaderValues((liveSession?.mcpServers ?? persisted?.mcpServers)!) }
-        : {}),
+      ...(summaryMcpServers ? { mcpServers: withholdCallerMcpHeaderValues(summaryMcpServers) } : {}),
       ...(typeof (liveSession?.strictMcpConfig ?? persisted?.strictMcpConfig) === "boolean"
         ? { strictMcpConfig: liveSession?.strictMcpConfig ?? persisted?.strictMcpConfig }
         : {}),
@@ -56284,23 +56285,24 @@ export function createAgentChatService(args: {
 
 
   /**
-   * `updateSession({ mcpServers })`: swap a personal chat's caller servers.
+   * `updateSession({ mcpServers })`, step one: check a replacement of a
+   * personal chat's caller servers and return the parsed set. Commits nothing.
    *
    * Everything a create checks is checked again — a replacement is a request
    * for tools the chat will depend on, and the same silent under-delivery is
-   * possible. It throws before touching the session, so a refused update leaves
-   * the old servers in place.
+   * possible. `provider` is the provider the chat will be on once the whole
+   * update lands, so a request that also switches the model is judged against
+   * the provider it is switching TO.
    *
    * Refused mid-turn rather than deferred: the running provider process was
    * started with the old servers, and swapping them under a live turn would
-   * leave the session reporting servers the agent cannot see. Between turns the
-   * runtime is torn down with a preserving reason, so the next turn starts a
-   * fresh process that resumes the same provider thread with the new config.
+   * leave the session reporting servers the agent cannot see.
    */
-  const replaceCallerMcpServers = (
+  const prepareCallerMcpReplacement = (
     managed: ManagedChatSession,
     requested: Record<string, AgentChatMcpServerConfig> | null,
-  ): void => {
+    provider: AgentChatProvider,
+  ): CallerMcpServers | null => {
     if (!isPersonalSession(managed.session)) {
       throw new Error("invalid_argument: mcpServers can only be updated on a personal chat.");
     }
@@ -56311,32 +56313,44 @@ export function createAgentChatService(args: {
       );
     }
     const next = parseCallerMcpServers(requested);
-    const provider = managed.session.provider;
-    if (next && !providerAcceptsCallerMcpServers(provider)) {
+    const problem = callerMcpDeliveryProblem(provider, next);
+    if (problem?.kind === "provider") {
       throw new Error(
         `invalid_argument: provider '${provider}' cannot accept injected MCP servers: `
-        + `${callerMcpSupport(provider)?.mechanism ?? "no MCP support"}.`,
+        + `${problem.mechanism ?? "no MCP support"}.`,
       );
     }
-    const unsupported = next ? callerMcpUnsupportedTransport(provider, next) : null;
-    if (unsupported) {
+    if (problem?.kind === "transport") {
       throw new Error(
-        `invalid_argument: provider '${provider}' has no '${unsupported.transport}' MCP transport, so `
-        + `${unsupported.names.map((name) => `'${name}'`).join(", ")} cannot be delivered.`,
+        `invalid_argument: provider '${provider}' has no '${problem.transport}' MCP transport, so `
+        + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered.`,
       );
     }
+    return next;
+  };
+
+  /**
+   * Step two: install a replacement `prepareCallerMcpReplacement` accepted.
+   * Only called once every check of the update has passed, so a refused update
+   * leaves the old servers and a live runtime in place. Between turns the
+   * runtime is torn down with a preserving reason, so the next turn starts a
+   * fresh process that resumes the same provider thread with the new config.
+   */
+  const commitCallerMcpReplacement = (
+    managed: ManagedChatSession,
+    next: CallerMcpServers | null,
+  ): void => {
+    const provider = managed.session.provider;
     if (next) managed.session.mcpServers = next;
     else delete managed.session.mcpServers;
     // Same gate as create: a report exists when servers exist or strict mode
     // was asked for, and describes this provider.
-    if (next || managed.session.strictMcpConfig === true) {
-      managed.session.mcpCapability = resolveCallerMcpCapability(provider, {
-        hasServers: next != null,
-        strictRequested: managed.session.strictMcpConfig === true,
-      });
-    } else {
-      delete managed.session.mcpCapability;
-    }
+    const capability = callerMcpCapabilityFor(provider, {
+      servers: next,
+      strict: managed.session.strictMcpConfig,
+    });
+    if (capability) managed.session.mcpCapability = capability;
+    else delete managed.session.mcpCapability;
     // The permission report names caller servers the policy shuts out, so it
     // moves with the server list.
     if (managed.session.permissionPolicy) {
@@ -56427,12 +56441,14 @@ export function createAgentChatService(args: {
     let modelHandoff: AgentChatModelHandoff | null = null;
     let modelSwitched = false;
 
-    // Before the model switch below, so a request that changes both is judged
-    // against the servers it is switching WITH.
-    if (requestedMcpServers !== undefined) {
-      replaceCallerMcpServers(managed, requestedMcpServers);
-    }
-
+    // Every check the model switch and the server replacement make runs here,
+    // before either commits anything: a refused update must leave the old
+    // servers, the old reports, and a live runtime exactly as they were.
+    let requestedModel: {
+      descriptor: ModelDescriptor;
+      nextProvider: AgentChatProvider;
+      nextModel: string;
+    } | null = null;
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
       if (!nextModelId.length) {
@@ -56445,53 +56461,75 @@ export function createAgentChatService(args: {
       }
 
       const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);
-      const nextModel = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;
       if (nextProvider === "cursor") {
         assertCursorChatModelCanUseSdk({
           modelRef: descriptor.providerModelId,
           descriptor,
         });
       }
+      requestedModel = {
+        descriptor,
+        nextProvider,
+        nextModel: descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id,
+      };
+    }
+    // New servers are judged against the provider the chat lands on, so a
+    // request that changes both is checked as one move.
+    const nextCallerMcpServers = requestedMcpServers !== undefined
+      ? prepareCallerMcpReplacement(
+        managed,
+        requestedMcpServers,
+        requestedModel?.nextProvider ?? managed.session.provider,
+      )
+      : undefined;
+    if (requestedModel && nextCallerMcpServers === undefined) {
+      // A model switch can cross providers, which means it can move a chat
+      // onto a provider that cannot honor the MCP request the chat was created
+      // with. Create-time refuses that; without the same check here the switch
+      // was a way around it, landing a chat on Pi with its injected servers
+      // silently gone. Refuse for the same reason and with the same shape —
+      // including a provider that accepts servers but lacks the transport one
+      // of them speaks.
+      const { nextProvider } = requestedModel;
+      const problem = callerMcpDeliveryProblem(nextProvider, managed.session.mcpServers);
+      if (problem?.kind === "provider") {
+        throw new Error(
+          `Cannot switch this chat to '${nextProvider}': it has injected MCP servers and `
+          + `${problem.mechanism ?? "that provider has no MCP support"}. `
+          + "Start a new chat on that provider instead.",
+        );
+      }
+      if (problem?.kind === "transport") {
+        throw new Error(
+          `Cannot switch this chat to '${nextProvider}': it has no '${problem.transport}' `
+          + `MCP transport for ${problem.names.map((name) => `'${name}'`).join(", ")}. `
+          + "Start a new chat on that provider instead.",
+        );
+      }
+    }
+
+    // Before the model switch below, so the reports the switch recomputes
+    // describe the servers it is switching WITH.
+    if (nextCallerMcpServers !== undefined) {
+      commitCallerMcpReplacement(managed, nextCallerMcpServers);
+    }
+
+    if (requestedModel) {
+      const { descriptor, nextProvider, nextModel } = requestedModel;
       const previousProvider = managed.session.provider;
       const previousModelId = managed.session.modelId
         ?? resolveModelIdFromStoredValue(managed.session.model, previousProvider)
         ?? managed.session.model;
 
-      // A model switch can cross providers, which means it can move a chat onto
-      // a provider that cannot honor the MCP request the chat was created with.
-      // Create-time refuses that; without the same check here the switch was a
-      // way around it, landing a chat on Pi with its injected servers silently
-      // gone. Refuse for the same reason and with the same shape.
-      if (managed.session.mcpServers && !providerAcceptsCallerMcpServers(nextProvider)) {
-        throw new Error(
-          `Cannot switch this chat to '${nextProvider}': it has injected MCP servers and `
-          + `${callerMcpSupport(nextProvider)?.mechanism ?? "that provider has no MCP support"}. `
-          + "Start a new chat on that provider instead.",
-        );
-      }
-      // Same reasoning one level down: a provider that accepts servers can
-      // still lack the transport one of them speaks, and switching onto it
-      // would connect that server over the wrong protocol.
-      const unsupportedTransport = managed.session.mcpServers
-        ? callerMcpUnsupportedTransport(nextProvider, managed.session.mcpServers)
-        : null;
-      if (unsupportedTransport) {
-        throw new Error(
-          `Cannot switch this chat to '${nextProvider}': it has no '${unsupportedTransport.transport}' `
-          + `MCP transport for ${unsupportedTransport.names.map((name) => `'${name}'`).join(", ")}. `
-          + "Start a new chat on that provider instead.",
-        );
-      }
       // The report describes THIS provider's enforcement. Carrying the old one
       // across a switch would claim Claude's "enforced" on a Codex session —
       // a guarantee ADE is no longer keeping. Recomputed whenever the session
       // carries an MCP request at all, including strict-mode-only.
-      if (managed.session.mcpServers || managed.session.strictMcpConfig === true) {
-        managed.session.mcpCapability = resolveCallerMcpCapability(nextProvider, {
-          hasServers: managed.session.mcpServers != null,
-          strictRequested: managed.session.strictMcpConfig === true,
-        });
-      }
+      const switchedMcpCapability = callerMcpCapabilityFor(nextProvider, {
+        servers: managed.session.mcpServers,
+        strict: managed.session.strictMcpConfig,
+      });
+      if (switchedMcpCapability) managed.session.mcpCapability = switchedMcpCapability;
       // Same reasoning for the host configuration reports. A thread that moves
       // from Claude to Droid keeps its instructions text, but "applied on a
       // real system-prompt channel" stops being true the moment it moves, and

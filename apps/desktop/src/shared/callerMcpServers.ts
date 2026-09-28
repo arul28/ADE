@@ -177,6 +177,73 @@ export function callerMcpUnsupportedTransport(
 }
 
 /**
+ * Why `servers` cannot be delivered to `provider`, or null when they can (or
+ * when there are none). The one check create, a model switch, and
+ * `updateSession({ mcpServers })` all run — each wraps it in its own message,
+ * because each caller did something different to reach it.
+ *
+ * `provider`: the provider has no MCP surface; `mechanism` is its table text
+ * (null for a provider missing from the table). `transport`: the provider
+ * accepts servers but has no client for the transport the named ones speak.
+ */
+export type CallerMcpDeliveryProblem =
+  | { kind: "provider"; mechanism: string | null }
+  | { kind: "transport"; transport: string; names: string[] };
+
+export function callerMcpDeliveryProblem(
+  provider: AgentChatProvider | string,
+  servers: CallerMcpServers | null | undefined,
+): CallerMcpDeliveryProblem | null {
+  if (!servers) return null;
+  if (!providerAcceptsCallerMcpServers(provider)) {
+    return { kind: "provider", mechanism: callerMcpSupport(provider)?.mechanism ?? null };
+  }
+  const unsupported = callerMcpUnsupportedTransport(provider, servers);
+  return unsupported ? { kind: "transport", ...unsupported } : null;
+}
+
+/**
+ * The capability report a session carries, or null when it should carry none.
+ *
+ * The gate is "servers, or strict explicitly requested": an explicit
+ * `strictMcpConfig: false` with no servers emits NO report, because an absent
+ * report is how every consumer tells "no MCP was requested" from "here is what
+ * ADE did with your request".
+ */
+export function callerMcpCapabilityFor(
+  provider: AgentChatProvider | string,
+  { servers, strict }: { servers: CallerMcpServers | null | undefined; strict: boolean | null | undefined },
+): AgentChatMcpCapability | null {
+  if (!servers && strict !== true) return null;
+  return resolveCallerMcpCapability(provider, {
+    hasServers: servers != null,
+    strictRequested: strict === true,
+  });
+}
+
+/**
+ * The transcript warning for servers restored without the header values the
+ * host once gave them, or null when nothing was withheld. `key` identifies the
+ * withheld set, so a caller can warn once per set rather than once per launch.
+ * The fix is the host's: send the servers again with
+ * `updateSession({ mcpServers })`.
+ */
+export function callerMcpMissingHeadersNotice(
+  servers: CallerMcpServers | null | undefined,
+): { key: string; message: string } | null {
+  const missing = callerMcpServersMissingHeaders(servers);
+  if (!missing.length) return null;
+  return {
+    key: missing.join("\u0000"),
+    message:
+      `MCP ${missing.length > 1 ? "servers" : "server"} ${missing.map((name) => `'${name}'`).join(", ")} `
+      + "restarted without the headers the host supplied, because ADE does not store header values. "
+      + "The host must send the servers again (updateSession with mcpServers) before tools that need "
+      + "those credentials will work.",
+  };
+}
+
+/**
  * The one place that turns "what did the caller ask for" plus "what can this
  * provider do" into the report an embedder reads. Both the create path and the
  * model-switch path call it, so a switch can never produce a report shaped
@@ -522,11 +589,8 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
     } catch {
       return {
         ok: false,
-        // Not a URL, so the URL scrubber cannot see its query string; cut it
-        // by hand, since a malformed URL can still carry a token.
-        problem: `server '${name}' has a url that is not a valid absolute URL: ${
-          url.includes("?") ? `${url.slice(0, url.indexOf("?"))}?<redacted>` : url
-        }`,
+        // A malformed URL can still carry a token in its query string.
+        problem: `server '${name}' has a url that is not a valid absolute URL: ${redactUrl(url)}`,
       };
     }
     // Scheme allow-list, not a block-list. `file:` would read local paths and a
@@ -814,6 +878,9 @@ export function callerMcpServersToDroidList(
  * would be sent to the server as if it were the token. Stdio servers are
  * returned unchanged — their `env` is launch configuration the provider needs
  * to start the process at all after a restart.
+ *
+ * Twin: `toStoredMcpServers` in packages/sdk/src/mcpHeaders.ts, the SDK's
+ * copy for the host side. Change the two together.
  */
 export function withholdCallerMcpHeaderValues(servers: CallerMcpServers): CallerMcpServers {
   const out: CallerMcpServers = {};
@@ -841,13 +908,20 @@ export function callerMcpServersMissingHeaders(servers: CallerMcpServers | null 
     .map(([name]) => name);
 }
 
-/** `scheme://host[:port]/path` with any userinfo, query string, and fragment replaced. */
+/**
+ * `scheme://host[:port]/path` with any userinfo, query string, and fragment
+ * replaced. Text that does not parse as a URL keeps everything before its first
+ * `?`.
+ */
 function redactUrl(raw: string): string {
   let parsed: URL;
   try {
     parsed = new URL(raw);
   } catch {
-    return raw;
+    // Not a URL, so there is no query string to parse out; cut it by hand,
+    // since a malformed URL can still carry a token.
+    const query = raw.indexOf("?");
+    return query >= 0 ? `${raw.slice(0, query)}?<redacted>` : raw;
   }
   const hadUserinfo = parsed.username.length > 0 || parsed.password.length > 0;
   const hadQuery = parsed.search.length > 0;

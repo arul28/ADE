@@ -44,12 +44,12 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ChatAttachment,
-  HistoryPage,
-  HistoryPageRequest,
+  ThreadHistoryPage,
+  HistoryPageOptions,
   ModelDescriptor,
   ProviderStatus,
   SendInput,
-  ThreadModelInfo,
+  ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
   ThreadUsage,
@@ -140,7 +140,7 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
      * Restated rather than picked: `@ade-dev/sdk` 0.3 resolves it to the
      * selection plus the new capability reports, 0.2 and the Electron bridge to
      * the selection alone. The adapter reads the result only as an optional
-     * `ThreadModelInfo`, so every generation fits.
+     * `ThreadModelSelection`, so every generation fits.
      */
     setModel?(modelId: string): Promise<unknown>;
     /**
@@ -155,7 +155,7 @@ export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "hist
      * present, so `useAdeThread` can tell a paging client from one that loads
      * the whole window in one `history()` read.
      */
-    historyPage?(request?: HistoryPageRequest): Promise<{
+    historyPage?(request?: HistoryPageOptions): Promise<{
       events: AgentChatEventEnvelope[];
       hasMore: boolean;
       nextBeforeSequence?: number | null;
@@ -284,10 +284,9 @@ export function threadStatusFromEnvelope(envelope: AgentChatEventEnvelope): Thre
       case "completed":
       case "interrupted":
         return { state: "idle", turnId };
+      // Also the SDK's synthetic status for a runtime that exited mid-turn
+      // (`synthetic: true`), which no `done` follows.
       case "failed":
-      // The SDK's synthetic status for a runtime that exited mid-turn. Without
-      // this arm it mapped to null and the composer stayed "running" forever.
-      case "error":
         return {
           state: "error",
           turnId,
@@ -430,40 +429,60 @@ function toSendText(input: SendInput | string): string {
   return typeof input === "string" ? input : input.text;
 }
 
-/**
- * Image formats a provider accepts as pixels. Kept identical to the inference
- * in `@ade-dev/sdk` (`AgentChatFileRef.type`), so the same file is typed the
- * same way whichever layer fills the field in.
+/*
+ * ONE RULE, THREE COPIES. `IMAGE_EXTENSIONS`, `isImageAttachmentPath` and
+ * `inferAttachmentType` below are a word-for-word copy of the runtime's own
+ * `inferAttachmentType` rule in `apps/desktop/src/shared/types/chat.ts`, and
+ * `@ade-dev/sdk` carries the same copy in `packages/sdk/src/attachments.ts`.
+ * This package cannot import either (the SDK is an optional peer and this runs
+ * in a browser), so a change to the rule is made in all three places or none.
  */
-const IMAGE_MIME_TYPES: ReadonlySet<string> = new Set([
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "image/gif",
-  "image/webp",
-]);
-const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
 
-function extensionOf(value: string | undefined): string | null {
-  if (!value) return null;
-  // Both separators: a Windows path reaches here verbatim.
-  const base = value.split(/[\\/]/).pop() ?? "";
-  const dot = base.lastIndexOf(".");
-  return dot > 0 ? base.slice(dot + 1).toLowerCase() : null;
+/** The runtime's `IMAGE_ATTACHMENT_MEDIA_TYPES` keys: the extensions it reads as images. */
+const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".heif",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".svg",
+  ".tif",
+  ".tiff",
+  ".webp",
+]);
+
+/** The runtime's `isImageAttachmentPath`: the last suffix of the path, lowercased. */
+function isImageAttachmentPath(filePath: string): boolean {
+  const extension = filePath.match(/\.[^./\\]+$/)?.[0]?.toLowerCase();
+  return extension ? IMAGE_EXTENSIONS.has(extension) : false;
 }
 
 /**
- * `"image"` or `"file"` for one attachment. An explicit `type` wins; then the
- * MIME type; then the extension of the name or the path. Anything unrecognised
- * is a file, which the runtime sends as a path hint — the safe reading, since
- * sending non-image bytes as an image is a provider error.
+ * `"image"` or `"file"` for one attachment, by the runtime's rule.
+ *
+ * Any `image/*` mime type means image. Otherwise — including for a non-image
+ * mime type, which does NOT force `"file"` — the path's extension decides:
+ * `.bmp .gif .heic .heif .ico .jpeg .jpg .png .svg .tif .tiff .webp` are
+ * images, everything else is a file. Same name, signature and answer as the
+ * runtime's `inferAttachmentType`.
+ */
+export function inferAttachmentType(filePath: string, mimeType?: string | null): "file" | "image" {
+  if (mimeType?.toLowerCase().startsWith("image/")) return "image";
+  return isImageAttachmentPath(filePath) ? "image" : "file";
+}
+
+/**
+ * `"image"` or `"file"` for one attachment: an explicit `type` wins, else
+ * `inferAttachmentType` on its `uri` — the path the runtime receives, so the
+ * runtime would infer the same — with its `mimeType`. `name` stands in only
+ * for an attachment with no `uri`, which is never sent.
  */
 export function attachmentKind(attachment: ChatAttachment): "file" | "image" {
   if (attachment.type) return attachment.type;
-  const mime = attachment.mimeType?.trim().toLowerCase();
-  if (mime) return IMAGE_MIME_TYPES.has(mime) ? "image" : "file";
-  const extension = extensionOf(attachment.name) ?? extensionOf(attachment.uri);
-  return extension && IMAGE_EXTENSIONS.has(extension) ? "image" : "file";
+  return inferAttachmentType(attachment.uri || attachment.name || "", attachment.mimeType);
 }
 
 function toFileRefs(input: SendInput | string): SdkFileRef[] | undefined {
@@ -487,6 +506,23 @@ function toFileRefs(input: SendInput | string): SdkFileRef[] | undefined {
     })
     .filter((ref): ref is SdkFileRef => ref !== null);
   return refs.length > 0 ? refs : undefined;
+}
+
+/**
+ * The one normalizer for a resolved model: the fields this package reads, or
+ * null for anything without a `modelId`. Used for `AdaptedThread.model` and for
+ * what `setModel` resolves to, whose shape differs by SDK generation.
+ */
+export function readThreadModelSelection(value: unknown): ThreadModelSelection | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.modelId !== "string" || !record.modelId) return null;
+  const info: ThreadModelSelection = { modelId: record.modelId };
+  if (typeof record.displayName === "string" || record.displayName === null) {
+    info.displayName = record.displayName as string | null;
+  }
+  if (typeof record.provider === "string" && record.provider) info.provider = record.provider;
+  return info;
 }
 
 /** The `(channel, listener)` pairs `AdaptedThread.on` accepts. */
@@ -520,7 +556,7 @@ class AdaptedThread implements AdeThread {
   readonly pendingApprovals?: () => Promise<readonly ApprovalRequest[]>;
 
   /** Present only when the inner thread pages, so the hook can feature-detect it. */
-  readonly historyPage?: (request?: HistoryPageRequest) => Promise<HistoryPage>;
+  readonly historyPage?: (request?: HistoryPageOptions) => Promise<ThreadHistoryPage>;
 
   constructor(private readonly inner: SdkLikeThread) {
     if (inner.setModel) {
@@ -551,13 +587,8 @@ class AdaptedThread implements AdeThread {
    * Read through to the inner thread every time: the SDK replaces its value
    * after `setModel`, so a copy taken at construction would go stale.
    */
-  get model(): ThreadModelInfo | null {
-    const model = this.inner.model;
-    if (!model || typeof model.modelId !== "string" || !model.modelId) return null;
-    const info: ThreadModelInfo = { modelId: model.modelId };
-    if (model.displayName !== undefined) info.displayName = model.displayName;
-    if (model.provider) info.provider = model.provider;
-    return info;
+  get model(): ThreadModelSelection | null {
+    return readThreadModelSelection(this.inner.model);
   }
 
   get key(): string {

@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   attachmentIsReferenceOnly,
   getImageAttachmentMediaType,
+  referenceOnlyHintFor,
   type AgentChatFileRef,
 } from "../../../shared/types/chat";
 import {
@@ -111,7 +112,7 @@ export async function buildClaudeV2MessageAsync(
   const imageAttachments = attachments.filter(sendsImageBytes);
   if (!imageAttachments.length) {
     const text = attachments.length
-      ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
+      ? `${promptText}\n\n${attachments.map(referenceOnlyHintFor).join("\n")}`
       : promptText;
     return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
@@ -122,7 +123,7 @@ export async function buildClaudeV2MessageAsync(
 
   for (const attachment of attachments) {
     if (!sendsImageBytes(attachment)) {
-      content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
+      content.push({ type: "text", text: `\n${referenceOnlyHintFor(attachment)}` });
       continue;
     }
 
@@ -202,7 +203,7 @@ export function buildClaudeV2Message(
   if (!imageAttachments.length) {
     // No images -- include file paths as text hints, return plain string
     const text = attachments.length
-      ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
+      ? `${promptText}\n\n${attachments.map(referenceOnlyHintFor).join("\n")}`
       : promptText;
     return options.forceUserMessage ? wrapAsUserMessage(text) : text;
   }
@@ -215,7 +216,7 @@ export function buildClaudeV2Message(
 
   for (const attachment of attachments) {
     if (!sendsImageBytes(attachment)) {
-      content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
+      content.push({ type: "text", text: `\n${referenceOnlyHintFor(attachment)}` });
       continue;
     }
 

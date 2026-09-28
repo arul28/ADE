@@ -26,7 +26,6 @@ import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 import { historyPageBeforeSequence } from "../sync/syncRemoteCommandService";
-import { withholdCallerMcpHeaderValues } from "../../../../desktop/src/shared/callerMcpServers";
 
 /**
  * An embedder's message args, with every marker only ADE may author removed.
@@ -551,12 +550,10 @@ export class PersonalChatScope {
         // `mcpServers` rides through with the rest: the chat service accepts
         // it only for a personal session, which `requirePersonalSession` has
         // just established, and validates it exactly as create does.
-        const updated = await service.updateSession(args as never);
-        // The live session object carries the header values the host just
-        // sent; the reply does not need to echo a credential back.
-        result = updated.mcpServers
-          ? { ...updated, mcpServers: withholdCallerMcpHeaderValues(updated.mcpServers) }
-          : updated;
+        await service.updateSession(args as never);
+        // The same shape create returns. The summary already withholds header
+        // values, so the reply never echoes back a credential the host sent.
+        result = await service.getSessionSummary(sessionId);
         break;
       }
       case "archive":

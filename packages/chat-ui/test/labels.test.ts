@@ -17,6 +17,7 @@ function chip(overrides: Partial<ToolChipRow> = {}): ToolChipRow {
     type: "tool_chip",
     id: "tool::t1::i1",
     tool: "server.tool",
+    identity: { server: null, tool: "server.tool" },
     args: {},
     status: "running",
     turnId: "t1",

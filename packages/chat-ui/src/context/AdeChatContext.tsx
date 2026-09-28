@@ -27,12 +27,13 @@ import type {
   ModelDescriptor,
   ProviderStatus,
   SendInput,
-  ThreadModelInfo,
+  ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
   ThreadUsage,
 } from "../sdkTypes";
 import type { ActivityLabelConfig } from "../activity/labels";
+import { readThreadModelSelection } from "../adapters/sdkClient";
 import { TranscriptRowBuilder, type TranscriptRow } from "../transcript/transcriptRows";
 
 export type AdeChatContextValue = {
@@ -173,7 +174,7 @@ export type ThreadState = {
    * successful `setModel`. Null when the client does not report one (an SDK
    * before 0.3, a proxy), and a UI then names the model from its catalog.
    */
-  model: ThreadModelInfo | null;
+  model: ThreadModelSelection | null;
   /**
    * Older history exists that is not loaded yet. Only ever true on a client
    * with `historyPage`; a client that reads history in one `history()` call has
@@ -197,18 +198,6 @@ export const DEFAULT_HISTORY_PAGE_SIZE = 200;
 
 /** Where the next older page starts, or null when there is none to read. */
 type OlderCursor = { beforeSequence: number } | null;
-
-function readModelInfo(value: unknown): ThreadModelInfo | null {
-  if (!value || typeof value !== "object") return null;
-  const record = value as Record<string, unknown>;
-  if (typeof record.modelId !== "string" || !record.modelId) return null;
-  const info: ThreadModelInfo = { modelId: record.modelId };
-  if (typeof record.displayName === "string" || record.displayName === null) {
-    info.displayName = record.displayName as string | null;
-  }
-  if (typeof record.provider === "string" && record.provider) info.provider = record.provider;
-  return info;
-}
 
 /** The oldest sequence in a list, for paging a runtime that sent no cursor. */
 function oldestSequence(envelopes: readonly AgentChatEventEnvelope[]): number | null {
@@ -274,26 +263,27 @@ export function useAdeThread(
   const builderRef = useRef<TranscriptRowBuilder>(new TranscriptRowBuilder());
   const [olderCursor, setOlderCursor] = useState<OlderCursor>(null);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [model, setModelInfo] = useState<ThreadModelInfo | null>(null);
+  const [model, setModelInfo] = useState<ThreadModelSelection | null>(null);
   /** Bumped per open, so a page that lands after a key change is dropped. */
   const openEpochRef = useRef(0);
   /**
-   * Requests the runtime is still blocked on that the transcript does not show.
+   * Requests the runtime is still blocked on that the transcript does not show
+   * (`restored`), and when they were read (`at`, an ISO timestamp).
    *
    * Kept beside the envelopes rather than mixed into them: they are requests,
    * not events, and `buildTranscriptRows` takes them as such. A resolution that
-   * arrives live settles the card through the normal collapse rules.
+   * arrives live settles the card through the normal collapse rules. `at` is
+   * captured once, at the restore, and held so every rebuild places the card
+   * at the same instant: the restored rows sort in at this time rather than
+   * appending, so a message that streams in afterwards renders below the card.
+   * A ref, not state: only rebuilds read it, and nothing renders from it.
    */
-  const [restoredApprovals, setRestoredApprovals] = useState<readonly ApprovalRequest[]>([]);
-  /**
-   * When `restoredApprovals` was read, as an ISO timestamp.
-   *
-   * Captured once, at the restore, and held so every rebuild places the card at
-   * the same instant. `buildTranscriptRows` sorts the restored rows in at this
-   * time rather than appending them, so a message that streams in afterwards
-   * renders below the card instead of above it.
-   */
-  const [restoredAt, setRestoredAt] = useState<string | null>(null);
+  const restoredRef = useRef<{ restored: readonly ApprovalRequest[]; at: string | null }>({
+    restored: [],
+    at: null,
+  });
+  /** A `loadOlder()` read is in flight; the ref twin of `loadingOlder` for guards. */
+  const loadingOlderRef = useRef(false);
   const [status, setStatus] = useState<ThreadStatus>(IDLE_STATUS);
   const [usage, setUsage] = useState<ThreadUsage | null>(null);
   const [error, setError] = useState<Error | null>(null);
@@ -352,8 +342,7 @@ export function useAdeThread(
     // epoch check drops the result, and this frees the next key to page.
     loadingOlderRef.current = false;
     setModelInfo(null);
-    setRestoredApprovals([]);
-    setRestoredAt(null);
+    restoredRef.current = { restored: [], at: null };
     setStatus(IDLE_STATUS);
     setUsage(null);
     if (!enabled) return;
@@ -442,9 +431,8 @@ export function useAdeThread(
         envelopesRef.current = merged;
         rebuildRows(restored, restoredReadAt);
         setOlderCursor(cursor);
-        setRestoredApprovals(restored);
-        setRestoredAt(restoredReadAt);
-        setModelInfo(readModelInfo(opened.model));
+        restoredRef.current = { restored, at: restoredReadAt };
+        setModelInfo(opened.model ?? null);
         setThread(opened);
         setError(null);
       })
@@ -491,17 +479,11 @@ export function useAdeThread(
     // The thread's own property first (the SDK updates it), then what
     // `setModel` returned; a client with neither keeps the old value null.
     if (threadRef.current === target) {
-      setModelInfo(readModelInfo(target.model) ?? readModelInfo(selection));
+      setModelInfo(target.model ?? readThreadModelSelection(selection));
     }
   }, []);
 
   /** See `ThreadState.loadOlder`. */
-  const restoredRef = useRef<{ restored: readonly ApprovalRequest[]; at: string | null }>({
-    restored: [],
-    at: null,
-  });
-  restoredRef.current = { restored: restoredApprovals, at: restoredAt };
-  const loadingOlderRef = useRef(false);
   const loadOlder = useCallback(async () => {
     const target = threadRef.current;
     if (!target || typeof target.historyPage !== "function") return;

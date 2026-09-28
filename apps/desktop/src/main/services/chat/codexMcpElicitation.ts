@@ -48,12 +48,6 @@ function enumOptions(property: Record<string, unknown>): Array<{ label: string; 
   ));
 }
 
-export function mcpElicitationAllowsAlways(meta: unknown): boolean {
-  const persist = readRecord(meta)?.persist;
-  return persist === "always"
-    || (Array.isArray(persist) && persist.some((value) => value === "always"));
-}
-
 function mcpElicitationOffersPersist(meta: unknown, scope: "session" | "always"): boolean {
   const persist = readRecord(meta)?.persist;
   return persist === scope

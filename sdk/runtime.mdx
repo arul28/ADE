@@ -58,7 +58,7 @@ Each `on` returns an unsubscribe function. The listeners stay attached across an
 **Every live thread gets a synthetic status.** A runtime that stops mid-turn sends no `done` and no `error`. So the SDK sends this envelope on each live thread's `status` channel:
 
 ```ts
-{ type: "status", turnStatus: "error", message: "The ADE runtime exited (…)", synthetic: true }
+{ type: "status", turnStatus: "failed", message: "The ADE runtime exited (…)", synthetic: true }
 ```
 
 Show the thread as stopped when you get it. Approvals that were pending died with the provider process. Their `approvalTimeoutMs` clocks stop.

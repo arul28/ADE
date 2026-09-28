@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { McpServerConfig } from "./types.js";
 
 /**
@@ -11,6 +12,13 @@ import type { McpServerConfig } from "./types.js";
  * good. The durable record now keeps only the header NAMES. The values are
  * resolved again at every create, resume and restart, from the caller's
  * `refresh.mcpServers` or from the client's `mcpHeaders` callback.
+ *
+ * RUNTIME TWIN. The runtime withholds header values from its own durable
+ * session record the same way: `withholdCallerMcpHeaderValues` (and
+ * `normalizeHeaderNames`) in `apps/desktop/src/shared/callerMcpServers.ts`.
+ * Keep the two in step — names only, trimmed, empty names dropped, and
+ * deduplicated case-insensitively (HTTP header names are case-insensitive, so
+ * `Authorization` and `authorization` are one header), first spelling kept.
  */
 
 /** A caller MCP server as it is persisted: header names, never header values. */
@@ -36,9 +44,26 @@ function isRemote(
   return server.type === "http" || server.type === "sse";
 }
 
+/**
+ * Header names, trimmed, empty ones dropped, deduplicated case-insensitively
+ * with the first spelling kept — the runtime's `normalizeHeaderNames` rule.
+ */
+function uniqueHeaderNames(names: Iterable<unknown>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of names) {
+    if (typeof entry !== "string") continue;
+    const name = entry.trim();
+    if (!name || seen.has(name.toLowerCase())) continue;
+    seen.add(name.toLowerCase());
+    out.push(name);
+  }
+  return out;
+}
+
 function headerNamesOf(headers: unknown): string[] {
   if (!headers || typeof headers !== "object") return [];
-  return Object.keys(headers as Record<string, unknown>).filter((name) => name.length > 0);
+  return uniqueHeaderNames(Object.keys(headers as Record<string, unknown>));
 }
 
 /**
@@ -83,18 +108,13 @@ export function readStoredMcpServers(
     if (!raw || typeof raw !== "object") continue;
     const entry = raw as Record<string, unknown>;
     if ((entry.type === "http" || entry.type === "sse") && typeof entry.url === "string") {
-      const names = new Set<string>();
-      if (Array.isArray(entry.headerNames)) {
-        for (const header of entry.headerNames) if (typeof header === "string" && header) names.add(header);
-      }
-      if (entry.headers !== undefined) {
-        migrated = true;
-        for (const header of headerNamesOf(entry.headers)) names.add(header);
-      }
+      const listed = Array.isArray(entry.headerNames) ? entry.headerNames : [];
+      if (entry.headers !== undefined) migrated = true;
+      const names = uniqueHeaderNames([...listed, ...headerNamesOf(entry.headers)]);
       servers[name] = {
         type: entry.type,
         url: entry.url,
-        ...(names.size > 0 ? { headerNames: [...names] } : {}),
+        ...(names.length > 0 ? { headerNames: names } : {}),
       };
     } else if (entry.type === "stdio" && typeof entry.command === "string") {
       servers[name] = entry as StoredMcpServerConfig;
@@ -154,4 +174,28 @@ export function missingHeadersWarning(
     `They were sent without them. Pass refresh.mcpServers to threads.open, or an mcpHeaders ` +
     `callback to createAdeChat, so the host supplies current credentials.`
   );
+}
+
+/**
+ * A one-way fingerprint of a resolved server map, header values included.
+ *
+ * Lets a client tell "these are the servers I already pushed" from a real
+ * change without keeping the credentials around to compare: a renderer reload
+ * that sends the same `refresh` must not make `updateSession` restart the
+ * provider for nothing. Key order does not matter. Held in memory only; never
+ * persisted.
+ */
+export function mcpServersFingerprint(servers: Record<string, McpServerConfig>): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") {
+      return Object.fromEntries(
+        Object.keys(value as Record<string, unknown>)
+          .sort()
+          .map((name) => [name, canonical((value as Record<string, unknown>)[name])]),
+      );
+    }
+    return value;
+  };
+  return createHash("sha256").update(JSON.stringify(canonical(servers))).digest("hex");
 }

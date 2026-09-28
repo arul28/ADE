@@ -105,7 +105,7 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `instructionsCapability` | `{ requested, level, mode, mechanism, detail }` or `null`. |
 | `settingSourcesCapability` | `{ requested, level, value, mechanism, detail }` or `null`. |
 | `permissionCapability` | `{ level, mechanism, residual }` or `null`. Refreshed after `setModel`. |
-| `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. When the runtime exits, each live thread receives `{ type: "status", turnStatus: "error", message, synthetic: true }` on `status`. |
+| `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. When the runtime exits, each live thread receives `{ type: "status", turnStatus: "failed", message, synthetic: true }` on `status`. |
 
 The three capability fields are `null` when the thread requested nothing, **and** when an older runtime reported nothing. `level` is `"applied"` \| `"best-effort"` \| `"ignored"` for the two host-config reports, and `"enforced"` \| `"best-effort"` \| `"unsupported"` for the permission one.
 

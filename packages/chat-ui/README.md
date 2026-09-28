@@ -125,7 +125,9 @@ Controlled attachments: `onAttachmentsChange` always receives the FULL new
 list, so replace your state with it and never append. A picker result is merged
 into the latest list (not the list from when the picker opened), duplicates are
 removed by `id`, and a remove click removes one `id`. Every attachment is sent
-with `type` (`"image"` for png/jpg/jpeg/gif/webp, else `"file"`).
+with `type`: `"image"` for an `image/*` MIME type or an image extension (bmp,
+gif, heic, heif, ico, jpeg, jpg, png, svg, tif, tiff, webp), else `"file"`. This
+is the runtime's own rule.
 
 Submitting during a running turn dispatches `onSteer`, never a second `onSend`,
 and staged attachments go with the steer. Enter sends, Shift+Enter is a newline, IME composition never submits, Escape

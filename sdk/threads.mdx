@@ -120,7 +120,7 @@ The SDK adds two envelopes of its own to the `status` channel. Both carry `synth
 
 | `event.type` | When |
 |---|---|
-| `status` with `turnStatus: "error"` and a `message` | The runtime exited or its socket closed. A runtime that stops mid-turn sends nothing, so without this event a subscriber would show "running" with no end. See [Runtime](/sdk/runtime#when-the-runtime-exits). |
+| `status` with `turnStatus: "failed"`, `synthetic: true` and a `message` | The runtime exited or its socket closed. A runtime that stops mid-turn sends nothing, so without this event a subscriber would show "running" with no end. See [Runtime](/sdk/runtime#when-the-runtime-exits). |
 | `capabilities_changed` | After `setModel()`. It carries the four capability reports for the new provider. |
 
 ### History
@@ -283,7 +283,9 @@ type AgentChatFileRef = {
 
 `"image"` sends the bytes as an image that the model can see. `"file"` sends a path hint, and the model opens the file with its own tools.
 
-When you do not set `type`, the SDK sets it before it sends the attachment. `mimeType` wins when it is present: `image/png`, `image/jpeg`, `image/jpg`, `image/gif` and `image/webp` give `"image"`, and any other MIME type gives `"file"`. Without `mimeType`, the extension of `path` or `name` decides: `.png`, `.jpg`, `.jpeg`, `.gif` and `.webp` give `"image"`. An explicit `type` always wins. `inferAttachmentType(ref)` is exported if you need the same rule.
+When you do not set `type`, the SDK sets it before it sends the attachment, with the runtime's own rule. An `image/*` `mimeType` gives `"image"`. Otherwise the extension of `path` decides: `.bmp`, `.gif`, `.heic`, `.heif`, `.ico`, `.jpeg`, `.jpg`, `.png`, `.svg`, `.tif`, `.tiff` and `.webp` give `"image"`, and everything else gives `"file"`. An explicit `type` always wins. `inferAttachmentType(path, mimeType?)` is exported if you need the same rule.
+
+A provider still decides which image formats it accepts. Claude takes jpeg, png, gif and webp up to 10 MB inline, and sends any other image as a path hint.
 
 Before 0.3 the field did not exist, and every image reached the model as a path hint.
 
