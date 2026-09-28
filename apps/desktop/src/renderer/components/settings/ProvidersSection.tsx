@@ -48,6 +48,7 @@ import { HarnessesPage } from "./harnesses/HarnessesPage";
 import { useHarnessPresets } from "./harnesses/useHarnessPresets";
 import { CustomToolMark } from "../shared/CustomToolMark";
 import { HelpHint } from "./primitives/HelpHint";
+import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 
 /** The one sentence behind the "?" on the Custom section. */
 const CUSTOM_ENTRY_HELP = "An agent and the model it runs on, saved together — pick one in any model picker to start a chat with that whole setup.";
@@ -349,6 +350,7 @@ export function ProvidersSection({
   onHarnessesChange?: (open: boolean) => void;
 } = {}) {
   const navigate = useNavigate();
+  const usageHeaderPreferences = useUsageHeaderPreferences();
   // Claude and Codex can hold several local logins; the row says how many so
   // the count is visible without opening the page.
   const accountCounts = useProviderAccountCounts();
@@ -1219,6 +1221,18 @@ export function ProvidersSection({
           anchor="ai-providers"
           title="AI providers"
           description="Every coding agent ADE can run. Open one to sign in, choose models, or turn it off."
+          toolbar={(
+            <button
+              type="button"
+              role="switch"
+              aria-checked={usageHeaderPreferences.showInHeader}
+              onClick={() => setUsageHeaderVisible(!usageHeaderPreferences.showInHeader)}
+              style={{ ...outlineButton(), display: "inline-flex", alignItems: "center", gap: 7 }}
+            >
+              <span aria-hidden>{usageHeaderPreferences.showInHeader ? "◉" : "○"}</span>
+              Show usage in header
+            </button>
+          )}
         >
           <SettingsManagerTable columns={PROVIDER_COLUMNS} minWidth={620}>
             {descriptors.map((descriptor) => (

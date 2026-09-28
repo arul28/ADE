@@ -889,3 +889,12 @@ windows carried, no such message), and a rejected token produces the
 "reconnect" state instead. The next successful poll clears it and resets
 `providerFailureCount`, and `Retry-After`/exponential backoff bounds the retry
 storm, so it self-heals.
+
+## Compact header visibility
+
+The top-bar usage control shows all tracked providers by default. In the expanded
+Limits panel, each provider has an eye control to include or hide that provider
+from the compact header; provider rows remain available in the expanded panel.
+The AI providers settings page has a **Show usage in header** switch. Hiding the
+last provider hides the header control and turns that switch off. Turning it back
+on restores all providers to the header.
