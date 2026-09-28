@@ -1,7 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useRef, useState } from "react";
 import { CheckCircle, XCircle } from "@phosphor-icons/react";
 import type { AiApiKeyVerificationResult } from "../../../shared/types";
 import type { OpenCodeProviderAuthMethod } from "../../../shared/types/config";
+import { openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
 import { COLORS, MONO_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { OAuthConnectModal } from "./OAuthConnectModal";
 import { ProviderDetailDialog } from "./providerSectionPrimitives";
@@ -31,6 +32,32 @@ export type ApiKeySource = "config" | "env" | "store";
 
 /** Another provider's sign-in, for a provider with none of its own. */
 export type OpenCodeSignInVia = { providerId: string; providerName: string; methods: OpenCodeProviderAuthMethod[] };
+
+/**
+ * The open detail view's row and the sign-in it borrows, if any (OpenCode Go
+ * signs in through `opencode`). The row outlives a refresh that briefly drops
+ * it, so the dialog, and any sign-in running inside it, is not unmounted.
+ */
+export function useOpenCodeProviderDetail(
+  detailProviderId: string | null,
+  catalog: readonly OpenCodeProviderDetail[],
+): { provider: OpenCodeProviderDetail | null; signInVia: OpenCodeSignInVia | undefined } {
+  const lastRef = useRef<OpenCodeProviderDetail | null>(null);
+  const provider = useMemo(() => {
+    if (!detailProviderId) return null;
+    const found = catalog.find((p) => p.id === detailProviderId);
+    if (found) return found;
+    return lastRef.current?.id === detailProviderId ? lastRef.current : null;
+  }, [detailProviderId, catalog]);
+  lastRef.current = provider;
+  const signInVia = useMemo((): OpenCodeSignInVia | undefined => {
+    const viaId = provider ? openCodeSignInViaProvider(provider.id) : null;
+    const via = viaId ? catalog.find((p) => p.id === viaId) : undefined;
+    if (!via?.methods.some((m) => m.type === "oauth")) return undefined;
+    return { providerId: via.id, providerName: via.name, methods: via.methods };
+  }, [provider, catalog]);
+  return { provider, signInVia };
+}
 
 const sectionLabelStyle: React.CSSProperties = {
   fontSize: 10,
@@ -103,7 +130,11 @@ export function OpenCodeProviderDetailModal({
     : oauthMethods.length > 0
       ? provider.signedIn === true || provider.hasKey
       : provider.connected;
-  const [oauthOpen, setOauthOpen] = useState(false);
+  // The sign-in dialog runs against the target it opened with: a refresh that
+  // changes `signInVia` mid-flow must not retarget it, which would cancel the
+  // running sign-in and filter out its "connected" event.
+  const [oauthTarget, setOauthTarget] = useState<OpenCodeSignInVia | null>(null);
+  const openOauth = () => setOauthTarget(signInTarget);
   const [editing, setEditing] = useState(false);
   const [keyValue, setKeyValue] = useState("");
   const [busy, setBusy] = useState(false);
@@ -207,7 +238,7 @@ export function OpenCodeProviderDetailModal({
                             type="button"
                             style={outlineButton({ height: 28 })}
                             disabled={busy}
-                            onClick={() => setOauthOpen(true)}
+                            onClick={openOauth}
                             aria-label={`Sign in again to ${provider.name}`}
                           >
                             Sign in again
@@ -231,7 +262,7 @@ export function OpenCodeProviderDetailModal({
                       type="button"
                       style={primaryButton()}
                       disabled={busy}
-                      onClick={() => setOauthOpen(true)}
+                      onClick={openOauth}
                       aria-label={`Sign in to ${provider.name}`}
                     >
                       Sign in
@@ -352,14 +383,14 @@ export function OpenCodeProviderDetailModal({
             </div>
       </ProviderDetailDialog>
 
-      {oauthOpen ? (
+      {oauthTarget ? (
         <OAuthConnectModal
-          providerId={signInTarget.providerId}
-          providerName={signInTarget.providerName}
-          methods={signInTarget.methods}
-          onClose={() => setOauthOpen(false)}
+          providerId={oauthTarget.providerId}
+          providerName={oauthTarget.providerName}
+          methods={oauthTarget.methods}
+          onClose={() => setOauthTarget(null)}
           onConnected={() => {
-            setOauthOpen(false);
+            setOauthTarget(null);
             onConnected();
           }}
         />

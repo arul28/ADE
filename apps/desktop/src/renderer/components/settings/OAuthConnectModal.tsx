@@ -14,7 +14,6 @@ import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesign
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { pinKey } from "../../state/projectMachines";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -126,12 +125,10 @@ export function OAuthConnectModal({
   // The OAuth flow runs in the page's machine's runtime; start, cancel and the
   // status feed must all name that machine.
   const { pin } = useSettingsMachineScope();
-  // Effects below key on the machine, not on the pin object or the parent's
-  // callbacks: re-running them mid-flow cancels the sign-in (unmount cleanup)
-  // or re-anchors the status feed past the "connected" event.
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
-  const machineKey = pinKey(pin);
+  // The parent's callbacks are read through refs so the effects below re-run
+  // only when the machine or provider changes: a re-run mid-flow cancels the
+  // sign-in (unmount cleanup) or re-anchors a pinned status feed past its
+  // "connected" event. `pin` itself is stable per machine (SettingsMachineScope).
   const onConnectedRef = useRef(onConnected);
   onConnectedRef.current = onConnected;
   const onCloseRef = useRef(onClose);
@@ -171,10 +168,10 @@ export function OAuthConnectModal({
     () => () => {
       cancelRequestedRef.current = true;
       if (startPendingRef.current || flowActiveRef.current) {
-        void window.ade.ai.opencodeOAuthCancel({ providerId }, pinRef.current).catch(() => undefined);
+        void window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
       }
     },
-    [machineKey, providerId],
+    [pin, providerId],
   );
 
   // Subscribe to backend OAuth status pushes for this provider.
@@ -196,11 +193,11 @@ export function OAuthConnectModal({
                 : "Sign-in failed."),
         );
       }
-    }, pinRef.current);
+    }, pin);
     return () => {
       unsubscribe();
     };
-  }, [machineKey, providerId]);
+  }, [pin, providerId]);
 
   const startFlow = async () => {
     cancelRequestedRef.current = false;
