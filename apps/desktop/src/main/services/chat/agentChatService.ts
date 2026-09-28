@@ -36073,16 +36073,17 @@ export function createAgentChatService(args: {
     };
 
     proc.on("error", (error) => {
-      const message = `Codex app-server failed to start: ${redactCallerMcpText(
+      const redactedError = redactCallerMcpText(
         error instanceof Error ? error.message : String(error),
         managed.session.mcpServers,
-      )}`;
+      );
+      const message = `Codex app-server failed to start: ${redactedError}`;
       logger.warn("agent_chat.codex_spawn_failed", {
         sessionId: managed.session.id,
         cwd: managed.laneWorktreePath,
         path: process.env.PATH ?? "",
         shellPath: process.env.SHELL ?? "",
-        error: error instanceof Error ? error.message : String(error),
+        error: redactedError,
       });
 
       rejectPendingCodexRequests(pending, message);

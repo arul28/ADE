@@ -241,6 +241,10 @@ registerAdeIpc(ipcMain, client, {
 
 The hook gets the key and the options that the renderer sent. Read them if you want, but do not trust them. The SDK opens the key with what the hook returns, and ignores the renderer's options. Return `undefined` to reopen a stored key with its record. For a key that this home never saw, that fails with `invalid_option`.
 
+`refresh.mcpServers` on every open is safe. Every renderer `threads.open` reaches the hook, including a key the renderer already holds, and the SDK sends the servers to the runtime only when they differ from what it last sent for that key. An unchanged token does not restart the provider.
+
+If a turn is running when a changed `refresh` arrives, the runtime refuses the update. The open still succeeds and returns the live thread, and the SDK logs one line. The thread keeps its old servers until a later open, or a `thread.updateMcpServers()` call from main, succeeds after the turn ends.
+
 **Without the hook**, the bridge forwards four renderer fields and drops the rest:
 
 | Forwarded | Dropped |

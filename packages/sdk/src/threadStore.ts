@@ -149,7 +149,9 @@ export class ThreadStore {
       const raw = await fs.promises.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       const { file, migrated } = normalize(parsed);
-      this.cache = file;
+      // The cache is set only after the migration write below. Until then,
+      // readers wait on `loading`, so no `mutate()` can write the same temp
+      // file at the same time.
       if (migrated) {
         // An SDK before 0.3 wrote MCP header values — bearer tokens — into
         // this file. Take them off disk now rather than on the next unrelated
@@ -163,6 +165,7 @@ export class ThreadStore {
           );
         }
       }
+      this.cache = file;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {

@@ -210,7 +210,7 @@ type DoctorReport = {
 
 `sdkVersion` is injected at package build time from `package.json`. Compare it to `socket.runtimeVersion` when versions disagree.
 
-`binary` is the 0.1.x view and keeps its four `source` values. `runtime` is the 0.2 view: which of the five resolution steps produced the binary, and what the OS thinks of its signature. `runtime.signature` is `null` for "not known", never for "not signed" — see [Runtime](/sdk/runtime#doctorruntime). `accepted` is Gatekeeper's verdict on the outermost `.app` that contains the runtime, and `null` when it could not be judged. `runtime.compatibility` compares the runtime version with `SUPPORTED_RUNTIME_RANGE`; see [Runtime](/sdk/runtime#version-compatibility).
+`binary` is the 0.1.x view and keeps its four `source` values. A `packaged` or `attached` runtime reports `binary.source: "option"`. `runtime` is the 0.2 view: which of the five resolution steps produced the binary, and what the OS thinks of its signature. `runtime.signature` is `null` for "not known", never for "not signed" — see [Runtime](/sdk/runtime#doctorruntime). `accepted` is Gatekeeper's verdict on the outermost `.app` that contains the runtime, and `null` when it could not be judged. `runtime.compatibility` compares the runtime version with `SUPPORTED_RUNTIME_RANGE`; see [Runtime](/sdk/runtime#version-compatibility).
 
 ## Errors
 

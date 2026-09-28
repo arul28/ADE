@@ -212,7 +212,7 @@ From runtime 1.2.81, each macOS platform package carries a `signing/` directory:
 | `signing/entitlements.runtime.plist` | The entitlements ADE signs its own runtime with: `com.apple.security.cs.allow-jit` and nothing else. |
 | `signing/manifest.json` | `{ schemaVersion: 1, entitlements, sign: [{ path, entitlements }] }`. Every Mach-O file under `native/` with `entitlements: false`, then `bin/ade` with `entitlements: true`, in the order to sign them. Paths are relative to the package root. |
 
-The hook reads the manifest, and walks the tree itself for an older package:
+The hook reads the manifest, and walks the tree itself for an older package. For that fallback, save the one-key plist from [macOS: signing](#macos-signing) as `build/entitlements.runtime.plist` in your project.
 
 ```js
 // scripts/sign-ade-runtime.cjs — electron-builder `afterPack` hook
@@ -274,7 +274,11 @@ exports.default = async function signAdeRuntime(context) {
     `${context.packager.appInfo.productFilename}.app`,
     "Contents", "Resources", "ade-runtime",
   );
-  const packageDir = path.dirname(require.resolve("@ade-dev/runtime-darwin-arm64/package.json", {
+  // electron-builder's Arch enum: 1 = x64, 3 = arm64. Copy the matching
+  // package in `extraResources` for each architecture you build.
+  const archName = { 1: "x64", 3: "arm64" }[context.arch];
+  if (!archName) throw new Error(`No ADE runtime package for arch ${context.arch}.`);
+  const packageDir = path.dirname(require.resolve(`@ade-dev/runtime-darwin-${archName}/package.json`, {
     paths: [context.packager.projectDir],
   }));
   const plan = signingPlan(runtimeDir, packageDir);

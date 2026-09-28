@@ -417,6 +417,10 @@ export async function createAdeChat(
   ): Promise<{ trimmedKey: string; sessionId: string; live: Thread | undefined }> => {
     const trimmedKey = typeof key === "string" ? key.trim() : "";
     if (!trimmedKey) throw new AdeError("invalid_option", "A thread key must be a non-empty string.");
+    // An open still resolving can recreate the session under a new id. Read
+    // the mapping only after it settles, or a delete or archive acts on the
+    // old id and leaves the new session alive without its key.
+    await openInFlight.get(trimmedKey)?.catch(() => {});
     const live = liveSessions.get(trimmedKey);
     const record = await store.get(trimmedKey);
     const sessionId = live?.id ?? record?.sessionId;
@@ -458,9 +462,6 @@ export async function createAdeChat(
     assertUsable();
     requireAction("delete", "delete");
     const { trimmedKey, sessionId, live } = await sessionForKey(key);
-    // An open that is still resolving would re-register the key after the
-    // delete; wait it out so the delete is the last word.
-    await openInFlight.get(trimmedKey)?.catch(() => {});
     await interruptIfRunning(sessionId);
     try {
       await chats.delete(sessionId);

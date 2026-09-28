@@ -79,11 +79,18 @@ export function useWindowedRows<Row extends { key: string }>(
   const gapRef = useRef(0);
   const frameRef = useRef<number | null>(null);
 
+  // Every task queued before the frame runs is kept. One slot would drop a
+  // height measurement that arrives while a scroll frame is pending, and the
+  // spacers would keep the old estimates.
+  const frameTasksRef = useRef(new Set<() => void>());
   const scheduleFrame = useCallback((task: () => void) => {
+    frameTasksRef.current.add(task);
     if (frameRef.current !== null) return;
     const run = () => {
       frameRef.current = null;
-      task();
+      const tasks = [...frameTasksRef.current];
+      frameTasksRef.current.clear();
+      for (const next of tasks) next();
     };
     frameRef.current =
       typeof requestAnimationFrame === "function"
@@ -151,6 +158,7 @@ export function useWindowedRows<Row extends { key: string }>(
         else clearTimeout(frameRef.current);
         frameRef.current = null;
       }
+      frameTasksRef.current.clear();
     };
   }, [readViewport, observer]);
 

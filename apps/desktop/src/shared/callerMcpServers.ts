@@ -920,10 +920,13 @@ function redactUrl(raw: string): string {
   try {
     parsed = new URL(raw);
   } catch {
-    // Not a URL, so there is no query string to parse out; cut it by hand,
-    // since a malformed URL can still carry a token.
-    const query = raw.indexOf("?");
-    return query >= 0 ? `${raw.slice(0, query)}?<redacted>` : raw;
+    // Not a URL, so the parser cannot find the secrets; cut them by hand,
+    // since a malformed URL can still carry a token in its userinfo, query
+    // string or fragment.
+    return raw
+      .replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/i, "$1<redacted>@")
+      .replace(/\?[^#]*/, "?<redacted>")
+      .replace(/#.*$/s, "#<redacted>");
   }
   const hadUserinfo = parsed.username.length > 0 || parsed.password.length > 0;
   const hadQuery = parsed.search.length > 0;

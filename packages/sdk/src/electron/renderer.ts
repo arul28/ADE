@@ -81,7 +81,8 @@ const STATUS = new Set<string>(STATUS_EVENT_TYPES);
  * `adaptSdkClient` takes it with no cast. The capability reports, `title` and
  * `model` are snapshots taken at open and refreshed by this handle's own
  * `setModel` and `update` calls; a change made by another renderer or by the
- * main process is seen at the next `threads.open` of the key.
+ * main process is seen at the next `threads.open` of the key, which always
+ * asks main.
  */
 export interface AdeIpcThread {
   readonly id: string;
@@ -515,7 +516,10 @@ export function createAdeIpcClient(bridge: AdeBridge): AdeIpcClient {
   async function openThread(key: string, opts?: Record<string, unknown>): Promise<AdeIpcThread> {
     const trimmed = typeof key === "string" ? key.trim() : "";
     if (!trimmed) throw new AdeError("invalid_option", "threads.open needs a non-empty key.");
-    if (threads.has(trimmed)) return buildThread(trimmed);
+    // A key this renderer already holds still goes to main: the host's
+    // `openOptions` hook runs on every open, and that is how a rotated MCP
+    // credential reaches a live thread. The existing handle keeps its
+    // listeners and takes the fresh snapshot.
     const pending = opening.get(trimmed);
     if (pending) return pending;
 

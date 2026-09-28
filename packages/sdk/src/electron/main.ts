@@ -415,7 +415,14 @@ export function registerAdeIpc(
     options: ThreadResumeOptions | undefined,
   ): Promise<AdeThread> {
     const existing = entry.threads.get(key);
-    if (existing) return existing;
+    if (existing) {
+      // A held key still takes the hook's `refresh`: that is how a rotated MCP
+      // credential reaches a live thread. The SDK applies it to the live
+      // thread, skips a map it already sent, and logs (never throws) when the
+      // runtime refuses it mid-turn.
+      if (options?.refresh) await client.threads.open(key, { refresh: options.refresh });
+      return existing;
+    }
     const pending = entry.opening.get(key);
     if (pending) return pending;
 
