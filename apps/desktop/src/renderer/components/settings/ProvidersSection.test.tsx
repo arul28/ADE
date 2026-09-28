@@ -562,6 +562,29 @@ describe("ProvidersSection", () => {
     expect(within(tile).getByText(/Verify the Cursor API key to enable Cursor chat/i)).toBeTruthy();
   });
 
+  it("keeps one Cursor status subscription when a local provider edit changes refreshStatus", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, ["lmstudio/qwen2.5-coder:32b"]));
+    // The status feed re-anchors at its live head on every subscription, so a
+    // re-subscribe drops a "success" emitted while it was swapping. Opening an
+    // unrelated editor re-creates the refresh callback; the feed must survive.
+    let subscribeCount = 0;
+    window.ade.ai.onCursorAuthStatus = vi.fn(() => {
+      subscribeCount += 1;
+      return () => undefined;
+    }) as any;
+
+    renderProvidersSection("opencode");
+
+    const edits = await screen.findAllByRole("button", { name: "Edit" });
+    expect(subscribeCount).toBe(1);
+
+    fireEvent.click(edits[0]);
+
+    expect(subscribeCount).toBe(1);
+  });
+
   it("signs in with Cursor, shows the login URL while pending, then signs out", async () => {
     const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
     getStatusMock.mockReset();

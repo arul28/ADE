@@ -37,7 +37,11 @@ export type SettingsMachineScope = {
    * are rendered then.
    */
   target: SettingsMachineTarget | null;
-  /** The pin for pin-aware preload calls, derived from `target`. */
+  /**
+   * The pin for pin-aware preload calls, derived from `target`. It keeps its
+   * identity while the machine's binding key is unchanged, so effects may key
+   * on it (`useSettingsMachinePage`).
+   */
   pin: OpenProjectBinding | null;
   /** The physical computer ADE runs on, the only one plain IPC reaches. */
   isThisMachine: boolean;

@@ -50,7 +50,7 @@ import {
   SettingsMachineEyebrow,
   SettingsMachineNavRow,
   machineSectionAvailable,
-  settingsMachinePageFor,
+  useSettingsMachinePage,
   type MachineSectionKind,
   type SettingsMachinePage,
 } from "../settings/SettingsMachinesNav";
@@ -855,9 +855,8 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   );
 
   // The machine a Machines page is about, as the section components see it.
-  const machinePageScope = useMemo<SettingsMachinePage | null>(
-    () => (selectedMachine && isMachineSettingsTab(section) ? settingsMachinePageFor(selectedMachine) : null),
-    [section, selectedMachine],
+  const machinePageScope = useSettingsMachinePage(
+    selectedMachine && isMachineSettingsTab(section) ? selectedMachine : null,
   );
 
   const activeTab = tabs.find((tab) => tab.id === section)

@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
 import { Desktop, HardDrives } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { ProjectMachine } from "../../state/projectMachines";
+import { useStableBinding } from "../../state/laneMachineRouting";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { Banner } from "../ui/notice";
 import { settingsMachineScope, type SettingsMachineScope, type SettingsMachineTarget } from "./SettingsMachineScope";
@@ -59,6 +60,21 @@ export function settingsMachinePageFor(machine: ProjectMachine): SettingsMachine
     hasRepo: machine.hasRepo,
     version: machine.version,
   };
+}
+
+/**
+ * The page scope for `machine`, with a pin that keeps its identity until its
+ * key changes. The machine list re-derives with fresh pin objects on every
+ * sync tick; sections key effects on `pin`, and an in-flight sign-in cancels
+ * itself (and its status feed re-anchors past its result) when `pin` changes.
+ */
+export function useSettingsMachinePage(machine: ProjectMachine | null): SettingsMachinePage | null {
+  const derived = useMemo(() => (machine ? settingsMachinePageFor(machine) : null), [machine]);
+  const stablePin = useStableBinding(derived?.pin ?? null);
+  return useMemo(() => {
+    if (!derived || !stablePin || derived.pin === stablePin) return derived;
+    return { ...derived, pin: stablePin, target: { kind: "pinned", binding: stablePin } };
+  }, [derived, stablePin]);
 }
 
 /**

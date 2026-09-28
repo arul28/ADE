@@ -21,7 +21,7 @@ import type {
   AcpProviderDiagnostics,
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
-import { openCodeProviderDisplayName, openCodeSignInViaProvider } from "../../../shared/opencodeProviders";
+import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { toggleDisabledProvider } from "../../../shared/providerEnablement";
 import {
   getLocalProviderDefaultEndpoint,
@@ -36,6 +36,7 @@ import { showToast } from "../app/toast/toastStore";
 import { revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import {
   OpenCodeProviderDetailModal,
+  useOpenCodeProviderDetail,
   type ApiKeySource,
   type OpenCodeProviderDetail,
 } from "./OpenCodeProviderDetailModal";
@@ -479,6 +480,11 @@ export function ProvidersSection({
     setCustomModelSlugs((current) => (current === "" && persisted.length ? persisted.join(", ") : current));
   }, [status?.customModelSlugs]);
 
+  // The Cursor status feed re-subscribes only when the machine changes.
+  // Re-subscribing when `refreshStatus` changes identity would re-anchor a
+  // pinned feed at its live head and drop a "success" emitted in between.
+  const refreshStatusRef = useRef(refreshStatus);
+  refreshStatusRef.current = refreshStatus;
   useEffect(() => {
     const unsubscribe = window.ade.ai.onCursorAuthStatus((event: CursorSdkAuthEvent) => {
       if (event.url) setCursorLoginUrl(event.url);
@@ -488,7 +494,7 @@ export function ProvidersSection({
         if (event.state === "success" || event.state === "logged-out" || event.state === "cancelled") {
           setCursorLoginUrl(null);
         }
-        void refreshStatus({ force: true, refreshOpenCodeInventory: true, silent: true });
+        void refreshStatusRef.current({ force: true, refreshOpenCodeInventory: true, silent: true });
       }
       if (event.state === "error" && event.error) setError(event.error);
       if (event.state === "success") {
@@ -496,7 +502,7 @@ export function ProvidersSection({
       }
     }, pin);
     return unsubscribe;
-  }, [pin, refreshStatus]);
+  }, [pin]);
 
   useEffect(() => {
     // A convenience refresh when this machine's chats change model state.
@@ -706,18 +712,10 @@ export function ProvidersSection({
       .sort((a, b) => (b.modelCount ?? 0) - (a.modelCount ?? 0));
   }, [openCodeCatalog, providerSearch]);
 
-  const detailProvider = useMemo(
-    () => (detailProviderId ? openCodeCatalog.find((p) => p.id === detailProviderId) ?? null : null),
-    [detailProviderId, openCodeCatalog],
+  const { provider: detailProvider, signInVia: detailSignInVia } = useOpenCodeProviderDetail(
+    detailProviderId,
+    openCodeCatalog,
   );
-  // A provider with no sign-in of its own (OpenCode Go) signs in through
-  // another one's methods.
-  const detailSignInVia = useMemo(() => {
-    const viaId = detailProvider ? openCodeSignInViaProvider(detailProvider.id) : null;
-    const via = viaId ? openCodeCatalog.find((p) => p.id === viaId) : undefined;
-    if (!via?.methods.some((m) => m.type === "oauth")) return undefined;
-    return { providerId: via.id, providerName: via.name, methods: via.methods };
-  }, [detailProvider, openCodeCatalog]);
   const openProviderDetail = useCallback((id: string) => {
     // Always use the unified provider modal (OAuth + API key), including Kimi.
     setDetailProviderId(id);

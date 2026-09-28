@@ -3,6 +3,7 @@
 import React from "react";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenCodeOAuthStatusEvent } from "../../../shared/types/config";
 import { OAuthConnectModal } from "./OAuthConnectModal";
 
 describe("OAuthConnectModal", () => {
@@ -210,6 +211,78 @@ describe("OAuthConnectModal", () => {
     );
     expect(window.ade.builtInBrowser.navigate).not.toHaveBeenCalled();
     expect(window.ade.app.openExternal).not.toHaveBeenCalled();
+    expect(window.ade.ai.opencodeOAuthCancel).toHaveBeenCalledWith({ providerId: "openai" }, null);
+  });
+
+  it("keeps one status subscription across a re-render that only changes the callbacks", async () => {
+    let emitStatus: ((event: OpenCodeOAuthStatusEvent) => void) | null = null;
+    const subscribe = vi.fn((cb: (event: OpenCodeOAuthStatusEvent) => void) => {
+      emitStatus = cb;
+      return () => {
+        if (emitStatus === cb) emitStatus = null;
+      };
+    });
+    window.ade.ai.onOpencodeOAuthStatus = subscribe;
+
+    const first = { onClose: vi.fn(), onConnected: vi.fn() };
+    const { rerender } = render(
+      <OAuthConnectModal
+        providerId="opencode"
+        providerName="OpenCode Zen"
+        methods={[{ type: "oauth", label: "Sign in with OpenCode" }]}
+        onClose={first.onClose}
+        onConnected={first.onConnected}
+      />,
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+    expect(subscribe).toHaveBeenCalledTimes(1);
+
+    // The parent re-renders with fresh inline callbacks; the modal must not
+    // re-anchor the status feed, which drops any event emitted in the gap.
+    const second = { onClose: vi.fn(), onConnected: vi.fn() };
+    rerender(
+      <OAuthConnectModal
+        providerId="opencode"
+        providerName="OpenCode Zen"
+        methods={[{ type: "oauth", label: "Sign in with OpenCode" }]}
+        onClose={second.onClose}
+        onConnected={second.onConnected}
+      />,
+    );
+
+    expect(subscribe).toHaveBeenCalledTimes(1);
+    expect(window.ade.ai.opencodeOAuthCancel).not.toHaveBeenCalled();
+
+    // The current callbacks still close the modal when approval lands.
+    await act(async () => {
+      emitStatus?.({ providerId: "opencode", state: "connected" });
+    });
+    expect(second.onConnected).toHaveBeenCalledTimes(1);
+    expect(second.onClose).toHaveBeenCalledTimes(1);
+    expect(first.onConnected).not.toHaveBeenCalled();
+  });
+
+  it("cancels an in-flight sign-in on a real unmount", async () => {
+    const { unmount } = render(
+      <OAuthConnectModal
+        providerId="openai"
+        providerName="OpenAI"
+        methods={[{ type: "oauth", label: "Sign in with ChatGPT" }]}
+        onClose={vi.fn()}
+        onConnected={vi.fn()}
+      />,
+    );
+
+    await act(async () => {
+      screen.getByRole("button", { name: "Connect" }).click();
+    });
+    expect(window.ade.ai.opencodeOAuthStart).toHaveBeenCalled();
+
+    unmount();
+
     expect(window.ade.ai.opencodeOAuthCancel).toHaveBeenCalledWith({ providerId: "openai" }, null);
   });
 });

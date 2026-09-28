@@ -60,7 +60,11 @@ Main process:
   `SettingsMachineScope.tsx` — the per-machine Settings navigation and its
   explicit current/pinned runtime target. `projectMachines.ts` supplies the
   shared machine list; local-only and bound-runtime sections are gated to the
-  machine that can reach them.
+  machine that can reach them. `useSettingsMachinePage` keeps each page's `pin`
+  identity stable until the machine's binding key changes, so a section's
+  effects do not re-run (and cancel an in-flight provider sign-in) on every
+  cross-machine sync tick — the scope's `pin` is the machine identity a section
+  keys its runtime effects on, not a value to rebuild per render.
 - `apps/desktop/src/main/services/account/accountBridge.ts`,
   `apps/ade-cli/src/services/account/accountAuthService.ts`, and
   `accountMachineDirectoryService.ts` — machine-scoped Clerk session and
@@ -970,7 +974,15 @@ Renderer — settings:
   settle on `connected` / `failed` / `timeout` / `cancelled` without polling.
   Cancel, Escape, backdrop click, and unmount-while-active all call
   `opencodeOAuthCancel`. Success force-refreshes status, reloads auth
-  methods, and toasts the added-model count.
+  methods, and toasts the added-model count. The status subscription and the
+  unmount cancel key only on the machine's stable `pin` and the provider id
+  (parent callbacks are read through refs), so a re-render cannot re-anchor a
+  pinned status feed past a `connected` event or cancel a running sign-in.
+  OpenCode Go has no sign-in of its own and opens this dialog against the
+  `opencode` provider it borrows; `useOpenCodeProviderDetail` in
+  `OpenCodeProviderDetailModal.tsx` latches the open row and snapshots the
+  sign-in target when the dialog opens, so a catalog refresh can neither
+  unmount the dialog nor retarget a running flow.
 - `apps/desktop/src/renderer/components/settings/SecretsSection.tsx`
   — Settings > Secrets. Lists project-scoped ADE secrets without values,
   adds/replaces secrets, reveals values on demand, copies them to the

@@ -125,6 +125,14 @@ export function OAuthConnectModal({
   // The OAuth flow runs in the page's machine's runtime; start, cancel and the
   // status feed must all name that machine.
   const { pin } = useSettingsMachineScope();
+  // The parent's callbacks are read through refs so the effects below re-run
+  // only when the machine or provider changes: a re-run mid-flow cancels the
+  // sign-in (unmount cleanup) or re-anchors a pinned status feed past its
+  // "connected" event. `pin` itself is stable per machine (SettingsMachineScope).
+  const onConnectedRef = useRef(onConnected);
+  onConnectedRef.current = onConnected;
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   const oauthMethods = useMemo(
     () => methods.map((method, index) => ({ method, index })).filter((entry) => entry.method.type === "oauth"),
     [methods],
@@ -172,8 +180,8 @@ export function OAuthConnectModal({
       if (event.providerId !== providerId) return;
       if (event.state !== "pending") flowActiveRef.current = false;
       if (event.state === "connected") {
-        onConnected();
-        onClose();
+        onConnectedRef.current();
+        onCloseRef.current();
       } else if (event.state === "failed" || event.state === "timeout" || event.state === "cancelled") {
         setPhase("error");
         setErrorMessage(
@@ -189,7 +197,7 @@ export function OAuthConnectModal({
     return () => {
       unsubscribe();
     };
-  }, [pin, providerId, onClose, onConnected]);
+  }, [pin, providerId]);
 
   const startFlow = async () => {
     cancelRequestedRef.current = false;
