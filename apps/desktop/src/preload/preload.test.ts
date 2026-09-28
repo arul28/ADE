@@ -9046,7 +9046,7 @@ describe("preload built-in browser loopback tunneling", () => {
     expect(forwardCalls()).toBe(2);
   });
 
-  it("leaves non-loopback URLs and local pins alone", async () => {
+  it("keeps browser IPC local for local pins and leaves non-loopback URLs unchanged", async () => {
     const { bridge, invoke, forwardCalls } = await loadBridge();
 
     await bridge.builtInBrowser.navigate({ url: "https://example.test/" }, REMOTE_PIN);
@@ -9055,16 +9055,14 @@ describe("preload built-in browser loopback tunneling", () => {
     });
     expect(forwardCalls()).toBe(0);
 
-    // A pin on another checkout of THIS computer keeps routing through that
-    // runtime, which proxies back to this same browser.
+    // A local pin scopes the selected project collection; it never routes this
+    // window-owned browser through the other checkout's agent RPC gate.
     await bridge.builtInBrowser.navigate(
       { url: "http://localhost:3000/" },
       { kind: "local", key: "local:/other", rootPath: "/other", displayName: "other" },
     );
-    expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeCallAction, expect.objectContaining({
-      rootPath: "/other",
-      request: expect.objectContaining({ domain: "built_in_browser", action: "navigate" }),
-    }));
+    expect(invoke).toHaveBeenCalledWith(IPC.builtInBrowserNavigate, { url: "http://localhost:3000/" });
+    expect(invoke).toHaveBeenCalledTimes(2);
     expect(forwardCalls()).toBe(0);
   });
 

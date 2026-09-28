@@ -1152,9 +1152,9 @@ describe("CommandPalette", () => {
     // over must be findable here — anything less answers "no results" for work
     // that is plainly on screen.
     describe("across machines", () => {
-      it("lists a thread from another machine and marks it with that machine", async () => {
+      it("lists a thread from an offline machine and identifies its owner", async () => {
         seedThreads([makeSession()], {
-          machines: { "target-studio": makeForeignMachine() },
+          machines: { "target-studio": makeForeignMachine({ online: false }) },
         });
 
         render(

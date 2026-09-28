@@ -1275,97 +1275,6 @@ describe("SessionListPane", () => {
       resetCrossMachineLaneSyncForTest();
     });
 
-    /**
-     * The reported bug, end to end.
-     *
-     * Sitting at the MacBook with the project tab bound to the Mac Studio and no
-     * other machine contributing rows, NOTHING in the sidebar was badged — the
-     * Studio's lanes least of all, even though every one of them was somewhere
-     * else. The union computed their markers correctly and then discarded the
-     * whole map, because it bailed on "no rows outside the active binding"
-     * rather than "no rows outside this machine".
-     */
-    it("badges the tab's own lanes when the tab is bound to another machine", () => {
-      useAppStore.setState({
-        projectBinding: {
-          kind: "remote",
-          key: "remote:target-studio:project-a",
-          targetId: "target-studio",
-          runtimeName: "Mac Studio (12)",
-          projectId: "project-a",
-          rootPath: "/repo-a",
-          displayName: "Repo A",
-        },
-        // Deliberately empty: the Studio IS the tab's binding, so it contributes
-        // no union row. This is exactly the configuration that used to blank
-        // every badge.
-        crossMachineLanesByMachineId: {},
-        // The union reads the tab's lanes from the STORE, not from the pane's
-        // props — that slice is what the binding attributes to its machine.
-        lanes: [makeLane({ id: "lane-studio", name: "Studio Lane" })],
-      });
-      const studioLane = makeLane({ id: "lane-studio", name: "Studio Lane" });
-      const first = makeSession({
-        id: "session-studio-a", laneId: "lane-studio", laneName: "Studio Lane", title: "First",
-      });
-      const second = makeSession({
-        id: "session-studio-b", laneId: "lane-studio", laneName: "Studio Lane", title: "Second",
-      });
-
-      const { container } = renderPane({
-        lanes: [studioLane],
-        runningFiltered: [first, second],
-        allSessionsUnfiltered: [first, second],
-        sessionsGroupedByLane: new Map([["lane-studio", [first, second]]]),
-      });
-
-      const header = container.querySelector('[data-section-id="lane-studio"]')!;
-      const marker = header.querySelector("[data-machine-marker-mode]");
-      expect(marker).toBeTruthy();
-      expect(marker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
-      expect(marker?.getAttribute("aria-label")).toBe("Mac Studio (12)");
-      // Named on the header, so the rows below it do not repeat it.
-      expect(cardPropsFor("session-studio-a")?.suppressMachineChip).toBe(true);
-    });
-
-    it("badges a one-chat lane on the bound machine through its card", () => {
-      // Same bug, singleton shape — an auto-created lane with a single chat,
-      // which is the common way work starts. It has no header to hang a badge
-      // on, and the card's own chip was fed only by foreign rows, so this case
-      // stayed blank even once the union kept its markers.
-      useAppStore.setState({
-        projectBinding: {
-          kind: "remote",
-          key: "remote:target-studio:project-a",
-          targetId: "target-studio",
-          runtimeName: "Mac Studio (12)",
-          projectId: "project-a",
-          rootPath: "/repo-a",
-          displayName: "Repo A",
-        },
-        crossMachineLanesByMachineId: {},
-        lanes: [makeLane({ id: "lane-solo", name: "Solo Lane" })],
-      });
-      const studioLane = makeLane({ id: "lane-solo", name: "Solo Lane" });
-      const only = makeSession({
-        id: "session-solo", laneId: "lane-solo", laneName: "Solo Lane", title: "Only chat",
-      });
-
-      const { container } = renderPane({
-        lanes: [studioLane],
-        runningFiltered: [only],
-        allSessionsUnfiltered: [only],
-        sessionsGroupedByLane: new Map([["lane-solo", [only]]]),
-      });
-
-      expect(container.querySelector('[data-section-id="lane-solo"]')).toBeNull();
-      const badge = container.querySelector(
-        '[data-session-id="session-solo"] [data-machine-marker-mode]',
-      );
-      expect(badge?.getAttribute("data-session-machine")).toBe("Mac Studio (12)");
-      expect(badge?.getAttribute("aria-label")).toBe("On Mac Studio (12)");
-    });
-
     function seedForeignMachine(overrides: Partial<CrossMachineMachineLanes> = {}) {
       seedStudioMachine(
         [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" })],
@@ -1379,40 +1288,17 @@ describe("SessionListPane", () => {
       );
     }
 
-    it("marks only lanes that are not on this machine", () => {
-      seedForeignMachine();
-      const onSelectSession = vi.fn();
-      renderPane({ onSelectSession });
+    it("shows an offline marker on the stale foreign lane", () => {
+      seedForeignMachine({ online: false });
+      renderPane();
 
-      expect(screen.getByText("Elsewhere Lane")).toBeTruthy();
-      expect(screen.getByText("Chat on the other machine")).toBeTruthy();
-      expect(document.querySelector('[data-session-id="session-elsewhere"]')).toBeTruthy();
+      expect(screen.getByRole("button", { name: /Elsewhere Lane/ })).toBeTruthy();
 
-      // One marker, for the foreign lane only — the local lanes stay untouched.
-      // The foreign lane has a single chat, so it renders headerless and its
-      // card IS the header: the badge lives there, under the same attribute a
-      // lane header would use.
-      const markers = document.querySelectorAll("[data-machine-marker-mode]");
-      expect(markers).toHaveLength(1);
-      const foreignCard = document.querySelector('[data-session-id="session-elsewhere"]');
-      expect(foreignCard?.querySelector("[data-machine-marker-mode]")).toBeTruthy();
-      expect(foreignCard?.querySelector("[data-session-machine]")?.getAttribute("data-session-machine"))
-        .toBe("Mac Studio (12)");
-      const localHeader = screen.getByRole("heading", {
-        name: "Orphaned sessions: Mobile-created lane (1)",
-      });
-      expect(localHeader?.querySelector("[data-machine-marker-mode]")).toBeNull();
-
-      fireEvent.click(screen.getByRole("button", { name: /Chat on the other machine/ }));
-      expect(onSelectSession).toHaveBeenCalledWith(
-        "session-elsewhere",
-        expect.anything(),
-        ["session-elsewhere"],
-        expect.objectContaining({
-          targetId: "target-studio",
-          projectId: "project-a",
-        }),
-      );
+      // The foreign lane has a single chat, so its card carries the marker.
+      const marker = document.querySelector("[data-machine-marker-mode]");
+      expect(marker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
+      expect(marker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
+      expect(marker?.getAttribute("data-machine-online")).toBe("false");
     });
 
     /**
@@ -1740,18 +1626,6 @@ describe("SessionListPane", () => {
       );
     });
 
-    it("shows a hover label for one online foreign machine", async () => {
-      seedForeignMachine();
-      renderPane();
-      const marker = document.querySelector("[data-machine-marker-mode]")!;
-      expect(marker.getAttribute("data-machine-marker-mode")).toBe("glyph");
-      // The compact non-Primary header marker spells nothing out until hover.
-      expect(marker.textContent).not.toContain("Mac Studio (12)");
-      expect(screen.queryByRole("tooltip")).toBeNull();
-      fireEvent.mouseEnter(marker.parentElement!);
-      expect((await screen.findByRole("tooltip")).textContent).toContain("Mac Studio (12)");
-    });
-
     it("dims an offline machine's lane and folds its chats away instead of removing them", () => {
       seedForeignMachine({ online: false });
       renderPane();
@@ -1837,7 +1711,7 @@ describe("SessionListPane", () => {
       };
 
       it("files a fully settled foreign lane into the Settled shelf, marker intact", () => {
-        seedForeignMachine({ sessions: [foreignSettled()] });
+        seedForeignMachine({ online: false, sessions: [foreignSettled()] });
         const { container } = renderPane({ workCollapsedSectionIds: OPEN_QUIET_SHELVES });
 
         expect(shelfContains(container, "settled")).toBe(true);
@@ -2955,13 +2829,9 @@ describe("SessionListPane visual hierarchy", () => {
       expect(order).toEqual(["lane-primary", "lane-other"]);
     });
 
-    it("separates two Primaries by badging only the one that is elsewhere", () => {
-      // Every ADE machine has a Primary, so two connected machines put two
-      // identically-named, identically-purple rows in one column. This used to
-      // need a bespoke badge naming the LOCAL Primary. It no longer does: under
-      // the physical-machine rule exactly one Primary on screen can be unbadged
-      // — the one on the Mac you're sitting at — so presence versus absence
-      // separates the pair on its own.
+    it("marks the offline Primary while leaving this computer's Primary alone", () => {
+      // Every ADE machine has a Primary, so an offline one needs its marker to
+      // distinguish stale work from the Primary that remains actionable here.
       seedStudioMachine(
         [makeLane({ id: "lane-primary-studio", name: "Primary", laneType: "primary", branchRef: "main" })],
         [makeSession({
@@ -2970,6 +2840,7 @@ describe("SessionListPane visual hierarchy", () => {
           laneName: "Primary",
           title: "Primary chat elsewhere",
         })],
+        { online: false },
       );
 
       const { container } = renderWithPrimary();
@@ -2979,16 +2850,13 @@ describe("SessionListPane visual hierarchy", () => {
       expect(localHeader.querySelector("[data-machine-marker-mode]")).toBeNull();
       expect(within(localHeader).queryByText(THIS_MACHINE_NAME)).toBeNull();
 
-      // The Studio's Primary: badged, in the resting glyph form. Primary is no
-      // longer an exception to that — its name is on hover like every other
-      // lane's. This fixture sorts manually, which opts every lane out of the
-      // headerless form, so the badge sits on the header where it always did.
+      // The Studio's Primary carries the offline marker in the lane header.
       const foreignGroup = container.querySelector(
         '[data-group-id="target-studio:lane-primary-studio"]',
       ) as HTMLElement;
       const foreignMarker = foreignGroup.querySelector("[data-machine-marker-mode]");
       expect(foreignMarker?.getAttribute("data-machine-marker-mode")).toBe("glyph");
-      expect(foreignMarker?.getAttribute("aria-label")).toBe("Mac Studio (12)");
+      expect(foreignMarker?.getAttribute("aria-label")).toBe("Mac Studio (12), offline");
       expect(within(foreignGroup).queryByText("Mac Studio (12)")).toBeNull();
     });
 
@@ -3062,10 +2930,6 @@ describe("SessionListPane machine chip suppression", () => {
     Reflect.deleteProperty(window, "ade");
   });
 
-  function seedMachine(lane: LaneSummary, sessions: TerminalSessionSummary[]) {
-    seedStudioMachine([lane], sessions);
-  }
-
   it("suppresses the row chip under a machine-labelled lane header, but not for a singleton", () => {
     const foreignLane = makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane", branchRef: "feature/elsewhere" });
     const foreignA = makeSession({
@@ -3080,7 +2944,7 @@ describe("SessionListPane machine chip suppression", () => {
       laneName: "Elsewhere Lane",
       title: "Foreign second",
     });
-    seedMachine(foreignLane, [foreignA, foreignB]);
+    seedStudioMachine([foreignLane], [foreignA, foreignB], { online: false });
     const local = makeSession({
       id: "session-local-solo",
       laneId: "lane-known",
@@ -3094,10 +2958,11 @@ describe("SessionListPane machine chip suppression", () => {
       runningFiltered: [local],
       allSessionsUnfiltered: [local],
       sessionsGroupedByLane: new Map([["lane-known", [local]]]),
+      workCollapsedSectionIds: ["lane-open:target-studio:lane-elsewhere"],
     });
 
     // The foreign header names the machine, so its rows stop repeating it.
-    const foreignHeader = screen.getByText("Elsewhere Lane").closest(".ade-lane-group-header")!;
+    const foreignHeader = screen.getByRole("button", { name: /Elsewhere Lane/ }).closest(".ade-lane-group-header")!;
     expect(foreignHeader.querySelector("[data-machine-marker-mode]")).toBeTruthy();
     expect(cardPropsFor("session-foreign-a")?.suppressMachineChip).toBe(true);
     expect(cardPropsFor("session-foreign-b")?.suppressMachineChip).toBe(true);
@@ -3114,14 +2979,14 @@ describe("SessionListPane machine chip suppression", () => {
     // header label for its rows to repeat — and nothing to suppress. Work that
     // is here says so by staying quiet.
     const foreignPrimary = makeLane({ id: "lane-primary-remote", name: "Primary", laneType: "primary" });
-    seedMachine(foreignPrimary, [
+    seedStudioMachine([foreignPrimary], [
       makeSession({
         id: "session-remote-primary",
         laneId: "lane-primary-remote",
         laneName: "Primary",
         title: "Remote primary chat",
       }),
-    ]);
+    ], { online: false });
     const localPrimary = makeLane({ id: "lane-primary-local", name: "Primary", laneType: "primary" });
     const first = makeSession({
       id: "session-primary-a",

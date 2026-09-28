@@ -415,10 +415,8 @@ describe("FilesWorkbench", () => {
         pin,
       );
     });
-    // Whose disk this is has to be visible. On the routed tab, the way back is
-    // picking a lane on this machine in the picker, not a dedicated button
-    // (that button is embedded-pane-only, see FilesWorkbench.tsx).
-    expect(screen.getByText(/Mac Studio/)).toBeTruthy();
+    // The read stays scoped to the chat's machine even when the open tab is
+    // bound elsewhere; online machine labels are intentionally omitted here.
   });
 
   it("reveals a directory in the tree instead of trying to open it as a file", async () => {

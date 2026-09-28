@@ -1079,6 +1079,7 @@ export function createBuiltInBrowserService(args: {
   const serviceForProjectRoot = (
     projectRoot: string,
     sourceWindow?: BrowserWindow | null,
+    activateSource = true,
   ): WindowBrowserService => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return activeService();
@@ -1090,7 +1091,7 @@ export function createBuiltInBrowserService(args: {
     const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
       // The window's own project, or a project no window is bound to that this
       // window's pane is showing: either way it is what is on screen.
-      markActive: projectRootsMatch(projectRootForWindow(win), normalized) || host.viaSource,
+      markActive: projectRootsMatch(projectRootForWindow(win), normalized) || (activateSource && host.viaSource),
     });
     service.attachToWindow(win);
     return service;
@@ -1135,10 +1136,11 @@ export function createBuiltInBrowserService(args: {
   const serviceForInput = (
     input?: BuiltInBrowserProjectScopeArgs | null,
     sourceWindow?: BrowserWindow | null,
+    options: { activateSource?: boolean } = {},
   ): WindowBrowserService => {
     if (requestsPersonalCollection(input)) return serviceForPersonalCollection(sourceWindow);
     const projectRoot = projectRootFromInput(input);
-    if (projectRoot) return serviceForProjectRoot(projectRoot, sourceWindow);
+    if (projectRoot) return serviceForProjectRoot(projectRoot, sourceWindow, options.activateSource);
     if (isLiveWindow(sourceWindow)) return serviceShownInWindow(sourceWindow);
     return activeService();
   };
@@ -1492,7 +1494,7 @@ export function createBuiltInBrowserService(args: {
     ): BuiltInBrowserStatus {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      const status = serviceForInput(input, win).getStatusForInput(input ?? {});
+      const status = serviceForInput(input, win, { activateSource: false }).getStatusForInput(input ?? {});
       // Seed value for a surface that mounted mid-flight; the `agent-presence`
       // event carries every change after this. Scoped to the collection the
       // status describes, so one project's pane cannot report another's agent.
