@@ -822,6 +822,54 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(legacySpelling.featureEnabled("rosterPeer"))
   }
 
+  /// A lane of another machine keeps a namespaced id on the phone. The host
+  /// must only ever see the plain id, a command must name one machine, and a
+  /// reply's lanes must come back namespaced so the next command on them goes
+  /// to the same machine. Session and other non-lane ids are never touched.
+  func testRemoteLaneIdsRoundTripBetweenCommandsAndReplies() throws {
+    let laneA = workRemoteLaneId(machineKey: "mac-b", laneId: "lane-a")
+    let laneB = workRemoteLaneId(machineKey: "mac-b", laneId: "lane-b")
+    let otherMachineLane = workRemoteLaneId(machineKey: "pc-c", laneId: "lane-c")
+
+    let cases: [(args: [String: Any], machineKey: String?, stripped: [String: String])] = [
+      (["laneId": laneA, "text": laneA], "mac-b", ["laneId": "lane-a", "text": laneA]),
+      (["parentLaneId": laneB, "name": "child"], "mac-b", ["parentLaneId": "lane-b"]),
+      (["laneId": "lane-a"], nil, ["laneId": "lane-a"]),
+      ([:], nil, [:]),
+    ]
+    for row in cases {
+      let target = try syncRemoteLaneTarget(args: row.args)
+      XCTAssertEqual(target?.machineKey, row.machineKey, "\(row.args)")
+      for (key, value) in row.stripped {
+        XCTAssertEqual((target?.args ?? row.args)[key] as? String, value, "\(key) of \(row.args)")
+      }
+    }
+    let list = try XCTUnwrap(syncRemoteLaneTarget(args: ["laneIds": [laneA, laneB]]))
+    XCTAssertEqual(list.args["laneIds"] as? [String], ["lane-a", "lane-b"])
+    XCTAssertThrowsError(try syncRemoteLaneTarget(args: ["laneId": laneA, "parentLaneId": otherMachineLane]))
+
+    let reply: [String: Any] = [
+      "lane": ["id": "lane-a", "laneType": "worktree", "worktreePath": "/w/a", "parentLaneId": "lane-p"],
+      "children": [["id": "lane-b", "laneType": "worktree", "worktreePath": "/w/b"]],
+      "sessions": [["id": "session-1", "laneId": "lane-a"]],
+      "stackChain": [["laneId": laneA]],
+    ]
+    let tagged = try XCTUnwrap(syncTagRemoteLaneIds(in: reply, machineKey: "mac-b") as? [String: Any])
+    let lane = try XCTUnwrap(tagged["lane"] as? [String: Any])
+    XCTAssertEqual(lane["id"] as? String, laneA)
+    XCTAssertEqual(lane["parentLaneId"] as? String, workRemoteLaneId(machineKey: "mac-b", laneId: "lane-p"))
+    XCTAssertEqual(((tagged["children"] as? [[String: Any]])?.first?["id"]) as? String, laneB)
+    let session = try XCTUnwrap((tagged["sessions"] as? [[String: Any]])?.first)
+    XCTAssertEqual(session["id"] as? String, "session-1", "A session id is not a lane id.")
+    XCTAssertEqual(session["laneId"] as? String, laneA)
+    XCTAssertEqual(((tagged["stackChain"] as? [[String: Any]])?.first?["laneId"]) as? String, laneA, "Tagging twice is a no-op.")
+
+    // The tagged reply's lane goes back to its machine as the plain id.
+    let next = try XCTUnwrap(syncRemoteLaneTarget(args: ["laneId": try XCTUnwrap(lane["id"] as? String)]))
+    XCTAssertEqual(next.machineKey, "mac-b")
+    XCTAssertEqual(next.args["laneId"] as? String, "lane-a")
+  }
+
   @MainActor
   func testFleetProjectIdentityMergesOnlyTheSameRepositoryAcrossHubAndWork() {
     let focused = MobileProjectSummary(

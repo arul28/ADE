@@ -1,6 +1,13 @@
 import SwiftUI
 import UIKit
 
+/// Which machines' lanes the Lanes tab shows.
+enum LaneMachineFilter: Equatable {
+  case all
+  case focused
+  case machine(String)
+}
+
 struct LaneListPresentation: Equatable {
   var filteredSnapshots: [LaneListSnapshot]
   var stackOrderedSnapshots: [LaneListSnapshot]
@@ -161,9 +168,114 @@ extension LanesTabView {
     laneListPresentation = next
   }
 
+  /// The focused machine's name for its chip and filter.
+  var focusedMachineName: String {
+    syncService.hostName ?? syncService.activeHostProfile?.hostName ?? "This machine"
+  }
+
+  var laneMachineChips: LaneMachineChips {
+    guard !remoteLanes.machines.isEmpty else { return .none }
+    return LaneMachineChips(
+      focused: LaneMachineChip(name: focusedMachineName, isLive: true),
+      byMachineKey: Dictionary(
+        remoteLanes.machines.map { ($0.machineKey, LaneMachineChip(name: $0.name, isLive: $0.isLive)) },
+        uniquingKeysWith: { first, _ in first }
+      )
+    )
+  }
+
+  var showsFocusedMachineLanes: Bool {
+    switch machineFilter {
+    case .all, .focused: return true
+    case .machine: return false
+    }
+  }
+
+  /// The other machines the filter shows, each with its rows filtered the
+  /// same way as the focused list and in stack order.
+  var visibleRemoteMachineLanes: [(machine: LaneRemoteMachinesModel.MachineLanes, snapshots: [LaneListSnapshot])] {
+    remoteLanes.machines.compactMap { machine in
+      switch machineFilter {
+      case .focused: return nil
+      case .machine(let key) where key != machine.machineKey: return nil
+      default: break
+      }
+      let filtered = laneListFilteredSnapshots(
+        machine.snapshots,
+        scope: scope,
+        runtimeFilter: runtimeFilter,
+        searchText: searchText,
+        pinnedLaneIds: pinnedLaneIds
+      )
+      guard !filtered.isEmpty else { return nil }
+      return (machine, laneStackGraphOrder(filtered))
+    }
+  }
+
+  @ViewBuilder
+  var laneMachineFilterChips: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 6) {
+        WorkFilterChip(title: "All", selected: machineFilter == .all, tint: ADEColor.accent) {
+          machineFilter = .all
+        }
+        WorkFilterChip(title: focusedMachineName, selected: machineFilter == .focused, tint: ADEColor.accent) {
+          machineFilter = machineFilter == .focused ? .all : .focused
+        }
+        ForEach(remoteLanes.machines) { machine in
+          WorkFilterChip(
+            title: machine.name,
+            selected: machineFilter == .machine(machine.machineKey),
+            tint: ADEColor.accent
+          ) {
+            machineFilter = machineFilter == .machine(machine.machineKey) ? .all : .machine(machine.machineKey)
+          }
+        }
+      }
+      .padding(.horizontal, 2)
+    }
+    .scrollClipDisabled()
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Machines")
+  }
+
+  /// "Show only <machine>" for a lane's machine, from its long-press menu.
+  func showOnlyMachine(ofLaneId laneId: String) {
+    if let remote = workParseRemoteLaneId(laneId) {
+      machineFilter = .machine(remote.machineKey)
+    } else {
+      machineFilter = .focused
+    }
+  }
+
+  @ViewBuilder
+  var remoteMachineLaneSections: some View {
+    ForEach(visibleRemoteMachineLanes, id: \.machine.machineKey) { entry in
+      LaneTreeView(
+        snapshots: entry.snapshots,
+        pinnedLaneIds: pinnedLaneIds,
+        openLaneIds: openLaneIds,
+        allLaneSnapshots: entry.machine.snapshots,
+        lanePrTagsByLaneId: [:],
+        transitionNamespace: transitionNamespace,
+        selectedLaneId: selectedLaneTransitionId,
+        onRefreshRoot: { await remoteLanes.refresh(sync: syncService, fleet: machineFleet) },
+        onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
+        onTogglePin: { laneId in togglePin(laneId) },
+        onSelectLane: { laneId in selectedLaneTransitionId = laneId },
+        machineChips: laneMachineChips
+      )
+    }
+  }
+
   @ViewBuilder
   var laneList: some View {
-    if laneSnapshots.isEmpty {
+    if !showsFocusedMachineLanes {
+      VStack(spacing: 10) {
+        laneListHeader
+        remoteMachineLaneSections
+      }
+    } else if laneSnapshots.isEmpty && remoteLanes.machines.isEmpty {
       if let emptyStatePresentation {
         emptyStateCard(emptyStatePresentation)
           .padding(.top, 24)
@@ -187,12 +299,7 @@ extension LanesTabView {
         EmptyView()
       } else {
         VStack(spacing: 10) {
-          Text("LANES")
-            .font(.caption.weight(.semibold))
-            .tracking(0.6)
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 2)
+          laneListHeader
 
           if let primarySnapshot = normalStickyPrimarySnapshot {
             NavigationLink {
@@ -211,7 +318,8 @@ extension LanesTabView {
                 depth: 0,
                 pullRequest: lanePrTagsByLaneId[primarySnapshot.lane.id],
                 transitionNamespace: transitionNamespace,
-                isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id
+                isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id,
+                machine: laneMachineChips.chip(forLaneId: primarySnapshot.lane.id)
               )
               .equatable()
             }
@@ -248,16 +356,34 @@ extension LanesTabView {
               onRefreshRoot: { await reload(refreshRemote: true) },
               onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
               onTogglePin: { laneId in togglePin(laneId) },
-              onSelectLane: { laneId in selectedLaneTransitionId = laneId }
+              onSelectLane: { laneId in selectedLaneTransitionId = laneId },
+              machineChips: laneMachineChips
             )
           }
+          remoteMachineLaneSections
         }
       }
     }
   }
 
+  var laneListHeader: some View {
+    Text("LANES")
+      .font(.caption.weight(.semibold))
+      .tracking(0.6)
+      .foregroundStyle(ADEColor.textMuted)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 2)
+  }
+
   @ViewBuilder
   func laneContextMenu(snapshot: LaneListSnapshot) -> some View {
+    if let chip = laneMachineChips.chip(forLaneId: snapshot.lane.id) {
+      Button {
+        showOnlyMachine(ofLaneId: snapshot.lane.id)
+      } label: {
+        Label("Show only \(chip.name)", systemImage: "desktopcomputer")
+      }
+    }
     Button {
       detailSheetTarget = LaneDetailSheetTarget(
         laneId: snapshot.lane.id,
@@ -267,7 +393,8 @@ extension LanesTabView {
     } label: {
       Label("Manage lane", systemImage: "slider.horizontal.3")
     }
-    if snapshot.lane.laneType == "primary", !primaryBranches.isEmpty {
+    // The branch list belongs to the focused machine's primary lane.
+    if snapshot.lane.laneType == "primary", !isWorkRemoteLaneId(snapshot.lane.id), !primaryBranches.isEmpty {
       Menu {
         ForEach(primaryBranches) { branch in
           Button(branch.name) {
@@ -517,7 +644,10 @@ extension LanesTabView {
 
   @MainActor
   func refreshFromPullGesture() async {
+    // The other machines are read now, not on their 30-second beat.
+    async let remote: Void = remoteLanes.refresh(sync: syncService, fleet: machineFleet)
     await reload(refreshRemote: true)
+    await remote
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1

@@ -3,6 +3,8 @@ import SwiftUI
 struct LanesTabView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
+  @EnvironmentObject var machineFleet: MachineFleet
+  @StateObject var remoteLanes = LaneRemoteMachinesModel()
   @Namespace private var laneTransitionNamespace
   var isActive = true
 
@@ -26,6 +28,8 @@ struct LanesTabView: View {
   @State var selectedLaneTransitionId: String?
   @State private var lastLanesLocalProjectionReload = Date.distantPast
   @State private var lastHandledLanesProjectionRevision: Int?
+  /// Which machines' lanes the list shows (the filter chips).
+  @State var machineFilter: LaneMachineFilter = .all
 
   var pinnedLaneIds: Set<String> {
     get {
@@ -55,6 +59,14 @@ struct LanesTabView: View {
   var primaryBranchReloadKey: String? {
     guard isActive else { return nil }
     return "\(primaryLane?.id ?? "none")-\(canRunLiveActions)"
+  }
+
+  /// Re-read the other machines while the tab is visible, for the focused
+  /// project, and again when a machine's live link comes or goes.
+  var remoteLanesPollKey: String? {
+    guard isActive, let projectId = syncService.activeProjectId else { return nil }
+    let live = machineFleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
+    return "\(projectId)|\(live.joined(separator: ","))"
   }
 
   var laneNavigationRequestKey: String? {
@@ -135,6 +147,9 @@ struct LanesTabView: View {
             ADECardSkeleton(rows: 4)
             ADECardSkeleton(rows: 3)
           }
+          if !remoteLanes.machines.isEmpty {
+            laneMachineFilterChips
+          }
           if !openLaneSnapshots.isEmpty {
             openLanesTray
               .transition(.move(edge: .top).combined(with: .opacity))
@@ -177,6 +192,17 @@ struct LanesTabView: View {
         guard !Task.isCancelled, lanesProjectionReloadKey == revision else { return }
         lastHandledLanesProjectionRevision = revision
       }
+      .task(id: remoteLanesPollKey) {
+        guard remoteLanesPollKey != nil else { return }
+        while !Task.isCancelled {
+          await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+          try? await Task.sleep(nanoseconds: LaneRemoteMachinesModel.refreshIntervalNanoseconds)
+        }
+      }
+      .onChange(of: syncService.activeProjectId) { _, _ in
+        remoteLanes.reset()
+        machineFilter = .all
+      }
       .task(id: laneNavigationRequestKey) {
         guard laneNavigationRequestKey != nil else { return }
         await handleRequestedLaneNavigation()
@@ -216,14 +242,17 @@ struct LanesTabView: View {
       }
       .sheet(isPresented: $addLaneSheetPresented) {
         AddLaneSheet(
-          primaryLane: primaryLane,
-          lanes: laneSnapshots.map(\.lane),
+          machines: laneCreateMachines,
           onLaneCreated: { createdLaneId in
             addLaneSheetPresented = false
             if !openLaneIds.contains(createdLaneId) {
               openLaneIds.insert(createdLaneId, at: 0)
             }
-            await reload(refreshRemote: true)
+            if isWorkRemoteLaneId(createdLaneId) {
+              await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+            } else {
+              await reload(refreshRemote: true)
+            }
           }
         )
       }
@@ -246,6 +275,36 @@ struct LanesTabView: View {
         }
       }
     }
+  }
+
+  /// The machines a new lane can go to: this project's checkout on the
+  /// focused machine and on every live machine, least busy first.
+  var laneCreateMachines: [LaneCreateMachine] {
+    var machines = [LaneCreateMachine(
+      id: "",
+      name: focusedMachineName,
+      primaryLane: primaryLane,
+      lanes: laneSnapshots.map(\.lane),
+      target: nil,
+      runningCount: laneSnapshots.reduce(0) { $0 + $1.runtime.runningCount }
+    )]
+    for machine in remoteLanes.machines where machine.isLive {
+      machines.append(LaneCreateMachine(
+        id: machine.machineKey,
+        name: machine.name,
+        primaryLane: machine.snapshots.first { $0.lane.laneType == "primary" }?.lane,
+        lanes: machine.snapshots.map(\.lane),
+        target: LaneCreateTarget(
+          projectId: syncFleetMarkedProjectId(machineKey: machine.machineKey, projectId: machine.projectId),
+          rootPath: machine.rootPath
+        ),
+        runningCount: machine.snapshots.reduce(0) { $0 + $1.runtime.runningCount }
+      ))
+    }
+    // Stable sort: ties keep the focused machine first.
+    return machines.enumerated()
+      .sorted { ($0.element.runningCount, $0.offset) < ($1.element.runningCount, $1.offset) }
+      .map(\.element)
   }
 
   // MARK: - Top bar

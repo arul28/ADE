@@ -489,6 +489,30 @@ struct LanePrTagChip: View {
 
 // MARK: - Stack card
 
+/// The machine a lane lives on, shown on its row when the list spans more
+/// than one machine (the desktop's rule: chips only with two or more).
+struct LaneMachineChip: Equatable {
+  let name: String
+  /// False for a machine the phone has no live link to: its rows are the last
+  /// roster it sent, dimmed, with no actions.
+  let isLive: Bool
+}
+
+/// The chip of every lane in a list that spans machines, by lane id.
+struct LaneMachineChips: Equatable {
+  var focused: LaneMachineChip?
+  var byMachineKey: [String: LaneMachineChip] = [:]
+
+  static let none = LaneMachineChips(focused: nil)
+
+  /// Nil when the list shows one machine only.
+  func chip(forLaneId laneId: String) -> LaneMachineChip? {
+    guard !byMachineKey.isEmpty else { return nil }
+    if let remote = workParseRemoteLaneId(laneId) { return byMachineKey[remote.machineKey] }
+    return focused
+  }
+}
+
 struct LaneStackCard: View, Equatable {
   let snapshot: LaneListSnapshot
   let isPinned: Bool
@@ -497,6 +521,7 @@ struct LaneStackCard: View, Equatable {
   var pullRequest: LanePrTag? = nil
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
+  var machine: LaneMachineChip? = nil
 
   static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
     lhs.renderSignature == rhs.renderSignature
@@ -514,7 +539,8 @@ struct LaneStackCard: View, Equatable {
       isOpen: isOpen,
       depth: depth,
       pullRequest: pullRequest,
-      isSelectedTransitionSource: isSelectedTransitionSource
+      isSelectedTransitionSource: isSelectedTransitionSource,
+      machine: machine
     )
   }
 
@@ -553,6 +579,18 @@ struct LaneStackCard: View, Equatable {
         }
 
         HStack(spacing: 5) {
+          if let machine {
+            Image(systemName: "desktopcomputer")
+              .font(.system(size: 10, weight: .regular))
+              .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+            Text(machine.isLive ? machine.name : "\(machine.name) · Not live")
+              .font(.caption2.weight(.medium))
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+            Text("·")
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted)
+          }
           Image(systemName: "arrow.triangle.branch")
             .font(.system(size: 10, weight: .regular))
             .foregroundStyle(ADEColor.textMuted.opacity(0.7))
@@ -604,6 +642,7 @@ struct LaneStackCard: View, Equatable {
     )
     .shadow(color: isOpen ? laneTint.accentBar.opacity(0.14) : .clear, radius: 8, y: 2)
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
+    .opacity(machine?.isLive == false ? 0.5 : 1)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(stackCardAccessibilityLabel)
   }
@@ -641,12 +680,14 @@ struct LaneStackCard: View, Equatable {
   }
 
   private var stackCardAccessibilityLabel: String {
-    laneStackCardAccessibilityLabel(
+    let label = laneStackCardAccessibilityLabel(
       snapshot: snapshot,
       isPinned: isPinned,
       isOpen: isOpen,
       pullRequest: pullRequest
     )
+    guard let machine else { return label }
+    return "\(label), on \(machine.name)\(machine.isLive ? "" : ", not live")"
   }
 }
 
@@ -659,9 +700,12 @@ func laneStackCardRenderSignature(
   isOpen: Bool,
   depth: Int,
   pullRequest: LanePrTag?,
-  isSelectedTransitionSource: Bool
+  isSelectedTransitionSource: Bool,
+  machine: LaneMachineChip? = nil
 ) -> Int {
   var hasher = Hasher()
+  hasher.combine(machine?.name)
+  hasher.combine(machine?.isLive)
   let lane = snapshot.lane
   hasher.combine(lane.id)
   hasher.combine(lane.name)

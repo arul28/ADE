@@ -4581,6 +4581,9 @@ final class SyncService: ObservableObject {
   /// Work tab's same-repo rows). Every read, write and stream for these goes
   /// through that machine's `MachineConnection`, never the focused socket.
   private var remoteMachineChatsBySession: [String: SyncRemoteMachineChat] = [:]
+  /// Lane details of other machines' lanes, by namespaced lane id. Memory
+  /// only: `ade.db` holds the focused machine's project.
+  private var remoteLaneDetails: [String: LaneDetailPayload] = [:]
   /// Remote chats registered by an open chat screen, and by the Work list's
   /// cross-machine rows. An entry leaves `remoteMachineChatsBySession` only
   /// when neither owner holds it.
@@ -10343,6 +10346,14 @@ final class SyncService: ObservableObject {
   }
 
   func refreshLaneDetail(laneId: String) async throws -> LaneDetailPayload {
+    if let remote = workParseRemoteLaneId(laneId), remote.machineKey != focusedMachineKey {
+      // Routed to the lane's machine by its namespaced id; the reply comes
+      // back with namespaced lane ids. No signature: nothing is cached on disk.
+      let raw = try await sendCommand(action: "lanes.getDetail", args: ["laneId": laneId])
+      let detail = try decodeHydrationPayload(raw, as: LaneDetailPayload.self, domainLabel: "lane detail", decoder: decoder)
+      remoteLaneDetails[laneId] = detail
+      return detail
+    }
     let scope = try captureHydrationProjectScope()
     try requireCurrentHydrationProjectScope(scope)
     let statusAttempt = beginDomainHydrationAttempt([.lanes])
@@ -10415,7 +10426,8 @@ final class SyncService: ObservableObject {
   }
 
   func fetchLaneDetail(laneId: String) async throws -> LaneDetailPayload? {
-    database.fetchLaneDetail(laneId: laneId)
+    if workParseRemoteLaneId(laneId) != nil { return remoteLaneDetails[laneId] }
+    return database.fetchLaneDetail(laneId: laneId)
   }
 
   func listWorkspaces() async throws -> [FilesWorkspace] {
@@ -13153,7 +13165,9 @@ final class SyncService: ObservableObject {
     name: String? = nil,
     description: String? = nil,
     parentLaneId: String? = nil,
-    baseBranch: String? = nil
+    baseBranch: String? = nil,
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = ["branchRef": branchRef]
     if let name, !name.isEmpty {
@@ -13168,7 +13182,13 @@ final class SyncService: ObservableObject {
     if let baseBranch, !baseBranch.isEmpty {
       args["baseBranch"] = baseBranch
     }
-    return try await sendDecodableCommand(action: "lanes.importBranch", args: args, as: LaneSummary.self)
+    return try await sendDecodableCommand(
+      action: "lanes.importBranch",
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: LaneSummary.self
+    )
   }
 
   func createChildLane(
@@ -21680,7 +21700,7 @@ final class SyncService: ObservableObject {
 
   func performCommandRequest(
     action: String,
-    args: [String: Any],
+    args rawArgs: [String: Any],
     commandId: String? = nil,
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
@@ -21690,15 +21710,18 @@ final class SyncService: ObservableObject {
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
     let targetProjectId: String?
+    let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
-      args: args,
+      args: rawArgs,
       targetProjectId: rawTargetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId): targetProjectId = projectId
+    case .focused(let projectId, let focusedArgs):
+      targetProjectId = projectId
+      args = focusedArgs
     }
     let runtimeScoped = commandIsRuntimeScoped(action)
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
@@ -21740,7 +21763,7 @@ final class SyncService: ObservableObject {
 
   private func sendCommand(
     action: String,
-    args: [String: Any],
+    args rawArgs: [String: Any],
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
@@ -21750,15 +21773,18 @@ final class SyncService: ObservableObject {
     attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
     let targetProjectId: String?
+    let args: [String: Any]
     switch try await routeOrStripFleetTarget(
       action: action,
-      args: args,
+      args: rawArgs,
       targetProjectId: rawTargetProjectId,
       targetProjectRootPath: targetProjectRootPath,
       timeoutNanoseconds: timeoutNanoseconds
     ) {
     case .routed(let result): return result
-    case .focused(let projectId): targetProjectId = projectId
+    case .focused(let projectId, let focusedArgs):
+      targetProjectId = projectId
+      args = focusedArgs
     }
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
@@ -22464,15 +22490,17 @@ extension SyncService {
     }
   }
 
-  private func performCommandRequestSafe(action: String, args: [String: Any]) async throws -> Any {
-    if case .routed(let result) = try await routeOrStripFleetTarget(
+  private func performCommandRequestSafe(action: String, args rawArgs: [String: Any]) async throws -> Any {
+    let args: [String: Any]
+    switch try await routeOrStripFleetTarget(
       action: action,
-      args: args,
+      args: rawArgs,
       targetProjectId: nil,
       targetProjectRootPath: nil,
       timeoutNanoseconds: nil
     ) {
-      return result
+    case .routed(let result): return result
+    case .focused(_, let focusedArgs): args = focusedArgs
     }
     guard supportsRemoteAction(action) else {
       throw NSError(
@@ -24748,6 +24776,23 @@ extension SyncService {
     targetProjectRootPath: String?,
     timeoutNanoseconds: UInt64?
   ) async throws -> SyncFleetTargetResolution {
+    var args = args
+    var targetProjectId = targetProjectId
+    var targetProjectRootPath = targetProjectRootPath
+    // A lane of another machine carries its machine in its id
+    // (`workRemoteLaneId`). The host gets the plain lane id, and the command
+    // goes to the lane's machine in the project that machine holds.
+    let laneTarget = try syncRemoteLaneTarget(args: args)
+    if let laneTarget {
+      args = laneTarget.args
+      if laneTarget.machineKey != focusedMachineKey {
+        guard let repo = remoteLaneRepo(machineKey: laneTarget.machineKey) else {
+          throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "This lane's machine no longer lists this project."])
+        }
+        targetProjectId = syncFleetMarkedProjectId(machineKey: laneTarget.machineKey, projectId: repo.projectId)
+        targetProjectRootPath = repo.rootPath
+      }
+    }
     if let route = try syncFleetRoute(
       action: action,
       args: args,
@@ -24761,9 +24806,19 @@ extension SyncService {
         projectRootPath: route.rootPath,
         timeoutNanoseconds: timeoutNanoseconds
       )
-      return .routed(result)
+      // Lane replies from another machine carry its lanes: tag them, so the
+      // next command on one of them goes back to that machine. A `lanes.*`
+      // command sent to a machine-marked project (create, import) counts too.
+      // Chat replies stay plain: the Work tab namespaces their lanes itself.
+      let replyMachineKey = laneTarget?.machineKey
+        ?? (action.hasPrefix("lanes.") ? syncFleetParseMarkedProjectId(targetProjectId)?.machineKey : nil)
+      guard let replyMachineKey, replyMachineKey != focusedMachineKey else { return .routed(result) }
+      return .routed(syncTagRemoteLaneIds(in: result, machineKey: replyMachineKey))
     }
-    return .focused(projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId)
+    return .focused(
+      projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId,
+      args: args
+    )
   }
 }
 
@@ -24918,5 +24973,52 @@ extension SyncService {
       }
     }
     return nil
+  }
+}
+
+// MARK: - Lanes of other machines (see SyncService+RemoteLanes.swift)
+
+extension SyncService {
+  /// Every other paired machine's checkout of the focused repository, as the
+  /// fleet's rosters report it. The same rule the Work tab and the Hub use.
+  func remoteReposForActiveProject() -> [WorkRemoteMachineRepo] {
+    guard let fleet = machineFleet, !fleet.machines.isEmpty, let activeProject else { return [] }
+    let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
+      ?? workRepoIdentity(originUrl: rosterProject(for: activeProject)?.repoOriginUrl)
+    return workRemoteMachineRepos(
+      machines: fleet.machines,
+      identity: identity,
+      folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
+    )
+  }
+
+  /// `machineKey`'s checkout of the focused repository, if it has one.
+  func remoteLaneRepo(machineKey: String) -> WorkRemoteMachineRepo? {
+    remoteReposForActiveProject().first { $0.machineKey == machineKey }
+  }
+
+  /// The lane snapshots of one other machine's checkout, with namespaced
+  /// ids. Throws when that machine is not live.
+  func fetchRemoteLaneSnapshots(repo: WorkRemoteMachineRepo, timeoutNanoseconds: UInt64) async throws -> [LaneListSnapshot] {
+    let args: [String: Any] = [
+      "includeArchived": true,
+      "includeStatus": true,
+      "includeConflictStatus": true,
+      "includeRebaseSuggestions": true,
+      "includeAutoRebaseStatus": true,
+    ]
+    let raw = try await sendCommand(
+      action: "lanes.refreshSnapshots",
+      args: args,
+      timeoutNanoseconds: timeoutNanoseconds,
+      targetProjectId: syncFleetMarkedProjectId(machineKey: repo.machineKey, projectId: repo.projectId),
+      targetProjectRootPath: repo.rootPath,
+      fallbackToActiveProjectScope: false
+    )
+    // The router tagged the reply's lane ids (a `lanes.*` reply from another
+    // machine).
+    let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
+    if let snapshots = payload.snapshots { return snapshots }
+    return payload.lanes.map { LaneListSnapshot(lane: $0, runtime: syncRemoteLaneEmptyRuntime) }
   }
 }

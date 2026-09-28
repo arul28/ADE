@@ -74,6 +74,18 @@ func isWorkRemoteLaneId(_ laneId: String) -> Bool {
   laneId.hasPrefix(workRemoteLaneIdPrefix)
 }
 
+/// The machine and the plain lane id of a namespaced lane id, or nil for a
+/// focused-machine lane id.
+func workParseRemoteLaneId(_ laneId: String) -> (machineKey: String, laneId: String)? {
+  guard laneId.hasPrefix(workRemoteLaneIdPrefix) else { return nil }
+  let rest = laneId.dropFirst(workRemoteLaneIdPrefix.count)
+  guard let bar = rest.firstIndex(of: "|") else { return nil }
+  let machineKey = String(rest[..<bar])
+  let plain = String(rest[rest.index(after: bar)...])
+  guard !machineKey.isEmpty, !plain.isEmpty else { return nil }
+  return (machineKey, plain)
+}
+
 /// The other machines' checkouts of the repository `identity`.
 func workRemoteMachineRepos(
   machines: [MachineFleet.Machine],

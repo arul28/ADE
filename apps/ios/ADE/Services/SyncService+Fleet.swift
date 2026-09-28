@@ -59,7 +59,9 @@ func syncFleetParseMarkedProjectId(_ value: String?) -> (machineKey: String, pro
 
 enum SyncFleetTargetResolution {
   case routed(Any)
-  case focused(projectId: String?)
+  /// For the focused machine: the plain project id, and the args with any
+  /// machine tag taken off their lane ids.
+  case focused(projectId: String?, args: [String: Any])
 }
 
 /// The transport terms a host's `hello_ok` sets. The focused connection and

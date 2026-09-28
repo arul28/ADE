@@ -1,5 +1,12 @@
 import SwiftUI
 
+/// Where a new lane is created: a project on another machine.
+struct LaneCreateTarget: Equatable {
+  /// A machine-marked project id (`syncFleetMarkedProjectId`).
+  let projectId: String
+  let rootPath: String?
+}
+
 struct LaneCreateSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -7,6 +14,10 @@ struct LaneCreateSheet: View {
   let primaryLane: LaneSummary?
   let lanes: [LaneSummary]
   let showsModePicker: Bool
+  /// The project on another machine that a new lane goes to (a machine-marked
+  /// project id). Nil for the focused machine. Modes that start from a lane
+  /// (child, rescue) reach that lane's machine by its namespaced id instead.
+  let target: LaneCreateTarget?
   let onComplete: @MainActor (String) async -> Void
 
   @State private var name = ""
@@ -59,11 +70,13 @@ struct LaneCreateSheet: View {
     lanes: [LaneSummary],
     initialMode: LaneCreateMode = .primary,
     showsModePicker: Bool = true,
+    target: LaneCreateTarget? = nil,
     onComplete: @escaping @MainActor (String) async -> Void
   ) {
     self.primaryLane = primaryLane
     self.lanes = lanes
     self.showsModePicker = showsModePicker
+    self.target = target
     self.onComplete = onComplete
     _createMode = State(initialValue: initialMode)
   }
@@ -495,7 +508,9 @@ struct LaneCreateSheet: View {
           name: name,
           description: description,
           parentLaneId: nil,
-          baseBranch: selectedBaseBranch
+          baseBranch: selectedBaseBranch,
+          targetProjectId: target?.projectId,
+          targetProjectRootPath: target?.rootPath
         )
       case .child:
         created = try await syncService.createChildLane(name: name, parentLaneId: selectedParentLaneId, description: description)
@@ -504,7 +519,9 @@ struct LaneCreateSheet: View {
           branchRef: selectedImportBranch,
           name: name,
           description: description,
-          baseBranch: selectedBaseBranch
+          baseBranch: selectedBaseBranch,
+          targetProjectId: target?.projectId,
+          targetProjectRootPath: target?.rootPath
         )
       case .rescueUnstaged:
         created = try await syncService.createFromUnstaged(sourceLaneId: selectedRescueLaneId, name: name, description: description)
