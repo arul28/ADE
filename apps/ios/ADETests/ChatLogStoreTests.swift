@@ -197,6 +197,24 @@ final class ChatLogStoreTests: XCTestCase {
     XCTAssertNil(tail.meta?.olderCursor)
   }
 
+  func testReadMetaHealsOlderHistoryOnlyNearBudgetAfterTheFirstEvent() async {
+    let store = makeStore(perChat: 1_000)
+    await store.append(chatA, events: [event(2, bytes: 450), event(3, bytes: 450)], generation: 1)
+    await store.append(chatB, events: [event(1, bytes: 450), event(2, bytes: 450)], generation: 1)
+    await store.flush()
+    await store.updateMeta(chatA) { $0.hasOlder = false }
+    await store.updateMeta(chatB) { $0.hasOlder = false }
+    await store.flush()
+
+    let trimmedTop = await store.loadTail(chatA, maxEvents: 10, maxBytes: 1_000)
+    let trueTop = await store.loadTail(chatB, maxEvents: 10, maxBytes: 1_000)
+    XCTAssertEqual(trimmedTop.meta?.oldestSequence, 2)
+    XCTAssertGreaterThanOrEqual((trimmedTop.meta?.bytes ?? 0) * 10, 9_000)
+    XCTAssertEqual(trimmedTop.meta?.hasOlder, true)
+    XCTAssertEqual(trueTop.meta?.oldestSequence, 1)
+    XCTAssertEqual(trueTop.meta?.hasOlder, false)
+  }
+
   func testOversizedSingleEventIsKeptAlone() async {
     let store = makeStore(perChat: 1_000)
     await store.append(chatA, events: [event(1, bytes: 100), event(2, bytes: 100)], generation: 1)

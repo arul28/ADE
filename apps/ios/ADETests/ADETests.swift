@@ -803,6 +803,126 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(wire.compressionThresholdBytes, 512)
     XCTAssertTrue(wire.chunkedEnvelopes)
     XCTAssertEqual(wire.maxFrameBytes, 64 * 1024)
+
+    try service.applyHelloPayloadForTesting([
+      "brain": brain,
+      "compression": ["codec": "deflate", "thresholdBytes": 0],
+      "features": [
+        "chunkedEnvelopes": ["enabled": true, "maxFrameBytes": Int.max],
+        "rosterPeer": true,
+      ],
+    ])
+    wire = service.negotiatedWireTransportForTesting()
+    XCTAssertNil(wire.compressionCodec, "A zero threshold must not turn on deflate.")
+    XCTAssertEqual(wire.compressionThresholdBytes, 4 * 1024)
+    XCTAssertEqual(wire.maxFrameBytes, 720 * 1024, "The host frame budget is capped locally.")
+    let legacySpelling = SyncHelloNegotiation(helloPayload: [
+      "features": ["rosterPeer": true],
+    ])
+    XCTAssertTrue(legacySpelling.featureEnabled("rosterPeer"))
+  }
+
+  @MainActor
+  func testFleetProjectIdentityMergesOnlyTheSameRepositoryAcrossHubAndWork() {
+    let focused = MobileProjectSummary(
+      id: "focused-project",
+      displayName: "Repo",
+      rootPath: "/focused/Repo",
+      repoOwner: "Owner",
+      repoName: "Repo",
+      laneCount: 0,
+      isAvailable: true,
+      isCached: false
+    )
+    let sameRepository = RemoteRosterProject(
+      projectId: "remote-same-repo",
+      rootPath: "/remote/Repo",
+      displayName: "Repo",
+      iconDataUrl: nil,
+      lastOpenedAt: nil,
+      booted: false,
+      runningCount: 0,
+      attentionCount: 0,
+      lanes: [],
+      chats: [],
+      repoOriginUrl: "git@github.com:owner/repo.git"
+    )
+    let differentRepository = RemoteRosterProject(
+      projectId: "remote-other-repo",
+      rootPath: "/other/Repo",
+      displayName: "Repo",
+      iconDataUrl: nil,
+      lastOpenedAt: nil,
+      booted: false,
+      runningCount: 0,
+      attentionCount: 0,
+      lanes: [],
+      chats: [],
+      repoOriginUrl: "https://github.com/owner/other.git"
+    )
+    let machine = MachineFleet.Machine(
+      machineKey: "machine-remote",
+      name: "Remote",
+      state: .live,
+      projects: [sameRepository, differentRepository],
+      rosterRevision: 1,
+      lastUpdateAt: nil,
+      isPinned: false
+    )
+
+    XCTAssertTrue(fleetProjectsMatch(
+      identity: "owner/repo",
+      folder: "repo",
+      otherIdentity: "owner/repo",
+      otherFolder: "repo"
+    ))
+    XCTAssertFalse(fleetProjectsMatch(
+      identity: "owner/repo",
+      folder: "repo",
+      otherIdentity: "owner/other",
+      otherFolder: "repo"
+    ))
+    XCTAssertTrue(fleetProjectsMatch(
+      identity: "owner/repo",
+      folder: "repo",
+      otherIdentity: nil,
+      otherFolder: "repo"
+    ))
+    XCTAssertFalse(fleetProjectsMatch(
+      identity: "owner/repo",
+      folder: nil,
+      otherIdentity: nil,
+      otherFolder: "repo"
+    ))
+
+    let workRepos = workRemoteMachineRepos(
+      machines: [machine],
+      identity: workRepoIdentity(owner: "Owner", name: "Repo"),
+      folderKey: "repo"
+    )
+    XCTAssertEqual(workRepos.map(\.projectId), ["remote-same-repo"])
+
+    let hub = hubMergeFleetRosters(focused: [(project: focused, roster: nil)], machines: [machine])
+    XCTAssertEqual(hub.mergedRosters[focused.id]?.projectId, focused.id)
+    XCTAssertEqual(hub.extraProjects.map(\.roster.projectId), ["fleet|machine-remote|remote-other-repo"])
+  }
+
+  func testMachineConnectionBackoffCapsThenMovesToSlowRetry() {
+    let actual = (0...9).map {
+      machineConnectionBackoffNanoseconds(failures: $0, jitter: 1)
+    }
+    XCTAssertEqual(actual, [
+      2_000_000_000,
+      2_000_000_000,
+      4_000_000_000,
+      8_000_000_000,
+      16_000_000_000,
+      32_000_000_000,
+      60_000_000_000,
+      60_000_000_000,
+      300_000_000_000,
+      300_000_000_000,
+    ])
   }
 
   func testSyncPreprocessRejectsMalformedOrUnsupportedCompressionMetadata() {

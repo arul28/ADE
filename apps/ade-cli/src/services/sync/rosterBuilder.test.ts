@@ -473,6 +473,13 @@ describe("buildRosterSnapshot", () => {
     // Resolvable by rootPath too.
     expect(resolver.resolveTranscriptPath({ projectRootPath: projectRoot, sessionId: "chat-run" }))
       .toBe(path.join(expectedDir, "chat-run.jsonl"));
+    // Supplying both selectors is a hard boundary: a valid project id cannot
+    // make the brain serve transcripts from a different requested root.
+    expect(resolver.resolveTranscriptPath({
+      projectId: PROJECT_ID,
+      projectRootPath: path.join(projectRoot, "different-project"),
+      sessionId: "chat-run",
+    })).toBeNull();
 
     // Unknown project → null (not registered).
     expect(resolver.resolveTranscriptPath({ projectId: "project_unknown", sessionId: "chat-run" })).toBeNull();

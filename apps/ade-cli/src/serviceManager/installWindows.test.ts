@@ -43,6 +43,7 @@ import {
   WINDOWS_TASK_ACTION_FIELD_SEPARATOR,
   buildWindowsRuntimeQueryArgs,
   renderWindowsServiceLauncher,
+  resolveWindowsBrainOutputLogPath,
 } from "./installWindows";
 import {
   BRAIN_HEARTBEAT_INTERVAL_MS,
@@ -385,9 +386,10 @@ describe("Windows background service helpers", () => {
     );
     expect(fs.readFileSync(launcherPath, "utf8")).toBe(
       `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
-        pidPath,
-        logPath: `${launcherPath}.log`,
-        // The supervisor loop doubles as this platform's wedge watchdog.
+      pidPath,
+      logPath: `${launcherPath}.log`,
+      brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
+      // The supervisor loop doubles as this platform's wedge watchdog.
         heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
         wedgeBreadcrumbPath: path.win32.join(
           machineLayout.runtimeDir,
@@ -579,6 +581,7 @@ describe("Windows background service helpers", () => {
     fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
       pidPath,
       logPath: `${launcherPath}.log`,
+      brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
       heartbeatPath: path.win32.join(machineLayout.runtimeDir, "heartbeat.json"),
       wedgeBreadcrumbPath: path.win32.join(machineLayout.runtimeDir, "event-loop-wedge.json"),
     })}`, "utf8");

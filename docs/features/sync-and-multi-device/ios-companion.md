@@ -2407,9 +2407,22 @@ push-controllers built from UIKit) matches the SwiftUI chrome.
 
 Before the tabs render, the **Hub** (`HubScreen`, in `Views/Hub/`) can take
 over the root screen when no active project is selected or the user taps the
-Projects toolbar button. The Hub is the app's home surface: it lists every
-project on the connected machine, each expandable to its chats grouped by lane
-(from the `roster_subscribe` feed — see the sub-protocol table).
+Projects toolbar button. The Hub is the app's home surface: it lists projects
+across the paired machines, each expandable to its chats grouped by lane (from
+the `roster_subscribe` feeds — see the sub-protocol table). Project identities
+merge across machines when their repository origins match. If either machine
+does not report an origin, the folder name is the fallback; known, different
+origins stay separate even when their folders match.
+
+The focused machine owns the full sync connection. Up to three other paired
+machines stay available through lightweight roster connections, for a maximum
+of four live machines including the focused one. The fleet prioritizes pinned
+machines and then recently used machines, closes background connections, and
+does not connect hidden or signed-out machines. Settings > Machines lists the
+paired computers and lets the user hide one. Work includes remote chats for
+the same repository across machines. Chat commands route to the machine that
+owns the chat and fail while that machine is offline; they are never queued or
+sent to the focused machine as a fallback.
 
 The Hub also owns the only mobile entry to projectless Chats.
 `HubPersonalChatsCard` shows the active-session count and attention count when
