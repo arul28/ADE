@@ -24,8 +24,12 @@ There is no 1.x code path.
 ## Servers and profiles
 
 - A **profile** is a set of chats that can share one config. Every ordinary
-  lane chat, the model inventory, auth, and one-shot tasks use the `shared`
-  profile. Personal chats use `shared:personal` (they get no ADE skills). A
+  lane chat, the model inventory, auth, and one-shot tasks use the shared
+  profile for their project's OpenCode settings (`sharedOpenCodeProfileFor`:
+  `ai.apiKeys`, `localProviders`, `customProviders`, `customModelSlugs`).
+  Projects with the same settings share one server; a brain serving projects
+  with different settings runs one per set, so they never overwrite each
+  other's config. Personal chats use `shared:personal` (they get no ADE skills). A
   chat whose config must differ — its own MCP servers (CTO tools), a harness
   preset provider, a strict MCP surface — gets a profile keyed by that content.
 - One `opencode serve --hostname=127.0.0.1 --port=<p>` runs per profile. The
@@ -38,7 +42,10 @@ There is no 1.x code path.
   CLI's shared background service (`serve --service`,
   `~/.local/state/opencode/service.json`).
 - Config reaches the server as a file named by `OPENCODE_CONFIG`
-  (`<runtime root>/config-ade/<hash>.json`), written atomically. OpenCode
+  (`<runtime root>/config-ade/<profile hash>.<pid>.<id>.json`, one per server
+  start), written atomically and private to the user. It holds provider keys,
+  so it lives only as long as its server: close, exit, a failed launch, and
+  orphan recovery (through the registry record) delete it. OpenCode
   watches and hot-reloads it, so a new API key or local model applies to a
   running server. It layers over the user's global config
   (`XDG_CONFIG_HOME/opencode`), so the user's own providers, agents, skills,

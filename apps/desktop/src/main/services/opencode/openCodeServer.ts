@@ -343,7 +343,9 @@ function ensureOpenCodeIsolationDirs(paths: OpenCodeIsolationPaths): void {
  */
 function profileConfigFile(paths: OpenCodeIsolationPaths, key: string): string {
   const safe = createHash("sha256").update(key).digest("hex").slice(0, 24);
-  return path.join(paths.root, "config-ade", `${safe}.${process.pid}.json`);
+  // Unique per start: a server that is still exiting (idle close, then a quick
+  // re-acquire) must never delete the file of its successor.
+  return path.join(paths.root, "config-ade", `${safe}.${process.pid}.${randomUUID()}.json`);
 }
 
 const RENAME_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
@@ -501,10 +503,12 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
       proc.off("error", onError);
     };
 
+    // A failed attempt keeps the config file: the port-conflict retry launches
+    // with the same one, and startEntry removes it when every attempt fails.
     const fail = (error: Error): void => {
       cleanupStartup();
       stopChildProcess(proc);
-      if (proc.pid) removeManagedServerRecord(proc.pid);
+      if (proc.pid) removeManagedServerRecord(proc.pid, { keepConfig: true });
       reject(error);
     };
 
@@ -515,7 +519,11 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
     const onStdout = (chunk: Buffer): void => {
       if (resolved) return;
       output += chunk.toString();
-      for (const line of output.split("\n")) {
+      // Only complete lines: a chunk can end inside the URL, and a cut-off
+      // port would resolve the start with the wrong address.
+      const lines = output.split("\n");
+      lines.pop();
+      for (const line of lines) {
         const url = parseOpenCodeServerListenUrl(line);
         if (!url) continue;
         resolved = true;
@@ -545,7 +553,7 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
     };
 
     proc.on("exit", (code, signal) => {
-      if (proc.pid) removeManagedServerRecord(proc.pid);
+      if (proc.pid) removeManagedServerRecord(proc.pid, { keepConfig: !resolved });
       if (!resolved) {
         cleanupStartup();
         let message = `Server exited with code ${code}`;
@@ -640,7 +648,7 @@ function closeEntry(entry: OpenCodeServerEntry, reason: string, logger?: Logger 
 function scheduleIdleShutdown(entry: OpenCodeServerEntry, logger?: Logger | null): void {
   clearIdleTimer(entry);
   if (entry.refCount > 0 || entry.closed) return;
-  const idleMs = entry.key === SHARED_OPENCODE_PROFILE.key ? SHARED_SERVER_IDLE_MS : PROFILE_SERVER_IDLE_MS;
+  const idleMs = isSharedOpenCodeProfileKey(entry.key) ? SHARED_SERVER_IDLE_MS : PROFILE_SERVER_IDLE_MS;
   entry.idleTimer = setTimeout(() => {
     if (entry.refCount > 0) return;
     closeEntry(entry, "idle", logger);
@@ -894,9 +902,14 @@ export async function acquireOpenCodeServer(args: {
   return lease;
 }
 
-/** The running shared server, if any, without starting one. */
-export function peekSharedOpenCodeServerUrl(): string | null {
-  const entry = serverEntries.get(SHARED_OPENCODE_PROFILE.key);
+/** A shared server (one per set of project settings, plus personal chats') rather than a per-chat profile. */
+export function isSharedOpenCodeProfileKey(key: string): boolean {
+  return key === SHARED_OPENCODE_PROFILE.key || key.startsWith(`${SHARED_OPENCODE_PROFILE.key}:`);
+}
+
+/** The running server for `profile`, if any, without starting one. */
+export function peekOpenCodeServerUrl(profile: OpenCodeServerProfile): string | null {
+  const entry = serverEntries.get(profile.key);
   return entry && !entry.closed ? entry.server.url : null;
 }
 

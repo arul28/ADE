@@ -15,6 +15,7 @@ import {
   type BuildOpenCodeConfigArgs,
   type OpenCodeAgentProfile,
   type OpenCodePermissionRule,
+  sharedOpenCodeProfileFor,
 } from "./openCodeConfig";
 import { acquireOpenCodeServer, type OpenCodeServerLease, type OpenCodeServerOwnerKind } from "./openCodeServer";
 
@@ -144,7 +145,8 @@ export async function applyOpenCodeSessionContext(
 export async function startOpenCodeChatSession(args: {
   config: BuildOpenCodeConfigArgs;
   directory: string;
-  agent: OpenCodeAgentProfile;
+  /** ADE's agent for the mode; null (`config-toml`) keeps a reopened session's own agent. */
+  agent: OpenCodeAgentProfile | null;
   model: OpenCodeModelRef;
   /**
    * Session-level rules. A child session inherits its parent's rules, while
@@ -163,6 +165,7 @@ export async function startOpenCodeChatSession(args: {
   ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
     profile: openCodeProfileFor({
+      projectConfig: args.config.projectConfig,
       isolated: args.config.isolated,
       personal: args.config.personal,
       mcpServers: args.config.mcpServers,
@@ -190,6 +193,16 @@ export async function startOpenCodeChatSession(args: {
       try {
         const existing = await client.session.get({ sessionID: persisted });
         const handle = handleFor(existing.id, existing.title, true);
+        // The saved session keeps the agent and model of its last turn. Bring
+        // them to what ADE shows now: the runtime treats them as already set.
+        if (args.agent && existing.agent !== args.agent) {
+          await client.session.switchAgent({ sessionID: existing.id, agent: args.agent });
+        }
+        const saved = existing.model;
+        if (!saved || saved.providerID !== args.model.providerID || saved.id !== args.model.id
+          || (saved.variant ?? null) !== (args.model.variant ?? null)) {
+          await client.session.switchModel({ sessionID: existing.id, model: args.model });
+        }
         if (args.permissions) await client.session.update({ sessionID: existing.id, permissions: args.permissions });
         await applyOpenCodeSessionContext(handle, args);
         return handle;
@@ -205,7 +218,8 @@ export async function startOpenCodeChatSession(args: {
     const title = args.title?.trim();
     const created = await client.session.create({
       location: { directory: args.directory },
-      agent: args.agent,
+      // `config-toml` has no ADE agent; a new session starts on the edit rules.
+      agent: args.agent ?? "ade-edit",
       model: args.model,
       ...(args.permissions ? { permissions: args.permissions } : {}),
       ...(title ? { title } : {}),
@@ -260,6 +274,7 @@ export async function runOpenCodeTextPrompt(args: {
 }): Promise<{ text: string; inputTokens: number | null; outputTokens: number | null }> {
   ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
+    profile: sharedOpenCodeProfileFor(args.config.projectConfig),
     config: buildOpenCodeConfig(args.config),
     // A running shared server keeps the chats' fuller config (skills, local
     // models); a helper prompt only seeds a server that is starting.

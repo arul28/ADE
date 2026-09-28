@@ -2217,7 +2217,7 @@ func workChatActiveSendCapability(
   provider: String,
   liveRedirectOnly: Bool,
   runsInCloud: Bool = false,
-  hostSupportsOpenCodeSteer: Bool = true
+  hostSupportsOpenCodeSteer: Bool
 ) -> WorkActiveSendCapability {
   let capability = WorkActiveSendCapability.forProvider(provider)
     .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)

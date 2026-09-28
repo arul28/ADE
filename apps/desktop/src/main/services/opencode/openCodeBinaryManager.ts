@@ -1,6 +1,6 @@
 // OpenCode binary resolution with bundled fallback
 import { execFileSync, spawnSync } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
@@ -149,9 +149,23 @@ function canRunBinaryCandidate(filePath: string): boolean {
 
 const openCode2BinaryCache = new Map<string, boolean>();
 
+/**
+ * The cache key names the file as it is now: an upgrade in place (1.x to 2 at
+ * the same path) changes its size or time and is probed again.
+ */
+function binaryIdentity(binaryPath: string): string {
+  try {
+    const stat = statSync(binaryPath);
+    return `${binaryPath}\0${stat.size}\0${stat.mtimeMs}`;
+  } catch {
+    return binaryPath;
+  }
+}
+
 /** Whether `opencode --version` reports major version 2 (`opencode v2.0.18`). */
 function isOpenCode2Binary(binaryPath: string): boolean {
-  const cached = openCode2BinaryCache.get(binaryPath);
+  const cacheKey = binaryIdentity(binaryPath);
+  const cached = openCode2BinaryCache.get(cacheKey);
   if (cached !== undefined) return cached;
   let isV2 = false;
   try {
@@ -171,7 +185,7 @@ function isOpenCode2Binary(binaryPath: string): boolean {
   } catch {
     isV2 = false;
   }
-  openCode2BinaryCache.set(binaryPath, isV2);
+  openCode2BinaryCache.set(cacheKey, isV2);
   return isV2;
 }
 

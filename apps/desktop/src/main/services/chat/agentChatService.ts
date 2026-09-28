@@ -910,11 +910,12 @@ import {
   openCodeAgentFor,
   openCodeSessionRulesFor,
   PERSONAL_OPENCODE_PROFILE,
+  sharedOpenCodeProfileFor,
   resolveOpenCodeModelRef,
   type DiscoveredLocalModelEntry,
   type OpenCodeAgentProfile,
 } from "../opencode/openCodeConfig";
-import { acquireOpenCodeServer, SHARED_OPENCODE_PROFILE } from "../opencode/openCodeServer";
+import { acquireOpenCodeServer } from "../opencode/openCodeServer";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
   applyOpenCodeSessionContext,
@@ -2707,6 +2708,12 @@ type OpenCodeActiveTurn = {
   laneDirectiveKey: string | null;
   /** Set once OpenCode reports the execution started; a prompt that never starts is failed. */
   executionStarted: boolean;
+  /**
+   * When ADE last knew the turn was live on the server: the prompt was
+   * admitted, or an execution started. Null until the prompt returns. A
+   * server snapshot taken before this cannot say the turn ended.
+   */
+  admittedAt: number | null;
   /** Resolves when the turn has been settled (done emitted). */
   settled: Promise<void>;
   settle: () => void;
@@ -2736,6 +2743,8 @@ type OpenCodeRuntime = {
   instructions: string | null;
   pendingApprovals: Map<string, PendingOpenCodeApproval>;
   pendingForms: Map<string, PendingOpenCodeForm>;
+  /** Forms answered in ADE whose reply to OpenCode has not finished yet. */
+  answeringForms: Set<string>;
   /**
    * Messages admitted to OpenCode's inbox during a turn, in admission order.
    * OpenCode owns the queue; these rows mirror it so the transcript, cancel,
@@ -15289,7 +15298,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "opencode") return await fn(managed.runtime.handle.client);
     const personal = isPersonalSession(managed.session);
     const lease = await acquireOpenCodeServer({
-      profile: personal ? PERSONAL_OPENCODE_PROFILE : SHARED_OPENCODE_PROFILE,
+      profile: personal ? PERSONAL_OPENCODE_PROFILE : sharedOpenCodeProfileFor(projectConfigService.get().effective),
       // A server this starts must have ADE's agents and providers, or a later
       // lease that only reuses it (terminal, inventory) finds none.
       config: buildOpenCodeConfig({
@@ -15403,7 +15412,7 @@ export function createAgentChatService(args: {
           ...(opencodeMcpConfig ? { mcpServers: opencodeMcpConfig } : {}),
         },
         directory: managed.laneWorktreePath,
-        agent: agent ?? "ade-edit",
+        agent,
         model,
         permissions: openCodeSessionRulesFor(permMode).rules,
         title: manualSessionTitleForRuntime(managed),
@@ -15436,6 +15445,7 @@ export function createAgentChatService(args: {
       instructions,
       pendingApprovals: new Map(),
       pendingForms: new Map(),
+      answeringForms: new Set(),
       pendingSteers: [],
       inboxOutcomes: new Map(),
       interrupted: false,
@@ -29541,6 +29551,7 @@ export function createAgentChatService(args: {
       requestedModel: args.requestedModel ?? { providerID: model.providerID, modelID: model.id },
       laneDirectiveKey: args.laneDirectiveKey ?? null,
       executionStarted: args.origin === "opencode",
+      admittedAt: args.origin === "opencode" ? Date.now() : null,
       settled,
       settle,
     };
@@ -29775,20 +29786,27 @@ export function createAgentChatService(args: {
       });
       if (managed.runtime !== runtime || !runtime.pendingForms.has(form.id)) return;
       runtime.pendingForms.delete(form.id);
-      if (response.decision === "decline" || response.decision === "cancel") {
-        await cancelForm();
-        return;
+      // Until OpenCode has the reply, the form is still listed as open; a
+      // reconcile in that window must not show it again.
+      runtime.answeringForms.add(form.id);
+      try {
+        if (response.decision === "decline" || response.decision === "cancel") {
+          await cancelForm();
+          return;
+        }
+        // One answer per field key; a free-text reply stands in for a field with none.
+        const freeform = response.responseText?.trim();
+        await runtime.handle.client.session.form.reply({
+          sessionID: form.sessionID,
+          formID: form.id,
+          answer: openCodeFormAnswer(form.fields, (key) => {
+            const picked = ownQuestionValue(response.answers, key) ?? [];
+            return picked.length ? picked : freeform ? [freeform] : [];
+          }),
+        });
+      } finally {
+        runtime.answeringForms.delete(form.id);
       }
-      // One answer per field key; a free-text reply stands in for a field with none.
-      const freeform = response.responseText?.trim();
-      await runtime.handle.client.session.form.reply({
-        sessionID: form.sessionID,
-        formID: form.id,
-        answer: openCodeFormAnswer(form.fields, (key) => {
-          const picked = ownQuestionValue(response.answers, key) ?? [];
-          return picked.length ? picked : freeform ? [freeform] : [];
-        }),
-      });
     })().catch(async (error) => {
       if (runtime.interrupted) return;
       logger.warn("agent_chat.opencode_question_failed", {
@@ -29930,8 +29948,12 @@ export function createAgentChatService(args: {
 
     switch (event.type) {
       case "session.execution.started":
-        if (runtime.activeTurn) runtime.activeTurn.executionStarted = true;
-        else beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
+        if (runtime.activeTurn) {
+          runtime.activeTurn.executionStarted = true;
+          runtime.activeTurn.admittedAt = Date.now();
+        } else {
+          beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
+        }
         return;
       case "session.execution.succeeded":
         finishOpenCodeTurn(managed, runtime, { status: "completed" });
@@ -29977,6 +29999,9 @@ export function createAgentChatService(args: {
   const reconcileOpenCodeRuntime = async (managed: ManagedChatSession, runtime: OpenCodeRuntime): Promise<void> => {
     if (managed.runtime !== runtime) return;
     const client = runtime.handle.client;
+    // The snapshot only speaks for a turn that was already live before it.
+    const turnAtSnapshot = runtime.activeTurn;
+    const snapshotAt = Date.now();
     let active: Awaited<ReturnType<typeof client.session.active>>;
     try {
       active = await client.session.active();
@@ -29994,9 +30019,10 @@ export function createAgentChatService(args: {
       if (!turn) beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
       // Its `execution.started` fell in the gap.
       else turn.executionStarted = true;
-    } else if (turn) {
+    } else if (turn && turn === turnAtSnapshot && turn.admittedAt !== null && turn.admittedAt < snapshotAt) {
       // Idle now. A turn whose start was never seen either ran entirely in the
       // gap (an assistant message newer than the turn proves it) or never ran.
+      // A turn admitted after the snapshot is left to its events and the watchdog.
       const ran = turn.executionStarted || await openCodeAnsweredSince(client, runtime.handle.sessionId, turn.startedAt);
       if (managed.runtime !== runtime || runtime.activeTurn !== turn) return;
       if (!ran) {
@@ -30058,15 +30084,17 @@ export function createAgentChatService(args: {
       .catch(() => null);
     for (const request of requests?.data ?? []) {
       if (managed.runtime !== runtime) return;
-      const tracked = [...runtime.pendingApprovals.values()].some((pending) => pending.requestId === request.id);
-      if (tracked || !await adoptChild(request.sessionID)) continue;
+      const tracked = (): boolean => [...runtime.pendingApprovals.values()].some((pending) => pending.requestId === request.id);
+      if (tracked() || !await adoptChild(request.sessionID)) continue;
+      // The live `permission.asked` may have landed during the child lookup.
+      if (managed.runtime !== runtime || tracked()) continue;
       onOpenCodePermissionAsked(managed, runtime, request);
     }
     for (const sessionId of [parentId, ...runtime.subagents.keys()]) {
       const forms = await client.session.form.list({ sessionID: sessionId }).catch(() => null);
       for (const form of forms ?? []) {
         if (managed.runtime !== runtime) return;
-        if (runtime.pendingForms.has(form.id)) continue;
+        if (runtime.pendingForms.has(form.id) || runtime.answeringForms.has(form.id)) continue;
         onOpenCodeFormCreated(managed, runtime, form);
       }
     }
@@ -30209,6 +30237,7 @@ export function createAgentChatService(args: {
           .join("\n\n");
         await client.session.prompt({ sessionID, text, ...(files.length ? { files } : {}) });
       }
+      turn.admittedAt = Date.now();
       args.onBackendDispatched?.();
       // A prompt OpenCode admitted but never ran would otherwise hold the chat
       // on "Working": after a bound, ask the server what happened.
@@ -50405,9 +50434,11 @@ export function createAgentChatService(args: {
         await runtime.handle.client.session.interrupt({ sessionID: runtime.handle.sessionId });
         // An idle session emits no `execution.interrupted`: a turn whose
         // execution never started (or ended unseen) must still end on Stop.
-        if (runtime.activeTurn) {
+        const stoppedTurn = runtime.activeTurn;
+        if (stoppedTurn) {
           const active = await runtime.handle.client.session.active().catch(() => null);
-          if (active && !active[runtime.handle.sessionId] && managed.runtime === runtime) {
+          // Only the turn Stop was aimed at: OpenCode may already run the next one.
+          if (active && !active[runtime.handle.sessionId] && managed.runtime === runtime && runtime.activeTurn === stoppedTurn) {
             finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
           }
         }

@@ -21,7 +21,7 @@ import { openCodeProviderDisplayName } from "../../../shared/opencodeProviders";
 import { stableStringify } from "../shared/utils";
 import { openCodeAuthMethodsFromIntegrations, type OpenCodeIntegrationInfo } from "./openCodeAuthMethods";
 import { resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
-import { buildOpenCodeConfig, type DiscoveredLocalModelEntry } from "./openCodeConfig";
+import { buildOpenCodeConfig, type DiscoveredLocalModelEntry, sharedOpenCodeProfileFor } from "./openCodeConfig";
 import { acquireOpenCodeServer } from "./openCodeServer";
 
 /**
@@ -787,6 +787,7 @@ export async function probeOpenCodeProviderInventory(args: {
   const probePromise = (async (): Promise<OpenCodeInventoryResult> => {
     try {
       const lease = await acquireOpenCodeServer({
+        profile: sharedOpenCodeProfileFor(args.projectConfig),
         config: buildOpenCodeConfig({
           projectConfig: args.projectConfig,
           discoveredLocalModels: args.discoveredLocalModels ?? lastDiscoveredLocalModels,

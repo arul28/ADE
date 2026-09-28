@@ -16,6 +16,7 @@ import {
   openCodeAgentFor,
   openCodeSessionRulesFor,
   resolveOpenCodeModelRef,
+  sharedOpenCodeProfileFor,
 } from "./openCodeConfig";
 import { readOpenCodeDb, resolveAdeOpenCodeDbPath } from "./openCodeCredentials";
 import { lastOpenCodeDiscoveredLocalModels } from "./openCodeInventory";
@@ -237,6 +238,7 @@ export async function attachOpenCodeTerminal(args: {
   const lineRest = direct && line ? splitOpenCodeArgs(line.args).rest : rest;
 
   const lease = await acquireOpenCodeServer({
+    profile: sharedOpenCodeProfileFor(args.projectConfig),
     config: buildOpenCodeConfig({
       projectConfig: args.projectConfig,
       discoveredLocalModels: lastOpenCodeDiscoveredLocalModels(),
@@ -251,15 +253,19 @@ export async function attachOpenCodeTerminal(args: {
     const client = lease.client;
     let sessionId: string | null = null;
     let resumed = false;
+    // A resumed session takes the launch's mode, whichever way it was found.
+    const applyMode = async (existing: { id: string; agent?: string }): Promise<void> => {
+      if (agent && existing.agent !== agent) {
+        await client.session.switchAgent({ sessionID: existing.id, agent });
+      }
+      if (sessionRules) await client.session.update({ sessionID: existing.id, permissions: sessionRules });
+    };
     if (selector?.kind === "session") {
       try {
         const existing = await client.session.get({ sessionID: selector.id });
         sessionId = existing.id;
         resumed = true;
-        if (agent && existing.agent !== agent) {
-          await client.session.switchAgent({ sessionID: existing.id, agent });
-        }
-        if (sessionRules) await client.session.update({ sessionID: existing.id, permissions: sessionRules });
+        await applyMode(existing);
       } catch (error) {
         if (!isOpenCodeNotFoundError(error)) throw error;
         // A 1.x terminal session lived in the user's own store, which ADE's
@@ -272,6 +278,7 @@ export async function attachOpenCodeTerminal(args: {
       if (latest) {
         sessionId = latest.id;
         resumed = true;
+        await applyMode(latest);
       }
     }
     if (!sessionId) {

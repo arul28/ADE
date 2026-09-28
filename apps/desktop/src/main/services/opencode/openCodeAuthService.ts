@@ -27,7 +27,7 @@ import {
   openCodeAuthMethodsFromIntegrations,
   openCodeMethodFormAnswer,
 } from "./openCodeAuthMethods";
-import { buildOpenCodeConfig } from "./openCodeConfig";
+import { buildOpenCodeConfig, sharedOpenCodeProfileFor } from "./openCodeConfig";
 import { readOpenCodeCredentials } from "./openCodeCredentials";
 import {
   clearOpenCodeInventoryCache,
@@ -35,7 +35,7 @@ import {
   peekOpenCodeAuthMethods,
   probeOpenCodeProviderInventory,
 } from "./openCodeInventory";
-import { acquireOpenCodeServer, peekSharedOpenCodeServerUrl, type OpenCodeServerLease } from "./openCodeServer";
+import { acquireOpenCodeServer, peekOpenCodeServerUrl, type OpenCodeServerLease } from "./openCodeServer";
 
 /** OAuth completion poll cadence. */
 const POLL_INTERVAL_MS = 2_000;
@@ -68,6 +68,7 @@ async function acquireAuthLease(
   configMode: "if-starting" | "providers" = "if-starting",
 ): Promise<OpenCodeServerLease> {
   return await acquireOpenCodeServer({
+    profile: sharedOpenCodeProfileFor(deps.projectConfig),
     configMode,
     config: buildOpenCodeConfig({
       projectConfig: deps.projectConfig,
@@ -85,7 +86,7 @@ async function acquireAuthLease(
  * No server is started for it: the next one reads the key store when it starts.
  */
 async function refreshRunningServerConfig(deps: OpenCodeAuthDeps): Promise<void> {
-  if (!peekSharedOpenCodeServerUrl()) return;
+  if (!peekOpenCodeServerUrl(sharedOpenCodeProfileFor(deps.projectConfig))) return;
   const lease = await acquireAuthLease(deps, "providers");
   lease.release();
 }

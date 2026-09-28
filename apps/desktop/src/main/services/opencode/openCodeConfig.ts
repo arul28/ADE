@@ -418,7 +418,38 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeServ
  */
 export const PERSONAL_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared:personal", isolated: false };
 
+/** The project settings the generated config reads (keys, local servers, custom providers and slugs). */
+function projectOpenCodeSettings(projectConfig: ProjectConfigFile | EffectiveProjectConfig): Record<string, unknown> | null {
+  const ai = projectConfig.ai ?? {};
+  const settings = {
+    apiKeys: ai.apiKeys ?? {},
+    localProviders: ai.localProviders ?? {},
+    customProviders: ai.customProviders ?? [],
+    customModelSlugs: ai.customModelSlugs ?? [],
+  };
+  const empty = Object.values(settings).every((value) => (
+    Array.isArray(value) ? value.length === 0 : Object.keys(value as object).length === 0
+  ));
+  return empty ? null : settings;
+}
+
+function digestOf(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
+}
+
+/**
+ * The shared server for a project. One brain can serve several projects, and
+ * their settings can differ; one config file per server would make them
+ * overwrite each other. Projects with the same settings (the usual case)
+ * still share one server.
+ */
+export function sharedOpenCodeProfileFor(projectConfig: ProjectConfigFile | EffectiveProjectConfig): OpenCodeServerProfile {
+  const settings = projectOpenCodeSettings(projectConfig);
+  return settings ? { key: `shared:${digestOf(settings)}`, isolated: false } : SHARED_OPENCODE_PROFILE;
+}
+
 export function openCodeProfileFor(args: {
+  projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   isolated?: boolean;
   personal?: boolean;
   mcpServers?: Record<string, OpenCodeMcpServerConfig>;
@@ -426,15 +457,15 @@ export function openCodeProfileFor(args: {
 }): OpenCodeServerProfile {
   const hasMcp = Boolean(args.mcpServers && Object.keys(args.mcpServers).length);
   const hasPreset = Boolean(args.presetProviders && Object.keys(args.presetProviders).length);
-  if (!args.isolated && !hasMcp && !hasPreset) return args.personal ? PERSONAL_OPENCODE_PROFILE : SHARED_OPENCODE_PROFILE;
-  const digest = createHash("sha256")
-    .update(stableStringify({
-      isolated: Boolean(args.isolated),
-      personal: Boolean(args.personal),
-      mcp: args.mcpServers ?? {},
-      preset: args.presetProviders ?? {},
-    }))
-    .digest("hex")
-    .slice(0, 16);
+  if (!args.isolated && !hasMcp && !hasPreset) {
+    return args.personal ? PERSONAL_OPENCODE_PROFILE : sharedOpenCodeProfileFor(args.projectConfig);
+  }
+  const digest = digestOf({
+    isolated: Boolean(args.isolated),
+    personal: Boolean(args.personal),
+    mcp: args.mcpServers ?? {},
+    preset: args.presetProviders ?? {},
+    project: projectOpenCodeSettings(args.projectConfig),
+  });
   return { key: `profile:${digest}`, isolated: Boolean(args.isolated) };
 }

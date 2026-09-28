@@ -480,12 +480,12 @@ export function writeManagedServerRecord(record: ManagedOpenCodeServerRecord): v
   }
 }
 
-export function removeManagedServerRecord(pid: number): void {
+export function removeManagedServerRecord(pid: number, options: { keepConfig?: boolean } = {}): void {
   for (const dir of managedServerRegistryDirs()) {
     const file = path.join(dir, `${pid}.json`);
     try {
       const record = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<ManagedOpenCodeServerRecord>;
-      if (typeof record.configFile === "string") removeProfileConfig(record.configFile);
+      if (!options.keepConfig && typeof record.configFile === "string") removeProfileConfig(record.configFile);
     } catch {
       // No record here, or an unreadable one.
     }

@@ -169,6 +169,7 @@ export function readOpenCodeStoreMessages(
     `);
     let beforeSeq = Number.MAX_SAFE_INTEGER;
     pages: for (;;) {
+      const startSeq = beforeSeq;
       const rows = page.all(args.sessionId, beforeSeq) as Array<Record<string, unknown>>;
       for (const row of rows) {
         const seq = numberOrNull(row.seq);
@@ -183,7 +184,9 @@ export function readOpenCodeStoreMessages(
         }
         messages.push({ id, type: textOrNull(row.type) ?? "unknown", createdAt: numberOrNull(row.createdAt), data });
       }
-      if (rows.length < V2_PAGE_ROWS) break;
+      // A page whose rows carry no usable `seq` cannot move the cursor; the same
+      // query would return it forever and block the main process.
+      if (rows.length < V2_PAGE_ROWS || beforeSeq >= startSeq) break;
     }
     return { messages: messages.reverse(), truncated };
   }
