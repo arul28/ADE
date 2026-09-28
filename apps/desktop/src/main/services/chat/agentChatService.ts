@@ -906,6 +906,7 @@ import {
 } from "./laneAppleDeviceDirective";
 import type { OpenCodeEvent } from "@opencode/client";
 import {
+  buildOpenCodeConfig,
   mapPermissionModeToOpenCodeAgent,
   openCodeSessionRulesFor,
   PERSONAL_OPENCODE_PROFILE,
@@ -932,7 +933,7 @@ import {
   type OpenCodeStructuredError,
   type OpenCodeTurnMapper,
 } from "./openCodeEventMapper";
-import { peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
+import { lastOpenCodeDiscoveredLocalModels, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import { checkKimiWindowsPrerequisites, resolveAcpExecutable } from "../ai/acpExecutables";
@@ -15318,8 +15319,17 @@ export function createAgentChatService(args: {
     fn: (client: OpenCodeSessionHandle["client"]) => Promise<T>,
   ): Promise<T> => {
     if (managed.runtime?.kind === "opencode") return await fn(managed.runtime.handle.client);
+    const personal = isPersonalSession(managed.session);
     const lease = await acquireOpenCodeServer({
-      profile: isPersonalSession(managed.session) ? PERSONAL_OPENCODE_PROFILE : SHARED_OPENCODE_PROFILE,
+      profile: personal ? PERSONAL_OPENCODE_PROFILE : SHARED_OPENCODE_PROFILE,
+      // A server this starts must have ADE's agents and providers, or a later
+      // lease that only reuses it (terminal, inventory) finds none.
+      config: buildOpenCodeConfig({
+        projectConfig: projectConfigService.get().effective,
+        discoveredLocalModels: lastOpenCodeDiscoveredLocalModels(),
+        personal,
+      }),
+      configMode: "if-starting",
       ownerKind: "chat",
       ownerId: managed.session.id,
       logger,
@@ -29604,6 +29614,7 @@ export function createAgentChatService(args: {
     runtime.activeTurn = turn;
     runtime.activeTurnId = turnId;
     runtime.interrupted = false;
+    runtime.preserveQueuedSteersOnInterrupt = false;
     setOpenCodeRuntimeBusy(runtime, true);
     setSessionActive(managed);
     if (args.origin === "opencode") {
@@ -29647,6 +29658,8 @@ export function createAgentChatService(args: {
     if (!turn) return;
     runtime.activeTurn = null;
     runtime.activeTurnId = null;
+    // A `subagent` call whose child never appeared must not name the next turn's child.
+    pendingOpenCodeSubagentCalls.delete(runtime);
     setOpenCodeRuntimeBusy(runtime, false);
     const { turnId } = turn;
     void emitTurnDiffSummaryIfChanged(managed, turnId);
@@ -30229,15 +30242,28 @@ export function createAgentChatService(args: {
     }
     if (managed.runtime !== runtime) return;
     const parentRunning = Boolean(active[runtime.handle.sessionId]);
-    if (parentRunning && !runtime.activeTurn) {
-      beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
-    } else if (!parentRunning && runtime.activeTurn?.executionStarted) {
-      const info = await client.session.get({ sessionID: runtime.handle.sessionId }).catch(() => null);
-      if (managed.runtime !== runtime || !runtime.activeTurn) return;
-      if (info?.outcome === "failed") finishOpenCodeTurn(managed, runtime, { status: "failed" });
-      else if (info?.outcome === "interrupted") finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
-      else finishOpenCodeTurn(managed, runtime, { status: "completed" });
+    const turn = runtime.activeTurn;
+    if (parentRunning) {
+      if (!turn) beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
+      // Its `execution.started` fell in the gap.
+      else turn.executionStarted = true;
+    } else if (turn) {
+      // Idle now. A turn whose start was never seen either ran entirely in the
+      // gap (an assistant message newer than the turn proves it) or never ran.
+      const ran = turn.executionStarted || await openCodeAnsweredSince(client, runtime.handle.sessionId, turn.startedAt);
+      if (managed.runtime !== runtime || runtime.activeTurn !== turn) return;
+      if (!ran) {
+        finishOpenCodeTurn(managed, runtime, { status: "failed", error: new Error("OpenCode did not start this prompt.") });
+      } else {
+        const info = await client.session.get({ sessionID: runtime.handle.sessionId }).catch(() => null);
+        if (managed.runtime !== runtime || runtime.activeTurn !== turn) return;
+        if (info?.outcome === "failed") finishOpenCodeTurn(managed, runtime, { status: "failed" });
+        else if (info?.outcome === "interrupted") finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
+        else finishOpenCodeTurn(managed, runtime, { status: "completed" });
+      }
     }
+    await recoverOpenCodePendingAsks(managed, runtime);
+    if (managed.runtime !== runtime) return;
     for (const [childId, child] of runtime.subagents) {
       if (child.settled || active[childId]) continue;
       const info = await client.session.get({ sessionID: childId }).catch(() => null);
@@ -30245,6 +30271,58 @@ export function createAgentChatService(args: {
       if (info?.outcome === "failed") settleOpenCodeChild(managed, runtime, childId, "failed", "Subagent failed");
       else if (info?.outcome === "interrupted") settleOpenCodeChild(managed, runtime, childId, "stopped", "Subagent stopped");
       else if (info) settleOpenCodeChild(managed, runtime, childId, "completed", child.description);
+    }
+  };
+
+  /** Whether the session has an assistant message created at or after `since`. */
+  const openCodeAnsweredSince = async (
+    client: OpenCodeSessionHandle["client"],
+    sessionId: string,
+    since: number,
+  ): Promise<boolean> => {
+    const page = await client.message.list({ sessionID: sessionId, limit: 1, order: "desc", type: "assistant" }).catch(() => null);
+    const latest = page?.data[0];
+    return Boolean(latest && latest.type === "assistant" && latest.time.created >= since);
+  };
+
+  /**
+   * Show the asks and forms published while nobody listened. 2.0 streams do
+   * not replay, and an execution waiting on an ask with no card hangs.
+   */
+  const recoverOpenCodePendingAsks = async (managed: ManagedChatSession, runtime: OpenCodeRuntime): Promise<void> => {
+    const client = runtime.handle.client;
+    const parentId = runtime.handle.sessionId;
+    const known = (sessionId: string): boolean => sessionId === parentId || runtime.subagents.has(sessionId);
+    // A child created before a reopen is not tracked yet; its ask names it.
+    const adoptChild = async (sessionId: string): Promise<boolean> => {
+      if (known(sessionId)) return true;
+      const info = await client.session.get({ sessionID: sessionId }).catch(() => null);
+      if (!info?.parentID || !known(info.parentID) || managed.runtime !== runtime) return false;
+      onOpenCodeChildCreated(managed, runtime, {
+        sessionID: info.id,
+        parentID: info.parentID,
+        ...(info.agent ? { agent: info.agent } : {}),
+        ...(info.model ? { model: info.model } : {}),
+      } as Extract<OpenCodeEvent, { type: "session.created" }>["data"]);
+      return true;
+    };
+    const requests = await client.permission.request
+      .list({ location: { directory: runtime.handle.directory } })
+      .catch(() => null);
+    for (const request of requests?.data ?? []) {
+      if (managed.runtime !== runtime) return;
+      const tracked = [...runtime.pendingApprovals.values()].some((pending) => pending.requestId === request.id);
+      if (tracked || !await adoptChild(request.sessionID)) continue;
+      onOpenCodePermissionAsked(managed, runtime, request);
+    }
+    for (const sessionId of [parentId, ...runtime.subagents.keys()]) {
+      const forms = await client.session.form.list({ sessionID: sessionId }).catch(() => null);
+      for (const form of forms ?? []) {
+        if (managed.runtime !== runtime) return;
+        if (runtime.pendingForms.has(form.id)) continue;
+        // `form.list` and `form.created` carry one wire shape; the client generates it twice.
+        onOpenCodeFormCreated(managed, runtime, form as unknown as Extract<OpenCodeEvent, { type: "form.created" }>["data"]["form"]);
+      }
     }
   };
 
@@ -50574,11 +50652,19 @@ export function createAgentChatService(args: {
       if (!runtime.activeTurn && runtime.interrupted) return result;
       runtime.interrupted = true;
       if (stopModeClearsQueue(mode)) cancelOpenCodeInboxRows(managed, runtime, "interrupted");
-      else runtime.preserveQueuedSteersOnInterrupt = true;
+      else if (runtime.activeTurn) runtime.preserveQueuedSteersOnInterrupt = true;
       settleOpenCodePendingApprovals(managed, runtime);
       settleOpenCodePendingForms(managed, runtime);
       try {
         await runtime.handle.client.session.interrupt({ sessionID: runtime.handle.sessionId });
+        // An idle session emits no `execution.interrupted`: a turn whose
+        // execution never started (or ended unseen) must still end on Stop.
+        if (runtime.activeTurn) {
+          const active = await runtime.handle.client.session.active().catch(() => null);
+          if (active && !active[runtime.handle.sessionId] && managed.runtime === runtime) {
+            finishOpenCodeTurn(managed, runtime, { status: "interrupted" });
+          }
+        }
       } catch (error) {
         logger.warn("agent_chat.opencode_interrupt_failed", {
           sessionId: managed.session.id,

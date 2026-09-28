@@ -640,6 +640,19 @@ struct WorkActiveSendCapability: Equatable {
     )
   }
 
+  /// An older host only queues for OpenCode; offering inline there would make
+  /// the default send fail. `hostSupportsOpenCodeSteer` is the host's
+  /// `openCodeInboxSteer` feature.
+  func withholdingOpenCodeInlineIfNeeded(hostSupportsOpenCodeSteer: Bool, provider: String) -> WorkActiveSendCapability {
+    guard !hostSupportsOpenCodeSteer, providerFamilyKey(provider) == "opencode", modes.contains(.inline) else { return self }
+    return WorkActiveSendCapability(
+      modes: modes.filter { $0 != .inline },
+      agentLabel: agentLabel,
+      interruptContinues: interruptContinues,
+      inlineCarriesAttachments: inlineCarriesAttachments
+    )
+  }
+
   static func forProvider(_ provider: String) -> WorkActiveSendCapability {
     // Normalized through the same family collapse the rest of Work uses, so a
     // session labelled "claude-code" or "cursor-agent" is not silently demoted

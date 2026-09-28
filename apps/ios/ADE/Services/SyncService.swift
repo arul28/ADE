@@ -4514,6 +4514,9 @@ final class SyncService: ObservableObject {
   /// `hello.features.macDesktopControl`: this host accepts a takeover from a
   /// paired controller. Absent keeps the sheet on the picture alone.
   private var advertisesMacDesktopControl = false
+  /// `hello.features.openCodeInboxSteer`: OpenCode chats on this host take a
+  /// mid-turn "send during turn" message. Older hosts only queue for OpenCode.
+  private(set) var supportsOpenCodeInboxSteer = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
   private var recentFullChatSnapshotRequestBySession: [
@@ -19505,6 +19508,7 @@ final class SyncService: ObservableObject {
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     advertisesMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
     advertisesMacDesktopControl = featureEnabled("macDesktopControl", "mac_desktop_control")
+    supportsOpenCodeInboxSteer = featureEnabled("openCodeInboxSteer", "open_code_inbox_steer")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
     if let chunking = features?["chunkedEnvelopes"] as? [String: Any],

@@ -256,6 +256,9 @@ export async function runOpenCodeTextPrompt(args: {
   ensureOpenCodeAvailable();
   const lease = await acquireOpenCodeServer({
     config: buildOpenCodeConfig(args.config),
+    // A running shared server keeps the chats' fuller config (skills, local
+    // models); a helper prompt only seeds a server that is starting.
+    configMode: "if-starting",
     ownerKind: "oneshot",
     logger: args.logger,
   });

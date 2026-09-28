@@ -756,6 +756,8 @@ type ManagedOpenCodeServerRecord = {
   port: number;
   ownerPid: number;
   startedAt: number;
+  /** The server's generated config, which holds provider keys; removed with the record. */
+  configFile?: string;
 };
 
 function managedServerRegistryDirs(): string[] {
@@ -784,8 +786,15 @@ function writeManagedServerRecord(record: ManagedOpenCodeServerRecord): void {
 
 function removeManagedServerRecord(pid: number): void {
   for (const dir of managedServerRegistryDirs()) {
+    const file = path.join(dir, `${pid}.json`);
     try {
-      fs.rmSync(path.join(dir, `${pid}.json`), { force: true });
+      const record = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<ManagedOpenCodeServerRecord>;
+      if (typeof record.configFile === "string") removeProfileConfig(record.configFile);
+    } catch {
+      // No record here, or an unreadable one.
+    }
+    try {
+      fs.rmSync(file, { force: true });
     } catch {
       // ignore
     }
@@ -822,6 +831,7 @@ function readManagedServerRecords(): Array<{ file: string; record: ManagedOpenCo
             ownerPid,
             port: Number.isInteger(Number(parsed.port)) ? Number(parsed.port) : 0,
             startedAt: Number.isFinite(Number(parsed.startedAt)) ? Number(parsed.startedAt) : 0,
+            ...(typeof parsed.configFile === "string" ? { configFile: parsed.configFile } : {}),
           },
         });
       } catch {
@@ -934,11 +944,7 @@ export async function recoverManagedOpenCodeOrphans(args: {
       if (record.pid === process.pid) continue;
       if (handledPids.has(record.pid)) continue;
       if (!openCodeProcessController.isProcessAlive(record.pid)) {
-        try {
-          fs.rmSync(file, { force: true });
-        } catch {
-          // ignore
-        }
+        removeManagedServerRecord(record.pid);
         continue;
       }
       // Guard against PID reuse: the live process must still look like an
@@ -979,11 +985,7 @@ export async function recoverManagedOpenCodeOrphans(args: {
         port: record.port,
         source: "registry",
       });
-      try {
-        fs.rmSync(file, { force: true });
-      } catch {
-        // ignore
-      }
+      removeManagedServerRecord(record.pid);
     }
 
     lastOrphanRecoveryResult = { recoveredPids, skippedPids };
@@ -997,21 +999,64 @@ export async function recoverManagedOpenCodeOrphans(args: {
   return await recoveryPromise;
 }
 
-/** Where a profile's generated config file lives. One file per profile. */
+/**
+ * Where a profile's generated config file lives: one file per profile and
+ * process. The file holds provider keys, so it lives only as long as its
+ * server, and two brains on one ADE home never share (or delete) one file.
+ */
 function profileConfigFile(paths: OpenCodeIsolationPaths, key: string): string {
   const safe = createHash("sha256").update(key).digest("hex").slice(0, 24);
-  return path.join(paths.root, "config-ade", `${safe}.json`);
+  return path.join(paths.root, "config-ade", `${safe}.${process.pid}.json`);
 }
+
+function isProfileConfigFile(file: string): boolean {
+  const dir = path.resolve(resolveAdeOpenCodeIsolationPaths().root, "config-ade");
+  const resolved = path.resolve(file);
+  return path.dirname(resolved) === dir && resolved.endsWith(".json");
+}
+
+function removeProfileConfig(file: string): void {
+  // A registry record is data on disk: never delete a path it names outside the config directory.
+  if (!isProfileConfigFile(file)) return;
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // ignore
+  }
+}
+
+const RENAME_RETRY_CODES = new Set(["EPERM", "EBUSY", "EACCES"]);
 
 /**
  * Write the config atomically: OpenCode watches the file, and a reader that
- * lands between truncate and write would load an empty config.
+ * lands between truncate and write would load an empty config. The directory
+ * and file are private to the user, because the config holds provider keys.
  */
 function writeProfileConfig(file: string, json: string): void {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
-  fs.writeFileSync(tmp, json, { encoding: "utf8", mode: 0o600 });
-  fs.renameSync(tmp, file);
+  try {
+    fs.writeFileSync(tmp, json, { encoding: "utf8", mode: 0o600 });
+    // Windows refuses a rename onto a file another process (OpenCode's
+    // watcher) has open for a moment; retry briefly instead of failing.
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        fs.renameSync(tmp, file);
+        return;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code ?? "";
+        if (process.platform !== "win32" || !RENAME_RETRY_CODES.has(code) || attempt >= 4) throw error;
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+      }
+    }
+  } catch (error) {
+    try {
+      fs.rmSync(tmp, { force: true });
+    } catch {
+      // ignore
+    }
+    throw error;
+  }
 }
 
 /**
@@ -1113,11 +1158,13 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
     shell: launchSpec.useShell,
   });
   if (proc.pid) {
+    const configFile = launchSpec.env.OPENCODE_CONFIG;
     writeManagedServerRecord({
       pid: proc.pid,
       port: args.port,
       ownerPid: process.pid,
       startedAt: Date.now(),
+      ...(configFile ? { configFile } : {}),
     });
   }
 
@@ -1256,6 +1303,7 @@ function closeEntry(entry: OpenCodeServerEntry, reason: string, logger?: Logger 
   } catch {
     // ignore shutdown failures
   }
+  removeProfileConfig(entry.configFile);
   logServerEvent(logger, "opencode.server_shutdown", entry, { reason });
 }
 
@@ -1347,7 +1395,13 @@ async function startEntry(args: {
     configFile,
     password,
   });
-  const server = await launchOpenCodeServerWithRetry(env);
+  let server: OpenCodeServerInstance;
+  try {
+    server = await launchOpenCodeServerWithRetry(env);
+  } catch (error) {
+    removeProfileConfig(configFile);
+    throw error;
+  }
   const authorization = `Basic ${Buffer.from(`${OPENCODE_BASIC_AUTH_USER}:${password}`).toString("base64")}`;
   const client = OpenCode.make({ baseUrl: server.url, headers: { authorization } });
   const entry: OpenCodeServerEntry = {
@@ -1372,6 +1426,7 @@ async function startEntry(args: {
   server.onExit((error) => {
     const wasClosed = entry.closed;
     entry.closed = true;
+    removeProfileConfig(entry.configFile);
     clearIdleTimer(entry);
     entry.streamAbort?.abort();
     if (serverEntries.get(entry.key) === entry) serverEntries.delete(entry.key);
@@ -1421,8 +1476,9 @@ function buildLease(entry: OpenCodeServerEntry, logger?: Logger | null): OpenCod
       if (entry.closed) return;
       const json = JSON.stringify(config);
       if (json === entry.configJson) return;
-      entry.configJson = json;
+      // Recorded only once written, so a failed write is retried by the next identical config.
       writeProfileConfig(entry.configFile, json);
+      entry.configJson = json;
       logServerEvent(logger, "opencode.server_config_updated", entry);
     },
     release() {
@@ -1482,6 +1538,9 @@ export async function acquireOpenCodeServer(args: {
       inFlightEntries.set(profile.key, pending);
     }
     entry = await pending;
+    // The server can exit while it loads its catalog, or a shutdown can close
+    // it; a lease on it would fail on its first request.
+    if (entry.closed) throw new Error("The OpenCode server stopped while it was starting. Try again.");
     serverEntries.set(profile.key, entry);
   }
   clearIdleTimer(entry);
@@ -1489,14 +1548,21 @@ export async function acquireOpenCodeServer(args: {
   entry.lastUsedAt = Date.now();
   const lease = buildLease(entry, args.logger);
   const configMode = args.configMode ?? "replace";
-  if (args.config && configMode === "replace") lease.updateConfig(args.config);
-  if (args.config && configMode === "providers") {
-    const running = JSON.parse(entry.configJson) as OpenCodeServerConfig;
-    const providers = (args.config as { providers?: unknown }).providers;
-    const merged: Record<string, unknown> = { ...running };
-    if (providers === undefined) delete merged.providers;
-    else merged.providers = providers;
-    lease.updateConfig(merged);
+  try {
+    if (args.config && configMode === "replace") lease.updateConfig(args.config);
+    if (args.config && configMode === "providers") {
+      const running = JSON.parse(entry.configJson) as OpenCodeServerConfig;
+      const providers = (args.config as { providers?: unknown }).providers;
+      const merged: Record<string, unknown> = { ...running };
+      if (providers === undefined) delete merged.providers;
+      else merged.providers = providers;
+      lease.updateConfig(merged);
+    }
+  } catch (error) {
+    // A failed config write must not leave a lease counted forever: the
+    // server would never reach its idle shutdown.
+    lease.release();
+    throw error;
   }
   logServerEvent(args.logger, "opencode.server_acquired", entry, {
     ownerKind: args.ownerKind,
@@ -1515,6 +1581,12 @@ export function shutdownOpenCodeServers(filter: { key?: string } = {}, logger?: 
   for (const entry of [...serverEntries.values()]) {
     if (filter.key && entry.key !== filter.key) continue;
     closeEntry(entry, "shutdown", logger);
+  }
+  // A server still starting is closed as soon as it is up; otherwise it would
+  // outlive this process and wait for the next start's orphan recovery.
+  for (const [key, pending] of inFlightEntries) {
+    if (filter.key && key !== filter.key) continue;
+    void pending.then((entry) => closeEntry(entry, "shutdown", logger), () => {});
   }
 }
 

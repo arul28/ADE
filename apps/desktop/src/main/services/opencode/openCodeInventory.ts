@@ -784,11 +784,11 @@ export async function probeOpenCodeProviderInventory(args: {
       const lease = await acquireOpenCodeServer({
         config: buildOpenCodeConfig({
           projectConfig: args.projectConfig,
-          discoveredLocalModels: args.discoveredLocalModels,
+          discoveredLocalModels: args.discoveredLocalModels ?? lastDiscoveredLocalModels,
         }),
-        // A running server keeps the chats' config; this narrower one only
-        // seeds a server that is starting.
-        configMode: "if-starting",
+        // Providers are built from the same inputs a chat uses, so a new key or
+        // local model reaches a running server; its skills and agents stay.
+        configMode: "providers",
         ownerKind: "inventory",
         ownerId: args.projectRoot,
         logger: args.logger,

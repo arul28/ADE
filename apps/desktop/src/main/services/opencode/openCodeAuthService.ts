@@ -356,16 +356,16 @@ export async function clearProviderKey(
     .filter((credential) => credential.integrationId === providerId)
     .map((credential) => credential.id);
   try {
-    if (!credentialIds.length) {
-      await refreshRunningServerConfig(deps);
-      return { ok: true };
+    if (credentialIds.length) {
+      const lease = await acquireAuthLease(deps);
+      try {
+        await removeCredentials(lease.client, credentialIds);
+      } finally {
+        lease.release();
+      }
     }
-    const lease = await acquireAuthLease(deps);
-    try {
-      await removeCredentials(lease.client, credentialIds);
-    } finally {
-      lease.release();
-    }
+    // The deleted ADE key must also leave a running server's config.
+    await refreshRunningServerConfig(deps);
     return { ok: true };
   } catch (err) {
     return { ok: false, error: `OpenCode could not remove the ${providerId} sign-in: ${errorMessage(err)}` };
