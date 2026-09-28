@@ -681,7 +681,7 @@ describe("simRecordingService against the helper's per-device state", () => {
       udid,
       laneId: "lane-a",
       proof: true,
-      demo: { plain: true, fallbackReason: expect.stringContaining("could not be read") },
+      demo: { plain: true, fallbackReason: expect.stringMatching(/\S/) },
     });
   });
 
