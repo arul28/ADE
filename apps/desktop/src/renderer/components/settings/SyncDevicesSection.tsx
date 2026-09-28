@@ -41,6 +41,7 @@ import { useReconnectThisComputer } from "../../hooks/useReconnectThisComputer";
 import { readThisMachineRefusal } from "../../../shared/accountMachineRefusal";
 import { describeThisComputerRefusal } from "../../lib/thisComputerRefusal";
 import { BrainRepairButton } from "./BrainRepairButton";
+import { showToast } from "../app/toast/toastStore";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   COLORS,
@@ -249,22 +250,27 @@ export function ThisMacCard({
   const reconnect = useReconnectThisComputer({
     onSettled: () => { void sync.refresh({ force: true }); },
   });
-  // "No ADE on this computer is hosting sync" used to be a dead end. Start sync
-  // runs the brain's own sync-host recovery; when that cannot fix it, its
-  // answer says why and Repair (restart the background service) is offered.
+  // Start sync runs the brain's own sync-host recovery, so "No ADE on this
+  // computer is hosting sync" has a way out. Success is an event (a toast);
+  // a failure is a state of this card: its answer says why, next to Repair
+  // (restart the background service).
   const [startingSync, setStartingSync] = useState(false);
-  const [startSyncOutcome, setStartSyncOutcome] = useState<{ ok: boolean; message: string } | null>(null);
+  const [startSyncFailure, setStartSyncFailure] = useState<string | null>(null);
   const startSyncHost = window.ade?.account?.startSyncHost;
   const startSync = useCallback(async () => {
     const start = window.ade?.account?.startSyncHost;
     if (!start) return;
     setStartingSync(true);
-    setStartSyncOutcome(null);
+    setStartSyncFailure(null);
     try {
       const result = await start();
-      setStartSyncOutcome({ ok: result.ok, message: result.ok ? "Sync is running on this computer." : result.message });
+      if (result.ok) {
+        showToast({ tone: "success", title: "Sync is running on this computer." });
+      } else {
+        setStartSyncFailure(result.message);
+      }
     } catch (err) {
-      setStartSyncOutcome({ ok: false, message: err instanceof Error ? err.message : String(err) });
+      setStartSyncFailure(err instanceof Error ? err.message : String(err));
     } finally {
       setStartingSync(false);
       void sync.refresh({ force: true });
@@ -487,19 +493,19 @@ export function ThisMacCard({
                 ) : null}
               </div>
             ) : null}
-            {syncNotHosted && startSyncOutcome ? (
+            {syncNotHosted && startSyncFailure ? (
               <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                 <span
                   role="status"
                   style={{
                     ...helperTextStyle,
                     lineHeight: 1.4,
-                    color: startSyncOutcome.ok ? COLORS.success : COLORS.warning,
+                    color: COLORS.warning,
                   }}
                 >
-                  {startSyncOutcome.message}
+                  {startSyncFailure}
                 </span>
-                {!startSyncOutcome.ok && repair.available ? <BrainRepairButton repair={repair} height={24} /> : null}
+                {repair.available ? <BrainRepairButton repair={repair} height={24} /> : null}
               </div>
             ) : null}
           </div>

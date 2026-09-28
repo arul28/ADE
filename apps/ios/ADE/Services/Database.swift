@@ -284,7 +284,7 @@ final class DatabaseService {
   /// `localDbVersion`, readable without the access queue. A changeset apply
   /// holds that queue for the whole batch, and the main actor reads the
   /// version on every relay tick and heartbeat: through the queue it waited
-  /// for the apply (the 55-120 ms frames of rounds 8-9).
+  /// for the apply (55-120 ms frames).
   private let publishedDbVersion = OSAllocatedUnfairLock(initialState: 0)
   private var cachedSiteIdHex = ""
   private var cachedSiteIdBlob = Data()

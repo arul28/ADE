@@ -215,11 +215,11 @@ export function createPrPollingService({
     return DEFAULT_INTERVAL_MS;
   };
 
-  // The per-PR poll cursor lives in memory. It used to be written to the
-  // replicated `pull_requests.last_polled_at` column for every PR on every
-  // tick: nothing reads it, but cr-sqlite shipped each write to every synced
-  // peer (on a 221-PR project that was most of a phone's idle sync traffic).
-  // The column stays; an older value there still seeds the cursor.
+  // The per-PR poll cursor lives in memory, not in the replicated
+  // `pull_requests.last_polled_at` column: nothing reads it remotely, and
+  // cr-sqlite would ship a write per PR per tick to every synced peer (most of
+  // a phone's idle sync traffic on a large project). The column stays; a value
+  // already there still seeds the cursor.
   const lastPolledAtByPrId = new Map<string, string>();
 
   const getLastPolledAt = (prId: string): string | null => {

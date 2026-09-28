@@ -43,7 +43,6 @@ final class MachineConnection {
   private(set) var lastUpdateAt: Date?
   private(set) var supportsChatStreaming = false
   private(set) var supportsChatLogV2 = false
-  private(set) var supportsCrossProjectChat = false
   private(set) var supportsChatHistoryPaging = false
   private(set) var supportsChatHistoryPageBySequence = false
   private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = []
@@ -99,7 +98,7 @@ final class MachineConnection {
     let cacheKey = syncService.fleetRosterCacheKey(for: profile)
     self.rosterCacheKey = cacheKey
     self.rosterProjects = cacheKey.map(MachineConnection.loadCachedRoster(cacheKey:)) ?? []
-    self.hostName = fleetNonEmpty(profile.hostName)
+    self.hostName = nonEmptyTrimmed(profile.hostName)
   }
 
   var isLive: Bool { phase == .live && socket != nil }
@@ -206,17 +205,9 @@ final class MachineConnection {
   /// Apply `hello_ok`. Returns false when the host cannot serve a roster peer.
   private func attach(_ result: SyncFleetDialResult) -> Bool {
     let payload = result.helloPayload
-    let features = payload["features"] as? [String: Any]
-    func featureEnabled(_ keys: String...) -> Bool {
-      for key in keys {
-        if let feature = features?[key] as? [String: Any],
-           let enabled = feature["enabled"] as? Bool {
-          return enabled
-        }
-        if let value = features?[key] as? Bool { return value }
-      }
-      return false
-    }
+    let negotiation = SyncHelloNegotiation(helloPayload: payload)
+    let features = negotiation.features
+    func featureEnabled(_ keys: String...) -> Bool { negotiation.featureEnabled(keys) }
     guard featureEnabled("rosterPeer", "roster_peer") else {
       machineConnectionLog.notice("fleet host lacks rosterPeer machine=\(self.machineKey, privacy: .public)")
       result.task.cancel(with: .goingAway, reason: nil)
@@ -226,28 +217,11 @@ final class MachineConnection {
     supportsChatStreaming = featureEnabled("chatStreaming", "chat_streaming")
     supportsChatHistoryPaging = featureEnabled("chatHistoryPaging", "chat_history_paging")
     supportsChatLogV2 = featureEnabled("chatLogV2", "chat_log_v2")
-    supportsCrossProjectChat = featureEnabled("crossProjectChat", "cross_project_chat")
     supportsChatHistoryPageBySequence = featureEnabled("chatHistoryPageBySequence", "chat_history_page_by_sequence")
-    if let chunking = features?["chunkedEnvelopes"] as? [String: Any],
-       chunking["enabled"] as? Bool == true,
-       let frameBytes = (chunking["maxFrameBytes"] as? NSNumber)?.intValue,
-       frameBytes > 1_024 {
-      chunkedEnvelopes = true
-      maxFrameBytes = min(syncDefaultMaxFrameBytes, frameBytes)
-    } else {
-      chunkedEnvelopes = false
-      maxFrameBytes = syncDefaultMaxFrameBytes
-    }
-    if let compression = payload["compression"] as? [String: Any],
-       compression["codec"] as? String == SyncWireCompressionCodec.deflate.rawValue,
-       let threshold = (compression["thresholdBytes"] as? NSNumber)?.intValue,
-       threshold > 0 {
-      compressionCodec = .deflate
-      compressionThresholdBytes = threshold
-    } else {
-      compressionCodec = nil
-      compressionThresholdBytes = syncApplicationCompressionThresholdBytes
-    }
+    chunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil
+    maxFrameBytes = negotiation.chunkedMaxFrameBytes ?? syncDefaultMaxFrameBytes
+    compressionCodec = negotiation.deflateThresholdBytes != nil ? .deflate : nil
+    compressionThresholdBytes = negotiation.deflateThresholdBytes ?? syncApplicationCompressionThresholdBytes
     if let routing = features?["commandRouting"] as? [String: Any],
        let actions = routing["actions"],
        let data = try? JSONSerialization.data(withJSONObject: actions),
@@ -257,7 +231,7 @@ final class MachineConnection {
       commandDescriptors = []
     }
     if let brain = payload["brain"] as? [String: Any],
-       let name = fleetNonEmpty(brain["deviceName"] as? String) {
+       let name = nonEmptyTrimmed(brain["deviceName"] as? String) {
       hostName = name
     }
     chunkAssembler = SyncEnvelopeChunkAssembler()
@@ -809,20 +783,24 @@ final class MachineConnection {
     case .beforeSequence(let sequence): payload["beforeSequence"] = sequence
     case .beforeOffset(let offset): payload["beforeOffset"] = max(0, offset)
     }
-    let raw = try await request(
-      type: "chat_history",
-      payload: payload,
-      timeoutNanoseconds: 8_000_000_000,
-      timeoutMessage: "Timed out loading earlier chat messages."
-    )
-    let decoded = try await decodeOlderPage(raw, sessionId: sessionId)
     let commandCanPage: Bool = {
       switch olderRequest {
       case .beforeOffset: return true
       case .beforeSequence: return supportsChatHistoryPageBySequence
       }
     }()
-    guard decoded.unavailable, commandCanPage else { return decoded }
+    do {
+      let raw = try await request(
+        type: "chat_history",
+        payload: payload,
+        timeoutNanoseconds: 8_000_000_000,
+        timeoutMessage: "Timed out loading earlier chat messages."
+      )
+      let decoded = try await decodeOlderPage(raw, sessionId: sessionId)
+      guard decoded.unavailable, commandCanPage else { return decoded }
+    } catch where isSyncRequestTimeoutError(error) && commandCanPage {
+      // A handler that never answers `chat_history` falls through as well.
+    }
     // The socket handler cannot serve this chat's history; the command can.
     var args: [String: Any] = ["sessionId": sessionId, "maxBytes": syncChatHistoryTailPageMaxBytes]
     switch olderRequest {
@@ -852,16 +830,21 @@ final class MachineConnection {
 
 // MARK: - Pure helpers
 
+/// Failures in a row after which a machine is dialed only every few minutes.
+private let machineConnectionSlowRetryFailures = 8
+private let machineConnectionSlowRetrySeconds = 300.0
+private let machineConnectionMaxBackoffSeconds = 60.0
+
 /// Exponential backoff with jitter: 2 s, 4 s, 8 s … capped at 60 s, then
-/// 5 minutes once a machine has failed 8 times in a row. A machine that is
-/// switched off otherwise cost a 10 s dial every minute for as long as the
-/// app was open (round 10 log).
+/// 5 minutes once a machine has failed 8 times in a row. Without the slow
+/// retry, a machine that is switched off costs a 10 s dial every minute for
+/// as long as the app is open.
 func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.random(in: 0.8...1.2)) -> UInt64 {
-  if failures >= 8 {
-    return UInt64(300.0 * jitter * 1_000_000_000)
+  if failures >= machineConnectionSlowRetryFailures {
+    return UInt64(machineConnectionSlowRetrySeconds * jitter * 1_000_000_000)
   }
   let exponent = min(max(failures, 1), 6)
-  let seconds = min(60.0, pow(2.0, Double(exponent))) * jitter
+  let seconds = min(machineConnectionMaxBackoffSeconds, pow(2.0, Double(exponent))) * jitter
   return UInt64(seconds * 1_000_000_000)
 }
 
@@ -872,7 +855,8 @@ func machineConnectionDecode<T: Decodable>(_ payload: Any, as type: T.Type) -> T
   return try? JSONDecoder().decode(type, from: data)
 }
 
-func fleetNonEmpty(_ value: String?) -> String? {
+/// The string without surrounding whitespace, or nil when nothing is left.
+func nonEmptyTrimmed(_ value: String?) -> String? {
   guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
   return trimmed
 }

@@ -12,7 +12,7 @@ private let machineFleetLog = Logger(subsystem: "com.ade.ios", category: "fleet"
 /// Hub and the Work tab. It publishes on its own, so a roster delta from
 /// another machine never re-renders the views that observe `SyncService`.
 ///
-/// Policy (owner decisions 2026-09-25):
+/// Policy:
 /// - At most 4 machines live at once, the focused one included. Machines the
 ///   user chose ("keep live") come first, then the most recently used.
 /// - All roster connections close when the app goes to the background, and
@@ -59,6 +59,8 @@ final class MachineFleet: ObservableObject {
   private var reconcileScheduled = false
   private var publishScheduled = false
   private var needsUpdateSince: [String: Date] = [:]
+  private var needsUpdateRetryTask: Task<Void, Never>?
+  private var needsUpdateRetryDue: Date?
   private var pinnedKeys: [String]
   private var lastOrder: [String] = []
   private var lastPublishedPhase: [String: MachineConnection.Phase] = [:]
@@ -105,7 +107,7 @@ final class MachineFleet: ObservableObject {
             // Both keys a row can be hidden under: the device identity, and
             // `account:<machine key>` for a directory row without one.
             accountMachines: machines.flatMap { machine in
-              [fleetNonEmpty(machine.deviceId), "account:\(machine.machineKey)"]
+              [nonEmptyTrimmed(machine.deviceId), "account:\(machine.machineKey)"]
                 .compactMap { $0 }
                 .map { (identity: $0, online: machine.online) }
             }
@@ -166,6 +168,9 @@ final class MachineFleet: ObservableObject {
     }
     connections.removeAll()
     needsUpdateSince.removeAll()
+    needsUpdateRetryTask?.cancel()
+    needsUpdateRetryTask = nil
+    needsUpdateRetryDue = nil
     machines = []
     pairedMachineCount = 0
   }
@@ -178,14 +183,6 @@ final class MachineFleet: ObservableObject {
 
   func machine(for machineKey: String) -> Machine? {
     machines.first { $0.machineKey == machineKey }
-  }
-
-  /// Keys of the machines the user chose to keep live, in their order.
-  var pinnedMachineKeys: [String] { pinnedKeys }
-
-  /// Machines over the limit (paused) right now.
-  var pausedMachines: [Machine] {
-    machines.filter { $0.state == .paused }
   }
 
   // MARK: - User choices
@@ -238,6 +235,21 @@ final class MachineFleet: ObservableObject {
 
   // MARK: - Reconcile
 
+  /// One pending wake-up for the earliest "update needed" wait that ends.
+  private func scheduleNeedsUpdateRetry(after seconds: TimeInterval) {
+    let due = Date().addingTimeInterval(seconds)
+    if let needsUpdateRetryDue, needsUpdateRetryDue <= due { return }
+    needsUpdateRetryDue = due
+    needsUpdateRetryTask?.cancel()
+    needsUpdateRetryTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(max(1, seconds) * 1_000_000_000))
+      guard let self, !Task.isCancelled else { return }
+      self.needsUpdateRetryDue = nil
+      self.needsUpdateRetryTask = nil
+      self.reconcile()
+    }
+  }
+
   private func scheduleReconcile() {
     guard !reconcileScheduled else { return }
     reconcileScheduled = true
@@ -255,14 +267,18 @@ final class MachineFleet: ObservableObject {
     let focusedKey = syncService.focusedMachineKey
     // Focusing a machine is the phone connecting to it: a hidden machine the
     // user connects to again is back in the lists.
-    if let focusedKey, let identity = HiddenMachineStore.identity(fromFleetKey: focusedKey),
+    if let focusedKey,
+       let identity = HiddenMachineStore.identity(fromFleetKey: focusedKey)
+         ?? syncService.activeHostProfile.flatMap(HiddenMachineStore.nameIdentity(for:)),
        hiddenMachines.isHidden(identity: identity) {
       hiddenMachines.unhide(identity: identity)
     }
     // Hidden machines are treated exactly like unpaired ones below: their
     // roster connection is closed and dropped. The pairing itself is kept.
     let profiles = syncService.fleetMachineProfiles().filter { entry in
-      guard let identity = HiddenMachineStore.identity(fromFleetKey: entry.machineKey) else { return true }
+      guard let identity = HiddenMachineStore.identity(fromFleetKey: entry.machineKey)
+        ?? HiddenMachineStore.nameIdentity(for: entry.profile)
+      else { return true }
       return !hiddenMachines.isHidden(identity: identity)
     }
     let blocked = syncService.fleetBlockedMachineKeys
@@ -308,8 +324,13 @@ final class MachineFleet: ObservableObject {
       guard let connection = connections[key] else { continue }
       let wantsLive = appActive && liveKeys.contains(key) && !blocked.contains(key)
       if wantsLive {
-        if let since = needsUpdateSince[key], now.timeIntervalSince(since) < Self.needsUpdateRetryInterval {
-          continue
+        if let since = needsUpdateSince[key] {
+          let remaining = Self.needsUpdateRetryInterval - now.timeIntervalSince(since)
+          if remaining > 0 {
+            // Try again when the wait ends: the machine may be updated by then.
+            scheduleNeedsUpdateRetry(after: remaining)
+            continue
+          }
         }
         connection.start()
       } else if connection.isRunning || connection.isLive {
@@ -387,7 +408,7 @@ final class MachineFleet: ObservableObject {
       }
       return Machine(
         machineKey: key,
-        name: connection.hostName ?? fleetNonEmpty(connection.profile.hostName) ?? "Machine",
+        name: connection.hostName ?? nonEmptyTrimmed(connection.profile.hostName) ?? "Machine",
         state: state,
         projects: connection.rosterProjects,
         rosterRevision: connection.rosterRevision,
@@ -453,8 +474,14 @@ final class HiddenMachineStore: ObservableObject {
     return rest.isEmpty ? nil : rest
   }
 
+  /// The identity Settings hides a saved machine under when it never
+  /// reported a device identity (`name:<host name>`).
+  static func nameIdentity(for profile: HostConnectionProfile) -> String? {
+    nonEmptyTrimmed(profile.hostName).map { "name:\($0)" }
+  }
+
   func setAccountScope(_ userId: String?) {
-    let next = fleetNonEmpty(userId) ?? "signed-out"
+    let next = nonEmptyTrimmed(userId) ?? "signed-out"
     guard next != scope else { return }
     scope = next
     if let data = defaults.data(forKey: defaultsKey),

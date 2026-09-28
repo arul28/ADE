@@ -664,13 +664,19 @@ export function createForeignChatTranscriptResolver(args: {
       const requestedProjectId = typeof projectId === "string" ? projectId.trim() : "";
       const requestedRootPath = normalizePath(projectRootPath);
       const records = args.projectRegistry.list();
-      const record = records.find((entry) => {
-        if (requestedProjectId && entry.projectId === requestedProjectId) return true;
-        // Platform path identity: case-folded on Windows and macOS, so a root
-        // spelled with different casing still names the registered project.
-        if (requestedRootPath && pathsEqual(entry.rootPath, requestedRootPath)) return true;
-        return false;
-      });
+      const byId = requestedProjectId
+        ? records.find((entry) => entry.projectId === requestedProjectId)
+        : undefined;
+      // Platform path identity: case-folded on Windows and macOS, so a root
+      // spelled with different casing still names the registered project.
+      const byRoot = requestedRootPath
+        ? records.find((entry) => pathsEqual(entry.rootPath, requestedRootPath))
+        : undefined;
+      // Both selectors given: the project the id names must live at that
+      // root, or a request for one project could be answered from another's
+      // transcripts.
+      if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
+      const record = byId ?? byRoot;
       if (!record) return null;
 
       const layout = resolveAdeLayout(record.rootPath);

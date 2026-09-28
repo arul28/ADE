@@ -1,21 +1,18 @@
 import Foundation
 
-// The Work tab's cross-machine rows (owner decision D1=A, 2026-09-25): the
+// The Work tab's cross-machine rows: the
 // focused project plus the SAME repository's chats on every other paired
 // machine, the way the desktop Work board unions machines
-// (`crossMachineLanes.ts`). Repositories match by their normalized origin
-// (`owner/name`); a project without an origin never matches, so a folder that
-// merely shares a name is never merged.
+// (`crossMachineLanes.ts`). Checkouts match by `fleetProjectsMatch`, the
+// same rule as the Hub.
 
 /// One other machine's checkout of the focused repository, as its roster
 /// reports it.
 struct WorkRemoteMachineRepo: Equatable {
   let machineKey: String
   let machineName: String
-  let isLive: Bool
   let projectId: String
   let rootPath: String?
-  let displayName: String
   let lanes: [RemoteRosterLane]
   let chats: [RemoteRosterChat]
 }
@@ -49,10 +46,32 @@ func workRepoIdentity(owner: String?, name: String?) -> String? {
   return "\(owner)/\(name)".lowercased()
 }
 
+/// Whether two checkouts on different machines are the same project. Known
+/// origins decide. The folder name decides only when one side has no origin
+/// (hosts before the fleet release send none), so two different repositories
+/// that share a folder name never merge.
+func fleetProjectsMatch(
+  identity lhsIdentity: String?,
+  folder lhsFolder: String?,
+  otherIdentity rhsIdentity: String?,
+  otherFolder rhsFolder: String?
+) -> Bool {
+  if let lhsIdentity, let rhsIdentity { return lhsIdentity == rhsIdentity }
+  guard let lhsFolder, let rhsFolder else { return false }
+  return lhsFolder == rhsFolder
+}
+
 /// Lane ids of another machine live in the list under a namespaced id, so a
 /// lane never merges with a focused-machine lane (or another machine's).
 func workRemoteLaneId(machineKey: String, laneId: String) -> String {
-  "fleet|\(machineKey)|\(laneId)"
+  "\(workRemoteLaneIdPrefix)\(machineKey)|\(laneId)"
+}
+
+private let workRemoteLaneIdPrefix = "fleet|"
+
+/// Whether a lane id is another machine's namespaced lane id.
+func isWorkRemoteLaneId(_ laneId: String) -> Bool {
+  laneId.hasPrefix(workRemoteLaneIdPrefix)
 }
 
 /// The other machines' checkouts of the repository `identity`.
@@ -65,22 +84,17 @@ func workRemoteMachineRepos(
   var repos: [WorkRemoteMachineRepo] = []
   for machine in machines {
     for project in machine.projects {
-      // Origin when the project has one; the folder name for hosts that send
-      // no origin (the same fallback as the Hub).
-      if let remoteIdentity = workRepoIdentity(originUrl: project.repoOriginUrl), let identity {
-        guard remoteIdentity == identity else { continue }
-      } else {
-        guard let folderKey,
-              hubProjectFolderKey(project.rootPath, displayName: project.displayName) == folderKey
-        else { continue }
-      }
+      guard fleetProjectsMatch(
+        identity: identity,
+        folder: folderKey,
+        otherIdentity: workRepoIdentity(originUrl: project.repoOriginUrl),
+        otherFolder: hubProjectFolderKey(project.rootPath, displayName: project.displayName)
+      ) else { continue }
       repos.append(WorkRemoteMachineRepo(
         machineKey: machine.machineKey,
         machineName: machine.name,
-        isLive: machine.state == .live,
         projectId: project.projectId,
         rootPath: project.rootPath,
-        displayName: project.displayName,
         lanes: project.lanes,
         chats: project.chats.filter { $0.archived != true && !$0.isIdentityChat }
       ))

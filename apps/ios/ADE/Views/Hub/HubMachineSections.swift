@@ -1,93 +1,13 @@
 import SwiftUI
 
-// The Hub as ONE list of projects across every paired machine (owner,
-// 2026-09-25: no per-machine lists). A project that exists on several machines
+// The Hub as ONE list of projects across every paired machine (no
+// per-machine lists). A project that exists on several machines
 // (same repository origin) is one card; its lanes and chats come from every
 // machine, and a lane from a machine other than the focused one carries that
 // machine's name. A chat opens through its own machine's roster connection; a
 // project that lives only on another machine opens by focusing that machine.
-// Machine state and "keep live" live in Settings > Machines, not here.
-
-/// Short state copy for a machine header.
-func hubMachineStateLabel(_ state: MachineFleet.MachineState, lastUpdateAt: Date?, now: Date = Date()) -> String {
-  func updated() -> String {
-    guard let lastUpdateAt else { return "" }
-    let formatter = RelativeDateTimeFormatter()
-    formatter.unitsStyle = .short
-    return " · updated \(formatter.localizedString(for: lastUpdateAt, relativeTo: now))"
-  }
-  switch state {
-  case .live: return "Live"
-  case .connecting: return "Connecting…"
-  case .offline: return "Offline" + updated()
-  case .paused: return "Paused" + updated()
-  case .inactive: return "Paused in background"
-  case .needsUpdate: return "Update ADE on this machine"
-  case .needsAttention(let message): return message
-  }
-}
-
-private func hubMachineStateColor(_ state: MachineFleet.MachineState) -> Color {
-  switch state {
-  case .live: return ADEColor.success
-  case .connecting, .inactive: return ADEColor.textMuted
-  case .offline, .paused: return ADEColor.textMuted
-  case .needsUpdate, .needsAttention: return ADEColor.warning
-  }
-}
-
-/// Shown when the account has more machines than the phone keeps live.
-struct HubMachineLimitNotice: View {
-  let pairedMachineCount: Int
-  let pausedCount: Int
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      Image(systemName: "info.circle.fill")
-        .foregroundStyle(ADEColor.info)
-      VStack(alignment: .leading, spacing: 2) {
-        Text("Live updates for \(MachineFleet.liveMachineLimit) machines at a time")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(pausedCount == 1
-          ? "1 machine shows its last update. Use its … menu to keep it live."
-          : "\(pausedCount) machines show their last update. Use a machine's … menu to keep it live.")
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      Spacer(minLength: 0)
-    }
-    .padding(12)
-    .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-    )
-    .accessibilityElement(children: .combine)
-  }
-}
-
-struct HubKeepLivePrompt: Identifiable, Equatable {
-  let machineKey: String
-  let machineName: String
-  let pausedName: String
-  var id: String { machineKey }
-}
-
-struct HubRemoteProjectPrompt: Identifiable, Equatable {
-  let machineKey: String
-  let machineName: String
-  let project: MobileProjectSummary
-  var id: String { "\(machineKey)|\(project.id)" }
-}
-
-func hubMachineCanRetry(_ state: MachineFleet.MachineState) -> Bool {
-  switch state {
-  case .needsUpdate, .needsAttention, .offline: return true
-  default: return false
-  }
-}
+// Machine state and "keep live" live in Settings > Machines
+// (`SettingsMachineFleet.swift`), not here.
 
 /// Where a Hub chat or lane from another machine really lives.
 struct HubRemoteOwner: Equatable {
@@ -127,8 +47,7 @@ func hubRemoteProjectCardId(machineKey: String, projectId: String) -> String {
 }
 
 /// Pure: fold the other machines' rosters into the focused machine's project
-/// list. Repositories match on the normalized origin (`owner/name`); a project
-/// without an origin is never merged with another one.
+/// list. Checkouts on different machines match by `fleetProjectsMatch`.
 func hubMergeFleetRosters(
   focused: [(project: MobileProjectSummary, roster: RemoteRosterProject?)],
   machines: [MachineFleet.Machine]
@@ -136,11 +55,13 @@ func hubMergeFleetRosters(
   var merge = HubFleetMerge()
   var focusedByIdentity: [String: String] = [:]
   var focusedByFolder: [String: String] = [:]
+  var focusedIdentityById: [String: String] = [:]
   for entry in focused {
     let identity = workRepoIdentity(owner: entry.project.repoOwner, name: entry.project.repoName)
       ?? workRepoIdentity(originUrl: entry.roster?.repoOriginUrl)
-    if let identity, focusedByIdentity[identity] == nil {
-      focusedByIdentity[identity] = entry.project.id
+    if let identity {
+      focusedIdentityById[entry.project.id] = identity
+      if focusedByIdentity[identity] == nil { focusedByIdentity[identity] = entry.project.id }
     }
     if let folder = hubProjectFolderKey(entry.project.rootPath ?? entry.roster?.rootPath, displayName: entry.project.displayName),
        focusedByFolder[folder] == nil {
@@ -181,12 +102,17 @@ func hubMergeFleetRosters(
         )
       }
 
-      // Repository origin first. Hosts before the fleet release send no
-      // origin: then the checkout's folder name is the match (owner, round 7:
-      // one card per project, not one per machine).
+      // One card per project, not one per machine.
       let folder = hubProjectFolderKey(remote.rootPath, displayName: remote.displayName)
       let matchedFocusedId = identity.flatMap { focusedByIdentity[$0] }
-        ?? folder.flatMap { focusedByFolder[$0] }
+        ?? folder.flatMap { focusedByFolder[$0] }.flatMap { focusedId in
+          fleetProjectsMatch(
+            identity: identity,
+            folder: folder,
+            otherIdentity: focusedIdentityById[focusedId],
+            otherFolder: folder
+          ) ? focusedId : nil
+        }
       if let focusedId = matchedFocusedId {
         var target = merge.mergedRosters[focusedId]
           ?? focusedRosterById[focusedId].flatMap { $0 }

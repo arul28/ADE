@@ -760,7 +760,7 @@ extension WorkRootListScreen {
     selectedSessionTransitionId = session.id
     // A row from another machine opens through that machine; it is not
     // restored at launch (the restore path opens focused-machine chats).
-    let remoteChat: WorkChatCrossProjectContext? = session.laneId.hasPrefix("fleet|")
+    let remoteChat: WorkChatCrossProjectContext? = isWorkRemoteLaneId(session.laneId)
       ? syncService.remoteMachineChat(sessionId: session.id).map { remote in
         WorkChatCrossProjectContext(
           projectId: remote.projectId,

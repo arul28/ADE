@@ -84,6 +84,7 @@ import {
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
+import { withTimeout } from "../../desktop/src/main/services/ai/utils";
 import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
@@ -434,6 +435,9 @@ type ParsedCli = {
 
 const DEFAULT_EPHEMERAL_RUNTIME_IDLE_EXIT_MS = 5 * 60 * 1000;
 const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
+// How long "Reconnect this computer" waits for a sync-host start it kicked
+// off before answering with why nothing hosts sync.
+const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
 
 type InvocationStep = {
   key: string;
@@ -21702,16 +21706,11 @@ async function runServe(
         if (!holdsLease() && startSyncHostForRepair) {
           headlessProjectLogger.info("account.machine_repair_starting_sync_host", {});
           try {
-            await Promise.race([
+            await withTimeout(
               startSyncHostForRepair(),
-              new Promise<never>((_resolve, reject) => {
-                const timer = setTimeout(
-                  () => reject(new Error("Starting phone sync took longer than 20 seconds.")),
-                  20_000,
-                );
-                timer.unref?.();
-              }),
-            ]);
+              REPAIR_SYNC_HOST_START_TIMEOUT_MS,
+              `Starting phone sync took longer than ${REPAIR_SYNC_HOST_START_TIMEOUT_MS / 1000} seconds.`,
+            );
           } catch (error) {
             startError = error instanceof Error ? error.message : String(error);
           }
@@ -21772,29 +21771,21 @@ async function runServe(
           const byId = projectId?.trim()
             ? records.find((record) => record.projectId === projectId.trim())
             : undefined;
-          if (byId) return byId.projectId;
           const byRoot = projectRootPath?.trim()
             ? records.find((record) => pathsEqual(record.rootPath, path.resolve(projectRootPath.trim())))
             : undefined;
-          return byRoot?.projectId ?? null;
-        },
-        listDescriptors: async () => {
-          // Read from a project that is already running; never boot one just
-          // to answer a hello.
-          for (const record of projectRegistry.list()) {
-            const booted = scopeRegistry.getIfBooted(record.projectId);
-            if (!booted) continue;
-            const scope = await Promise.race([
-              booted.catch(() => null),
-              new Promise<null>((resolve) => {
-                const timer = setTimeout(() => resolve(null), 250);
-                timer.unref?.();
-              }),
-            ]);
-            const descriptors = scope?.runtime.syncService?.getRemoteCommandDescriptors();
-            if (descriptors && descriptors.length > 0) return descriptors;
+          // Both selectors given: the project the id names must live at that
+          // root, or the command would run in a project the caller did not mean.
+          if (byId && projectRootPath?.trim() && !pathsEqual(byId.rootPath, path.resolve(projectRootPath.trim()))) {
+            return null;
           }
-          return [];
+          return (byId ?? byRoot)?.projectId ?? null;
+        },
+        // The static table every project runtime registers: available with
+        // no project booted, and never boots one just to answer a hello.
+        listDescriptors: async () => {
+          const { listProjectRemoteCommandDescriptors } = await import("./services/sync/syncRemoteCommandService");
+          return listProjectRemoteCommandDescriptors();
         },
         getDescriptor: async (projectId, action) => {
           const scope = await scopeRegistry.get(projectId);
@@ -22002,7 +21993,16 @@ async function runServe(
   // no scope nothing ever dialled it and the target user for this path — a
   // headless box or a fresh machine with no desktop app — was LAN-only. Built
   // lazily, on the same event that takes the projectless lease.
-  const ensureProjectlessRelayTunnel = async (): Promise<void> => {
+  // Single-flight: the startup loop and a repair can both reach this, and two
+  // concurrent calls would each build a tunnel before either set the gate.
+  let projectlessRelayTunnelInFlight: Promise<void> | null = null;
+  const ensureProjectlessRelayTunnel = (): Promise<void> => {
+    projectlessRelayTunnelInFlight ??= createProjectlessRelayTunnel().finally(() => {
+      projectlessRelayTunnelInFlight = null;
+    });
+    return projectlessRelayTunnelInFlight;
+  };
+  const createProjectlessRelayTunnel = async (): Promise<void> => {
     const listener = sharedSyncListener;
     if (!listener || brainRelayTunnelGate) return;
     try {
@@ -22035,7 +22035,17 @@ async function runServe(
       });
     }
   };
-  const startSyncHost = async () => {
+  // One in-flight start, shared by the startup loop, phone/web "Fix
+  // connection" and "Reconnect this computer": a repair that lands mid-attempt
+  // joins it instead of racing a second start against the same lease.
+  let startSyncHostInFlight: ReturnType<typeof startSyncHostOnce> | null = null;
+  const startSyncHost = (): ReturnType<typeof startSyncHostOnce> => {
+    startSyncHostInFlight ??= startSyncHostOnce().finally(() => {
+      startSyncHostInFlight = null;
+    });
+    return startSyncHostInFlight;
+  };
+  const startSyncHostOnce = async () => {
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
     >;
@@ -22088,12 +22098,13 @@ async function runServe(
       // its own host/viewer call from the project database: when that
       // database names another device as brain and that device was seen in
       // the last few minutes, the scope becomes a VIEWER, never takes the
-      // lease, and never listens -- and this function used to return success
-      // anyway, so the startup loop exited silently and nothing hosted sync
-      // until a restart (Windows Alpha brain, 2026-09-28, minutes after the
-      // Stable brain that had hosted was force-killed). Re-run the decision,
-      // and fail loudly while it still says viewer, so the loop logs it and
-      // retries until the other brain counts as gone.
+      // lease, and never listens. Returning success then would end the
+      // startup loop with nothing hosting sync until a restart (a brain that
+      // restarts right after the previous host was killed hits this). So
+      // re-run the decision, and fail loudly while that cluster record still
+      // says viewer: the loop logs it and retries until the other brain
+      // counts as gone. A viewer the user chose (a saved connection to
+      // another host) is intended, never goes stale, and returns as-is.
       const scopeSync = activeScope.runtime.syncService;
       if (scopeSync && !scopeSync.getHostService()) {
         await scopeSync.reevaluateHostRole();
@@ -22101,8 +22112,10 @@ async function runServe(
           const status = await scopeSync
             .getStatus({ includeTransferReadiness: false })
             .catch(() => null);
-          const { describeScopeNotHostingSync } = await import("./services/sync/syncHostStartupLoop");
-          throw new Error(describeScopeNotHostingSync(activeScope.record.displayName || activeScope.record.rootPath, status));
+          if (status?.role === "viewer" && status.viewerReason === "cluster_record") {
+            const { describeScopeNotHostingSync } = await import("./services/sync/syncHostStartupLoop");
+            throw new Error(describeScopeNotHostingSync(activeScope.record.displayName || activeScope.record.rootPath, status));
+          }
         }
       }
     }
@@ -22537,12 +22550,12 @@ async function runServe(
         isSyncEnabled: () => syncEnabled,
         logger: headlessProjectLogger,
         getSnapshot: async () => {
-          // Read the host that is ALREADY active; never start one. This used
-          // to call `resolveActiveSyncHost()`, which boots and switches to the
-          // most recent project when no host is published yet -- and the first
-          // publish runs from inside the lease notification, i.e. while the
-          // startup loop's own switch is still in flight, so a status read
-          // superseded the switch it was reporting on.
+          // Read the host that is ALREADY active; never start one.
+          // `resolveActiveSyncHost()` would boot and switch to the most recent
+          // project when no host is published yet -- and the first publish
+          // runs from inside the lease notification, while the startup loop's
+          // own switch is still in flight, so a status read would supersede
+          // the switch it is reporting on.
           const activeScope = await activeSyncHostScopeWithoutBooting();
           const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,

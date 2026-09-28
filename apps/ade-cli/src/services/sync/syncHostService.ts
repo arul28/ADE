@@ -18,8 +18,6 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
-import { compactChatEventForWire } from "../../../../desktop/src/shared/chatEventCompaction";
-import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
@@ -104,7 +102,6 @@ import type {
 import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
-  SYNC_FOLDED_REPLAY_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -116,9 +113,7 @@ import {
   PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
   PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
 } from "../../../../desktop/src/shared/types/pairedRuntime";
-import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
 import {
-  compactChatEventForMobileWire,
   createSubagentProgressCoalescer,
   foldSubagentProgressForSnapshot,
   MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS,
@@ -129,7 +124,6 @@ import {
 import {
   CHAT_SEQUENCE_RESUME_MAX_BYTES,
   readChatEventsAfterSequence,
-  readTurnAlignedTranscriptTail,
 } from "./chatLogResume";
 import {
   createSyncRosterFanout,
@@ -140,12 +134,19 @@ import {
   readChatTranscriptEventsSince,
   readSubscribedTranscriptHistoryPage,
   readTranscriptLogicalSize,
-  readTranscriptTailSnapshot,
+  clampChatSnapshotMaxBytes,
+  readFileBackedChatSnapshot,
   SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
   transcriptStorageKey,
 } from "./syncChatTranscriptReads";
 import { readArtifactByteRange } from "../../../../desktop/src/main/services/computerUse/artifactByteRange";
-import { findStoredToolResult } from "../../../../desktop/src/main/services/chat/chatToolResultLookup";
+import {
+  chatEventDeliveryKey,
+  compactChatEventEnvelopeForMobileSync,
+  compactChatEventEnvelopeForSync,
+  prepareChatSnapshotEventsForPeer,
+  readStoredToolResultResponse,
+} from "./syncChatWire";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
@@ -267,8 +268,11 @@ import {
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import {
+  commandErrorResult,
   createSyncRemoteCommandService,
-  SyncRemoteCommandResultTooLargeError,
+  evaluateRemoteCommandPolicy,
+  remoteCommandArgsFingerprint,
+  stableJsonKey,
   type SyncRemoteCommandService,
 } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
@@ -330,6 +334,8 @@ import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 export { selectChangesetBatchChunk } from "./changesetPump";
+// Existing importers of the wire adapters keep this path.
+export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync } from "./syncChatWire";
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
 
@@ -959,20 +965,6 @@ type PeerState = {
   productAnalyticsEnabled: boolean;
 };
 
-/**
- * Cursor Cloud lifecycle writes are available to the interactive mobile/web
- * clients, but not to another desktop or VPS peer acting as a read-only
- * viewer. Bootstrap metadata is caller-controlled, so only the server-recorded
- * pairing identity can grant this authority.
- */
-export function isInteractiveControllerPeer(
-  peer: { pairingRecord: SyncPairingRecord | null },
-): boolean {
-  return peer.pairingRecord?.peerPlatform === "iOS"
-    || peer.pairingRecord?.peerDeviceType === "phone"
-    || peer.pairingRecord?.peerDeviceType === "browser";
-}
-
 type PendingChangesetBatch = {
   batchId: string;
   fromDbVersion: number;
@@ -1029,22 +1021,6 @@ const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "chat.unarchive",
   "chat.delete",
 ]);
-
-function stableJsonValue(value: unknown): unknown {
-  if (value == null) return value;
-  if (Array.isArray(value)) return value.map(stableJsonValue);
-  if (typeof value !== "object") return value;
-  const input = value as Record<string, unknown>;
-  const output: Record<string, unknown> = {};
-  for (const key of Object.keys(input).sort()) {
-    output[key] = stableJsonValue(input[key]);
-  }
-  return output;
-}
-
-export function stableJsonKey(value: unknown): string {
-  return JSON.stringify(stableJsonValue(value)) ?? "null";
-}
 
 function mobileCommandArgsFingerprint(argsKey: string): string {
   return createHash("sha256").update(argsKey).digest("hex");
@@ -1367,6 +1343,17 @@ function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
   };
 }
 
+/**
+ * Replica or roster, decided once from the hello: a roster socket
+ * (`syncRole: "roster"`) holds no CRDT replica. The replica paths — the
+ * changeset pump, the delivered-cursor row, inbound batches, the project
+ * hand-off — are entered only for replica peers, so none of them re-checks the
+ * role inside.
+ */
+function isReplicaSyncPeer(metadata: SyncPeerMetadata | null | undefined): boolean {
+  return !isRosterSyncPeer(metadata);
+}
+
 function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: number): SyncPeerConnectionState | null {
   if (!peer.metadata) return null;
   return {
@@ -1378,9 +1365,9 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
     remotePort: peer.remotePort,
     latencyMs: peer.latencyMs,
     // A roster socket holds no replica, so it has no lag to report.
-    syncLag: isRosterSyncPeer(peer.metadata)
-      ? 0
-      : Math.max(0, currentServerDbVersion - peer.lastKnownServerDbVersion),
+    syncLag: isReplicaSyncPeer(peer.metadata)
+      ? Math.max(0, currentServerDbVersion - peer.lastKnownServerDbVersion)
+      : 0,
     isBrain: false,
     isHost: false,
     isAuthenticated: peer.authenticated,
@@ -1815,10 +1802,10 @@ export function buildSyncHostHelloOkPayload(args: {
       roster: {
         enabled: args.rosterEnabled === true,
       },
-      // Every ingress built on this payload honors `syncRole: "roster"`.
-      rosterPeer: {
-        enabled: true,
-      },
+      // Every ingress built on this payload honors `syncRole: "roster"`, but a
+      // roster socket is only useful where the roster feed is served: without
+      // it the phone would show a live link that never gets a roster.
+      ...(args.rosterEnabled === true ? { rosterPeer: { enabled: true as const } } : {}),
       ...(args.chunkedEnvelopes
         ? {
             chunkedEnvelopes: {
@@ -2167,139 +2154,6 @@ function normalizeTerminalInputId(value: unknown): string | null {
   return inputId;
 }
 
-/**
- * Envelope adapter for the wire. The policy lives in
- * `shared/chatEventCompaction` — see its header for why the wire and the stored
- * transcript have to share one. Every outbound path (live push, replay ring,
- * snapshot backfill) funnels through here.
- */
-export function compactChatEventEnvelopeForSync(
-  envelope: AgentChatEventEnvelope,
-): AgentChatEventEnvelope {
-  const event = compactChatEventForWire(envelope.event);
-  return event === envelope.event ? envelope : { ...envelope, event };
-}
-
-/**
- * The same adapter for peers that announced `mobileChatSlimV1`. Everything the
- * shared wire policy does, plus the phone-only tool-result cap — see
- * `shared/chatMobileSlim`.
- */
-export function compactChatEventEnvelopeForMobileSync(
-  envelope: AgentChatEventEnvelope,
-): AgentChatEventEnvelope {
-  const event = compactChatEventForMobileWire(envelope.event);
-  return event === envelope.event ? envelope : { ...envelope, event };
-}
-
-/**
- * Shape a `chat_subscribe` snapshot's rows for one peer, the same way on every
- * ingress: compact for the wire (slim for `mobileChatSlimV1` peers), fold
- * superseded subagent progress on the slim wire, and fold streaming deltas for
- * `foldedReplay` peers. `sourceEvents` is the pre-fold list; every one of them
- * must be marked delivered, or the transcript pump re-sends a collapsed row.
- */
-export function prepareChatSnapshotEventsForPeer(args: {
-  events: AgentChatEventEnvelope[];
-  pinnedEvents: AgentChatEventEnvelope[];
-  capabilities: readonly string[] | null | undefined;
-  sessionId: string;
-  logger: Pick<Logger, "debug">;
-}): {
-  events: AgentChatEventEnvelope[];
-  pinnedEvents: AgentChatEventEnvelope[];
-  sourceEvents: AgentChatEventEnvelope[];
-} {
-  const slimChatPeer = args.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;
-  const compactForPeer = slimChatPeer ? compactChatEventEnvelopeForMobileSync : compactChatEventEnvelopeForSync;
-  let events = args.events.map(compactForPeer);
-  const pinnedEvents = args.pinnedEvents.map(compactForPeer);
-  // Fold streaming deltas into the message they belong to. Snapshot-only
-  // and capability-gated: the replay-buffer resume path stays unfolded
-  // because its per-event `seq` monotonicity is load-bearing for the client's
-  // `seq <= lastSeq` drop rule, and it carries only a small recent gap.
-  // `sourceEvents` keeps the pre-fold envelopes so delivery bookkeeping still
-  // marks every collapsed delta as sent.
-  const sourceEvents: AgentChatEventEnvelope[] = events;
-  if (slimChatPeer) {
-    // A snapshot is a byte-capped tail; on a subagent-heavy thread most of it
-    // is superseded progress for agents whose card the phone will draw exactly
-    // once. Keep the latest per agent — started and result are untouched, so
-    // every card and every outcome still arrives.
-    const progressFolded = foldSubagentProgressForSnapshot(events);
-    if (progressFolded.foldedAwayCount > 0) {
-      args.logger.debug("sync_host.chat_replay_subagent_progress_folded", {
-        sessionId: args.sessionId,
-        beforeCount: events.length,
-        afterCount: progressFolded.events.length,
-        foldedAwayCount: progressFolded.foldedAwayCount,
-      });
-    }
-    events = progressFolded.events;
-  }
-  if (args.capabilities?.includes(SYNC_FOLDED_REPLAY_CAPABILITY)) {
-    const folded = foldChatEventEnvelopesForReplay(events);
-    if (folded.foldedAwayCount > 0) {
-      args.logger.debug("sync_host.chat_replay_folded", {
-        sessionId: args.sessionId,
-        beforeCount: events.length,
-        afterCount: folded.events.length,
-        foldedAwayCount: folded.foldedAwayCount,
-      });
-    }
-    // `sourceEvents` deliberately keeps the FULL pre-fold list rather than
-    // `folded.sources`: on the slim wire the subagent progress fold has already
-    // removed envelopes from `events`, and every one of them still needs its
-    // delivery key marked. For every other peer the two are the same array.
-    events = folded.events;
-  }
-  return { events, pinnedEvents, sourceEvents };
-}
-
-/**
- * Answer a `chat_tool_result` from the subscribed transcript: the stored event
- * with the shared storage caps already applied — never the raw provider
- * payload. The phone-only cap is the one thing this response deliberately does
- * not apply. `found: false` (not `unavailable`) when the row is gone, so the
- * phone shows "no longer available" instead of an error it could retry.
- */
-export async function readStoredToolResultResponse(args: {
-  transcriptPath: string;
-  sessionId: string;
-  itemId: string;
-  resultSequence: number | null;
-  resultTimestamp: string | null;
-  sourceOffset: number | null;
-  signal?: AbortSignal;
-}): Promise<SyncChatToolResultResponsePayload> {
-  const { sessionId, itemId } = args;
-  const hit = await findStoredToolResult({
-    transcriptPath: args.transcriptPath,
-    sessionId,
-    itemId,
-    ...(args.resultSequence !== null ? { resultSequence: args.resultSequence } : {}),
-    ...(args.resultTimestamp ? { resultTimestamp: args.resultTimestamp } : {}),
-    ...(args.sourceOffset !== null ? { sourceOffset: args.sourceOffset } : {}),
-    ...(args.signal ? { signal: args.signal } : {}),
-  });
-  if (!hit) return { sessionId, itemId, found: false };
-  const stored = compactChatEventForWire(hit.event);
-  return {
-    sessionId,
-    itemId,
-    found: true,
-    result: stored.type === "tool_result" ? stored.result : undefined,
-    ...(stored.type === "tool_result" && typeof stored.resultOriginalBytes === "number"
-      ? { resultOriginalBytes: stored.resultOriginalBytes }
-      : {}),
-    ...(stored.type === "tool_result" && typeof stored.resultOmittedBytes === "number"
-      ? { resultOmittedBytes: stored.resultOmittedBytes }
-      : {}),
-    ...(stored.type === "tool_result" && stored.status ? { status: stored.status } : {}),
-    ...(stored.type === "tool_result" && stored.tool ? { tool: stored.tool } : {}),
-  };
-}
-
 export type ChatEventReplayBufferEntry = {
   seq: number;
   bytes: number;
@@ -2362,10 +2216,6 @@ function lifecycleAgentKey(event: AgentChatEventEnvelope["event"]): string | nul
     : event.agentId ?? event.taskId;
   const value = typeof candidate === "string" ? candidate.trim() : "";
   return value || null;
-}
-
-export function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
-  return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
 }
 
 /**
@@ -3395,7 +3245,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         }
         try {
-          await pumpChanges(peer, generation);
+          // A roster socket never replicates: no batch, no reseed, no ack wait.
+          if (isReplicaSyncPeer(peer.metadata)) await pumpChanges(peer, generation);
         } catch (error) {
           args.logger.warn("sync_host.poll_failed", {
             peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -3938,7 +3789,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     ws.on("close", (code, reason) => {
       peer.lifecycleGeneration += 1;
-      flushPeerDeliveredWatermark(peer);
+      // A roster socket delivered nothing; the device's cursor row and its
+      // throttle state belong to its replica, which may connect here later.
+      if (isReplicaSyncPeer(peer.metadata)) flushPeerDeliveredWatermark(peer);
       abortPeerOperations(peer, "Sync peer closed.");
       peer.pendingTerminalSnapshots.clear();
       peer.envelopeChunks.reset();
@@ -4117,20 +3970,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         terminalInputDedupeLedger.restore(snapshot.terminalInputDedupe ?? []);
         peer.connectedAt = snapshot.connectedAt;
         const serverDbSiteId = args.db.sync.getSiteId();
-        peer.lastKnownServerDbVersion = isRosterSyncPeer(snapshot.metadata)
-          ? args.db.sync.getDbVersion()
-          : adoptedSyncHostCursorForPeer({
-            peer: snapshot.metadata,
-            serverDbSiteId,
-            serverDbVersion: args.db.sync.getDbVersion(),
-            snapshotServerDbSiteId: snapshot.serverDbSiteId,
-            snapshotLastKnownServerDbVersion: snapshot.lastKnownServerDbVersion,
-            hostWatermark: readPeerDeliveredWatermark(snapshot.metadata?.deviceId, serverDbSiteId),
-            // Adoption inherits a cursor the depositing owner already resolved;
-            // log a clamp but do not seed a row from it, because the deposited
-            // value can legitimately be ahead of anything recorded here.
-            onCursorResolved: (info) => logPeerCursorRewound(snapshot.metadata?.deviceId ?? null, info),
-          });
+        // Only replica peers are handed off (the depositing host closes roster
+        // sockets), so this cursor always belongs to a replica.
+        peer.lastKnownServerDbVersion = adoptedSyncHostCursorForPeer({
+          peer: snapshot.metadata,
+          serverDbSiteId,
+          serverDbVersion: args.db.sync.getDbVersion(),
+          snapshotServerDbSiteId: snapshot.serverDbSiteId,
+          snapshotLastKnownServerDbVersion: snapshot.lastKnownServerDbVersion,
+          hostWatermark: readPeerDeliveredWatermark(snapshot.metadata?.deviceId, serverDbSiteId),
+          // Adoption inherits a cursor the depositing owner already resolved;
+          // log a clamp but do not seed a row from it, because the deposited
+          // value can legitimately be ahead of anything recorded here.
+          onCursorResolved: (info) => logPeerCursorRewound(snapshot.metadata?.deviceId ?? null, info),
+        });
         // Restore live subscriptions so streaming does not silently stop for
         // a peer that never observes a disconnect. Sessions from a different
         // project simply no-op on this host; the phone that REQUESTED a
@@ -6074,8 +5927,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // the gate so a phone/browser cannot suppress its normal CRDT stream by
       // spoofing the hello capability.
       if (isRuntimeOnlyPairedHost(peer)) return;
-      // A roster socket never replicates: no batch, no reseed, no ack wait.
-      if (isRosterSyncPeer(peer.metadata)) return;
       // The 4 MiB gate is a hard socket-safety boundary. Fair scheduling may
       // override only the lower chat-priority watermark below.
       if (isPeerBackpressured(peer)) return;
@@ -6342,9 +6193,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // anything delivered — storing it would let the same device id skip a
     // backlog if it ever reconnected as a replica.
     if (isInvalidationOnlyBrowserPeer(peer.metadata)) return;
-    // A roster socket delivers nothing, and the row belongs to the device's
-    // full replica (which may be connected to this machine later).
-    if (isRosterSyncPeer(peer.metadata)) return;
     const dbVersion = Math.max(0, Math.floor(peer.lastKnownServerDbVersion));
     const nowMs = Date.now();
     const state = peerWatermarkWrites.get(peerDeviceId);
@@ -6360,8 +6208,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   function flushPeerDeliveredWatermark(peer: PeerState): void {
     const peerDeviceId = peer.metadata?.deviceId ?? null;
     if (!peerDeviceId) return;
-    // Leave the device's throttle state alone: it belongs to its replica.
-    if (isRosterSyncPeer(peer.metadata)) return;
     if (isInvalidationOnlyBrowserPeer(peer.metadata)) {
       peerWatermarkWrites.delete(peerDeviceId);
       return;
@@ -6694,7 +6540,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       : requestedProjectId ?? hostProjectId ?? args.projectRoot;
     const commandCacheKey = mobileCommandCacheKey(commandScopeKey, peer, commandId);
     const commandArgsKey = stableJsonKey(payload.args ?? {});
-    const commandArgsFingerprint = mobileCommandArgsFingerprint(commandArgsKey);
+    const commandArgsFingerprint = remoteCommandArgsFingerprint(payload.args ?? {});
     pruneMobileCommandResultCache();
 
     const sendResult = (record: CachedMobileCommand | null, result: SyncCommandResultPayload) => {
@@ -6785,7 +6631,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
 
     const descriptor = remoteCommandService.getDescriptor(payload.action);
-    const policy = descriptor?.policy ?? null;
     const shouldRouteToProject =
       Boolean(args.remoteCommandExecutor)
       && Boolean(requestedProjectId)
@@ -6835,26 +6680,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       return;
     }
-    if (!policy) {
-      reject(`Unsupported remote command: ${payload.action}.`);
-      return;
-    }
-    if (descriptor?.scope === "project") {
-      if (hostProjectId && !requestedProjectId) {
-        reject(`Remote command ${payload.action} requires projectId. Select the project again and retry.`, "missing_project");
-        return;
-      }
-      if (requestedProjectId && !hostProjectId) {
-        reject(`Remote command ${payload.action} requires an open project on this ADE machine.`, "project_not_open");
-        return;
-      }
-    }
-    if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(peer))) {
-      reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
-      return;
-    }
-    if (policy.localOnly || policy.requiresApproval) {
-      reject(`Remote command ${payload.action} requires approval on this machine.`, "approval_required");
+    const policyRejection = evaluateRemoteCommandPolicy({
+      action: payload.action,
+      descriptor,
+      peer,
+      requestedProjectId,
+      hostProjectId,
+    });
+    if (policyRejection) {
+      reject(policyRejection.message, policyRejection.code);
       return;
     }
 
@@ -6988,26 +6822,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         result: decorateCommandResult(payload.action, created),
       });
     } catch (error) {
-      // Coded errors (e.g. laneService attach's lane_already_linked) embed the
-      // code in the message so it survives IPC transports. The service runs
-      // in-process here, so gate on the Error's real `code` property — parsing
-      // the message alone would also mangle legit prefixes like git's "fatal:".
-      const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
-      const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
-      if (error instanceof SyncRemoteCommandResultTooLargeError) {
-        sendResult(acceptedRecord, { commandId, ok: false, error: error.details });
-        return;
-      }
-      sendResult(acceptedRecord, {
-        commandId,
-        ok: false,
-        error: directCode
-          ? { code: directCode, message: parseCodedErrorMessage(error).message }
-          : {
-            code: "command_failed",
-            message: error instanceof Error ? error.message : String(error),
-          },
-      });
+      sendResult(acceptedRecord, commandErrorResult(commandId, error));
     }
   }
 
@@ -8152,7 +7967,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // version sequence and silently skips (or replays) the entire backlog.
       const ownSiteId = args.db.sync.getSiteId();
       const serverDbVersion = args.db.sync.getDbVersion();
-      const rosterPeer = isRosterSyncPeer(hello.peer);
+      const rosterPeer = !isReplicaSyncPeer(hello.peer);
       // A roster socket neither reads nor seeds the device's delivered-cursor
       // row: that row is the device's full replica's, and the phone's
       // replica for this machine may connect here later on its own socket.
@@ -8399,7 +8214,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       case "changeset_batch": {
         // A roster socket is not a replica: its batches are dropped unapplied
         // and unacknowledged (the roster client never expects an ack).
-        if (isRosterSyncPeer(peer.metadata)) {
+        if (!isReplicaSyncPeer(peer.metadata)) {
           args.logger.debug("sync_host.roster_peer_changeset_ignored", {
             peerDeviceId: peer.metadata?.deviceId ?? null,
           });
@@ -9190,56 +9005,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
           break;
         }
-        const maxBytes = Math.max(
-          1_024,
-          Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),
-        );
+        const maxBytes = clampChatSnapshotMaxBytes(payload?.maxBytes);
         let events: AgentChatEventEnvelope[];
         let pinnedEvents: AgentChatEventEnvelope[] = [];
         let truncated: boolean;
         let transcriptSize: number;
         let tailStartOffset = 0;
         let hasOlderHistory = false;
-        let alignedForeignSnapshot: Awaited<ReturnType<typeof readTurnAlignedTranscriptTail>> | null = null;
-        if (foreignTranscriptPath && chatLogV2Requested) {
-          try {
-            alignedForeignSnapshot = await runWithAbortSignal(
-              () => readTurnAlignedTranscriptTail({
-                transcriptPath: foreignTranscriptPath,
-                sessionId,
-                maxBytes,
-                ...(signal ? { signal } : {}),
-              }),
-              signal,
-              "Sync operation aborted.",
-            );
-          } catch (error) {
-            signal?.throwIfAborted();
-            // Fall back to the plain tail below.
-            args.logger.warn("sync_host.chat_aligned_tail_failed", {
-              sessionId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        if (alignedForeignSnapshot) {
-          events = alignedForeignSnapshot.events;
-          pinnedEvents = alignedForeignSnapshot.pinnedEvents;
-          truncated = alignedForeignSnapshot.truncated;
-          transcriptSize = alignedForeignSnapshot.transcriptSize;
-          tailStartOffset = alignedForeignSnapshot.tailStartOffset;
-          hasOlderHistory = alignedForeignSnapshot.tailStartOffset > 0;
-        } else if (foreignTranscriptPath) {
-          const foreignSnapshot = await runWithAbortSignal(
-            () => readTranscriptTailSnapshot(foreignTranscriptPath, maxBytes, signal),
-            signal,
-            "Sync operation aborted.",
-          );
-          events = foreignSnapshot.events;
-          truncated = foreignSnapshot.truncated;
-          transcriptSize = foreignSnapshot.transcriptSize;
-          tailStartOffset = foreignSnapshot.tailStartOffset;
-          hasOlderHistory = foreignSnapshot.tailStartOffset > 0;
+        if (foreignTranscriptPath) {
+          const foreignSnapshot = await readFileBackedChatSnapshot({
+            transcriptPath: foreignTranscriptPath,
+            sessionId,
+            maxBytes,
+            chatLogV2: chatLogV2Requested,
+            ...(signal ? { signal } : {}),
+            logger: args.logger,
+            logPrefix: "sync_host",
+          });
+          ({ events, pinnedEvents, truncated, transcriptSize, tailStartOffset, hasOlderHistory } = foreignSnapshot);
         } else if (foreignScope.kind === "rejected") {
           // Unresolvable explicit-foreign scope: serve an empty snapshot, never
           // this host's local history for the same session id.
@@ -9781,6 +9564,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             } catch {
               // ignore close failures
             }
+            continue;
+          }
+          if (!isReplicaSyncPeer(peer.metadata)) {
+            // A roster socket is closed, not handed off. Its chats are
+            // cross-project subscriptions the handoff cannot carry (a bare
+            // session id would bind to the next host's same-id local chat),
+            // and the phone rebuilds all of it on reconnect: hello,
+            // roster_subscribe, and chat_subscribe with its resume point. A
+            // phone holds either a roster or a full socket to one machine,
+            // never both, so this close cannot supersede its replica socket;
+            // replica peers are handed off below as before.
+            peer.ws.on("error", () => {});
+            try {
+              peer.ws.close(4002, "Sync host changed projects");
+            } catch {
+              // ignore close failures
+            }
+            args.logger.info("sync_host.roster_peer_closed_on_handoff", {
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+            });
             continue;
           }
           // Anything the coalescer is still holding was already marked

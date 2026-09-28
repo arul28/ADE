@@ -215,8 +215,10 @@ export function resolveWindowsSupervisorLogPath(args: {
 export function resolveWindowsBrainOutputLogPath(args: {
   env?: NodeJS.ProcessEnv;
   serviceName?: string;
+  /** The launcher this service actually uses, when the caller already has it. */
+  launcherPath?: string;
 } = {}): string {
-  return `${resolveWindowsServiceLauncherPath(args)}.output.log`;
+  return `${args.launcherPath ?? resolveWindowsServiceLauncherPath(args)}.output.log`;
 }
 
 export function readWindowsServicePidRecord(args: {
@@ -847,7 +849,7 @@ async function installWindowsServiceImpl(
   const renderedLauncher = `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
     pidPath,
     logPath,
-    brainOutputLogPath: `${launcherPath}.output.log`,
+    brainOutputLogPath: resolveWindowsBrainOutputLogPath({ launcherPath }),
     heartbeatPath,
     wedgeBreadcrumbPath,
   })}`;
@@ -1149,7 +1151,9 @@ async function uninstallWindowsServiceImpl(
       message: removalErrors.join(" "),
     };
   }
-  for (const logFile of [`${launcherPath}.log`, `${launcherPath}.output.log`, `${launcherPath}.output.log.1`]) {
+  const brainOutputLogPath = resolveWindowsBrainOutputLogPath({ launcherPath });
+  // `.1` is the supervisor's single rotated generation of the brain output log.
+  for (const logFile of [`${launcherPath}.log`, brainOutputLogPath, `${brainOutputLogPath}.1`]) {
     try { fs.rmSync(logFile, { force: true }); } catch { /* advisory log */ }
   }
   try {

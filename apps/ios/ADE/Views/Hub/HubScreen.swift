@@ -21,7 +21,7 @@ struct HubScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @EnvironmentObject private var machineFleet: MachineFleet
   // Every other machine's projects, lanes and chats folded into this one list
-  // (owner, 2026-09-25: one list of projects, chats from all machines inside).
+  // (one list of projects, chats from all machines inside).
   @State private var fleetMerge = HubFleetMerge()
   /// A project that lives only on another machine while the phone focuses it.
   @State private var switchingRemoteProjectId: String?

@@ -814,6 +814,14 @@ export type SyncRouteHealth = {
 export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
+  /**
+   * Why a viewer is a viewer. `saved_connection`: the user connected this
+   * runtime to another host on purpose, which is intended and never goes
+   * stale. `cluster_record`: the project database still names another,
+   * recently seen device as host; once that device counts as gone, this
+   * runtime takes hosting back. Absent on a host and on older runtimes.
+   */
+  viewerReason?: "saved_connection" | "cluster_record";
   runtimeMode?: SyncRuntimeMode;
   runtimeRole?: SyncRuntimeRole;
   localDevice: SyncDeviceRecord;
@@ -973,7 +981,9 @@ export type SyncFeatureFlags = {
    * The host honors `peer.syncRole: "roster"` on hello (see SyncPeerMetadata):
    * no changeset replication, no cursor bookkeeping for that socket. A client
    * that opens a roster socket must close it on a host without this feature,
-   * or the host would replicate the whole project DB to it.
+   * or the host would replicate the whole project DB to it. Advertised only
+   * alongside an enabled `roster` feed, since a roster socket without one
+   * would look live and never receive a roster.
    */
   rosterPeer?: {
     enabled: true;

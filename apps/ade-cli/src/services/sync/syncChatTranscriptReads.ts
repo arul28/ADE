@@ -14,6 +14,9 @@ import {
   readTranscriptHistoryPage,
   readTranscriptHistoryPageBeforeSequence,
 } from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
+import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { runWithAbortSignal } from "./abortSignal";
+import { readTurnAlignedTranscriptTail } from "./chatLogResume";
 
 /**
  * Transcript reads shared by every sync ingress that serves a chat straight
@@ -122,6 +125,76 @@ export async function readTranscriptTailSnapshot(
   }
 }
 
+/** A `chat_subscribe` snapshot's tail budget when the client names none. */
+export const SYNC_CHAT_SNAPSHOT_DEFAULT_BYTES = 220_000;
+const SYNC_CHAT_SNAPSHOT_MIN_BYTES = 1_024;
+const SYNC_CHAT_SNAPSHOT_MAX_BYTES = 2_000_000;
+
+/** The client's requested snapshot budget, bounded; the default when it sent none. */
+export function clampChatSnapshotMaxBytes(requested: unknown): number {
+  const bytes = typeof requested === "number" && Number.isFinite(requested)
+    ? requested
+    : SYNC_CHAT_SNAPSHOT_DEFAULT_BYTES;
+  return Math.max(SYNC_CHAT_SNAPSHOT_MIN_BYTES, Math.min(SYNC_CHAT_SNAPSHOT_MAX_BYTES, Math.floor(bytes)));
+}
+
+export type FileBackedChatSnapshot = {
+  events: AgentChatEventEnvelope[];
+  /** Unresolved approval requests from before the window (chatLogV2 only). */
+  pinnedEvents: AgentChatEventEnvelope[];
+  truncated: boolean;
+  transcriptSize: number;
+  tailStartOffset: number;
+  hasOlderHistory: boolean;
+};
+
+/**
+ * The `chat_subscribe` snapshot of a chat served from its transcript file (a
+ * personal chat, or a project chat this ingress has no runtime for). chatLogV2
+ * clients get the tail cut at a turn boundary with pending approvals pinned;
+ * if that read fails, everyone gets the plain byte tail.
+ */
+export async function readFileBackedChatSnapshot(args: {
+  transcriptPath: string;
+  sessionId: string;
+  maxBytes: number;
+  chatLogV2: boolean;
+  signal?: AbortSignal;
+  logger: Pick<Logger, "warn">;
+  /** `sync_host` or `sync_brain`: which ingress logged a failed aligned read. */
+  logPrefix: string;
+}): Promise<FileBackedChatSnapshot> {
+  const { transcriptPath, sessionId, maxBytes, signal } = args;
+  if (args.chatLogV2) {
+    try {
+      const aligned = await runWithAbortSignal(
+        () => readTurnAlignedTranscriptTail({
+          transcriptPath,
+          sessionId,
+          maxBytes,
+          ...(signal ? { signal } : {}),
+        }),
+        signal,
+        "Sync operation aborted.",
+      );
+      return { ...aligned, hasOlderHistory: aligned.tailStartOffset > 0 };
+    } catch (error) {
+      signal?.throwIfAborted();
+      // Fall back to the plain tail below.
+      args.logger.warn(`${args.logPrefix}.chat_aligned_tail_failed`, {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const tail = await runWithAbortSignal(
+    () => readTranscriptTailSnapshot(transcriptPath, maxBytes, signal),
+    signal,
+    "Sync operation aborted.",
+  );
+  return { ...tail, pinnedEvents: [], hasOlderHistory: tail.tailStartOffset > 0 };
+}
+
 /**
  * One older page of a subscribed transcript, by durable sequence
  * (`beforeSequence`, chatLogV2) or by byte cursor (`beforeOffset`). Reads
@@ -187,7 +260,7 @@ export async function readChatTranscriptEventsSince(
     const size = stat.size;
     const durableStart = Math.max(0, Math.floor(startOffset));
     // A truncation/rotation invalidates both cursors. Restart from the new
-    // EOF (the same recovery behavior as the old unbounded reader).
+    // EOF.
     if (size < durableStart || (scanOffset != null && size < scanOffset)) {
       return {
         events: [],

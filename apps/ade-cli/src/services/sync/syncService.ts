@@ -1432,6 +1432,12 @@ export function createSyncService(args: SyncServiceArgs) {
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected());
       const role = isLocalBrain ? "brain" : "viewer";
+      // A saved draft makes this runtime a viewer on purpose; without one, a
+      // viewer is following the cluster record `refreshRoleState` reclaims
+      // once its brain goes stale.
+      const viewerReason: SyncRoleSnapshot["viewerReason"] = isLocalBrain
+        ? undefined
+        : cluster && !savedDraft ? "cluster_record" : "saved_connection";
       const runtimeRole = isLocalBrain ? "host" : "viewer";
       const crdtSyncAvailable = isCrdtSyncAvailable();
       const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
@@ -1539,6 +1545,7 @@ export function createSyncService(args: SyncServiceArgs) {
       return {
         mode,
         role,
+        ...(viewerReason ? { viewerReason } : {}),
         runtimeMode,
         runtimeRole,
         localDevice,

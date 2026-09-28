@@ -25,6 +25,7 @@ import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { readImageFileAndSniffMime, saveImageTempAttachment } from "../imageAttachment";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
+import { historyPageBeforeSequence } from "../sync/syncRemoteCommandService";
 
 /**
  * An embedder's message args, with every marker only ADE may author removed.
@@ -589,11 +590,7 @@ export class PersonalChatScope {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
         // chatLogV2 durable cursor; takes precedence over the byte cursor.
-        const beforeSequence = typeof args.beforeSequence === "number"
-          && Number.isInteger(args.beforeSequence)
-          && args.beforeSequence >= 0
-          ? args.beforeSequence
-          : null;
+        const beforeSequence = historyPageBeforeSequence(args.beforeSequence);
         result = await service.getChatEventHistoryPage(sessionId, {
           beforeOffset: Number(args.beforeOffset),
           ...(beforeSequence != null ? { beforeSequence } : {}),

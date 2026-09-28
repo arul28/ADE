@@ -772,7 +772,7 @@ func settingsFleetMachineSubtitle(
   case .paused:
     return "Paused (\(MachineFleet.liveMachineLimit)-machine limit)"
   default:
-    return hubMachineStateLabel(state, lastUpdateAt: lastUpdateAt, now: now)
+    return machineFleetStateLabel(state, lastUpdateAt: lastUpdateAt, now: now)
   }
 }
 
@@ -791,7 +791,7 @@ struct SettingsMachinesSection: View {
   @EnvironmentObject private var machineFleet: MachineFleet
   /// Machines removed from this phone's lists ("Remove from this list").
   @ObservedObject private var hiddenMachines = HiddenMachineStore.shared
-  @State private var keepLivePrompt: HubKeepLivePrompt?
+  @State private var keepLivePrompt: MachineFleetKeepLivePrompt?
 
   @State private var seeAllPresented = false
   @State private var renamingMachine: AccountMachine?
@@ -833,9 +833,9 @@ struct SettingsMachinesSection: View {
     var hiddenIdentity: String {
       switch kind {
       case .account(let machine):
-        return fleetNonEmpty(machine.deviceId) ?? "account:\(machine.machineKey)"
+        return nonEmptyTrimmed(machine.deviceId) ?? "account:\(machine.machineKey)"
       case .saved(let host):
-        return fleetNonEmpty(host.hostIdentity) ?? "name:\(host.hostName)"
+        return nonEmptyTrimmed(host.hostIdentity) ?? "name:\(host.hostName)"
       }
     }
   }
@@ -897,8 +897,9 @@ struct SettingsMachinesSection: View {
           // Route-neutral to match the saved rows below; the route kind stays
           // in the Connection details section, never on the primary list. A
           // machine the fleet holds (or tries to hold) a roster link to says
-          // that instead, in the same line.
-          routeHint: fleet.map {
+          // that instead, in the same line, unless the machine announced
+          // sleep (the rule above: the announcement beats a socket).
+          routeHint: (asleep ? nil : fleet).map {
             settingsFleetMachineSubtitle($0.state, lastUpdateAt: $0.lastUpdateAt, powerClause: powerClause)
           } ?? accountMachineDetailLine(
             isConnected: current && !asleep,
@@ -981,7 +982,7 @@ struct SettingsMachinesSection: View {
 
       // The phone keeps live updates for a limited number of machines.
       if machineFleet.pairedMachineCount > MachineFleet.liveMachineLimit {
-        HubMachineLimitNotice(
+        MachineFleetLimitNotice(
           pairedMachineCount: machineFleet.pairedMachineCount,
           pausedCount: machineFleet.machines.filter { $0.state == .paused }.count
         )
@@ -1119,7 +1120,7 @@ struct SettingsMachinesSection: View {
               Label("Stop keeping live", systemImage: "bolt.slash")
             }
           }
-          if hubMachineCanRetry(fleetMachine.state) {
+          if machineFleetCanRetry(fleetMachine.state) {
             Button {
               machineFleet.retry(machineKey: fleetMachine.machineKey)
             } label: {
@@ -1182,7 +1183,7 @@ struct SettingsMachinesSection: View {
   /// The fleet's view of this machine (its roster connection), keyed like
   /// saved profiles: `machine:<device id>`.
   private func fleetMachine(identity: String?) -> MachineFleet.Machine? {
-    guard let identity = fleetNonEmpty(identity) else { return nil }
+    guard let identity = nonEmptyTrimmed(identity) else { return nil }
     return machineFleet.machine(for: "machine:\(identity.lowercased())")
   }
 
@@ -1213,7 +1214,7 @@ struct SettingsMachinesSection: View {
 
   private func requestKeepLive(_ machine: MachineFleet.Machine) {
     if let wouldPause = machineFleet.machineThatWouldPause(forKeepingLive: machine.machineKey) {
-      keepLivePrompt = HubKeepLivePrompt(
+      keepLivePrompt = MachineFleetKeepLivePrompt(
         machineKey: machine.machineKey,
         machineName: machine.name,
         pausedName: wouldPause.name

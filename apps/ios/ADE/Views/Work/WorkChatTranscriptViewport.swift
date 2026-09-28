@@ -42,7 +42,7 @@ extension WorkChatTranscriptController: UICollectionViewDelegate {
       else { continue }
       // Never anchor on the rows that sit ABOVE the history: older pages land
       // below them, so holding them still is what threw the reader to the top
-      // of each new page (round 7). Anchor on the first message row instead.
+      // of each new page. Anchor on the first message row instead.
       if Self.rowsAboveHistory.contains(orderedRowIds[indexPath.item]) { continue }
       if fallback == nil { fallback = (indexPath, attributes) }
       if attributes.frame.minY >= visibleTop - 0.5 {

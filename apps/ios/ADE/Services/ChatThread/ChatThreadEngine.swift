@@ -186,9 +186,10 @@ actor ChatThreadEngine {
             // Rows below the store's oldest were trimmed away on disk: the
             // cache does have older history, even though the host says the
             // top was reached.
-            let trimmedBelowKnownTop = !hasOlder
-              && oldestKnownSequence != nil
-              && (meta.oldestSequence ?? Int.min) > oldestKnownSequence!
+            let trimmedBelowKnownTop: Bool = {
+              guard !hasOlder, let oldestKnownSequence else { return false }
+              return (meta.oldestSequence ?? Int.min) > oldestKnownSequence
+            }()
             meta.hasOlder = hasOlder || trimmedBelowKnownTop
             meta.olderCursor = olderCursor
           }

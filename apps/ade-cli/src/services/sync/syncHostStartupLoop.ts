@@ -359,8 +359,8 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         deps.log("ADE brain mobile sync host recovered.");
         logEvent("sync.host_start_recovered", { attempts: attempt, lastFailureSignature });
       } else {
-        // A first-attempt success used to leave no trace at all, so a brain
-        // whose sync host never started looked exactly like one whose started.
+        // Log a first-attempt success too: without it, a brain whose sync host
+        // never started looks exactly like one whose host started.
         logEvent("sync.host_started", { attempts: 1 });
       }
       return;

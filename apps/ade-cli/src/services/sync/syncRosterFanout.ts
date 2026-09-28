@@ -81,6 +81,9 @@ export function createSyncRosterFanout<P extends SyncRosterPeerState>(args: {
   let maxWaitTimer: ReturnType<typeof setTimeout> | null = null;
   let safetyPollTimer: ReturnType<typeof setInterval> | null = null;
   let flushInFlight = false;
+  // A flush that fired while another was building: it may carry a change the
+  // in-flight build already missed, so one more flush runs when it ends.
+  let flushRequestedInFlight = false;
 
   function stopSafetyPoll(): void {
     if (!safetyPollTimer) return;
@@ -164,7 +167,11 @@ export function createSyncRosterFanout<P extends SyncRosterPeerState>(args: {
 
   async function flush(): Promise<void> {
     clearFlushTimers();
-    if (args.isDisposed() || flushInFlight) return;
+    if (args.isDisposed()) return;
+    if (flushInFlight) {
+      flushRequestedInFlight = true;
+      return;
+    }
     const subscribers = args.subscribers();
     if (subscribers.length === 0) {
       stopSafetyPoll();
@@ -215,6 +222,12 @@ export function createSyncRosterFanout<P extends SyncRosterPeerState>(args: {
       }
     } finally {
       flushInFlight = false;
+      if (flushRequestedInFlight) {
+        flushRequestedInFlight = false;
+        // Re-armed through the debounce: one follow-up per missed request,
+        // never a loop (a later request only comes from a new dirty mark).
+        markDirty();
+      }
     }
   }
 

@@ -1493,9 +1493,13 @@ struct WorkChatSessionView: View {
       WorkChatComposerCard(
         chatSummary: chatSummaryContext,
         contextMeter: composerContextMeter,
-        onCompactContext: { [onSend] in
+        onCompactContext: { [onSend, $errorMessage] in
           Task { @MainActor in
-            _ = await onSend("/compact", [], .queue)
+            // Most send failures set their own message; the rest (a send
+            // already in flight) would otherwise fail silently.
+            if await !onSend("/compact", [], .queue), $errorMessage.wrappedValue == nil {
+              $errorMessage.wrappedValue = "Couldn’t start compacting. Try again."
+            }
           }
         },
         sessionId: session.id,
@@ -1956,7 +1960,7 @@ struct WorkChatSessionView: View {
     // A reveal of buffered (already loaded) history is on screen: arm the
     // trigger again, the way a finished host page does. Without this a long
     // thread, whose older rows are mostly already in memory, stopped at the
-    // top after the first reveal (round 6).
+    // top after the first reveal.
     if let requested = olderRevealRequestedCount, frame.visibleTimelineCount >= requested {
       olderRevealRequestedCount = nil
       olderHistoryTriggerArmed = true
