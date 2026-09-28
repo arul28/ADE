@@ -27,12 +27,13 @@ import type {
   ModelDescriptor,
   ProviderStatus,
   SendInput,
+  ThreadModelInfo,
   ThreadOpenOptions,
   ThreadStatus,
   ThreadUsage,
 } from "../sdkTypes";
 import type { ActivityLabelConfig } from "../activity/labels";
-import { buildTranscriptRows, type TranscriptRow } from "../transcript/transcriptRows";
+import { TranscriptRowBuilder, type TranscriptRow } from "../transcript/transcriptRows";
 
 export type AdeChatContextValue = {
   client: AdeChatClient | null;
@@ -166,16 +167,78 @@ export type ThreadState = {
    * reason instead of offering a button whose click would throw.
    */
   canApprove: boolean;
+  /**
+   * The model the runtime has the thread on, as it resolved it — which can be
+   * a successor of the id the host asked for. Read on open and after every
+   * successful `setModel`. Null when the client does not report one (an SDK
+   * before 0.3, a proxy), and a UI then names the model from its catalog.
+   */
+  model: ThreadModelInfo | null;
+  /**
+   * Older history exists that is not loaded yet. Only ever true on a client
+   * with `historyPage`; a client that reads history in one `history()` call has
+   * nothing further to page.
+   */
+  hasOlder: boolean;
+  /** A `loadOlder()` read is in flight. */
+  loadingOlder: boolean;
+  /**
+   * Load the next older history page and fold it in above the current rows.
+   * A no-op when `hasOlder` is false or a load is already running. A failed
+   * read leaves `hasOlder` true so the caller can retry; it never throws.
+   */
+  loadOlder: () => Promise<void>;
 };
 
 const IDLE_STATUS: ThreadStatus = { state: "idle" };
 
+/** Envelopes read per `historyPage` call when the host does not say. */
+export const DEFAULT_HISTORY_PAGE_SIZE = 200;
+
+/** Where the next older page starts, or null when there is none to read. */
+type OlderCursor = { beforeSequence: number } | null;
+
+function readModelInfo(value: unknown): ThreadModelInfo | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.modelId !== "string" || !record.modelId) return null;
+  const info: ThreadModelInfo = { modelId: record.modelId };
+  if (typeof record.displayName === "string" || record.displayName === null) {
+    info.displayName = record.displayName as string | null;
+  }
+  if (typeof record.provider === "string" && record.provider) info.provider = record.provider;
+  return info;
+}
+
+/** The oldest sequence in a list, for paging a runtime that sent no cursor. */
+function oldestSequence(envelopes: readonly AgentChatEventEnvelope[]): number | null {
+  let oldest: number | null = null;
+  for (const envelope of envelopes) {
+    if (typeof envelope.sequence === "number" && (oldest === null || envelope.sequence < oldest)) {
+      oldest = envelope.sequence;
+    }
+  }
+  return oldest;
+}
+
+function cursorFrom(
+  page: { events: readonly AgentChatEventEnvelope[]; hasMore: boolean; nextBeforeSequence?: number | null },
+): OlderCursor {
+  if (!page.hasMore) return null;
+  const before =
+    typeof page.nextBeforeSequence === "number" ? page.nextBeforeSequence : oldestSequence(page.events);
+  return before === null ? null : { beforeSequence: before };
+}
+
 /**
  * Open a thread and keep its transcript current.
  *
- * History is loaded once on open; live events append. Rows are recomputed from
- * the raw envelope list so the collapse rules (streaming text merge, tool
- * call→result upgrade) stay identical for replayed and live events.
+ * History is loaded on open — the newest page when the thread has
+ * `historyPage`, else the whole `history()` window — and older pages load on
+ * `loadOlder()`. Live events append through a `TranscriptRowBuilder`, so each
+ * one patches the tail rather than rebuilding every row; the collapse rules
+ * (streaming text merge, tool call→result upgrade) are the same code for
+ * replayed and live events. Loading an older page rebuilds once.
  */
 export function useAdeThread(
   key: string,
@@ -190,11 +253,30 @@ export function useAdeThread(
      * Defaults to true.
      */
     enabled?: boolean;
+    /**
+     * Envelopes per `historyPage` read (the first page and each older one).
+     * Ignored by a client without `historyPage`. Default
+     * `DEFAULT_HISTORY_PAGE_SIZE`. A streamed reply is many envelopes, so a
+     * page holds fewer messages than this number suggests.
+     */
+    historyPageSize?: number;
   },
 ): ThreadState {
   const client = useAdeChatClient(options?.client);
   const [thread, setThread] = useState<AdeThread | null>(null);
-  const [envelopes, setEnvelopes] = useState<AgentChatEventEnvelope[]>([]);
+  const [rows, setRows] = useState<TranscriptRow[]>([]);
+  /**
+   * Every envelope folded in so far, in render order. Kept only so that an
+   * older page can be merged in and the builder rerun once; live appends never
+   * read it.
+   */
+  const envelopesRef = useRef<AgentChatEventEnvelope[]>([]);
+  const builderRef = useRef<TranscriptRowBuilder>(new TranscriptRowBuilder());
+  const [olderCursor, setOlderCursor] = useState<OlderCursor>(null);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [model, setModelInfo] = useState<ThreadModelInfo | null>(null);
+  /** Bumped per open, so a page that lands after a key change is dropped. */
+  const openEpochRef = useRef(0);
   /**
    * Requests the runtime is still blocked on that the transcript does not show.
    *
@@ -220,6 +302,11 @@ export function useAdeThread(
   const providerId = options?.providerId;
   const resume = options?.resume;
   const enabled = options?.enabled ?? true;
+  const pageSizeRef = useRef(DEFAULT_HISTORY_PAGE_SIZE);
+  pageSizeRef.current =
+    options?.historyPageSize && options.historyPageSize > 0
+      ? Math.floor(options.historyPageSize)
+      : DEFAULT_HISTORY_PAGE_SIZE;
 
   /**
    * The model this thread is currently bound to.
@@ -235,12 +322,36 @@ export function useAdeThread(
   requestedModelIdRef.current = modelId;
   const boundModelIdRef = useRef<string | undefined>(undefined);
 
+  /**
+   * Rebuild every row from `envelopesRef` plus the restored approvals. Used on
+   * open and after an older page; live envelopes go through `append` instead.
+   */
+  const rebuildRows = useCallback(
+    (restored: readonly ApprovalRequest[], at: string | null) => {
+      const builder = new TranscriptRowBuilder();
+      builder.append(envelopesRef.current);
+      builder.restore(restored, at ?? undefined);
+      builderRef.current = builder;
+      setRows(builder.rows);
+    },
+    [],
+  );
+
   useEffect(() => {
     let cancelled = false;
     const disposers: Array<() => void> = [];
+    const epoch = ++openEpochRef.current;
 
     setThread(null);
-    setEnvelopes([]);
+    envelopesRef.current = [];
+    builderRef.current = new TranscriptRowBuilder();
+    setRows([]);
+    setOlderCursor(null);
+    setLoadingOlder(false);
+    // An older-page read from the previous key may still be in flight; its
+    // epoch check drops the result, and this frees the next key to page.
+    loadingOlderRef.current = false;
+    setModelInfo(null);
     setRestoredApprovals([]);
     setRestoredAt(null);
     setStatus(IDLE_STATUS);
@@ -262,16 +373,52 @@ export function useAdeThread(
         // is dropped; the merge below de-duplicates any overlap.
         const live: AgentChatEventEnvelope[] = [];
         let historyApplied = false;
+        // Live envelopes that land in one tick are folded in together, so a
+        // burst of streamed deltas costs one row snapshot, not one per delta.
+        let pendingLive: AgentChatEventEnvelope[] = [];
+        let flushScheduled = false;
+        const flushLive = () => {
+          flushScheduled = false;
+          if (cancelled || pendingLive.length === 0) return;
+          const batch = pendingLive;
+          pendingLive = [];
+          envelopesRef.current.push(...batch);
+          setRows(builderRef.current.append(batch));
+        };
         disposers.push(
           opened.on("event", (envelope) => {
-            if (historyApplied) setEnvelopes((current) => [...current, envelope]);
-            else live.push(envelope);
+            if (!historyApplied) {
+              live.push(envelope);
+              return;
+            }
+            pendingLive.push(envelope);
+            if (!flushScheduled) {
+              flushScheduled = true;
+              queueMicrotask(flushLive);
+            }
           }),
         );
         disposers.push(opened.on("status", (next) => setStatus(next)));
         disposers.push(opened.on("usage", (next) => setUsage(next)));
 
-        const history = await opened.history().catch(() => [] as AgentChatEventEnvelope[]);
+        // The newest page when the thread pages, the whole window otherwise.
+        let history: AgentChatEventEnvelope[];
+        let cursor: OlderCursor = null;
+        if (typeof opened.historyPage === "function") {
+          const page = await opened
+            .historyPage({ limit: pageSizeRef.current })
+            .catch(() => null);
+          if (page) {
+            history = page.events ?? [];
+            cursor = cursorFrom(page);
+          } else {
+            // A paging read that fails falls back to the unpaged one rather
+            // than opening an empty transcript.
+            history = await opened.history().catch(() => [] as AgentChatEventEnvelope[]);
+          }
+        } else {
+          history = await opened.history().catch(() => [] as AgentChatEventEnvelope[]);
+        }
         if (cancelled) return;
         const restored = await readPendingApprovals(opened);
         if (cancelled) return;
@@ -291,9 +438,13 @@ export function useAdeThread(
         // empty transcript has nothing to anchor to, so the local clock is the
         // only answer left, and with no rows the position cannot be wrong.
         const restoredReadAt = merged[merged.length - 1]?.timestamp ?? new Date().toISOString();
-        setEnvelopes(merged);
+        if (epoch !== openEpochRef.current) return;
+        envelopesRef.current = merged;
+        rebuildRows(restored, restoredReadAt);
+        setOlderCursor(cursor);
         setRestoredApprovals(restored);
         setRestoredAt(restoredReadAt);
+        setModelInfo(readModelInfo(opened.model));
         setThread(opened);
         setError(null);
       })
@@ -307,7 +458,7 @@ export function useAdeThread(
       for (const dispose of disposers) dispose();
     };
     // `modelId` is intentionally absent: see requestedModelIdRef above.
-  }, [client, key, providerId, resume, enabled]);
+  }, [client, key, providerId, resume, enabled, rebuildRows]);
 
   const threadRef = useRef<AdeThread | null>(null);
   threadRef.current = thread;
@@ -335,9 +486,53 @@ export function useAdeThread(
     if (!target || !nextModelId) return;
     if (boundModelIdRef.current === nextModelId) return;
     if (typeof target.setModel !== "function") return;
-    await target.setModel(nextModelId);
+    const selection = await target.setModel(nextModelId);
     boundModelIdRef.current = nextModelId;
+    // The thread's own property first (the SDK updates it), then what
+    // `setModel` returned; a client with neither keeps the old value null.
+    if (threadRef.current === target) {
+      setModelInfo(readModelInfo(target.model) ?? readModelInfo(selection));
+    }
   }, []);
+
+  /** See `ThreadState.loadOlder`. */
+  const restoredRef = useRef<{ restored: readonly ApprovalRequest[]; at: string | null }>({
+    restored: [],
+    at: null,
+  });
+  restoredRef.current = { restored: restoredApprovals, at: restoredAt };
+  const loadingOlderRef = useRef(false);
+  const loadOlder = useCallback(async () => {
+    const target = threadRef.current;
+    if (!target || typeof target.historyPage !== "function") return;
+    if (!olderCursor || loadingOlderRef.current) return;
+    const epoch = openEpochRef.current;
+    loadingOlderRef.current = true;
+    setLoadingOlder(true);
+    try {
+      const page = await target.historyPage({
+        beforeSequence: olderCursor.beforeSequence,
+        limit: pageSizeRef.current,
+      });
+      if (epoch !== openEpochRef.current || threadRef.current !== target) return;
+      const seen = new Set(envelopesRef.current.map(envelopeIdentity));
+      const older = (page.events ?? []).filter((item) => !seen.has(envelopeIdentity(item)));
+      const next = cursorFrom(page);
+      // A page that returned nothing new while claiming more would loop the
+      // "load older" trigger forever; treat it as the end.
+      setOlderCursor(older.length === 0 ? null : next);
+      if (older.length === 0) return;
+      envelopesRef.current = sortEnvelopes([...older, ...envelopesRef.current]);
+      rebuildRows(restoredRef.current.restored, restoredRef.current.at);
+    } catch {
+      // Keep the cursor: the next scroll to the top retries.
+    } finally {
+      if (epoch === openEpochRef.current) {
+        loadingOlderRef.current = false;
+        setLoadingOlder(false);
+      }
+    }
+  }, [olderCursor, rebuildRows]);
 
   /**
    * Answer an approval.
@@ -364,11 +559,6 @@ export function useAdeThread(
     return await target.pendingApprovals();
   }, []);
 
-  const rows = useMemo(
-    () => buildTranscriptRows(envelopes, restoredApprovals, restoredAt ?? undefined),
-    [envelopes, restoredApprovals, restoredAt],
-  );
-
   return {
     thread,
     ready: thread !== null,
@@ -384,6 +574,10 @@ export function useAdeThread(
     pendingApprovals,
     canSetModel: typeof thread?.setModel === "function",
     canApprove: typeof thread?.approve === "function",
+    model,
+    hasOlder: olderCursor !== null,
+    loadingOlder,
+    loadOlder,
   };
 }
 

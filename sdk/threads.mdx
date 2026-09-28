@@ -1,6 +1,6 @@
 ---
 title: "Threads"
-description: "Durable named threads: open-or-resume by key, send, steer, interrupt, setModel, history, and export."
+description: "Durable named threads: open-or-resume by key, list, rename, archive, delete, send, steer, interrupt, setModel, paged history, attachments, and export."
 icon: "comments"
 ---
 
@@ -17,25 +17,92 @@ const thread = await ade.threads.open("support", {
 
 A resume re-applies the values the key was **created** with. `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` are read off the stored record, not off this call: passing a different value is not an error and does not change the thread, and the SDK logs one line naming each option it ignored. To run under different host configuration or a different tool surface, open a different key.
 
-If the stored session is gone (wiped home, copied machine, deleted chat), the SDK drops the stale key and **creates a new conversation** under that key. Reusing a key is not proof the old transcript is still there.
+`refresh.mcpServers` is the one exception. It replaces the thread's MCP servers on a resume, so a new token or a new port takes effect. See [MCP servers](/sdk/mcp#credentials-that-change).
 
 ```ts
 const again = await ade.threads.open("support");
 ```
 
-`ade.threads.list()` returns every tracked key for this home.
+### When the runtime lost the session
+
+If the stored session is gone (wiped home, copied machine, corrupt state root), the SDK drops the stale session and **creates a new conversation** under the same key. This is a **recreate**. Reusing a key is not proof that the old transcript is still there.
+
+A recreate uses the **stored record first**. `provider`, `model`, `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` come from the record. An option that you pass to this call only fills a field that the record does not have. The SDK logs one line for each stored value that it used instead of yours.
+
+<Warning>
+This rule changed in 0.3. Before 0.3 the call's options won on a recreate. Any caller that could name a key, such as a renderer over the Electron bridge, could then rebuild a lost thread on another provider, under a looser policy, or with no MCP servers.
+</Warning>
+
+The record keeps MCP header **names**, not values. A recreate gets the values from `refresh.mcpServers` or from the client's `mcpHeaders` callback. If neither supplies them, the server connects without its headers and the SDK logs a line. See [MCP servers](/sdk/mcp#credentials-that-change).
+
+A recreate gives the thread a new `thread.id`. Key your own state on `thread.key`, not on `thread.id`.
+
+## List, rename, archive, delete
+
+```ts
+const rows = await ade.threads.list();
+await ade.threads.archive("support");
+await ade.threads.unarchive("support");
+await ade.threads.delete("support");
+```
+
+`list()` returns every chat in this home as a `ThreadSummary`, archived chats included. The order is not guaranteed. Sort on `updatedAt` yourself.
+
+| Field | |
+|---|---|
+| `key` | Your key, or `null` for a chat that was not created through the SDK |
+| `title` | The title, or `null` |
+| `archived` | `true` after `archive()` |
+| `updatedAt` | ISO time of the last activity. Equal to `lastActivityAt` |
+| `modelSelection` | `{ modelId, provider, model, displayName }`, or `null` |
+| `sessionId`, `provider`, `model`, `status`, `startedAt`, `lastActivityAt` | As the runtime reports them |
+
+`archive(key)` keeps the key and the transcript. `unarchive(key)` reverses it.
+
+`delete(key)` deletes the runtime session, its transcript and the key. A thread object that you hold for that key stops working. Drop it.
+
+`archive` and `delete` interrupt a running turn **first**, so subscribers get the turn's `done` event before the session changes. A key that the store does not know throws `thread_not_found`. A runtime without the matching action throws `invalid_option`.
+
+### Title and model
+
+```ts
+thread.title;   // string | null
+thread.model;   // { modelId, provider, model, displayName } | null
+```
+
+The runtime can give a thread a title after its first turn. `thread.title` shows that title after the next `open()` or `update()`.
+
+Show `thread.model.displayName` when it is not `null`. When a CLI update retires a model, the runtime resolves the old id to a newer model, and the id that you stored is then the wrong label.
+
+### `update()`
+
+```ts
+await thread.update({ title: "Outage review" });
+await thread.update({ reasoningEffort: "high", fastMode: false });
+```
+
+`update()` changes `title`, `reasoningEffort` or `fastMode` on a live thread. It returns `{ title, model }` as the runtime reports them after the change. The SDK also writes the title to its thread store. `title: null` clears the title, and `reasoningEffort: null` returns to the model default.
+
+A rename works at any time. `reasoningEffort` and `fastMode` are **refused while a turn is in flight** (`invalid_option`) unless you pass `{ force: true }`. On Codex, a settings change can restart the provider, and that ends the turn without `error` or `done`. Wait for the turn to end, or call `interrupt()` first.
 
 ## Send, steer, interrupt
 
 ```ts
 await thread.send("What changed?");
 await thread.steer("Focus on the outage"); // mid-turn follow-up
+await thread.steer("", { attachments: [{ path: "/Users/me/MyApp/work/log.txt" }] });
 await thread.interrupt();
 ```
 
 `send()` dispatches the turn and resolves when the runtime accepts it, **not** when the reply finishes. Watch `thread.on("status")` / `thread.on("event")` for the rest.
 
-Submitting during a running turn is a **steer**, not a second send. `steer()` must be safe to call while the turn is live. It does not start a new turn.
+Submitting during a running turn is a **steer**, not a second send. `steer()` is safe to call while the turn is live. It does not start a new turn.
+
+`steer()` takes `{ attachments }` with the same rules as `send()`. It needs text, at least one attachment, or both. A steer with attachments and empty text is allowed. It resolves when the runtime accepts the steer, not when the agent reads it.
+
+### Retry and edit
+
+The SDK has no `retry()` and no `editLast()` in 0.3. A "retry" or "edit and resend" button today sends a **new** user message, and the transcript keeps the earlier message and reply. Providers differ in how they can roll a turn back, and that needs runtime work. It is planned, not released.
 
 ## Events
 
@@ -49,7 +116,29 @@ thread.on("usage", (envelope) => { /* token usage */ });
 
 Each `on` returns an unsubscribe function. Unknown event types are ignored, not rendered — the runtime can add kinds without breaking listeners.
 
-`history({ limit })` returns envelopes in transcript order (`sequence`, then `timestamp`). Provider clocks are not trusted.
+The SDK adds two envelopes of its own to the `status` channel. Both carry `synthetic: true`.
+
+| `event.type` | When |
+|---|---|
+| `status` with `turnStatus: "error"` and a `message` | The runtime exited or its socket closed. A runtime that stops mid-turn sends nothing, so without this event a subscriber would show "running" with no end. See [Runtime](/sdk/runtime#when-the-runtime-exits). |
+| `capabilities_changed` | After `setModel()`. It carries the four capability reports for the new provider. |
+
+### History
+
+`history({ limit })` returns envelopes in transcript order (`sequence`, then `timestamp`). Provider clocks are not trusted. Without `limit` it returns the full transcript, up to the runtime's cap of about 20,000 events or 2 MB.
+
+For a long thread, read one page at a time:
+
+```ts
+let page = await thread.historyPage({ limit: 200 });   // newest page
+while (page.hasMore) {
+  page = await thread.historyPage({ beforeSequence: page.nextBeforeSequence!, limit: 200 });
+}
+```
+
+`historyPage()` returns `{ events, hasMore, nextBeforeSequence }`. Events are oldest-first inside a page. Omit `beforeSequence` for the newest page. `limit` defaults to 200. The runtime pages by bytes, so a page can hold fewer events than `limit`.
+
+A runtime without the `getEventHistoryPage` action gives the newest page only. A request for an older page then returns an empty page with `hasMore: false`, and the SDK logs one line.
 
 ## Instructions
 
@@ -140,14 +229,17 @@ Read `thread.settingSourcesCapability` for the answer on the thread you actually
 ```ts
 await thread.interrupt();
 const next = await thread.setModel("claude-opus-4");
-// next.provider / next.model — what the runtime actually resolved
+// next.modelId / next.provider / next.model / next.displayName — what the runtime resolved
+// next.capabilities — the four capability reports on the new provider
 ```
 
 Crossing providers is supported: the engine tears down the old provider thread and replays the transcript into the new one.
 
 `setModel` **refuses while a turn is in flight** (`invalid_option`) unless you pass `{ force: true }`. A forced switch ends that turn without `error` or `done` — subscribers just stop receiving. Interrupt first if you need a clean handoff.
 
-After a switch, `thread.mcpCapability` is refreshed. A Claude thread that later lands on Codex must not keep advertising `level: "enforced"`.
+`setModel` returns the resolved model and `capabilities`: `mcpCapability`, `permissionCapability`, `instructionsCapability` and `settingSourcesCapability` as they are on the new provider. The thread also emits the same reports as a `capabilities_changed` envelope on the `status` channel. A switch across providers can lower a guarantee. For example, a policy that Claude enforces is best-effort on Codex. Read the new reports before you tell a user that their rules still apply.
+
+`thread.model` and the four capability fields on the thread change to the new values.
 
 ## Export and dispose
 
@@ -164,11 +256,63 @@ Do not call `dispose()` on every page unmount if the host process is staying up.
 
 ```ts
 await thread.send("Look at this screenshot", {
-  attachments: [{ /* ChatAttachment */ }],
+  attachments: [
+    { path: "/Users/me/MyApp/work/screen.png" },                  // sent as an image
+    { path: "notes/spec.md", name: "spec.md" },                  // relative to the chat's cwd
+    { path: "/Users/me/MyApp/work/mix.wav", hydrate: false },    // path only, bytes never read
+  ],
 });
 ```
 
-`send()` requires text or at least one attachment.
+`send()` and `steer()` each need text or at least one attachment.
+
+An attachment is an `AgentChatFileRef`. It names a file on disk. The SDK does not upload bytes.
+
+```ts
+type AgentChatFileRef = {
+  path: string;              // absolute, or relative to the chat's working directory
+  name?: string;
+  mimeType?: string;
+  bytes?: number;
+  type?: "file" | "image";   // inferred when absent
+  hydrate?: boolean;         // default true
+};
+```
+
+### `type`
+
+`"image"` sends the bytes as an image that the model can see. `"file"` sends a path hint, and the model opens the file with its own tools.
+
+When you do not set `type`, the SDK sets it before it sends the attachment. `mimeType` wins when it is present: `image/png`, `image/jpeg`, `image/jpg`, `image/gif` and `image/webp` give `"image"`, and any other MIME type gives `"file"`. Without `mimeType`, the extension of `path` or `name` decides: `.png`, `.jpg`, `.jpeg`, `.gif` and `.webp` give `"image"`. An explicit `type` always wins. `inferAttachmentType(ref)` is exported if you need the same rule.
+
+Before 0.3 the field did not exist, and every image reached the model as a path hint.
+
+### `hydrate: false`
+
+`hydrate: false` is **reference-only**. The runtime never opens the file, never copies it to a staging directory, and gives the model the path alone. This is also true for an image. Use it for a file that must not download as a side effect, for example a macOS File Provider placeholder: a read of the bytes downloads the whole file from the cloud.
+
+A runtime older than 1.2.81 ignores `hydrate` and reads the bytes. See [Version compatibility](/sdk/runtime#version-compatibility).
+
+### Where a path may point
+
+- A **relative** path resolves in the chat's working directory: the thread's `cwd`, or the runtime's scratch workspace when you did not set one.
+- An **absolute** path must be inside the chat's working directory, or inside `<home>/personal-chats/state`, the runtime's state directory.
+- Any other path throws, and the send fails. The error names the path.
+
+Before runtime 1.2.81, an absolute path had to be inside `<home>/personal-chats/state`. A path inside your own `cwd` threw.
+
+### Size limits
+
+| Route | Limit |
+|---|---|
+| Claude, `type: "image"` | 10 MB, and only JPEG, PNG, GIF or WebP. A larger image, or another format, goes as a path hint. The turn still runs. |
+| Codex, `type: "image"` or `"file"` | No size cap. Codex copies the whole file to a staging directory before the turn, unless `hydrate: false`. |
+| Claude, `type: "file"` | No read. The model gets a path hint. |
+| OpenCode | ADE sets no cap. OpenCode gets a file URL and reads the file itself, unless `hydrate: false`. |
+| Droid, Pi, Cursor, ACP providers, text inline | 512 KB. A larger file goes as a path hint. |
+| Any provider, `hydrate: false` | No read. The model gets a path hint. |
+
+Over the [Electron bridge](/sdk/electron#attachments-are-paths-not-bytes), attachments cross as paths only.
 
 ## Next
 

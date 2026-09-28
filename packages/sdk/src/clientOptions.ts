@@ -10,6 +10,7 @@
  */
 
 import type { ThreadInstructions } from "./hostConfig.js";
+import type { McpHeadersResolver } from "./mcpHeaders.js";
 import type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
 import type { RuntimeDownloader } from "./download.js";
 import type { AdeProvider, AgentChatSettingSources, McpServerConfig } from "./types.js";
@@ -51,6 +52,82 @@ export type CreateAdeChatOptions = {
    * one.
    */
   instructions?: ThreadInstructions;
+  /**
+   * Supplies MCP header values — usually a bearer token — per thread and
+   * server, at the moment they are needed.
+   *
+   * The SDK never writes header values to disk: the thread store keeps header
+   * NAMES only. So a resume, a recreate after the runtime lost a session, and
+   * an `autoRestart` all need the values again, and this is where they come
+   * from when the caller did not pass them (`refresh.mcpServers` on
+   * `threads.open` wins over it; headers passed explicitly on a create win over
+   * it too). Called synchronously; return undefined for a server that needs no
+   * headers.
+   *
+   * On a resume the SDK pushes the resolved servers to the runtime with
+   * `updateSession`, so a rotated token takes effect on the next turn. That
+   * needs a runtime advertising `capabilities.personalChats.updateMcpServers`;
+   * an older one keeps whatever it had and the SDK logs a warning.
+   */
+  mcpHeaders?: McpHeadersResolver;
+  /**
+   * Respawn the runtime when it exits unexpectedly. Off by default.
+   *
+   * `true` uses 5 attempts with a 1 s backoff that doubles per attempt;
+   * the object form overrides either. Each attempt emits
+   * `client.on("restart")`. On success the client re-handshakes, rebinds its
+   * event stream, and re-opens every thread it had open from the stored
+   * record — header values resolved again through `mcpHeaders` — so the
+   * thread objects a host holds, and a bridge built on this client, keep
+   * working. The client object itself never changes.
+   *
+   * A turn in flight when the runtime died is NOT resumed: each live thread
+   * already received a synthetic `status` / `turnStatus: "error"` envelope,
+   * and the transcript keeps everything that was persisted.
+   *
+   * Not attempted after `dispose()`, and not in attach mode for a runtime the
+   * SDK did not start — there the client only reconnects to the same socket.
+   */
+  autoRestart?: boolean | { maxAttempts?: number; backoffMs?: number };
+  /**
+   * Refuse a runtime whose version is outside `SUPPORTED_RUNTIME_RANGE`,
+   * throwing `AdeError("runtime_incompatible")` from `createAdeChat` (and
+   * failing an `autoRestart` attempt the same way).
+   *
+   * Off by default: an unsupported runtime connects, logs one warning, and
+   * degrades feature by feature. `doctor().runtime.compatibility` reports the
+   * verdict either way. Dev builds (`0.0.0`, or no version) always pass.
+   */
+  requireCompatibleRuntime?: boolean;
+  /**
+   * Where `binaryPath` came from. Set by `resolvePackagedRuntime()`, which
+   * returns `source: "packaged"` so that spreading its result into these
+   * options makes `doctor().runtime.source` report `"packaged"` rather than
+   * `"explicit"`. Ignored without `binaryPath`.
+   */
+  source?: "packaged";
+};
+
+/**
+ * Credentials and endpoints to push onto a thread as it is opened.
+ *
+ * The one exception to "a resume re-applies the stored values": MCP servers
+ * carry secrets that rotate (a bearer token after sign-out or an account
+ * switch) and endpoints that move (a port that was busy), and a thread pinned
+ * to the old ones fails MCP auth for good.
+ */
+export type ThreadRefreshOptions = {
+  /**
+   * Replaces the thread's caller MCP servers wholesale.
+   *
+   * On a resume the SDK sends these with `updateSession`, and the provider
+   * picks them up on its next turn; that needs a runtime advertising
+   * `capabilities.personalChats.updateMcpServers`, and an older one keeps its
+   * old servers with a logged warning. On a recreate they are the servers the
+   * new session is created with. On a create they are used when `mcpServers`
+   * is absent. The stored record is updated either way — header names only.
+   */
+  mcpServers?: Record<string, McpServerConfig>;
 };
 
 /** Escape hatches for tests and embedders. Not part of the stable surface. */
@@ -230,6 +307,8 @@ export type ThreadOpenOptions = {
   settingSources?: AgentChatSettingSources;
   reasoningEffort?: string;
   title?: string;
+  /** See {@link ThreadRefreshOptions}. */
+  refresh?: ThreadRefreshOptions;
 };
 
 /**
@@ -248,7 +327,16 @@ export type ThreadOpenOptions = {
  * the SDK logs one line naming the option it ignored. To run under different
  * host configuration, open a different key.
  *
- * The exception is a recreate: when the runtime has lost the session entirely,
- * the thread is created afresh and these options DO win over the record.
+ * THE STORED RECORD ALSO WINS ON A RECREATE. When the runtime has lost the
+ * session entirely (a wiped or migrated home, a corrupt state root), the key is
+ * created afresh from the record: `provider`, `model`, `cwd`, `instructions`,
+ * `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` come
+ * off the record, and a value passed here only fills a field the record lacks.
+ * Before 0.3 the call's options won instead, which let any caller that could
+ * name a key — a renderer, over the Electron bridge — rebuild a lost thread
+ * with a looser policy, another provider, or no MCP servers at all.
+ *
+ * `refresh.mcpServers` is the one field that does replace the stored value, on
+ * a resume and on a recreate alike — see {@link ThreadRefreshOptions}.
  */
 export type ThreadResumeOptions = Partial<ThreadOpenOptions>;

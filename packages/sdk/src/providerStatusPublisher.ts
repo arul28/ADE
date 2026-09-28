@@ -28,8 +28,10 @@ export type ProviderStatusPublisherOptions = {
   /**
    * Whether the runtime serves the real probe. Absent on every 0.1.x runtime,
    * which is why the catalog derivation stays rather than being replaced.
+   * A function so a client that respawned its runtime reads the answer of the
+   * runtime connected now.
    */
-  probeSupported: boolean;
+  probeSupported: boolean | (() => boolean);
   /** Reads the model catalog. Returns null when the call failed. */
   readCatalog: (mode: "cached" | "refresh-stale") => Promise<AgentChatModelCatalog | null>;
   /** Calls the `providers.status` RPC. Throws on a transport failure. */
@@ -63,7 +65,7 @@ export function createProviderStatusPublisher(
   const listeners = new Set<(status: Record<string, ProviderStatus>) => void>();
 
   const readProbe = async (refresh: boolean): Promise<ProviderStatusRpcResult | null> => {
-    if (!probeSupported) {
+    if (!(typeof probeSupported === "function" ? probeSupported() : probeSupported)) {
       // Once per client. An embedder reading `installed: false` off a derived
       // record and printing "Claude is not installed" is the specific wrong
       // conclusion this line exists to head off.

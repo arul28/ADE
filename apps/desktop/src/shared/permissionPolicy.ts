@@ -270,6 +270,53 @@ export function evaluatePermissionPolicy(
 }
 
 /**
+ * The policy's verdict on one MCP tool call a provider asked to approve, when
+ * the provider may not say which tool it is.
+ *
+ * Codex asks through an MCP elicitation, and the tool name is recovered from
+ * the elicitation's text (see `codexMcpToolApproval`), so on some requests only
+ * the server is known. With a tool name this is exactly
+ * {@link evaluatePermissionPolicy} on `mcp:<server>:<tool>`. Without one, the
+ * rule has to stay on the refusing side of every ambiguity:
+ *
+ * - a `deniedTools` entry that could name ANY tool of this server (a specific
+ *   tool, the server wildcard, or a bare `*` / `mcp:*` prefix) means the call
+ *   might be denied, so it is not auto-approved — it goes to `fallback`;
+ * - an `allowedTools` entry naming one specific tool cannot vouch for a tool
+ *   nobody named, so only whole-server allowances (`mcp:<server>:*`,
+ *   `autoApproveMcpServers`) approve it.
+ */
+export function evaluateMcpToolApprovalPolicy(
+  policy: AgentChatPermissionPolicy,
+  server: string,
+  tool: string | null,
+): PermissionPolicyDecision {
+  const trimmedServer = server.trim();
+  const trimmedTool = tool?.trim() ?? "";
+  if (trimmedTool.length > 0) {
+    return evaluatePermissionPolicy(policy, {
+      toolName: `mcp:${trimmedServer}:${trimmedTool}`,
+      provider: "codex",
+    });
+  }
+  const serverPrefix = `mcp:${trimmedServer}:`.toLowerCase();
+  const couldDeny = (policy.deniedTools ?? []).some((pattern) => {
+    const neutral = claudeToolNameToNeutral(pattern.trim()).toLowerCase();
+    if (neutral.startsWith(serverPrefix)) return true;
+    // A wildcard shorter than the server prefix ("*", "mcp:*", "mcp:ver*")
+    // covers every tool the prefix does.
+    return neutral.endsWith("*") && serverPrefix.startsWith(neutral.slice(0, -1));
+  });
+  if (couldDeny) return policy.fallback === "deny" ? "deny" : "ask";
+  // `mcp:<server>:*` as the name: a whole-server allowance or
+  // `autoApproveMcpServers` matches it, a single-tool allowance does not.
+  return evaluatePermissionPolicy(policy, {
+    toolName: `mcp:${trimmedServer}:*`,
+    provider: "codex",
+  });
+}
+
+/**
  * Translates the policy into the two tool lists the Claude Agent SDK accepts.
  *
  * Claude's lists take exact tool names, plus `mcp__<server>` for a whole
@@ -290,17 +337,20 @@ export function policyToClaudeToolLists(
     if (!allowedTools.includes(entry)) allowedTools.push(entry);
   }
   const disallowedTools = translateForClaude(policy.deniedTools);
-  // Under `fallback: "deny"` the two lists are the whole enforcement. The
+  // Under `fallback: "deny"` the two lists are the primary enforcement. The
   // Agent SDK removes a disallowed tool from the model's catalog outright,
-  // which holds whether or not the SDK ever calls back into `canUseTool`, and
-  // on the machines we measured it does not call back at all. So a deny
-  // fallback cannot be left to the prompt path: every mutating built-in the
-  // policy did not name is denied up front.
+  // which holds whether or not the SDK calls back into `canUseTool`. On Agent
+  // SDK 0.3.280 it does call back for MCP tools and mutating commands
+  // (measured 2026-09-28; on 0.3.258 it did not), but not for a command Claude
+  // Code classifies as read-only, and a setting layer can pre-approve a tool
+  // before it asks. So a deny fallback is not left to the prompt path: every
+  // mutating built-in the policy did not name is denied up front.
   //
-  // Only an explicit `allowedTools` entry rescues one. `sandboxRoot` cannot,
-  // because containment is decided per call against a path, and there is no
-  // per-call hook to decide it in. Denying is the only answer that is actually
-  // enforced, and a `sandboxRoot` that quietly did nothing would be worse.
+  // Only an explicit `allowedTools` entry rescues one. `sandboxRoot` cannot:
+  // containment is decided per call against a path, and a tool removed from the
+  // catalog never makes a call to judge. Denying is the answer that is enforced
+  // regardless of the hook, and a `sandboxRoot` that quietly did nothing would
+  // be worse.
   if (policy.fallback === "deny") {
     for (const tool of CLAUDE_MUTATING_BUILTIN_TOOLS) {
       if (matchesAnyPattern(tool, policy.allowedTools)) continue;
@@ -339,9 +389,13 @@ export const CLAUDE_MUTATING_BUILTIN_TOOLS = [
  * This is a hole, not a feature, and it exists because the two enforcement
  * surfaces have different resolutions. `allowManagedMcpServersOnly` is
  * per-server: to let `mcp:srv:search` run at all, the whole of `srv` has to be
- * reachable. Per-tool refusal would have to come from `canUseTool`, and on
- * Claude that does not fire. So under `fallback: "deny"` an entry naming one
- * tool of a server silently admits every other tool of it.
+ * reachable. Per-tool refusal has to come from `canUseTool`. On Agent SDK
+ * 0.3.280 that hook fires for an unlisted MCP tool and ADE's gate denies it
+ * (measured 2026-09-28, permissionMode "default"; on 0.3.258 it did not fire),
+ * but a Claude setting loaded through `settingSources` can pre-approve the
+ * tool before the hook is asked. So under `fallback: "deny"` an entry naming
+ * one tool of a server admits the others to a refusal that is per-call, not
+ * guaranteed.
  *
  * A server also named by a whole-server form is not listed: allowing all of it
  * was the stated intent there, so nothing is unexpected.

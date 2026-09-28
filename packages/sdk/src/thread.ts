@@ -8,8 +8,9 @@ import {
   type ApprovalRequest,
   type ObservedApproval,
 } from "./approvals.js";
-import { AdeError } from "./errors.js";
-import type { ChatEventStream } from "./eventStream.js";
+import { completeAttachments } from "./attachments.js";
+import { AdeError, errorMessage } from "./errors.js";
+import type { ChatEventSource } from "./eventStream.js";
 import {
   normalizeInstructionsCapability,
   normalizePermissionCapability,
@@ -19,6 +20,7 @@ import {
   type SettingSourcesCapability,
 } from "./hostConfig.js";
 import { normalizeMcpCapability } from "./mcpCapability.js";
+import { missingHeadersWarning, withResolvedHeaders, type McpHeadersResolver } from "./mcpHeaders.js";
 import { isSupportedProvider } from "./permissions.js";
 import type { PersonalChatsApi } from "./personalChats.js";
 import {
@@ -29,8 +31,14 @@ import {
   type AgentChatFileRef,
   type AgentChatSessionSummary,
   type McpCapabilityReport,
+  type McpServerConfig,
+  type ThreadCapabilities,
+  type ThreadHistoryPage,
+  type ThreadModelSelection,
   type Unsubscribe,
 } from "./types.js";
+
+export type { ThreadModelSelection } from "./types.js";
 
 export type ThreadEventChannel = "event" | "usage" | "status";
 
@@ -42,26 +50,106 @@ export type SetModelOptions = {
   force?: boolean;
 };
 
-/** What a thread's model actually resolved to, as reported by the runtime. */
-export type ThreadModelSelection = {
-  /** Catalog model id now bound to the thread. */
-  modelId: string;
-  /** Provider group that id resolved into — authoritative, not inferred. */
-  provider: string;
-  /** Provider-native model token. */
-  model: string;
-};
+/**
+ * What `setModel` returns: the resolved model, plus the four capability
+ * reports as they stand on the new provider.
+ *
+ * A switch across providers can quietly lower a guarantee — a policy Claude
+ * enforced is best-effort on Codex — so the reports come back with the answer
+ * rather than leaving the caller to re-read four fields and notice. The same
+ * object is emitted as `capabilities_changed` on the thread's `status`
+ * channel, for subscribers that did not make the call.
+ */
+export type SetModelResult = ThreadModelSelection & { capabilities: ThreadCapabilities };
 
 export type SendOptions = {
+  /** Files to attach. `type` is inferred when absent; see `AgentChatFileRef`. */
   attachments?: AgentChatFileRef[];
   /** Text shown to the user when it differs from what the agent receives. */
   displayText?: string;
   reasoningEffort?: string | null;
 };
 
+/** Options for `steer`. */
+export type SteerOptions = {
+  /**
+   * Files to hand the running turn. Same shape and inference as
+   * `SendOptions.attachments`. A steer with attachments may have empty text.
+   */
+  attachments?: AgentChatFileRef[];
+};
+
+/**
+ * What `update` may change on a live thread.
+ *
+ * `title` is a rename and is safe at any time. `reasoningEffort` and
+ * `fastMode` reconfigure the provider, which on some providers restarts it —
+ * so they follow the same mid-turn rule `setModel` does.
+ */
+export type ThreadUpdate = {
+  /** New title. `null` clears it. Persisted in the thread store as well. */
+  title?: string | null;
+  /** Reasoning effort for later turns. `null` returns to the model default. */
+  reasoningEffort?: string | null;
+  /** Provider fast mode, where the provider has one. */
+  fastMode?: boolean;
+};
+
+/** Options for `update`. */
+export type ThreadUpdateOptions = {
+  /**
+   * Apply `reasoningEffort` / `fastMode` even with a turn in flight, accepting
+   * that some providers end that turn without a completion event. Ignored for
+   * a title-only update, which never needs it.
+   */
+  force?: boolean;
+};
+
+/** What `update` returns: the thread's title and model after the change. */
+export type ThreadUpdateResult = {
+  title: string | null;
+  model: ThreadModelSelection | null;
+};
+
+/** Options for `historyPage`. */
+export type HistoryPageOptions = {
+  /**
+   * Return events strictly older than this `sequence`. Omit for the newest
+   * page. Pass the previous page's `nextBeforeSequence` to walk backwards.
+   */
+  beforeSequence?: number;
+  /**
+   * At most this many events. The runtime pages by bytes, so a page can hold
+   * fewer; when it holds more, the SDK keeps the newest `limit` and moves the
+   * cursor so nothing is skipped. Defaults to 200.
+   */
+  limit?: number;
+};
+
 export interface AdeThread {
+  /**
+   * The runtime session id. Stable for the life of the thread, EXCEPT across a
+   * recreate: if an `autoRestart` finds the runtime lost the session, the key
+   * is rebuilt on a new session and this id changes. Key your own state on
+   * `key`, not on this.
+   */
   readonly id: string;
   readonly key: string;
+  /**
+   * The thread's title, or null. Updated by `update({ title })`; the runtime
+   * may also retitle a thread after its first turn, which this reflects at the
+   * next open or `update`.
+   */
+  readonly title: string | null;
+  /**
+   * What the thread's model resolved to, with the catalog display name.
+   *
+   * Kept current by `setModel`. Null only when the runtime reported no model.
+   * Show `displayName` rather than the id when it is non-null: after a CLI
+   * update retires a model the runtime resolves the id forward, and the raw id
+   * a host stored is then the wrong label.
+   */
+  readonly model: ThreadModelSelection | null;
   /**
    * What the provider did with this thread's `mcpServers` / strict-mode request.
    *
@@ -120,8 +208,48 @@ export interface AdeThread {
    * you and throws rather than silently ending the turn.
    */
   send(text: string, opts?: SendOptions): Promise<void>;
-  steer(text: string): Promise<void>;
+  /**
+   * Add input to the turn in flight, without waiting for it to end.
+   *
+   * Needs text, attachments, or both. Attachments follow the same rules as
+   * `send`. Resolves once the runtime accepted the steer, not once the agent
+   * read it.
+   */
+  steer(text: string, opts?: SteerOptions): Promise<void>;
   interrupt(): Promise<void>;
+  /**
+   * Rename the thread, or change its reasoning effort or fast mode.
+   *
+   * A title-only update is allowed at any time. `reasoningEffort` and
+   * `fastMode` are refused while a turn is in flight unless `{ force: true }`:
+   * on Codex a settings change the provider rejects tears the provider down,
+   * which ends the turn without `error` or `done` — the silent truncation the
+   * client's destructive-while-streaming rule forbids. Await the turn or
+   * `interrupt()` first.
+   *
+   * Resolves with the title and model as the runtime reports them afterwards.
+   */
+  update(patch: ThreadUpdate, opts?: ThreadUpdateOptions): Promise<ThreadUpdateResult>;
+  /**
+   * Replace this thread's caller MCP servers wholesale.
+   *
+   * For a credential or URL that changed: a rotated bearer token, a port that
+   * moved. The provider picks the new servers up on the next turn. Header
+   * values are sent to the runtime and never persisted by the SDK — the thread
+   * store keeps header names only.
+   *
+   * A remote server passed without `headers` gets them from the client's
+   * `mcpHeaders` callback, when there is one.
+   *
+   * Refused by the runtime while a turn is in flight (`invalid_option`), and by
+   * the SDK on a runtime that does not advertise
+   * `capabilities.personalChats.updateMcpServers` (`invalid_option`) — an older
+   * runtime would ignore the field and leave the old credentials in place,
+   * which is worse than failing.
+   *
+   * Resolves with the thread's new `mcpCapability`.
+   */
+  updateMcpServers(servers: Record<string, McpServerConfig>): Promise<McpCapabilityReport | null>;
   /**
    * Switch this thread's model, including across providers — the runtime tears
    * the old one down and replays the transcript into the new one.
@@ -132,17 +260,37 @@ export interface AdeThread {
    * or `interrupt()` first.
    *
    * Returns what the model actually resolved to — the runtime resolves aliases
-   * and CLI-wrapped ids, so it can differ from what you passed.
+   * and CLI-wrapped ids, so it can differ from what you passed — together with
+   * the four capability reports on the new provider. The same reports are
+   * emitted as a `capabilities_changed` envelope on the `status` channel.
    */
-  setModel(modelId: string, opts?: SetModelOptions): Promise<ThreadModelSelection>;
+  setModel(modelId: string, opts?: SetModelOptions): Promise<SetModelResult>;
+  /**
+   * The durable transcript, newest `limit` events (all of them when omitted,
+   * up to the runtime's own cap of about 20,000 events / 2 MB). For a long
+   * thread prefer `historyPage`, which reads one bounded page at a time.
+   */
   history(opts?: { limit?: number }): Promise<AgentChatEventEnvelope[]>;
+  /**
+   * One page of the durable transcript, for "load older" on scroll.
+   *
+   * Without `beforeSequence` this is the newest page. Each page reports the
+   * cursor for the one before it. Events are oldest-first within a page.
+   *
+   * On a runtime without the `getEventHistoryPage` action, only the newest page
+   * is available: an older-page request returns an empty page with
+   * `hasMore: false` and logs once.
+   */
+  historyPage(opts?: HistoryPageOptions): Promise<ThreadHistoryPage>;
   /**
    * Answer an approval this thread emitted.
    *
    * AN UNANSWERED APPROVAL BLOCKS THE TURN, with no timeout anywhere in the
    * runtime. This call and `interrupt()` are the only two ways out, and they
    * are not the same: this one answers the request and lets the turn continue,
-   * while `interrupt()` aborts the turn without answering anything.
+   * while `interrupt()` aborts the turn without answering anything. A policy
+   * with `approvalTimeoutMs` adds a third: the SDK declines the request itself
+   * when the time runs out.
    *
    * Resolves once the runtime accepts the decision, NOT once the tool has run —
    * the same dispatch-resolution asymmetry `send()` has.
@@ -154,7 +302,9 @@ export interface AdeThread {
    *
    * Throws `invalid_option` for a request whose `requestKind` is one of the
    * four that want prose or a choice rather than a verdict. Those are listed
-   * by `pendingApprovals()` and are meant to be rendered read-only.
+   * by `pendingApprovals()` and are meant to be rendered read-only. The kind
+   * is the runtime's own answer: an MCP elicitation that only asks "may this
+   * tool run?" arrives as `"approval"` and is answerable here.
    *
    * `accept_always` settles this request and every later one the provider
    * considers the same, for the life of the session.
@@ -210,7 +360,69 @@ export type ThreadHostConfig = {
    */
   pendingInputsSupported?: boolean;
   logger?: (line: string) => void;
+  /** Title at open, from the runtime's summary or the stored record. */
+  title?: string | null;
+  /** Model at open, already carrying its display name when the catalog knew it. */
+  model?: ThreadModelSelection | null;
+  /** Catalog display name for a model id, or null. Used after `setModel` / `update`. */
+  displayNameFor?: (modelId: string) => Promise<string | null>;
+  /**
+   * Persists what a thread changed about itself: a title, a refreshed MCP
+   * server map. The client strips header values before anything reaches disk.
+   */
+  onRecordChanged?: (patch: {
+    title?: string | null;
+    mcpServers?: Record<string, McpServerConfig>;
+  }) => Promise<void>;
+  /** Injects an SDK-synthesized envelope into the stream every subscriber reads. */
+  emitSynthetic?: (envelope: AgentChatEventEnvelope) => void;
+  /**
+   * The policy's `approvalTimeoutMs`: an approval-shaped request this thread
+   * watched arrive and nobody answered within it is declined by the SDK.
+   */
+  approvalTimeoutMs?: number;
+  /** Whether the runtime advertises `capabilities.personalChats.updateMcpServers`. */
+  updateMcpServersSupported?: boolean;
+  /** Whether the runtime lists the `getEventHistoryPage` action. */
+  historyPageSupported?: boolean;
+  /** The client's `mcpHeaders` callback, for servers passed without headers. */
+  resolveMcpHeaders?: McpHeadersResolver;
 };
+
+/** The runtime refused an argument; say so as `invalid_option`, not `rpc_error`. */
+function translateInvalidArgument(error: unknown): unknown {
+  if (error instanceof AdeError && error.code === "rpc_error" && /invalid_argument:/.test(error.message)) {
+    return new AdeError("invalid_option", error.message, { cause: error });
+  }
+  return error;
+}
+
+const DEFAULT_HISTORY_PAGE_LIMIT = 200;
+
+/** The lowest `sequence` in a page, or null when none of its envelopes carry one. */
+function lowestSequence(events: readonly AgentChatEventEnvelope[]): number | null {
+  let lowest: number | null = null;
+  for (const envelope of events) {
+    if (typeof envelope.sequence !== "number") continue;
+    if (lowest === null || envelope.sequence < lowest) lowest = envelope.sequence;
+  }
+  return lowest;
+}
+
+/** Keep the newest `limit` events of a page and report the cursor before them. */
+function trimPage(
+  events: AgentChatEventEnvelope[],
+  limit: number,
+  runtimeHasMore: boolean,
+): ThreadHistoryPage {
+  const trimmed = events.length > limit;
+  const kept = trimmed ? events.slice(-limit) : events;
+  const cursor = lowestSequence(kept);
+  // An un-numbered page cannot be continued by sequence, so it must not claim
+  // more: a "load older" affordance gated on `hasMore` would spin forever.
+  const hasMore = (trimmed || runtimeHasMore) && cursor !== null && cursor > 1;
+  return { events: kept, hasMore, nextBeforeSequence: hasMore ? cursor : null };
+}
 
 const USAGE = new Set<string>(USAGE_EVENT_TYPES);
 const STATUS = new Set<string>(STATUS_EVENT_TYPES);
@@ -253,6 +465,15 @@ export class Thread implements AdeThread {
   private readonly requestedSettingSources: boolean;
   private readonly requestedPermissionPolicy: boolean;
 
+  /** The session this thread is bound to. Replaced only by a recreate. */
+  private sessionId: string;
+  private currentTitle: string | null;
+  private currentModel: ThreadModelSelection | null;
+  private readonly hostConfig: ThreadHostConfig;
+  /** Approval timers by item id, for a policy with `approvalTimeoutMs`. */
+  private readonly approvalTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private warnedAboutHistoryPage = false;
+
   /** The provider this thread runs, kept in step with `setModel`. */
   private provider: AdeProvider;
   private readonly pendingInputsSupported: boolean;
@@ -272,11 +493,11 @@ export class Thread implements AdeThread {
   private unsubscribeEvents: Unsubscribe | null = null;
 
   constructor(
-    readonly id: string,
+    id: string,
     readonly key: string,
     mcpCapability: McpCapabilityReport | null,
     private readonly chats: PersonalChatsApi,
-    private readonly events: ChatEventStream,
+    private readonly events: ChatEventSource,
     private readonly assertUsable: () => void,
     /**
      * Persists the thread's new provider/model after a switch. Without this a
@@ -286,6 +507,10 @@ export class Thread implements AdeThread {
     private readonly onModelChanged: (selection: ThreadModelSelection) => Promise<void> = async () => {},
     hostConfig: ThreadHostConfig = {},
   ) {
+    this.sessionId = id;
+    this.hostConfig = hostConfig;
+    this.currentTitle = hostConfig.title ?? null;
+    this.currentModel = hostConfig.model ?? null;
     this.mcpCapability = mcpCapability;
     this.instructionsCapability = hostConfig.instructionsCapability ?? null;
     this.settingSourcesCapability = hostConfig.settingSourcesCapability ?? null;
@@ -312,10 +537,12 @@ export class Thread implements AdeThread {
       const observed = observedApprovalFromEvent(event);
       if (observed) {
         this.observedApprovals.set(observed.itemId, observed);
+        this.armApprovalTimeout(observed);
         return;
       }
       if (event.type === "pending_input_resolved" && typeof event.itemId === "string") {
         this.observedApprovals.delete(event.itemId);
+        this.clearApprovalTimer(event.itemId);
         return;
       }
       // A turn ending settles every approval that turn was blocked on, and the
@@ -344,6 +571,7 @@ export class Thread implements AdeThread {
           // reason.
           if (turnId === null || approval.turnId === undefined || approval.turnId === turnId) {
             this.observedApprovals.delete(itemId);
+            this.clearApprovalTimer(itemId);
           }
         }
       }
@@ -365,6 +593,161 @@ export class Thread implements AdeThread {
     this.unsubscribeEvents?.();
     this.unsubscribeEvents = null;
     this.observedApprovals.clear();
+    for (const timer of this.approvalTimers.values()) clearTimeout(timer);
+    this.approvalTimers.clear();
+  }
+
+  get id(): string {
+    return this.sessionId;
+  }
+
+  get title(): string | null {
+    return this.currentTitle;
+  }
+
+  get model(): ThreadModelSelection | null {
+    return this.currentModel;
+  }
+
+  /**
+   * The runtime went away. Internal; called by the client for every live thread.
+   *
+   * Emits the synthetic `status` / `turnStatus: "error"` envelope, because a
+   * runtime that died mid-turn sends nothing and a subscriber would otherwise
+   * show "running" forever. Every pending approval died with the provider
+   * process, so the observed set and its timers are dropped too.
+   */
+  notifyRuntimeLost(message: string): void {
+    this.observedApprovals.clear();
+    for (const timer of this.approvalTimers.values()) clearTimeout(timer);
+    this.approvalTimers.clear();
+    this.hostConfig.emitSynthetic?.({
+      sessionId: this.id,
+      timestamp: new Date().toISOString(),
+      event: { type: "status", turnStatus: "error", message, synthetic: true },
+    });
+  }
+
+  /**
+   * Take over another thread's session binding. Internal.
+   *
+   * Used when a restart finds the runtime lost this key's session and the
+   * client had to recreate it: the object a host (or a bridge) already holds
+   * must keep working, so the fresh thread's state moves into this one and the
+   * fresh object is thrown away.
+   */
+  adoptSession(fresh: Thread): void {
+    this.sessionId = fresh.sessionId;
+    this.mcpCapability = fresh.mcpCapability;
+    this.instructionsCapability = fresh.instructionsCapability;
+    this.settingSourcesCapability = fresh.settingSourcesCapability;
+    this.permissionCapability = fresh.permissionCapability;
+    this.provider = fresh.provider;
+    this.currentTitle = fresh.currentTitle;
+    this.currentModel = fresh.currentModel;
+    this.observedApprovals.clear();
+    fresh.dispose();
+  }
+
+  /** Replaces the MCP report after a refresh the client applied. Internal. */
+  setMcpCapability(report: McpCapabilityReport | null): void {
+    this.mcpCapability = report;
+  }
+
+  private clearApprovalTimer(itemId: string): void {
+    const timer = this.approvalTimers.get(itemId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.approvalTimers.delete(itemId);
+  }
+
+  /**
+   * Starts the SDK-side decline clock for one approval, when the policy has one.
+   *
+   * Approval-shaped requests only. A question wants an answer a decline cannot
+   * give, so it is left to the host. The clock is per item, starts when THIS
+   * client saw the request, and is cleared by any settlement it sees — an
+   * answer, a `pending_input_resolved`, or the turn's `done`.
+   */
+  private armApprovalTimeout(observed: ObservedApproval): void {
+    const timeoutMs = this.hostConfig.approvalTimeoutMs;
+    if (!timeoutMs || timeoutMs <= 0) return;
+    if (observed.requestKind !== undefined && !isApprovalShaped(observed.requestKind)) return;
+    this.clearApprovalTimer(observed.itemId);
+    const timer = setTimeout(() => {
+      this.approvalTimers.delete(observed.itemId);
+      if (!this.observedApprovals.has(observed.itemId)) return;
+      this.logger(
+        `ade sdk: thread "${this.key}" approval "${observed.itemId}" was unanswered for ${timeoutMs}ms; declining it (approvalTimeoutMs)`,
+      );
+      void this.chats
+        .approve({
+          sessionId: this.id,
+          itemId: observed.itemId,
+          decision: "decline",
+          responseText: `Declined automatically after ${timeoutMs}ms with no answer.`,
+        })
+        .then(() => {
+          this.observedApprovals.delete(observed.itemId);
+        })
+        .catch((error: unknown) => {
+          this.logger(
+            `ade sdk: thread "${this.key}" could not decline timed-out approval "${observed.itemId}": ${errorMessage(error)}`,
+          );
+        });
+    }, timeoutMs);
+    timer.unref?.();
+    this.approvalTimers.set(observed.itemId, timer);
+  }
+
+  /**
+   * Whether a turn is running, read from the runtime rather than inferred.
+   * Throws `rpc_error` naming `action` when the runtime cannot say.
+   */
+  private async turnInFlight(action: string): Promise<boolean> {
+    let summary: AgentChatSessionSummary | null;
+    try {
+      summary = await this.chats.getSummary(this.id);
+    } catch (error) {
+      throw new AdeError(
+        "rpc_error",
+        `Cannot ${action} for "${this.key}": failed to read whether a turn is in flight. ` +
+          `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
+        { cause: error },
+      );
+    }
+    return summary?.status === "active" || typeof summary?.currentTurnStartedAt === "string";
+  }
+
+  /** The runtime's model fields, completed with the catalog's display name. */
+  private async selectionFrom(
+    summary: { provider?: unknown; model?: unknown; modelId?: unknown } | null,
+    fallbackModelId: string,
+  ): Promise<ThreadModelSelection> {
+    const record = summary ?? {};
+    const modelId =
+      typeof record.modelId === "string" && record.modelId ? record.modelId : fallbackModelId;
+    let displayName: string | null = null;
+    try {
+      displayName = (await this.hostConfig.displayNameFor?.(modelId)) ?? null;
+    } catch {
+      displayName = null;
+    }
+    return {
+      modelId,
+      provider: typeof record.provider === "string" ? record.provider : "",
+      model: typeof record.model === "string" ? record.model : fallbackModelId,
+      displayName,
+    };
+  }
+
+  private capabilities(): ThreadCapabilities {
+    return {
+      mcpCapability: this.mcpCapability,
+      permissionCapability: this.permissionCapability,
+      instructionsCapability: this.instructionsCapability,
+      settingSourcesCapability: this.settingSourcesCapability,
+    };
   }
 
   async send(text: string, opts: SendOptions = {}): Promise<void> {
@@ -376,17 +759,102 @@ export class Thread implements AdeThread {
       sessionId: this.id,
       text,
       ...(opts.displayText !== undefined ? { displayText: opts.displayText } : {}),
-      ...(opts.attachments ? { attachments: opts.attachments } : {}),
+      ...(opts.attachments ? { attachments: completeAttachments(opts.attachments) } : {}),
       ...(opts.reasoningEffort !== undefined ? { reasoningEffort: opts.reasoningEffort } : {}),
     });
   }
 
-  async steer(text: string): Promise<void> {
+  async steer(text: string, opts: SteerOptions = {}): Promise<void> {
     this.assertUsable();
-    if (!text.trim()) {
-      throw new AdeError("invalid_option", "steer() needs text.");
+    const body = typeof text === "string" ? text : "";
+    if (!body.trim() && !(opts.attachments?.length)) {
+      throw new AdeError("invalid_option", "steer() needs text or at least one attachment.");
     }
-    await this.chats.steer({ sessionId: this.id, text });
+    await this.chats.steer({
+      sessionId: this.id,
+      text: body,
+      ...(opts.attachments?.length ? { attachments: completeAttachments(opts.attachments) } : {}),
+    });
+  }
+
+  async update(patch: ThreadUpdate, opts: ThreadUpdateOptions = {}): Promise<ThreadUpdateResult> {
+    this.assertUsable();
+    const args: Record<string, unknown> = { sessionId: this.id };
+    if (patch.title !== undefined) {
+      if (patch.title !== null && typeof patch.title !== "string") {
+        throw new AdeError("invalid_option", "update({ title }) takes a string or null.");
+      }
+      args.title = patch.title === null ? null : patch.title.trim() || null;
+    }
+    const reconfigures = patch.reasoningEffort !== undefined || patch.fastMode !== undefined;
+    if (patch.reasoningEffort !== undefined) args.reasoningEffort = patch.reasoningEffort;
+    if (patch.fastMode !== undefined) {
+      if (typeof patch.fastMode !== "boolean") {
+        throw new AdeError("invalid_option", "update({ fastMode }) takes a boolean.");
+      }
+      args.fastMode = patch.fastMode;
+    }
+    if (Object.keys(args).length === 1) {
+      throw new AdeError("invalid_option", "update() needs at least one of title, reasoningEffort, fastMode.");
+    }
+    // Same rule as `setModel`, for the same reason: a provider reconfigure can
+    // end a running turn with no completion event. A rename cannot, so it is
+    // never refused.
+    if (reconfigures && !opts.force && (await this.turnInFlight("change reasoning settings"))) {
+      throw new AdeError(
+        "invalid_option",
+        `Thread "${this.key}" has a turn in flight, and changing reasoningEffort or fastMode can end it without a completion event. ` +
+          `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
+      );
+    }
+    let updated: AgentChatSessionSummary | null;
+    try {
+      updated = (await this.chats.updateSession(args)) as AgentChatSessionSummary | null;
+    } catch (error) {
+      throw translateInvalidArgument(error);
+    }
+    if (patch.title !== undefined) {
+      this.currentTitle =
+        typeof updated?.title === "string" ? updated.title : (args.title as string | null);
+      await this.hostConfig.onRecordChanged?.({ title: this.currentTitle });
+    } else if (typeof updated?.title === "string") {
+      this.currentTitle = updated.title;
+    }
+    if (updated && (typeof updated.model === "string" || typeof updated.modelId === "string")) {
+      this.currentModel = await this.selectionFrom(updated, this.currentModel?.modelId ?? String(updated.model ?? ""));
+    }
+    return { title: this.currentTitle, model: this.currentModel };
+  }
+
+  async updateMcpServers(
+    servers: Record<string, McpServerConfig>,
+  ): Promise<McpCapabilityReport | null> {
+    this.assertUsable();
+    if (!servers || typeof servers !== "object" || Array.isArray(servers)) {
+      throw new AdeError("invalid_option", "updateMcpServers() takes a map of server name to config.");
+    }
+    if (!this.hostConfig.updateMcpServersSupported) {
+      throw new AdeError(
+        "invalid_option",
+        "This ADE runtime cannot replace a thread's MCP servers (capabilities.personalChats.updateMcpServers is not set). " +
+          "Upgrade the runtime, or open a new thread key with the new servers.",
+      );
+    }
+    const resolved = withResolvedHeaders(this.key, servers, this.hostConfig.resolveMcpHeaders);
+    const warning = missingHeadersWarning(this.key, resolved.missing);
+    if (warning) this.logger(warning);
+    let updated: AgentChatSessionSummary | null;
+    try {
+      updated = (await this.chats.updateSession({
+        sessionId: this.id,
+        mcpServers: resolved.servers,
+      })) as AgentChatSessionSummary | null;
+    } catch (error) {
+      throw translateInvalidArgument(error);
+    }
+    this.mcpCapability = normalizeMcpCapability(updated?.mcpCapability) ?? this.mcpCapability;
+    await this.hostConfig.onRecordChanged?.({ mcpServers: resolved.servers });
+    return this.mcpCapability;
   }
 
   async interrupt(): Promise<void> {
@@ -397,7 +865,7 @@ export class Thread implements AdeThread {
   async setModel(
     modelId: string,
     opts: SetModelOptions = {},
-  ): Promise<ThreadModelSelection> {
+  ): Promise<SetModelResult> {
     this.assertUsable();
     const trimmed = typeof modelId === "string" ? modelId.trim() : "";
     if (!trimmed) {
@@ -414,41 +882,21 @@ export class Thread implements AdeThread {
     // in-flight turn WITHOUT emitting `error` or `done` — the consumer just
     // sees events stop. A silently truncated answer is the worst outcome
     // available here, so it takes an explicit `force` to choose it.
-    if (!opts.force) {
-      let summary: AgentChatSessionSummary | null;
-      try {
-        summary = await this.chats.getSummary(this.id);
-      } catch (error) {
-        throw new AdeError(
-          "rpc_error",
-          `Cannot switch models for "${this.key}": failed to read whether a turn is in flight. ` +
-            `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
-          { cause: error },
-        );
-      }
-      const turnActive =
-        summary?.status === "active" || typeof summary?.currentTurnStartedAt === "string";
-      if (turnActive) {
-        throw new AdeError(
-          "invalid_option",
-          `Thread "${this.key}" has a turn in flight, and switching models would end it without a completion event. ` +
-            `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
-        );
-      }
+    if (!opts.force && (await this.turnInFlight("switch models"))) {
+      throw new AdeError(
+        "invalid_option",
+        `Thread "${this.key}" has a turn in flight, and switching models would end it without a completion event. ` +
+          `Await the turn, call interrupt() first, or pass { force: true } to accept losing it.`,
+      );
     }
 
     const updated = (await this.chats.updateSession({
       sessionId: this.id,
       modelId: trimmed,
     })) as AgentChatSessionSummary | null;
-    const record = (updated ?? {}) as { provider?: unknown; model?: unknown; modelId?: unknown };
-    const selection: ThreadModelSelection = {
-      // The runtime's answer wins over the requested id: it resolves aliases
-      // and CLI-wrapped models, so what came back can legitimately differ.
-      modelId: typeof record.modelId === "string" && record.modelId ? record.modelId : trimmed,
-      provider: typeof record.provider === "string" ? record.provider : "",
-      model: typeof record.model === "string" ? record.model : trimmed,
-    };
+    // The runtime's answer wins over the requested id: it resolves aliases
+    // and CLI-wrapped models, so what came back can legitimately differ.
+    const selection = await this.selectionFrom(updated, trimmed);
     // Always replace. Keeping the open-time snapshot after a cross-provider
     // switch would let a Claude `enforced` report outlive a Codex residual.
     this.mcpCapability = normalizeMcpCapability(updated?.mcpCapability);
@@ -471,8 +919,18 @@ export class Thread implements AdeThread {
       this.requestedPermissionPolicy,
     );
     if (isSupportedProvider(selection.provider)) this.provider = selection.provider;
+    this.currentModel = selection;
     await this.onModelChanged(selection);
-    return selection;
+    const capabilities = this.capabilities();
+    // Announced on the stream as well as returned: a bridge, a second
+    // component, or a status bar that did not make this call still has to
+    // learn that the guarantee it is showing may have moved.
+    this.hostConfig.emitSynthetic?.({
+      sessionId: this.id,
+      timestamp: new Date().toISOString(),
+      event: { type: "capabilities_changed", synthetic: true, ...capabilities },
+    });
+    return { ...selection, capabilities };
   }
 
   async pendingApprovals(): Promise<ApprovalRequest[]> {
@@ -567,6 +1025,44 @@ export class Thread implements AdeThread {
       ...(opts.limit != null ? { maxEvents: opts.limit } : {}),
     });
     return snapshot?.events ?? [];
+  }
+
+  async historyPage(opts: HistoryPageOptions = {}): Promise<ThreadHistoryPage> {
+    this.assertUsable();
+    const limit =
+      typeof opts.limit === "number" && Number.isFinite(opts.limit) && opts.limit > 0
+        ? Math.floor(opts.limit)
+        : DEFAULT_HISTORY_PAGE_LIMIT;
+    const before = opts.beforeSequence;
+    if (before === undefined || before === null) {
+      // The newest page comes from the tail read every runtime has. Asking for
+      // one more than the limit is how "is there anything older?" is answered
+      // on a runtime that does not report `hasOlderHistory`.
+      const snapshot = await this.chats.getEventHistory({ sessionId: this.id, maxEvents: limit + 1 });
+      const events = snapshot?.events ?? [];
+      const runtimeHasMore = snapshot?.hasOlderHistory === true || snapshot?.truncated === true;
+      return trimPage(events, limit, runtimeHasMore);
+    }
+    if (typeof before !== "number" || !Number.isInteger(before) || before < 0) {
+      throw new AdeError("invalid_option", "historyPage({ beforeSequence }) takes a non-negative integer.");
+    }
+    if (!this.hostConfig.historyPageSupported) {
+      if (!this.warnedAboutHistoryPage) {
+        this.warnedAboutHistoryPage = true;
+        this.logger(
+          `ade sdk: this runtime has no getEventHistoryPage action, so historyPage() for "${this.key}" ` +
+            `can only return the newest page; older pages come back empty`,
+        );
+      }
+      return { events: [], hasMore: false, nextBeforeSequence: null };
+    }
+    const page = await this.chats.getEventHistoryPage({ sessionId: this.id, beforeSequence: before });
+    // The byte-bounded read can overlap the cursor by an envelope; drop
+    // anything at or past it so a caller walking back never sees a repeat.
+    const events = (page?.events ?? []).filter(
+      (envelope) => typeof envelope.sequence !== "number" || envelope.sequence < before,
+    );
+    return trimPage(events, limit, page?.hasMore === true);
   }
 
   on(

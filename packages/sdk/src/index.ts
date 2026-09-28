@@ -36,18 +36,36 @@
 export { createAdeChat } from "./client.js";
 export type {
   AdeChatClient,
+  AdeClientEvent,
+  AdeClientEventMap,
   CreateAdeChatOptions,
   ThreadOpenOptions,
+  ThreadRefreshOptions,
   ThreadResumeOptions,
 } from "./client.js";
 
 export type {
   AdeThread,
+  HistoryPageOptions,
   SendOptions,
+  SetModelResult,
+  SteerOptions,
   ThreadEventChannel,
   SetModelOptions,
   ThreadModelSelection,
+  ThreadUpdate,
+  ThreadUpdateOptions,
+  ThreadUpdateResult,
 } from "./thread.js";
+export { SUPPORTED_RUNTIME_RANGE, checkRuntimeCompatibility } from "./compatibility.js";
+export { parseToolIdentity, type ToolIdentity } from "./toolIdentity.js";
+export { inferAttachmentType } from "./attachments.js";
+export type { McpHeadersResolver, StoredMcpServerConfig } from "./mcpHeaders.js";
+export {
+  resolvePackagedRuntime,
+  type PackagedRuntime,
+  type ResolvePackagedRuntimeOptions,
+} from "./packagedRuntime.js";
 export { AdeError, type AdeErrorCode } from "./errors.js";
 export { SDK_VERSION } from "./version.js";
 export type { PermissionPreset, ThreadPermissionPolicy } from "./permissions.js";
@@ -106,6 +124,7 @@ export type {
   AgentChatSessionStatus,
   AgentChatSessionSummary,
   AgentChatSettingSources,
+  CapabilitiesChangedEvent,
   DoctorReport,
   KnownAgentChatEvent,
   McpCapabilityReport,
@@ -119,6 +138,10 @@ export type {
   ProviderStatus,
   ProviderStatusProbeRecord,
   ProviderStatusRpcResult,
+  RuntimeCompatibility,
+  SyntheticRuntimeLostStatusEvent,
+  ThreadCapabilities,
+  ThreadHistoryPage,
   ThreadSummary,
   Unsubscribe,
 } from "./types.js";

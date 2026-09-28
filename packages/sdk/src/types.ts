@@ -22,6 +22,12 @@
  * pass through untouched rather than being dropped or failing a parse.
  */
 
+import type {
+  InstructionsCapability,
+  PermissionCapability,
+  SettingSourcesCapability,
+} from "./hostConfig.js";
+
 /** Chat providers ADE can drive. Kept closed at the SDK boundary on purpose. */
 export type AdeProvider =
   | "claude"
@@ -198,12 +204,50 @@ export type McpCapabilityReport = {
   delivered: boolean;
 };
 
-/** File attachment reference accepted by send/steer. */
+/**
+ * File attachment reference accepted by `send` and `steer`.
+ *
+ * Only the path crosses the wire; bytes never do. The runtime reads the file
+ * itself, on the host machine, when the provider needs its contents.
+ *
+ * WHERE THE PATH MAY LIVE. The runtime resolves an attachment against the
+ * thread's working directory and refuses an absolute path it cannot place, so
+ * a send whose attachment names a file outside what the runtime accepts throws
+ * rather than dropping the file quietly. Pass paths the host obtained from its
+ * own file dialog or drop handler, not strings a model produced.
+ */
 export type AgentChatFileRef = {
   path: string;
   name?: string;
   mimeType?: string;
   bytes?: number;
+  /**
+   * How the provider receives the file.
+   *
+   * `"image"` sends the bytes as an image the model can see (Claude and Codex
+   * both take image input). `"file"` sends a path hint the model can open with
+   * its own tools. When absent, the SDK infers `"image"` from `mimeType`
+   * (`image/png`, `image/jpeg`, `image/gif`, `image/webp`) or from the
+   * extension (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`) before sending, and
+   * `"file"` otherwise. Before 0.3 the field did not exist and every image
+   * arrived as a path hint.
+   */
+  type?: "file" | "image";
+  /**
+   * Whether the runtime may read the file's bytes. Defaults to true.
+   *
+   * `false` is REFERENCE-ONLY: the runtime never opens the file, never copies
+   * it to a staging directory, and hands the model the path alone — even for an
+   * image. Use it for files that must not be downloaded as a side effect, such
+   * as a macOS File Provider placeholder, where reading the bytes hydrates the
+   * whole file from the cloud.
+   *
+   * An older runtime ignores the field and reads the bytes as before; the SDK
+   * cannot detect that from here, so treat reference-only as a request until
+   * your runtime is at least the SDK's supported minimum
+   * (`SUPPORTED_RUNTIME_RANGE`).
+   */
+  hydrate?: boolean;
 };
 
 /**
@@ -360,7 +404,102 @@ export const STATUS_EVENT_TYPES = [
   "turn_health",
   "session_meta_updated",
   "interrupt_receipt",
+  "capabilities_changed",
 ] as const;
+
+/**
+ * The `status` envelope the SDK synthesizes when the runtime goes away.
+ *
+ * A runtime that exits mid-turn emits nothing — the process that would have
+ * sent `done` or `error` is gone — so without this every subscriber stayed
+ * "running" forever. Every live thread receives one of these, on the `status`
+ * and `event` channels, when the client sees the runtime exit or its socket
+ * drop. `synthetic: true` marks it as the SDK's own; the runtime never sends
+ * that key. It is not in the durable transcript, so `history()` never
+ * returns it.
+ */
+export type SyntheticRuntimeLostStatusEvent = {
+  type: "status";
+  turnStatus: "error";
+  message: string;
+  synthetic: true;
+};
+
+/**
+ * Emitted on a thread's `status` channel after `setModel` replaced its
+ * capability reports.
+ *
+ * A switch across providers can move a policy from `"enforced"` to
+ * `"best-effort"`, and a host that read the reports once at open would keep
+ * showing the old guarantee. Synthesized by the SDK, never by the runtime.
+ */
+export type CapabilitiesChangedEvent = {
+  type: "capabilities_changed";
+  synthetic: true;
+} & ThreadCapabilities;
+
+/**
+ * The four capability reports a thread carries, as one object.
+ *
+ * Returned by `setModel` and carried by `capabilities_changed`. Each report
+ * keeps its own null rule — see the matching field on `AdeThread`.
+ */
+export type ThreadCapabilities = {
+  mcpCapability: McpCapabilityReport | null;
+  permissionCapability: PermissionCapability | null;
+  instructionsCapability: InstructionsCapability | null;
+  settingSourcesCapability: SettingSourcesCapability | null;
+};
+
+/**
+ * What a thread's model resolved to, as the runtime reports it.
+ *
+ * The runtime resolves aliases, CLI-wrapped ids, and ids a CLI update retired,
+ * so this can differ from the id the host passed. Render `displayName` rather
+ * than the raw id whenever it is non-null.
+ */
+export type ThreadModelSelection = {
+  /** Catalog model id now bound to the thread. */
+  modelId: string;
+  /** Provider group that id resolved into — authoritative, not inferred. */
+  provider: string;
+  /** Provider-native model token. */
+  model: string;
+  /**
+   * The catalog's display name for `modelId`, or null when the catalog does
+   * not list it (a retired model, or a catalog that has not loaded).
+   */
+  displayName: string | null;
+};
+
+/**
+ * One page of a thread's durable transcript, newest page first.
+ *
+ * Returned by `AdeThread.historyPage`. `events` are in transcript order
+ * (oldest first) within the page.
+ */
+export type ThreadHistoryPage = {
+  events: AgentChatEventEnvelope[];
+  /** True when older events exist before this page. */
+  hasMore: boolean;
+  /**
+   * Pass as `beforeSequence` to read the page before this one. Null when
+   * `hasMore` is false — including the case where the transcript's envelopes
+   * carry no `sequence`, which cannot be paged by sequence at all.
+   */
+  nextBeforeSequence: number | null;
+};
+
+/** Raw result of the runtime's `getEventHistoryPage` action. */
+export type AgentChatEventHistoryPage = {
+  sessionId: string;
+  events: AgentChatEventEnvelope[];
+  startOffset: number;
+  hasMore: boolean;
+  sessionFound: boolean;
+  unavailable?: boolean;
+  [key: string]: unknown;
+};
 
 export type AgentChatEventEnvelope = {
   sessionId: string;
@@ -423,6 +562,8 @@ export type AgentChatSessionSummary = {
    * instead reports a resume mismatch on a `cwd` that never changed.
    */
   requestedCwd?: string | null;
+  /** Catalog model id the session is bound to, when the runtime reports one. */
+  modelId?: string;
   /** Present only when the chat was created with an MCP request. */
   mcpCapability?: McpCapabilityReport;
   /**
@@ -511,7 +652,13 @@ export type ModelCatalogEntry = {
   /** Canonical ADE registry id — this is what `ThreadOpenOptions.model` takes. */
   id: string;
   displayName: string;
-  provider: string;
+  /**
+   * The provider group this model belongs to. One of the six
+   * {@link AdeProvider} values for every model this SDK can open a thread on;
+   * typed open because the runtime's catalog is downloaded and can list a
+   * provider group newer than this SDK.
+   */
+  provider: AdeProvider | (string & {});
   /** Provider-native model ref ADE sends under the hood. */
   runtimeModelId: string;
   isDefault: boolean;
@@ -634,7 +781,14 @@ export type ThreadSummary = {
   status: AgentChatSessionStatus;
   startedAt: string;
   lastActivityAt: string;
+  /** The same instant as `lastActivityAt`, under the name list UIs sort by. */
+  updatedAt: string;
   archived: boolean;
+  /**
+   * What the thread's model resolved to, with the catalog's display name.
+   * Null when the runtime reported no model at all.
+   */
+  modelSelection: ThreadModelSelection | null;
 };
 
 export type DoctorReport = {
@@ -673,8 +827,14 @@ export type DoctorReport = {
    * is the difference an embedder cannot otherwise see.
    */
   runtime: {
+    /**
+     * `"packaged"` is an explicit runtime whose options came from
+     * `resolvePackagedRuntime()` — the copy inside the host's own signed app
+     * bundle. `"explicit"` is any other caller-pinned `binaryPath`.
+     */
     source:
       | "explicit"
+      | "packaged"
       | "bundled-package"
       | "cached-download"
       | "path"
@@ -689,11 +849,26 @@ export type DoctorReport = {
     /**
      * macOS and Windows only. Null on Linux, in attach mode, and whenever the
      * check could not run — "not known", never "not signed".
+     *
+     * `accepted` on macOS is Gatekeeper's verdict on the outermost `.app` the
+     * runtime is embedded in (a nested binary assessed alone is always
+     * "rejected" as not an app), and null when it cannot be judged. Only
+     * `accepted: false` means the OS refused it.
      */
-    signature: { signed: boolean; authority?: string; accepted?: boolean } | null;
+    signature: { signed: boolean; authority?: string; accepted?: boolean | null } | null;
     /** True only when THIS client downloaded a runtime during its lifetime. */
     downloadedThisSession: boolean;
     checksumVerified: boolean;
+    /**
+     * Whether the runtime's self-reported version is inside the range this SDK
+     * supports (`SUPPORTED_RUNTIME_RANGE`).
+     *
+     * An unsupported runtime still connects: features it lacks are detected
+     * and degrade with a logged line. Pass `requireCompatibleRuntime: true` to
+     * `createAdeChat` to refuse it instead. A dev build (`0.0.0`, or no version
+     * at all) counts as supported and says so in `note`.
+     */
+    compatibility: RuntimeCompatibility;
   };
   socket: {
     path: string;
@@ -712,6 +887,17 @@ export type DoctorReport = {
   threads: { tracked: number; live: number };
   /** Most recent errors the client recorded, newest last. Capped. */
   recentErrors: Array<{ at: string; scope: string; message: string }>;
+};
+
+/** The result of comparing a runtime's version with `SUPPORTED_RUNTIME_RANGE`. */
+export type RuntimeCompatibility = {
+  supported: boolean;
+  /** The range this SDK build supports, e.g. `">=1.2.81 <2.0.0"`. */
+  range: string;
+  /** What the runtime reported on `ade/initialize`, or null when it sent none. */
+  version: string | null;
+  /** Why a version counted as supported without being checked, when it did. */
+  note: string | null;
 };
 
 /**
@@ -774,6 +960,11 @@ export type PersonalChatCapabilities = {
   pushEvents?: boolean;
   /** Unit-1 addition: true when create honours `mcpServers`/`strictMcpConfig`. */
   mcpServers?: boolean;
+  /**
+   * True when `updateSession` accepts `mcpServers` for a personal session,
+   * replacing the caller servers wholesale. Absent on runtimes before 1.2.81.
+   */
+  updateMcpServers?: boolean;
 };
 
 export type AdeInitializeResult = {

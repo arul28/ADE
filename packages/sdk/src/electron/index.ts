@@ -24,6 +24,8 @@ export {
   registerAdeIpc,
   navigationEndsRendererWorld,
   adeErrorCodeOf,
+  ADE_IPC_RENDERER_OPEN_FIELDS,
+  type AdeChatClientSource,
   type RegisterAdeIpcOptions,
 } from "./main.js";
 
@@ -41,6 +43,7 @@ export {
 
 export type {
   AdeBridge,
+  AdeIpcClientEvent,
   AdeIpcErrorPayload,
   AdeIpcEventPayload,
   AdeIpcInvokeRequest,

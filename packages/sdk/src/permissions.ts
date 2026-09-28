@@ -70,7 +70,40 @@ export type ThreadPermissionPolicy = {
   sandboxRoot?: string;
   /** What happens to anything the rules above did not match. */
   fallback: "ask" | "deny";
+  /**
+   * Decline an approval nobody answered within this many milliseconds.
+   *
+   * Opt-in and enforced by the SDK, not the runtime: the field is stripped
+   * before the policy goes on the wire. When an approval-shaped
+   * `approval_request` this client watched arrive is still pending after the
+   * timeout, the SDK answers it `decline` and logs a line; the transcript then
+   * records the refusal like any other. Questions and plan approvals are left
+   * alone — a decline is not an answer to them.
+   *
+   * Only requests this client SAW are timed, from the moment it saw them. One
+   * raised before the client connected, or while its runtime was down, is not.
+   *
+   * There is no default. Proceeding after N seconds is a security decision, and
+   * refusing after N seconds breaks a long human review, so the host picks.
+   */
+  approvalTimeoutMs?: number;
 };
+
+/**
+ * The validated `approvalTimeoutMs` of a policy, or undefined when it has none.
+ * Throws `invalid_option` for a value that is not a positive finite number.
+ */
+export function readApprovalTimeoutMs(policy: ThreadPermissionPolicy | undefined): number | undefined {
+  const value = policy?.approvalTimeoutMs;
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new AdeError(
+      "invalid_option",
+      `permissions.approvalTimeoutMs must be a positive number of milliseconds; got ${JSON.stringify(value)}.`,
+    );
+  }
+  return Math.floor(value);
+}
 
 /** True for the policy form of `permissions`, false for either preset. */
 export function isPermissionPolicy(

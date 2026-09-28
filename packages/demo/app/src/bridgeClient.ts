@@ -105,8 +105,8 @@ export function createBridgeClient(url: string): BridgeClient {
       async send(text: string, opts?: { attachments?: SdkFileRef[] }) {
         await call("thread.send", { key, text, attachments: opts?.attachments });
       },
-      async steer(text: string) {
-        await call("thread.steer", { key, text });
+      async steer(text: string, opts?: { attachments?: SdkFileRef[] }) {
+        await call("thread.steer", { key, text, attachments: opts?.attachments });
       },
       async interrupt() {
         await call("thread.interrupt", { key });

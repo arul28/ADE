@@ -9,6 +9,12 @@
 
 /** Every token this package reads. Nothing else is styleable. */
 export const ADE_CHAT_TOKENS = [
+  /**
+   * The outermost surface: the chat root and the composer bar. Separate from
+   * `--adechat-bg` so it alone can be `transparent` while inset surfaces
+   * (code blocks, command boxes) keep an opaque colour.
+   */
+  "--adechat-root-bg",
   "--adechat-bg",
   "--adechat-bg-subtle",
   "--adechat-bg-raised",
@@ -37,6 +43,16 @@ export type AdeChatTheme = Record<AdeChatToken, string>;
 export type CreateThemeInput = {
   /** Any CSS color. Hex (3/6/8 digit) unlocks derived tints. */
   accent?: string;
+  /**
+   * The chat's background. Any CSS color, or `"transparent"` to let the host
+   * surface show through the root and the composer bar.
+   *
+   * With `"transparent"`, `--adechat-root-bg` is `transparent` and
+   * `--adechat-bg` (inset surfaces, and the base the subtle/raised tints are
+   * derived from) falls back to the scheme default. Nothing can be inferred
+   * from a transparent background, so pass `scheme` to match the host; it
+   * defaults to `"dark"`.
+   */
   background?: string;
   foreground?: string;
   muted?: string;
@@ -135,12 +151,14 @@ function contrastForeground(background: string, scheme: "light" | "dark"): strin
  * present, so the result can be spread straight onto a `style` prop.
  */
 export function createTheme(input: CreateThemeInput = {}): AdeChatTheme {
-  const backgroundLuminance = input.background ? relativeLuminance(input.background) : null;
+  const transparent = input.background?.trim().toLowerCase() === "transparent";
+  const requestedBackground = transparent ? undefined : input.background;
+  const backgroundLuminance = requestedBackground ? relativeLuminance(requestedBackground) : null;
   const scheme: "light" | "dark" =
     input.scheme ?? (backgroundLuminance === null ? "dark" : backgroundLuminance > 0.5 ? "light" : "dark");
 
   const background =
-    input.background ?? (scheme === "light" ? DEFAULTS.lightBackground : DEFAULTS.darkBackground);
+    requestedBackground ?? (scheme === "light" ? DEFAULTS.lightBackground : DEFAULTS.darkBackground);
   const accent = input.accent ?? DEFAULTS.accent;
   const foreground = input.foreground ?? contrastForeground(background, scheme);
   const danger = input.danger ?? DEFAULTS.danger;
@@ -160,6 +178,10 @@ export function createTheme(input: CreateThemeInput = {}): AdeChatTheme {
         : `${Math.round(DEFAULTS.radius * 0.6)}px`;
 
   return {
+    // A reference, not a copy, for every opaque theme: a host that overrides
+    // `--adechat-bg` by hand (on the root, where this is declared) still moves
+    // the root and composer with it, as it did before this token existed.
+    "--adechat-root-bg": transparent ? "transparent" : "var(--adechat-bg)",
     "--adechat-bg": background,
     "--adechat-bg-subtle": shade(background, 0.04, toward),
     "--adechat-bg-raised": shade(background, 0.08, toward),

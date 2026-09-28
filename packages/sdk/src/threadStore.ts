@@ -1,12 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { errorMessage } from "./errors.js";
+import { readStoredMcpServers, type StoredMcpServerConfig } from "./mcpHeaders.js";
 import type { ThreadPermissionPolicy } from "./permissions.js";
-import type {
-  AgentChatInstructions,
-  AgentChatSettingSources,
-  McpServerConfig,
-} from "./types.js";
+import type { AgentChatInstructions, AgentChatSettingSources } from "./types.js";
 
 /**
  * Durable `key -> sessionId` map at `<home>/threads.json`.
@@ -25,6 +22,12 @@ export type ThreadRecord = {
   sessionId: string;
   provider: string;
   model: string;
+  /**
+   * The catalog model id the thread is bound to, when known. `model` is the
+   * provider-native token a `setModel` resolved to, which a recreate cannot
+   * always hand back to `create`; the catalog id can.
+   */
+  modelId?: string;
   createdAt: string;
   lastOpenedAt: string;
   title?: string | null;
@@ -38,11 +41,18 @@ export type ThreadRecord = {
    */
   requestedMcp?: boolean;
   /**
-   * The MCP request this key was created with. Stored so a recreate after the
-   * runtime loses the session can rebuild the same tool surface instead of
-   * opening a silent tool-less thread under the same name.
+   * The MCP request this key was created with (or last refreshed to). Stored
+   * so a recreate after the runtime loses the session can rebuild the same
+   * tool surface instead of opening a silent tool-less thread under the same
+   * name.
+   *
+   * HEADER VALUES ARE NEVER STORED. A remote server keeps `headerNames` only;
+   * the values come back from `refresh.mcpServers` or the client's
+   * `mcpHeaders` callback at every create, resume and restart. A file written
+   * by an SDK before 0.3 is migrated on first read: values stripped, names
+   * kept, file rewritten.
    */
-  mcpServers?: Record<string, McpServerConfig>;
+  mcpServers?: Record<string, StoredMcpServerConfig>;
   loadUserMcpServers?: boolean;
   /**
    * The host configuration this key was created with.
@@ -68,6 +78,8 @@ const EMPTY: ThreadStoreFile = { version: 1, threads: {} };
 
 export class ThreadStore {
   private cache: ThreadStoreFile | null = null;
+  /** Single-flight first read, so two early callers do not both migrate and write. */
+  private loading: Promise<ThreadStoreFile> | null = null;
   /** Serialises writes so two concurrent `open()` calls cannot clobber. */
   private writeChain: Promise<void> = Promise.resolve();
 
@@ -114,12 +126,33 @@ export class ThreadStore {
     });
   }
 
-  private async read(): Promise<ThreadStoreFile> {
-    if (this.cache) return this.cache;
+  private read(): Promise<ThreadStoreFile> {
+    if (this.cache) return Promise.resolve(this.cache);
+    this.loading ??= this.load().finally(() => {
+      this.loading = null;
+    });
+    return this.loading;
+  }
+
+  private async load(): Promise<ThreadStoreFile> {
     try {
       const raw = await fs.promises.readFile(this.filePath, "utf8");
       const parsed = JSON.parse(raw) as unknown;
-      this.cache = normalize(parsed);
+      const { file, migrated } = normalize(parsed);
+      this.cache = file;
+      if (migrated) {
+        // An SDK before 0.3 wrote MCP header values — bearer tokens — into
+        // this file. Take them off disk now rather than on the next unrelated
+        // write, which may never come.
+        try {
+          await this.writeFile(file);
+          this.logger(`ade sdk: removed stored MCP header values from ${this.filePath}; only header names are kept`);
+        } catch (error) {
+          this.logger(
+            `ade sdk: could not rewrite ${this.filePath} to remove stored MCP header values (${errorMessage(error)})`,
+          );
+        }
+      }
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOENT") {
@@ -132,20 +165,24 @@ export class ThreadStore {
       }
       this.cache = { version: 1, threads: {} };
     }
-    return this.cache;
+    return this.cache!;
+  }
+
+  private async writeFile(file: ThreadStoreFile): Promise<void> {
+    await fs.promises.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
+    const tempPath = `${this.filePath}.${process.pid}.tmp`;
+    await fs.promises.writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
+    await fs.promises.rename(tempPath, this.filePath);
   }
 
   private async mutate(apply: (file: ThreadStoreFile) => void): Promise<void> {
     const run = async (): Promise<void> => {
       const file = await this.read();
       apply(file);
-      await fs.promises.mkdir(path.dirname(this.filePath), { recursive: true, mode: 0o700 });
-      const tempPath = `${this.filePath}.${process.pid}.tmp`;
-      await fs.promises.writeFile(tempPath, `${JSON.stringify(file, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      await fs.promises.rename(tempPath, this.filePath);
+      await this.writeFile(file);
     };
     this.writeChain = this.writeChain.then(run, run);
     await this.writeChain;
@@ -172,19 +209,23 @@ function isStoredPermissionPolicy(value: unknown): value is ThreadPermissionPoli
   return record.fallback === "ask" || record.fallback === "deny";
 }
 
-function normalize(value: unknown): ThreadStoreFile {
-  if (!value || typeof value !== "object") return { ...EMPTY, threads: {} };
+function normalize(value: unknown): { file: ThreadStoreFile; migrated: boolean } {
+  if (!value || typeof value !== "object") return { file: { ...EMPTY, threads: {} }, migrated: false };
   const source = value as Partial<ThreadStoreFile>;
   const threads: Record<string, ThreadRecord> = {};
+  let migrated = false;
   for (const [key, entry] of Object.entries(source.threads ?? {})) {
     if (!entry || typeof entry !== "object") continue;
     const record = entry as Partial<ThreadRecord>;
     if (typeof record.sessionId !== "string" || !record.sessionId) continue;
+    const storedMcp = readStoredMcpServers(record.mcpServers);
+    if (storedMcp?.migrated) migrated = true;
     threads[key] = {
       key,
       sessionId: record.sessionId,
       provider: typeof record.provider === "string" ? record.provider : "",
       model: typeof record.model === "string" ? record.model : "",
+      ...(typeof record.modelId === "string" && record.modelId ? { modelId: record.modelId } : {}),
       createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
       lastOpenedAt:
         typeof record.lastOpenedAt === "string" ? record.lastOpenedAt : new Date(0).toISOString(),
@@ -193,9 +234,7 @@ function normalize(value: unknown): ThreadStoreFile {
       // rather than defaulting to false, which would wrongly suppress a real
       // capability report for every thread written before this field existed.
       ...(typeof record.requestedMcp === "boolean" ? { requestedMcp: record.requestedMcp } : {}),
-      ...(record.mcpServers && typeof record.mcpServers === "object"
-        ? { mcpServers: record.mcpServers as Record<string, McpServerConfig> }
-        : {}),
+      ...(storedMcp ? { mcpServers: storedMcp.servers } : {}),
       ...(typeof record.loadUserMcpServers === "boolean"
         ? { loadUserMcpServers: record.loadUserMcpServers }
         : {}),
@@ -215,5 +254,5 @@ function normalize(value: unknown): ThreadStoreFile {
         : {}),
     };
   }
-  return { version: 1, threads };
+  return { file: { version: 1, threads }, migrated };
 }

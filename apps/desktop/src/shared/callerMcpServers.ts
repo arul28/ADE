@@ -473,6 +473,18 @@ function normalizeStringRecord(value: unknown): Record<string, string> | null {
   return Object.keys(out).length ? out : null;
 }
 
+function normalizeHeaderNames(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const name = entry.trim();
+    if (!name || out.some((existing) => existing.toLowerCase() === name.toLowerCase())) continue;
+    out.push(name);
+  }
+  return out.length ? out : null;
+}
+
 /**
  * Validates and normalizes one caller-supplied server in a single pass: either
  * the config ADE will hand a provider verbatim, or the reason it cannot.
@@ -508,7 +520,14 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
     try {
       parsed = new URL(url);
     } catch {
-      return { ok: false, problem: `server '${name}' has a url that is not a valid absolute URL: ${url}` };
+      return {
+        ok: false,
+        // Not a URL, so the URL scrubber cannot see its query string; cut it
+        // by hand, since a malformed URL can still carry a token.
+        problem: `server '${name}' has a url that is not a valid absolute URL: ${
+          url.includes("?") ? `${url.slice(0, url.indexOf("?"))}?<redacted>` : url
+        }`,
+      };
     }
     // Scheme allow-list, not a block-list. `file:` would read local paths and a
     // custom scheme would be handed to whatever the provider's client does with
@@ -517,12 +536,16 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
       return { ok: false, problem: `server '${name}' must use http: or https:, got ${parsed.protocol}` };
     }
     const headers = normalizeStringRecord(record.headers);
+    // Names only survive when there are no values: with values present the
+    // names are their keys, and a second list could only disagree with them.
+    const headerNames = headers ? null : normalizeHeaderNames(record.headerNames);
     return {
       ok: true,
       config: {
         type,
         url,
         ...(headers ? { headers } : {}),
+        ...(headerNames ? { headerNames } : {}),
       },
     };
   }
@@ -687,7 +710,18 @@ export function callerMcpServersToCodexConfig(
 export function callerMcpServersToInlineRecord(
   servers: CallerMcpServers,
 ): Record<string, AgentChatMcpServerConfig> {
-  return { ...servers };
+  const out: Record<string, AgentChatMcpServerConfig> = {};
+  for (const [name, config] of Object.entries(servers)) {
+    // `headerNames` is ADE's own bookkeeping for withheld credentials, not a
+    // transport field; a provider schema that validates strictly would reject it.
+    if (config.type === "stdio" || config.headerNames === undefined) {
+      out[name] = config;
+      continue;
+    }
+    const { headerNames: _headerNames, ...transport } = config;
+    out[name] = transport;
+  }
+  return out;
 }
 
 /**
@@ -764,4 +798,101 @@ export function callerMcpServersToDroidList(
       ...(headers?.length ? { headers } : {}),
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Credentials: header values stay in memory, never on disk or in error text
+// ---------------------------------------------------------------------------
+
+/**
+ * The servers as ADE may write them down: every header VALUE dropped, the
+ * header names kept in `headerNames`.
+ *
+ * Used for the durable chat record and for any summary that leaves the
+ * process, because an MCP header is almost always a credential. A value
+ * replaced by a placeholder would be worse than one dropped: the placeholder
+ * would be sent to the server as if it were the token. Stdio servers are
+ * returned unchanged — their `env` is launch configuration the provider needs
+ * to start the process at all after a restart.
+ */
+export function withholdCallerMcpHeaderValues(servers: CallerMcpServers): CallerMcpServers {
+  const out: CallerMcpServers = {};
+  for (const [name, config] of Object.entries(servers)) {
+    if (config.type === "stdio" || !config.headers) {
+      out[name] = config;
+      continue;
+    }
+    const { headers, headerNames: _existing, ...rest } = config;
+    const headerNames = Object.keys(headers);
+    out[name] = headerNames.length ? { ...rest, headerNames } : rest;
+  }
+  return out;
+}
+
+/**
+ * Servers restored without the header values the host once gave them — the
+ * ones a provider will now dial with no credentials until the host sends the
+ * servers again. Empty when nothing was withheld.
+ */
+export function callerMcpServersMissingHeaders(servers: CallerMcpServers | null | undefined): string[] {
+  if (!servers) return [];
+  return Object.entries(servers)
+    .filter(([, config]) => config.type !== "stdio" && !config.headers && (config.headerNames?.length ?? 0) > 0)
+    .map(([name]) => name);
+}
+
+/** `scheme://host[:port]/path` with any userinfo, query string, and fragment replaced. */
+function redactUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return raw;
+  }
+  const hadUserinfo = parsed.username.length > 0 || parsed.password.length > 0;
+  const hadQuery = parsed.search.length > 0;
+  const hadHash = parsed.hash.length > 0;
+  if (!hadUserinfo && !hadQuery && !hadHash) return raw;
+  return `${parsed.protocol}//${hadUserinfo ? "<redacted>@" : ""}${parsed.host}${parsed.pathname}`
+    + `${hadQuery ? "?<redacted>" : ""}${hadHash ? "#<redacted>" : ""}`;
+}
+
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>`)\]]+/gi;
+const BEARER_IN_TEXT = /\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+
+/**
+ * Scrub MCP credentials out of text ADE is about to show or record: an error
+ * message, a notice, a provider's startup-failure line.
+ *
+ * Every URL loses its query string, fragment, and userinfo (a token in
+ * `?key=` is as common as one in a header); every `Bearer …` credential loses
+ * its value; and every header value of `servers`
+ * is replaced wherever it appears verbatim, which catches a token a provider
+ * echoed in some other shape. Values shorter than four characters are left
+ * alone — replacing every "1" in a message would destroy it and protect
+ * nothing.
+ */
+export function redactCallerMcpText(
+  text: string,
+  servers?: CallerMcpServers | null,
+): string {
+  let out = text.replace(URL_IN_TEXT, (match) => redactUrl(match));
+  out = out.replace(BEARER_IN_TEXT, (_match, scheme: string) => `${scheme} <redacted>`);
+  if (servers) {
+    const secrets = new Set<string>();
+    for (const config of Object.values(servers)) {
+      if (config.type === "stdio" || !config.headers) continue;
+      for (const value of Object.values(config.headers)) {
+        const trimmed = value.trim();
+        if (trimmed.length >= 4) secrets.add(trimmed);
+        // `Bearer abc…`: the token alone may be echoed without its scheme.
+        const token = trimmed.split(/\s+/).at(-1);
+        if (token && token.length >= 4) secrets.add(token);
+      }
+    }
+    for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+      out = out.split(secret).join("<redacted>");
+    }
+  }
+  return out;
 }

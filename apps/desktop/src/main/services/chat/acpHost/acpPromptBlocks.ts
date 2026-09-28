@@ -10,7 +10,11 @@
  */
 
 import path from "node:path";
-import type { AgentChatFileRef } from "../../../../shared/types/chat";
+import {
+  attachmentIsReferenceOnly,
+  referenceOnlyAttachmentHint,
+  type AgentChatFileRef,
+} from "../../../../shared/types/chat";
 import { hasNullByte } from "../../shared/utils";
 import {
   exceedsProviderInlineLimit,
@@ -82,6 +86,12 @@ export async function buildAcpPromptBlocks(
       } else {
         blocks.push(textBlock(`\nImage URL attachment omitted: ${url} (this provider does not support image prompts).`));
       }
+      continue;
+    }
+
+    // `hydrate: false`: the bytes are never read; the agent gets the path.
+    if (attachmentIsReferenceOnly(attachment)) {
+      blocks.push(textBlock(`\n${referenceOnlyAttachmentHint(attachment.path)}`));
       continue;
     }
 

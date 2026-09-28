@@ -18,7 +18,7 @@ import {
 
 import { Composer, type ComposerProps } from "./composer/Composer";
 import { AdeChatProvider, useAdeProviders, useAdeThread } from "./context/AdeChatContext";
-import { ModelPicker } from "./models/ModelPicker";
+import { ModelPicker, type ModelPickerProps } from "./models/ModelPicker";
 import { isModelSelectable } from "./models/modelSearch";
 import type { ActivityLabelConfig } from "./activity/labels";
 import type { AdeChatClient, ModelDescriptor } from "./sdkTypes";
@@ -45,6 +45,38 @@ export type AdeChatProps = {
   placeholder?: ComposerProps["placeholder"];
   sendOnEnter?: ComposerProps["sendOnEnter"];
   onRequestAttachment?: ComposerProps["onRequestAttachment"];
+  /**
+   * Controlled staged attachments, passed straight to the internal
+   * `<Composer>`. Pass with `onAttachmentsChange` to stage files from outside
+   * the picker (drag-and-drop, paste). Follow the Composer's merge rule:
+   * `onAttachmentsChange` gets the COMPLETE next list — replace your state with
+   * it, never append — and items are keyed by `id` (see
+   * `ComposerProps["attachments"]`). Omit both to let the composer own the list.
+   */
+  attachments?: ComposerProps["attachments"];
+  /** Called with the complete next attachment list. See `attachments`. */
+  onAttachmentsChange?: ComposerProps["onAttachmentsChange"];
+  /**
+   * Replaces the built-in model picker in the composer rail. Pass any node (a
+   * host model chip, a status pill); `null` renders an empty rail. When set,
+   * `hideModelPicker`, `reasoningEffort` and `onReasoningEffortChange` do
+   * nothing, and model switching is the host's job.
+   */
+  modelRail?: ComposerProps["modelRail"];
+  /** Extra composer controls, rendered after the rail (the Composer's `actions`). */
+  actions?: ComposerProps["actions"];
+  /**
+   * Selected reasoning effort, shown by the built-in picker for a model that
+   * lists `reasoningEfforts`. Controlled: pair with `onReasoningEffortChange`.
+   */
+  reasoningEffort?: ModelPickerProps["reasoningEffort"];
+  /**
+   * Called when the person picks an effort in the built-in picker. The effort
+   * control is drawn only when this is set. Applying it to the thread (for
+   * example `thread.update({ reasoningEffort })` on `@ade-dev/sdk` >= 0.3) is the
+   * host's job; this component does not call the runtime for it.
+   */
+  onReasoningEffortChange?: ModelPickerProps["onReasoningEffortChange"];
   hideToolCalls?: TranscriptProps["hideToolCalls"];
   hideReasoning?: TranscriptProps["hideReasoning"];
   renderMarkdown?: TranscriptProps["renderMarkdown"];
@@ -56,6 +88,21 @@ export type AdeChatProps = {
    * conversation that has silently stopped. This only changes how it looks.
    */
   approvals?: TranscriptProps["approvals"];
+  /** Extra content under a tool chip. See `TranscriptProps["renderToolResult"]`. */
+  renderToolResult?: TranscriptProps["renderToolResult"];
+  /** Action buttons on a tool chip. See `TranscriptProps["toolChipActions"]`. */
+  toolChipActions?: TranscriptProps["toolChipActions"];
+  /**
+   * Envelopes per history page on a client with `historyPage`; older pages load
+   * when the reader scrolls to the top. See `useAdeThread`.
+   */
+  historyPageSize?: number;
+  /**
+   * CSP nonce for the injected stylesheet, so a host whose `style-src` has no
+   * `'unsafe-inline'` can still use the built-in styles. Ignored with
+   * `disableStyles`. Only the first injection per document applies it.
+   */
+  styleNonce?: string;
   emptyState?: ReactNode;
 
   /** Hide the model rail when the host pins a model. */
@@ -83,10 +130,20 @@ function AdeChatInner({
   placeholder,
   sendOnEnter,
   onRequestAttachment,
+  attachments,
+  onAttachmentsChange,
+  modelRail,
+  actions,
+  reasoningEffort,
+  onReasoningEffortChange,
   hideToolCalls,
   hideReasoning,
   renderMarkdown,
   approvals,
+  renderToolResult,
+  toolChipActions,
+  historyPageSize,
+  styleNonce,
   emptyState,
   hideModelPicker = false,
   className,
@@ -118,6 +175,7 @@ function AdeChatInner({
     client,
     enabled: Boolean(activeModelId) || !catalogLoading,
     ...(activeModelId ? { modelId: activeModelId } : {}),
+    ...(historyPageSize !== undefined ? { historyPageSize } : {}),
   });
 
   // Token overrides are custom properties, which React accepts on `style` but
@@ -203,7 +261,19 @@ function AdeChatInner({
     : turnRunning
       ? "Wait for the current reply to finish before changing model."
       : null;
-  const rail = hideModelPicker ? null : (
+  // The rail names the model the person picked when the catalog knows it, and
+  // otherwise the runtime's own name for what the thread is on — a retired id
+  // the runtime resolved forward is not in the catalog, and printing the raw
+  // id there is what this replaces. The raw id is the last resort only.
+  const resolvedModel = thread.model;
+  const resolvedName =
+    resolvedModel?.displayName
+    && (!activeModelId || resolvedModel.modelId === activeModelId || !activeModel)
+      ? resolvedModel.displayName
+      : null;
+  const railLabel =
+    selectedLabel ?? activeModel?.displayName ?? resolvedName ?? activeModelId ?? "Choose model";
+  const defaultRail = hideModelPicker ? null : (
     <div ref={pickerRef} style={{ position: "relative" }}>
       <button
         type="button"
@@ -214,7 +284,7 @@ function AdeChatInner({
         disabled={modelPickerDisabledReason !== null}
         {...(modelPickerDisabledReason ? { title: modelPickerDisabledReason } : {})}
       >
-        {selectedLabel ?? activeModel?.displayName ?? activeModelId ?? "Choose model"}
+        {railLabel}
       </button>
       {modelError ? (
         <div role="alert" className="adechat-model-error">
@@ -226,6 +296,8 @@ function AdeChatInner({
           <ModelPicker
             client={client}
             value={activeModelId}
+            {...(reasoningEffort !== undefined ? { reasoningEffort } : {})}
+            {...(onReasoningEffortChange ? { onReasoningEffortChange } : {})}
             onChange={(model) => {
               if (modelId === undefined) setInternalModelId(model.id);
               setSelectedLabel(model.displayName);
@@ -238,9 +310,14 @@ function AdeChatInner({
     </div>
   );
 
-  const attachmentProps: Pick<ComposerProps, "onRequestAttachment"> = onRequestAttachment
-    ? { onRequestAttachment }
-    : {};
+  const attachmentProps: Pick<
+    ComposerProps,
+    "onRequestAttachment" | "attachments" | "onAttachmentsChange"
+  > = {
+    ...(onRequestAttachment ? { onRequestAttachment } : {}),
+    ...(attachments !== undefined ? { attachments } : {}),
+    ...(onAttachmentsChange ? { onAttachmentsChange } : {}),
+  };
 
   // Passed only when the thread can actually answer. Its ABSENCE is what makes
   // the card read-only with a reason, so a client whose runtime has no answer
@@ -251,7 +328,7 @@ function AdeChatInner({
 
   return (
     <div className={["adechat-root", className].filter(Boolean).join(" ")} style={style}>
-      {disableStyles ? null : <AdeChatStyles />}
+      {disableStyles ? null : <AdeChatStyles {...(styleNonce ? { nonce: styleNonce } : {})} />}
       <Transcript
         rows={thread.rows}
         status={thread.status.state}
@@ -261,6 +338,11 @@ function AdeChatInner({
         {...(renderMarkdown ? { renderMarkdown } : {})}
         {...(approvals ? { approvals } : {})}
         {...approvalHandler}
+        {...(renderToolResult ? { renderToolResult } : {})}
+        {...(toolChipActions ? { toolChipActions } : {})}
+        hasOlder={thread.hasOlder}
+        loadingOlder={thread.loadingOlder}
+        onLoadOlder={thread.loadOlder}
         {...(emptyState !== undefined ? { emptyState } : {})}
       />
       <Composer
@@ -272,7 +354,8 @@ function AdeChatInner({
         {...(placeholder !== undefined ? { placeholder } : {})}
         {...(sendOnEnter !== undefined ? { sendOnEnter } : {})}
         {...attachmentProps}
-        modelRail={rail}
+        modelRail={modelRail !== undefined ? modelRail : defaultRail}
+        {...(actions !== undefined ? { actions } : {})}
         error={thread.error?.message ?? null}
       />
     </div>

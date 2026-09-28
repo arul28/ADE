@@ -21,15 +21,17 @@ const require = createRequire(import.meta.url);
 /**
  * Which preload to load.
  *
- * By default this points straight at the SDK's own published preload, which is
- * a single self-contained file — the only thing a sandboxed preload can be,
- * because it has no module resolution. Set `ADE_EXAMPLE_PRELOAD=local` to load
+ * By default this points straight at the SDK's self-running preload,
+ * `@ade-dev/sdk/electron/preload-auto`: one file whose only `require` is
+ * `electron`, the only thing a sandboxed preload can load. (Not
+ * `@ade-dev/sdk/electron/preload`, which exports `exposeAdeBridge` without
+ * calling it, so `window.ade` would stay undefined.) Set `ADE_EXAMPLE_PRELOAD=local` to load
  * `preload.cjs` next to this file instead: that is the shape a host writes when
  * it wants its own channels alongside ADE's.
  */
 function resolvePreload() {
   if (process.env.ADE_EXAMPLE_PRELOAD === "local") return path.join(here, "preload.cjs");
-  return require.resolve("@ade-dev/sdk/electron/preload");
+  return require.resolve("@ade-dev/sdk/electron/preload-auto");
 }
 
 let disposeIpc = null;
@@ -45,6 +47,11 @@ async function start() {
     // Only this app's own thread. A compromised renderer cannot name a key with
     // different MCP servers or a different permission policy.
     allowThreadKey: (key) => key === "main",
+    // With no `openOptions` hook, only `provider`, `model`, `title` and
+    // `reasoningEffort` cross from the renderer; everything else is dropped
+    // and logged. A host that configures threads (MCP servers, a policy, a
+    // cwd) returns those options from `openOptions: (key) => ({ ... })`
+    // instead, and can gate model choice with `allowModel`.
     logger: (line) => process.stderr.write(`${line}\n`),
   });
 

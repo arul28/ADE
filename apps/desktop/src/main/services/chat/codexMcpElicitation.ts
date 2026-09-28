@@ -54,6 +54,62 @@ export function mcpElicitationAllowsAlways(meta: unknown): boolean {
     || (Array.isArray(persist) && persist.some((value) => value === "always"));
 }
 
+function mcpElicitationOffersPersist(meta: unknown, scope: "session" | "always"): boolean {
+  const persist = readRecord(meta)?.persist;
+  return persist === scope
+    || (Array.isArray(persist) && persist.some((value) => value === scope));
+}
+
+/**
+ * What an "allow for this session" answer sends back as `_meta.persist`.
+ *
+ * Codex offers the scopes it will honor in the request's `_meta.persist`.
+ * Its MCP tool approvals offer both, `["session", "always"]`, and `"always"`
+ * writes the approval into the user's config.toml for every future chat — far
+ * more than a session-scoped answer asked for. So `"session"` wins whenever it
+ * is offered. `"always"` is used only when it is the one scope on offer (the
+ * Computer Use per-app prompt), because remembering nothing would make the
+ * session-scoped button behave exactly like a one-time allow.
+ */
+export function mcpElicitationSessionPersistScope(...metas: unknown[]): "session" | "always" | null {
+  if (metas.some((meta) => mcpElicitationOffersPersist(meta, "session"))) return "session";
+  if (metas.some((meta) => mcpElicitationOffersPersist(meta, "always"))) return "always";
+  return null;
+}
+
+/** `Allow the <server> MCP server to run tool "<tool>"?` — Codex 0.156.1's wording. */
+const CODEX_MCP_TOOL_APPROVAL_MESSAGE = /\brun tool "(.+)"\?\s*$/s;
+
+/**
+ * Recognize Codex's own MCP tool-call approval among its elicitations, and
+ * name the tool it is about.
+ *
+ * Codex 0.156.1 asks before an MCP tool call by sending
+ * `mcpServer/elicitation/request` with `_meta.codex_approval_kind:
+ * "mcp_tool_call"` and an empty form schema (measured against a live
+ * app-server). The payload carries `tool_title`, `tool_description`, and
+ * `tool_params`, but not the tool's NAME — the title is display text a server
+ * chooses freely, so it is never matched against a policy. The name is in the
+ * message, `Allow the <server> MCP server to run tool "<name>"?`, and that is
+ * where it is read from. A `tool_name` key is honored first in case a later
+ * Codex adds one.
+ *
+ * Returns null for any other elicitation (a server's own form, a URL auth
+ * prompt). `toolName` is null when the kind matched but the name could not be
+ * read — an app connector's approval uses different wording — and the caller
+ * then judges the request on its server alone.
+ */
+export function codexMcpToolApproval(params: unknown): { toolName: string | null } | null {
+  const record = readRecord(params);
+  const meta = readRecord(record?._meta) ?? readRecord(record?.meta);
+  if (readString(meta?.codex_approval_kind) !== "mcp_tool_call") return null;
+  const explicit = readString(meta?.tool_name);
+  if (explicit) return { toolName: explicit };
+  const message = typeof record?.message === "string" ? record.message : "";
+  const quoted = CODEX_MCP_TOOL_APPROVAL_MESSAGE.exec(message)?.[1]?.trim();
+  return { toolName: quoted && quoted.length ? quoted : null };
+}
+
 export function mcpElicitationQuestions(schemaValue: unknown): PendingInputQuestion[] {
   const schema = readRecord(schemaValue);
   const properties = readRecord(schema?.properties);

@@ -1,12 +1,12 @@
 ---
 title: "Electron"
-description: "Bridge @ade-dev/sdk from Electron's main process to a sandboxed renderer: registerAdeIpc, exposeAdeBridge, createAdeIpcClient."
+description: "Bridge @ade-dev/sdk from Electron's main process to a sandboxed renderer: registerAdeIpc, a copy-paste sandboxed preload, createAdeIpcClient, the openOptions hook, and runtime lifecycle events."
 icon: "atom"
 ---
 
 `@ade-dev/sdk` spawns a child process and speaks over a Unix socket, so it runs in Electron's **main** process. `@ade-dev/chat-ui` is React and runs in the **renderer**. They cannot share an object.
 
-This page ships the bridge between them: three functions, one per process.
+This page describes the bridge between them: three functions, one per process.
 
 ```bash
 npm install @ade-dev/sdk
@@ -43,11 +43,19 @@ const disposeIpc = registerAdeIpc(ipcMain, client, {
   authorize: (event, method, args) => isTrustedFrame(event.sender),
   /** A thread key carries MCP servers and a permission policy. Pin it. */
   allowThreadKey: (key) => key === "main",
+  /** Main decides how a key opens. The renderer's options are ignored. */
+  openOptions: (key) => ({
+    provider: "claude",
+    model: "claude-sonnet-4-5",
+    permissions: { allowedTools: ["mcp:app:*"], fallback: "deny" },
+  }),
+  /** Which models a renderer may pick. */
+  allowModel: (key, { modelId }) => modelId.startsWith("claude-"),
 });
 
 const window = new BrowserWindow({
   webPreferences: {
-    preload: require.resolve("@ade-dev/sdk/electron/preload"),
+    preload: require.resolve("@ade-dev/sdk/electron/preload-auto"),   // see "Preload" below
     contextIsolation: true,
     nodeIntegration: false,
     sandbox: true,
@@ -62,20 +70,66 @@ app.on("before-quit", async () => {
 
 `registerAdeIpc` returns a disposer. Call it before `client.dispose()` so no event is pushed at a closing runtime.
 
-### Preload
+### Hosts with many threads
 
-```js
-const { contextBridge, ipcRenderer } = require("electron");
-const { exposeAdeBridge } = require("@ade-dev/sdk/electron/preload");
+The example pins one key. A host with a chat list has many keys, and `allowThreadKey` must then check that the key is in **your own catalog**: a `Set` of the keys you created, or a lookup in the store that holds your chat list. Do not check a prefix such as `key.startsWith("chat-")`. A compromised renderer can make any number of keys that match a prefix, and each new key opens a new thread with the tool surface that your options give it.
 
-exposeAdeBridge(contextBridge, ipcRenderer, { key: "ade" });
+```ts
+const catalog = new Set(await loadChatKeys());   // your own chat list
+
+registerAdeIpc(ipcMain, client, {
+  authorize: (event) => isTrustedFrame(event.sender),
+  allowThreadKey: (key) => catalog.has(key),
+});
 ```
 
-Read the [sandbox requirements](#sandbox-requirements) before you write this file. A sandboxed preload cannot resolve that `require`, so either bundle this module into your preload or point `webPreferences.preload` straight at the SDK's own published preload, which is already one self-contained file.
+Add a key to the catalog in main when the user creates a chat, before the renderer opens it. Remove the key when you delete the thread.
+
+### Preload
+
+A preload under `sandbox: true` can `require("electron")` and nothing else. The SDK ships one file that obeys that rule and exposes the bridge by itself:
+
+```ts
+webPreferences: {
+  preload: require.resolve("@ade-dev/sdk/electron/preload-auto"),
+  sandbox: true,
+}
+```
+
+`@ade-dev/sdk/electron/preload-auto` is one CommonJS file whose only `require` is `"electron"`. It calls `exposeAdeBridge` with the default key `ade` and the default channel prefix `ade`. There is no build step.
+
+If you need another key or prefix, or your own channels next to ADE's, write your own preload. Copy this file as it is. It is the whole preload half of the bridge:
+
+```js
+// preload.js — safe under sandbox: true. Requires nothing but "electron".
+const { contextBridge, ipcRenderer } = require("electron");
+
+const PREFIX = "ade"; // must equal registerAdeIpc's channelPrefix
+const INVOKE = `${PREFIX}:invoke`;
+const EVENT = `${PREFIX}:event`;
+
+contextBridge.exposeInMainWorld("ade", {
+  invoke(method, args) {
+    return ipcRenderer.invoke(INVOKE, { method, args });
+  },
+  onEvent(listener) {
+    const handler = (_event, payload) => listener(payload);
+    ipcRenderer.on(EVENT, handler);
+    return () => ipcRenderer.removeListener(EVENT, handler);
+  },
+});
+```
+
+This is what `exposeAdeBridge` in `@ade-dev/sdk/electron/preload` does. The surface is two functions. Every method name and argument shape is in the renderer half, so this file does not change when the SDK adds methods. A preload that you wrote for 0.2 keeps working with 0.3.
+
+The channel name is the contract between two processes. A wrong name gives no error: the bridge never answers. Keep a test in main that compares your names with `invokeChannel(prefix)` and `eventChannel(prefix)` from `@ade-dev/sdk/electron`.
+
+If you prefer to import `exposeAdeBridge`, bundle it into one file. See [Bundle the preload](#bundle-the-preload).
 
 ### Renderer
 
 ```tsx
+import "@ade-dev/sdk/electron/global"; // types window.ade
 import { createAdeIpcClient } from "@ade-dev/sdk/electron/renderer";
 import { adaptSdkClient, AdeChat } from "@ade-dev/chat-ui";
 
@@ -90,39 +144,124 @@ export function App() {
 
 `createAdeIpcClient` returns the shape `adaptSdkClient` expects. There is no cast and no host glue.
 
+`@ade-dev/sdk/electron/global` is types only. It declares `window.ade: AdeBridge`, and its JavaScript is empty, so the import costs nothing and is safe under a strict CSP. You can also list it in `tsconfig.json` `compilerOptions.types`. It declares the default key `ade` only. If your preload uses another key, declare `interface Window { <key>: AdeBridge }` yourself.
+
 A page with no bundler cannot import an ES module over `file://`. Load `dist/electron/renderer.global.js` with a plain `<script>` tag instead and read `window.AdeElectron.createAdeIpcClient`.
 
 ## Sandbox requirements
 
 A preload running under `sandbox: true` has **no module resolution**. `require` reaches Electron's own built-ins and nothing else: not a file path, not `node_modules`. A preload is therefore one of two things.
 
-<CardGroup cols={2}>
+<CardGroup cols={3}>
   <Card title="The shipped file" icon="box">
-    Point `webPreferences.preload` at `require.resolve("@ade-dev/sdk/electron/preload")`. That artifact is a single file with no `require` and no `import` of any kind.
+    Point `webPreferences.preload` at `require.resolve("@ade-dev/sdk/electron/preload-auto")`. Default key and prefix only.
+  </Card>
+  <Card title="Copy the file" icon="copy">
+    Use the [preload above](#preload). It requires only `electron`, so it needs no build step.
   </Card>
   <Card title="Your own bundle" icon="layer-group">
-    Bundle `@ade-dev/sdk/electron/preload` into your preload with esbuild, Vite or Rollup. Ship one file, with no external imports left in it.
+    Import `exposeAdeBridge` and bundle the preload into one file with esbuild, Vite or Rollup. Keep `electron` external.
   </Card>
 </CardGroup>
+
+<Warning>
+Do not set `webPreferences.preload` to `require.resolve("@ade-dev/sdk/electron/preload")`. That file exports `exposeAdeBridge` and does not call it, so `window.ade` stays undefined. Use `preload-auto`.
+</Warning>
+
+### Bundle the preload
+
+```ts
+// src/preload.ts
+import { contextBridge, ipcRenderer } from "electron";
+import { exposeAdeBridge } from "@ade-dev/sdk/electron/preload";
+
+exposeAdeBridge(contextBridge, ipcRenderer); // key "ade", channel prefix "ade"
+```
+
+```bash
+esbuild src/preload.ts --bundle --platform=node --format=cjs \
+  --external:electron --outfile=dist/preload.js
+```
+
+With Vite or Rollup the rules are the same: one CommonJS output file, `electron` external, and no code splitting. A shared chunk is an import that a sandboxed preload cannot resolve. Check the result: `dist/preload.js` must contain no `require` call except `require("electron")`.
 
 Everything that crosses `contextBridge` is structured-cloned, which drops prototypes. So the bridge exposes only plain data and functions, and the thread handle a renderer holds is an id plus functions rather than a class instance.
 
 ## What crosses the bridge
 
-| surface | notes |
+`ADE_IPC_METHODS` in `@ade-dev/sdk/electron` is the full list. A method that is not on it is refused with `invalid_option`.
+
+| IPC method | Renderer call | Gate | Notes |
+| --- | --- | --- | --- |
+| `providers.status` / `providers.refresh` | `providers.status()` / `providers.refresh()` | `authorize` | request and response |
+| `providers.subscribe` / `providers.unsubscribe` | `providers.onChange(cb)` | `authorize` | a subscription; the unsubscribe reaches main |
+| `models.list` | `models.list()` | `authorize` | request and response |
+| `doctor` | `doctor()` | `authorize` | the full `DoctorReport` |
+| `client.subscribe` / `client.unsubscribe` | `on("exit" \| "transport" \| "restart", cb)` | `authorize` | runtime lifecycle; see [below](#runtime-lifecycle-in-the-renderer) |
+| `threads.open` | `threads.open(key, opts)` | `authorize`, `allowThreadKey` | returns a thread handle; see [what a renderer may send](#what-a-renderer-may-send-to-threadsopen) |
+| `threads.list` | `threads.list()` | `authorize` | every `ThreadSummary` whose key `allowThreadKey` accepts. Rows with no key are left out |
+| `threads.delete` / `threads.archive` / `threads.unarchive` | `threads.delete(key)` / `.archive(key)` / `.unarchive(key)` | `authorize`, `allowThreadKey` | the renderer does not need to open the key first. Delete also drops the key's handles on every renderer |
+| `thread.export` | `exportThread(key)` | `authorize`, `allowThreadKey` | JSONL |
+| `thread.update` | `thread.update(patch, { force })` | `authorize`, `allowThreadKey` | only `title`, `reasoningEffort` and `fastMode` cross |
+| `thread.send` | `thread.send(text, opts)` | `authorize`, `allowThreadKey` | resolves on dispatch, matching the SDK's own asymmetry |
+| `thread.steer` | `thread.steer(text, { attachments })` | `authorize`, `allowThreadKey` | attachments cross as paths |
+| `thread.interrupt` | `thread.interrupt()` | `authorize`, `allowThreadKey` | request and response |
+| `thread.history` | `thread.history({ limit })` | `authorize`, `allowThreadKey` | merged against the live stream; see [ordering](#ordering) |
+| `thread.historyPage` | `thread.historyPage({ beforeSequence, limit })` | `authorize`, `allowThreadKey` | the newest page is merged like `history()` |
+| `thread.setModel` | `thread.setModel(id, opts)` | `authorize`, `allowThreadKey`, `allowModel` | refuses mid-turn like the real thing |
+| `thread.approve` / `thread.pendingApprovals` | the same names | `authorize`, `allowThreadKey` | see [Permissions](/sdk/permissions) |
+| `thread.subscribe` / `thread.unsubscribe` | `thread.on("event" \| "status" \| "usage", cb)` | `authorize`, `allowThreadKey` | a subscription |
+
+The thread handle also carries snapshots: `id`, `key`, `title`, `model`, `mcpCapability`, `instructionsCapability`, `settingSourcesCapability` and `permissionCapability`. They are taken at open. The handle's own `setModel()` and `update()` refresh them. A change from another renderer or from main shows at the next `threads.open` of the key.
+
+`thread.updateMcpServers` is **not** on the bridge. MCP servers carry credentials and choose the agent's tool surface, so only main may change them: with `thread.updateMcpServers()`, or with `refresh.mcpServers` from the `openOptions` hook.
+
+### What a renderer may send to `threads.open`
+
+The renderer is the least trusted process in your app. A thread key carries a tool surface, a permission policy and a working directory, so the renderer does not configure a thread.
+
+**With an `openOptions` hook** (recommended for every host), main decides:
+
+```ts
+registerAdeIpc(ipcMain, client, {
+  allowThreadKey: (key) => catalog.has(key),
+  openOptions: async (key, rendererOptions) => {
+    const chat = await loadChat(key);      // your own catalog
+    return {
+      provider: chat.provider,
+      model: chat.model,
+      cwd: chat.cwd,
+      permissions: { allowedTools: ["mcp:app:*"], fallback: "deny" },
+      mcpServers: appMcpServers(),
+      refresh: { mcpServers: appMcpServers() },   // current token on every open
+    };
+  },
+});
+```
+
+The hook gets the key and the options that the renderer sent. Read them if you want, but do not trust them. The SDK opens the key with what the hook returns, and ignores the renderer's options. Return `undefined` to reopen a stored key with its record. For a key that this home never saw, that fails with `invalid_option`.
+
+**Without the hook**, the bridge forwards four renderer fields and drops the rest:
+
+| Forwarded | Dropped |
 | --- | --- |
-| `providers.status()` / `providers.refresh()` | request and response |
-| `providers.onChange(cb)` | a subscription; the unsubscribe reaches main |
-| `models.list()` | request and response |
-| `threads.open(key, opts)` | returns a proxied thread; `opts` is serializable, `mcpServers` included |
-| `thread.send(text, opts)` | resolves on dispatch, matching the SDK's own asymmetry |
-| `thread.steer` / `thread.interrupt` | request and response |
-| `thread.history({ limit })` | merged against the live stream; see [ordering](#ordering) |
-| `thread.setModel(id, opts)` | refuses mid-turn like the real thing |
-| `thread.approve` / `thread.pendingApprovals` | see [Permissions](/sdk/permissions) |
-| `thread.on("event" \| "status" \| "usage", cb)` | a subscription |
-| `thread.id`, `thread.mcpCapability` | snapshots, resolved at open |
-| `thread.instructionsCapability`, `settingSourcesCapability`, `permissionCapability` | snapshots, resolved at open |
+| `provider`, `model`, `title`, `reasoningEffort` (strings only) | `permissions`, `mcpServers`, `cwd`, `instructions`, `settingSources`, `loadUserMcpServers`, `refresh`, and anything else |
+
+The bridge logs one line for each field that it drops. `ADE_IPC_RENDERER_OPEN_FIELDS` exports the list of four.
+
+<Warning>
+This is a breaking change in 0.3. Before 0.3 the bridge forwarded every renderer option. A compromised renderer could then open an allowed key with `permissions: "always-allow"`, its own MCP servers, or its own `cwd`. If your renderer sent host configuration, move that configuration into `openOptions`.
+</Warning>
+
+A key that the runtime lost is recreated from the SDK's stored record, and the record wins over any option. See [Threads](/sdk/threads#when-the-runtime-lost-the-session).
+
+### `allowModel`
+
+```ts
+allowModel: (key, { modelId }) => allowedModels.has(modelId),
+```
+
+`allowModel` gates `thread.setModel`. Without an `openOptions` hook, it also gates a `model` that the renderer sends to `threads.open`. Return `false` and the call fails with `unauthorized`. Without the hook, the bridge accepts any model id that the catalog resolves, on any provider.
 
 ### Attachments are paths, not bytes
 
@@ -174,17 +313,54 @@ try {
 
 `error.code` is the stable check. `instanceof` is not, because each subpath is a separate bundle and therefore carries its own copy of the class. Import `AdeError` from `@ade-dev/sdk/electron/renderer` if you want `instanceof` to hold in a renderer.
 
-`authorize` or `allowThreadKey` returning false rejects with code `unauthorized`, and the SDK is not called at all.
+`authorize`, `allowThreadKey` or `allowModel` returning false rejects with code `unauthorized`, and the SDK is not called at all.
 
 ## Transport degradation and restarts
 
-Two runtime facts a bridge has to survive.
+**The runtime exits.** The client tells you. `client.on("exit" | "transport" | "restart", cb)` in main, or `ipcClient.on(...)` in a renderer, reports each event. Every live thread also gets a synthetic `status` envelope with `turnStatus: "error"`, so a transcript does not stay "running". Pass `autoRestart` to `createAdeChat` and the client respawns the runtime and re-opens every live thread. The client object stays the same, so the bridge keeps working with no change. See [Runtime](/sdk/runtime#when-the-runtime-exits).
 
-**`doctor().runtime` and `DoctorReport.events.mode`.** The push transport can silently become polling: `mode` reads `"push"` normally and `"drain"` when the SDK is polling instead. Nothing about the bridge changes — envelopes still arrive on the same channel — but latency does, so report `mode` in your diagnostics rather than assuming push.
+**`DoctorReport.events.mode`.** The push transport can silently become polling: `mode` reads `"push"` normally and `"drain"` when the SDK is polling instead. Nothing about the bridge changes — envelopes still arrive on the same channel — but latency does, so report `mode` in your diagnostics rather than assuming push.
 
-**`events.epoch`.** The epoch changes when the runtime restarts. Envelopes from before and after a change belong to different runtime lifetimes, so a transcript stitched across one can appear to go backwards. Read `doctor()` in main, push the epoch to your renderer, and re-run `history()` when it changes rather than trusting the buffer you already hold.
+**`events.epoch`.** The epoch changes when the runtime restarts. Envelopes from before and after a change belong to different runtime lifetimes, so a transcript stitched across one can appear to go backwards. When a `restart` event with `ok: true` arrives, re-run `history()` or `historyPage()` rather than trusting the buffer you already hold.
 
-Neither value crosses this bridge on its own. `doctor()` is the host's call, from main, at whatever cadence your diagnostics need.
+A renderer can read both values with `doctor()` over the bridge.
+
+### Runtime lifecycle in the renderer
+
+```ts
+const ipcClient = createAdeIpcClient(window.ade);
+
+ipcClient.on("exit", ({ code, signal, error }) => showBanner("Chat stopped", error));
+ipcClient.on("restart", ({ attempt, ok }) => { if (ok) reloadTranscript(); });
+ipcClient.on("transport", ({ state }) => setOnline(state === "reconnected"));
+```
+
+The payloads are the same as `client.on` in main. One IPC subscription serves every listener in the renderer.
+
+### Swap the client
+
+A host that makes one client per signed-in account can pass a function instead of a client:
+
+```ts
+let current = await createAdeChat({ home: homeFor(account) });
+
+registerAdeIpc(ipcMain, () => current, { allowThreadKey, openOptions });
+
+async function switchAccount(next) {
+  const previous = current;
+  current = await createAdeChat({ home: homeFor(next) });   // the bridge now serves this one
+  await previous.dispose();
+}
+```
+
+The bridge reads the function on every call. On the first call after the client changed, it re-opens each renderer's threads on the new client with the options they were opened with, and moves every subscription across under the same id. The renderer does not see the change.
+
+Two limits:
+
+- Events that the old client would have pushed between the swap and that first call are not replayed.
+- A key that the new client cannot open is dropped. The renderer's next call on it gets `thread_not_found`.
+
+A client with `autoRestart` never changes identity, so it does not need a swap.
 
 ## Example app
 

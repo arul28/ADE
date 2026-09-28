@@ -12,8 +12,14 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 
 | Path | Role |
 |---|---|
-| `packages/sdk/src/client.ts` | `createAdeChat()` — public client: threads, models, providers, doctor, export, dispose. |
-| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer, interrupt, history, `setModel` (refuses mid-turn unless `{ force: true }`). |
+| `packages/sdk/src/client.ts` | `createAdeChat()` — public client: threads (open, list, delete, archive, unarchive), models, providers, doctor, export, `on("exit" \| "transport" \| "restart")`, `autoRestart`, dispose. Owns the resume / recreate rule and the runtime-lost handling. |
+| `packages/sdk/src/thread.ts` | `AdeThread` — send, steer (with attachments), interrupt, `update`, `updateMcpServers`, history, `historyPage`, `setModel` (refuses mid-turn unless `{ force: true }`; returns capabilities), approvals and the SDK-side `approvalTimeoutMs` clock, the synthetic runtime-lost status. |
+| `packages/sdk/src/threadStore.ts` | `<home>/threads.json`: key → session record. Stores MCP header names only, and migrates a pre-0.3 file that held header values on first read. |
+| `packages/sdk/src/attachments.ts` | `inferAttachmentType` / `completeAttachments` — fills `AgentChatFileRef.type` (`"image"` for png, jpg, jpeg, gif, webp by MIME type, else extension) before a send or steer. |
+| `packages/sdk/src/compatibility.ts` | `SUPPORTED_RUNTIME_RANGE` (`>=1.2.81 <2.0.0` for SDK 0.3.0) and `checkRuntimeCompatibility`. Dependency-free comparator; pre-release suffixes ignored; `0.0.0` / missing = supported with a note. |
+| `packages/sdk/src/mcpHeaders.ts` | MCP header persistence: `toStoredMcpServers` (names only), `readStoredMcpServers` (migration), `withResolvedHeaders` (explicit headers, then the `mcpHeaders` callback), and the missing-headers warning. |
+| `packages/sdk/src/packagedRuntime.ts` | `resolvePackagedRuntime(resourcesPath, { dir, platform, arch })` — the runtime inside a host's app bundle, with a Mach-O arch check; `source: "packaged"`. |
+| `packages/sdk/src/toolIdentity.ts` | `parseToolIdentity(name)` → `{ server, tool }` for `mcp__srv__tool`, `mcp:srv:tool`, `srv:tool` and a bare `tool`. chat-ui keeps a copy of the rule. |
 | `packages/sdk/src/sidecar.ts` | Spawns `ade runtime run --socket <path> --profile embedded`, scrubs host `ADE_*` env, sets `ADE_EMBEDDED_PARENT_PID`. |
 | `packages/sdk/src/jsonRpc.ts` | NDJSON JSON-RPC 2.0 over a Unix socket or Windows named pipe. |
 | `packages/sdk/src/personalChats.ts` | Typed `personalChats.call` / push subscribe / cursor drain. |
@@ -21,8 +27,10 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `packages/sdk/src/binary.ts` | Resolves a local `ade` binary: explicit path, bundled platform package, home cache, PATH, else download. |
 | `packages/sdk/src/bundledRuntime.ts` | `resolveBundledRuntime()` — finds an installed `@ade-dev/runtime-<target>` package and its `bin/` + `native/` halves. |
 | `packages/sdk/src/runtimeSignature.ts` | `probeRuntimeSignature()` — `codesign` + `spctl` on macOS, `Get-AuthenticodeSignature` on Windows. Never throws; null means "not known". |
-| `packages/sdk/src/electron/main.ts` | `registerAdeIpc()` — one `ipcMain.handle`, a per-`webContents.id` registry, `authorize` / `allowThreadKey` gates, teardown on destroy and navigation. |
-| `packages/sdk/src/electron/preload.ts` | `exposeAdeBridge()` — single-file, zero-import preload safe under `sandbox: true`. |
+| `packages/sdk/src/electron/main.ts` | `registerAdeIpc()` — one `ipcMain.handle`, a per-`webContents.id` registry, `authorize` / `allowThreadKey` / `allowModel` gates, the `openOptions` hook and the four-field renderer filter, the client getter and client swap, teardown on destroy and navigation. |
+| `packages/sdk/src/electron/preload.ts` | `exposeAdeBridge()` — single-file, zero-import preload module safe under `sandbox: true`. It exports the function and does not call it. |
+| `packages/sdk/src/electron/preload-auto.ts` | `@ade-dev/sdk/electron/preload-auto` — calls `exposeAdeBridge` with the default key and prefix. One CJS file whose only `require` is `"electron"`, for `webPreferences.preload` directly. |
+| `packages/sdk/src/electron/global.ts` | `@ade-dev/sdk/electron/global` — types only: `declare global { interface Window { ade: AdeBridge } }`. |
 | `packages/sdk/src/electron/renderer.ts` | `createAdeIpcClient()` — the renderer-side client that structurally satisfies chat-ui's `SdkLikeChatClient`. |
 | `packages/sdk/src/electron/protocol.ts` | Channel names, error serialization, `envelopeDedupeKey`, and the history/live merge. |
 | `packages/sdk/examples/electron/` | Runnable reference app: `sandbox: true`, `contextIsolation: true`, strict CSP. Not installed by CI. |
@@ -54,6 +62,7 @@ surfaces stay first-party. The SDK is how a *different* app embeds ADE chat.
 | `apps/desktop/src/main/services/chat/personalSession.ts` | What a personal chat is (`isPersonalSession`), where it runs (`resolvePersonalHostCwd`), and what its provider is told (`PERSONAL_CHAT_SYSTEM_PROMPT`, `resolvePersonalSystemPrompt`). |
 | `apps/desktop/src/main/services/chat/claudeToolGate.ts` | What ADE knows about one Claude tool call before deciding: name normalization, the read-only built-in set, the paths a call names, the pre-policy prompting heuristic, and `claudeToolAllowedInPlanMode` / `CLAUDE_PLAN_MODE_ALLOWED_TOOLS` — the literal plan-mode allowlist the `canUseTool` fence reads. |
 | `apps/desktop/src/main/services/chat/codexApprovalContainment.ts` | Which Codex approvals ADE answers itself, and the containment root each is checked against. The only place a host `sandboxRoot` takes effect on Codex. |
+| `apps/desktop/src/main/services/chat/codexMcpElicitation.ts` | Codex `mcpServer/elicitation/request` helpers: JSON Schema → pending-input questions, answer coercion, the MCP tool-approval parse (`Allow the <server> MCP server to run tool "<tool>"?`, `_meta.tool_name` first), and the `_meta.persist` scope for a session-wide accept (`"session"` when offered). |
 | `apps/desktop/src/shared/providerRemediation.ts` | `PROVIDER_REMEDIATION` — one table of install command, login command, docs URL and display name per provider, with win32 spellings. Read by the Settings CLI cards, the model picker's empty states, the CLI agent registry, and `providers.status`; none of the four keeps its own copy. |
 | `apps/desktop/src/main/services/ai/providerStatusProbe.ts` | The `providers.status` probe: per-provider orchestration, 60 s cache, shared in-flight probe, 8 s overall budget. |
 | `apps/desktop/src/main/services/ai/providerBinaryResolvers.ts` | Where each provider's binary is, per provider. A resolver that produced only a bare command name is confirmed on PATH or reported absent. |
@@ -110,7 +119,9 @@ An embedder shipping a signed, notarized app cannot download an executable at fi
 - `resolveBundledRuntime()` (`packages/sdk/src/bundledRuntime.ts`) resolves the package by `require.resolve("<name>/package.json")`. Missing package → `null`. Present but malformed → `AdeError("binary_not_found")` naming the missing path.
 - `createAdeChat` accepts `binaryPath`, `runtimeNodeModules`, `runtimeRoot` and `allowDownload`. Both directories are validated at create, not at spawn.
 - The pinned and bundled routes skip `SHA256SUMS` by design: bytes signed into the embedder's bundle are verified by the OS.
-- `doctor().runtime` reports `source` (`explicit` | `bundled-package` | `cached-download` | `path` | `downloaded` | `attached`), the two runtime paths, `signature`, `downloadedThisSession` and `checksumVerified`. `doctor().binary` keeps its 0.1.x four-value `source`.
+- `resolvePackagedRuntime(process.resourcesPath)` (`packages/sdk/src/packagedRuntime.ts`) resolves the copy a host put under `<resources>/ade-runtime`. It returns `null` when there is no binary, or on macOS when the Mach-O header has no slice for `process.arch`; it throws `binary_not_found` when `native/node_modules` is missing. Its result spreads into `createAdeChat` and carries `source: "packaged"`.
+- `doctor().runtime` reports `source` (`packaged` | `explicit` | `bundled-package` | `cached-download` | `path` | `downloaded` | `attached`), the two runtime paths, `signature`, `downloadedThisSession`, `checksumVerified` and `compatibility`. `doctor().binary` keeps its 0.1.x four-value `source` (`packaged` maps to `option`).
+- `signature.accepted` on macOS is `spctl --assess --type execute` on the OUTERMOST enclosing `.app`, because Gatekeeper judges a nested helper as part of its app and answers "does not seem to be an app" for the bare binary. Outside a bundle that answer gives `accepted: null` (not known), never `false`.
 - Built by `apps/ade-cli/scripts/build-runtime-npm-packages.mjs` from a release's artifacts; published by `.github/workflows/publish-runtime-packages.yml` when that GitHub release is published. `/release` undrafts; the workflow then publishes. `workflow_dispatch` is recovery. Checksum-verified, skip-if-version-exists.
 - Public guide: `sdk/bundling.mdx` — signing, entitlements, and an electron-builder fragment.
 
@@ -126,6 +137,8 @@ The SDK speaks the machine JSON-RPC surface, not desktop IPC.
 | `personalChats.streamEvents` | Cursor drain. Fallback when the runtime omits `pushEvents`. |
 | `runtime/info` | Capabilities, including `personalChats.mcpServers`. |
 
+`ade/initialize` returns `runtimeInfo.version`. The SDK compares it with `SUPPORTED_RUNTIME_RANGE`; outside the range it logs once and degrades by feature detection, or throws `runtime_incompatible` under `requireCompatibleRuntime: true`. The verdict is `doctor().runtime.compatibility`.
+
 **`BufferedEvent.category` is deliberately open.** The runtime is downloaded and can be newer than the SDK driving it, so a category this build has never heard of is an ordinary event, not a bug: the type is `KnownBufferedEventCategory | (string & {})`, listed for autocomplete rather than for exhaustiveness. `chatEnvelopeFromBufferedEvent` gates on `"runtime"` exactly, which is what keeps an unknown category from ever being mistaken for chat, and the drain fallback polls `personalChats.streamEvents` with no category filter so the cursor still advances past everything. `runtime` is the only category the SDK decodes: `pty` is terminal bytes it has no surface for, and `cto_voice` carries a live call's running transcript and is fail-closed to the `cto` role at the runtime — it never reaches an `agent`-role sidecar like this one (`apps/desktop/src/shared/runtimeEventPolicy.ts`).
 
 Create args the SDK actually sends:
@@ -139,11 +152,27 @@ Create args the SDK actually sends:
 
 Actions beyond the original nine: `approve` (answers one blocked request) and `pendingInputs` (read-only list, gated on the advertised action list — when it is absent the SDK derives the pending set from observed `approval_request` minus `pending_input_resolved` events and logs the hole once).
 
+Added for SDK 0.3 (runtime 1.2.81):
+
+- `delete`, `archive`, `unarchive` — already in the runtime; the SDK now calls them. The SDK interrupts a running turn first, and `delete` also removes the thread-store record.
+- `updateSession` — `title`, `reasoningEffort`, `fastMode` (the SDK's `thread.update`), and `mcpServers` for personal sessions only. `mcpServers` replaces the caller servers wholesale with the same validation as create (`normalizeCallerMcpServers`, reserved names, 32 cap, provider shape), is refused mid-turn (`invalid_argument: … turn in flight`), recomputes `mcpCapability` / `permissionCapability`, and restarts the provider so the next turn uses the new url and headers. Advertised as `capabilities.personalChats.updateMcpServers: true`.
+- `getEventHistoryPage` — `{ sessionId, beforeSequence }` → `{ events, hasMore }`, behind `thread.historyPage`. Without it only the newest page is available.
+- `send` / `steer` attachments: `AgentChatFileRef` gains `type?: "file" | "image"` (the SDK infers it) and `hydrate?: boolean` (default true; `false` = the runtime never reads the bytes and sends a path hint on every provider). Path rule: relative → resolved in the chat's working directory (the host `cwd`, else the scratch workspace); absolute → inside `projectRoot` (`<home>/personal-chats/state` for a personal chat) or inside that working directory, else the send throws. Size limits: Claude inline image 10 MB and jpeg/png/gif/webp only, else a path hint; Droid, Pi, Cursor and ACP inline text 512 KB, else a hint; Codex copies the whole file to a staging directory with no cap unless `hydrate: false`; `saveTempAttachment` accepts images only, 10 MB.
+- `tool_result.resourceLinks?: { uri, name?, title?, mimeType? }[]` — MCP `resource_link` items, on Codex (`mcpToolCall` result content) and Claude (`mcp__` tools only). No other provider sets it.
+
 `providers.status` is a top-level machine RPC, not a `personalChats.call` action, advertised as `capabilities.providers.status`. The SDK merges its probe with the catalog derivation and stamps `source: "probed"`; with no RPC every record is `source: "derived"` with `installed: modelCount > 0` and null probe fields.
 
 Durable threads: `threads.open("support", { provider, model })` creates or resumes by key stored under the home. Reopening the same key after a restart continues the conversation.
 
-Every host-configuration arg above applies on CREATE ONLY. A resume rebuilds the thread the key was created with, reading `requestedCwd`, `instructions`, `settingSources`, `permissionPolicy`, `mcpServers` and `strictMcpConfig` off the stored record and ignoring what the call passed. Silence there was the dangerous part: an embedder that reopens with a tighter policy and a new cwd, and is told nothing, may believe an agent is confined to a directory and a rule set it is not confined to. So the SDK logs one line per differing option, naming the stored value it used instead (`threadResumeMismatchWarnings`). The rule itself is unchanged — to run under different configuration, open a different key.
+Every host-configuration arg above applies on CREATE ONLY. A resume rebuilds the thread the key was created with, reading `requestedCwd`, `instructions`, `settingSources`, `permissionPolicy`, `mcpServers` and `strictMcpConfig` off the stored record and ignoring what the call passed. Silence there was the dangerous part: an embedder that reopens with a tighter policy and a new cwd, and is told nothing, may believe an agent is confined to a directory and a rule set it is not confined to. So the SDK logs one line per differing option, naming the stored value it used instead (`threadResumeMismatchWarnings`). The rule itself is unchanged — to run under different configuration, open a different key. The one exception is `refresh.mcpServers`, which replaces the stored servers (through `updateSession` on a live session).
+
+A RECREATE (the key has a record, the runtime lost its session) follows the same rule since 0.3: the record wins for `provider`, `model`, `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers`, and the call's options only fill a field the record lacks. Before 0.3 the call's options won, so any caller that could name a key — a renderer over the Electron bridge — could rebuild a lost thread on another provider, under a looser policy, or with no MCP servers. The recreate logs one line per stored value it used (`verb: "recreated"`) and gives the key a new session id.
+
+### MCP header persistence
+
+Header VALUES never reach durable state on either side. The SDK thread store keeps `headerNames` (and rewrites a pre-0.3 file that held values). The runtime persists the http/sse config with `headers` absent and `headerNames: string[]`, and the session summary carries names only. Values are resolved again at every create, resume, recreate and `autoRestart`: explicit headers in the call, then `refresh.mcpServers`, then the `createAdeChat({ mcpHeaders })` callback. A server whose record names headers that nobody supplied is still sent, without them, and the SDK logs the gap. After a runtime restart, a rehydrated server whose headers were withheld connects without them and the transcript gets one `system_notice` asking the host to resend.
+
+`redactCallerMcpText` (`callerMcpServers.ts`) scrubs URL query / fragment / userinfo, `Bearer` tokens and exact header values from Codex MCP startup failures, Codex stderr lines, app-server spawn errors and URL validation errors. Still stored in plaintext: URL query strings (needed to reconnect) and stdio `env` values.
 
 `setModel` refuses while a turn is in flight (`interrupt()` first, or `{ force: true }` to accept losing the turn). `dispose()` is not guarded that way — a shutdown that can refuse is worse than a truncated reply; the transcript is durable either way.
 
@@ -326,10 +355,11 @@ A policy with no `sandboxRoot` contains nothing. On Codex that means no approval
 is auto-accepted: every request Codex raises goes to `fallback`, so `"ask"`
 raises an `approval_request` and `"deny"` declines.
 
-On Codex the sandbox decides first, and the policy only answers what the sandbox
+On Codex the sandbox decides first, and the policy only answers what Codex
 raises: under `sandbox: workspace-write` a command or file change inside the
-thread's `cwd`, `$TMPDIR` or `/tmp` raises no approval request at all, so the
-policy governs sandbox escapes only.
+thread's `cwd`, `$TMPDIR` or `/tmp` raises no approval request at all, so for
+commands and file changes the policy governs sandbox escapes only. Codex also
+raises an approval before every MCP tool call; see "Codex MCP tool calls" below.
 
 Tool names are provider-neutral. An MCP tool is `mcp:<server>:<tool>`, and
 `mcp:<server>:*` names every tool of that server. Any other string matches the
@@ -358,16 +388,25 @@ An `allowedTools` entry means the tool may run, not that it skips its own
 machinery. Allow-listing `AskUserQuestion` lets it ask; it does not return
 success without the user ever seeing the question.
 
+### When Claude calls `canUseTool`
+
+Re-measured on 2026-09-28 against the pinned Agent SDK 0.3.280 (bundled Claude
+Code 2.1.280), permissionMode `"default"`, settingSources `[]`, with a stdio MCP
+server: `canUseTool` FIRES for an MCP tool call (`mcp__probe__lookup_song`) and
+for a mutating Bash command (`touch …`). It does NOT fire for `echo …`, which
+Claude Code classifies as read-only and runs without asking anyone. Against
+0.3.258 it had not fired on any mode tried. Levels are unchanged by the
+re-measurement; the comments and residuals in `hostSessionConfig.ts` were
+rewritten to match it.
+
+`allowedTools` and `disallowedTools` stay the primary enforcement: the CLI
+removes a denied tool from the model's catalog, which holds whatever the prompt
+path does.
+
 ### What `fallback: "deny"` does on Claude
 
-Measured against Agent SDK 0.3.258 and not re-measured against a later pin:
-`allowedTools` and `disallowedTools` are
-enforced, because the CLI removes a denied tool from the model's catalog. But
-`canUseTool` did not fire on any permission mode tried, so the prompt path
-cannot be relied on to enforce anything.
-
-A deny fallback is therefore expressed entirely in what the session is given,
-not in what it is asked:
+A deny fallback is expressed entirely in what the session is given, not in what
+it is asked:
 
 - Every Claude mutating built-in the policy does not name is added to
   `disallowedTools`. The list is literal and fixed: `Bash`, `Write`, `Edit`,
@@ -380,23 +419,26 @@ not in what it is asked:
   `autoApproveMcpServers` and every `mcp:<server>:…` entry in `allowedTools`.
   A server the policy never names is unreachable, **including one the same
   caller supplied in `mcpServers`**. Name it in the policy to use it.
-- `canUseTool` stays wired behind both, so a future SDK that does call back
-  finds a gate that already denies.
+- `canUseTool` stays wired behind both and denies everything unmatched. It is
+  a second line, not the enforcement.
 
 Two clauses do not survive this, and both are reported rather than hidden.
 
-`sandboxRoot` is a per-call decision about a path, and the per-call hook is the
-one that does not fire, so under a deny fallback a mutating built-in is denied
-outright rather than allowed inside the root. This does not lower the level —
+`sandboxRoot` is a per-call decision about a path, and a deny fallback removes
+every unnamed mutating built-in from the catalog before any call can reach it,
+so under a deny fallback a mutating built-in is denied outright rather than
+allowed inside the root. This does not lower the level —
 refusing is stricter than the root, never looser — but the `residual` says it,
 so nothing implies the root was applied. If you want containment on Claude
 rather than refusal, use `fallback: "ask"` and answer the approvals.
 
 An `allowedTools` entry that names ONE MCP tool admits its whole server. The
 allowlist is per-server, so letting `mcp:srv:search` run makes `srv` reachable,
-and the per-tool refusal would have to come from the hook that does not fire.
-A policy in that shape reports `best-effort`, with a residual naming the
-servers whose unnamed tools are not refused. Use `mcp:<server>:*` or
+and the per-tool refusal has to come from `canUseTool`. On 0.3.280 that hook
+fires for an unlisted MCP tool and denies it, but a Claude setting loaded
+through `settingSources` can pre-approve the tool before the hook is asked. A
+policy in that shape therefore reports `best-effort`, with a residual naming
+the servers whose unnamed tools only the per-call gate refuses. Use `mcp:<server>:*` or
 `autoApproveMcpServers` when you mean the whole server, and split the rest onto
 a separate server if you need tool-level separation on Claude.
 
@@ -415,17 +457,40 @@ the engine never disagree about what a rule means.
 | Provider | Level | Mechanism |
 |---|---|---|
 | claude, `fallback: "deny"` | enforced, or best-effort when an allow entry names one MCP tool | `allowedTools` / `disallowedTools`, which remove a denied tool from the model's catalog, plus `allowManagedMcpServersOnly` scoped to the servers the policy names. Residual: `sandboxRoot` is not applied; any blocked caller MCP servers are named |
-| claude, `fallback: "ask"` | best-effort | the same two lists, plus a `canUseTool` gate. Residual: the ask verdict needs the Agent SDK permission prompt, which a user-level Claude setting can pre-empt |
-| codex | best-effort | `approvalPolicy: on-request` with `sandbox: workspace-write`. The policy governs sandbox escapes only, and auto-accepts nothing without a `sandboxRoot` — see the precedence section above |
+| claude, `fallback: "ask"` | best-effort | the same two lists, plus a `canUseTool` gate. Residual: the ask verdict needs the Agent SDK to call the gate, which it does on 0.3.280 for MCP tools and mutating commands but not for a command Claude Code classifies as read-only; a Claude setting loaded through `settingSources` can also pre-approve an unlisted tool |
+| codex | best-effort | `approvalPolicy: on-request` with `sandbox: workspace-write`. The policy governs sandbox escapes (auto-accepts nothing without a `sandboxRoot`) and MCP tool calls (judged on `mcp:<server>:<tool>`) |
 | cursor | unsupported | the Cursor SDK takes a mode preset, not a rule set |
 | droid | unsupported | the Factory SDK takes an autonomy level, not a rule set |
 | opencode | unsupported | OpenCode takes an agent profile, not a rule set |
 | pi | unsupported | the Pi SDK takes a tool policy ADE derives from the session mode |
 
-Codex does not raise an approval for a plain MCP tool call. Its three approval
-methods cover shell commands, patches, and permission escalations. So
-`allowedTools`, `deniedTools`, and `autoApproveMcpServers` do not gate MCP tools
-on Codex, and the session reports that in `permissionCapability.residual`.
+#### Codex MCP tool calls
+
+Measured on `@openai/codex` 0.156.1 with `approvalPolicy: on-request`: Codex
+sends `mcpServer/elicitation/request` before EVERY MCP tool call, with
+`_meta.codex_approval_kind: "mcp_tool_call"`, an empty schema, and the message
+`Allow the <server> MCP server to run tool "<name>"?`. There is no tool-name
+field; the runtime reads `_meta.tool_name` when present and parses the message
+otherwise (`codexMcpElicitation.ts`). The pre-0.3 claim here — that Codex does
+not route plain MCP calls through an approval — was wrong for 0.156.1, and
+issue #1208 repeated it.
+
+Since runtime 1.2.81 the elicitation handler consults the host policy the same
+way the command handler does. `mcp:<server>:<tool>` is judged by `deniedTools`
+→ decline; `allowedTools` / `autoApproveMcpServers` → accept (no card, like a
+Claude auto-allow); else `fallback` (`deny` → decline plus a transcript
+`approval_request` and `pending_input_resolved` declined; `ask` → an
+`approval_request` with `requestKind: "approval"`, so `thread.approve()` answers
+it). Before, the request surfaced as `structured_question`, which the SDK
+refuses to answer, so a Codex thread stopped at its first MCP tool call.
+
+When the tool name cannot be parsed (an app connector's approval), the call is
+judged on the server alone: only a whole-server allowance approves it, and any
+`deniedTools` entry that could name one of that server's tools sends it to
+`fallback`. Non-tool elicitations (a server's own form, URL auth) reach the
+policy only through `fallback: "deny"`. On Codex the three tool fields are read
+for MCP tool calls and nothing else — never as a shell or built-in blocklist.
+`permissionCapability.residual` states all of this.
 
 Source of truth: `PERMISSION_POLICY_SUPPORT` in
 `apps/desktop/src/shared/hostSessionConfig.ts`. The session summary carries
@@ -439,15 +504,27 @@ Source of truth: `PERMISSION_POLICY_SUPPORT` in
 
 When the policy says "ask", the engine emits an `approval_request` event and the
 turn stops until someone answers it. **An unanswered approval blocks the turn
-indefinitely.** There is no timeout, by design: proceeding after sixty seconds is
-a security decision no default should make, and refusing after sixty seconds
-breaks a long human review. A host must render a card for every
+indefinitely.** The runtime has no timeout, by design: proceeding after sixty
+seconds is a security decision no default should make, and refusing after sixty
+seconds breaks a long human review. A host must render a card for every
 `approval_request` it receives, or the thread appears frozen.
+
+The SDK offers an opt-in `ThreadPermissionPolicy.approvalTimeoutMs`. It is
+stripped before the policy reaches the wire and enforced in `thread.ts`: an
+approval-shaped request (`approval` / `permissions`) this client watched arrive
+and nobody answered within the timeout is answered `decline`, with a log line.
+It covers only requests this client saw, from when it saw them; questions and
+plan approvals are never timed.
 
 Two ways out. Answer it with the `approve` action
 (`{ sessionId, itemId, decision, responseText? }`, decision one of `accept`,
 `accept_for_session`, `decline`, `cancel`), or call `interrupt()`, which aborts
-the turn without answering. `accept_for_session` records the tool in the
+the turn without answering. On a Codex MCP tool approval,
+`accept_for_session` sends `_meta.persist: "session"` when Codex offers it
+(0.156.1 offers `["session", "always"]`); before 1.2.81 it sent `"always"`,
+which Codex writes to the user's `config.toml` for every future chat. `"always"`
+is used only when it is the one scope offered (the Computer Use per-app
+prompt). On Claude, `accept_for_session` records the tool in the
 session's approval overrides, so the same tool does not ask again — unless the
 ask's own metadata suppresses the always-allow rule (`suppressAlwaysAllowRule`),
 in which case the host downgrades the answer to a one-shot accept, persists
@@ -605,14 +682,16 @@ and a sandboxed renderer has neither. Every embedder was therefore writing the
 same bridge by hand, and getting the same two things wrong — listeners that
 survive a reload, and a `history()` that races the live stream.
 
-Three subpath exports, one per process, three tsup entries and three `exports`
-keys in `packages/sdk/package.json`:
+One subpath export per process, plus a self-calling preload and a types-only
+global, each a tsup entry and an `exports` key in `packages/sdk/package.json`:
 
 | Export | Function |
 |---|---|
-| `@ade-dev/sdk/electron` | `registerAdeIpc(ipcMain, client, opts?)` → dispose function |
+| `@ade-dev/sdk/electron` | `registerAdeIpc(ipcMain, clientOrGetter, opts?)` → dispose function |
 | `@ade-dev/sdk/electron/preload` | `exposeAdeBridge(contextBridge, ipcRenderer, opts?)` |
+| `@ade-dev/sdk/electron/preload-auto` | Calls `exposeAdeBridge` with key `ade`, prefix `ade`. Point `webPreferences.preload` here |
 | `@ade-dev/sdk/electron/renderer` | `createAdeIpcClient(bridge)` → an `SdkLikeChatClient`-shaped client |
+| `@ade-dev/sdk/electron/global` | Types only: `window.ade: AdeBridge` |
 
 - **No dependency on `electron`, runtime or dev.** The three functions take
   minimal structural interfaces (`IpcMainLike`, `WebContentsLike`,
@@ -634,6 +713,32 @@ keys in `packages/sdk/package.json`:
   order. Unknown event types pass through untouched.
 - `authorize(event, method, args)` and `allowThreadKey(key)` are host gates. A
   refusal throws `AdeError("unauthorized")` and the SDK is never called.
+  `allowThreadKey` also filters `threads.list` over IPC, and keyless rows are
+  dropped there.
+- The renderer never configures a thread (0.3, breaking). With an
+  `openOptions(key, rendererOptions)` hook the hook's result is what the SDK
+  opens with and the renderer's options are ignored; the hook may return
+  `refresh.mcpServers` to push current credentials on every renderer open.
+  Without the hook the bridge forwards only `provider`, `model`, `title` and
+  `reasoningEffort` (`ADE_IPC_RENDERER_OPEN_FIELDS`, strings only) and logs one
+  line per dropped field. Combined with the recreate rule above, a renderer can
+  no longer rebuild a lost thread under a looser policy.
+- `allowModel(key, { modelId })` gates `thread.setModel`, and a renderer
+  `model` on `threads.open` when there is no hook.
+- `thread.updateMcpServers` is deliberately NOT in `ADE_IPC_METHODS`: MCP
+  servers carry credentials and pick the tool surface, so only main changes
+  them. `thread.update` forwards only `title`, `reasoningEffort` and `fastMode`.
+- `registerAdeIpc(ipcMain, clientOrGetter)` accepts `() => AdeChatClient`. On
+  the first call after the getter returns a different client, the bridge
+  reopens each renderer's threads on it with their original options and moves
+  every subscription across under the same id. Events pushed between the swap
+  and that call are not replayed. A client with `autoRestart` never changes
+  identity and needs none of this.
+- `client.subscribe` carries the client's `exit` / `transport` / `restart`
+  events as `{ kind: "client", subscriptionId, event, payload }`; the renderer
+  client splits them for `ipcClient.on(...)`.
+- The preload module exports `exposeAdeBridge` and does not call it; the
+  `preload-auto` entry is the one to point `webPreferences.preload` at.
 - Attachments cross as `{ path }` refs only. A renderer needs a real path from a
   main-side dialog; bytes do not travel.
 
@@ -675,11 +780,15 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
 - Never infer a tool's risk from its name. That substring heuristic is the bug
   `permissionPolicy.ts` exists to replace, and the read-only exemption in the
   Claude gate is a literal name-set membership test for the same reason.
-- Never rely on `canUseTool` to enforce a Claude policy. It did not fire on any
-  permission mode measured against Agent SDK 0.3.258, and that has not been
-  re-measured against a later pin. Enforcement that matters
-  goes in `allowedTools` / `disallowedTools` and `allowManagedMcpServersOnly`,
-  which the CLI applies itself; the gate stays wired as a second line only.
+- Never rely on `canUseTool` alone to enforce a Claude policy. On Agent SDK
+  0.3.280 it fires for MCP tools and mutating commands, but not for a command
+  Claude Code classifies as read-only, and a setting layer loaded through
+  `settingSources` can pre-approve a tool before it is asked (on 0.3.258 it did
+  not fire at all). Enforcement that matters goes in `allowedTools` /
+  `disallowedTools` and `allowManagedMcpServersOnly`, which the CLI applies
+  itself; the gate stays wired as a second line.
+- Never persist MCP header values, on either side of the wire. Store
+  `headerNames` and resolve values at session start.
 - Never assign over `opts.managedSettings.allowedMcpServers`. ADE's own managed
   servers are already in that object on the paths that build one, and replacing
   it takes the CTO tools away with no diagnostic. Merge.

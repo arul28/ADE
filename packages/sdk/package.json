@@ -1,6 +1,6 @@
 {
   "name": "@ade-dev/sdk",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Typed Node/Electron-main client that owns a slim ADE runtime and exposes chat as durable named threads.",
   "license": "MIT",
   "type": "module",
@@ -23,10 +23,16 @@
       "import": "./dist/electron/preload.js",
       "require": "./dist/electron/preload.cjs"
     },
+    "./electron/preload-auto": "./dist/electron/preload-auto.cjs",
     "./electron/renderer": {
       "types": "./dist/electron/renderer.d.ts",
       "import": "./dist/electron/renderer.js",
       "require": "./dist/electron/renderer.cjs"
+    },
+    "./electron/global": {
+      "types": "./dist/electron/global.d.ts",
+      "import": "./dist/electron/global.js",
+      "require": "./dist/electron/global.cjs"
     },
     "./electron/renderer.global.js": "./dist/electron/renderer.global.js"
   },

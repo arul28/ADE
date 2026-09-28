@@ -83,6 +83,13 @@ Transcript above, composer with the model rail below. No header bar.
 | `theme` | `Partial<AdeChatTheme>` | — | usually `createTheme(...)` |
 | `disableStyles` | `boolean` | `false` | skip the injected stylesheet |
 | `placeholder`, `sendOnEnter`, `onRequestAttachment` | | | forwarded to `<Composer>` |
+| `modelRail` | `ReactNode` | built-in picker | replaces the default picker; `null` = empty rail |
+| `actions` | `ReactNode` | — | extra composer controls (right rail) |
+| `attachments` / `onAttachmentsChange` | | — | controlled staging; see the merge rule under `<Composer>` |
+| `reasoningEffort` / `onReasoningEffortChange` | | — | the picker's effort control; the host applies it |
+| `renderToolResult`, `toolChipActions` | | | forwarded to `<Transcript>` |
+| `historyPageSize` | `number` | `200` | events per history page, when the thread has `historyPage` |
+| `styleNonce` | `string` | — | CSP nonce for the injected `<style>` |
 | `hideToolCalls`, `hideReasoning`, `renderMarkdown`, `emptyState` | | | forwarded to `<Transcript>` |
 | `approvals` | `{ render?, labels? }` | — | approval card wording, or a replacement card |
 | `hideModelPicker` | `boolean` | `false` | when the host pins a model |
@@ -114,8 +121,14 @@ conversation that had silently stopped. `approvals` changes only how it looks.
 | `error` | `string \| null` | — | |
 | `className` | `string` | — | |
 
-Submitting during a running turn dispatches `onSteer`, never a second `onSend`.
-Enter sends, Shift+Enter is a newline, IME composition never submits, Escape
+Controlled attachments: `onAttachmentsChange` always receives the FULL new
+list, so replace your state with it and never append. A picker result is merged
+into the latest list (not the list from when the picker opened), duplicates are
+removed by `id`, and a remove click removes one `id`. Every attachment is sent
+with `type` (`"image"` for png/jpg/jpeg/gif/webp, else `"file"`).
+
+Submitting during a running turn dispatches `onSteer`, never a second `onSend`,
+and staged attachments go with the steer. Enter sends, Shift+Enter is a newline, IME composition never submits, Escape
 interrupts a running turn. A failed send restores the draft rather than losing
 it.
 
@@ -133,11 +146,19 @@ it.
 | `onApprove` | `(itemId, decision) => void \| Promise<void>` | — | omit to render approval cards read-only |
 | `approvals` | `{ render?, labels? }` | — | custom approval card and button wording |
 | `emptyState` | `ReactNode` | `"No messages yet."` | |
+| `renderToolResult` | `(row: ToolChipRow) => ReactNode` | — | custom result view under a chip |
+| `toolChipActions` | `(row: ToolChipRow) => { label, onSelect }[]` | — | buttons on a chip, e.g. from `row.resourceLinks` |
+| `hasOlder` / `loadingOlder` / `onLoadOlder` | | — | "Load older messages" paging |
+| `windowThreshold` | `number` | `150` | row count above which rows are windowed |
+| `overscan` | `number` | `8` | rows mounted on each side of the view |
 | `className` | `string` | — | |
 
 Card set: user text, assistant markdown, collapsed reasoning, tool chips,
-approvals, error. Plain overflow scroll (no virtualization in v1), pinned to
-the bottom and released as soon as the reader scrolls up.
+approvals, error. Pinned to the bottom and released as soon as the reader
+scrolls up. Above `windowThreshold` rows only the rows in view plus `overscan`
+are mounted (no dependency; every row renders where `ResizeObserver` is
+missing). Tool chip rows carry `identity: { server, tool }` and, when the
+provider passes them, `resourceLinks`.
 
 ### Approval cards
 
@@ -247,6 +268,11 @@ it to `theme`, or set the tokens yourself on any ancestor.
 --adechat-danger        --adechat-hover            --adechat-space
 --adechat-danger-subtle --adechat-success
 ```
+
+`--adechat-root-bg` is the chat root's background: `transparent` for
+`createTheme({ background: "transparent" })`, else `var(--adechat-bg)`. Pass
+`scheme` with a transparent background. `injectAdeChatStyles(target?, { nonce })`
+and `<AdeChatStyles nonce>` set a CSP nonce on the injected `<style>`.
 
 Light/dark is inferred from the background's luminance (override with
 `scheme`). Non-hex colors (`var(--brand)`, `color-mix(...)`) pass straight

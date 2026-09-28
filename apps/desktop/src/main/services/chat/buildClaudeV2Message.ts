@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
+  attachmentIsReferenceOnly,
   getImageAttachmentMediaType,
   type AgentChatFileRef,
 } from "../../../shared/types/chat";
@@ -18,6 +19,15 @@ type ResolvedAgentChatFileRef = AgentChatFileRef & {
   _resolvedPath?: string;
   _rootPath?: string;
 };
+
+/**
+ * Whether this attachment goes to Claude as image bytes. Everything else —
+ * a file, or an image the caller marked reference-only with `hydrate: false`
+ * — goes as a `[File attached: …]` hint, and its bytes are never read.
+ */
+function sendsImageBytes(attachment: AgentChatFileRef): boolean {
+  return attachment.type === "image" && !attachmentIsReferenceOnly(attachment);
+}
 
 /** MIME types the Anthropic API accepts for inline image content blocks. */
 export const ANTHROPIC_IMAGE_MEDIA_TYPES = new Set([
@@ -98,7 +108,7 @@ export async function buildClaudeV2MessageAsync(
     message: { role: "user", content: [{ type: "text", text }] },
   });
 
-  const imageAttachments = attachments.filter((a) => a.type === "image");
+  const imageAttachments = attachments.filter(sendsImageBytes);
   if (!imageAttachments.length) {
     const text = attachments.length
       ? `${promptText}\n\n${attachments.map((a) => `[File attached: ${a.path}]`).join("\n")}`
@@ -111,7 +121,7 @@ export async function buildClaudeV2MessageAsync(
   ];
 
   for (const attachment of attachments) {
-    if (attachment.type !== "image") {
+    if (!sendsImageBytes(attachment)) {
       content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
       continue;
     }
@@ -188,7 +198,7 @@ export function buildClaudeV2Message(
     message: { role: "user", content: [{ type: "text", text }] },
   });
 
-  const imageAttachments = attachments.filter((a) => a.type === "image");
+  const imageAttachments = attachments.filter(sendsImageBytes);
   if (!imageAttachments.length) {
     // No images -- include file paths as text hints, return plain string
     const text = attachments.length
@@ -204,7 +214,7 @@ export function buildClaudeV2Message(
   ];
 
   for (const attachment of attachments) {
-    if (attachment.type !== "image") {
+    if (!sendsImageBytes(attachment)) {
       content.push({ type: "text", text: `\n[File attached: ${attachment.path}]` });
       continue;
     }

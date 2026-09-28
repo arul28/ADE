@@ -1,6 +1,7 @@
 import type { JsonRpcConnection } from "./jsonRpc.js";
 import type { EngineApprovalDecision } from "./approvals.js";
 import type {
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatFileRef,
   AgentChatModelCatalog,
@@ -20,10 +21,22 @@ import type {
  * leaking into the public API.
  */
 export class PersonalChatsApi {
-  constructor(private readonly connection: JsonRpcConnection) {}
+  private readonly connectionOf: () => JsonRpcConnection;
+
+  /**
+   * Takes the connection, or a function returning the current one.
+   *
+   * The function form is what lets a client respawn its runtime without
+   * handing every thread a new API object: each call reads the connection
+   * that is live NOW, so a thread opened before a restart keeps working after
+   * it.
+   */
+  constructor(connection: JsonRpcConnection | (() => JsonRpcConnection)) {
+    this.connectionOf = typeof connection === "function" ? connection : () => connection;
+  }
 
   async call<T>(action: string, args?: unknown, timeoutMs?: number): Promise<T> {
-    const response = await this.connection.request<PersonalChatCallResponse<T>>(
+    const response = await this.connectionOf().request<PersonalChatCallResponse<T>>(
       "personalChats.call",
       { action, ...(args !== undefined ? { args } : {}) },
       timeoutMs ? { timeoutMs } : {},
@@ -84,6 +97,38 @@ export class PersonalChatsApi {
     maxBytes?: number;
   }): Promise<AgentChatEventHistorySnapshot> {
     return this.call<AgentChatEventHistorySnapshot>("getEventHistory", args, 120_000);
+  }
+
+  /**
+   * One older page of the durable transcript, by sequence cursor.
+   *
+   * `beforeOffset` is sent as 0 because the runtime requires the field and
+   * ignores it whenever `beforeSequence` is set; the SDK pages by sequence
+   * only, since a byte offset means nothing to a caller.
+   */
+  getEventHistoryPage(args: {
+    sessionId: string;
+    beforeSequence: number;
+    maxBytes?: number;
+  }): Promise<AgentChatEventHistoryPage> {
+    return this.call<AgentChatEventHistoryPage>(
+      "getEventHistoryPage",
+      { beforeOffset: 0, ...args },
+      120_000,
+    );
+  }
+
+  archive(sessionId: string): Promise<unknown> {
+    return this.call("archive", { sessionId }, 60_000);
+  }
+
+  unarchive(sessionId: string): Promise<unknown> {
+    return this.call("unarchive", { sessionId }, 60_000);
+  }
+
+  /** Idempotent on the runtime side: an unknown session is a delete with nothing to do. */
+  delete(sessionId: string): Promise<unknown> {
+    return this.call("delete", { sessionId }, 120_000);
   }
 
   modelCatalog(args: { mode?: "cached" | "refresh-stale" | "force" } = {}): Promise<AgentChatModelCatalog> {

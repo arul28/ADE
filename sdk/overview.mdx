@@ -51,6 +51,28 @@ The client downloads (or you pin) an `ade` binary, spawns `ade runtime run --soc
 
 Provider logins are **not** stored under the sidecar home. Claude / Codex / Cursor credentials stay in those tools' own config homes. If the machine user can already run that provider in a terminal, the sidecar can too.
 
+## What's new in 0.3
+
+`@ade-dev/sdk` 0.3.0 and `@ade-dev/chat-ui` 0.3.0 release together. SDK 0.3.0 supports runtime `>=1.2.81 <2.0.0`. See [Version compatibility](/sdk/runtime#version-compatibility).
+
+- **Thread lifecycle.** `threads.delete`, `threads.archive`, `threads.unarchive`, and `thread.update()` for a rename, reasoning effort or fast mode. `ThreadSummary` and the thread carry `title`, the resolved model with its display name, and `updatedAt`. See [Threads](/sdk/threads#list-rename-archive-delete).
+- **Attachments.** `type` (`"file"` or `"image"`, inferred when absent), so images reach the model as images. `hydrate: false` sends the path only. `steer()` takes attachments. See [Attachments](/sdk/threads#attachments).
+- **Paged history.** `thread.historyPage()`. See [History](/sdk/threads#history).
+- **Credentials that change.** MCP header values are no longer stored. `refresh.mcpServers`, `thread.updateMcpServers()` and the `mcpHeaders` callback supply current tokens. See [MCP servers](/sdk/mcp#credentials-that-change).
+- **Codex MCP approvals.** The permission policy now judges Codex MCP tool calls, and `approve()` answers them. `approvalTimeoutMs` lets the SDK decline an approval that nobody answers. See [Permissions](/sdk/permissions#codex-mcp-tool-calls).
+- **Runtime exits.** `client.on("exit" | "transport" | "restart")`, a synthetic error status on each live thread, and opt-in `autoRestart`. See [Runtime](/sdk/runtime#when-the-runtime-exits).
+- **Electron bridge.** The renderer no longer configures threads: an `openOptions` hook in main decides, or only four fields cross. `allowModel`, `threads.list` and the lifecycle calls over IPC, a client getter, `@ade-dev/sdk/electron/global`, and a copy-paste sandboxed preload. See [Electron](/sdk/electron).
+- **Packaging.** `resolvePackagedRuntime()` and `doctor().runtime.source: "packaged"`. See [Bundling](/sdk/bundling#inside-a-packaged-app).
+- **Chat UI.** Composer rail slots and controlled attachments on `<AdeChat>`, a windowed transcript, tool identity and tool-result slots. See [Chat UI](/sdk/chat-ui).
+
+### Breaking changes
+
+- The Electron bridge drops every renderer `threads.open` option except `provider`, `model`, `title` and `reasoningEffort`, unless you set `openOptions`. See [What a renderer may send](/sdk/electron#what-a-renderer-may-send-to-threadsopen).
+- When the runtime lost a session, the recreate uses the stored record first, not the call's options. See [Threads](/sdk/threads#when-the-runtime-lost-the-session).
+- `setModel()` returns `displayName` and `capabilities` beside `modelId`, `provider` and `model`. A test that compares the whole result with `toEqual` must change.
+
+`thread.retry()` and `thread.editLast()` are not in 0.3. See [Retry and edit](/sdk/threads#retry-and-edit).
+
 ## What this is not
 
 - Not a hosted ADE cloud API. The sidecar runs on the same machine as your app.

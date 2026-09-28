@@ -22,6 +22,7 @@ export const ADE_ERROR_CODES = [
   "approval_not_found",
   "unauthorized",
   "disposed",
+  "runtime_incompatible",
 ] as const;
 
 /**
@@ -62,7 +63,13 @@ export type AdeErrorCode =
    * `authorize` hook said no. Used by `@ade-dev/sdk/electron`.
    */
   | "unauthorized"
-  | "disposed";
+  | "disposed"
+  /**
+   * The runtime's version is outside `SUPPORTED_RUNTIME_RANGE` and the host
+   * asked `createAdeChat` to refuse it (`requireCompatibleRuntime: true`).
+   * Without that option an unsupported runtime connects with a logged warning.
+   */
+  | "runtime_incompatible";
 
 /**
  * The list and the union must stay identical. Both directions are checked, so
