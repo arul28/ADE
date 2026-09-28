@@ -423,6 +423,7 @@ final class DriverRuntime: NSObject {
         case .parkWindow: return try parkWindow(request)
         case .unparkWindow: return try unparkWindow(request)
         case .launch: return try launch(request)
+        case .quitApp: return try quitApp(request)
         case .present: return try present(request)
         case .observe: return try observe(request)
         case .input: return try input(request)
@@ -695,6 +696,21 @@ final class DriverRuntime: NSObject {
             "bundleId": result.bundleId.map(JSONValue.string) ?? .null,
             "windows": .array(result.windows.map { .object($0.asJSON()) }),
             "watching": .bool(result.watching),
+        ]
+    }
+
+    private func quitApp(_ request: DriverRequest) throws -> [String: JSONValue] {
+        let laneId = try request.requireString("laneId")
+        let quit = try windows.quitApps(laneId: laneId, match: request.string("app"))
+        return [
+            "quit": .array(quit.map { entry in
+                .object([
+                    "pid": .int(Int(entry.app.pid)),
+                    "appName": .string(entry.app.appName),
+                    "bundleId": entry.app.bundleId.map(JSONValue.string) ?? .null,
+                    "released": .bool(entry.released),
+                ])
+            }),
         ]
     }
 

@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { IosSimH264Video, isWebCodecsAvailable } from "../chat/IosSimH264Video";
+import { H264StreamView } from "../chat/H264StreamView";
+import { h264SourceForUrl, isWebCodecsAvailable } from "../chat/h264StreamPlayer";
 import { cn } from "../ui/cn";
 import type { AppleDeviceOrientation } from "../../../shared/types";
+import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
 import {
   AppleDevice3DView,
   type AppleDevice3DFailure,
@@ -186,9 +188,10 @@ export function AppleDeviceStage({
     >
       <div style={videoStyle} data-apple-stage-screen="">
         {streamUrl ? (
-          <IosSimH264Video
-            url={streamUrl}
-            token={streamToken}
+          <H264StreamView
+            source={h264SourceForUrl(streamUrl, streamToken)}
+            streamName="simulator video stream"
+            streamGoneCode={APPLE_STREAM_NOT_RUNNING_CODE}
             reconnectNonce={reconnectNonce}
             onStatus={onReaderStatus}
             onDimensions={handleDimensions}

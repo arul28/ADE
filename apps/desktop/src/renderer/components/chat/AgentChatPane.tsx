@@ -154,7 +154,6 @@ import { collectAgentChatPromptHistory, type AgentChatPromptHistoryEntry } from 
 import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecyclePill";
 import { ChatAwayDigestCard } from "./ChatAwayDigestCard";
 import { ChatMacDesktopTimeLapseCard } from "./ChatMacDesktopTimeLapseCard";
-import { ChatAppControlRecordingCard } from "./ChatAppControlRecordingCard";
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
@@ -14862,25 +14861,12 @@ export function AgentChatPane({
       workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
     />
   ) : null;
-  /**
-   * An App Control recording this chat made, the same card in the same place.
-   * Null for every chat whose lane never recorded its app.
-   */
-  const appControlRecordingCard = laneId ? (
-    <ChatAppControlRecordingCard
-      laneId={laneId}
-      sessionId={composerSessionId}
-      runtimePin={renderedChatRuntimePin}
-      workScopeKey={workRuntimeScopeKey(renderedChatRuntimePin, projectBinding)}
-    />
-  ) : null;
-  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard || appControlRecordingCard ? (
+  const composerNoticeOverlay = awayDigestCard || lifecyclePill || macDesktopTimeLapseCard ? (
     <div
       data-testid="chat-composer-notice-overlay"
       className="pointer-events-none absolute inset-x-0 bottom-2 z-20 flex flex-col items-center gap-1.5 px-3"
     >
       {macDesktopTimeLapseCard}
-      {appControlRecordingCard}
       {awayDigestCard}
       {lifecyclePill}
     </div>

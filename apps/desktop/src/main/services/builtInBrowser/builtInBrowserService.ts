@@ -100,9 +100,12 @@ import type {
   BuiltInBrowserZoomResult,
 } from "../../../shared/types";
 import {
+  BUILT_IN_BROWSER_AGENT_VIEWPORT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
   BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT,
+  BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH,
   BUILT_IN_BROWSER_PARKED_PREVIEW_REPARK_DEBOUNCE_MS,
   BUILT_IN_BROWSER_PREVIEW_WARM_MS,
   BUILT_IN_BROWSER_VIEW_CORNER_RADIUS,
@@ -155,10 +158,22 @@ import {
 } from "./builtInBrowserConstants";
 import { isAllowedNavigationUrl, normalizeBrowserUrl } from "./builtInBrowserNavigation";
 import {
+  builtInBrowserRecordingKey,
   builtInBrowserTabTitle,
   createBuiltInBrowserTabCapabilities,
 } from "./builtInBrowserTabCapabilities";
 import { evaluateInTab } from "./builtInBrowserCdp";
+import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import {
+  DEMO_VIEWPORT_ISOLATED_WORLD_ID,
+  DEMO_VIEWPORT_SOURCE,
+  demoElementLabel,
+  demoTrackTarget,
+  demoTypedLabel,
+  demoUrlHost,
+  parseDemoViewport,
+} from "../demoVideo/demoTrackTargets";
 import {
   BuiltInBrowserHandoffActiveError,
   handoffOrigin,
@@ -422,8 +437,11 @@ export type BrowserTabState = {
  * `network` is the opt-in request log; `emulation` is a device override, which
  * Chromium drops the instant the DevTools session that set it detaches — which
  * is exactly why device presets used to change the label and nothing else.
+ * `agent-viewport` is the same override, held for an agent-owned or recording
+ * tab (see `BUILT_IN_BROWSER_AGENT_VIEWPORT`); it steps aside for a preset and
+ * for DevTools rather than blocking either.
  */
-export type BrowserDebuggerHoldOwner = "network" | "emulation";
+export type BrowserDebuggerHoldOwner = "network" | "emulation" | "agent-viewport";
 
 /**
  * Side-channel for the parts of a login handoff that are not the browser's job:
@@ -1708,6 +1726,18 @@ export function createBuiltInBrowserService(args: {
       return serviceForInput(input, sourceWindow).stopRecording(input);
     },
     /**
+     * A step caption (`ade proof step`) for the browser recordings in scope:
+     * the lane's, else the chat's. Browser recordings live in this process's
+     * demo track registry, so the brain forwards its steps here.
+     */
+    noteDemoStep(input: { laneId?: string | null; chatSessionId?: string | null; text?: string | null } = {}): { noted: number } {
+      const text = typeof input.text === "string" ? input.text : "";
+      const laneId = typeof input.laneId === "string" && input.laneId.trim() ? input.laneId.trim() : null;
+      const chatSessionId = typeof input.chatSessionId === "string" && input.chatSessionId.trim() ? input.chatSessionId.trim() : null;
+      if (!laneId && !chatSessionId) return { noted: 0 };
+      return { noted: demoTrackRegistry.noteStep({ laneId, chatSessionId }, text) };
+    },
+    /**
      * `owner` identifies the renderer holding the subscription (its
      * `webContents` id), so a crash releases its subscriptions and nobody
      * else's. Derived in main at the IPC boundary — never taken from `input`,
@@ -1986,6 +2016,9 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const emitStatus = (): void => {
+    // Before the status is built: a claim, release or recording edge that got
+    // us here may have to pin or free the tab's layout, and re-park it.
+    reconcileAgentViewports();
     const status = getStatus();
     if (!restoringTabs && args.onStateChange) {
       const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed());
@@ -2264,13 +2297,16 @@ function createBuiltInBrowserWindowService(args: {
     if (!laneId && !chatSessionId) return false;
     assertTabLeaseAvailable(tab, input);
     let changed = false;
+    let ownerChanged = false;
     if (laneId && laneId !== tab.ownerLaneId) {
       tab.ownerLaneId = laneId;
       changed = true;
+      ownerChanged = true;
     }
     if (chatSessionId && chatSessionId !== tab.ownerChatSessionId) {
       tab.ownerChatSessionId = chatSessionId;
       changed = true;
+      ownerChanged = true;
     }
     const leaseExpiresAt = new Date(Date.now() + normalizeLeaseTtlMs(input.leaseTtlMs)).toISOString();
     if (tab.ownerLeaseExpiresAt !== leaseExpiresAt) {
@@ -2278,6 +2314,18 @@ function createBuiltInBrowserWindowService(args: {
       changed = true;
     }
     if (changed) tab.ownerClaimedAt = new Date().toISOString();
+    /*
+     * A new owner is news the moment it happens. Reads and actions claim the
+     * tab they touch (`prepareAgentReadTabAsync`, `prepareAgentActionTab`) but
+     * emit nothing of their own, so an agent that picked up a tab it did not
+     * open — one restored at launch, one a person opened — drove it for minutes
+     * while every renderer still saw it unowned. The floating card only shows
+     * an unowned tab in a chat whose pane has shown it, so the preview never
+     * came up until the owner opened the Browser tool by hand (2026-09-27).
+     * Only the owner, not the lease renewal every call makes, and only for a
+     * tab already in the list: a tab being created is announced by its creator.
+     */
+    if (ownerChanged && tabs.includes(tab)) emitStatus();
     return changed;
   };
 
@@ -2378,6 +2426,9 @@ function createBuiltInBrowserWindowService(args: {
     );
     claimTabOwnerFromInput(tab, input);
     armAgentNavigationGuard(tab, input);
+    // A first claim pins the page to the agent viewport, which relays it out.
+    // Locating a target before that lands would aim at the old layout.
+    await settleAgentViewport(tab);
   };
 
   const prepareAgentReadTab = (
@@ -2401,6 +2452,7 @@ function createBuiltInBrowserWindowService(args: {
       waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS,
     });
     claimTabOwnerFromInput(tab, input);
+    await settleAgentViewport(tab);
   };
 
   /**
@@ -3010,11 +3062,15 @@ function createBuiltInBrowserWindowService(args: {
     wc.on("will-navigate", (event, url) => enforceAgentNavigation(event, url, "navigation"));
     wc.on("will-redirect", (event, url) => enforceAgentNavigation(event, url, "redirect"));
     wc.on("did-start-loading", () => {
-      noteNetworkActivity(tabForWebContents(wc));
+      const tab = tabForWebContents(wc);
+      noteNetworkActivity(tab);
+      if (tab) demoTrackRegistry.noteLoad(builtInBrowserRecordingKey(tab.id), "start");
       emitStatus();
     });
     wc.on("did-stop-loading", () => {
-      noteNetworkActivity(tabForWebContents(wc));
+      const tab = tabForWebContents(wc);
+      noteNetworkActivity(tab);
+      if (tab) demoTrackRegistry.noteLoad(builtInBrowserRecordingKey(tab.id), "end");
       emitStatus();
     });
     wc.on("did-navigate", (_event, url: string) => {
@@ -3043,6 +3099,7 @@ function createBuiltInBrowserWindowService(args: {
         tabCapabilities.applyTabZoom(tab, tab.zoomFactor);
       }
       if (tab) tabCapabilities.reapplyTabEmulation(tab);
+      if (tab) refreshAgentViewport(tab);
       emitStatus();
     });
     wc.on("page-favicon-updated", (_event, favicons: string[]) => {
@@ -3308,8 +3365,28 @@ function createBuiltInBrowserWindowService(args: {
     const union = displayUnionBottomRight();
     const right = Math.max(union.right, content.x + Math.max(0, content.width));
     const bottom = Math.max(union.bottom, content.y + Math.max(0, content.height));
+    // A tab on the agent viewport is laid out at that size whatever its box,
+    // so its park box IS that size: scale 1, and every preview frame and
+    // recording taken while nobody watches it is the full page, not a
+    // shrunk copy of whatever pane last showed it.
+    if (tabUsesAgentViewport(tab)) {
+      return {
+        x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+        y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
+        width: BUILT_IN_BROWSER_AGENT_VIEWPORT.width,
+        height: BUILT_IN_BROWSER_AGENT_VIEWPORT.height,
+      };
+    }
     // Window-relative, because `WebContentsView.setBounds` is.
-    const panelRect = tab.lastPanelRect;
+    // A pane squeezed to a sliver is not a page size worth keeping: a tab
+    // parked at 167 px wide laid the page out as a strip, and every
+    // screenshot, recording and preview an agent took of it came out as one.
+    // Below the usable size the floor wins, and the one resize is the price.
+    const panelRect = tab.lastPanelRect
+      && tab.lastPanelRect.width >= BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH
+      && tab.lastPanelRect.height >= BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT
+      ? tab.lastPanelRect
+      : null;
     return {
       x: Math.max(0, right - content.x) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
       y: Math.max(0, bottom - content.y) + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
@@ -3501,6 +3578,9 @@ function createBuiltInBrowserWindowService(args: {
     const release = acquireCaptureHold(tab.id);
     try {
       await waitForWarmToFinish(tab.id);
+      // Parking an agent-viewport tab refits it to scale 1; a capture taken
+      // before that lands is the previous pane's shrunk page.
+      await settleAgentViewport(tab);
       return await fn();
     } finally {
       release();
@@ -3551,6 +3631,163 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
+  /* ── Agent viewport ────────────────────────────────────────────────────── */
+
+  /**
+   * Per tab: the fit factor we want Chromium to draw the agent viewport at,
+   * the one it last accepted, the view box it is fitted into, and the queue
+   * the CDP calls run on. `target`/`applied` null means "no override of ours".
+   */
+  type AgentViewportState = {
+    target: number | null;
+    applied: number | null;
+    wanted: boolean;
+    box: { width: number; height: number } | null;
+    chain: Promise<void>;
+  };
+  const agentViewports = new WeakMap<BrowserTabState, AgentViewportState>();
+
+  const agentViewportState = (tab: BrowserTabState): AgentViewportState => {
+    let state = agentViewports.get(tab);
+    if (!state) {
+      state = { target: null, applied: null, wanted: false, box: null, chain: Promise.resolve() };
+      agentViewports.set(tab, state);
+    }
+    return state;
+  };
+
+  /**
+   * How much the fixed page has to shrink to fit the view's box. The pane
+   * letterboxes the box to the viewport's shape, so this is the pane's own fit
+   * factor; a parked view is exactly the viewport, so it is 1.
+   */
+  const agentViewportFit = (box: { width: number; height: number } | null): number => {
+    if (!box || !(box.width > 0) || !(box.height > 0)) return 1;
+    return clampBuiltInBrowserEmulationViewScale(Math.min(
+      1,
+      box.width / BUILT_IN_BROWSER_AGENT_VIEWPORT.width,
+      box.height / BUILT_IN_BROWSER_AGENT_VIEWPORT.height,
+    ));
+  };
+
+  /**
+   * Bring Chromium in line with `state.target`. Runs on the tab's own queue,
+   * and reads the target when it runs rather than when it was queued, so a
+   * burst of pane drags or an on/off/on flip lands on the last answer.
+   */
+  const applyAgentViewport = async (tab: BrowserTabState, state: AgentViewportState): Promise<void> => {
+    const target = state.target;
+    if (target === state.applied) return;
+    const wc = tab.webContents;
+    if (wc.isDestroyed()) {
+      state.applied = null;
+      return;
+    }
+    if (target == null) {
+      state.applied = null;
+      if (!tab.debuggerHolds.has("agent-viewport")) return;
+      try {
+        // A device preset that replaced ours owns the override now; clearing
+        // it here would take the person's iPhone away with our desktop.
+        if (!tab.emulation && wc.debugger.isAttached()) {
+          await sendDebuggerCommand(wc, "Emulation.clearDeviceMetricsOverride").catch(() => {});
+        }
+      } finally {
+        releaseDebuggerHold(tab, "agent-viewport");
+      }
+      return;
+    }
+    // Chromium reverts an override when the session that set it detaches, so
+    // like a preset it owns a debugger hold for as long as it is in force.
+    if (!tab.debuggerHolds.has("agent-viewport")) await acquireDebuggerHold(tab, "agent-viewport");
+    const { width, height } = BUILT_IN_BROWSER_AGENT_VIEWPORT;
+    await sendDebuggerCommand(wc, "Emulation.setDeviceMetricsOverride", {
+      width,
+      height,
+      // 0 keeps the display's own density, so the page stays as sharp as it
+      // would be unemulated.
+      deviceScaleFactor: 0,
+      mobile: false,
+      scale: target,
+      screenWidth: width,
+      screenHeight: height,
+      positionX: 0,
+      positionY: 0,
+      screenOrientation: { type: "landscapePrimary", angle: 90 },
+    });
+    state.applied = target;
+  };
+
+  const queueAgentViewport = (tab: BrowserTabState, state: AgentViewportState): void => {
+    state.chain = state.chain
+      .then(() => applyAgentViewport(tab, state))
+      .catch((error: unknown) => {
+        // DevTools open, a renderer mid-swap: the tab keeps laying out at its
+        // box, which is what it did before this existed. The next change of
+        // box or owner tries again.
+        logger()?.debug("built_in_browser.agent_viewport_failed", {
+          tabId: tab.id,
+          err: errorMessage(error),
+        });
+      });
+  };
+
+  /**
+   * Re-derive one tab's override from its owner, recording and box. `box` is
+   * the view's new bounds when the caller just placed it; omitted, the last
+   * known box stands (a detached view has no surface to fit anyway).
+   */
+  const syncAgentViewport = (
+    tab: BrowserTabState,
+    box?: { width: number; height: number } | null,
+  ): void => {
+    const state = agentViewportState(tab);
+    if (box && box.width > 0 && box.height > 0) state.box = { width: box.width, height: box.height };
+    const target = tabUsesAgentViewport(tab) ? agentViewportFit(state.box) : null;
+    if (target === state.target) return;
+    state.target = target;
+    queueAgentViewport(tab, state);
+  };
+
+  /**
+   * Re-send an override Chromium may have dropped behind our back: a
+   * cross-process navigation, or a `setEmulation` clear that swept ours away
+   * along with a preset that was never on.
+   */
+  const refreshAgentViewport = (tab: BrowserTabState): void => {
+    const state = agentViewports.get(tab);
+    if (!state || state.target == null) return;
+    state.applied = null;
+    queueAgentViewport(tab, state);
+  };
+
+  /**
+   * Every tab against its owner and recording state, from `emitStatus` — the
+   * one place every claim, release, recording edge, handoff and DevTools
+   * toggle passes through. Costs nothing but a comparison when nothing moved.
+   * A parked tab whose want flipped is re-parked, because its park box is the
+   * viewport's size only while it wants the viewport.
+   */
+  const reconcileAgentViewports = (): void => {
+    let repark = false;
+    for (const tab of tabs) {
+      if (tab.webContents.isDestroyed()) continue;
+      const state = agentViewportState(tab);
+      const wanted = tabUsesAgentViewport(tab);
+      if (wanted !== state.wanted) {
+        state.wanted = wanted;
+        if (parkedTabIds.has(tab.id)) repark = true;
+      }
+      syncAgentViewport(tab);
+    }
+    if (repark) attachViewsToCurrentWindow();
+  };
+
+  /** Resolves once the tab's queued override calls have run. */
+  const settleAgentViewport = async (tab: BrowserTabState): Promise<void> => {
+    await agentViewports.get(tab)?.chain;
+  };
+
   const attachViewsToCurrentWindow = (): void => {
     if (!win || win.isDestroyed()) return;
     const electronRect = toElectronRect(bounds);
@@ -3576,7 +3813,9 @@ function createBuiltInBrowserWindowService(args: {
           // warm, where the radius exists to clip the pixel that overlaps the
           // UI rather than to decorate anything.
           applyTabViewCornerRadius(tab, warming ? warmingCornerRadius : 0);
-          tab.view.setBounds(warming ?? parkedPreviewRect(tab));
+          const parkedRect = warming ?? parkedPreviewRect(tab);
+          tab.view.setBounds(parkedRect);
+          syncAgentViewport(tab, parkedRect);
           if (warming) scheduleParkAfterWarming(tab.id);
           tab.view.setVisible(true);
           // Still not the active tab: parked means composited, not attended, so
@@ -3593,6 +3832,7 @@ function createBuiltInBrowserWindowService(args: {
         tab.view.setVisible(false);
         removeTabViewFromWindow(tab);
         applyTabLifecycle(tab, false);
+        syncAgentViewport(tab);
         continue;
       }
       parkedTabIds.delete(tab.id);
@@ -3606,6 +3846,7 @@ function createBuiltInBrowserWindowService(args: {
       // On screen at real bounds: whatever else happens, this view has a surface.
       surfacedTabIds.add(tab.id);
       tab.view.setBounds(electronRect);
+      syncAgentViewport(tab, electronRect);
       tab.view.setVisible(true);
       applyTabLifecycle(tab, true);
     }
@@ -4500,6 +4741,7 @@ function createBuiltInBrowserWindowService(args: {
     armAgentNavigationGuard(tab, input);
     const wc = tab.webContents;
     attachViewsToCurrentWindow();
+    void noteDemoAction(tab, input, "navigate", { label: demoUrlHost(targetUrl) });
     await wc.loadURL(targetUrl);
     if (input.openPanel) {
       requestOpenPanel({ url: targetUrl, tabId: tab.id, laneId: input.laneId, chatSessionId: input.chatSessionId });
@@ -4864,11 +5106,41 @@ function createBuiltInBrowserWindowService(args: {
     };
   }
 
+  /**
+   * An action on a tab that is recording, for its demo track. Costs nothing
+   * when the tab is not recording and never fails the action. The time is
+   * taken before the viewport read, so it is when the action happened.
+   */
+  async function noteDemoAction(
+    tab: BrowserTabState,
+    input: { chatSessionId?: string | null },
+    kind: DemoTrackEventKind,
+    target: { point?: { x: number; y: number } | null; element?: BuiltInBrowserElementSnapshot | null; label?: string },
+  ): Promise<void> {
+    const key = builtInBrowserRecordingKey(tab.id);
+    if (!demoTrackRegistry.isRecording(key)) return;
+    const atMs = Date.now();
+    let viewport = null;
+    if ((target.point || target.element) && !tab.webContents.isDestroyed()) {
+      viewport = parseDemoViewport(await tab.webContents
+        .executeJavaScriptInIsolatedWorld(DEMO_VIEWPORT_ISOLATED_WORLD_ID, [{ code: DEMO_VIEWPORT_SOURCE }])
+        .catch(() => null));
+    }
+    demoTrackRegistry.note(key, {
+      kind,
+      by: input.chatSessionId ? "agent" : "user",
+      atMs,
+      ...demoTrackTarget(viewport, target.point ?? null, target.element ?? null),
+      ...(target.label ? { label: target.label } : {}),
+    });
+  }
+
   async function click(input: BuiltInBrowserClickArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before clicking.");
     return runTracedAgentAction(tab, "click", input, async () => {
       const wc = tab.webContents;
-      const { x, y } = await resolveClickTarget(tab, input);
+      const { x, y, element } = await resolveClickTarget(tab, input);
+      await noteDemoAction(tab, input, "click", { point: { x, y }, element, label: demoElementLabel(element) });
       const button = normalizeMouseButton(input.button);
       const clickCount = normalizeClickCount(input.clickCount);
       await withTemporaryDebugger(wc, async () => {
@@ -4898,6 +5170,8 @@ function createBuiltInBrowserWindowService(args: {
       const text = stringOrNull(input.text);
       if (!text) throw new Error("Text is required.");
       await captureActionBaseline(tab, input);
+      // No label: what had focus is unknown, so the text may be a secret.
+      await noteDemoAction(tab, input, "type", {});
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
       });
@@ -4911,11 +5185,13 @@ function createBuiltInBrowserWindowService(args: {
     return runTracedAgentAction(tab, "dispatchKey", input, async () => {
       const key = stringOrNull(input.key);
       if (!key) throw new Error("Key is required.");
+      let element: BuiltInBrowserElementSnapshot | null = null;
       if (hasElementTarget(input)) {
-        await focusElementTarget(tab, input, { select: false });
+        element = await focusElementTarget(tab, input, { select: false });
       } else {
         await captureActionBaseline(tab, input);
       }
+      await noteDemoAction(tab, input, "key", { element, label: key });
       const event = keyEventForAgentInput(key);
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.dispatchKeyEvent", {
@@ -4941,6 +5217,11 @@ function createBuiltInBrowserWindowService(args: {
       const deltaY = finiteNumber(input.deltaY) ?? 0;
       if (deltaX === 0 && deltaY === 0) throw new Error("Scroll requires deltaX or deltaY.");
       await captureActionBaseline(tab, input);
+      const scrollX = finiteNumber(input.x);
+      const scrollY = finiteNumber(input.y);
+      await noteDemoAction(tab, input, "scroll", {
+        point: scrollX != null && scrollY != null ? { x: normalizeDimension(scrollX), y: normalizeDimension(scrollY) } : null,
+      });
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.dispatchMouseEvent", {
           type: "mouseWheel",
@@ -4963,7 +5244,8 @@ function createBuiltInBrowserWindowService(args: {
         ? input.value
         : (typeof input.text === "string" ? input.text : null);
       if (text == null) throw new Error("Fill text is required.");
-      await focusElementTarget(tab, input, { select: true, clear: true });
+      const element = await focusElementTarget(tab, input, { select: true, clear: true });
+      await noteDemoAction(tab, input, "type", { element, label: demoTypedLabel(text, element) });
       await withTemporaryDebugger(tab.webContents, async () => {
         await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
       });
@@ -5990,7 +6272,14 @@ function createBuiltInBrowserWindowService(args: {
     selectPoint,
     selectCurrent,
     clearSelection,
-    setEmulation: tabCapabilities.setEmulation,
+    setEmulation: async (input: BuiltInBrowserSetEmulationArgs) => {
+      const result = await tabCapabilities.setEmulation(input);
+      // Clearing a preset clears Chromium's override outright, ours included
+      // when no preset was on; put the agent viewport back if it still applies.
+      const tab = tabById(result.tabId);
+      if (tab) refreshAgentViewport(tab);
+      return result;
+    },
     setZoom: tabCapabilities.setZoom,
     findInPage: tabCapabilities.findInPage,
     stopFindInPage: tabCapabilities.stopFindInPage,
@@ -6178,6 +6467,22 @@ function urlForBrowserLog(value: string): string | null {
   }
 }
 
+/**
+ * Whether the tab is laid out at `BUILT_IN_BROWSER_AGENT_VIEWPORT` rather than
+ * at its box: an agent owns it, or it is being recorded.
+ *
+ * A device preset is an explicit ask and wins. DevTools needs the debugger the
+ * override holds, and a handoff hands the tab to a person, who gets the page at
+ * the size of the pane they are typing into — person-driven tabs keep laying
+ * out at their box, as they always have.
+ */
+function tabUsesAgentViewport(
+  tab: Pick<BrowserTabState, "emulation" | "devToolsMode" | "handoff" | "ownerChatSessionId" | "recording">,
+): boolean {
+  if (tab.emulation || tab.devToolsMode !== null || tab.handoff) return false;
+  return Boolean(tab.ownerChatSessionId) || Boolean(tab.recording);
+}
+
 function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
   const wc = tab.webContents;
   const url = wc.isDestroyed() ? null : emptyToNull(wc.getURL());
@@ -6201,6 +6506,9 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     zoomFactor: tab.zoomFactor,
     devToolsOpen: tab.devToolsMode !== null,
     emulation: tab.emulation,
+    agentViewport: tabUsesAgentViewport(tab)
+      ? { width: BUILT_IN_BROWSER_AGENT_VIEWPORT.width, height: BUILT_IN_BROWSER_AGENT_VIEWPORT.height }
+      : null,
     networkLogging: tab.networkLoggingEnabled,
     recording: tab.recording
       ? { startedAt: tab.recording.startedAt, fps: tab.recording.fps }

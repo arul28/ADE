@@ -4,7 +4,7 @@ import Foundation
 ///
 /// The vendored `H264Encoder` emits **AVCC**: each NAL prefixed with a 4-byte
 /// big-endian length, with SPS/PPS carried out-of-band in an `avcC` blob.
-/// ADE's renderer (`IosSimH264Video.tsx`) configures its `VideoDecoder` with a
+/// ADE's renderer (`h264StreamPlayer.ts`) configures its `VideoDecoder` with a
 /// codec string and no `description`, which means it decodes **Annex-B** only.
 ///
 /// This is the one real format delta between serve-sim and ADE, and it is

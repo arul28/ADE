@@ -161,32 +161,6 @@ final class AppleDeviceStreamTests: XCTestCase {
     XCTAssertEqual(parser.pendingBytes, 0)
   }
 
-  // MARK: - Annex-B
-
-  func testSplitsNalUnitsOnBothStartCodeLengths() {
-    let data = Data([0, 0, 0, 1, 0x67, 0xAA] + [0, 0, 1, 0x68, 0xBB] + [0, 0, 0, 1, 0x65, 0xCC, 0xDD])
-    let units = AppleAnnexB.nalUnits(in: data)
-
-    XCTAssertEqual(units.count, 3)
-    XCTAssertEqual(AppleAnnexB.nalType(of: units[0]), AppleAnnexB.nalTypeSps)
-    XCTAssertEqual(AppleAnnexB.nalType(of: units[1]), AppleAnnexB.nalTypePps)
-    XCTAssertEqual(AppleAnnexB.nalType(of: units[2]), AppleAnnexB.nalTypeIdr)
-    XCTAssertEqual(units[2], Data([0x65, 0xCC, 0xDD]))
-  }
-
-  func testAvccSampleDropsParameterSetsAndLengthPrefixesTheRest() throws {
-    // SPS/PPS live in the format description, not in the sample; leaving them
-    // in is how a stream decodes to nothing on some devices and fine on others.
-    let units = [Data([0x67, 0xAA]), Data([0x68, 0xBB]), Data([0x65, 0xCC, 0xDD])]
-    let sample = try XCTUnwrap(AppleAnnexB.avccSample(from: units))
-
-    XCTAssertEqual(sample, Data([0, 0, 0, 3, 0x65, 0xCC, 0xDD]))
-  }
-
-  func testAvccSampleOfParameterSetsOnlyIsNil() {
-    XCTAssertNil(AppleAnnexB.avccSample(from: [Data([0x67, 0xAA]), Data([0x68, 0xBB])]))
-  }
-
   // MARK: - Health state machine
 
   func testFirstFrameTimeoutStallsAConnectionThatNeverShowsAPicture() {

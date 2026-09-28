@@ -128,6 +128,14 @@ export const PI_LOGIN_IPC_TIMEOUT_MS = 11 * 60_000;
  */
 export const CURSOR_LOGIN_IPC_TIMEOUT_MS = 21 * 60_000;
 
+/**
+ * A recording's stop makes its demo before it answers: measure the raw file,
+ * render it, and render again when the first result is over 10 MB. A
+ * five-minute recording takes well under a minute on Apple silicon; this
+ * leaves room for a slow machine and the size refits.
+ */
+export const DEMO_RECORDING_STOP_TIMEOUT_MS = 4 * 60_000;
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
@@ -174,6 +182,11 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   // See IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS.
   ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS],
+  // See DEMO_RECORDING_STOP_TIMEOUT_MS.
+  ["mac_desktop.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["built_in_browser.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["ios_simulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

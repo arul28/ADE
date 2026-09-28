@@ -16,7 +16,7 @@ import {
 import { macDesktopNotParkedSentence } from "./macDesktopActivityText";
 import type { MacDesktopWindow } from "../../../shared/types/macDesktop";
 import { cn } from "../ui/cn";
-import { RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
+import { MakingDemoPill, RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
 import {
   WORK_TOOL_CHROME_CHIP,
   WORK_TOOL_CHROME_ROW,
@@ -26,7 +26,7 @@ import {
   WorkToolEmptyLine,
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
-import { H264VideoCanvas } from "./H264VideoCanvas";
+import { H264StreamView } from "./H264StreamView";
 import { MacDesktopAgentCursor } from "./MacDesktopAgentCursor";
 import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
 import { MAC_DESKTOP_SECONDARY_BUTTON, MacDesktopStateCard } from "./MacDesktopStateCard";
@@ -141,6 +141,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId, setSelectedWindowId,
     lastObservation, surfaceNode, videoHost, canvasSlot, attachCanvasSlot, attachSurface, errorText, display, lease, windows,
     supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, permissionCheck, confirmStop, setConfirmStop,
+    confirmRestartCapture, setConfirmRestartCapture, restartingCapture, restartCapture,
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow, releaseWindowById,
@@ -743,8 +744,31 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
             {stopped ? "Video stopped" : "The picture is not coming through"}
           </p>
           <p className="text-[12px] leading-5 text-muted-fg">
-            {stopped ? "Mac Desktop is still running." : "Mac Desktop is up, but no video has arrived yet."}
+            {confirmRestartCapture
+              ? "Restart the capture? Apps open here stay open and move to your main screen."
+              : restartingCapture
+                ? "Restarting the capture…"
+                : stopped ? "Mac Desktop is still running." : "Mac Desktop is up, but no video has arrived yet."}
           </p>
+          {confirmRestartCapture ? (
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                data-testid={`mac-desktop-restart-capture-yes${suffix}`}
+                className={cn(WORK_TOOL_PRIMARY_BUTTON, "h-7")}
+                onClick={() => void restartCapture()}
+              >
+                Restart
+              </button>
+              <button
+                type="button"
+                className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
+                onClick={() => setConfirmRestartCapture(false)}
+              >
+                Keep waiting
+              </button>
+            </div>
+          ) : restartingCapture ? null : (
           <div className="flex items-center gap-3">
             {/* A fresh `startStream`, budget included: the automatic retries
                 give up after a few tries, and this is the way back after that. */}
@@ -761,6 +785,14 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
                 Details
               </button>
             ) : null}
+            <button
+              type="button"
+              data-testid={`mac-desktop-restart-capture${suffix}`}
+              className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
+              onClick={() => setConfirmRestartCapture(true)}
+            >
+              Restart capture
+            </button>
             {stopped ? null : (
               <button
                 type="button"
@@ -771,6 +803,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
               </button>
             )}
           </div>
+          )}
           {stopped && detail && videoDetailsOpen ? (
             <p className="max-w-full break-words text-left font-mono text-[11px] leading-4 text-muted-fg">{detail}</p>
           ) : null}
@@ -855,6 +888,12 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
             className="z-[11]"
             style={{ bottom }}
           />
+        ) : recording?.makingDemo ? (
+          <MakingDemoPill
+            marker={{ "data-testid": `mac-desktop-making-demo${scope === "pane" ? "" : "-fs"}` }}
+            className="z-[11]"
+            style={{ bottom }}
+          />
         ) : null}
         {receipt ? (
           <RecordingSavedRow
@@ -906,8 +945,8 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
           node is what travels between the pane and the overlay. */}
       {videoHost && live.url
         ? createPortal(
-            <H264VideoCanvas
-              url={live.url}
+            <H264StreamView
+              source={{ kind: "http", url: live.url }}
               reconnectNonce={live.reconnectNonce}
               onStatus={live.onStatus}
               onDimensions={live.onDimensions}

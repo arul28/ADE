@@ -337,16 +337,29 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       ...laneClaim(),
       ...(windowId() == null ? {} : { windowId: windowId() }),
     });
+  if (sub === "quit") {
+    // Only apps the lane opened, including ones it released to the user.
+    // Nothing named quits them all.
+    const app = readValue(args, ["--app"]) ?? positionals(args)[0] ?? null;
+    return desktopAction("mac-desktop quit", "quitApp", {
+      ...laneClaim(),
+      ...(app ? { app } : {}),
+    });
+  }
   if (sub === "open" || sub === "launch") {
     const target = requireValue(
       readValue(args, ["--target", "--app"]) ?? positionals(args)[0] ?? null,
       "app, path, or URL",
     );
-    // Everything after `--` is the launched app's argv, not ours.
+    // Everything after `--` is the launched app's argv, not ours, except an
+    // output flag at the very end: `open TextEdit -- <file> --text` meant the
+    // CLI's --text, and TextEdit got it as a second file.
+    const appArgs = [...tail];
+    while (appArgs.length && (appArgs[appArgs.length - 1] === "--text" || appArgs[appArgs.length - 1] === "--json")) appArgs.pop();
     return desktopAction("mac-desktop open", "open", {
       ...laneClaim(),
       target,
-      ...(tail.length ? { args: [...tail] } : {}),
+      ...(appArgs.length ? { args: appArgs } : {}),
     });
   }
   if (sub === "observe" || sub === "snapshot") {
@@ -485,8 +498,9 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
   if (sub === "record" || sub === "recording") {
     const mode = (positionals(args)[0] ?? "start").toLowerCase();
     if (mode === "start") {
-      // Same flags and default as `ade apple record-start`.
-      const keepIdle = readFlag(args, ["--keep-idle"]);
+      // Same flags and default as `ade apple record-start`. `--keep-idle` is
+      // the old name of `--plain`.
+      const plain = readFlag(args, ["--plain", "--keep-idle"]);
       const maxSeconds = readNumberOption(args, ["--max-seconds"]);
       if (maxSeconds != null && maxSeconds <= 0) {
         throw new CliUsageError("mac-desktop record start --max-seconds must be greater than 0.");
@@ -495,7 +509,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
         ...laneClaim(),
         caption: readValue(args, ["--caption", "--description", "--desc"]),
         fps: readNumberOption(args, ["--fps"]),
-        ...(keepIdle ? { keepIdle: true } : {}),
+        ...(plain ? { plain: true } : {}),
         ...(maxSeconds == null ? {} : { maxSeconds }),
       }, "mac-desktop-recording");
     }
@@ -506,7 +520,15 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
         laneClaim(),
         "mac-desktop-recording",
       );
-    throw new CliUsageError(`Unknown mac-desktop record command: ${mode}. Use start or stop.`);
+    // The lane's recording, as `app-control record status` reports its own.
+    if (mode === "status")
+      return desktopAction(
+        "mac-desktop record status",
+        "getStatus",
+        laneClaim(),
+        "mac-desktop-recording",
+      );
+    throw new CliUsageError(`Unknown mac-desktop record command: ${mode}. Use start, stop or status.`);
   }
   if (sub === "stream" || sub === "live" || sub === "stream-status")
     return desktopAction("mac-desktop stream status", "getStreamStatus", laneClaim());
@@ -958,7 +980,10 @@ export function macDesktopRecordingDurationMs(record: JsonObject): number | null
 /** `record start` / `record stop`: is it running, where is the file, how long. */
 export function formatMacDesktopRecording(value: unknown): string {
   const record = isRecord(value) ? value : {};
-  const status = firstRecord(record, ["recording", "status"]) ?? record;
+  // `record status` reads the display's status, whose `recording` is null when
+  // the lane has never recorded: that is "not running", not a blank record.
+  const status = firstRecord(record, ["recording", "status"])
+    ?? ("recording" in record && record.recording == null ? { laneId: record.laneId, running: false } : record);
   const durationMs = macDesktopRecordingDurationMs(status);
   const finite = (value: unknown): number | null =>
     typeof value === "number" && Number.isFinite(value) ? value : null;

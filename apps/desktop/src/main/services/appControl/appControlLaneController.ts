@@ -50,9 +50,12 @@ import { createAppControlAgentActions } from "./appControlAgentActions";
 import type {
   createAppControlRecording} from "./appControlRecording";
 import {
+  appControlRecordingKey,
   type AppControlScreencastRecorderBackend,
   type AppControlWindowRecorder,
 } from "./appControlRecording";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import type { DemoEngine } from "../../../shared/demoVideo/demoContract";
 import type { ComputerUseArtifactIngestionRequest, ComputerUseArtifactIngestionResult } from "../../../shared/types/computerUseArtifacts";
 import { killWindowsProcessTreeAsync } from "../shared/processExecution";
 import type { Logger } from "../logging/logger";
@@ -110,6 +113,12 @@ export type CreateAppControlServiceArgs = {
    * and a start is refused with "needs the ADE desktop app".
    */
   getScreencastRecorder?: (() => AppControlScreencastRecorderBackend | null) | null;
+  /**
+   * The ADE desktop app's Chromium demo engine, which renders the screencast's
+   * `.aderaw` capture into the demo. Read at each stop; null without a desktop
+   * app on this machine.
+   */
+  getChromiumDemoEngine?: (() => DemoEngine | null) | null;
   /** Files a captioned recording as proof (the artifact broker's `ingest`). */
   ingestArtifacts?: ((request: ComputerUseArtifactIngestionRequest) =>
     Promise<ComputerUseArtifactIngestionResult> | ComputerUseArtifactIngestionResult) | null;
@@ -1496,6 +1505,16 @@ export function createAppControlLaneController(context: AppControlLaneController
    * the UI looks unchanged.
    */
   const subscribeDiagnostics = (client: CdpClient): void => {
+    // Page loads of the main frame, for a running recording's demo track (a
+    // no-op when the lane is not recording). A page target's main frame id is
+    // its target id.
+    const noteLoad = (phase: "start" | "end") => (params: unknown): void => {
+      if (isRecord(params) && params.frameId === screencastTargetId) {
+        demoTrackRegistry.noteLoad(appControlRecordingKey(laneId), phase);
+      }
+    };
+    client.on("Page.frameStartedLoading", noteLoad("start"));
+    client.on("Page.frameStoppedLoading", noteLoad("end"));
     client.on("Runtime.consoleAPICalled", (params) => {
       if (!isRecord(params)) return;
       const argsList = Array.isArray(params.args) ? params.args : [];

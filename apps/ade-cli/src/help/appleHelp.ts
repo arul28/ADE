@@ -1005,20 +1005,23 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   typed-text badges) follow Settings unless --overlays is passed. Starting
   while an auto recording is running converts it to manual (no restart, no gap).
 
-  Still time is cut: a still screen longer than 2 s keeps 0.75 s in the video.
+  A recording becomes a demo when it stops: still stretches are cut, waits
+  play faster, tap rings are drawn, and step captions (ade proof step
+  "<text>") show. The camera does not zoom on a phone unless you pass --zoom. Every video ends under 10 MB.
   record-stop reports durationMs (video), wallDurationMs (real time) and
-  idleCutMs. A recording a chat owns stops itself after 10 minutes of real
-  time (stopReason "cap") and is filed as proof.
+  idleCutMs. A recording stops itself after 5 minutes (stopReason "cap") or
+  after 2 minutes with no input ("idle"), and is filed as proof.
 
     $ ade --socket apple record-start --text
     $ ade --socket apple record-start --overlays off --label "signup" --text
-    $ ade --socket apple record-start --keep-idle --max-seconds 1200 --text
+    $ ade --socket apple record-start --plain --max-seconds 120 --text
 
   Flags:
-    --overlays on|off      Overlay compositor; default is Settings.
+    --overlays on|off      Tap rings and typed text in the demo; default is Settings.
     --label <text>         Human label for the recording.
-    --keep-idle            Keep still stretches at real length.
-    --max-seconds <n>      Stop after n seconds of real time (default 600).
+    --plain                File it as recorded: no cuts, zoom, rings or captions.
+    --zoom                 Zoom in a little on each tap. Use it only when asked.
+    --max-seconds <n>      Stop after n seconds of real time (at most and default 300).
     --lane, --lane-id <id> Lane whose device to record.
 `,
   "record-stop": `${ADE_BANNER}

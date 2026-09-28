@@ -73,6 +73,8 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
     case debugging
     case shipping
     case monitoring
+    /// A recording the chat owns is running (set by ADE, never by an agent).
+    case recording
     case waiting
     case needsYou
     case done
@@ -98,6 +100,7 @@ public enum ActivityGlyph: String, Codable, Hashable, Sendable {
         case .debugging: return "ladybug.fill"
         case .shipping: return "paperplane.fill"
         case .monitoring: return "eye.fill"
+        case .recording: return "record.circle.fill"
         case .waiting: return "hourglass"
         // A filled dot, not a bell. The bell said "notification"; the row is
         // not a notification, it is a state, and the strip/island read it

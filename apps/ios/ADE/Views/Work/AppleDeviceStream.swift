@@ -1,8 +1,6 @@
 import AVFoundation
-import CoreMedia
 import Foundation
 import UIKit
-import VideoToolbox
 
 // MARK: - Wire models
 
@@ -299,76 +297,6 @@ struct AppleStreamRecordParser {
   }
 }
 
-// MARK: - Annex-B
-
-/// Splitting an Annex-B elementary stream into NAL units.
-///
-/// The helper's access units carry SPS/PPS inline on every keyframe, so the
-/// decoder can be built from any keyframe and rebuilt when the device rotates
-/// and the parameter sets change mid-stream.
-enum AppleAnnexB {
-  /// NAL unit payloads, start codes stripped. Accepts both 3-byte and 4-byte
-  /// start codes; the helper emits 4-byte but a re-muxer may not.
-  static func nalUnits(in data: Data) -> [Data] {
-    var units: [Data] = []
-    let bytes = [UInt8](data)
-    let count = bytes.count
-    guard count >= 3 else { return units }
-
-    var starts: [(index: Int, length: Int)] = []
-    var i = 0
-    while i + 2 < count {
-      if bytes[i] == 0, bytes[i + 1] == 0 {
-        if bytes[i + 2] == 1 {
-          starts.append((i, 3))
-          i += 3
-          continue
-        }
-        if i + 3 < count, bytes[i + 2] == 0, bytes[i + 3] == 1 {
-          starts.append((i, 4))
-          i += 4
-          continue
-        }
-      }
-      i += 1
-    }
-    for (offset, start) in starts.enumerated() {
-      let payloadStart = start.index + start.length
-      let payloadEnd = offset + 1 < starts.count ? starts[offset + 1].index : count
-      guard payloadEnd > payloadStart else { continue }
-      units.append(Data(bytes[payloadStart..<payloadEnd]))
-    }
-    return units
-  }
-
-  static func nalType(of unit: Data) -> UInt8? {
-    guard let first = unit.first else { return nil }
-    return first & 0x1F
-  }
-
-  static let nalTypeSps: UInt8 = 7
-  static let nalTypePps: UInt8 = 8
-  static let nalTypeIdr: UInt8 = 5
-
-  /// Rewrites NAL units as AVCC: each payload prefixed with its big-endian
-  /// 4-byte length, which is what `CMBlockBuffer` wants. Parameter sets are
-  /// dropped — they live in the format description, not in the sample.
-  static func avccSample(from units: [Data]) -> Data? {
-    var out = Data()
-    for unit in units {
-      guard let type = nalType(of: unit) else { continue }
-      if type == nalTypeSps || type == nalTypePps { continue }
-      // Access unit delimiters (9) and filler (12) carry nothing a decoder
-      // needs and some decoders reject them inside a sample.
-      if type == 9 || type == 12 { continue }
-      var length = UInt32(unit.count).bigEndian
-      withUnsafeBytes(of: &length) { out.append(contentsOf: $0) }
-      out.append(unit)
-    }
-    return out.isEmpty ? nil : out
-  }
-}
-
 // MARK: - Health state machine
 
 /// What the viewer is doing, as one value the view renders directly.
@@ -597,176 +525,35 @@ private func appleStreamAppendTokenIfAbsent(_ components: inout URLComponents, t
 
 // MARK: - Decoder
 
-/// Feeds Annex-B access units into an `AVSampleBufferDisplayLayer`.
+/// The Apple device viewer's picture: a display layer it owns, fed by the
+/// shared `H264SampleBufferFeeder`.
 ///
-/// `AVSampleBufferDisplayLayer` rather than a raw `VTDecompressionSession`: the
-/// phone only ever displays this stream, never samples it, so the layer's own
-/// hardware decode path is both less code and one fewer buffer copy per frame.
-/// Parameter sets are rebuilt whenever the SPS or PPS bytes change, which is
-/// what makes a mid-stream rotation on the Mac survive without a reconnect.
+/// The helper's access units carry SPS/PPS inline on every keyframe, so the
+/// format is built from any keyframe and rebuilt when the device rotates and
+/// the parameter sets change mid-stream.
 @MainActor
 final class AppleStreamDecoder {
   let layer = AVSampleBufferDisplayLayer()
+  private let feeder = H264SampleBufferFeeder()
 
-  private var sps: Data?
-  private var pps: Data?
-  private var formatDescription: CMFormatDescription?
-  private(set) var presentedSize: CGSize?
+  var presentedSize: CGSize? { feeder.presentedSize }
 
   init() {
     layer.videoGravity = .resizeAspect
     layer.backgroundColor = UIColor.black.cgColor
+    feeder.attach(layer)
   }
 
   func reset() {
-    sps = nil
-    pps = nil
-    formatDescription = nil
-    presentedSize = nil
-    layer.flushAndRemoveImage()
+    feeder.reset()
   }
 
   /// Decodes one access unit. Returns true when a sample was enqueued, which is
-  /// what feeds the frame watchdog — a unit that only carried parameter sets is
-  /// not a frame.
+  /// what feeds the frame watchdog — a unit that only carried parameter sets,
+  /// or a P-frame held until the next keyframe, is not a frame.
   @discardableResult
   func decode(accessUnit: Data, keyframe: Bool) -> Bool {
-    let units = AppleAnnexB.nalUnits(in: accessUnit)
-    guard !units.isEmpty else { return false }
-
-    var parameterSetsChanged = false
-    for unit in units {
-      switch AppleAnnexB.nalType(of: unit) {
-      case AppleAnnexB.nalTypeSps where unit != sps:
-        sps = unit
-        parameterSetsChanged = true
-      case AppleAnnexB.nalTypePps where unit != pps:
-        pps = unit
-        parameterSetsChanged = true
-      default:
-        continue
-      }
-    }
-    if parameterSetsChanged {
-      formatDescription = Self.makeFormatDescription(sps: sps, pps: pps)
-      if let formatDescription {
-        let dims = CMVideoFormatDescriptionGetDimensions(formatDescription)
-        presentedSize = CGSize(width: CGFloat(dims.width), height: CGFloat(dims.height))
-      }
-      // A new format mid-stream needs the layer emptied, or it keeps decoding
-      // against the sets it was built with and shows a torn picture.
-      layer.flush()
-    }
-
-    // Nothing can be decoded before the first keyframe carries the parameter
-    // sets. Dropping these units is correct, not a failure: the helper sends a
-    // keyframe on connect, so this window is one access unit wide at most.
-    guard let formatDescription else { return false }
-    guard let sample = AppleAnnexB.avccSample(from: units) else { return false }
-    guard let buffer = Self.makeSampleBuffer(sample: sample, format: formatDescription, keyframe: keyframe) else {
-      return false
-    }
-    if layer.status == .failed {
-      // The documented recovery: the layer will refuse every further sample
-      // until it is flushed, so a decode error must not be sticky.
-      layer.flush()
-    }
-    layer.enqueue(buffer)
-    return true
-  }
-
-  private static func makeFormatDescription(sps: Data?, pps: Data?) -> CMFormatDescription? {
-    guard let sps, let pps, !sps.isEmpty, !pps.isEmpty else { return nil }
-    var format: CMFormatDescription?
-    let status = sps.withUnsafeBytes { spsBytes -> OSStatus in
-      pps.withUnsafeBytes { ppsBytes -> OSStatus in
-        guard
-          let spsBase = spsBytes.bindMemory(to: UInt8.self).baseAddress,
-          let ppsBase = ppsBytes.bindMemory(to: UInt8.self).baseAddress
-        else { return -1 }
-        let pointers: [UnsafePointer<UInt8>] = [spsBase, ppsBase]
-        let sizes: [Int] = [sps.count, pps.count]
-        return pointers.withUnsafeBufferPointer { pointerBuffer in
-          sizes.withUnsafeBufferPointer { sizeBuffer in
-            CMVideoFormatDescriptionCreateFromH264ParameterSets(
-              allocator: kCFAllocatorDefault,
-              parameterSetCount: 2,
-              parameterSetPointers: pointerBuffer.baseAddress!,
-              parameterSetSizes: sizeBuffer.baseAddress!,
-              nalUnitHeaderLength: 4,
-              formatDescriptionOut: &format
-            )
-          }
-        }
-      }
-    }
-    return status == noErr ? format : nil
-  }
-
-  private static func makeSampleBuffer(sample: Data, format: CMFormatDescription, keyframe: Bool) -> CMSampleBuffer? {
-    var blockBuffer: CMBlockBuffer?
-    var bytes = [UInt8](sample)
-    let createStatus = CMBlockBufferCreateWithMemoryBlock(
-      allocator: kCFAllocatorDefault,
-      memoryBlock: nil,
-      blockLength: bytes.count,
-      blockAllocator: kCFAllocatorDefault,
-      customBlockSource: nil,
-      offsetToData: 0,
-      dataLength: bytes.count,
-      flags: 0,
-      blockBufferOut: &blockBuffer
-    )
-    guard createStatus == kCMBlockBufferNoErr, let blockBuffer else { return nil }
-    let replaceStatus = CMBlockBufferReplaceDataBytes(
-      with: &bytes,
-      blockBuffer: blockBuffer,
-      offsetIntoDestination: 0,
-      dataLength: bytes.count
-    )
-    guard replaceStatus == kCMBlockBufferNoErr else { return nil }
-
-    var sampleBuffer: CMSampleBuffer?
-    var sampleSize = bytes.count
-    // No timing: this is a live stream with no control timebase, so every
-    // sample is displayed the moment it decodes (see the attachment below).
-    // Inventing presentation times here would make the layer queue and then
-    // drift behind the device it is mirroring.
-    var timing = CMSampleTimingInfo(
-      duration: .invalid,
-      presentationTimeStamp: .invalid,
-      decodeTimeStamp: .invalid
-    )
-    let status = CMSampleBufferCreateReady(
-      allocator: kCFAllocatorDefault,
-      dataBuffer: blockBuffer,
-      formatDescription: format,
-      sampleCount: 1,
-      sampleTimingEntryCount: 1,
-      sampleTimingArray: &timing,
-      sampleSizeEntryCount: 1,
-      sampleSizeArray: &sampleSize,
-      sampleBufferOut: &sampleBuffer
-    )
-    guard status == noErr, let sampleBuffer else { return nil }
-
-    if let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
-       CFArrayGetCount(attachments) > 0 {
-      let raw = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
-      CFDictionarySetValue(
-        raw,
-        Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-        Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-      )
-      if !keyframe {
-        CFDictionarySetValue(
-          raw,
-          Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(),
-          Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-        )
-      }
-    }
-    return sampleBuffer
+    feeder.feed(annexB: accessUnit, keyframe: keyframe) == .enqueued
   }
 }
 

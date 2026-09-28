@@ -46,6 +46,9 @@ function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
       return <RocketLaunch size={13} weight="bold" aria-hidden className="shrink-0" />;
     case "monitoring":
       return <Eye size={13} weight="bold" aria-hidden className="shrink-0" />;
+    // A recording is live: the dot blinks the way every recording pill does.
+    case "recording":
+      return <Circle size={9} weight="fill" aria-hidden className="shrink-0 text-[var(--color-error)] motion-safe:animate-pulse" />;
     case "waiting":
       return <Alarm size={13} weight="regular" aria-hidden className="shrink-0" />;
     case "done":

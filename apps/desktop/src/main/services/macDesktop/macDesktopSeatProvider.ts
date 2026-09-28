@@ -159,6 +159,11 @@ export function createMacVirtualDisplayProvider(client: MacDesktopDriverClient):
       args: args.args,
     }, { timeoutMs: LAUNCH_TIMEOUT_MS }),
 
+    quitApp: (args) => request(MAC_DESKTOP_DRIVER_OPS.quitApp, {
+      laneId: args.laneId,
+      ...(args.app ? { app: args.app } : {}),
+    }),
+
     present: (args) => request(MAC_DESKTOP_DRIVER_OPS.present, {
       laneId: args.laneId,
       destination: args.destination,

@@ -15,6 +15,7 @@
  */
 
 import fs from "node:fs";
+import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import {
   MAC_DESKTOP_DEFAULT_RESOLUTION,
@@ -46,6 +47,8 @@ import {
   type MacDesktopRecordStartArgs,
   type MacDesktopRecordingStatus,
   type MacDesktopRecheckPermissionsArgs,
+  type MacDesktopQuitAppArgs,
+  type MacDesktopQuitAppResult,
   type MacDesktopReleaseArgs,
   type MacDesktopRequestPermissionArgs,
   type MacDesktopResolutionPreset,
@@ -159,6 +162,8 @@ export type MacDesktopAnalyticsProperties = {
 };
 
 export type MacDesktopServiceDeps = {
+  /** The engines that turn a raw recording into its demo. Defaults to this process's Swift engine. */
+  demoEngines?: DemoEngineSet | null;
   projectRoot: string;
   logger: Logger;
   /**
@@ -527,6 +532,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const activeProvider = () => driverLifecycle.activeProvider();
 
   const streamingDeps: Parameters<typeof createMacDesktopStreaming>[0] = {
+    onStreamNeverSent: () => driverLifecycle.sampleCaptureStall("stream_never_sent"),
     logger: deps.logger,
     now,
     isDarwin,
@@ -563,6 +569,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         : `Lane ${laneId} is not recording its desktop.`,
     ),
     onRecordingFiled: () => captureOutcome("recorded"),
+    demoEngines: deps.demoEngines ?? createDemoEngineSet({ logger: deps.logger }),
   });
   const recordings = recording.recordings;
 
@@ -1117,6 +1124,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async releaseWindow(args: MacDesktopReleaseArgs): Promise<{ released: number }> {
       assertSupported();
       return await windowLifecycle.releaseWindow(args);
+    },
+
+    async quitApp(args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult> {
+      assertSupported();
+      return await windowLifecycle.quitApp(args);
     },
 
     async observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation> {

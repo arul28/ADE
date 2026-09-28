@@ -8,8 +8,8 @@ import {
   type WorkToolsMacDesktopState,
   type WorkToolsObservation,
 } from "../../../shared/types/workTools";
-import { H264VideoCanvas, isWebCodecsAvailable, type H264VideoRecordSource, type H264VideoStatus } from "../chat/H264VideoCanvas";
-import { createH264FrameGate } from "../chat/h264FrameGate";
+import { H264StreamView } from "../chat/H264StreamView";
+import { isWebCodecsAvailable, type H264PushSource, type H264StreamStatus } from "../chat/h264StreamPlayer";
 import {
   MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
   MacDesktopTakeoverCursor,
@@ -306,27 +306,24 @@ function decodeBase64Bytes(data: string): Uint8Array {
  * A push-fed record source over the web `macDesktop` namespace. One
  * subscription per source instance; abandoning the source unsubscribes.
  *
- * P-frames after a sequence gap are withheld: the host skips frames under
- * backpressure and always resumes at a keyframe, so decoding a P-frame whose
- * reference was skipped paints corruption that outlives the drop.
+ * Records keep the host's sequence numbers: the host skips frames under
+ * backpressure and always resumes at a keyframe, and the player's gate uses
+ * the gap to hold P-frames whose reference was skipped.
  */
 export function createMacDesktopStreamSource(args: {
   api: Partial<MacDesktopWebApi>;
   laneId: string;
   subscriptionId: string;
   viewerLabel: string;
-}): H264VideoRecordSource {
+}): H264PushSource {
   const { api, laneId, subscriptionId, viewerLabel } = args;
   return {
+    kind: "push",
     subscribe(handlers) {
       let closed = false;
-      const gate = createH264FrameGate();
       const offRecord = api.onStreamRecord?.((record) => {
         if (closed || record.subscriptionId !== subscriptionId) return;
         if (record.kind === "config") {
-          // A config rebuilds the decoder, so the picture restarts at a
-          // keyframe even though no sequence number was skipped.
-          gate.reset();
           try {
             const config = JSON.parse(new TextDecoder().decode(decodeBase64Bytes(record.data))) as {
               codec?: unknown;
@@ -350,7 +347,6 @@ export function createMacDesktopStreamSource(args: {
           }
           return;
         }
-        if (!gate.shouldDeliver(record.keyframe, record.seq)) return;
         handlers.onRecord({
           kind: "access-unit",
           keyframe: record.keyframe,
@@ -453,7 +449,7 @@ function MacDesktopPanel({
   );
   const [connected, setConnected] = useState(true);
   const [retryNonce, setRetryNonce] = useState(0);
-  const [streamStatus, setStreamStatus] = useState<H264VideoStatus>("connecting");
+  const [streamStatus, setStreamStatus] = useState<H264StreamStatus>("connecting");
   const [streamError, setStreamError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -921,7 +917,7 @@ function MacDesktopPanel({
         }}
       >
         {pictureVisible ? (
-          <H264VideoCanvas
+          <H264StreamView
             source={source}
             className="absolute inset-0 h-full w-full"
             onStatus={(status, error) => {

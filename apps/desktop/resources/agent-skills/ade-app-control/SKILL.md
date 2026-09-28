@@ -138,16 +138,19 @@ ade app-control proof --caption "Settings shows the saved key" --text
 Use a **video** when the claim is about behavior over time: a flow, an
 animation, a retry. Use a **still** (`proof`) when one screen proves the claim.
 
-- `record start` captures the app's own window. Still stretches are cut unless
-  you pass `--keep-idle`. A recording stops itself after 10 minutes of real
-  time; `--max-seconds <n>` sets another limit.
-- Set the cap from the real pace of your steps, not a guess. Each command
-  takes seconds of real time, so count your steps and time one. When you
-  cannot tell, pass a large cap and stop the recording yourself.
+- `record start` captures the app's own window. When it stops, it becomes a
+  demo: still time cut, waits sped up, zoom to each action, a pointer and
+  click rings, under 10 MB. `--plain` keeps it as recorded; use it only when
+  the user asks.
+- Mark each step while recording with `ade proof step "<what happens next>"`.
+  Each step is a caption in the video and a chapter in ADE's player.
+- A recording stops itself after 5 minutes of real time, or after 2 minutes
+  with no action. `--max-seconds <n>` sets a shorter limit. Record the flow
+  that shows the claim, not the whole task.
 - Always pass `--caption`. `record stop` files a captioned video as proof under
   your lane, your chat and the lane's PR. A video with no caption stays a
   scratch file (unless the cap or the app closing ended it).
-- `record stop` prints `duration` (the video), `real time` with the idle cut,
+- `record stop` prints `duration` (the demo), `real time` with the time cut,
   the `file`, and a `proof` line with the proof id. If it prints an `error`
   line, the recording failed: report that. Never attach an older file in its
   place. On macOS the first recording can need the Screen Recording grant; the

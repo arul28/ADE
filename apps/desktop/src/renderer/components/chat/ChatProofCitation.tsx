@@ -1,10 +1,11 @@
 import { SpinnerGap, WarningCircle } from "@phosphor-icons/react";
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
+import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from "react";
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import type { ProofCompareBlock } from "../../../shared/proofCitation";
 import { proofRecordedBeforeRequestLine, readProofProvenance } from "../../../shared/proofProvenance";
 import { cn } from "../ui/cn";
 import { ArtifactLightbox, ProofPreviewFailureNotice } from "./ChatComputerUsePanel";
+import { DemoChapters } from "./DemoChapters";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import {
   externalArtifactUrl,
@@ -126,6 +127,7 @@ function CitedProofMedia({
     allowLocalArtifactProtocol,
   );
   const [lightboxOpen, setLightboxOpen] = useState(false);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const image = isImageArtifact(artifact);
   const video = isVideoArtifact(artifact);
   const externalUrl = externalArtifactUrl(artifact.uri);
@@ -162,6 +164,7 @@ function CitedProofMedia({
         </button>
       ) : preview && video ? (
         <video
+          ref={videoRef}
           src={preview}
           controls
           playsInline
@@ -173,9 +176,17 @@ function CitedProofMedia({
       ) : !image && !video ? (
         <CitationPlaceholder>{`${text} (${artifact.kind.replace(/_/g, " ")}) cannot show inline. It is in the proof drawer.`}</CitationPlaceholder>
       ) : null}
-      <span className="mt-1.5 block min-w-0 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] not-italic leading-5 text-fg/70">
-        {text}
-      </span>
+      {preview && video ? (
+        <DemoChapters metadata={artifact.metadata} videoRef={videoRef}>
+          <span className="block min-w-0 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] not-italic leading-5 text-fg/70">
+            {text}
+          </span>
+        </DemoChapters>
+      ) : (
+        <span className="mt-1.5 block min-w-0 font-sans text-[length:calc(var(--chat-font-size)*11.5/14)] not-italic leading-5 text-fg/70">
+          {text}
+        </span>
+      )}
       {/* The one provenance fact worth a line in an answer: a video older than the request. */}
       {olderLine ? (
         <span className="block font-sans text-[length:calc(var(--chat-font-size)*10/14)] not-italic text-amber-200/65">

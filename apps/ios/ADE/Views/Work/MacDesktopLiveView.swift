@@ -1,83 +1,14 @@
 import AVFoundation
-import CoreMedia
 import SwiftUI
 import UIKit
 
-/// The per-sample attachment dictionary the display layer actually reads.
-///
-/// `AVSampleBufferDisplayLayer` consults the sample-attachments array, not the
-/// buffer-level attachments `CMSetAttachment` writes. Two keys matter here:
-/// `DisplayImmediately` makes a sample present without a control timebase —
-/// this stream has none, so without it the layer holds every frame forever
-/// while `hasFrame` still flips and the placeholder disappears over black —
-/// and `NotSync` marks a P-frame as a delta frame, so the layer does not treat
-/// a mid-GOP picture as a sync sample. Keyframes need no `NotSync` entry: an
-/// absent key means sync.
-enum MacDesktopSampleAttachments {
-  static func apply(to sampleBuffer: CMSampleBuffer, keyframe: Bool) {
-    guard
-      let attachments = CMSampleBufferGetSampleAttachmentsArray(sampleBuffer, createIfNecessary: true),
-      CFArrayGetCount(attachments) > 0
-    else { return }
-    let dictionary = unsafeBitCast(
-      CFArrayGetValueAtIndex(attachments, 0),
-      to: CFMutableDictionary.self
-    )
-    CFDictionarySetValue(
-      dictionary,
-      Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
-      Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-    )
-    if !keyframe {
-      CFDictionarySetValue(
-        dictionary,
-        Unmanaged.passUnretained(kCMSampleAttachmentKey_NotSync).toOpaque(),
-        Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
-      )
-    }
-  }
-}
-
-/// Decides which pushed frames may reach the decoder.
-///
-/// The host may skip frames under backpressure and the contract says it always
-/// resumes at a keyframe, so once a sequence number jumps, every P-frame until
-/// the next keyframe references a picture the decoder never saw. Handing those
-/// to VideoToolbox paints corruption that outlives the drop.
-struct MacDesktopStreamFrameGate {
-  private(set) var lastSeq: Int?
-  private(set) var awaitingKeyframe = true
-
-  mutating func shouldDeliver(keyframe: Bool, seq: Int) -> Bool {
-    if let lastSeq, seq > lastSeq + 1 {
-      awaitingKeyframe = true
-    }
-    lastSeq = seq
-    if awaitingKeyframe {
-      guard keyframe else { return false }
-      awaitingKeyframe = false
-    }
-    return true
-  }
-
-  /// After a flush, a format change, or a decode error the decoder has no
-  /// reference picture, so it waits for the next keyframe again.
-  mutating func requireKeyframe() {
-    awaitingKeyframe = true
-  }
-
-  mutating func reset() {
-    lastSeq = nil
-    awaitingKeyframe = true
-  }
-}
-
 /// One lane's live-view subscription and its decoder.
 ///
-/// Owns the `AVSampleBufferDisplayLayer` relationship, the frame gate, and the
-/// format description. It deliberately does not own the socket: records arrive
-/// through `SyncService.registerMacDesktopStream`, and lifecycle (visible,
-/// foreground, connected) is the sheet's business.
+/// Owns the display layer relationship through an `H264SampleBufferFeeder`,
+/// which holds the frame gate and the format description. It deliberately
+/// does not own the socket: records arrive through
+/// `SyncService.registerMacDesktopStream`, and lifecycle (visible, foreground,
+/// connected) is the sheet's business.
 @MainActor
 final class MacDesktopLiveSession: ObservableObject {
   enum Phase: Equatable {
@@ -107,10 +38,7 @@ final class MacDesktopLiveSession: ObservableObject {
   @Published private(set) var pictureWidth: Int?
   @Published private(set) var pictureHeight: Int?
 
-  private weak var displayLayer: AVSampleBufferDisplayLayer?
-  private var formatDescription: CMVideoFormatDescription?
-  private var parameterSets: [[UInt8]]?
-  private var gate = MacDesktopStreamFrameGate()
+  private let feeder = H264SampleBufferFeeder()
   private var isStarting = false
   /// Bumped by every stop so a subscribe still in flight cannot land its reply
   /// on a session that was torn down while it waited.
@@ -187,25 +115,19 @@ final class MacDesktopLiveSession: ObservableObject {
     }
     phase = .idle
     hasFrame = false
-    formatDescription = nil
-    parameterSets = nil
-    gate.reset()
-    displayLayer?.flushAndRemoveImage()
+    feeder.reset()
   }
 
   // MARK: - Decoder
 
   func attach(_ layer: AVSampleBufferDisplayLayer) {
-    guard displayLayer !== layer else { return }
-    displayLayer = layer
     layer.videoGravity = .resizeAspect
     layer.backgroundColor = UIColor.clear.cgColor
+    feeder.attach(layer)
   }
 
   func detach(_ layer: AVSampleBufferDisplayLayer) {
-    guard displayLayer === layer else { return }
-    layer.flushAndRemoveImage()
-    displayLayer = nil
+    feeder.detach(layer)
   }
 
   func consume(_ record: MacDesktopStreamRecord) {
@@ -248,108 +170,21 @@ final class MacDesktopLiveSession: ObservableObject {
   }
 
   private func noteFrame(_ record: MacDesktopStreamRecord) {
-    let units = MacDesktopAnnexB.nalUnits(in: record.data)
-    if let sets = MacDesktopAnnexB.parameterSets(in: units) {
-      updateFormatDescription(sps: sets.sps, pps: sets.pps)
-    }
-    guard let layer = displayLayer else { return }
-    if layer.status == .failed || layer.requiresFlushToResumeDecoding {
-      // The decoder lost its references. Drop back to the keyframe the host
-      // repeats in front of every access unit that matters, and stop showing a
-      // picture that no longer decodes.
-      layer.flushAndRemoveImage()
+    switch feeder.feed(annexB: record.data, keyframe: record.keyframe, seq: record.seq) {
+    case .enqueued:
+      if !hasFrame {
+        hasFrame = true
+      }
+      if phase != .live {
+        phase = .live
+      }
+    case .recovering:
+      // The decoder lost its references and its picture is gone. The host
+      // sends a keyframe every two seconds; the placeholder says so until then.
       hasFrame = false
-      gate.requireKeyframe()
+    case .held:
+      break
     }
-    guard gate.shouldDeliver(keyframe: record.keyframe, seq: record.seq) else { return }
-    guard formatDescription != nil else { return }
-    let accessUnit = MacDesktopAnnexB.avccAccessUnit(fromAnnexB: record.data)
-    guard !accessUnit.isEmpty else { return }
-    guard enqueue(accessUnit: accessUnit, keyframe: record.keyframe, timestampUs: record.timestampUs) else {
-      gate.requireKeyframe()
-      return
-    }
-    if !hasFrame {
-      hasFrame = true
-    }
-    if phase != .live {
-      phase = .live
-    }
-  }
-
-  private func updateFormatDescription(sps: [UInt8], pps: [UInt8]) {
-    if let current = parameterSets,
-       current.count == 2,
-       current[0] == sps,
-       current[1] == pps,
-       formatDescription != nil {
-      return
-    }
-    guard let format = MacDesktopAnnexB.formatDescription(sps: sps, pps: pps) else { return }
-    formatDescription = format
-    parameterSets = [sps, pps]
-    // A new resolution or profile invalidates every queued sample.
-    displayLayer?.flushAndRemoveImage()
-    hasFrame = false
-    gate.requireKeyframe()
-  }
-
-  private func enqueue(
-    accessUnit: Data,
-    keyframe: Bool,
-    timestampUs: Int
-  ) -> Bool {
-    guard let layer = displayLayer, let format = formatDescription else { return false }
-    guard !accessUnit.isEmpty else { return false }
-
-    var blockBuffer: CMBlockBuffer?
-    let blockStatus = CMBlockBufferCreateWithMemoryBlock(
-      allocator: kCFAllocatorDefault,
-      memoryBlock: nil,
-      blockLength: accessUnit.count,
-      blockAllocator: kCFAllocatorDefault,
-      customBlockSource: nil,
-      offsetToData: 0,
-      dataLength: accessUnit.count,
-      flags: 0,
-      blockBufferOut: &blockBuffer
-    )
-    guard blockStatus == kCMBlockBufferNoErr, let blockBuffer else { return false }
-    let copyStatus = accessUnit.withUnsafeBytes { raw -> OSStatus in
-      guard let base = raw.baseAddress else { return -1 }
-      return CMBlockBufferReplaceDataBytes(
-        with: base,
-        blockBuffer: blockBuffer,
-        offsetIntoDestination: 0,
-        dataLength: accessUnit.count
-      )
-    }
-    guard copyStatus == kCMBlockBufferNoErr else { return false }
-
-    var sampleBuffer: CMSampleBuffer?
-    var timing = CMSampleTimingInfo(
-      duration: .invalid,
-      presentationTimeStamp: CMTime(value: CMTimeValue(timestampUs), timescale: 1_000_000),
-      decodeTimeStamp: .invalid
-    )
-    var sampleSize = accessUnit.count
-    let sampleStatus = CMSampleBufferCreateReady(
-      allocator: kCFAllocatorDefault,
-      dataBuffer: blockBuffer,
-      formatDescription: format,
-      sampleCount: 1,
-      sampleTimingEntryCount: 1,
-      sampleTimingArray: &timing,
-      sampleSizeEntryCount: 1,
-      sampleSizeArray: &sampleSize,
-      sampleBufferOut: &sampleBuffer
-    )
-    guard sampleStatus == noErr, let sampleBuffer else { return false }
-    // Per-sample attachments, not `CMSetAttachment`: the layer reads the
-    // sample dictionary, so a buffer-level write is invisible to it.
-    MacDesktopSampleAttachments.apply(to: sampleBuffer, keyframe: keyframe)
-    layer.enqueue(sampleBuffer)
-    return true
   }
 
   private static func message(for error: Error) -> String {

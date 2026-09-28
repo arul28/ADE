@@ -41,10 +41,10 @@ import {
  */
 const fakeDecoder = { playing: false };
 
-vi.mock("../chat/H264VideoCanvas", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../chat/H264VideoCanvas")>();
+vi.mock("../chat/H264StreamView", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../chat/H264StreamView")>();
   const { useEffect } = await import("react");
-  function FakeH264VideoCanvas(props: Parameters<typeof actual.H264VideoCanvas>[0]) {
+  function FakeH264StreamView(props: Parameters<typeof actual.H264StreamView>[0]) {
     useEffect(() => {
       props.onStatus?.("playing", null);
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -61,8 +61,8 @@ vi.mock("../chat/H264VideoCanvas", async (importOriginal) => {
   }
   return {
     ...actual,
-    H264VideoCanvas: (props: Parameters<typeof actual.H264VideoCanvas>[0]) => (
-      fakeDecoder.playing ? <FakeH264VideoCanvas {...props} /> : <actual.H264VideoCanvas {...props} />
+    H264StreamView: (props: Parameters<typeof actual.H264StreamView>[0]) => (
+      fakeDecoder.playing ? <FakeH264StreamView {...props} /> : <actual.H264StreamView {...props} />
     ),
   };
 });

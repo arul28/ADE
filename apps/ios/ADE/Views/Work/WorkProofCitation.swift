@@ -35,6 +35,9 @@ struct WorkProofCitationView: View {
 
   @Environment(\.workProofCitations) private var citations
   @State private var viewerOpen = false
+  @State private var seekRequest: Double?
+  /// The chapters stay behind their toggle until the person opens them.
+  @State private var chaptersOpen = false
 
   private var mediaMaxHeight: CGFloat { compact ? 220 : 360 }
 
@@ -96,7 +99,7 @@ struct WorkProofCitationView: View {
       .accessibilityLabel(captionText(artifact))
       .accessibilityHint("Opens the proof full screen")
     case .video(let url), .remoteURL(let url):
-      WorkArtifactVideoPlayerView(url: url)
+      WorkArtifactVideoPlayerView(url: url, seek: $seekRequest)
         .aspectRatio(16.0 / 10.0, contentMode: .fit)
         .frame(maxHeight: mediaMaxHeight)
         .clipShape(shape)
@@ -134,9 +137,33 @@ struct WorkProofCitationView: View {
 
   @ViewBuilder
   private func captionRows(_ artifact: ComputerUseArtifactSummary) -> some View {
-    Text(captionText(artifact))
-      .font(.footnote)
-      .foregroundStyle(ADEColor.textSecondary)
+    let chapters = workDemoChapters(artifact.metadataJson)
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text(captionText(artifact))
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      // One chapter has nowhere to jump to.
+      if chapters.count > 1 {
+        Button {
+          withAnimation(.easeOut(duration: 0.15)) { chaptersOpen.toggle() }
+        } label: {
+          HStack(spacing: 3) {
+            Text("Chapters · \(chapters.count)")
+            Image(systemName: "chevron.down")
+              .imageScale(.small)
+              .rotationEffect(.degrees(chaptersOpen ? 180 : 0))
+          }
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textSecondary.opacity(0.75))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(chaptersOpen ? "Hide chapters" : "Show \(chapters.count) chapters")
+      }
+    }
+    if chapters.count > 1, chaptersOpen {
+      WorkDemoChaptersRow(chapters: chapters) { seekRequest = $0 }
+    }
     // The one provenance fact worth a line in an answer: a video older than the request.
     if let older = workProofProvenanceLines(artifact.metadataJson).older {
       Text(older)

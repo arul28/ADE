@@ -309,6 +309,9 @@ type RemoteRuntimeLayout = {
    */
   macDesktopDriverExpr: string;
   macDesktopDriverSha256Expr: string;
+  /** The demo-video engine, beside the driver for the same reason. */
+  adeMediaExpr: string;
+  adeMediaSha256Expr: string;
 };
 
 function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
@@ -346,6 +349,8 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     ptyHostWorkerSha256Expr: `${runtimeDirExpr}/ptyHostWorker.cjs.sha256`,
     macDesktopDriverExpr: `${binDirExpr}/resources/native/ade-desktop-driver`,
     macDesktopDriverSha256Expr: `${binDirExpr}/resources/native/ade-desktop-driver.sha256`,
+    adeMediaExpr: `${binDirExpr}/resources/native/ade-media`,
+    adeMediaSha256Expr: `${binDirExpr}/resources/native/ade-media.sha256`,
   };
 }
 
@@ -515,15 +520,15 @@ function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string
 }
 
 /**
- * The Mac Desktop driver this app ships, from the same resources directory as
- * the runtime binary it uploads (`<resources>/runtime/<binary>` beside
- * `<resources>/native/ade-desktop-driver`). The driver is a universal macOS
- * binary, so one file serves an arm64 or x64 Mac.
+ * A native macOS helper this app ships (`ade-desktop-driver`, `ade-media`),
+ * from the same resources directory as the runtime binary it uploads
+ * (`<resources>/runtime/<binary>` beside `<resources>/native/<name>`). Both are
+ * universal macOS binaries, so one file serves an arm64 or x64 Mac.
  */
-function bundledMacDesktopDriverPath(resourcesPath: string, localBinaryPath: string | null): string | null {
-  const candidates = [path.join(resourcesPath, "native", "ade-desktop-driver")];
+function bundledNativeHelperPath(resourcesPath: string, localBinaryPath: string | null, name: string): string | null {
+  const candidates = [path.join(resourcesPath, "native", name)];
   if (localBinaryPath) {
-    candidates.push(path.join(path.dirname(path.dirname(localBinaryPath)), "native", "ade-desktop-driver"));
+    candidates.push(path.join(path.dirname(path.dirname(localBinaryPath)), "native", name));
   }
   return candidates.find((candidate) => {
     try {
@@ -841,11 +846,14 @@ async function readRemoteRuntimeSupportStatus(args: {
   localPtyHostWorkerSha256: string | null;
   /** Only for a macOS remote; null skips the check. */
   localMacDesktopDriverSha256?: string | null;
+  /** Only for a macOS remote; null skips the check. */
+  localAdeMediaSha256?: string | null;
 }): Promise<{
   nativeDepsReady: boolean;
   nodePath: string | null;
   ptyHostWorkerReady: boolean;
   macDesktopDriverReady: boolean;
+  adeMediaReady: boolean;
 }> {
   const sections = [
     remotePreflightSection("node_path", "command -v node || true"),
@@ -871,6 +879,13 @@ async function readRemoteRuntimeSupportStatus(args: {
       "echo ok",
     ].join(" && ") + " || true"));
   }
+  if (args.localAdeMediaSha256) {
+    sections.push(remotePreflightSection("ade_media_ready", [
+      `test -x ${args.layout.adeMediaExpr}`,
+      `test "$(cat ${args.layout.adeMediaSha256Expr} 2>/dev/null)" = ${shellQuote(args.localAdeMediaSha256)}`,
+      "echo ok",
+    ].join(" && ") + " || true"));
+  }
   const result = await execSsh(args.client, sections.join("; "));
   const parsed = parseRemotePreflightSections(result.stdout);
   const nodePath = parsed.node_path?.split(/\r?\n/u)[0]?.trim() || null;
@@ -879,6 +894,7 @@ async function readRemoteRuntimeSupportStatus(args: {
     nodePath,
     ptyHostWorkerReady: parsed.pty_host_worker_ready === "ok",
     macDesktopDriverReady: parsed.mac_desktop_driver_ready === "ok",
+    adeMediaReady: parsed.ade_media_ready === "ok",
   };
 }
 
@@ -1594,38 +1610,46 @@ async function uploadPtyHostWorker(
 }
 
 /**
- * Installs the Mac Desktop driver beside the remote brain.
+ * Installs a native macOS helper beside the remote brain: the Mac Desktop
+ * driver or the `ade-media` demo engine.
  *
- * Uploaded only when its checksum differs from what is there. That is not an
- * optimisation: macOS ties Screen Recording and Accessibility grants to the
- * binary's code hash, so every needless re-upload of an ad-hoc signed driver
- * would silently take the remote Mac's grants away. It is not re-signed for
- * the same reason — the shipped signature is what the grants were given to.
+ * Uploaded only when its checksum differs from what is there. For the driver
+ * that is not an optimisation: macOS ties Screen Recording and Accessibility
+ * grants to the binary's code hash, so every needless re-upload of an ad-hoc
+ * signed driver would silently take the remote Mac's grants away. It is not
+ * re-signed for the same reason — the shipped signature is what the grants
+ * were given to.
  */
-async function uploadMacDesktopDriver(
+async function uploadNativeHelper(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
   connectedConfig: OpenSshUploadConfig | null | undefined,
   layout: RemoteRuntimeLayout,
-  localPath: string,
-  localSha256: string,
+  helper: {
+    /** For error messages: "Mac Desktop driver", "demo engine". */
+    label: string;
+    remoteExpr: string;
+    remoteSha256Expr: string;
+    localPath: string;
+    localSha256: string;
+  },
 ): Promise<void> {
-  const tempExpr = `${layout.macDesktopDriverExpr}.${remoteUploadTempSuffix()}`;
+  const tempExpr = `${helper.remoteExpr}.${remoteUploadTempSuffix()}`;
   await execSshOrThrow(
     client,
     `mkdir -p ${layout.binDirExpr}/resources/native`,
-    "Unable to create the remote Mac Desktop driver directory.",
+    `Unable to create the remote ${helper.label} directory.`,
   );
   try {
-    await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
+    await uploadSshFile(client, target, route, connectedConfig, helper.localPath, tempExpr);
     await execSshOrThrow(client, [
-      remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localSha256),
+      remoteFileMatchesCommand(tempExpr, fileSizeBytes(helper.localPath), helper.localSha256),
       `chmod 755 ${tempExpr}`,
-      `mv -f ${tempExpr} ${layout.macDesktopDriverExpr}`,
-      `printf '%s\\n' ${shellQuote(localSha256)} > ${layout.macDesktopDriverSha256Expr}`,
-      `chmod 600 ${layout.macDesktopDriverSha256Expr}`,
-    ].join(" && "), "Uploaded Mac Desktop driver did not pass size and checksum verification.");
+      `mv -f ${tempExpr} ${helper.remoteExpr}`,
+      `printf '%s\\n' ${shellQuote(helper.localSha256)} > ${helper.remoteSha256Expr}`,
+      `chmod 600 ${helper.remoteSha256Expr}`,
+    ].join(" && "), `Uploaded ${helper.label} did not pass size and checksum verification.`);
   } catch (error) {
     await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
     throw error;
@@ -2427,9 +2451,13 @@ export async function bootstrapRemoteRuntime(args: {
     const localPtyHostWorker = bundledPtyHostWorkerPath(args.resourcesPath, bundledBinary);
     const localPtyHostWorkerSha256 = localPtyHostWorker ? hashRuntimeBinary(localPtyHostWorker) : null;
     const localMacDesktopDriver = arch.platform === "darwin"
-      ? bundledMacDesktopDriverPath(args.resourcesPath, bundledBinary)
+      ? bundledNativeHelperPath(args.resourcesPath, bundledBinary, "ade-desktop-driver")
       : null;
     const localMacDesktopDriverSha256 = localMacDesktopDriver ? hashLocalFile(localMacDesktopDriver) : null;
+    const localAdeMedia = arch.platform === "darwin"
+      ? bundledNativeHelperPath(args.resourcesPath, bundledBinary, "ade-media")
+      : null;
+    const localAdeMediaSha256 = localAdeMedia ? hashLocalFile(localAdeMedia) : null;
     const localAgentSkillsRoot = bundledAgentSkillsPath(args.resourcesPath, bundledBinary);
     let remoteBinaryMatchesLocal: boolean | null = null;
 
@@ -2503,6 +2531,7 @@ export async function bootstrapRemoteRuntime(args: {
       checkPtyHostWorker: Boolean(localPtyHostWorkerSha256),
       localPtyHostWorkerSha256,
       localMacDesktopDriverSha256,
+      localAdeMediaSha256,
     });
     const shouldUploadNativeDeps = Boolean(
       nativeDepsBundle &&
@@ -2578,17 +2607,32 @@ export async function bootstrapRemoteRuntime(args: {
     let macDesktopDriverWarning: string | null = null;
     if (localMacDesktopDriver && localMacDesktopDriverSha256 && !supportStatus.macDesktopDriverReady) {
       try {
-        await uploadMacDesktopDriver(
-          ssh,
-          args.target,
-          connectedRoute,
-          uploadConnectionConfig,
-          layout,
-          localMacDesktopDriver,
-          localMacDesktopDriverSha256,
-        );
+        await uploadNativeHelper(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, {
+          label: "Mac Desktop driver",
+          remoteExpr: layout.macDesktopDriverExpr,
+          remoteSha256Expr: layout.macDesktopDriverSha256Expr,
+          localPath: localMacDesktopDriver,
+          localSha256: localMacDesktopDriverSha256,
+        });
       } catch (error) {
         macDesktopDriverWarning = `Mac Desktop is not available on this machine: ADE could not install its driver (${runtimeErrorMessage(error)}).`;
+      }
+    }
+
+    // Likewise the demo engine: without it this machine's recordings are
+    // filed as their raw files, so it is a warning, not a failed connection.
+    let adeMediaWarning: string | null = null;
+    if (localAdeMedia && localAdeMediaSha256 && !supportStatus.adeMediaReady) {
+      try {
+        await uploadNativeHelper(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, {
+          label: "demo engine",
+          remoteExpr: layout.adeMediaExpr,
+          remoteSha256Expr: layout.adeMediaSha256Expr,
+          localPath: localAdeMedia,
+          localSha256: localAdeMediaSha256,
+        });
+      } catch (error) {
+        adeMediaWarning = `Demo videos recorded on this machine will be filed without edits: ADE could not install its demo engine (${runtimeErrorMessage(error)}).`;
       }
     }
 
@@ -2731,6 +2775,7 @@ export async function bootstrapRemoteRuntime(args: {
     const connectedAt = Date.now();
     const compatibilityWarnings = [...initializeInfo.compatibilityWarnings];
     if (macDesktopDriverWarning) compatibilityWarnings.push(macDesktopDriverWarning);
+    if (adeMediaWarning) compatibilityWarnings.push(adeMediaWarning);
     if (runtimeLayoutFallbackReason) {
       compatibilityWarnings.push(runtimeLayoutFallbackReason);
     } else if (layout.homeDirName !== preferredLayout.homeDirName) {

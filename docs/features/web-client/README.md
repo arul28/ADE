@@ -219,7 +219,7 @@ Browser `window.ade` adapter:
   token, never a lease identity — the host derives `web:<connectionId>:<token>`
   — and a host without the bit keeps the watch-only pane and its
   `WORK_TOOLS_CONTROL_HINT` line. The `macDesktop` Work tool renders live in
-  `WorkToolReadOnlyView` by feeding `H264VideoCanvas` a pushed-record source
+  `WorkToolReadOnlyView` by feeding `H264StreamView` a pushed-record source
   (the same decoder the Electron panel drives from a loopback URL), keeps the
   display's aspect ratio with `object-fit: contain`, shows the last still frame
   until the first keyframe arrives, and falls back to that still with a

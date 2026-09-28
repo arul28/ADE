@@ -1,6 +1,8 @@
+import { workToolDefinition } from "../terminals/workTools";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   AppControlEventPayload,
+  AppControlRecordingStatus,
   AppControlScreencastFrame,
   AppControlSession,
   OpenProjectBinding,
@@ -14,6 +16,7 @@ import {
   workSurfaceKey,
 } from "../../lib/workToolOnScreen";
 import { cn } from "../ui/cn";
+import { showToast } from "../app/toast/toastStore";
 import { closeWorkLiveCardForChat, useChatCompanionUiState } from "../chat/chatCompanionUiState";
 import { AppControlAgentCursor, type AgentCursorState } from "../chat/AppControlOverlays";
 import { CURSOR_TRACE_ACTIONS, traceCursorPoint } from "../chat/appControlTrace";
@@ -23,6 +26,7 @@ import {
   FloatingPlayerShell,
   useCanvasPictureInPicture,
   useFloatingPlayerFrame,
+  useFloatingPlayerStop,
 } from "../shared/FloatingPlayer";
 import { floatingPlayerSourceSize, type FloatingPlayerSize } from "../shared/floatingPlayerLayout";
 import { isWorkLivePictureInPictureSupported } from "./workLiveIosPictureInPicture";
@@ -77,6 +81,11 @@ function appControlStatusWord(session: AppControlSession): string {
 function sessionIsLive(session: AppControlSession | null): boolean {
   return Boolean(session) && session?.status !== "stopped" && session?.status !== "exited";
 }
+
+const FLOATING_ICON = (() => {
+  const definition = workToolDefinition("app-control");
+  return definition ? { Icon: definition.icon, color: definition.color } : null;
+})();
 
 export function AppControlMiniPlayer({
   active,
@@ -139,6 +148,7 @@ export function AppControlMiniPlayer({
   return (
     <AppControlMiniPlayerBox
       laneId={laneId}
+      chatSessionId={chatSessionId}
       session={session}
       onScreenKey={workSurfaceKey(APP_CONTROL_CARD_ON_SCREEN_KEY, scopeKey, laneId)}
       visible={visible}
@@ -149,8 +159,22 @@ export function AppControlMiniPlayer({
   );
 }
 
+/** The recording facts the player draws: running since when, or making the demo. */
+type AppControlCaptureState = { running: boolean; startedAt: string | null; makingDemo: boolean };
+const NO_CAPTURE: AppControlCaptureState = { running: false, startedAt: null, makingDemo: false };
+
+function captureStateFrom(status: AppControlRecordingStatus | null | undefined): AppControlCaptureState {
+  if (!status) return NO_CAPTURE;
+  return {
+    running: status.running === true,
+    startedAt: status.running === true ? status.startedAt ?? null : null,
+    makingDemo: status.makingDemo === true,
+  };
+}
+
 function AppControlMiniPlayerBox({
   laneId,
+  chatSessionId,
   session,
   onScreenKey,
   visible,
@@ -159,6 +183,8 @@ function AppControlMiniPlayerBox({
   onClose,
 }: {
   laneId: string;
+  /** The chat on screen; a Stop from the player is this chat's stop. */
+  chatSessionId: string | null;
   session: AppControlSession;
   onScreenKey: string;
   visible: boolean;
@@ -172,7 +198,8 @@ function AppControlMiniPlayerBox({
   const [frameSize, setFrameSize] = useState<FloatingPlayerSize | null>(null);
   const [viewport, setViewport] = useState<{ viewportWidth: number; viewportHeight: number } | null>(null);
   const [hasFrame, setHasFrame] = useState(false);
-  const [recording, setRecording] = useState(false);
+  const [capture, setCapture] = useState<AppControlCaptureState>(NO_CAPTURE);
+  const recording = capture.running;
   const [cursor, setCursor] = useState<AgentCursorState | null>(null);
 
   /* ── Frames: newest wins, one decode in flight, one paint per rAF ─────── */
@@ -252,11 +279,13 @@ function AppControlMiniPlayerBox({
       return;
     }
     if (event.type === "recording-changed") {
-      setRecording(event.status.running === true);
+      setCapture(captureStateFrom(event.status));
       return;
     }
     if (event.type === "session-stopped") {
-      setRecording(false);
+      // The recording is filed by its own stop path; a demo still being made
+      // keeps saying so until its `recording-changed` arrives.
+      setCapture((current) => (current.makingDemo ? { ...NO_CAPTURE, makingDemo: true } : NO_CAPTURE));
       setHasFrame(false);
       return;
     }
@@ -321,7 +350,7 @@ function AppControlMiniPlayerBox({
     let cancelled = false;
     void api.getRecordingStatus({ laneId }, runtimePinRef.current)
       .then((status) => {
-        if (!cancelled) setRecording(status?.running === true);
+        if (!cancelled) setCapture(captureStateFrom(status));
       })
       .catch(() => {});
     return () => {
@@ -335,6 +364,7 @@ function AppControlMiniPlayerBox({
     source,
     initial,
     onCommit: writeAppControlMiniPlayerChoice,
+    slot: { id: `app-control:${laneId}`, shown: visible && !pip.active },
   });
 
   // The picture went away (the app stopped): the PiP window would freeze on
@@ -350,6 +380,26 @@ function AppControlMiniPlayerBox({
     [onScreenKey, shown],
   );
 
+  const stopRecording = useCallback(async () => {
+    const api = window.ade?.appControl;
+    if (typeof api?.stopRecording !== "function") return;
+    // The status the stop answers with is the one the event also carries;
+    // taking it here means a lost event cannot leave the pill up.
+    const status = await api.stopRecording(
+      { laneId, ...(chatSessionId ? { chatSessionId } : {}) },
+      runtimePinRef.current,
+    ).catch((error: unknown) => {
+      showToast({
+        tone: "error",
+        title: "Recording did not stop",
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    });
+    if (status) setCapture(captureStateFrom(status));
+  }, [chatSessionId, laneId, runtimePinRef]);
+  const stopControl = useFloatingPlayerStop(stopRecording);
+
   const connected = session.status === "connected" || (session.status === "running" && Boolean(session.cdpEndpoint));
   const stateLabel = recording ? "recording" : appControlStatusWord(session);
 
@@ -358,11 +408,17 @@ function AppControlMiniPlayerBox({
       hostRef={hostRef}
       frame={frame}
       hidden={!shown}
+      icon={FLOATING_ICON}
       concealed={pip.active}
       attrPrefix="app-control-mini"
       playerId={laneId}
       ariaLabel="App, floating"
       recording={recording}
+      capture={capture.running || capture.makingDemo || stopControl.stopping ? {
+        startedAt: capture.startedAt,
+        makingDemo: capture.makingDemo || stopControl.stopping,
+        onStop: stopControl.onStop,
+      } : null}
       onStartDrag={startDrag}
       onStartResize={startResize}
       onOpenInPane={() => {

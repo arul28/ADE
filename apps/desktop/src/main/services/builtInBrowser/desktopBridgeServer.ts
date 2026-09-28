@@ -29,6 +29,15 @@ import {
   isAppControlRecorderBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/appControlRecorderBridgeClient";
 import {
+  DEMO_ENGINE_BRIDGE_PREFIX,
+  isDemoEngineBridgeMethod,
+} from "../../../../../ade-cli/src/services/builtInBrowser/demoEngineBridgeClient";
+import {
+  DEMO_RAW_FILE_EXTENSION,
+  type DemoEngine,
+  type DemoPlan,
+} from "../../../shared/demoVideo/demoContract";
+import {
   issueBuiltInBrowserActorCapability,
   resolveBuiltInBrowserActorCapability,
   revokeBuiltInBrowserActorCapability,
@@ -38,8 +47,15 @@ import type { BuiltInBrowserService } from "./builtInBrowserService";
 import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { pathComparisonKey } from "../shared/pathCompare";
 
-/** Per connection: the App Control recordings it started, cancelled when it closes. */
-type BridgeConnectionState = { recorderKeys: Set<string>; closed: boolean };
+/**
+ * Per connection: the App Control recordings it started and the demo jobs it
+ * runs, both cancelled when it closes.
+ */
+type BridgeConnectionState = {
+  recorderKeys: Set<string>;
+  demoJobs: Map<string, AbortController>;
+  closed: boolean;
+};
 
 /**
  * Side-channel JSON-RPC server that exposes the desktop's
@@ -88,6 +104,11 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * daemon as `app_control_recorder.*`. Absent: those methods are not found.
    */
   appControlScreencastRecorder?: AppControlScreencastRecorderBackend | null;
+  /**
+   * The Chromium demo engine, served to the runtime daemon as
+   * `demo_engine.*`. Absent: those methods are not found.
+   */
+  demoEngine?: DemoEngine | null;
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -119,7 +140,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
 
   const server = net.createServer((conn) => {
     activeSockets.add(conn);
-    const connection: BridgeConnectionState = { recorderKeys: new Set(), closed: false };
+    const connection: BridgeConnectionState = { recorderKeys: new Set(), demoJobs: new Map(), closed: false };
     const transport: JsonRpcTransport = {
       onData(callback) {
         conn.on("data", callback);
@@ -227,6 +248,9 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   function releaseConnectionRecordings(connection: BridgeConnectionState): void {
     const recorder = args.appControlScreencastRecorder ?? null;
     connection.closed = true;
+    // Nobody is left to receive a demo job's answer; stop its hidden renderer.
+    for (const controller of connection.demoJobs.values()) controller.abort();
+    connection.demoJobs.clear();
     const keys = [...connection.recorderKeys];
     connection.recorderKeys.clear();
     if (!recorder || !keys.length) return;
@@ -243,13 +267,18 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
     const method = request.method ?? "";
     const isRecorderMethod = method.startsWith(APP_CONTROL_RECORDER_BRIDGE_PREFIX);
-    if (!method.startsWith("built_in_browser.") && !isRecorderMethod) {
+    const isDemoEngineMethod = method.startsWith(DEMO_ENGINE_BRIDGE_PREFIX);
+    if (!method.startsWith("built_in_browser.") && !isRecorderMethod && !isDemoEngineMethod) {
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.* and app_control_recorder.*`,
+        `Unsupported method '${method}'. Desktop bridge only handles built_in_browser.*, app_control_recorder.* and demo_engine.*`,
       );
     }
-    const name = method.slice(isRecorderMethod ? APP_CONTROL_RECORDER_BRIDGE_PREFIX.length : "built_in_browser.".length);
+    const name = method.slice(
+      isRecorderMethod
+        ? APP_CONTROL_RECORDER_BRIDGE_PREFIX.length
+        : isDemoEngineMethod ? DEMO_ENGINE_BRIDGE_PREFIX.length : "built_in_browser.".length,
+    );
     const rawParams = isRecord(request.params) ? { ...request.params } : {};
     const providedBridgeAuth = typeof rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM] === "string"
       ? rawParams[BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM].trim()
@@ -262,6 +291,9 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
     if (isRecorderMethod) {
       return await handleAppControlRecorder(name, rawParams, connection);
+    }
+    if (isDemoEngineMethod) {
+      return await handleDemoEngine(name, rawParams, connection);
     }
     if (name === "authenticate") {
       return { authenticated: true };
@@ -421,6 +453,10 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         : { projectRoot: undefined, tabCollection: actor.tabCollection }),
       force: false,
     };
+    // A step caption touches no tab: it must not light the browser's presence.
+    if (name === "noteDemoStep") {
+      return service.noteDemoStep(params);
+    }
     const callable = (service as unknown as Record<string, unknown>)[name];
     if (typeof callable !== "function") {
       throw new JsonRpcError(
@@ -536,6 +572,61 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     }
   }
 
+  /**
+   * The Chromium demo engine, for the runtime daemon. Bridge auth is the only
+   * gate, as for the recorder. The engine reads one `.aderaw` capture and
+   * writes one `.mp4`; paths are checked here before it opens either.
+   */
+  async function handleDemoEngine(
+    name: string,
+    params: Record<string, unknown>,
+    connection: BridgeConnectionState,
+  ): Promise<unknown> {
+    const engine = args.demoEngine ?? null;
+    if (!engine || !isDemoEngineBridgeMethod(name)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.methodNotFound,
+        `Action '${DEMO_ENGINE_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`,
+      );
+    }
+    const jobId = normalizedString(params.jobId);
+    if (!jobId) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Demo engine calls need a job id.");
+    if (name === "cancel") {
+      connection.demoJobs.get(jobId)?.abort();
+      connection.demoJobs.delete(jobId);
+      return { ok: true };
+    }
+    if (connection.demoJobs.has(jobId)) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Demo job ${jobId} is already running.`);
+    }
+    const controller = new AbortController();
+    connection.demoJobs.set(jobId, controller);
+    try {
+      if (name === "analyze") {
+        const input = await resolveDemoEnginePath(normalizedString(params.input), DEMO_RAW_FILE_EXTENSION, true);
+        return await engine.analyze(input, { signal: controller.signal });
+      }
+      const request = isRecord(params.request) ? params.request : null;
+      if (!request || !isRecord(request.plan)) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Demo engine render needs a request with a plan.");
+      }
+      const input = await resolveDemoEnginePath(normalizedString(request.input), DEMO_RAW_FILE_EXTENSION, true);
+      const output = await resolveDemoEnginePath(normalizedString(request.output), ".mp4", false);
+      return await engine.render(
+        { input, output, plan: request.plan as unknown as DemoPlan },
+        { signal: controller.signal },
+      );
+    } catch (error) {
+      if (error instanceof JsonRpcError) throw error;
+      throw new JsonRpcError(
+        JsonRpcErrorCode.internalError,
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      if (connection.demoJobs.get(jobId) === controller) connection.demoJobs.delete(jobId);
+    }
+  }
+
   return {
     socketPath,
     authToken: bridgeAuthToken,
@@ -584,10 +675,10 @@ async function resolveRecorderTargetPath(filePath: string | null): Promise<strin
   const refuse = (): never => {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      "App Control recorder start needs an absolute .mp4 or .webm path under a project's .ade/artifacts/computer-use directory.",
+      "App Control recorder start needs an absolute .mp4, .webm or .aderaw path under a project's .ade/artifacts/computer-use directory.",
     );
   };
-  if (!filePath || !path.isAbsolute(filePath) || !/\.(mp4|webm)$/i.test(filePath)) return refuse();
+  if (!filePath || !path.isAbsolute(filePath) || !/\.(mp4|webm|aderaw)$/i.test(filePath)) return refuse();
   const realDir = await fs.promises.realpath(path.dirname(filePath)).catch(() => null);
   if (!realDir) return refuse();
   const segments = realDir.split(/[\\/]+/).filter(Boolean).map((segment) => pathComparisonKey(segment));
@@ -596,6 +687,30 @@ async function resolveRecorderTargetPath(filePath: string | null): Promise<strin
     return refuse();
   }
   return path.join(realDir, path.basename(filePath));
+}
+
+/**
+ * A file the demo engine may read (`mustExist`) or write. Absolute, with the
+ * one extension that job takes, in a directory that exists; resolved through
+ * symlinks and rebuilt from the real directory, as for the recorder. The
+ * engine writes a temporary sibling and renames it onto the output.
+ */
+async function resolveDemoEnginePath(filePath: string | null, extension: string, mustExist: boolean): Promise<string> {
+  const refuse = (): never => {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `The demo engine needs an absolute ${extension} path in an existing directory${mustExist ? ", of a file that exists" : ""}.`,
+    );
+  };
+  if (!filePath || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== extension) return refuse();
+  const realDir = await fs.promises.realpath(path.dirname(filePath)).catch(() => null);
+  if (!realDir) return refuse();
+  const resolved = path.join(realDir, path.basename(filePath));
+  if (mustExist) {
+    const stat = await fs.promises.stat(resolved).catch(() => null);
+    if (!stat?.isFile()) return refuse();
+  }
+  return resolved;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

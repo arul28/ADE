@@ -1,3 +1,4 @@
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { withImportedTurnBoundaries } from "../../../shared/importedTurnBoundaries";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
@@ -7671,6 +7672,8 @@ export function buildComputerUseDirective(
       "Respect the backend the user requested. If that backend is unavailable or hangs, stop and report the block instead of silently switching to a different backend.",
       "App Control (`ade app-control`, the **ade-app-control** skill) drives a dev Electron app, one session per lane: `launch`, `observe`, act on the handles, and read `hit:`/`effect:`. For proof, wrap the work in `ade app-control record start --caption \"<what it shows>\"` … `ade app-control record stop` (a video of the app's own window; a captioned recording is filed to the proof drawer), or file a still with `ade app-control proof --caption \"<what>\"`. To show the app to the user, run `ade app-control show --floating`.",
       "When the user asks you to send proof, register the resulting artifact with ADE via `ade proof ...` or `ingest_computer_use_artifacts` so it appears in the active proof drawer.",
+      "Keep the proof drawer clean: when proof of this work is replaced by a newer capture, shows a mistake or failed attempt, or no longer matches the code, delete it with `ade proof rm <id>` without asking. You can always capture it again. Cite only the proof that stays.",
+      "Every recording (Apple, Mac Desktop, App Control, browser) becomes a short demo when it stops: ADE cuts still time, speeds up waits, zooms to each action, draws the pointer and clicks, and keeps it under 10 MB. Record only the flow that shows the claim: set up first, start recording, run the flow, and stop as soon as the result is on screen; retries and troubleshooting stay out of the video. A recording stops itself after 5 minutes, or after 2 minutes with no action. While recording, mark each step with `ade proof step \"<what happens next>\"`: it becomes a caption in the video and a chapter in ADE's player. Pass `--plain` to `record start` only when the user asks for the raw recording.",
     ].join("\n"),
   );
 
@@ -7683,7 +7686,7 @@ export function buildComputerUseDirective(
         "Pick the surface: an iOS/SwiftUI app → `ade apple`; any macOS app → `ade mac-desktop`; a dev Electron app you launch or attach to → `ade app-control` (it records and proves its own window; `ade mac-desktop claim` can move it onto the lane screen, optional); a web page or localhost → `ade browser`.",
         "For web tasks, use ADE's built-in browser (`ade browser`, the **ade-browser** skill) by default. Open Safari or another browser on the Mac Desktop only when the user names that app or asks for the Mac Desktop.",
         "Every acting command reports `hit:` (the element it hit) and `effect:` (observed / unconfirmed / not_checked); when the effect is `unconfirmed`, observe again before you act or report.",
-        "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened, unsaved work included; `release` gives an app the lane opened to the user, whole.",
+        "`open` starts a separate, blank copy of the app on the lane screen; it shares that app's data (cookies, history) with the user. `ade mac-desktop stop` quits the apps the lane opened, unsaved work included; `release` gives an app the lane opened to the user, whole. Do not stop on your own when you finish. When the user asks you to close what you opened, run `ade mac-desktop quit` (it also quits apps you released) and then `ade mac-desktop stop`.",
         "The loop: `ade mac-desktop start` (viewing the screen does not start it), `ade mac-desktop open <app or file>`, `ade mac-desktop observe`, then act on the handles it returns (`click`, `type`, `type \"<text>\" --submit`, `press return`, `scroll`). For proof, wrap the work in `ade mac-desktop record start --caption \"<what it shows>\"` … `ade mac-desktop record stop` — a captioned recording is filed to the proof drawer — or file a still with `ade mac-desktop proof --caption \"<what>\"`. To show the screen to the user, run `ade mac-desktop show`.",
         "Check each step before you report it: an ok result only means the input was sent. Confirm with `ade mac-desktop observe`, `wait` or a screenshot, and report only what you saw. If a step did not work, say which one. Confirm the final state before `record stop`.",
         "If recording fails, say so. Never attach an older recording or a file you did not just record.",
@@ -18900,9 +18903,12 @@ export function createAgentChatService(args: {
     const detector = managed.activityDetector ??= createSessionActivityDetector();
     if (event.type === "status" && event.turnStatus === "started") managed.activityRowNeedsWrite = true;
     const before = detector.current;
-    const { activity: detected, counted } = detector.observe(event, Date.now());
+    const { activity: observed, counted } = detector.observe(event, Date.now());
+    // A running recording outranks the guess: it is a fact ADE knows.
+    const recording = demoTrackRegistry.isChatRecording(managed.session.id);
+    const detected = recording ? "recording" : observed;
     if (!detected) return;
-    const changed = detected !== before || managed.activityRowNeedsWrite === true;
+    const changed = detected !== (recording ? "recording" : before) || managed.activityRowNeedsWrite === true;
     // An unchanged detection only refills an empty row (an agent ran
     // `ade chat activity clear`): rewriting it would override an agent report
     // the evidence has not moved away from. Only counted evidence checks, so
@@ -18931,6 +18937,27 @@ export function createAgentChatService(args: {
       });
     }
   };
+
+  /**
+   * A recording the chat owns started or stopped: show "recording" at once,
+   * and put the detected activity back when it stops, without waiting for
+   * the chat's next event.
+   */
+  const unsubscribeRecordingStatus = demoTrackRegistry.onChatRecordingChange((sessionId, recording) => {
+    const managed = managedSessions.get(sessionId);
+    if (!managed) return;
+    const value = recording ? "recording" : managed.activityDetector?.current ?? null;
+    try {
+      if (value) sessionService.setDetectedSessionActivity(sessionId, value, managed.session.currentTurnStartedAt ?? null);
+      else sessionService.clearSessionActivity(sessionId);
+    } catch (error) {
+      logger.warn("agent_chat.recording_status_write_failed", {
+        sessionId,
+        recording,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
 
   /**
    * The user engaged (a message, a steer, an answer): the turn's activity
@@ -55428,6 +55455,7 @@ export function createAgentChatService(args: {
   const disposeAll = async (): Promise<void> => {
     beginDispose();
     disposeModelManifestListener();
+    unsubscribeRecordingStatus();
     for (const sessionId of [...managedSessions.keys()]) {
       try {
         await disposeManagedSession({ sessionId }, "detached");

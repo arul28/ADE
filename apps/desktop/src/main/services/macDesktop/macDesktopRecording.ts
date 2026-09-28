@@ -13,19 +13,26 @@
  *
  * 1. The chat that starts a recording owns it. The proof is filed under that
  *    chat, whichever chat stops it.
- * 2. A recording a chat owns stops itself after ten minutes of wall clock
- *    (`maxSeconds` changes it) and files itself, so an agent that forgets
- *    `record stop` cannot leave the display recording for hours. A recording
- *    with no owning chat has no cap unless it asks for one.
- * 3. Still time is cut by default. `durationMs` is the video; `wallDurationMs`
- *    the real time it covers; `idleCutMs` the difference. `keepIdle` turns it
- *    off. The proof keeps wall-clock times and adds "idle cut m:ss".
+ * 2. No recording runs longer than five minutes (`maxSeconds` may ask for
+ *    less), and one with no action for two minutes, or that fills the disk,
+ *    stops too (`demoRecordingGuard.ts`). A chat's recording that a limit
+ *    stopped files itself, so an agent that forgets `record stop` cannot
+ *    leave the display recording.
+ * 3. The helper records a raw file at wall clock. At the stop it becomes a
+ *    demo (`demoRenderService.ts`): still stretches cut, waits sped up, zoom
+ *    and a pointer on each action, step captions, under 10 MB. `plain` keeps
+ *    the recording as it was, only sized to fit. Only the result is kept.
+ *    `durationMs` is the video; `wallDurationMs` the real time it covers;
+ *    `idleCutMs` the difference.
  *
  * Split out of `macDesktopService.ts` as pure code motion: the registries and
  * the gates are passed in.
  */
 
 import fs from "node:fs";
+import { demoProofSentence, isLimitStop, recordingStopSentence } from "../../../shared/demoVideo/demoProofText";
+import type { DemoArtifactMetadata } from "../../../shared/demoVideo/demoContract";
+import { RECORDING_MAX_MS } from "../../../shared/demoVideo/demoContract";
 import { formatProofDuration, proofIdleCutLabel } from "../../../shared/proofProvenance";
 import {
   type DesktopSeatProvider,
@@ -37,6 +44,10 @@ import {
   type MacDesktopTimeLapse,
   macDesktopPaneCaption,
 } from "../../../shared/types/macDesktop";
+import type { DemoEngineSet } from "../demoVideo/demoEngines";
+import { rawPathFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
+import { produceDemoVideo } from "../demoVideo/demoRenderService";
+import { demoRecordingKey, demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopObservations } from "./macDesktopObservations";
 import { clampFps } from "./macDesktopStreamServer";
@@ -44,14 +55,14 @@ import { clampFps } from "./macDesktopStreamServer";
 /** The turn clip's rate. Low on purpose: it is a time-lapse, not a recording. */
 const TURN_CLIP_FPS = 4;
 
-/** How long a recording a chat owns may run. Same as the Apple device's. */
-export const MAC_DESKTOP_RECORDING_MAX_MS = 10 * 60 * 1000;
+/** How long any recording may run, whoever started it. */
+export const MAC_DESKTOP_RECORDING_MAX_MS = RECORDING_MAX_MS;
 
 /** The longest cap `maxSeconds` may ask for. */
-export const MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT = 4 * 60 * 60;
+export const MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT = RECORDING_MAX_MS / 1000;
 
 /**
- * A caller's `maxSeconds`, in ms, clamped to 1 s .. four hours. Null when absent or not a number.
+ * A caller's `maxSeconds`, in ms, clamped to 1 s .. five minutes. Null when absent or not a number.
  * Exported for App Control's window recording, which keeps the same cap rules.
  */
 export function capFromSeconds(maxSeconds: number | null | undefined): number | null {
@@ -59,12 +70,16 @@ export function capFromSeconds(maxSeconds: number | null | undefined): number | 
   return Math.round(Math.min(Math.max(maxSeconds, 1), MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT) * 1000);
 }
 
-/**
- * The cap for a recording: the caller's, or the default when a chat owns it.
- * A person recording with no chat gets none unless they ask.
- */
-function recordingCapMs(args: { maxSeconds?: number | null; chatSessionId: string | null }): number | null {
-  return capFromSeconds(args.maxSeconds) ?? (args.chatSessionId ? MAC_DESKTOP_RECORDING_MAX_MS : null);
+/** The cap for a recording: the caller's, else five minutes. Every recording has one. */
+function recordingCapMs(args: { maxSeconds?: number | null }): number {
+  return capFromSeconds(args.maxSeconds) ?? MAC_DESKTOP_RECORDING_MAX_MS;
+}
+
+/** The lengths a filed demo reports: the video, the real time it covers, and the difference. */
+export function demoLengths(meta: DemoArtifactMetadata): RecordingLengths {
+  const durationMs = Math.round(meta.outputSeconds * 1000);
+  const wallDurationMs = Math.round(meta.sourceSeconds * 1000);
+  return { durationMs, wallDurationMs, idleCutMs: Math.max(0, wallDurationMs - durationMs) };
 }
 
 export type RecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs: number };
@@ -104,16 +119,15 @@ function captionDuration(status: MacDesktopRecordingStatus): string {
  * video is shorter than its wall-clock times, then the cap when the cap
  * stopped it. Same sentences as the Apple device's proof.
  */
-function recordingProofDescription(lead: string, status: MacDesktopRecordingStatus): string {
-  const idleCut = proofIdleCutLabel(status.idleCutMs);
+function recordingProofDescription(
+  lead: string,
+  status: MacDesktopRecordingStatus,
+  demo: DemoArtifactMetadata | null,
+): string {
   return [
     lead,
-    idleCut && typeof status.wallDurationMs === "number"
-      ? `Still stretches were shortened: ${idleCut.replace(/^idle cut /, "")} cut from ${formatProofDuration(status.wallDurationMs)} of real time.`
-      : null,
-    status.stopReason === "cap" && typeof status.maxDurationMs === "number"
-      ? `Stopped at its ${formatProofDuration(status.maxDurationMs)} cap.`
-      : null,
+    demoProofSentence(demo),
+    recordingStopSentence(status.stopReason, status.maxDurationMs),
   ].filter(Boolean).join(" ");
 }
 
@@ -152,6 +166,20 @@ export type MacDesktopRecordingDeps = {
    * analytics emitter, and a scratch file that was not filed says nothing.
    */
   onRecordingFiled?: (() => void) | null;
+  /** The engines that turn the raw file into the demo. Absent: the raw file is filed as it is. */
+  demoEngines?: DemoEngineSet | null;
+};
+
+/** The recording's key in the demo track registry. */
+export function macDesktopDemoKey(laneId: string): string {
+  return demoRecordingKey("mac-desktop", laneId);
+}
+
+type RawRecording = {
+  rawPath: string;
+  finalPath: string;
+  plain: boolean;
+  stopWatch: () => void;
 };
 
 export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
@@ -169,6 +197,15 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
   const capTimers = new Map<string, ReturnType<typeof setTimeout>>();
   /** laneId → the stop in flight. Serialises a stop against the cap firing. */
   const stopping = new Map<string, Promise<MacDesktopRecordingStatus>>();
+  /** laneId → where the running recording's raw file goes and what it becomes. */
+  const raws = new Map<string, RawRecording>();
+
+  const endRaw = (laneId: string): RawRecording | null => {
+    const raw = raws.get(laneId) ?? null;
+    raw?.stopWatch();
+    raws.delete(laneId);
+    return raw;
+  };
 
   const isUserRecording = (laneId: string): boolean =>
     recordings.get(laneId)?.running === true;
@@ -242,6 +279,8 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       // button that could only fail. The intended path is kept because a
       // partial file is still inspectable.
       const partialFilePath = recordingPaths.get(laneId) ?? existing.filePath;
+      endRaw(laneId);
+      demoTrackRegistry.discard(macDesktopDemoKey(laneId));
       const failed: MacDesktopRecordingStatus = {
         ...existing,
         running: false,
@@ -258,18 +297,52 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     }
     // Wall clock, like the Apple recorder's: the idle cut shortens the video,
     // never the span of real time the proof says it covers.
-    const recordedTo = new Date(deps.now()).toISOString();
+    const stoppedAtMs = deps.now();
+    const recordedTo = new Date(stoppedAtMs).toISOString();
     recordingPaths.delete(laneId);
-    const filePath = typeof reply.filePath === "string" && reply.filePath.trim().length
+    const rawFilePath = typeof reply.filePath === "string" && reply.filePath.trim().length
       ? reply.filePath.trim()
       : null;
-    const lengths = readLengths(reply);
+    const rawLengths = readLengths(reply);
+    const raw = endRaw(laneId);
+    const demoKey = macDesktopDemoKey(laneId);
+    // The raw file is recorded at wall clock, so its first frame was its
+    // length before the stop. The track is measured from that frame.
+    demoTrackRegistry.markFirstFrame(demoKey, stoppedAtMs - rawLengths.wallDurationMs);
+    const track = demoTrackRegistry.end(demoKey, { durationSeconds: rawLengths.wallDurationMs / 1000, atMs: stoppedAtMs });
+    const making: MacDesktopRecordingStatus = { ...existing, running: false, makingDemo: true, stopReason: reason };
+    recordings.set(laneId, making);
+    deps.emit({ type: "recording-changed", status: making });
+
+    let filePath = rawFilePath;
+    let lengths = rawLengths;
+    let demo: DemoArtifactMetadata | null = null;
+    let demoError: string | null = null;
+    if (rawFilePath) {
+      try {
+        const produced = await produceDemoVideo({
+          rawPath: rawFilePath,
+          outputPath: raw?.finalPath ?? rawFilePath,
+          track,
+          plain: raw?.plain ?? false,
+          engines: deps.demoEngines?.engines() ?? [],
+          logger: deps.logger,
+        });
+        filePath = produced.path;
+        demo = produced.metadata;
+        lengths = demoLengths(produced.metadata);
+      } catch (error) {
+        demoError = error instanceof Error ? error.message : String(error);
+        deps.logger.warn("mac_desktop.recording_demo_failed", { laneId, error: demoError });
+      }
+    }
     const finished: MacDesktopRecordingStatus = {
       ...existing,
       running: false,
+      makingDemo: false,
       filePath,
       ...lengths,
-      lastError: null,
+      lastError: demoError,
       stopReason: reason,
     };
     // A caption is the opt-in that makes the file reviewer-facing evidence.
@@ -277,7 +350,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
     // The pane always sends one; an agent has to write its own. The one
     // exception is the cap: a chat's recording that ran out files itself, as
     // the Apple device's does, under "Mac Desktop recording · {lane} · 0:23".
-    const capFiled = !existing.caption && reason === "cap" && Boolean(existing.chatSessionId);
+    const capFiled = !existing.caption && isLimitStop(reason) && Boolean(existing.chatSessionId);
     const caption = existing.caption
       ?? (capFiled
         ? `${macDesktopPaneCaption("recording", await Promise.resolve(deps.resolveLaneName?.(laneId)).catch(() => null))} · ${captionDuration(finished)}`
@@ -291,7 +364,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         chatSessionId: existing.chatSessionId ?? stopperChatSessionId,
         toolName: "desktop record",
         title: caption,
-        caption: recordingProofDescription(existing.caption ?? DEFAULT_RECORDING_DESCRIPTION, finished),
+        caption: recordingProofDescription(existing.caption ?? DEFAULT_RECORDING_DESCRIPTION, finished, demo),
         filePath,
         kind: "video_recording",
         metadata: {
@@ -299,6 +372,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
           wallDurationMs: lengths.wallDurationMs,
           idleCutMs: lengths.idleCutMs,
           stopReason: reason,
+          ...(demo ? { demo } : {}),
         },
         // ADE's own recorder wrote this file between these two times. Without
         // it the broker read an agent's recording started in an earlier turn
@@ -464,12 +538,44 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       await closeTurnClips(laneId);
       // Same root as the turn clip: a captioned recording is played back in
       // the thread before it is ever filed as proof.
-      const filePath = deps.observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");
+      const finalPath = deps.observations.artifactPath(`mac-desktop-recording-${laneId}`, "mp4");
+      // The helper writes the raw recording (wall clock, nothing cut); the
+      // stop turns it into the demo at `finalPath` and deletes it.
+      const filePath = rawPathFor(finalPath);
       const fps = clampFps(args.fps, 15);
-      await provider.startRecording({ laneId, fps, filePath, keepIdle: args.keepIdle === true });
-      recordingPaths.set(laneId, filePath);
       const chatSessionId = args.chatSessionId?.trim() || null;
-      const maxDurationMs = recordingCapMs({ maxSeconds: args.maxSeconds, chatSessionId });
+      const plain = args.plain === true || args.keepIdle === true;
+      const demoKey = macDesktopDemoKey(laneId);
+      demoTrackRegistry.begin(demoKey, { surface: "mac-desktop", chatSessionId, laneId });
+      try {
+        await provider.startRecording({ laneId, fps, filePath, keepIdle: true });
+      } catch (error) {
+        demoTrackRegistry.discard(demoKey);
+        throw error;
+      }
+      recordingPaths.set(laneId, filePath);
+      raws.get(laneId)?.stopWatch();
+      raws.set(laneId, {
+        rawPath: filePath,
+        finalPath,
+        plain,
+        stopWatch: watchDemoRecording({
+          key: demoKey,
+          rawPath: filePath,
+          logger: deps.logger,
+          now: deps.now,
+          onLimit: (limit) => {
+            void stopUserRecording(laneId, null, limit).catch((error: unknown) => {
+              deps.logger.warn("mac_desktop.recording.limit_stop_failed", {
+                laneId,
+                limit,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          },
+        }),
+      });
+      const maxDurationMs = recordingCapMs({ maxSeconds: args.maxSeconds });
       const status: MacDesktopRecordingStatus = {
         laneId,
         running: true,
@@ -480,9 +586,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
         lastError: null,
         chatSessionId,
         maxDurationMs,
+        plain,
       };
       recordings.set(laneId, status);
-      if (maxDurationMs !== null) armCap(laneId, maxDurationMs);
+      armCap(laneId, maxDurationMs);
       deps.emit({ type: "recording-changed", status });
       return status;
     },
@@ -493,12 +600,18 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
 
     forgetLane(laneId: string): void {
       clearCap(laneId);
+      endRaw(laneId);
+      demoTrackRegistry.discard(macDesktopDemoKey(laneId));
       recordings.delete(laneId);
       recordingPaths.delete(laneId);
     },
 
     clear(): void {
       for (const laneId of [...capTimers.keys()]) clearCap(laneId);
+      for (const laneId of [...raws.keys()]) {
+        endRaw(laneId);
+        demoTrackRegistry.discard(macDesktopDemoKey(laneId));
+      }
       recordings.clear();
       recordingPaths.clear();
     },

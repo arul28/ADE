@@ -8,17 +8,24 @@ import {
   type ReactNode,
   type MutableRefObject,
 } from "react";
-import { PictureInPicture } from "@phosphor-icons/react";
+import { PictureInPicture, type Icon } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
+import { MakingDemoPill, RecordingPill } from "./RecordingReceipt";
 import {
   enterCanvasPictureInPicture,
   WORK_LIVE_PIP_UNSUPPORTED_LABEL,
   type WorkLivePipSession,
 } from "../work/workLiveIosPictureInPicture";
 import {
+  floatingPlayerFramesBefore,
+  setFloatingPlayerSlot,
+  useFloatingPlayerSlotsVersion,
+} from "./floatingPlayerSlots";
+import {
   clampFloatingPlayerPosition,
   FLOATING_PLAYER_CORNER_RADIUS,
+  placeFloatingPlayerClear,
   resizeFloatingPlayer,
   resolveFloatingPlayerFrame,
   type FloatingPlayerFrame,
@@ -93,6 +100,11 @@ export function useFloatingPlayerFrame(args: {
   source: FloatingPlayerSize;
   initial?: FloatingPlayerChoice | null;
   onCommit?: (choice: FloatingPlayerChoice) => void;
+  /**
+   * This player's place among the floating players on screen. A player that
+   * was never moved opens clear of the ones placed before it.
+   */
+  slot?: { id: string; shown: boolean } | null;
 }): {
   hostRef: MutableRefObject<HTMLDivElement | null>;
   frame: FloatingPlayerFrame;
@@ -163,13 +175,33 @@ export function useFloatingPlayerFrame(args: {
       ? { width: container.width, height: Math.max(0, container.height - container.topInset) }
       : FALLBACK_CONTAINER
   ), [container]);
-  const inBox = resolveFloatingPlayerFrame({
+  useFloatingPlayerSlotsVersion();
+  const slotId = args.slot?.id ?? null;
+  const slotShown = args.slot?.shown ?? false;
+  let inBox = resolveFloatingPlayerFrame({
     width,
     position: position ? { x: position.x, y: position.y - inset } : null,
     source,
     container: box,
   });
+  if (!position && slotId) {
+    const clear = placeFloatingPlayerClear({
+      size: { width: inBox.width, height: inBox.height },
+      container: box,
+      others: floatingPlayerFramesBefore(slotId).map((other) => ({ ...other, y: other.y - inset })),
+    });
+    inBox = resolveFloatingPlayerFrame({ width, position: clear, source, container: box });
+  }
   const frame: FloatingPlayerFrame = { ...inBox, y: inBox.y + inset };
+
+  useEffect(() => {
+    if (!slotId) return undefined;
+    setFloatingPlayerSlot(slotId, slotShown ? frame : null);
+    return undefined;
+  }, [frame.height, frame.width, frame.x, frame.y, slotId, slotShown]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => {
+    if (slotId) setFloatingPlayerSlot(slotId, null);
+  }, [slotId]);
 
   /** Listens on the window until the pointer comes up, then reports the choice. */
   const track = useCallback((move: (event: PointerEvent) => void) => {
@@ -294,6 +326,84 @@ export function useCanvasPictureInPicture(getCanvas: () => HTMLCanvasElement | n
 const BAR_TEXT_BUTTON =
   "shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg";
 
+/**
+ * A recording of the picture, as the player shows it: the live pill with its
+ * Stop while it runs, then "Making demo…" until the demo is filed.
+ *
+ * The player's red dot alone could not say how long a recording had run or
+ * offer a way to end it, so a recording an agent started kept running behind a
+ * floating preview with no control on it (the owner's 2026-09-27 report).
+ */
+export type FloatingPlayerCapture = {
+  /** When the running recording started; null once it has stopped. */
+  startedAt: string | null;
+  /** Between the stop and the demo being filed, including a stop in flight. */
+  makingDemo: boolean;
+  onStop: () => void;
+};
+
+/**
+ * Stop through the tool's own API, and "Making demo…" for as long as the stop
+ * takes. A stop now renders the demo before it answers — seconds, not a frame —
+ * and a pill that vanished on click read as a Stop that did nothing.
+ */
+export function useFloatingPlayerStop(stop: (() => Promise<unknown>) | null): {
+  stopping: boolean;
+  onStop: () => void;
+} {
+  const [stopping, setStopping] = useState(false);
+  const stoppingRef = useRef(false);
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
+  const onStop = useCallback(() => {
+    const run = stopRef.current;
+    if (!run || stoppingRef.current) return;
+    stoppingRef.current = true;
+    setStopping(true);
+    void run()
+      .catch(() => {})
+      .finally(() => {
+        stoppingRef.current = false;
+        if (mountedRef.current) setStopping(false);
+      });
+  }, []);
+  return { stopping, onStop };
+}
+
+/** The pill over the picture, ticking once a second only while it runs. */
+function FloatingPlayerCapturePill({ capture, attrPrefix }: { capture: FloatingPlayerCapture; attrPrefix: string }) {
+  const running = Boolean(capture.startedAt) && !capture.makingDemo;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  if (capture.makingDemo) {
+    return (
+      <MakingDemoPill
+        marker={{ [`data-${attrPrefix}-making-demo`]: "" }}
+        className="bottom-2 z-[3] px-2 text-[11px]"
+      />
+    );
+  }
+  if (!capture.startedAt) return null;
+  const startedAt = Date.parse(capture.startedAt);
+  return (
+    <RecordingPill
+      marker={{ [`data-${attrPrefix}-recording-pill`]: "" }}
+      elapsedMs={Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0}
+      onStop={capture.onStop}
+      className="bottom-2 z-[3] px-2 text-[11px]"
+    />
+  );
+}
+
 export function FloatingPlayerShell({
   hostRef,
   frame,
@@ -309,6 +419,8 @@ export function FloatingPlayerShell({
   onClose,
   pip,
   barLeading = null,
+  icon = null,
+  capture = null,
   children,
 }: {
   hostRef: MutableRefObject<HTMLDivElement | null>;
@@ -335,6 +447,10 @@ export function FloatingPlayerShell({
   };
   /** Extra facts at the start of the hover bar (who drives the picture). */
   barLeading?: ReactNode;
+  /** The tool's own glyph, the one its Work tab and the chat header show. */
+  icon?: { Icon: Icon; color: string } | null;
+  /** A recording of the picture in progress, or null when none is. */
+  capture?: FloatingPlayerCapture | null;
   /** The picture, and anything drawn over it. The shell's chrome sits above. */
   children: ReactNode;
 }) {
@@ -407,6 +523,18 @@ export function FloatingPlayerShell({
         />
       ))}
 
+      {icon ? (
+        <span
+          aria-hidden="true"
+          {...{ [data("icon")]: "" }}
+          className="pointer-events-none absolute left-2 top-2 z-[3] inline-flex h-5 w-5 items-center justify-center rounded-md bg-black/55 shadow-[0_0_0_1px_rgba(255,255,255,0.08)]"
+        >
+          <icon.Icon size={12} weight="duotone" style={{ color: icon.color }} />
+        </span>
+      ) : null}
+
+      {capture ? <FloatingPlayerCapturePill capture={capture} attrPrefix={attrPrefix} /> : null}
+
       <div className="absolute right-2 top-2 z-[3]">
         {hovered ? (
           /* `shrink-0` + `nowrap` on every child: at the 240px minimum the bar
@@ -443,10 +571,10 @@ export function FloatingPlayerShell({
         ) : (
           <span
             aria-hidden="true"
-            {...{ [data("dot")]: recording ? "recording" : "idle" }}
+            {...{ [data("dot")]: recording || capture?.startedAt ? "recording" : "idle" }}
             className={cn(
               "block h-2 w-2 rounded-full",
-              recording ? "bg-[var(--color-error)] motion-safe:animate-pulse" : "bg-fg/45",
+              recording || capture?.startedAt ? "bg-[var(--color-error)] motion-safe:animate-pulse" : "bg-fg/45",
             )}
           />
         )}

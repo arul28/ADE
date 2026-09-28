@@ -82,6 +82,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       ? args.windowRecorder
       : createAppControlWindowRecorder({ logger: args.logger }),
     screencastRecorder: () => args.getScreencastRecorder?.() ?? null,
+    getChromiumDemoEngine: args.getChromiumDemoEngine ?? null,
     ingestArtifacts: args.ingestArtifacts ?? null,
     resolvePrimaryPrUrl: args.resolvePrimaryPrUrl ?? null,
     resolveLaneName: args.resolveLaneName ?? null,

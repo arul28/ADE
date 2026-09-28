@@ -559,7 +559,7 @@ export type AppControlSwitchWindowArgs = AppControlSessionTargetArgs & {
 export type AppControlRecordingEngine = "window-capture" | "screencast";
 
 /** `chat-ended`: the chat that started the recording ended; it files itself like `cap`. */
-export type AppControlRecordingStopReason = "requested" | "cap" | "app-closed" | "chat-ended";
+export type AppControlRecordingStopReason = "requested" | "cap" | "idle" | "disk" | "app-closed" | "chat-ended";
 
 /** Field names mirror `MacDesktopRecordingStatus`. */
 export type AppControlRecordingStatus = {
@@ -593,13 +593,19 @@ export type AppControlRecordingStatus = {
    * values the Mac Desktop pane shows. Set when a start was refused for them.
    */
   permissions?: MacDesktopPermissions | null;
+  /** True between the stop and the demo being filed: the demo is being made. */
+  makingDemo?: boolean;
+  /** Set on a recording started with `plain`. */
+  plain?: boolean;
 };
 
 export type AppControlRecordStartArgs = AppControlLaneArgs & {
   caption?: string | null;
-  /** Keep still stretches. By default they are cut. */
+  /** File it as recorded, with no demo treatment (`record start --plain`). Still under 10 MB. */
+  plain?: boolean | null;
+  /** Older name for `plain`. */
   keepIdle?: boolean | null;
-  /** Wall-clock cap in seconds. A chat's recording defaults to ten minutes. */
+  /** Wall-clock cap in seconds, at most five minutes (the default). */
   maxSeconds?: number | null;
   fps?: number | null;
 };

@@ -65,6 +65,8 @@ export type MacDesktopDriverLifecycle = {
   hasDriver(): boolean;
   isDriverRunning(): boolean;
   driverHealth(): MacDesktopDriverHealth | null;
+  /** One stack sample of the running driver, for a capture that stalled. */
+  sampleCaptureStall(reason: string): void;
   refreshDriverHealth(): Promise<void>;
   reconcileDisplays(seat: DesktopSeatProvider): Promise<void>;
   recheckPermissions(args?: MacDesktopRecheckPermissionsArgs): Promise<MacDesktopPermissions>;
@@ -263,6 +265,7 @@ export function createMacDesktopDriverLifecycle(
     hasDriver() { return backend !== null; },
     isDriverRunning() { return Boolean(backend?.client.isRunning()); },
     driverHealth() { return backend?.client.getHealth() ?? null; },
+    sampleCaptureStall(reason) { backend?.client.sampleCaptureStall?.(reason); },
     refreshDriverHealth: async () => refreshDriverHealth(),
     reconcileDisplays,
     recheckPermissions,

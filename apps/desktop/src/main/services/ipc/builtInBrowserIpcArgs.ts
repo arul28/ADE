@@ -28,6 +28,7 @@ import type {
   BuiltInBrowserSetZoomArgs,
   BuiltInBrowserStartPreviewStreamArgs,
   BuiltInBrowserStartRecordingArgs,
+  BuiltInBrowserStopRecordingArgs,
   BuiltInBrowserStopFindInPageArgs,
   BuiltInBrowserStopPreviewStreamArgs,
   BuiltInBrowserTabArgs,
@@ -398,10 +399,24 @@ export function createBuiltInBrowserIpcArgParsers(args: {
   ): BuiltInBrowserStartRecordingArgs => {
     const record = builtInBrowserRecord(value, channel, false);
     const caption = optionalBuiltInBrowserString(record, "caption", channel, 500);
+    const plain = optionalBoolean(record.plain);
     return {
       ...parseBuiltInBrowserTabTargetRecord(record, channel),
       ...(record.fps == null ? {} : { fps: builtInBrowserNumber(record, "fps", channel, { min: 30, max: 60 }) }),
       ...(caption ? { caption } : {}),
+      ...(plain === undefined ? {} : { plain }),
+    };
+  };
+
+  const parseBuiltInBrowserStopRecordingArgs = (
+    value: unknown,
+    channel: string,
+  ): BuiltInBrowserStopRecordingArgs => {
+    const record = builtInBrowserRecord(value, channel, false);
+    const plain = optionalBoolean(record.plain);
+    return {
+      ...parseBuiltInBrowserTabTargetRecord(record, channel),
+      ...(plain === undefined ? {} : { plain }),
     };
   };
 
@@ -436,5 +451,6 @@ export function createBuiltInBrowserIpcArgParsers(args: {
     parseBuiltInBrowserStartPreviewStreamArgs,
     parseBuiltInBrowserStopPreviewStreamArgs,
     parseBuiltInBrowserStartRecordingArgs,
+    parseBuiltInBrowserStopRecordingArgs,
   };
 }

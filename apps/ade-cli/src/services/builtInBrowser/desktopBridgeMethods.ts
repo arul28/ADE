@@ -105,6 +105,11 @@ export const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS = [
   "uploadFile",
   "startRecording",
   "stopRecording",
+  /**
+   * A step caption (`ade proof step`) for the chat's browser recordings. They
+   * live in the desktop's demo track registry, so the brain forwards steps here.
+   */
+  "noteDemoStep",
 ] as const satisfies readonly (keyof BuiltInBrowserService)[];
 
 export type BuiltInBrowserDesktopBridgeMethod =

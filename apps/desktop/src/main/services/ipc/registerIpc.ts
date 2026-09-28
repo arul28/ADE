@@ -2817,6 +2817,7 @@ export function registerIpc({
     parseBuiltInBrowserStartPreviewStreamArgs,
     parseBuiltInBrowserStopPreviewStreamArgs,
     parseBuiltInBrowserStartRecordingArgs,
+    parseBuiltInBrowserStopRecordingArgs,
   } = createBuiltInBrowserIpcArgParsers({
     onInvalid: (channel, reason) =>
       getCtx().logger.warn("ipc.built_in_browser.invalid_args", { channel, reason }),
@@ -10130,7 +10131,7 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserStopRecording, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopRecording, { windowMs: 60_000, max: 20 });
     return ensureBuiltInBrowser().stopRecording(
-      parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserStopRecording),
+      parseBuiltInBrowserStopRecordingArgs(arg, IPC.builtInBrowserStopRecording),
       win,
     );
   });

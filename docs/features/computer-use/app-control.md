@@ -67,7 +67,7 @@ Mac Desktop recording.
 
 | Action | Arguments | Answer |
 |---|---|---|
-| `app_control.startRecording` | `laneId`, `chatSessionId?`, `caption?`, `keepIdle?`, `maxSeconds?` | `AppControlRecordingStatus` |
+| `app_control.startRecording` | `laneId`, `chatSessionId?`, `caption?`, `plain?` (older name `keepIdle?`), `maxSeconds?` | `AppControlRecordingStatus` |
 | `app_control.stopRecording` | `laneId`, `chatSessionId?` | `AppControlRecordingStatus` with `filePath`, `durationMs`, `wallDurationMs`, `idleCutMs`, `proofArtifactId`, `lastError` |
 | `app_control.getRecordingStatus` | `laneId` | `AppControlRecordingStatus` |
 
@@ -79,13 +79,14 @@ Mac Desktop recording.
 Rules:
 
 - **One per lane.** A lane has at most one recording.
-- **Cap.** A chat's recording stops itself after 10 minutes of real time
-  unless `maxSeconds` sets another limit (`stopReason: "cap"`). A recording no
-  chat owns has no cap unless one is asked for. A recording also stops when the
-  app closes (`stopReason: "app-closed"`).
-- **Idle cut.** Still stretches are cut from the video unless `keepIdle` is
-  set. `durationMs` is the video; `wallDurationMs` is the real time it covers;
-  `idleCutMs` is the difference.
+- **Limits.** Every recording stops itself after 5 minutes of real time
+  (`maxSeconds` sets less; `stopReason: "cap"`), after 2 minutes with no
+  action (`"idle"`), or when the disk is nearly full (`"disk"`). A recording
+  also stops when the app closes (`stopReason: "app-closed"`).
+- **Demo.** The engine records a raw file; the stop turns it into a demo
+  (see [Demo videos](../proof.md#demo-videos)) unless `plain` is set, and only
+  the demo is kept. `durationMs` is the video; `wallDurationMs` is the real
+  time it covers; `idleCutMs` is the difference.
 - **Chat-bound.** The chat that starts a recording owns it. The proof is filed
   under that chat, whichever chat stops it.
 - **Proof.** A captioned recording is filed as proof when it stops, with
@@ -102,12 +103,13 @@ Engines (`engine`):
 
 - `window-capture` (macOS). The ADEDesktopDriver `CaptureEngine` captures only
   the App Control app's window (`SCContentFilter(desktopIndependentWindow:)`).
-  It reuses the Mac Desktop writer: `AVAssetWriter`, the idle cut and the cap.
+  It reuses the Mac Desktop writer (`AVAssetWriter`) and writes a raw MP4 that
+  `ade-media` makes into the demo.
   A start that lacks the Screen Recording grant is refused, and the status
   carries `permissions`.
-- `screencast` (Windows and Linux). The desktop renderer draws the CDP
-  screencast frames onto a canvas and records it with `MediaRecorder` (MP4 when
-  supported, else WebM). The status contract is the same. A machine with no
+- `screencast` (Windows and Linux). The desktop app writes the CDP screencast
+  frames to an `.aderaw` file, and its Chromium demo engine makes the MP4 demo
+  from it. The status contract is the same. A machine with no
   ADE desktop app has no encoder, and the start says so.
 
 ## Proof
@@ -289,7 +291,7 @@ The chat terminal surface is `ade.terminal.*` (`list`, `read`, `write`,
   to the `agent*` action; the live-frame primitives are not reachable from the
   CLI;
 - capture and proof: `screenshot`, `snapshot`, `inspect`, `select`, `proof`,
-  `record start [--caption] [--keep-idle] [--max-seconds N]`, `record stop`,
+  `record start [--caption] [--plain] [--max-seconds N]`, `record stop`,
   `record status`;
 - windows: `windows`, `switch-window`, `targets`, `attach-target`, `focus`,
   `minimize`, `drivers`;

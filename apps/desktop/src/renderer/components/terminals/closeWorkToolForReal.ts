@@ -52,10 +52,14 @@ export function closeWorkToolForReal(
       const browser = window.ade?.builtInBrowser;
       if (!browser?.getStatus || !browser.closeTab) return;
       // Every open tab, not just the active one: the pane's browser is a
-      // collection, and "close the browser" means the collection.
+      // collection, and "close the browser" means the collection. A tab that
+      // is recording stays: an agent is filming proof in it, and closing the
+      // pane ended that recording with the tab and threw the video away.
       void browser.getStatus(undefined, pin)
         .then((status) => Promise.all(
-          status.tabs.map((tab) => browser.closeTab({ tabId: tab.id }, pin)),
+          status.tabs
+            .filter((tab) => !tab.recording)
+            .map((tab) => browser.closeTab({ tabId: tab.id }, pin)),
         ))
         .catch((error) => logCloseFailure(tool, error));
       return;

@@ -61,6 +61,7 @@ export type SessionStatusTone = "blue" | "violet" | "amber" | "emerald" | "red" 
 export type SessionStatusGlyph =
   | "working"
   | "monitoring"
+  | "recording"
   | "planning"
   | "exploring"
   | "implementing"
@@ -194,6 +195,7 @@ const REPORTED_ACTIVITY_PRESENTATION: Record<SessionActivityReport["value"], Ses
   debugging: { label: "Debugging", tone: "blue", glyph: "debugging", showsElapsed: true, prominent: false, activityDetail: true },
   shipping: { label: "Shipping", tone: "blue", glyph: "shipping", showsElapsed: true, prominent: false, activityDetail: true },
   monitoring: { label: "Monitoring", tone: "blue", glyph: "monitoring", showsElapsed: true, prominent: false, activityDetail: true },
+  recording: { label: "Recording", tone: "red", glyph: "recording", showsElapsed: true, prominent: false, activityDetail: true },
 };
 
 /**

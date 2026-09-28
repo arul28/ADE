@@ -307,7 +307,7 @@ function WorkFilesTool({ laneId, runtimePin }: WorkToolPanelProps) {
 
 /**
  * A canvas that has never been handed a frame is 300×150 — the HTML default —
- * and `IosSimH264Video` only sizes it on the first decode. Drawn with
+ * and `H264StreamView` only sizes it on the first decode. Drawn with
  * `alpha: false`, that placeholder reads as solid black.
  *
  * It matters because the poster below is painted full-bleed over the floating

@@ -87,6 +87,8 @@ export type BrowserStageProps = {
   launchpadGroups: BrowserLaunchpadGroup[];
   letterboxed: boolean;
   emulation: BuiltInBrowserEmulationState | null;
+  /** The fixed layout of an agent-owned or recording tab, when no preset is on. */
+  agentViewport?: { width: number; height: number } | null;
   busy: string | null;
   onRotateEmulation: () => void;
 };
@@ -274,6 +276,7 @@ export function BrowserStage({
   launchpadGroups,
   letterboxed,
   emulation,
+  agentViewport = null,
   busy,
   onRotateEmulation,
 }: BrowserStageProps) {
@@ -422,9 +425,10 @@ export function BrowserStage({
               data-testid="browser-emulation-caption"
               className="font-mono text-[10px] tracking-[0.02em] text-muted-fg/75"
             >
-              {emulationCaption(emulation, viewFrame.scale)}
+              {emulationCaption(emulation ?? agentViewport, viewFrame.scale)}
             </span>
-            <button
+            {/* Rotating is a device's; the agent's desktop size is not the person's to turn. */}
+            {emulation ? <button
               type="button"
               onClick={onRotateEmulation}
               disabled={busy === "emulation"}
@@ -438,7 +442,7 @@ export function BrowserStage({
               )}
             >
               <ArrowsLeftRight size={11} />
-            </button>
+            </button> : null}
           </div>
         ) : null}
       </div>

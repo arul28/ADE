@@ -2,7 +2,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
+import type { DemoArtifactMetadata } from "../../../../shared/demoVideo/demoContract";
+import { RECORDING_MAX_MS } from "../../../../shared/demoVideo/demoContract";
+import { demoProofSentence, recordingStopSentence } from "../../../../shared/demoVideo/demoProofText";
 import { formatProofDuration, proofIdleCutLabel } from "../../../../shared/proofProvenance";
+import { createDemoEngineSet, type DemoEngineSet } from "../../demoVideo/demoEngines";
+import { rawPathFor, watchDemoRecording } from "../../demoVideo/demoRecordingGuard";
+import { produceDemoVideo } from "../../demoVideo/demoRenderService";
+import { demoRecordingKey, demoTrackRegistry } from "../../demoVideo/demoTrackRegistry";
+import type { Logger } from "../../logging/logger";
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
 import type { ComputerUseProofProvenanceInput } from "../../../../shared/types/computerUseArtifacts";
 import { APPLE_DEVICE_ALREADY_RECORDING_CODE, type AppleInputSource, type AppleRecordingPhase } from "../../../../shared/types/iosSimulator";
@@ -28,18 +36,20 @@ import {
  * 1. The first AGENT input on a device with no running recording starts one,
  *    tagged `auto`, owned by the calling chat. A person driving the pane never
  *    starts one (round 3, A2) — see `noteInput`'s `source`.
- * 2. It stops at the end of that chat's turn, or after ten minutes, whichever
+ * 2. It stops at the end of that chat's turn, or after five minutes, whichever
  *    comes first.
  * 3. `record-start` while an auto recording runs **converts** it — no restart,
  *    no gap — so "let me record that" never costs the first minute. The auto
  *    cap goes; the manual cap (below) starts from the conversion.
- * 3a. A manual recording a chat owns stops itself after ten minutes of wall
- *    clock (`maxSeconds` changes it), so an agent that forgets `record-stop`
- *    cannot leave the device recording for hours. A person's own recording
- *    from the pane has no cap unless it asks for one.
- * 3b. Still time is cut by default: the helper keeps 0.75 s of any still
- *    stretch over 2 s. `durationMs` is the video; `wallDurationMs` the real
- *    time it covers; `idleCutMs` the difference. `keepIdle` turns it off.
+ * 3a. No recording runs longer than five minutes (`maxSeconds` may ask for
+ *    less), whoever started it, and one with no input for two minutes, or
+ *    that fills the disk, stops too (`demoRecordingGuard.ts`).
+ * 3b. The helper records a raw file at wall clock with no overlays. At the
+ *    stop it becomes a demo (`demoRenderService.ts`): still stretches cut,
+ *    waits sped up, zoom and tap rings on each input, under 10 MB. `plain`
+ *    keeps it as recorded, only sized to fit. Only the result is kept.
+ *    `durationMs` is the video; `wallDurationMs` the real time it covers;
+ *    `idleCutMs` the difference.
  * 4. Every recording that stops is filed into the proof drawer at once (round
  *    3, A3), attributed to the chat that owns it, captioned
  *    "Simulator recording · {device} · {duration}". There is no pin step.
@@ -81,6 +91,10 @@ export type SimRecording = {
   idleCutMs?: number | null;
   /** Wall-clock cap, or null for none. The recording stops itself at it. */
   maxDurationMs?: number | null;
+  /** Started with `plain`: filed as recorded, with no demo treatment. */
+  plain?: boolean;
+  /** How the demo was made, once it stopped. */
+  demo?: DemoArtifactMetadata | null;
   /**
    * Why it stopped. `cap` means the cap above ran out. `helper-exited` means
    * the helper died while writing it, so the file is probably unplayable.
@@ -99,7 +113,7 @@ export type SimRecording = {
 
 export type { AppleInputSource };
 
-export type SimRecordingStopReason = "requested" | "turn-end" | "cap" | "device-off" | "released" | "helper-exited";
+export type SimRecordingStopReason = "requested" | "turn-end" | "cap" | "idle" | "disk" | "device-off" | "released" | "helper-exited";
 
 export interface SimRecordingService {
   /** Auto-record start + overlay events. Called from every injected-input path. */
@@ -111,6 +125,8 @@ export interface SimRecordingService {
     x?: number;
     y?: number;
     text?: string;
+    /** The device's size in points, the unit of `x`/`y`, when a stream knows it. */
+    pointSize?: { width: number; height: number } | null;
     /**
      * Who drove the device. Only `agent` may START a recording.
      *
@@ -130,9 +146,13 @@ export interface SimRecordingService {
     chatSessionId: string | null;
     overlays?: boolean;
     label?: string;
-    /** Keep still stretches at wall-clock length (`record-start --keep-idle`). */
+    /** File it as recorded, with no demo treatment (`record-start --plain`). */
+    plain?: boolean;
+    /** Older name for `plain`. */
     keepIdle?: boolean;
-    /** Wall-clock cap in seconds. Default: ten minutes for a chat's recording. */
+    /** Zoom in on each tap in the demo (`record start --zoom`). Off by default. */
+    zoom?: boolean;
+    /** Wall-clock cap in seconds, at most five minutes (the default). */
     maxSeconds?: number;
   }): Promise<SimRecording>;
   stop(args: {
@@ -212,29 +232,31 @@ export const APPLE_OWNED_BY_OTHER_SESSION_CODE = "APPLE_OWNED_BY_OTHER_SESSION" 
 export const APPLE_HELPER_UNAVAILABLE_CODE = "APPLE_HELPER_UNAVAILABLE" as const;
 
 /** How long an auto recording may run before it stops itself. */
-export const AUTO_RECORDING_MAX_MS = 10 * 60 * 1000;
+export const AUTO_RECORDING_MAX_MS = RECORDING_MAX_MS;
 
 /**
- * How long a manual recording a chat owns may run. Counted from the start, or
- * from the conversion when it began as an auto recording.
+ * How long a manual recording may run. Counted from the start, or from the
+ * conversion when it began as an auto recording.
  */
-export const MANUAL_RECORDING_MAX_MS = 10 * 60 * 1000;
+export const MANUAL_RECORDING_MAX_MS = RECORDING_MAX_MS;
 
 /** The longest cap `maxSeconds` may ask for. */
-export const RECORDING_MAX_SECONDS_LIMIT = 4 * 60 * 60;
+export const RECORDING_MAX_SECONDS_LIMIT = RECORDING_MAX_MS / 1000;
 
-/** A caller's `maxSeconds`, in ms, clamped to 1 s .. four hours. Null when absent or not a number. */
+/** A caller's `maxSeconds`, in ms, clamped to 1 s .. five minutes. Null when absent or not a number. */
 function capFromSeconds(maxSeconds: number | undefined): number | null {
   if (typeof maxSeconds !== "number" || !Number.isFinite(maxSeconds) || maxSeconds <= 0) return null;
   return Math.round(Math.min(Math.max(maxSeconds, 1), RECORDING_MAX_SECONDS_LIMIT) * 1000);
 }
 
-/**
- * The cap for a manual recording: the caller's, or the default when a chat
- * owns it. A person recording from the pane gets none unless they ask.
- */
-function manualCapMs(args: { maxSeconds?: number; chatSessionId: string | null }): number | null {
-  return capFromSeconds(args.maxSeconds) ?? (args.chatSessionId ? MANUAL_RECORDING_MAX_MS : null);
+/** The cap for a manual recording: the caller's, else five minutes. Every recording has one. */
+function manualCapMs(args: { maxSeconds?: number }): number {
+  return capFromSeconds(args.maxSeconds) ?? MANUAL_RECORDING_MAX_MS;
+}
+
+/** The recording's key in the demo track registry. One recording per lane. */
+export function appleDemoKey(laneId: string): string {
+  return demoRecordingKey("apple", laneId);
 }
 
 /**
@@ -408,6 +430,8 @@ export type SimRecordingServiceDeps = {
     warn?: (event: string, data?: Record<string, unknown>) => void;
     info?: (event: string, data?: Record<string, unknown>) => void;
   } | null;
+  /** The engines that turn the raw file into the demo. Defaults to this process's Swift engine. */
+  demoEngines?: DemoEngineSet | null;
 };
 
 /**
@@ -476,10 +500,28 @@ type ActiveRecording = {
   capTimer: ReturnType<typeof setTimeout> | null;
   /** Serialises stop against a concurrent turn-end and cap expiry. */
   stopping: Promise<SimRecording | null> | null;
+  /** Where the helper writes the raw recording; the demo replaces it at `record.path`. */
+  rawPath: string;
+  /** Ends the idle and disk watch. */
+  stopWatch: () => void;
 };
 
 export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): SimRecordingService {
+  // The demo pipeline logs through a full Logger; this service's own is partial.
+  const demoLogger: Logger = {
+    debug: () => {},
+    info: (event, meta) => deps.logger?.info?.(event, meta),
+    warn: (event, meta) => deps.logger?.warn?.(event, meta),
+    error: (event, meta) => deps.logger?.warn?.(event, meta),
+  };
+  const demoEngines = deps.demoEngines ?? createDemoEngineSet({ logger: demoLogger });
   const active = new Map<string, ActiveRecording>();
+  /**
+   * Stops still running, by lane. A stop leaves `active` at once, but making
+   * the demo takes seconds; a second `record-stop` in that time waits for
+   * this one instead of finding nothing and answering null.
+   */
+  const stoppingLanes = new Map<string, Promise<SimRecording | null>>();
   let disposed = false;
 
   const notify = (laneId: string, phase: AppleRecordingPhase, recording: SimRecording): void => {
@@ -601,6 +643,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     overlays?: boolean;
     label?: string | null;
     keepIdle?: boolean;
+    plain?: boolean;
+    zoom?: boolean;
     maxSeconds?: number;
   }): Promise<SimRecording> => {
     const transport = requireTransport();
@@ -608,16 +652,20 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     const target = moviePath(args.laneId, id);
     fs.mkdirSync(path.dirname(target), { recursive: true });
 
-    const overlays = args.overlays ?? overlaysEnabled();
+    const plain = args.plain === true || args.keepIdle === true;
+    // The demo draws the taps; the raw file has none, and a plain one never will.
+    const overlays = !plain && (args.overlays ?? overlaysEnabled());
+    // The helper writes the raw recording (wall clock, nothing drawn, nothing
+    // cut); the stop turns it into the demo at `target` and deletes it.
+    const rawPath = rawPathFor(target);
     const sendStart = () => transport.send({
       type: "record-start",
       udid: args.udid,
-      path: target,
-      overlays,
+      path: rawPath,
+      overlays: false,
       fps: deps.fps ?? 30,
       accentColor: accent(),
-      // An older helper ignores the field and records at wall-clock time.
-      idleCompression: args.keepIdle !== true,
+      idleCompression: false,
     });
     let reply: Record<string, unknown>;
     try {
@@ -640,7 +688,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     }
     const maxDurationMs = args.mode === "auto"
       ? AUTO_RECORDING_MAX_MS
-      : manualCapMs({ maxSeconds: args.maxSeconds, chatSessionId: args.chatSessionId });
+      : manualCapMs({ maxSeconds: args.maxSeconds });
 
     const record: SimRecording = {
       id,
@@ -656,16 +704,30 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       proof: false,
       label: args.label ?? null,
       overlays,
-      // Only a helper that echoes the field cuts idle time.
-      idleCompression: reply?.idleCompression === true,
+      idleCompression: false,
       maxDurationMs,
+      plain,
     };
     writeSidecar(record);
+    const demoKey = appleDemoKey(args.laneId);
+    demoTrackRegistry.begin(demoKey, { surface: "apple", chatSessionId: args.chatSessionId, laneId: args.laneId, zoom: args.zoom === true });
     active.set(args.laneId, {
       record,
-      capTimer: maxDurationMs === null ? null : armCap(args.laneId, maxDurationMs),
+      capTimer: armCap(args.laneId, maxDurationMs),
       stopping: null,
+      rawPath,
+      stopWatch: watchDemoRecording({
+        key: demoKey,
+        rawPath,
+        logger: demoLogger,
+        onLimit: (limit) => {
+          void stopActive(args.laneId, { reason: limit }).catch((error: unknown) => {
+            warn("apple.recording.limit_stop_failed", { laneId: args.laneId, limit, error: String(error) });
+          });
+        },
+      }),
     });
+    void reply;
     notify(args.laneId, "started", record);
     return record;
   };
@@ -682,13 +744,15 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     options: { reason: SimRecordingStopReason; discard?: boolean },
   ): Promise<SimRecording | null> => {
     const entry = active.get(laneId);
-    if (!entry) return null;
+    if (!entry) return stoppingLanes.get(laneId) ?? null;
     if (entry.stopping) return entry.stopping;
 
     const run = (async (): Promise<SimRecording | null> => {
       if (entry.capTimer) clearTimeout(entry.capTimer);
       entry.capTimer = null;
+      entry.stopWatch();
       active.delete(laneId);
+      const demoKey = appleDemoKey(laneId);
 
       let lengths: RecordingLengths = { durationMs: null, wallDurationMs: null, idleCutMs: null };
       let bytes: number | null = null;
@@ -703,9 +767,53 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         warn("apple.recording.stop_failed", { laneId, reason: options.reason, error: String(error) });
       }
 
+      const stoppedAtMs = Date.now();
+      if (options.discard) {
+        demoTrackRegistry.discard(demoKey);
+        removeFiles({ ...entry.record, proofArtifactId: null });
+        try {
+          fs.rmSync(entry.rawPath, { force: true });
+        } catch {
+          // Nothing to keep either way.
+        }
+        return null;
+      }
+
+      // The raw file is at wall clock: its first frame was its length before
+      // the stop, and the track is measured from there.
+      const wallMs = lengths.wallDurationMs ?? lengths.durationMs ?? Math.max(0, stoppedAtMs - Date.parse(entry.record.startedAt));
+      demoTrackRegistry.markFirstFrame(demoKey, stoppedAtMs - wallMs);
+      const track = demoTrackRegistry.end(demoKey, { durationSeconds: wallMs / 1000, atMs: stoppedAtMs });
+      let filedPath = entry.record.path;
+      let demo: DemoArtifactMetadata | null = null;
+      if (fs.existsSync(entry.rawPath)) {
+        try {
+          const produced = await produceDemoVideo({
+            rawPath: entry.rawPath,
+            outputPath: entry.record.path,
+            track,
+            plain: entry.record.plain === true,
+            engines: demoEngines.engines(),
+            logger: demoLogger,
+          });
+          demo = produced.metadata;
+          bytes = produced.bytes;
+          lengths = {
+            durationMs: Math.round(produced.metadata.outputSeconds * 1000),
+            wallDurationMs: Math.round(produced.metadata.sourceSeconds * 1000),
+            idleCutMs: Math.max(0, Math.round((produced.metadata.sourceSeconds - produced.metadata.outputSeconds) * 1000)),
+          };
+        } catch (error) {
+          warn("apple.recording.demo_failed", { laneId, error: String(error) });
+          filedPath = entry.rawPath;
+        }
+      }
+
+      // The demo's size when one was made; else the helper's own count, and
+      // the file on disk only when the helper gave none.
       if (bytes === null) {
         try {
-          bytes = fs.statSync(entry.record.path).size;
+          bytes = fs.statSync(filedPath).size;
         } catch {
           bytes = null;
         }
@@ -713,16 +821,13 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
 
       const finished: SimRecording = {
         ...entry.record,
+        path: filedPath,
         endedAt: new Date().toISOString(),
         ...lengths,
         bytes,
         stopReason: options.reason,
+        demo,
       };
-
-      if (options.discard) {
-        removeFiles(finished);
-        return null;
-      }
       // Every recording that stops is proof (round 3, A3). Round 2 wrote the
       // file and waited for someone to press "Pin to proof"; nobody ever did,
       // because nothing on screen said the file existed. Filing it here means
@@ -740,6 +845,10 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     );
 
     entry.stopping = run;
+    stoppingLanes.set(laneId, run);
+    void run.finally(() => {
+      if (stoppingLanes.get(laneId) === run) stoppingLanes.delete(laneId);
+    }).catch(() => undefined);
     return run;
   };
 
@@ -773,15 +882,10 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
    */
   const fileAsProof = (record: SimRecording): SimRecording => {
     const caption = `Simulator recording · ${deviceLabel(record.udid)} · ${captionDuration(record)}`;
-    const idleCut = proofIdleCutLabel(record.idleCutMs);
     const description = [
-      "Screen recording of the lane's Apple device, with input overlays.",
-      idleCut && typeof record.wallDurationMs === "number"
-        ? `Still stretches were shortened: ${formatProofDuration(record.idleCutMs ?? 0)} cut from ${formatProofDuration(record.wallDurationMs)} of real time.`
-        : null,
-      record.stopReason === "cap" && typeof record.maxDurationMs === "number"
-        ? `Stopped at its ${formatProofDuration(record.maxDurationMs)} cap.`
-        : null,
+      "Screen recording of the lane's Apple device.",
+      demoProofSentence(record.demo),
+      recordingStopSentence(record.stopReason, record.maxDurationMs),
     ].filter(Boolean).join(" ");
     let artifactId: string | null = null;
     try {
@@ -811,6 +915,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
               overlays: record.overlays,
               mode: record.mode,
               recordingId: record.id,
+              ...(record.demo ? { demo: record.demo } : {}),
             },
           },
         ],
@@ -869,7 +974,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       return null;
     }
     const laneId = parts[0]!;
-    const id = parts[1]!.slice(0, -".mp4".length);
+    // A raw recording (`<id>.raw.mp4`) the service lost is filed under its id.
+    const id = parts[1]!.slice(0, -".mp4".length).replace(/\.raw$/, "");
     let size = bytes;
     if (size === null) {
       try {
@@ -929,8 +1035,34 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     const bytes = typeof reply.bytes === "number" ? reply.bytes : null;
     warn("apple.recording.orphan_reclaimed", { udid, reason, path: moviePathFromHelper, durationMs: lengths.durationMs });
     if (!moviePathFromHelper) return null;
-    const record = orphanRecord(moviePathFromHelper, udid, lengths, bytes);
+    let record = orphanRecord(moviePathFromHelper, udid, lengths, bytes);
     if (!record) return null;
+    if (/\.raw\.mp4$/.test(moviePathFromHelper)) {
+      // Nobody logged its track, but the stills and waits can still go.
+      const finalPath = moviePathFromHelper.replace(/\.raw\.mp4$/, ".mp4");
+      try {
+        const produced = await produceDemoVideo({
+          rawPath: moviePathFromHelper,
+          outputPath: finalPath,
+          track: null,
+          plain: false,
+          engines: demoEngines.engines(),
+          logger: demoLogger,
+        });
+        record = {
+          ...record,
+          path: produced.path,
+          bytes: produced.bytes,
+          demo: produced.metadata,
+          durationMs: Math.round(produced.metadata.outputSeconds * 1000),
+          wallDurationMs: Math.round(produced.metadata.sourceSeconds * 1000),
+          idleCutMs: Math.max(0, Math.round((produced.metadata.sourceSeconds - produced.metadata.outputSeconds) * 1000)),
+        };
+      } catch (error) {
+        warn("apple.recording.orphan_demo_failed", { udid, error: String(error) });
+        record = { ...record, path: moviePathFromHelper };
+      }
+    }
     const filed = fileAsProof(record);
     writeSidecar(filed);
     // The lane's pane never saw this recording stop, so it re-reads now.
@@ -963,16 +1095,6 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     return records;
   };
 
-  const sendOverlay = async (command: Record<string, unknown> & { type: string }): Promise<void> => {
-    try {
-      await requireTransport().send(command);
-    } catch (error) {
-      // Overlays are decoration. A failed one must never surface as a failed
-      // tap — the tap already happened.
-      warn("apple.recording.overlay_failed", { type: command.type, error: String(error) });
-    }
-  };
-
   const service: SimRecordingService = {
     active(args) {
       return active.get(args.laneId)?.record ?? null;
@@ -994,20 +1116,20 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           });
           entry = active.get(input.laneId);
         }
-        if (!entry || !entry.record.overlays) return;
-
-        if (input.kind === "type" || input.kind === "select" || input.kind === "open-url") {
-          const text = input.text?.trim();
-          if (text && badgesEnabled()) {
-            // `secure` is ADE's call, and ADE's call is "never send it": a
-            // secure field's characters do not reach this function at all.
-            // The flag is sent anyway so the helper has the last word.
-            await sendOverlay({ type: "overlay-text", udid: input.udid, text, secure: false });
-          }
-        }
-        if (typeof input.x === "number" && typeof input.y === "number" && ringsEnabled()) {
-          await sendOverlay({ type: "overlay-tap", udid: input.udid, x: input.x, y: input.y });
-        }
+        if (!entry) return;
+        // The demo draws the input now, from the track; the helper records
+        // the raw screen with nothing on it. The two settings still decide
+        // what the demo shows: no ring without rings, no text without badges.
+        const size = input.pointSize;
+        const hasPoint = typeof input.x === "number" && typeof input.y === "number"
+          && Boolean(size && size.width > 0 && size.height > 0) && ringsEnabled();
+        const text = input.text?.trim();
+        demoTrackRegistry.note(appleDemoKey(input.laneId), {
+          kind: input.kind === "type" ? "type" : input.kind === "drag" ? "drag" : input.kind === "open-url" ? "navigate" : "tap",
+          by: input.source === "user" ? "user" : "agent",
+          ...(hasPoint && entry.record.overlays ? { x: input.x! / size!.width, y: input.y! / size!.height } : {}),
+          ...(text && badgesEnabled() && entry.record.overlays ? { label: text } : {}),
+        });
       } catch (error) {
         warn("apple.recording.note_input_failed", { laneId: input.laneId, error: String(error) });
       }
@@ -1025,8 +1147,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         if (existing.capTimer) clearTimeout(existing.capTimer);
         existing.capTimer = null;
         const owner = existing.record.chatSessionId ?? args.chatSessionId;
-        const maxDurationMs = manualCapMs({ maxSeconds: args.maxSeconds, chatSessionId: owner });
-        if (maxDurationMs !== null) existing.capTimer = armCap(args.laneId, maxDurationMs);
+        const maxDurationMs = manualCapMs({ maxSeconds: args.maxSeconds });
+        existing.capTimer = armCap(args.laneId, maxDurationMs);
         existing.record = {
           ...existing.record,
           mode: "manual",
@@ -1034,6 +1156,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           chatSessionId: owner,
           maxDurationMs,
         };
+        // An automatic recording taken over by `record start --zoom` gets the zoom.
+        if (args.zoom === true) demoTrackRegistry.requestZoom(appleDemoKey(args.laneId));
         writeSidecar(existing.record);
         notify(args.laneId, "updated", existing.record);
         return existing.record;
@@ -1046,6 +1170,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         overlays: args.overlays,
         label: args.label ?? null,
         keepIdle: args.keepIdle,
+        plain: args.plain,
+        zoom: args.zoom,
         maxSeconds: args.maxSeconds,
       });
     },
@@ -1053,6 +1179,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     async stop(args) {
       const discard = args.discard === true && args.keep !== true;
       const entry = active.get(args.laneId);
+      const inFlight = entry ? null : stoppingLanes.get(args.laneId);
+      if (inFlight) return inFlight;
       if (!entry) {
         // This service has no recording on the lane. The helper can still
         // have one on the lane's device (see `reclaimHelperRecording`), so

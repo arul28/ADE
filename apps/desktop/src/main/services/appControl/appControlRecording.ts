@@ -6,10 +6,14 @@
  *
  * 1. One recording per lane. The chat that starts it owns it; the proof is
  *    filed under that chat, whichever chat stops it.
- * 2. A chat's recording stops itself after ten minutes (`maxSeconds` changes
- *    it) and files itself. A recording no chat owns has no cap unless asked.
- * 3. Still time is cut unless `keepIdle`. `durationMs` is the video,
- *    `wallDurationMs` the real time it covers, `idleCutMs` the difference.
+ * 2. No recording runs longer than five minutes (`maxSeconds` may ask for
+ *    less); two minutes with no action, or a full disk, stops it too. A
+ *    chat's recording that a limit stopped files itself.
+ * 3. The engine records a raw file; the stop turns it into a demo
+ *    (`demoRenderService.ts`) unless `plain`, and keeps only that. The
+ *    Chromium demo engine reads the screencast's `.aderaw`, the Swift one the
+ *    window capture's MP4. `durationMs` is the video, `wallDurationMs` the
+ *    real time it covers, `idleCutMs` the difference.
  * 4. A caption files the video as proof: owners are the lane, the chat and the
  *    lane's pull request. With no caption it stays a scratch file, except when
  *    the cap, the app closing or the chat ending stopped a chat's recording —
@@ -20,11 +24,14 @@
  * - macOS, `window-capture`: the desktop helper records the app's own window
  *   (ScreenCaptureKit, one window, wherever it sits). Needs Screen Recording.
  * - Windows and Linux, `screencast`: the CDP screencast frames the pane
- *   already shows are encoded by a recorder the ADE desktop app hosts
- *   (canvas + MediaRecorder). A machine with no desktop app has no encoder,
- *   and the start says so.
+ *   already shows are written to an `.aderaw` file by a recorder the ADE
+ *   desktop app hosts. A machine with no desktop app has no recorder, and the
+ *   start says so.
  */
 
+import type { DemoArtifactMetadata, DemoEngine, DemoTrack } from "../../../shared/demoVideo/demoContract";
+import { DEMO_RAW_FILE_EXTENSION } from "../../../shared/demoVideo/demoContract";
+import { demoProofSentence, recordingStopSentence } from "../../../shared/demoVideo/demoProofText";
 import { appControlProofCaption, formatProofDuration, proofIdleCutLabel } from "../../../shared/proofProvenance";
 import type {
   AppControlEventPayload,
@@ -46,11 +53,16 @@ import type { Logger } from "../logging/logger";
 import {
   MAC_DESKTOP_RECORDING_MAX_MS,
   capFromSeconds,
+  demoLengths,
   readCaptureBytes,
   readLengths,
   type RecordingLengths,
 } from "../macDesktop/macDesktopRecording";
 import { clampFps } from "../macDesktop/macDesktopStreamServer";
+import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
+import { rawPathFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
+import { produceDemoVideo } from "../demoVideo/demoRenderService";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 
 /** The broker's backend name for everything App Control files. */
 export const APP_CONTROL_PROOF_BACKEND_NAME = "ade-app-control";
@@ -80,8 +92,11 @@ export class AppControlRecordingError extends Error {
    Engines
    ────────────────────────────────────────────────────────────────────────── */
 
-/** The finished file, as either engine reports it. */
-export type AppControlRecordingFinish = RecordingLengths & { filePath: string };
+/**
+ * The finished raw file, as either engine reports it. `firstFrameAtMs` is the
+ * wall clock of its first frame when the engine knows it.
+ */
+export type AppControlRecordingFinish = RecordingLengths & { filePath: string; firstFrameAtMs?: number | null };
 
 /**
  * Windows and Linux: the encoder the ADE desktop app hosts.
@@ -195,6 +210,10 @@ export type AppControlRecordingDeps = {
     Promise<ComputerUseArtifactIngestionResult> | ComputerUseArtifactIngestionResult) | null;
   resolvePrimaryPrUrl?: ((laneId: string) => Promise<string | null> | string | null) | null;
   resolveLaneName?: ((laneId: string) => Promise<string | null> | string | null) | null;
+  /** The desktop app's Chromium demo engine, which reads the screencast's raw file. Null without a desktop app. */
+  getChromiumDemoEngine?: (() => DemoEngine | null) | null;
+  /** Overrides the engine set (tests, or a host that already built one). */
+  demoEngines?: DemoEngineSet | null;
 };
 
 /** The helper's recording key for a lane. Prefixed so it never names a Mac Desktop lane. */
@@ -210,19 +229,56 @@ function captionDuration(status: AppControlRecordingStatus): string {
   return idleCut ? `${video} · ${idleCut}` : video;
 }
 
-function recordingProofDescription(lead: string, status: AppControlRecordingStatus): string {
-  const idleCut = proofIdleCutLabel(status.idleCutMs);
+function recordingProofDescription(lead: string, status: AppControlRecordingStatus, demo: DemoArtifactMetadata | null): string {
   return [
     lead,
-    idleCut && typeof status.wallDurationMs === "number"
-      ? `Still stretches were shortened: ${idleCut.replace(/^idle cut /, "")} cut from ${formatProofDuration(status.wallDurationMs)} of real time.`
-      : null,
-    status.stopReason === "cap" && typeof status.maxDurationMs === "number"
-      ? `Stopped at its ${formatProofDuration(status.maxDurationMs)} cap.`
-      : null,
+    demoProofSentence(demo),
+    recordingStopSentence(status.stopReason, status.maxDurationMs),
     status.stopReason === "app-closed" ? "Stopped when the app's window closed." : null,
     status.stopReason === "chat-ended" ? "Stopped when the chat that started it ended." : null,
   ].filter(Boolean).join(" ");
+}
+
+/**
+ * Moves a track measured against the page's viewport into the recorded
+ * window's frame. The macOS window capture records the whole window, title
+ * bar included, while every App Control action is measured in the page's CSS
+ * viewport, which sits at the bottom of the window and spans its width.
+ * Without this, every ring and zoom would land a title bar too high.
+ */
+export function mapViewportTrackToWindow(
+  track: DemoTrack,
+  viewport: { width: number; height: number },
+  window: { width: number; height: number },
+): DemoTrack {
+  const valid = viewport.width > 0 && viewport.height > 0 && window.width > 0 && window.height > 0
+    && viewport.width <= window.width + 1 && viewport.height <= window.height + 1
+    // A viewport far smaller than the window is a measurement from another
+    // state (zoomed, docked devtools); leave the track alone rather than guess.
+    && viewport.height >= window.height * 0.6;
+  if (!valid) return track;
+  const offsetX = Math.max(0, (window.width - viewport.width) / 2);
+  const offsetY = Math.max(0, window.height - viewport.height);
+  const mapX = (x: number) => (x * viewport.width + offsetX) / window.width;
+  const mapY = (y: number) => (y * viewport.height + offsetY) / window.height;
+  return {
+    ...track,
+    events: track.events.map((event) => ({
+      ...event,
+      ...(typeof event.x === "number" ? { x: mapX(event.x) } : {}),
+      ...(typeof event.y === "number" ? { y: mapY(event.y) } : {}),
+      ...(event.rect
+        ? {
+          rect: [
+            mapX(event.rect[0]),
+            mapY(event.rect[1]),
+            (event.rect[2] * viewport.width) / window.width,
+            (event.rect[3] * viewport.height) / window.height,
+          ] as DemoTrack["events"][number]["rect"],
+        }
+        : {}),
+    })),
+  };
 }
 
 export function createAppControlRecording(deps: AppControlRecordingDeps) {
@@ -241,6 +297,20 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
   const laneEpochs = new Map<string, number>();
   /** laneId → the screencast backend a running recording feeds. */
   const screencastBackends = new Map<string, AppControlScreencastRecorderBackend>();
+  /** laneId → the recorded window and the page viewport at the start, for a window capture. */
+  const windowGeometry = new Map<string, { window: { width: number; height: number }; viewport: { width: number; height: number } | null }>();
+  /** laneId → where the demo goes, whether it is plain, and the idle/disk watch. */
+  const raws = new Map<string, { finalPath: string; plain: boolean; stopWatch: () => void }>();
+  const demoEngines = deps.demoEngines ?? createDemoEngineSet({
+    logger: deps.logger,
+    getChromiumDemoEngine: deps.getChromiumDemoEngine ?? null,
+  });
+  const endRaw = (laneId: string) => {
+    const raw = raws.get(laneId) ?? null;
+    raw?.stopWatch();
+    raws.delete(laneId);
+    return raw;
+  };
 
   const engineForPlatform = (): AppControlRecordingEngine =>
     platform === "darwin" ? "window-capture" : "screencast";
@@ -337,6 +407,13 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         permissions,
       ), args.chatSessionId);
     }
+    const frame = deps.getLastFrame(laneId);
+    windowGeometry.set(laneId, {
+      window: { width: window.width, height: window.height },
+      viewport: frame?.viewportWidth && frame.viewportHeight
+        ? { width: frame.viewportWidth, height: frame.viewportHeight }
+        : null,
+    });
     try {
       await recorder.start({
         key: appControlRecordingKey(laneId),
@@ -444,18 +521,24 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       ), chatSessionId);
     }
     const fps = clampFps(args.fps ?? null, DEFAULT_RECORDING_FPS);
-    const keepIdle = args.keepIdle === true;
+    const plain = args.plain === true || args.keepIdle === true;
     // Under the artifact root: the thread plays it back through
-    // `ade-artifact://`, which only serves `.ade/artifacts`.
-    const reserved = createComputerUseArtifactPath(
-      deps.projectRoot,
-      `app-control-recording-${laneId}`,
-      engine === "window-capture" ? "mp4" : "webm",
-    );
-    const request = { fps, filePath: reserved, keepIdle, chatSessionId };
-    const filePath = engine === "window-capture"
-      ? await startWindowCapture(laneId, session, request)
-      : await startScreencast(laneId, request);
+    // `ade-artifact://`, which only serves `.ade/artifacts`. The engine writes
+    // the raw file beside it; the stop makes the demo here and deletes that.
+    const finalPath = createComputerUseArtifactPath(deps.projectRoot, `app-control-recording-${laneId}`, "mp4");
+    const reserved = rawPathFor(finalPath, engine === "window-capture" ? ".mp4" : DEMO_RAW_FILE_EXTENSION);
+    const request = { fps, filePath: reserved, keepIdle: true, chatSessionId };
+    const demoKey = appControlRecordingKey(laneId);
+    demoTrackRegistry.begin(demoKey, { surface: "app-control", chatSessionId, laneId });
+    let filePath: string;
+    try {
+      filePath = engine === "window-capture"
+        ? await startWindowCapture(laneId, session, request)
+        : await startScreencast(laneId, request);
+    } catch (error) {
+      demoTrackRegistry.discard(demoKey);
+      throw error;
+    }
     // The awaits above leave room for the lane to close or its session to
     // change. A recording that outlived its session would run uncapped with
     // nothing to stop it, so drop it here instead.
@@ -467,6 +550,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       || !["connected", "running", "starting"].includes(current.status)
     ) {
       await discardStartedEngine(laneId, engine);
+      demoTrackRegistry.discard(demoKey);
       deps.logger.info("app_control.recording.start_discarded", { laneId, engine });
       throw new AppControlRecordingError(
         APP_CONTROL_RECORDING_NOT_RUNNING_CODE,
@@ -474,8 +558,27 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       );
     }
     recordingPaths.set(laneId, filePath);
-    const maxDurationMs = capFromSeconds(args.maxSeconds ?? null)
-      ?? (chatSessionId ? MAC_DESKTOP_RECORDING_MAX_MS : null);
+    endRaw(laneId);
+    raws.set(laneId, {
+      finalPath,
+      plain,
+      stopWatch: watchDemoRecording({
+        key: demoKey,
+        rawPath: filePath,
+        logger: deps.logger,
+        now,
+        onLimit: (limit) => {
+          void stopRecording(laneId, null, limit).catch((error: unknown) => {
+            deps.logger.warn("app_control.recording.limit_stop_failed", {
+              laneId,
+              limit,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        },
+      }),
+    });
+    const maxDurationMs = capFromSeconds(args.maxSeconds ?? null) ?? MAC_DESKTOP_RECORDING_MAX_MS;
     const status: AppControlRecordingStatus = {
       laneId,
       running: true,
@@ -489,6 +592,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       engine,
       sessionId: session.id,
       permissions: null,
+      plain,
     };
     recordings.set(laneId, status);
     recordingAppTitles.delete(laneId);
@@ -497,8 +601,8 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         if (title?.trim()) recordingAppTitles.set(laneId, title.trim());
       })
       .catch(() => {});
-    if (maxDurationMs !== null) armCap(laneId, maxDurationMs);
-    deps.logger.info("app_control.recording.started", { laneId, engine, fps, keepIdle, maxDurationMs });
+    armCap(laneId, maxDurationMs);
+    deps.logger.info("app_control.recording.started", { laneId, engine, fps, plain, maxDurationMs });
     publish(status);
     return status;
   };
@@ -521,6 +625,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     stopperChatSessionId: string | null,
     reason: AppControlRecordingStopReason,
     recordedTo: string,
+    demo: DemoArtifactMetadata | null,
   ): Promise<{ caption: string | null; proofArtifactId: string | null }> => {
     const selfFiled = !existing.caption && reason !== "requested" && Boolean(existing.chatSessionId);
     const startTitle = recordingAppTitles.get(laneId) ?? null;
@@ -547,7 +652,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         inputs: [{
           kind: "video_recording",
           title: caption,
-          description: recordingProofDescription(existing.caption ?? DEFAULT_RECORDING_DESCRIPTION, finished),
+          description: recordingProofDescription(existing.caption ?? DEFAULT_RECORDING_DESCRIPTION, finished, demo),
           path: finished.filePath,
           metadata: {
             durationMs: finished.durationMs,
@@ -555,6 +660,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
             idleCutMs: finished.idleCutMs,
             stopReason: reason,
             engine: finished.engine,
+            ...(demo ? { demo } : {}),
           },
         }],
         owners,
@@ -598,20 +704,62 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         stopReason: reason,
       };
       recordingPaths.delete(laneId);
+      endRaw(laneId);
+      demoTrackRegistry.discard(appControlRecordingKey(laneId));
       recordings.set(laneId, failed);
       stopping.delete(laneId);
       publish(failed);
       throw error;
     }
-    const recordedTo = new Date(now()).toISOString();
+    const stoppedAtMs = now();
+    const recordedTo = new Date(stoppedAtMs).toISOString();
     recordingPaths.delete(laneId);
-    const lengths = readLengths(finish as unknown as Record<string, unknown>);
+    const raw = endRaw(laneId);
+    const rawLengths = readLengths(finish as unknown as Record<string, unknown>);
+    const rawFilePath = finish.filePath?.trim() || null;
+    const demoKey = appControlRecordingKey(laneId);
+    demoTrackRegistry.markFirstFrame(demoKey, finish.firstFrameAtMs ?? stoppedAtMs - rawLengths.wallDurationMs);
+    const endedTrack = demoTrackRegistry.end(demoKey, { durationSeconds: rawLengths.wallDurationMs / 1000, atMs: stoppedAtMs });
+    const geometry = windowGeometry.get(laneId) ?? null;
+    windowGeometry.delete(laneId);
+    const track = endedTrack && existing.engine === "window-capture" && geometry?.viewport
+      ? mapViewportTrackToWindow(endedTrack, geometry.viewport, geometry.window)
+      : endedTrack;
+    const making: AppControlRecordingStatus = { ...existing, running: false, makingDemo: true, stopReason: reason };
+    recordings.set(laneId, making);
+    publish(making);
+
+    let filePath = rawFilePath;
+    let lengths = rawLengths;
+    let demo: DemoArtifactMetadata | null = null;
+    let demoError: string | null = null;
+    if (rawFilePath) {
+      try {
+        const produced = await produceDemoVideo({
+          rawPath: rawFilePath,
+          outputPath: raw?.finalPath ?? rawFilePath.replace(/(\.raw)?\.[^./\\]+$/, ".mp4"),
+          track,
+          plain: raw?.plain ?? false,
+          engines: demoEngines.engines(),
+          logger: deps.logger,
+        });
+        filePath = produced.path;
+        demo = produced.metadata;
+        lengths = demoLengths(produced.metadata);
+      } catch (error) {
+        demoError = error instanceof Error ? error.message : String(error);
+        deps.logger.warn("app_control.recording_demo_failed", { laneId, error: demoError });
+        // A screencast's raw file cannot be played, so there is nothing to file.
+        if (rawFilePath.endsWith(DEMO_RAW_FILE_EXTENSION)) filePath = null;
+      }
+    }
     const finished: AppControlRecordingStatus = {
       ...existing,
       running: false,
-      filePath: finish.filePath?.trim() || null,
+      makingDemo: false,
+      filePath,
       ...lengths,
-      lastError: null,
+      lastError: demoError,
       stopReason: reason,
     };
     const { caption, proofArtifactId } = await fileProof(
@@ -621,6 +769,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       stopperChatSessionId,
       reason,
       recordedTo,
+      demo,
     );
     const status: AppControlRecordingStatus = {
       ...finished,
@@ -742,6 +891,8 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       clearCap(laneId);
       recordings.delete(laneId);
       recordingPaths.delete(laneId);
+      endRaw(laneId);
+      demoTrackRegistry.discard(appControlRecordingKey(laneId));
       screencastBackends.get(laneId)?.cancel?.(appControlRecordingKey(laneId));
       screencastBackends.delete(laneId);
     },
@@ -749,6 +900,10 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
     dispose(): void {
       unsubscribeInterrupted?.();
       for (const laneId of [...capTimers.keys()]) clearCap(laneId);
+      for (const laneId of [...raws.keys()]) {
+        endRaw(laneId);
+        demoTrackRegistry.discard(appControlRecordingKey(laneId));
+      }
       for (const [laneId, backend] of screencastBackends) backend.cancel?.(appControlRecordingKey(laneId));
       screencastBackends.clear();
       recordings.clear();

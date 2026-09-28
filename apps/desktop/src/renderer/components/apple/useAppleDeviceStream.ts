@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { IosSimulatorStreamStatus, OpenProjectBinding } from "../../../shared/types";
-import type { IosSimH264Status } from "../chat/IosSimH264Video";
+import type { H264StreamStatus } from "../chat/h264StreamPlayer";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { useAppStore } from "../../state/appStore";
 import {
@@ -128,11 +128,11 @@ export type AppleDeviceStream = {
   /** Increments once per decoded frame; the 3D presenter re-uploads on change. */
   frameVersion: number;
   streamStatus: IosSimulatorStreamStatus | null;
-  /** Wire to `IosSimH264Video`'s `onStatus`. */
-  handleReaderStatus: (status: IosSimH264Status, error: string | null) => void;
-  /** Wire to `IosSimH264Video`'s `onDimensions`. */
+  /** Wire to `H264StreamView`'s `onStatus`. */
+  handleReaderStatus: (status: H264StreamStatus, error: string | null) => void;
+  /** Wire to `H264StreamView`'s `onDimensions`. */
   handleDimensions: (size: { width: number; height: number }) => void;
-  /** Wire to `IosSimH264Video`'s `onFrame`. The watchdogs live on this call. */
+  /** Wire to `H264StreamView`'s `onFrame`. The watchdogs live on this call. */
   noteFrame: () => void;
   /** New stream, new address, new token. The Reconnect action on every viewer. */
   reconnect: () => void;
@@ -443,7 +443,7 @@ export function useAppleDeviceStream({
     setState((current) => (current === "live" ? current : "live"));
   }, []);
 
-  const handleReaderStatus = useCallback((next: IosSimH264Status, nextError: string | null) => {
+  const handleReaderStatus = useCallback((next: H264StreamStatus, nextError: string | null) => {
     if (next === "error") {
       setState("error");
       forwardError(nextError);
@@ -465,8 +465,8 @@ export function useAppleDeviceStream({
       if (wantedRef.current) scheduleRecover();
       return;
     }
-    // `playing` means the decoder accepted a chunk, not that a frame was drawn.
-    // `noteFrame` is what promotes the column to `live`.
+    // `playing` is reported once per stream; `noteFrame`, called per drawn
+    // frame, is what promotes the column to `live` and feeds the watchdogs.
   }, [forwardError, scheduleRecover]);
 
   const handleDimensions = useCallback((next: { width: number; height: number }) => {
