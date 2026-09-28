@@ -2486,184 +2486,111 @@ These modules are pure and unit-testable:
   `hasPendingInputOptions()` for introspection inside the composer, and
   `resolvePendingInputs()` for the summary join described above.
 
-## Cursor Cloud fleet view
+## Cloud agents (Devin Cloud and Cursor Cloud)
 
-The chat composer also exposes a Cursor Cloud agents side panel from its
-overflow menu whenever the lane has a connected Cursor account. The panel
-follows every Cursor page, lists all cloud agents, keeps archived
-rows behind a reveal toggle (including an archived-only fleet), opens an
-existing agent as an ADE chat, and keeps archive, cancel, delete, and refresh
-actions on the same Cursor-owned agent record. Cursor supplies the agent name:
-ADE mirrors that name and does not offer an ADE rename action. New cloud launches pass the selected model's
-reasoning and service-tier parameters explicitly, so Cursor cannot silently
-replace the chosen variant with its default.
-A control the selected model does not define at all (Composer models carry no
-reasoning parameter, for example) is simply not sent; the launch fails closed
-only when the model has the control and cannot represent the chosen value.
+One pattern, two clouds. A **cloud lane** is a lane whose git branch lives on
+the cloud: ADE keeps a local worktree as a mirror, and the chats in that lane
+run on the cloud's VM against that branch. The machine picked in the prompt
+box is where the lane lives, and a cloud is one of those machines.
 
-On a fresh draft, the existing machine picker adds a **Cursor Cloud** row only
-when Cursor is connected. Selecting it switches the draft to the first eligible
-Cursor Cloud model; the normal model, lane, permission, and provider pickers
-remain the source of truth. The selected lane supplies the repository remote and
-branch, and Enter uses the same launch path as the send button. **Advanced**
-contains the creation-time Open a PR / existing-PR choice and project-secret
-attachments; the secrets control is hidden when there is nothing attachable.
-Cloud service tier is tri-state (unset, Fast, Standard), starts unset, is shown
-only for models whose catalog row advertises it, and is cleared when the model
-changes; unset is omitted from the Cursor request.
+### The model
 
-Cloud readiness is honest about the lane's git remote. The remote is read
-through `useLaneGitRemote` with a loading, ready, and error state, retried on
-its own a few times and again whenever the machine picker opens; "no GitHub
-remote" is only shown after a finished read that returned none. The
-auto-create lane row reads the primary lane's remote, because the auto-created
-branch is cut from the same repo and the placeholder id is not a lane the brain
-knows. Before the agent starts, the launcher asks git where the lane's branch
-stands: a branch that is only behind origin is not pushed (the cloud clones
-origin, which is newer), a diverged branch blocks the send with one plain
-sentence, and only local commits are pushed. A failed push always aborts the
-launch, even when origin already lists the branch — listing it is not proof it
-has these commits. A rejected push is rewritten into a sentence instead of
-git's stderr. ADE rename is blocked on every surface that can write a chat
-title: desktop menus, the command palette, ADE Code (`/rename`, hotkey `r`),
-iOS, `sessions.updateMeta`, `session.updateMeta`, and `work.updateSessionMeta`.
-The iOS chat settings sheet shows Cursor's name as read-only. Pin and other
-non-title patches still go through.
+- **A lane is a cloud lane when it carries the synced tag** `ade:cloud:devin`
+  or `ade:cloud:cursor` (`shared/cloudLanes.ts`: `cloudLaneTag`,
+  `laneCloudProvider`, `withCloudLaneTag`). Tags sync through CRR, so every
+  machine and the phone agree. `isReservedLaneTag` keeps the tag out of the
+  user's tag editor.
+- **Chats in a Devin Cloud lane are Devin Cloud sessions.** The composer's
+  lane list is scoped to cloud lanes when the machine is a cloud, and choosing
+  a cloud lane in a draft selects cloud mode by itself.
+- **One running cloud chat per lane.** `cloudAgents.launch` refuses a second
+  one; this also keeps two sessions from pushing to one branch.
+- **Devin has no branch field**, so the branch rides the prompt.
+  `buildDevinCloudBranchPin` writes a full "fetch and check out `<branch>`"
+  block on the first turn and a one-line reminder on later turns.
+  `AgentChatDevinCloudConfig.pinned` records that the first turn went through.
+  `stripDevinCloudBranchPin` removes the pin wherever Devin echoes the prompt
+  back (history replay, list excerpts), so the user never sees ADE's
+  instructions as their own words.
+- **After each successful turn** the lane mirror fetches `origin/<branch>` and
+  fast-forwards when the worktree is clean (`syncDevinCloudLaneMirror`), then
+  the diff summary is emitted.
 
-A new cloud launch returns its ADE session as soon as it is persisted, and the
-first hydrate runs in the chat view; only reopening an existing empty cloud
-chat waits for hydrate. Cursor names the agent shortly after the first run
-produces output, so while the ADE title is still a default the mirror re-reads
-the name on the tick that yields the first visible turn or a terminal run,
-capped at three extra reads, with no polling of its own.
+### Transport
 
-The top bar carries the connection-gated Cursor quick-view button
-(`CursorCloudQuickViewButton`, mounted beside the Linear quick-view). There is
-no Cursor Cloud row in the left rail. The button opens `CursorCloudFleetModal`, an account-wide fleet surface
-listing every Cursor Cloud agent across all Cursor pages. Entries report their
-ADE ownership (`matchedBy: session / repo / both / account`) when a session or
-repository matches the current project; agents launched on cursor.com or from
-another repository remain visible instead of being invisible. Shared
-`cursorCloudRepoMatch.ts` still normalizes SSH, HTTPS, and `.git`-suffixed
-remotes for ownership and pull safety.
+Devin Cloud chats use the **ACP cloud relay**, `devin acp --cloud`
+(`acpHost/acpDialects/devinCloud.ts`). It runs on the CLI login, so no API
+token is needed. `session/new` takes `repos`, `devin_version` (the model,
+through `modelConfigOptionId`) and `platform`, applied as `initialConfigValues`
+on new sessions only. Relay session ids are `devin-<hex>`, and the REST/web id
+is `<hex>` (`devinCloudAcpSessionId` / `devinCloudRestSessionId`).
+`session/load` replays history, including user messages, which the translator
+echoes as cloud `user_message` rows (`echoRemoteUserMessages`), deduped by
+`cognition.ai/eventId`. `session_info_update` carries status
+(working / blocked / finished), `userActionRequired` and the title, which drive
+attention and the Work row.
 
-Grouping is state-first: **Active runs** first, then finished/error rows grouped
-under their owning ADE lane (the lane header carries its Linear identifier when
-present), then unlinked rows clustered by repo · branch. Status, lane, and
-archived filters apply across all groups. What counts as active is derived once
-in `shared/cursorCloudFleetStatus.ts`, so the modal, the row component, and the
-main-process service cannot disagree about section placement or Stop-button
-visibility.
+The older REST mirror (`devinCloudConversation.ts`, `watchMirror`) remains for
+chats linked over the v3 API. It skips relay chats: running both would print
+every message twice.
 
-Row actions: **Open** mirrors the cloud agent into an ADE chat in its lane
-(resolving the lane first when unlinked), **Stop** cancels the latest run even
-for agents launched elsewhere, **Pull into lane…** appears once a run finishes,
-and the ⋯ menu offers Archive/Unarchive, Open PR, and Delete with an explicit
-click-again confirmation. Expanding a row lazily fetches usage; failures render
-inline on the offending row rather than disabling it.
+The **directory** (`devinCloudDirectory.ts`) is a short-lived scripted relay
+client used for `session/list` (4 s cache, single-flight), for cancel
+(`session/load` + `session/cancel`) and for archive (the `/archive` prompt;
+there is no unarchive). Cursor Cloud reuses `cursorCloudFleetService`.
 
-Pull-into-lane never guesses at a target. Resolution order is the linked
-session's lane → any local lane already on the pushed branch → a fresh lane
-imported from the remote branch. It refuses dirty worktrees (uncommitted changes
-must be committed or stashed first), fetches + merges `FETCH_HEAD`, and on merge
-conflict aborts the merge and reports exactly that instead of half-landing.
-Branch names coming back from Cursor are guarded against git option injection,
-and a multi-repo agent pulls only a branch pushed to *this* project's repo —
-branches attributed to other repositories refuse with an explanation.
+### The service and actions
 
-Freshness has no timer. The Cursor Cloud ingress relay's terminal deliveries are
-re-broadcast as the per-project `ade.ai.cursorCloud.fleetEvent` push, which
-soft-refreshes the open modal and lights the button's unread-finishes badge
-while it is closed; everything else waits for the manual refresh control. When
-the relay is unconfigured or erroring, a banner says so ("Live updates not
-configured yet — this list updates on refresh and when agents finish") rather
-than letting a stale list look current. A missing Cursor key renders a connect
-prompt linking Settings → AI connections instead of an empty list.
+`cloudAgentsService.ts` is one provider-neutral surface behind the `ai`-domain
+actions `listCloudAgents`, `openCloudAgent`, `stopCloudAgent`,
+`archiveCloudAgent` and `launchCloudAgent`. It is available as IPC and as
+`window.ade.cloudAgents.*`, and is shared by the brain and desktop main.
 
-## Devin Cloud fleet view
+- `list` returns `CloudAgent` rows with a status in ADE's vocabulary
+  (starting / working / needs_you / idle / finished / failed / archived), the
+  PR, model, platform, and a `link` to the ADE chat and lane when one exists.
+- `open` reuses the linked chat. Otherwise it resolves a lane: the lane
+  already on the PR branch, else a lane imported from that branch. If the
+  branch is gone (merged or closed PR), or there is no PR, it creates a new
+  cloud lane on a pushed branch. The chat then opens with the history loaded.
+- `stop` interrupts the linked chat's turn, or cancels through the directory.
+- `launch` creates or reuses a cloud lane
+  (`<provider>/<slug>-<rand>`, pushed), creates the chat, and sends the prompt.
 
-Devin is a single provider id covering local (`devin acp` chats and the tracked
-`devin` CLI) and cloud (the session fleet); capability gates decide which parts
-light up per surface. Cloud auth is a pasted v3 credential (`cog_`) in
-Settings → AI connections: a Personal Access Token (acts as you, self-serve on
-every Devin account) or a service-user key (`Settings → Devin API → Service
-users`) for automation — the recommended choice on Enterprise plans, where PATs
-are disabled by default. A legacy v1 personal key (`apk_user_`) remains as a
-fallback. The org id is collected once; a PAT auto-discovers it from `/v3/self`
-(the enterprise org list is gated), while a service user has no self org and
-must paste it — it is shown in the Devin webapp's settings and session URLs. On
-a service-user credential an optional **act-as user id** (`user_...`) is sent as
-`create_as_user_id` / `message_as_user_id`, so sessions and messages land in
-that person's list and usage instead of the service user's.
+### The panels
 
-The top bar carries an auth-gated Devin quick-view button
-(`DevinCloudQuickViewButton`, mounted beside the Cursor quick-view). It renders
-only while `devinCloudGetAuthStatus().configured` is true and opens
-`DevinCloudFleetModal`, an org-wide fleet surface listing Devin sessions.
-Provenance chips (**Mine / From ADE / All**) sit beside the status and lane
-filters; ADE-created sessions carry `ade` + `ade:lane:<id>` tags at launch and
-show a "via ADE" badge. "Mine" matches the credential's `/v3/self` principal
-against either the session's `user_id` or its `service_user_id`, so a
-service-user credential still recognizes the sessions it created. Repo
-attribution (`matchedBy: "repo"`) compares the project origin against the
-session's **pull-request repo** — the v3 `SessionResponse` carries no `repos`
-field, so the PR URL is the reliable signal — with `session.repos` kept only as
-a fallback. Status derives once in `shared/devinCloudFleetStatus.ts`
-(archived → archived, error → error, exit/finished → finished, suspended →
-suspended, waiting_for_user/waiting_for_approval → needs_you, running →
-working, else starting), so the modal, rows, and the attention mapping cannot
-disagree. Devin has no live event feed: the list self-refreshes while the modal
-is open and on the manual refresh control, and the footer says so.
+`renderer/components/app/cloudAgents/` holds `CloudAgentsPanel`,
+`CloudAgentRow` and `cloudAgentsModel.ts`. The model holds filters, sections
+(Needs you / Working / In ADE / Recent), brands, and the model-label rule:
+unknown Devin model ids are internal codenames and read as "Devin".
 
-Row actions: **Open live session** mirrors the session into an ADE chat
-(transcript via `GET /v3/organizations/{org}/sessions/{id}/messages`, sends via
-`POST .../messages`), **Live** opens `session.url` in ADE's built-in browser —
-the only live Desktop/VM view, since no provider exposes VM control over an API
-— **Stop** terminates, **Pull into lane…** merges a finished session's pushed
-branch into its owning/matching/new lane (same refusal rules as Cursor: dirty
-worktrees refused, conflicts abort and report), and the ⋯ menu offers
-Archive/Unarchive, Open PR, and Delete with confirmation. A successful pull
-offers **Continue in lane**, which launches the local `devin` CLI in that lane
-seeded with the session's task context — the reverse of handing off to cloud.
+Each cloud keeps its own top-bar modal (`DevinCloudQuickViewButton`,
+`CursorCloudQuickViewButton`). Anything can open one with
+`openCloudAgentsPanel(provider)`, which is how the composer menu does it.
 
-When the `devin` CLI is installed and logged in, the row menu also offers VM
-actions that ride the CLI's own credentials rather than the API token:
-**SSH into VM** (`devin ssh <id>` — a real shell on the session's machine),
-**Forward port…** (`devin forward <id> <port>` — maps a VM port to localhost
-for dev servers on the box), and **Steer in terminal** (`devin --cloud -r
-<id>` — drive the cloud session from a PTY). Each spawns as a tracked
-terminal session in the entry's lane and reveals it in Work. Without the CLI
-the menu shows a hint to install it instead.
+- **Launch bar:** prompt, Model, VM (Devin), and Lane (a new cloud lane or an
+  existing one). ⌘↵ starts it.
+- **List:** filters with counts, This project / All repos, and search.
+- **Row actions:** Open (in ADE), Stop, web, and ⋯. The ⋯ menu has Shell on
+  the VM, Forward a port, Take over its desktop (Cursor), Copy link and
+  Archive.
 
-The chat drawer's **Devin Cloud sessions** panel drafts a new session bound to
-the selected lane's repository: target repo and base branch come from the lane,
-**Agent mode** maps to `devin_mode` (Devin default / normal / fast / lite /
-ultra / fusion), **VM platform** maps to the v3 `platform` label
-(org-defined — linux, macos, windows, or an outpost pool name; blank uses the
-org default, and it is ignored on the v1 fallback path), **Playbook** binds an
-org playbook (`playbook_id`), **ACU cap** sets a hard `max_acu_limit`, and
-**Skip Devin's approval gate** sets `bypass_approval`.
-The session's repo is sent as `owner/repo` in the API `repos` field (derived
-from the lane remote; clone URLs are for the prompt line, not the API field),
-with the pushed lane branch named in the prompt the way Devin's own handoff
-flow does. Sending from the composer launches the session with the provenance
-tags. From any non-cloud chat, the attach menu's **Hand off to Devin Cloud**
-packages the lane context into a prompt and launches the same path.
+Opening or launching refreshes lanes and reveals the chat.
+`ade:work:select-session` reloads the session list and refocuses when the chat
+is not loaded yet.
 
-Cloud sessions join ADE's attention system: `waiting_for_user` /
-`waiting_for_approval` raise a "Needs you" marker
-(`requestAttention`, provider_structured source) that clears when the session
-leaves that state or the user answers. Session attachments marked as Devin's own
-output (recordings, screenshots) are downloaded into the computer-use artifact
-store and ingested into the chat's proof drawer, deduped by attachment id.
+### Honest gating
 
-Known limits: cloud sessions run on Devin's VMs — no local file access and no
-REST API for screen/exec; the deep-link live view covers watching, and the
-CLI's `devin ssh`/`devin forward` cover shell + port access (both surfaced in
-the row menu when the CLI is present).
-There is no third-party OAuth for the REST API; the token paste is the only
-path (same as Cursor). The Devin CLI does not yet expose account
-Knowledge/Playbooks/Secrets to local sessions.
+- **Shell in a Devin Cloud lane** is `devin ssh <id>` to the VM
+  (`useWorkSessions.launchPtySession`), never a local shell. It needs a chat
+  with a session first.
+- **Cursor Cloud has no shell.** The launch throws and says so.
+- **Machine-bound tools** (iOS, Mac desktop, App Control) are unavailable in
+  cloud lanes, with the reason shown (`workTools.ts` `CLOUD_MACHINE_TOOLS`).
+- **A Devin Cloud chat's model is fixed.** The composer shows it as a label
+  (`fixedModelLabel`) instead of the picker.
+- **Cloud lanes are marked** by `LaneCloudMarker` on lane headers, and by a
+  cloud glyph on any card that names its lane.
 
 ## Fragile and tricky wiring
 

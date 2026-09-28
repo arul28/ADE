@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowLeft, CaretDown, CircleNotch, CloudArrowUp, Desktop, DeviceMobile, ArrowBendUpRight, DownloadSimple, GitFork, Lightning, Plus, Terminal, TreeStructure, X } from "@phosphor-icons/react";
 import {
   inferAttachmentType,
   mergeAttachments,
@@ -63,7 +63,7 @@ import {
   type ChatLaunchChatArgs,
   type ChatLaunchLaneConfig,
 } from "../../../shared/types";
-import type { CursorCloudServiceTier, DevinCloudCatalog, DevinCloudMode } from "../../../shared/types/config";
+import type { CursorCloudServiceTier } from "../../../shared/types/config";
 import { mergeReasoningFragment } from "../../../shared/chatActivityPhase";
 import {
   isUnsupportedAgentChatRecoveryActionError,
@@ -233,8 +233,6 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
-import { ChatCursorCloudPanel } from "./ChatCursorCloudPanel";
-import { ChatDevinCloudPanel } from "./ChatDevinCloudPanel";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots } from "./chatExecutionSummary";
@@ -328,6 +326,17 @@ import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
 import { devinCloudErrorMessage } from "../../lib/devinCloudUtils";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
+import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
+import {
+  DEVIN_CLOUD_DEFAULT_VERSION,
+  DEVIN_CLOUD_PLATFORMS,
+  DEVIN_CLOUD_VERSIONS,
+  devinCloudVersionLabel,
+  cloudLaneTag,
+  laneCloudProvider,
+  withCloudLaneTag,
+  type CloudLaneProvider,
+} from "../../../shared/cloudLanes";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import {
   invalidateAgentChatSessionListCache,
@@ -4036,8 +4045,6 @@ export function AgentChatPane({
     deviceName: string | null;
     deviceUdid: string | null;
   } | null>(null);
-  const [cursorCloudPaneOpen, setCursorCloudPaneOpen] = useState(false);
-  const [devinCloudPaneOpen, setDevinCloudPaneOpen] = useState(false);
   // Subagent drill-in: when set, the chat surface renders the named subagent's
   // transcript instead of the parent stream and the composer is disabled.
   const [subagentView, setSubagentView] = useState<{
@@ -4059,12 +4066,9 @@ export function AgentChatPane({
   // token gate is read once per pane mount — the same lazy cadence the
   // quick-view button uses — so a work tab never pays an auth probe at boot.
   const [devinCloudMode, setDevinCloudMode] = useState(false);
-  const [devinCloudModeSel, setDevinCloudModeSel] = useState<DevinCloudMode | null>(null);
-  const [devinCloudPlatformSel, setDevinCloudPlatformSel] = useState("");
-  const [devinBypassApproval, setDevinBypassApproval] = useState(false);
-  const [devinCloudPlaybookSel, setDevinCloudPlaybookSel] = useState("");
-  const [devinAcuLimitSel, setDevinAcuLimitSel] = useState("");
-  const [devinCloudCatalog, setDevinCloudCatalog] = useState<DevinCloudCatalog>({ playbooks: [], knowledge: [] });
+  // The cloud model (`devin_version`) and VM OS for the next Devin Cloud launch.
+  const [devinCloudVersionSel, setDevinCloudVersionSel] = useState<string>(DEVIN_CLOUD_DEFAULT_VERSION);
+  const [devinCloudPlatformSel, setDevinCloudPlatformSel] = useState("linux");
   const [devinCloudAuthConfigured, setDevinCloudAuthConfigured] = useState<boolean | null>(null);
   const [cloudOverlayArmed, setCloudOverlayArmed] = useState(false);
   const [cloudHydrateFailed, setCloudHydrateFailed] = useState(false);
@@ -5249,7 +5253,6 @@ export function AgentChatPane({
       if (event.type !== "ade:chat:open-info") return;
       setIosSimulatorOpen(false);
       setAppControlOpen(false);
-      setCursorCloudPaneOpen(false);
       setChatActionsOpen(true);
 
       const taskId = typeof detail.taskId === "string" ? detail.taskId : null;
@@ -5497,7 +5500,6 @@ export function AgentChatPane({
     markChatActionsAutoOpened();
     setIosSimulatorOpen(false);
     setAppControlOpen(false);
-    setCursorCloudPaneOpen(false);
     setChatActionsOpen(true);
   }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length, selectedScheduledWorkSnapshots.length, selectedTaskCount]);
 
@@ -6325,17 +6327,6 @@ export function AgentChatPane({
   const cursorCloudCanLaunch = cursorCloudAvailable
     && selectedEvents.length === 0
     && !selectedSession?.cursorCloudAgentId;
-  useEffect(() => {
-    if (!cursorCloudPanelAvailable && cursorCloudPaneOpen) setCursorCloudPaneOpen(false);
-  }, [cursorCloudPanelAvailable, cursorCloudPaneOpen]);
-  useEffect(() => {
-    if (!cursorCloudPaneOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setCursorCloudPaneOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [cursorCloudPaneOpen]);
   // The lane's remote and branch feed ChatPrPane's branchName fallback as well as cloud launches.
   // One read per lane, no polling — but a tri-state one, so a pending or failed
   // read cannot be mistaken for "this lane has no remote".
@@ -6385,12 +6376,12 @@ export function AgentChatPane({
   // same cadence the fleet button uses — and re-read when the machine picker
   // opens so a freshly pasted token appears without a reload.
   const refetchDevinCloudAuth = useCallback(() => {
-    const read = window.ade.ai.devinCloudGetAuthStatus;
-    if (typeof read !== "function") return;
-    void read()
-      .then((status) => setDevinCloudAuthConfigured(status.configured === true))
+    // Devin Cloud rides the Devin CLI's own login (`devin acp --cloud`), so a
+    // signed-in CLI is the whole gate.
+    void getAiStatusCached({ projectRoot: projectRoot ?? null })
+      .then((status) => setDevinCloudAuthConfigured(status.providerConnections?.devin?.authAvailable === true))
       .catch(() => setDevinCloudAuthConfigured(false));
-  }, []);
+  }, [projectRoot]);
   useEffect(() => {
     if (devinCloudAuthConfigured !== null) return;
     refetchDevinCloudAuth();
@@ -6424,17 +6415,6 @@ export function AgentChatPane({
     }
     return null;
   }, [devinCloudAvailable, laneGitRemote, laneGitRemoteError, laneGitRemoteStatus, laneId]);
-  useEffect(() => {
-    if (!devinCloudPanelAvailable && devinCloudPaneOpen) setDevinCloudPaneOpen(false);
-  }, [devinCloudPanelAvailable, devinCloudPaneOpen]);
-  useEffect(() => {
-    if (!devinCloudPaneOpen) return;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setDevinCloudPaneOpen(false);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [devinCloudPaneOpen]);
   // Cloud mode drops the moment the chat stops being launchable — a chat that
   // has started or a lost Cursor connection. A model switch is handled by the
   // cloud eligibility hook instead of hiding the entry point.
@@ -6444,17 +6424,6 @@ export function AgentChatPane({
   useEffect(() => {
     if (!devinCloudCanLaunch && devinCloudMode) setDevinCloudMode(false);
   }, [devinCloudCanLaunch, devinCloudMode, setDevinCloudMode]);
-  // Playbooks/Knowledge are org-level and change rarely — load them once when
-  // cloud mode is first armed, not on every keystroke. A failed read leaves the
-  // picker empty; a launch without a playbook is still valid.
-  useEffect(() => {
-    if (!devinCloudMode || !devinCloudAuthConfigured) return;
-    let alive = true;
-    void window.ade.ai.devinCloudCatalog()
-      .then((catalog) => { if (alive) setDevinCloudCatalog(catalog); })
-      .catch(() => undefined);
-    return () => { alive = false; };
-  }, [devinCloudAuthConfigured, devinCloudMode]);
   const applyCursorCloudModelSwitch = useCallback((nextModelId: string) => {
     setModelId(nextModelId);
     setReasoningEffort(null);
@@ -7829,7 +7798,6 @@ export function AgentChatPane({
     setIosSimulatorAvailable(true);
     if (!iosSimulatorOpenRef.current) {
       setAppControlOpen(false);
-      setCursorCloudPaneOpen(false);
     }
     setIosSimulatorOpen(true);
   }, []);
@@ -11109,7 +11077,9 @@ export function AgentChatPane({
     const sessionId = selectedSession?.sessionId;
     const devinSessionId = selectedSession?.devinSessionId?.trim();
     const watchFn = window.ade.ai.devinCloudWatchMirror;
-    if (!sessionId || !devinSessionId || subagentView || typeof watchFn !== "function") return;
+    // Relay chats stream live; only REST-linked chats need the mirror.
+    const relayChat = selectedSession?.devinCloud?.transport === "acp";
+    if (!sessionId || !devinSessionId || relayChat || subagentView || typeof watchFn !== "function") return;
 
     let watching = false;
     const sync = () => {
@@ -11125,6 +11095,7 @@ export function AgentChatPane({
       if (watching) void watchFn({ sessionId, watching: false }).catch(() => undefined);
     };
   }, [
+    selectedSession?.devinCloud?.transport,
     selectedSession?.devinSessionId,
     selectedSession?.sessionId,
     subagentView,
@@ -11334,6 +11305,16 @@ export function AgentChatPane({
         secretNames: selectedSecretNames,
         rememberSecretNames,
       });
+      // The lane now lives on Cursor Cloud: the agent works on its branch.
+      {
+        const targetLane = lanes.find((lane) => lane.id === targetLaneId) ?? null;
+        if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("cursor"))) {
+          void window.ade.lanes.updateAppearance({
+            laneId: targetLaneId,
+            tags: withCloudLaneTag(targetLane.tags, "cursor"),
+          }).then(() => refreshLanesStore()).catch(() => undefined);
+        }
+      }
       // The agent exists; leave the draft pane immediately. Hydrate/attach
       // continue in the daemon and fill the transcript as Cursor's VM comes up.
       patchDraftLaunchJob(jobId, { status: "starting-session", sessionId });
@@ -11421,6 +11402,7 @@ export function AgentChatPane({
     setCursorCloudMode,
     setDraftLaunchJobs,
     setDraftLaunchTargetId,
+    lanes,
   ]);
 
   /**
@@ -11504,7 +11486,6 @@ export function AgentChatPane({
     ]));
 
     let createdLaneId: string | null = null;
-    let createdDevinSessionId: string | null = null;
     let launchTimedOut = false;
     const assertLaunchActive = () => {
       if (launchTimedOut) {
@@ -11542,48 +11523,44 @@ export function AgentChatPane({
         });
       }
       if (!targetLaneId) throw new Error("Select a lane before sending.");
-      const sessionId = crypto.randomUUID();
-      const created = await window.ade.ai.devinCloudCreateSession({
-        laneId: targetLaneId,
-        prompt,
-        sessionId,
-        title: jobTitle,
-        devinMode: devinCloudModeSel,
-        bypassApproval: devinBypassApproval,
-        platform: devinCloudPlatformSel.trim() || null,
-        ...(devinCloudPlaybookSel.trim() ? { playbookId: devinCloudPlaybookSel.trim() } : {}),
-        ...(Number.isFinite(Number(devinAcuLimitSel)) && devinAcuLimitSel.trim()
-          ? { maxAcuLimit: Math.floor(Number(devinAcuLimitSel)) }
-          : {}),
-        ...(snapshot.attachments.length ? { attachments: snapshot.attachments } : {}),
-      });
-      createdDevinSessionId = created.devinSessionId;
-      // The Devin session exists; leave the draft pane immediately. The mirror
-      // hydrates the transcript as Devin's VM comes up.
-      patchDraftLaunchJob(jobId, { status: "starting-session", sessionId });
-      let opened: Awaited<ReturnType<typeof window.ade.ai.devinCloudOpenChat>>;
-      try {
-        opened = await window.ade.ai.devinCloudOpenChat({
-          devinSessionId: created.devinSessionId,
+      // The lane now lives on Devin Cloud: its branch is where the VM works,
+      // and every chat in it is a Devin Cloud chat.
+      const targetLane = lanes.find((lane) => lane.id === targetLaneId) ?? null;
+      if (targetLane && !(targetLane.tags ?? []).includes(cloudLaneTag("devin"))) {
+        await window.ade.lanes.updateAppearance({
           laneId: targetLaneId,
-          sessionId,
-          devinMode: devinCloudModeSel,
-        });
-      } catch {
-        opened = { sessionId };
+          tags: withCloudLaneTag(targetLane.tags, "devin"),
+        }).catch(() => undefined);
       }
-      const openedSession = opened.session ?? {
-        id: opened.sessionId || sessionId,
+      patchDraftLaunchJob(jobId, { status: "starting-session" });
+      // One call does the rest: push the branch, open a chat over the Devin
+      // relay (`devin acp --cloud`), and send the first message. The chat
+      // streams live from here.
+      const launched = await window.ade.cloudAgents.launch({
+        provider: "devin",
+        prompt,
+        model: devinCloudVersionSel,
+        platform: devinCloudPlatformSel || null,
+        laneId: targetLaneId,
+      });
+      const now = new Date().toISOString();
+      const openedSession = {
+        id: launched.chatSessionId,
         laneId: targetLaneId,
         provider: "devin" as const,
-        model: "devin",
-        modelId: "devin/devin",
+        model: "adaptive",
+        modelId: "devin/adaptive",
         status: "active" as const,
-        createdAt: new Date().toISOString(),
-        lastActivityAt: new Date().toISOString(),
+        createdAt: now,
+        lastActivityAt: now,
         devinRuntime: "cloud" as const,
-        devinSessionId: created.devinSessionId,
-        devinMode: devinCloudModeSel,
+        devinCloud: {
+          transport: "acp" as const,
+          version: devinCloudVersionSel,
+          platform: devinCloudPlatformSel || null,
+          repo: null,
+          branch: targetLane?.branchRef ?? null,
+        },
       };
       setDevinCloudMode(false);
       if (createdLaneId) {
@@ -11591,6 +11568,8 @@ export function AgentChatPane({
         await refreshLanesStore().catch(() => undefined);
         onLaneChange?.(createdLaneId);
         setDraftLaunchTargetId(null);
+      } else {
+        void refreshLanesStore().catch(() => undefined);
       }
       patchDraftLaunchJob(jobId, {
         status: "ready",
@@ -11605,9 +11584,6 @@ export function AgentChatPane({
       return true;
     } catch (cloudError) {
       let message = devinCloudErrorMessage(cloudError);
-      if (createdDevinSessionId) {
-        message = `${message} The Devin session is already running at https://app.devin.ai/sessions/${createdDevinSessionId}.`;
-      }
       // The lane, if one was created, is left alone: it is a normal empty lane and deleting it
       // would throw away a branch that may already be on the remote.
       patchDraftLaunchJob(jobId, { status: "failed", error: message, autoOpen: false });
@@ -11621,12 +11597,10 @@ export function AgentChatPane({
     buildDraftLaunchSnapshotForCurrentState,
     currentNativeControls,
     cursorCloudServiceTier,
-    devinAcuLimitSel,
-    devinBypassApproval,
-    devinCloudModeSel,
     devinCloudPlatformSel,
-    devinCloudPlaybookSel,
     devinCloudUnavailableReason,
+    devinCloudVersionSel,
+    lanes,
     draftLaunchTargetIsAutoCreate,
     executionMode,
     fastMode,
@@ -13432,16 +13406,29 @@ export function AgentChatPane({
   // A configured recipe rides the auto-create target; relabel that row (and so
   // the trigger) to the pending lane's name instead of "Auto-create lane", and
   // mark it "New" so the list says it is not created yet.
-  const draftShelfLanes = useMemo(
-    () => (draftNewLaneConfig
-      ? draftLaneSelectorLanes.map((lane) => (
+  // A cloud lane lives on its cloud: Devin Cloud lists only Devin Cloud lanes,
+  // Cursor Cloud only Cursor Cloud lanes, and a real machine only its own.
+  const draftShelfCloudFilter: CloudLaneProvider | null = cursorCloudMode ? "cursor" : devinCloudMode ? "devin" : null;
+  const laneCloudById = useMemo(() => {
+    const map = new Map<string, CloudLaneProvider | null>();
+    for (const lane of lanes) map.set(lane.id, laneCloudProvider(lane));
+    return map;
+  }, [lanes]);
+  const draftShelfLanes = useMemo(() => {
+    const scoped = draftLaneSelectorLanes.filter((lane) =>
+      isAutoCreateLaneOptionId(lane.id) || (laneCloudById.get(lane.id) ?? null) === draftShelfCloudFilter);
+    return draftNewLaneConfig
+      ? scoped.map((lane) => (
         isAutoCreateLaneOptionId(lane.id)
           ? { ...lane, name: draftNewLaneConfig.name, detail: "New" }
           : lane
       ))
-      : draftLaneSelectorLanes),
-    [draftLaneSelectorLanes, draftNewLaneConfig],
-  );
+      : scoped.map((lane) => (
+        isAutoCreateLaneOptionId(lane.id) && draftShelfCloudFilter
+          ? { ...lane, name: "New cloud lane" }
+          : lane
+      ));
+  }, [draftLaneSelectorLanes, draftNewLaneConfig, draftShelfCloudFilter, laneCloudById]);
   const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
     ? AUTO_CREATE_LANE_OPTION.id
     : (laneId ?? "");
@@ -13453,6 +13440,12 @@ export function AgentChatPane({
     if (!isAutoCreateLaneOptionId(nextLaneId)) clearNewLaneConfig();
     handleDraftLaneSelectionChange(nextLaneId);
   }, [clearNewLaneConfig, handleDraftLaneSelectionChange]);
+  // Switching machines keeps the lane only when it lives there; otherwise the
+  // draft falls back to a new lane on the chosen machine.
+  const keepLaneOnMachine = useCallback((cloud: CloudLaneProvider | null) => {
+    if (draftLaunchTargetIsAutoCreate || !laneId) return;
+    if ((laneCloudById.get(laneId) ?? null) !== cloud) handleDraftLaneSelectionChange(AUTO_CREATE_LANE_OPTION.id);
+  }, [draftLaunchTargetIsAutoCreate, handleDraftLaneSelectionChange, laneCloudById, laneId]);
   const canUseThisComputerForDraft = laneMachineOptions.some(
     (option) => option.id === THIS_MACHINE_ID,
   );
@@ -13534,18 +13527,44 @@ export function AgentChatPane({
       setError(null);
       setDevinCloudMode(false);
       setCursorCloudMode(true);
+      keepLaneOnMachine("cursor");
       return;
     }
     if (nextMachineId === DEVIN_CLOUD_MACHINE_ID) {
       setError(null);
       setCursorCloudMode(false);
       setDevinCloudMode(true);
+      keepLaneOnMachine("devin");
       return;
     }
     setCursorCloudMode(false);
     setDevinCloudMode(false);
+    keepLaneOnMachine(null);
     handleDraftMachineChange(nextMachineId);
-  }, [handleDraftMachineChange, setCursorCloudMode]);
+  }, [handleDraftMachineChange, keepLaneOnMachine, setCursorCloudMode]);
+  // A draft opened in a cloud lane (from the sidebar, a deeplink) is on that
+  // cloud: the lane has no other machine.
+  useEffect(() => {
+    if (selectedSession || !laneId || draftLaunchTargetIsAutoCreate) return;
+    const cloud = laneCloudById.get(laneId) ?? null;
+    if (cloud === "devin" && !devinCloudMode && devinCloudCanLaunch) {
+      setCursorCloudMode(false);
+      setDevinCloudMode(true);
+    } else if (cloud === "cursor" && !cursorCloudMode && cursorCloudCanLaunch) {
+      setDevinCloudMode(false);
+      setCursorCloudMode(true);
+    }
+  }, [
+    cursorCloudCanLaunch,
+    cursorCloudMode,
+    devinCloudCanLaunch,
+    devinCloudMode,
+    draftLaunchTargetIsAutoCreate,
+    laneCloudById,
+    laneId,
+    selectedSession,
+    setCursorCloudMode,
+  ]);
   const useThisComputerForDraft = useCallback(() => {
     setCursorCloudMode(false);
     setDevinCloudMode(false);
@@ -14183,50 +14202,6 @@ export function AgentChatPane({
       ]}
     />
   );
-  const cursorCloudPanelContent = (
-    <ChatCursorCloudPanel
-      cursorCloudAgentId={selectedSession?.cursorCloudAgentId ?? null}
-      cursorRuntime={cursorRuntime}
-      cursorModelIds={cursorCloudModelIds}
-      defaultRepoUrl={null}
-      defaultBranch={laneGitBranch}
-      defaultModelSdkId={modelId.startsWith("cursor/") ? modelId.slice("cursor/".length) : null}
-      laneGitRemote={laneGitRemote}
-      laneId={laneId ?? null}
-      onClose={() => setCursorCloudPaneOpen(false)}
-      onOpened={(result) => {
-        setCursorCloudPaneOpen(false);
-        adoptCursorCloudChatSession(result);
-      }}
-      onMissingFields={(message) => setError(message)}
-    />
-  );
-  const devinCloudPanelContent = (
-    <ChatDevinCloudPanel
-      devinSessionId={selectedSession?.devinSessionId ?? null}
-      laneId={laneId ?? null}
-      laneGitRemote={laneGitRemote}
-      laneGitBranch={laneGitBranch}
-      devinMode={devinCloudModeSel}
-      onDevinModeChange={setDevinCloudModeSel}
-      platform={devinCloudPlatformSel}
-      onPlatformChange={setDevinCloudPlatformSel}
-      bypassApproval={devinBypassApproval}
-      onBypassApprovalChange={setDevinBypassApproval}
-      playbookId={devinCloudPlaybookSel}
-      playbooks={devinCloudCatalog.playbooks}
-      onPlaybookChange={setDevinCloudPlaybookSel}
-      acuLimit={devinAcuLimitSel}
-      onAcuLimitChange={setDevinAcuLimitSel}
-      onLaunched={() => setDevinCloudPaneOpen(false)}
-      onClose={() => setDevinCloudPaneOpen(false)}
-      onOpened={(result) => {
-        setDevinCloudPaneOpen(false);
-        adoptDevinCloudChatSession(result);
-      }}
-      onMissingFields={(message) => setError(message)}
-    />
-  );
   const terminalPanelContent = chatTerminalVisible ? (
     <ChatTerminalDrawer
       open={terminalDrawerOpen}
@@ -14382,7 +14357,6 @@ export function AgentChatPane({
                     if (next) {
                       setChatActionsOpen(false);
                       setAppControlOpen(false);
-                      setCursorCloudPaneOpen(false);
                     }
                     return next;
                   });
@@ -14491,7 +14465,6 @@ export function AgentChatPane({
           const next = !current;
           if (next) {
             setIosSimulatorOpen(false);
-            setCursorCloudPaneOpen(false);
             setAppControlOpen(false);
           }
           return next;
@@ -14810,6 +14783,7 @@ export function AgentChatPane({
   const composerElement = (
       <AgentChatComposer
             surfaceMode={surfaceMode}
+            fixedModelLabel={selectedSession?.devinCloud ? devinCloudVersionLabel(selectedSession.devinCloud.version) : null}
             // The CTO identity surface is steer-only: the composer reads this
             // to drop "queue" from the active-turn send options.
             surfaceProfile={surfaceProfile}
@@ -15143,8 +15117,6 @@ export function AgentChatPane({
                 if (next) {
                   setChatActionsOpen(false);
                   setAppControlOpen(false);
-                  setCursorCloudPaneOpen(false);
-                  setDevinCloudPaneOpen(false);
                 }
                 return next;
               });
@@ -15157,8 +15129,6 @@ export function AgentChatPane({
                 if (next) {
                   setChatActionsOpen(false);
                   setIosSimulatorOpen(false);
-                  setCursorCloudPaneOpen(false);
-                  setDevinCloudPaneOpen(false);
                 }
                 return next;
               });
@@ -15171,35 +15141,9 @@ export function AgentChatPane({
             cloudTargetLabel={devinCloudSessionActive ? "Devin Cloud" : "Cursor Cloud"}
             cloudFileAttachmentsDelivered={devinCloudSessionActive}
             cursorCloudPanelAvailable={cursorCloudPanelAvailable}
-            cursorCloudPaneOpen={cursorCloudPaneOpen}
-            onToggleCursorCloudPanel={() => {
-              setCursorCloudPaneOpen((current) => {
-                const next = !current;
-                if (next) {
-                  setChatActionsOpen(false);
-                  setIosSimulatorOpen(false);
-                  setAppControlOpen(false);
-                  setTerminalDrawerOpen(false);
-                  setDevinCloudPaneOpen(false);
-                }
-                return next;
-              });
-            }}
+            onToggleCursorCloudPanel={() => openCloudAgentsPanel("cursor")}
             devinCloudPanelAvailable={devinCloudPanelAvailable}
-            devinCloudPaneOpen={devinCloudPaneOpen}
-            onToggleDevinCloudPanel={() => {
-              setDevinCloudPaneOpen((current) => {
-                const next = !current;
-                if (next) {
-                  setChatActionsOpen(false);
-                  setIosSimulatorOpen(false);
-                  setAppControlOpen(false);
-                  setTerminalDrawerOpen(false);
-                  setCursorCloudPaneOpen(false);
-                }
-                return next;
-              });
-            }}
+            onToggleDevinCloudPanel={() => openCloudAgentsPanel("devin")}
             devinCloudHandoffAvailable={
               devinCloudPanelAvailable
               && Boolean(selectedSession)
@@ -15476,10 +15420,8 @@ export function AgentChatPane({
   // App Control) host their own input affordances, so the empty-state layout
   // shrinks the hero and moves the composer below.
   const appPanelOpen = effectiveIosSimulatorOpen || effectiveAppControlOpen;
-  const effectiveCursorCloudPaneOpen = cursorCloudPaneOpen && cursorCloudPanelAvailable;
-  const effectiveDevinCloudPaneOpen = devinCloudPaneOpen && devinCloudPanelAvailable;
   const terminalRightPaneOpen = chatTerminalVisible && !hasExternalTerminalPane && terminalDrawerOpen && Boolean(selectedSessionId);
-  const heavyRightPaneOpen = appPanelOpen || terminalRightPaneOpen || effectiveCursorCloudPaneOpen || effectiveDevinCloudPaneOpen;
+  const heavyRightPaneOpen = appPanelOpen || terminalRightPaneOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
   const chatActionsFloating = chatActionsAvailable && chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
   const chatActionsRightPaneOpen = chatActionsAvailable && chatActionsOpen && !chatActionsFloating;
@@ -15928,8 +15870,6 @@ export function AgentChatPane({
                     : null}
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
-                  {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
-                  {effectiveDevinCloudPaneOpen ? renderRightPane(devinCloudPanelContent) : null}
                   {terminalRightPaneOpen && terminalPanelContent ? renderRightPane(terminalPanelContent) : null}
                 </motion.div>
               ) : (
@@ -16045,97 +15985,47 @@ export function AgentChatPane({
                               {devinCloudMode && !parallelChatMode ? (
                                 <div className="flex shrink-0 items-center gap-1.5">
                                   <label
-                                    className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/55"
-                                    title="Devin Cloud agent mode"
+                                    className="relative flex h-7 items-center gap-1 rounded-full border border-sky-400/20 bg-sky-400/[0.06] pl-2.5 pr-6 font-sans text-[11px] text-sky-100/90 transition-colors hover:border-sky-300/35"
+                                    title="The model Devin Cloud runs this session on"
                                   >
-                                    <span>Mode</span>
+                                    <span className="text-sky-200/55">Model</span>
+                                    <span className="font-medium">
+                                      {DEVIN_CLOUD_VERSIONS.find((option) => option.value === devinCloudVersionSel)?.label ?? devinCloudVersionSel}
+                                    </span>
+                                    <CaretDown size={9} weight="bold" className="pointer-events-none absolute right-2 text-sky-200/55" />
                                     <select
-                                      value={devinCloudModeSel ?? ""}
-                                      onChange={(event) => {
-                                        const value = event.target.value;
-                                        setDevinCloudModeSel(value === "" ? null : value as DevinCloudMode);
-                                      }}
-                                      className="bg-transparent text-[10px] font-medium text-fg/75 outline-none"
+                                      aria-label="Devin Cloud model"
+                                      value={devinCloudVersionSel}
+                                      onChange={(event) => setDevinCloudVersionSel(event.target.value)}
+                                      className="absolute inset-0 cursor-pointer opacity-0"
                                     >
-                                      <option value="">Devin default</option>
-                                      <option value="normal">Normal</option>
-                                      <option value="fast">Fast</option>
-                                      <option value="lite">Lite</option>
-                                      <option value="ultra">Ultra</option>
-                                      <option value="fusion">Fusion</option>
+                                      {DEVIN_CLOUD_VERSIONS.map((option) => (
+                                        <option key={option.value} value={option.value}>
+                                          {option.badge ? `${option.label} · ${option.badge}` : option.label} — {option.description}
+                                        </option>
+                                      ))}
                                     </select>
                                   </label>
                                   <label
-                                    className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/55"
-                                    title="Devin Cloud VM platform — org-defined (linux, macos, windows, or an outpost pool); blank uses the org default"
+                                    className="relative flex h-7 items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.03] pl-2.5 pr-6 font-sans text-[11px] text-fg/75 transition-colors hover:border-white/20"
+                                    title="The operating system of Devin's VM"
                                   >
-                                    <span>Platform</span>
-                                    <input
-                                      type="text"
-                                      list="ade-devin-platforms"
+                                    <span className="text-fg/45">VM</span>
+                                    <span className="font-medium">
+                                      {DEVIN_CLOUD_PLATFORMS.find((option) => option.value === devinCloudPlatformSel)?.label ?? "Ubuntu"}
+                                    </span>
+                                    <CaretDown size={9} weight="bold" className="pointer-events-none absolute right-2 text-fg/45" />
+                                    <select
+                                      aria-label="Devin Cloud VM"
                                       value={devinCloudPlatformSel}
                                       onChange={(event) => setDevinCloudPlatformSel(event.target.value)}
-                                      placeholder="default"
-                                      className="w-16 bg-transparent font-mono text-[10px] font-medium text-fg/75 outline-none placeholder:text-fg/30"
-                                    />
-                                    <datalist id="ade-devin-platforms">
-                                      <option value="linux" />
-                                      <option value="macos" />
-                                      <option value="windows" />
-                                    </datalist>
-                                  </label>
-                                  {devinCloudCatalog.playbooks.length > 0 ? (
-                                    <label
-                                      className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/55"
-                                      title="Attach one of your Devin org playbooks to the session"
+                                      className="absolute inset-0 cursor-pointer opacity-0"
                                     >
-                                      <span>Playbook</span>
-                                      <select
-                                        value={devinCloudPlaybookSel}
-                                        onChange={(event) => setDevinCloudPlaybookSel(event.target.value)}
-                                        className="max-w-28 bg-transparent text-[10px] font-medium text-fg/75 outline-none"
-                                      >
-                                        <option value="">None</option>
-                                        {devinCloudCatalog.playbooks.map((playbook) => (
-                                          <option key={playbook.playbookId} value={playbook.playbookId}>
-                                            {playbook.title}
-                                          </option>
-                                        ))}
-                                      </select>
-                                    </label>
-                                  ) : null}
-                                  <label
-                                    className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.03] px-1.5 py-1 font-sans text-[10px] text-fg/55"
-                                    title="Hard ACU ceiling for this session (blank uses the org default)"
-                                  >
-                                    <span>ACU cap</span>
-                                    <input
-                                      type="text"
-                                      inputMode="numeric"
-                                      value={devinAcuLimitSel}
-                                      onChange={(event) => {
-                                        const next = event.target.value.replace(/[^0-9]/g, "");
-                                        setDevinAcuLimitSel(next);
-                                      }}
-                                      placeholder="none"
-                                      className="w-10 bg-transparent font-mono text-[10px] font-medium text-fg/75 outline-none placeholder:text-fg/30"
-                                    />
+                                      {DEVIN_CLOUD_PLATFORMS.map((option) => (
+                                        <option key={option.value} value={option.value}>{option.label}</option>
+                                      ))}
+                                    </select>
                                   </label>
-                                  <button
-                                    type="button"
-                                    onClick={() => setDevinBypassApproval((current) => !current)}
-                                    className={cn(
-                                      "flex items-center gap-1 rounded-md border px-1.5 py-1 font-sans text-[10px] transition-colors",
-                                      devinBypassApproval
-                                        ? "border-amber-400/30 bg-amber-500/[0.08] text-amber-100/85"
-                                        : "border-white/[0.08] bg-white/[0.03] text-fg/55",
-                                    )}
-                                    title={devinBypassApproval
-                                      ? "Devin will act without asking for approval."
-                                      : "Devin will pause for approval on protected actions."}
-                                  >
-                                    {devinBypassApproval ? "Auto-approve on" : "Auto-approve off"}
-                                  </button>
                                 </div>
                               ) : null}
                               {onOpenShellSession || onImportedSession ? (
@@ -16249,8 +16139,6 @@ export function AgentChatPane({
                   {rightPaneDivider}
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
-                  {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}
-                  {effectiveDevinCloudPaneOpen ? renderRightPane(devinCloudPanelContent) : null}
                 </motion.div>
               )}
             </AnimatePresence>

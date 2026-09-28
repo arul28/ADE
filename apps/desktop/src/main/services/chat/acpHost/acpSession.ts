@@ -188,7 +188,7 @@ export type AcpSessionCallbacks = {
   /** The agent reported session config options or a mode change. */
   onConfigOptions?: (snapshot: { options: AcpSessionConfigOption[]; currentModeId: string | null }) => void;
   /** The agent reported its own session title. */
-  onSessionInfo?: (info: { title: string | null; updatedAt: string | null }) => void;
+  onSessionInfo?: (info: { title: string | null; updatedAt: string | null; meta?: Record<string, unknown> | null }) => void;
   /** The agent process went away. The session is dead. */
   onProcessExit?: (detail: { code: number | null; signal: string | null; stderrTail: string }) => void;
 };
@@ -366,6 +366,7 @@ export async function openAcpSession(args: OpenAcpSessionArgs): Promise<AcpSessi
   const translator: AcpEventTranslator = createAcpEventTranslator({
     readUsage: (update) => dialect.usage.behavior({ usageUpdate: update }),
     includeSlashCommand: dialect.includeSlashCommand,
+    ...(dialect.echoRemoteUserMessages ? { echoRemoteUserMessages: true } : {}),
     callbacks: {
       ...(callbacks.onSlashCommands ? { onSlashCommands: callbacks.onSlashCommands } : {}),
       onConfigOptions: (snapshot) => {

@@ -9,6 +9,7 @@
 import type { AcpDialect, AcpProviderId } from "../acpHostTypes";
 import { copilotDialect } from "./copilot";
 import { devinDialect } from "./devin";
+import { devinCloudDialect } from "./devinCloud";
 import { grokDialect } from "./grok";
 import { kimiDialect } from "./kimi";
 import { qwenDialect } from "./qwen";
@@ -21,11 +22,16 @@ export const ACP_DIALECTS: Record<AcpProviderId, AcpDialect> = {
   devin: devinDialect,
 };
 
-export function acpDialectFor(providerId: AcpProviderId): AcpDialect {
+/**
+ * The dialect for a provider. `cloud` selects a provider's hosted variant; only
+ * Devin has one (`devin acp --cloud`), and every other provider ignores it.
+ */
+export function acpDialectFor(providerId: AcpProviderId, options?: { cloud?: boolean }): AcpDialect {
+  if (options?.cloud && providerId === "devin") return devinCloudDialect;
   return ACP_DIALECTS[providerId];
 }
 
-export { copilotDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
+export { copilotDialect, devinCloudDialect, devinDialect, grokDialect, kimiDialect, qwenDialect };
 export {
   COPILOT_CONFIG_OPTION_IDS,
   COPILOT_NATIVE_MODE_IDS,
@@ -59,3 +65,5 @@ export {
   QWEN_SYSTEM_SETTINGS_PATH_ENV,
   type QwenSkillDefaultsResult,
 } from "./qwenSkillDefaults";
+
+export { DEVIN_CLOUD_CONFIG_OPTION_IDS, devinCloudAcpSessionId, devinCloudRestSessionId } from "./devinCloud";

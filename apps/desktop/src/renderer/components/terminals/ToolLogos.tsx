@@ -2,7 +2,7 @@ import React from "react";
 import { Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, OpenCode, Qwen } from "@lobehub/icons";
 import type { TerminalToolType } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { DroidLogo, PiLogo } from "../shared/ProviderLogos";
+import { DevinLogo, DroidLogo, PiLogo } from "../shared/ProviderLogos";
 
 type LogoProps = { size?: number; className?: string };
 
@@ -58,6 +58,10 @@ export const GrokLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
   <Grok.Avatar size={size} className={lobeMarkClass(className)} />
 );
 
+export const DevinToolLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
+  <DevinLogo size={size} className={className} />
+);
+
 const USAGE_PROVIDER_LOGOS = {
   claude: ClaudeLogo,
   codex: CodexLogo,
@@ -98,6 +102,8 @@ const LOGO_MAP: Partial<Record<TerminalToolType, React.FC<LogoProps>>> = {
   "grok-chat": GrokLogo,
   copilot: CopilotLogo,
   "copilot-chat": CopilotLogo,
+  devin: DevinToolLogo,
+  "devin-chat": DevinToolLogo,
   shell: ShellLogo,
 };
 

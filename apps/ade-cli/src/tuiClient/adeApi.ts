@@ -460,6 +460,7 @@ const CHAT_BACKED_TERMINAL_TOOL_TYPES = new Set([
   "kimi-chat",
   "grok-chat",
   "copilot-chat",
+  "devin-chat",
 ]);
 
 const TRACKED_CLI_PROVIDERS = new Set<AdeCodeProvider>([

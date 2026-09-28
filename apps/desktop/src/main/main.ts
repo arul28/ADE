@@ -313,6 +313,8 @@ import { buildLinearAutomationDispatches } from "./services/automations/linearAu
 import { createCursorCloudIngressService } from "./services/automations/cursorCloudIngressService";
 import { createCursorCloudFleetService } from "./services/chat/cursorCloudFleetService";
 import { createDevinCloudFleetService } from "./services/chat/devinCloudFleetService";
+import { createCloudAgentsServiceFromHost } from "./services/chat/cloudAgentsService";
+import { resolveDevinCloudBinary } from "./services/chat/devinCloudBinary";
 import { buildCursorCloudAutomationDispatches } from "./services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "./services/chat/cursorCloudCreateOptions";
 import { createGithubPollingService } from "./services/automations/githubPollingService";
@@ -4367,6 +4369,17 @@ app.whenReady().then(async () => {
       },
       openDevinCloudChat: (args) => agentChatService.openDevinCloudChat(args),
     });
+    const cloudAgentsService = createCloudAgentsServiceFromHost({
+      projectRoot,
+      logger,
+      laneService,
+      getAgentChatService: () => agentChatService,
+      cursorFleet: cursorCloudFleetService,
+      archiveCursorAgent: (agentId) => aiIntegrationService.archiveCursorCloudAgent(agentId),
+      unarchiveCursorAgent: (agentId) => aiIntegrationService.unarchiveCursorCloudAgent(agentId),
+      cursorCreateRun: (args) => aiIntegrationService.createCursorCloudRun({ ...args, workOnCurrentBranch: true }),
+      resolveDevinBinary: resolveDevinCloudBinary,
+    });
     automationService?.setCursorCloudIngressAvailable(() => {
       const status = cursorCloudIngressService.getStatus();
       return status.state === "ready" || Boolean(status.webhookId && !status.lastError);
@@ -5242,6 +5255,7 @@ app.whenReady().then(async () => {
       cursorCloudIngressService,
       cursorCloudFleetService,
       devinCloudFleetService,
+      cloudAgentsService,
       feedbackReporterService,
       usageTrackingService,
       storageInsightsService,

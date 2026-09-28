@@ -28,7 +28,8 @@ import {
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { resolveOpenInTarget } from "../../../shared/editorTargets";
-import { LaneMachineMarker } from "./LaneMachineMarker";
+import { LaneCloudMarker, LaneMachineMarker } from "./LaneMachineMarker";
+import { laneCloudProvider } from "../../../shared/cloudLanes";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
@@ -2159,6 +2160,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     laneAppleDevice?: LaneAppleDevice | null;
     /** The headerless lane holds a Mac Desktop display; its card shows the mark. */
     laneMacDesktop?: boolean;
+    /** The headerless lane lives on a cloud; its card shows the mark. */
+    laneCloud?: "devin" | "cursor" | null;
     /** Board cards only: the column states the status, so the card must not. */
     suppressStatusLabel?: boolean;
     nestedSubagent?: boolean;
@@ -2253,6 +2256,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         machineMarker={options?.machineMarker ?? null}
         laneAppleDevice={options?.laneAppleDevice ?? null}
         laneMacDesktop={options?.laneMacDesktop ?? false}
+        // A card that names its lane also says the lane lives on a cloud.
+        laneCloud={options?.laneCloud ?? (options?.showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
         suppressMachineChip={options?.suppressMachineChip}
         suppressStatusLabel={options?.suppressStatusLabel}
         nestedSubagent={options?.nestedSubagent}
@@ -3003,7 +3008,9 @@ export const SessionListPane = React.memo(function SessionListPane({
         headerless={headerless}
         accentColor={laneAccent}
         prBadge={prBadge}
-        machineMarker={machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
+        machineMarker={laneCloudProvider(lane)
+          ? <LaneCloudMarker provider={laneCloudProvider(lane)!} />
+          : machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
         appleDevice={laneAppleDevice || laneMacDesktop ? (
           <>
             {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
@@ -3058,6 +3065,7 @@ export const SessionListPane = React.memo(function SessionListPane({
               machineMarker,
               laneAppleDevice,
               laneMacDesktop,
+              laneCloud: laneCloudProvider(lane),
               laneActions: {
                 laneId: lane.id,
                 laneName: lane.name,

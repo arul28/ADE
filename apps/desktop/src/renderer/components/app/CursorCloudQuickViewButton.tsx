@@ -9,7 +9,8 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-import { CursorCloudFleetModal } from "./CursorCloudFleetModal";
+import { CloudAgentsPanel } from "./cloudAgents/CloudAgentsPanel";
+import { subscribeOpenCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
 
 // Keep the entry point on the same visibility cadence as Linear. Both
 // integrations are connection-gated and should appear/disappear together
@@ -210,6 +211,11 @@ export function CursorCloudQuickViewButton({
     if (open) setUnreadFinished(0);
   }, [open]);
 
+  useEffect(() => {
+    if (!visible) return undefined;
+    return subscribeOpenCloudAgentsPanel("cursor", () => setOpen(true));
+  }, [visible]);
+
   const occludesNativeBrowser = open;
 
   useEffect(() => {
@@ -262,8 +268,8 @@ export function CursorCloudQuickViewButton({
         ) : null}
       </button>
       {open ? createPortal(
-        <CursorCloudFleetModal
-          projectRoot={activeProjectRoot ?? null}
+        <CloudAgentsPanel
+          provider="cursor"
           projectName={projectName}
           onClose={() => setOpen(false)}
         />,

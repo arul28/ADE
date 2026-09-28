@@ -15,6 +15,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
+import { laneCloudProvider } from "../../../shared/cloudLanes";
 import {
   useWorkToolContextInsertion,
   type WorkSidebarContextTarget,
@@ -180,10 +181,16 @@ export function WorkSidebar({
   // follow the pin. A pin on another machine never opens a view here — the
   // panel explains that instead of driving a browser nobody can see.
   const {
-    context: toolContext,
+    context: feedsToolContext,
     browserViewRoot,
     offline: pinnedMachineOffline,
   } = useNativeToolFeeds();
+  // A cloud lane's machine is its cloud; tools that run on a real machine say so.
+  const laneCloud = useAppStore((state) => laneCloudProvider(state.lanes.find((lane) => lane.id === laneId)));
+  const toolContext = useMemo(
+    () => (laneCloud ? { ...feedsToolContext, cloudLane: laneCloud } : feedsToolContext),
+    [feedsToolContext, laneCloud],
+  );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a
   // non-sequitur, and the picker says why the card is dimmed.

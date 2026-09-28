@@ -77,7 +77,7 @@ export type AcpRuntimeCoordinatorCallbacks<TSteer> = {
   ) => void;
   onSessionInfo: (
     runtime: AcpRuntimeState<TSteer> | null,
-    info: { title: string | null; updatedAt: string | null },
+    info: { title: string | null; updatedAt: string | null; meta?: Record<string, unknown> | null },
   ) => void;
   onProcessExit: (
     runtime: AcpRuntimeState<TSteer> | null,
@@ -117,6 +117,12 @@ export type CreateAcpRuntimeArgs<TSteer> = {
   /** Provider-specific value for its declared mode config option. */
   nativeModeValue: string;
   setResumeCommand: (command: string) => void;
+  /**
+   * Config values to set on a freshly created session, before the model. Only
+   * applied on `session/new`: a rejoined session already carries its own (a
+   * Devin Cloud session's repos are fixed once its VM exists).
+   */
+  initialConfigValues?: ReadonlyArray<{ configId: string; value: string }>;
   spawnOverride?: OpenAcpSessionArgs["spawnOverride"];
   pool?: OpenAcpSessionArgs["pool"];
   binarySource: string;
@@ -342,13 +348,14 @@ async function applyAcpModel<TSteer>(
   args: { sessionId: string; logger: Logger },
 ): Promise<void> {
   const { dialect, session } = runtime;
+  const modelOptionId = dialect.modelConfigOptionId ?? "model";
   const modelBehavior = behaviorOf(dialect.modelSelection);
   const viaConfigOption = !modelBehavior
     && dialect.sessionConfig.declared
-    && dialect.configOptionIds.includes("model");
+    && dialect.configOptionIds.includes(modelOptionId);
   if (!modelBehavior && !viaConfigOption) return;
 
-  const resolution = resolveAcpConfigValue(runtime.configOptions, "model", modelToken, dialect.modelIdFromAgent);
+  const resolution = resolveAcpConfigValue(runtime.configOptions, modelOptionId, modelToken, dialect.modelIdFromAgent);
   if (resolution.kind === "not_offered") {
     args.logger.warn("agent_chat.acp_model_not_offered", {
       sessionId: args.sessionId,
@@ -366,10 +373,10 @@ async function applyAcpModel<TSteer>(
       const call = modelBehavior({ sessionId: session.sessionId, modelId: resolution.value });
       await session.connection.request(call.method, call.params);
     } else {
-      reported = await session.setConfigOption({ configId: "model", value: resolution.value });
+      reported = await session.setConfigOption({ configId: modelOptionId, value: resolution.value });
     }
-    recordConfigChange(runtime, "model", resolution.value, reported);
-    const current = runtime.configOptions.find((option) => option.id === "model")?.value;
+    recordConfigChange(runtime, modelOptionId, resolution.value, reported);
+    const current = runtime.configOptions.find((option) => option.id === modelOptionId)?.value;
     session.noteCurrentModel(typeof current === "string" && current.length ? current : resolution.value);
   } catch (error) {
     args.logger.warn("agent_chat.acp_set_model_failed", {
@@ -480,6 +487,32 @@ export async function createAcpRuntime<TSteer>(
           args.callbacks.onOpenFailed(error);
         }
         throw error;
+      }
+    }
+  }
+  if (args.initialConfigValues?.length && session.entryPlan.mode === "new" && args.dialect.sessionConfig.declared) {
+    for (const { configId, value } of args.initialConfigValues) {
+      if (!value.trim()) continue;
+      const resolution = resolveAcpConfigValue(runtime.configOptions, configId, value);
+      if (resolution.kind === "not_offered") {
+        args.logger.warn("agent_chat.acp_initial_config_not_offered", {
+          sessionId: args.owner.session.id,
+          provider: args.provider,
+          configId,
+          value,
+        });
+        continue;
+      }
+      if (resolution.kind === "advertised" && resolution.current) continue;
+      try {
+        recordConfigChange(runtime, configId, resolution.value, await session.setConfigOption({ configId, value: resolution.value }));
+      } catch (error) {
+        args.logger.warn("agent_chat.acp_initial_config_failed", {
+          sessionId: args.owner.session.id,
+          provider: args.provider,
+          configId,
+          error: getErrorMessage(error),
+        });
       }
     }
   }

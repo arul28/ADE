@@ -1016,6 +1016,7 @@ const CHAT_BACKED_REMOTE_TOOL_TYPES = new Set([
   "kimi-chat",
   "grok-chat",
   "copilot-chat",
+  "devin-chat",
 ]);
 
 const TRACKED_CLI_REMOTE_TOOL_TYPE_PREFIXES = [

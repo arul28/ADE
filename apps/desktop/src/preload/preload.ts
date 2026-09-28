@@ -238,6 +238,12 @@ import type {
   DevinCloudCreateSessionForLaneRequest,
   DevinCloudCreateSessionForLaneResult,
   DevinCloudFleetResult,
+  CloudAgentArchiveArgs,
+  CloudAgentLaunchArgs,
+  CloudAgentList,
+  CloudAgentListArgs,
+  CloudAgentOpenResult,
+  CloudAgentRef,
   DevinCloudOpenChatRequest,
   DevinCloudOpenChatResult,
   DevinCloudPullIntoLaneResult,
@@ -5619,6 +5625,28 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.syncEvent, listener);
       };
     },
+  },
+  cloudAgents: {
+    list: async (args: CloudAgentListArgs): Promise<CloudAgentList> =>
+      callProjectRuntimeActionOr("ai", "listCloudAgents", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsList, args),
+      ),
+    open: async (args: CloudAgentRef): Promise<CloudAgentOpenResult> =>
+      callProjectRuntimeActionOr("ai", "openCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsOpen, args),
+      ),
+    stop: async (args: CloudAgentRef): Promise<{ stopped: true }> =>
+      callProjectRuntimeActionOr("ai", "stopCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsStop, args),
+      ),
+    launch: async (args: CloudAgentLaunchArgs): Promise<CloudAgentOpenResult> =>
+      callProjectRuntimeActionOr("ai", "launchCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsLaunch, args),
+      ),
+    archive: async (args: CloudAgentArchiveArgs): Promise<{ archived: boolean }> =>
+      callProjectRuntimeActionOr("ai", "archiveCloudAgent", { args }, () =>
+        ipcRenderer.invoke(IPC.cloudAgentsArchive, args),
+      ),
   },
   agentTools: {
     detect: async (): Promise<AgentTool[]> =>

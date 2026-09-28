@@ -200,6 +200,7 @@ import {
   readSettleOverride,
   readStringActionArg,
   readWakeReason,
+  requireCloudAgentProvider,
   requireNonEmptyString,
   requireSnoozeDeadline,
   toRuntimeFileWatchArgs,
@@ -2311,6 +2312,35 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       requireService(runtime.cursorCloudFleetService, "Cursor Cloud fleet not available.").stopAgentRun(
         requireNonEmptyString(args?.agentId, "agentId"),
       ),
+    listCloudAgents: (args?: { provider?: string; force?: boolean }) =>
+      requireService(runtime.cloudAgentsService, "Cloud agents are not available.").list({
+        provider: requireCloudAgentProvider(args?.provider),
+        ...(args?.force !== undefined ? { force: args.force === true } : {}),
+      }),
+    openCloudAgent: (args?: { provider?: string; id?: string }) =>
+      requireService(runtime.cloudAgentsService, "Cloud agents are not available.").open({
+        provider: requireCloudAgentProvider(args?.provider),
+        id: requireNonEmptyString(args?.id, "id"),
+      }),
+    stopCloudAgent: (args?: { provider?: string; id?: string }) =>
+      requireService(runtime.cloudAgentsService, "Cloud agents are not available.").stop({
+        provider: requireCloudAgentProvider(args?.provider),
+        id: requireNonEmptyString(args?.id, "id"),
+      }),
+    launchCloudAgent: (args?: { provider?: string; prompt?: string; model?: string | null; platform?: string | null; laneId?: string | null }) =>
+      requireService(runtime.cloudAgentsService, "Cloud agents are not available.").launch({
+        provider: requireCloudAgentProvider(args?.provider),
+        prompt: requireNonEmptyString(args?.prompt, "prompt"),
+        model: typeof args?.model === "string" ? args.model : null,
+        platform: typeof args?.platform === "string" ? args.platform : null,
+        laneId: typeof args?.laneId === "string" && args.laneId.trim() ? args.laneId.trim() : null,
+      }),
+    archiveCloudAgent: (args?: { provider?: string; id?: string; archived?: boolean }) =>
+      requireService(runtime.cloudAgentsService, "Cloud agents are not available.").archive({
+        provider: requireCloudAgentProvider(args?.provider),
+        id: requireNonEmptyString(args?.id, "id"),
+        archived: args?.archived !== false,
+      }),
     getDevinCloudAuthStatus: () => aiIntegrationService.getDevinCloudAuthStatus(),
     setDevinCloudCredentials: async (args?: { apiKey?: string; orgId?: string | null }) => {
       const status = await aiIntegrationService.setDevinCloudCredentials({

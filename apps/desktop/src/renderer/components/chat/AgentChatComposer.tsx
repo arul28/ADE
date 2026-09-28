@@ -1774,6 +1774,7 @@ export function AgentChatComposer({
   onToggleDevinCloudPanel,
   devinCloudHandoffAvailable = false,
   onHandoffToDevinCloud,
+  fixedModelLabel = null,
   showAppControlToggle = false,
   appControlOpen = false,
   onToggleAppControl,
@@ -2062,6 +2063,11 @@ export function AgentChatComposer({
   onToggleDevinCloudPanel?: () => void;
   devinCloudHandoffAvailable?: boolean;
   onHandoffToDevinCloud?: () => void;
+  /**
+   * The chat's model is fixed by where it runs (a Devin Cloud session keeps the
+   * version it started with), so show it as a label instead of the picker.
+   */
+  fixedModelLabel?: string | null;
   showAppControlToggle?: boolean;
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
@@ -6259,7 +6265,14 @@ export function AgentChatComposer({
                 />
               </>
             ) : null}
-            {!hideModelControls && !parallelChatMode ? (
+            {!hideModelControls && !parallelChatMode && fixedModelLabel ? (
+              <SmartTooltip content={{ label: "Model", description: "A cloud session keeps the model it started with. Start a new session to use another." }}>
+                <span className={cn("inline-flex h-6 items-center truncate rounded-md px-2 text-[11px] font-medium text-fg/75", COMPOSER_MODEL_TRIGGER)}>
+                  {fixedModelLabel}
+                </span>
+              </SmartTooltip>
+            ) : null}
+            {!hideModelControls && !parallelChatMode && !fixedModelLabel ? (
               <>
                 <ModelPicker
                   value={modelId}
@@ -6383,18 +6396,16 @@ export function AgentChatComposer({
                 ...(cursorCloudPanelAvailable && onToggleCursorCloudPanel
                   ? [{
                       id: "cursor-cloud-panel",
-                      label: cursorCloudPaneOpen ? "Close Cursor Cloud agents" : "Open Cursor Cloud agents",
-                      icon: <CloudArrowUp size={14} weight={cursorCloudPaneOpen ? "fill" : "regular"} />,
-                      active: cursorCloudPaneOpen,
+                      label: "Cursor Cloud agents…",
+                      icon: <CloudArrowUp size={14} weight="regular" />,
                       onSelect: onToggleCursorCloudPanel,
                     }]
                   : []),
                 ...(devinCloudPanelAvailable && onToggleDevinCloudPanel
                   ? [{
                       id: "devin-cloud-panel",
-                      label: devinCloudPaneOpen ? "Close Devin Cloud sessions" : "Open Devin Cloud sessions",
+                      label: "Devin Cloud sessions…",
                       icon: <DevinLogo size={14} />,
-                      active: devinCloudPaneOpen,
                       onSelect: onToggleDevinCloudPanel,
                     }]
                   : []),

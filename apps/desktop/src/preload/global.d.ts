@@ -376,6 +376,12 @@ import type {
   DevinCloudCreateSessionForLaneRequest,
   DevinCloudCreateSessionForLaneResult,
   DevinCloudFleetResult,
+  CloudAgentArchiveArgs,
+  CloudAgentLaunchArgs,
+  CloudAgentList,
+  CloudAgentListArgs,
+  CloudAgentOpenResult,
+  CloudAgentRef,
   DevinCloudOpenChatRequest,
   DevinCloudOpenChatResult,
   DevinCloudPullIntoLaneResult,
@@ -1535,6 +1541,14 @@ declare global {
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         getCloudRelayStatus: () => Promise<SyncCloudRelayStatus>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
+      };
+      /** Devin Cloud sessions and Cursor Cloud agents, one contract for both panels. */
+      cloudAgents: {
+        list: (args: CloudAgentListArgs) => Promise<CloudAgentList>;
+        open: (args: CloudAgentRef) => Promise<CloudAgentOpenResult>;
+        stop: (args: CloudAgentRef) => Promise<{ stopped: true }>;
+        archive: (args: CloudAgentArchiveArgs) => Promise<{ archived: boolean }>;
+        launch: (args: CloudAgentLaunchArgs) => Promise<CloudAgentOpenResult>;
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;

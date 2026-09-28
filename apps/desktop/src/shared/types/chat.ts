@@ -854,6 +854,29 @@ export type AgentChatCompletionReport = {
 
 export type AgentChatRuntime = "local" | "cloud";
 
+/**
+ * A Devin Cloud chat driven live over `devin acp --cloud` (the ACP relay), as
+ * opposed to the older REST mirror. Present means the chat's turns run on a
+ * Devin VM through the ACP host; absent on a cloud chat means the REST path.
+ */
+export type AgentChatDevinCloudConfig = {
+  transport: "acp";
+  /** `devin_version` config value: the cloud model (`devin-2-5`, `devin_lite`, `devin-swe-2-low`, …). */
+  version: string | null;
+  /** VM OS: `linux` | `macos` | `windows`. Null = Devin's default. */
+  platform: string | null;
+  /** `owner/repo` the session clones. */
+  repo: string | null;
+  /** The lane branch every turn is pinned to. */
+  branch: string | null;
+  /**
+   * True once the VM stands on `branch`: after the first turn carried the full
+   * branch instructions, or when the session was opened from a pull request
+   * whose head is the branch. Until then the next turn carries them.
+   */
+  pinned?: boolean;
+};
+
 export type AgentChatTextPhase = "commentary" | "final_answer";
 
 /** Any provider the session importer lists can be opened as an ADE chat. */
@@ -2563,6 +2586,8 @@ export type AgentChatSession = {
   devinMode?: DevinCloudMode | null;
   /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
   devinPromotedTurnId?: string;
+  /** Set on Devin Cloud chats driven over the ACP relay. */
+  devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   surface?: AgentChatSurface;
   automationId?: string | null;
@@ -2712,6 +2737,7 @@ export type AgentChatSessionSummary = {
   devinRuntime?: AgentChatRuntime;
   devinMode?: DevinCloudMode | null;
   devinPromotedTurnId?: string;
+  devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   /**
    * The spawning chat's identity, when it had one — `"cto"` for work the CTO
@@ -3400,6 +3426,11 @@ export type AgentChatCreateArgs = {
   reasoningEffort?: string | null;
   fastMode?: boolean;
   cursorCloudServiceTier?: CursorCloudServiceTier | null;
+  /**
+   * Start a Devin Cloud chat driven over the ACP relay. The chat's turns run on
+   * a Devin VM; `provider` must be `devin`.
+   */
+  devinCloud?: AgentChatDevinCloudConfig | null;
   /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;

@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { DevinCloudAuthStatus } from "../../../shared/types";
+import type { AiSettingsStatus } from "../../../shared/types";
 import { DevinMark } from "../shared/ProviderLogos";
 import { useAppStore } from "../../state/appStore";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
-import { DevinCloudFleetModal } from "./DevinCloudFleetModal";
+import { CloudAgentsPanel } from "./cloudAgents/CloudAgentsPanel";
+import { subscribeOpenCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
 
 // Keep the entry point on the same visibility cadence as Linear and Cursor.
 // Both integrations are connection-gated and should appear/disappear together
@@ -31,14 +32,14 @@ type VisibilityCacheEntry = {
 const visibilityCacheByProject = new Map<string, VisibilityCacheEntry>();
 
 /**
- * The fleet entry point only exists while a Devin API token does. Reads the
- * credential state through the cached reader so opening Work never pays an
+ * The fleet entry point only exists while the Devin CLI is signed in. Reads
+ * the provider status through the cached reader so opening Work never pays an
  * extra auth probe in its startup window.
  */
 function readDevinVisibilityCached(
   args: {
     cacheKey: string | null | undefined;
-    reader: (() => Promise<DevinCloudAuthStatus>) | undefined;
+    reader: (() => Promise<AiSettingsStatus>) | undefined;
     force?: boolean;
   },
 ): Promise<boolean> {
@@ -57,7 +58,9 @@ function readDevinVisibilityCached(
   entry.inFlight = Promise.resolve()
     .then(() => reader())
     .then((status) => {
-      const nextValue = status.configured === true;
+      // The panel rides the Devin CLI's own login (`devin acp --cloud`), so a
+      // signed-in CLI is all it needs.
+      const nextValue = status.providerConnections?.devin?.authAvailable === true;
       entry.value = nextValue;
       entry.checkedAtMs = Date.now();
       return nextValue;
@@ -96,14 +99,14 @@ export function DevinCloudQuickViewButton({
   openRef.current = open;
 
   const readDevinAuthStatus = useCallback(
-    () => window.ade.ai.devinCloudGetAuthStatus(),
+    () => window.ade.ai.getStatus(),
     [],
   );
 
   const loadVisibility = useCallback(
     (force = false) => readDevinVisibilityCached({
       cacheKey: activeProjectVisibilityKey,
-      reader: typeof window !== "undefined" && typeof window.ade?.ai?.devinCloudGetAuthStatus === "function"
+      reader: typeof window !== "undefined" && typeof window.ade?.ai?.getStatus === "function"
         ? readDevinAuthStatus
         : undefined,
       force,
@@ -192,6 +195,11 @@ export function DevinCloudQuickViewButton({
     };
   }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visibilityRetryIntervalMs, visible]);
 
+  useEffect(() => {
+    if (!visible) return undefined;
+    return subscribeOpenCloudAgentsPanel("devin", () => setOpen(true));
+  }, [visible]);
+
   const occludesNativeBrowser = open;
 
   useEffect(() => {
@@ -237,8 +245,8 @@ export function DevinCloudQuickViewButton({
         {variant !== "icon" ? <span className="ade-tab-label min-w-0 flex-1 truncate">Devin Cloud</span> : null}
       </button>
       {open ? createPortal(
-        <DevinCloudFleetModal
-          projectRoot={activeProjectRoot ?? null}
+        <CloudAgentsPanel
+          provider="devin"
           projectName={projectName}
           onClose={() => setOpen(false)}
         />,

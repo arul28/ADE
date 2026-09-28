@@ -677,10 +677,12 @@ export function createSessionService({
       "kimi",
       "grok",
       "copilot",
+      "devin",
       "qwen-chat",
       "kimi-chat",
       "grok-chat",
       "copilot-chat",
+      "devin-chat",
       "aider",
       "continue",
       "other"
@@ -703,6 +705,7 @@ export function createSessionService({
     if (normalized.startsWith("chat:kimi:")) return "kimi-chat";
     if (normalized.startsWith("chat:grok:")) return "grok-chat";
     if (normalized.startsWith("chat:copilot:")) return "copilot-chat";
+    if (normalized.startsWith("chat:devin:")) return "devin-chat";
     if (normalized === "chat:codex" || normalized.startsWith("chat:codex:")) return "codex-chat";
     return toolType;
   };
@@ -853,6 +856,9 @@ export function createSessionService({
         } else if (toolType === "copilot-chat") {
           legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
           legacyChatParams.push("chat:copilot:%");
+        } else if (toolType === "devin-chat") {
+          legacyChatClauses.push("lower(coalesce(s.resume_command, '')) like ?");
+          legacyChatParams.push("chat:devin:%");
         }
       }
 

@@ -156,3 +156,8 @@ export function readStringActionArg(value: unknown, field: string): string {
   }
   return requireNonEmptyString(asActionRecord(value)[field], field);
 }
+
+export function requireCloudAgentProvider(value: unknown): "devin" | "cursor" {
+  if (value === "devin" || value === "cursor") return value;
+  throw new Error("provider must be 'devin' or 'cursor'.");
+}

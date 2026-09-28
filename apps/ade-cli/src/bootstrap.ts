@@ -113,6 +113,8 @@ import { buildLinearAutomationDispatches } from "../../desktop/src/main/services
 import { createCursorCloudIngressService } from "../../desktop/src/main/services/automations/cursorCloudIngressService";
 import { createCursorCloudFleetService } from "../../desktop/src/main/services/chat/cursorCloudFleetService";
 import { createDevinCloudFleetService } from "../../desktop/src/main/services/chat/devinCloudFleetService";
+import { createCloudAgentsServiceFromHost, type CloudAgentsService } from "../../desktop/src/main/services/chat/cloudAgentsService";
+import { resolveDevinCloudBinary } from "../../desktop/src/main/services/chat/devinCloudBinary";
 import { buildCursorCloudAutomationDispatches } from "../../desktop/src/main/services/automations/cursorCloudAutomationDispatch";
 import { openCursorCloudCredentialStore } from "../../desktop/src/main/services/chat/cursorCloudCreateOptions";
 import { createAutomationSecretService } from "../../desktop/src/main/services/automations/automationSecretService";
@@ -381,6 +383,7 @@ export type AdeRuntime = {
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
   devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
+  cloudAgentsService?: CloudAgentsService | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
@@ -2197,6 +2200,17 @@ export async function createAdeRuntime(args: {
         return agentChatService.openDevinCloudChat(args);
       },
     });
+    const cloudAgentsService = createCloudAgentsServiceFromHost({
+      projectRoot,
+      logger,
+      laneService,
+      getAgentChatService: () => agentChatService ?? null,
+      cursorFleet: cursorCloudFleetService,
+      archiveCursorAgent: (agentId) => aiIntegrationService.archiveCursorCloudAgent(agentId),
+      unarchiveCursorAgent: (agentId) => aiIntegrationService.unarchiveCursorCloudAgent(agentId),
+      cursorCreateRun: (args) => aiIntegrationService.createCursorCloudRun({ ...args, workOnCurrentBranch: true }),
+      resolveDevinBinary: resolveDevinCloudBinary,
+    });
     const configReloadService = createConfigReloadService({
       paths: {
         sharedPath: adeProjectService.paths.sharedConfigPath,
@@ -2808,6 +2822,7 @@ export async function createAdeRuntime(args: {
       chatLaunchService,
       cursorCloudFleetService,
       devinCloudFleetService,
+      cloudAgentsService,
       ctoStateService,
       ctoMemoryService,
       ctoVoiceCallService,
