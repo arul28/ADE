@@ -55,7 +55,11 @@ export async function readHistoryPage(args: {
   chats: PersonalChatsApi;
   sessionId: string;
   opts: HistoryPageOptions;
-  /** Read at call time: the runtime may have been replaced since the thread opened. */
+  /**
+   * Whether the CURRENT runtime lists `getEventHistoryPage`. The thread reads
+   * it at call time, because the runtime may have been replaced since the
+   * thread opened.
+   */
   pageSupported: boolean;
   onUnsupported: () => void;
 }): Promise<ThreadHistoryPage> {

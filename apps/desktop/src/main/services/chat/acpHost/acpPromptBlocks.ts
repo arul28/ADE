@@ -11,8 +11,9 @@
 
 import path from "node:path";
 import {
+  attachmentAgentPath,
   attachmentIsReferenceOnly,
-  referenceOnlyHintFor,
+  attachmentPathHint,
   type AgentChatFileRef,
 } from "../../../../shared/types/chat";
 import { hasNullByte } from "../../shared/utils";
@@ -91,7 +92,7 @@ export async function buildAcpPromptBlocks(
 
     // `hydrate: false`: the bytes are never read; the agent gets the path.
     if (attachmentIsReferenceOnly(attachment)) {
-      blocks.push(textBlock(`\n${referenceOnlyHintFor(attachment)}`));
+      blocks.push(textBlock(`\n${attachmentPathHint(attachment)}`));
       continue;
     }
 
@@ -105,7 +106,7 @@ export async function buildAcpPromptBlocks(
         } else {
           blocks.push(args.imagePrompt({
             base64Data: bytes.toString("base64"),
-            mimeType: imageMimeType(attachment._resolvedPath || attachment.path),
+            mimeType: imageMimeType(attachmentAgentPath(attachment)),
           }));
         }
         continue;

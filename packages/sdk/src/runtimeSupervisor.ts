@@ -10,7 +10,8 @@ import { ChatEventStream, type ChatEventHub } from "./eventStream.js";
 import { JsonRpcConnection } from "./jsonRpc.js";
 import { reclaimStaleRuntime, runtimePidfilePath } from "./runtimePidfile.js";
 import { DEFAULT_ADE_ROLE, startSidecar, type Sidecar } from "./sidecar.js";
-import type { AdeInitializeResult, DoctorReport, RuntimeCompatibility } from "./types.js";
+import type { DoctorReport, RuntimeCompatibility } from "./types.js";
+import type { AdeInitializeResult } from "./wireTypes.js";
 
 /**
  * The runtime a client owns: finding it, starting (or reaching) it, the

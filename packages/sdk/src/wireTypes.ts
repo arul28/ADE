@@ -1,8 +1,14 @@
 /**
  * The runtime's wire shapes the SDK decodes internally: the event buffer, the
  * `personalChats.call` envelope, and the `ade/initialize` answer. None of them
- * reaches a public signature except through `types.ts`, which re-exports them
- * so existing imports keep working.
+ * reaches a public signature; import them from here.
+ *
+ * Hand-copied, like `types.ts`, from:
+ *   - `PersonalChatCallResponse`, `PersonalChatCapabilities`,
+ *     `PersonalChatStreamEventsResult`
+ *       <- apps/desktop/src/shared/types/personalChats.ts
+ *   - `BufferedEvent`, drain/gap semantics
+ *       <- apps/ade-cli/src/eventBuffer.ts
  */
 
 /**

@@ -8,11 +8,8 @@ import { JsonRpcConnection } from "../src/jsonRpc.js";
 import { startSidecar, type Sidecar } from "../src/sidecar.js";
 import { resolveRuntimeSocketPath } from "../src/socketPath.js";
 import type { AdeThread } from "../src/thread.js";
-import type {
-  AdeInitializeResult,
-  ModelCatalogEntry,
-  PersonalChatCallResponse,
-} from "../src/types.js";
+import type { ModelCatalogEntry } from "../src/types.js";
+import type { AdeInitializeResult, PersonalChatCallResponse } from "../src/wireTypes.js";
 
 /**
  * Live wire-contract test. Opt-in: set `ADE_SDK_LIVE_BINARY` to an `ade`
@@ -928,7 +925,7 @@ describe.skipIf(!LIVE_BINARY)("live seam: SDK 0.2 host configuration, approvals 
     ).rejects.toMatchObject({ code: "invalid_option" });
 
     // And the engine's own refusal, taken raw. The `invalid_argument:` prefix
-    // is a CONTRACT, not prose: `createChat` in client.ts matches on it to turn
+    // is a CONTRACT, not prose: `PersonalChatsApi.call` in personalChats.ts matches on it to turn
     // a generic `rpc_error` into `invalid_option`. Reworded without the prefix,
     // every bad-argument refusal starts arriving as "the runtime failed".
     await expect(

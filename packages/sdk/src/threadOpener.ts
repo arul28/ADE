@@ -115,12 +115,6 @@ export type ThreadOpenerContext = {
     pendingInputs(): boolean;
     historyPage(): boolean;
   };
-  /**
-   * The fingerprint of the MCP servers last sent per key (create, resume
-   * refresh, `updateMcpServers`). In memory only; header values never leave
-   * the hash.
-   */
-  mcpPushed: Map<string, string>;
 };
 
 type BuildThreadInit = {
@@ -144,6 +138,13 @@ export type ThreadOpener = ReturnType<typeof createThreadOpener>;
 
 export function createThreadOpener(ctx: ThreadOpenerContext) {
   const { chats, store, logger, recordError } = ctx;
+
+  /**
+   * The fingerprint of the MCP servers last sent per key (create, resume
+   * refresh, `updateMcpServers`). In memory only; header values never leave
+   * the hash.
+   */
+  const mcpPushed = new Map<string, string>();
 
   /**
    * The one writer for a key's durable record: a title, a refreshed MCP map
@@ -189,8 +190,8 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       historyPageSupported: ctx.runtime.historyPage,
       ...(ctx.mcpHeaders ? { resolveMcpHeaders: ctx.mcpHeaders } : {}),
       mcpPushed: {
-        get: () => ctx.mcpPushed.get(init.key),
-        set: (fingerprint) => ctx.mcpPushed.set(init.key, fingerprint),
+        get: () => mcpPushed.get(init.key),
+        set: (fingerprint) => mcpPushed.set(init.key, fingerprint),
       },
     });
   };
@@ -243,10 +244,10 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
       return null;
     }
     const fingerprint = mcpServersFingerprint(resolved.servers);
-    if (ctx.mcpPushed.get(key) === fingerprint) return null;
+    if (mcpPushed.get(key) === fingerprint) return null;
     try {
       const updated = await chats.updateSession({ sessionId, mcpServers: resolved.servers });
-      ctx.mcpPushed.set(key, fingerprint);
+      mcpPushed.set(key, fingerprint);
       await persistThread(key)({ mcpServers: resolved.servers });
       return updated;
     } catch (error) {
@@ -491,8 +492,8 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
     if (!created?.sessionId) {
       throw new AdeError("protocol_error", "The ADE runtime created a chat with no session id.");
     }
-    if (suppliedServers && mcpServers) ctx.mcpPushed.set(key, mcpServersFingerprint(mcpServers));
-    else ctx.mcpPushed.delete(key);
+    if (suppliedServers && mcpServers) mcpPushed.set(key, mcpServersFingerprint(mcpServers));
+    else mcpPushed.delete(key);
 
     // The CANONICAL path, as the runtime echoes it on the create summary, not
     // the caller's spelling. The engine resolves the path before it binds the
@@ -588,7 +589,7 @@ export function createThreadOpener(ctx: ThreadOpenerContext) {
   const rebindLiveThreads = async (liveSessions: ReadonlyMap<string, Thread>): Promise<void> => {
     // The new runtime holds no header values, so nothing it has was "already
     // sent" by this client.
-    ctx.mcpPushed.clear();
+    mcpPushed.clear();
     for (const [key, thread] of [...liveSessions]) {
       try {
         const record = await store.get(key);

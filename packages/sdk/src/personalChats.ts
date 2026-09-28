@@ -9,8 +9,8 @@ import type {
   AgentChatSessionSummary,
   PendingInputRequest,
   PendingInputsResult,
-  PersonalChatCallResponse,
 } from "./types.js";
+import type { PersonalChatCallResponse } from "./wireTypes.js";
 
 /**
  * Whether a summary says a turn is running: the runtime's `active` status, or a

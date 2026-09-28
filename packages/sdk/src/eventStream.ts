@@ -1,13 +1,12 @@
 import { errorMessage } from "./errors.js";
 import type { JsonRpcConnection } from "./jsonRpc.js";
+import type { AgentChatEventEnvelope, Unsubscribe } from "./types.js";
 import type {
-  AgentChatEventEnvelope,
   BufferedEvent,
   PersonalChatStreamEventsResult,
   PersonalChatSubscribeEventsResult,
   RuntimeEventNotification,
-  Unsubscribe,
-} from "./types.js";
+} from "./wireTypes.js";
 
 /**
  * Machine-scoped chat event stream.

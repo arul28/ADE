@@ -753,14 +753,21 @@ export function normalizeInboundFileRef(attachment: AgentChatFileRef): AgentChat
 }
 
 /**
- * The path hint a provider gets for an attachment whose bytes ADE did not send
- * (a `hydrate: false` reference, or a file a provider reads itself). Takes the
- * resolved ref, so the agent always gets the absolute path ADE validated —
- * a path relative to the caller's cwd means nothing to the agent's process.
- * Falls back to the raw path only for a ref that was never resolved.
+ * The path an agent is told for an attachment: the absolute path ADE resolved
+ * and validated. A path relative to the caller's cwd means nothing to the
+ * agent's process. Falls back to the raw path only for a ref that was never
+ * resolved.
  */
-export function referenceOnlyHintFor(attachment: { path: string; _resolvedPath?: string | null }): string {
-  return `[File attached: ${attachment._resolvedPath || attachment.path}]`;
+export function attachmentAgentPath(attachment: { path: string; _resolvedPath?: string | null }): string {
+  return attachment._resolvedPath || attachment.path;
+}
+
+/**
+ * The path hint a provider gets for an attachment whose bytes ADE did not send
+ * (a `hydrate: false` reference, or a file a provider reads itself).
+ */
+export function attachmentPathHint(attachment: { path: string; _resolvedPath?: string | null }): string {
+  return `[File attached: ${attachmentAgentPath(attachment)}]`;
 }
 
 /** Merge two attachment lists, deduplicating by path (last-write wins). */

@@ -10,11 +10,8 @@
  *     `AgentChatCreateArgs`, `AgentChatSendArgs`, `AgentChatSteerArgs`,
  *     `AgentChatModelCatalog*`, permission-mode unions
  *       <- apps/desktop/src/shared/types/chat.ts
- *   - `PersonalChatAction`, `PersonalChatCallResponse`,
- *     `PersonalChatCapabilities`, `PersonalChatStreamEventsResult`
- *       <- apps/desktop/src/shared/types/personalChats.ts
- *   - `BufferedEvent`, drain/gap semantics
- *       <- apps/ade-cli/src/eventBuffer.ts
+ *   - the runtime's internal wire shapes (`BufferedEvent`, the
+ *     `personalChats.call` envelope, `ade/initialize`) live in `wireTypes.ts`
  *
  * The event union in `chat.ts` has ~60 members and grows every release, so it
  * is modelled here as an open record with a `type` discriminant plus narrowed
@@ -906,16 +903,5 @@ export type RuntimeCompatibility = {
   note: string | null;
 };
 
-// The runtime's internal wire shapes live in `wireTypes.ts`.
-export type {
-  AdeInitializeResult,
-  BufferedEvent,
-  KnownBufferedEventCategory,
-  PersonalChatCallResponse,
-  PersonalChatCapabilities,
-  PersonalChatStreamEventsResult,
-  PersonalChatSubscribeEventsResult,
-  RuntimeEventNotification,
-} from "./wireTypes.js";
 
 export type Unsubscribe = () => void;

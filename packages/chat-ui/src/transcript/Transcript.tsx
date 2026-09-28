@@ -35,7 +35,7 @@ import { ApprovalCard, type ApprovalRespond, type ApprovalUiOptions } from "./Ap
 import { renderMarkdown as defaultRenderMarkdown } from "./markdown";
 import { ToolChip, type ToolChipAction } from "./ToolChip";
 import type { ToolChipRow, TranscriptRow } from "./transcriptRows";
-import { useWindowedRows } from "./useWindowedRows";
+import { RowSlot, useWindowedRows } from "./useWindowedRows";
 
 export type TranscriptProps = {
   rows: readonly TranscriptRow[];
@@ -255,33 +255,6 @@ export function Transcript({
           {...(awaitingApproval ? { label: DEFAULT_APPROVAL_WAITING_LABEL } : {})}
         />
       ) : null}
-    </div>
-  );
-}
-
-/**
- * The measured wrapper around one row. Observed while mounted and released on
- * unmount, so rows that scroll out of the window are not held by the observer.
- */
-function RowSlot({
-  rowKey,
-  observer,
-  children,
-}: {
-  rowKey: string;
-  observer: ResizeObserver | null;
-  children: ReactNode;
-}) {
-  const ref = useRef<HTMLDivElement | null>(null);
-  useLayoutEffect(() => {
-    const node = ref.current;
-    if (!node || !observer) return;
-    observer.observe(node);
-    return () => observer.unobserve(node);
-  }, [observer]);
-  return (
-    <div ref={ref} className="adechat-row-slot" data-row-key={rowKey}>
-      {children}
     </div>
   );
 }

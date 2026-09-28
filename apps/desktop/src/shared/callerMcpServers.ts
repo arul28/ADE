@@ -62,7 +62,7 @@ export type CallerMcpSupport = {
  * `callerMcpSupport`, which is `hasOwnProperty`-guarded.
  *
  * This table is also the source of truth the `@ade-dev/sdk` docs summarize
- * (`packages/sdk/src/client.ts`, `ThreadOpenOptions.loadUserMcpServers`) and
+ * (`packages/sdk/src/clientOptions.ts`, `ThreadOpenOptions.loadUserMcpServers`) and
  * the SDK's test fixture pins for `claude` and `pi`
  * (`packages/sdk/test/mockRuntime.ts`, `PROVIDER_MCP_VERDICTS`). Changing a
  * row's `level` is a change to both of those too.
@@ -890,7 +890,9 @@ export function withholdCallerMcpHeaderValues(servers: CallerMcpServers): Caller
       continue;
     }
     const { headers, headerNames: _existing, ...rest } = config;
-    const headerNames = Object.keys(headers);
+    // Deduped case-insensitively on write, like the SDK twin, so the stored
+    // bytes agree and not only the values read back.
+    const headerNames = normalizeHeaderNames(Object.keys(headers)) ?? [];
     out[name] = headerNames.length ? { ...rest, headerNames } : rest;
   }
   return out;
@@ -901,7 +903,7 @@ export function withholdCallerMcpHeaderValues(servers: CallerMcpServers): Caller
  * ones a provider will now dial with no credentials until the host sends the
  * servers again. Empty when nothing was withheld.
  */
-export function callerMcpServersMissingHeaders(servers: CallerMcpServers | null | undefined): string[] {
+function callerMcpServersMissingHeaders(servers: CallerMcpServers | null | undefined): string[] {
   if (!servers) return [];
   return Object.entries(servers)
     .filter(([, config]) => config.type !== "stdio" && !config.headers && (config.headerNames?.length ?? 0) > 0)

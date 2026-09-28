@@ -139,12 +139,9 @@ export const ADE_IPC_RENDERER_OPEN_FIELDS = ["provider", "model", "title", "reas
 export type AdeChatClientSource = AdeChatClient | (() => AdeChatClient);
 
 /** One subscription a renderer holds, by the id it holds it under. */
-type SubscriptionEntry = {
-  kind: "thread" | "client" | "providers";
-  /** The thread key, for `kind: "thread"`. */
-  key?: string;
-  stop: Unsubscribe;
-};
+type SubscriptionEntry =
+  | { kind: "thread"; /** The thread key. */ key: string; stop: Unsubscribe }
+  | { kind: "client" | "providers"; stop: Unsubscribe };
 
 /** Per-renderer bookkeeping. One entry per live `webContents`. */
 type RendererEntry = {
@@ -426,12 +423,27 @@ export function registerAdeIpc(
     // This collapses them again on the bridge so the main side never attaches
     // two listeners to that one session and broadcasts every envelope twice.
     const started = (async () => {
-      const thread = await (options ? client.threads.open(key, options) : client.threads.open(key));
-      if (!entry.disposed) {
-        entry.threads.set(key, thread);
-        entry.rendererOptions.set(key, raw);
+      let target = client;
+      let targetOptions = options;
+      for (;;) {
+        const thread = await (targetOptions
+          ? target.threads.open(key, targetOptions)
+          : target.threads.open(key));
+        if (entry.disposed) return thread;
+        // The host swapped its client while this open was in flight. A move
+        // that ran meanwhile could not know this key yet, so it is moved
+        // here: gated and resolved again for the client now in use, never
+        // stored as a handle on the client that was replaced.
+        const current = entry.client ?? target;
+        if (current === target) {
+          entry.threads.set(key, thread);
+          entry.rendererOptions.set(key, raw);
+          return thread;
+        }
+        if (allowThreadKey && !allowThreadKey(key)) throw unauthorized("threads.open");
+        target = current;
+        targetOptions = await hostOpenOptions(key, raw);
       }
-      return thread;
     })().finally(() => {
       entry.opening.delete(key);
     });
@@ -472,6 +484,8 @@ export function registerAdeIpc(
   function attachClientSubscription(entry: RendererEntry, client: AdeChatClient, subscriptionId: string): void {
     const stops = ADE_CLIENT_EVENTS.map((event) =>
       client.on(event, (payload) => {
+        // The cast restores what `ADE_CLIENT_EVENTS.map` loses: the pairing of
+        // `event` with its payload type. `client.on(event, …)` checked it.
         push(entry.webContents, { kind: "client", subscriptionId, event, payload } as AdeIpcEventPayload);
       }),
     );
@@ -526,27 +540,32 @@ export function registerAdeIpc(
     entry.threads.clear();
     entry.rendererOptions.clear();
     for (const [key, raw] of opened) {
-      if (allowThreadKey && !allowThreadKey(key)) {
-        log(`[ade-electron] dropped "${key}" on the new client: allowThreadKey refused it; its subscriptions end`);
-        continue;
-      }
+      if (entry.disposed) return;
       try {
+        // Inside the `try`: a gate that throws is a refusal for this key, not
+        // the end of the move for every key after it.
+        if (allowThreadKey && !allowThreadKey(key)) {
+          log(`[ade-electron] dropped "${key}" on the new client: allowThreadKey refused it; its subscriptions end`);
+          continue;
+        }
         await openThread(entry, client, key, raw, await hostOpenOptions(key, raw));
       } catch (error) {
         log(`[ade-electron] dropped "${key}" on the new client: ${errorMessage(error)}; its subscriptions end`);
       }
     }
+    // A renderer that went away mid-move released nothing (the move had
+    // already released it all), so anything attached now would never be
+    // released and would keep the provider poll running.
+    if (entry.disposed) return;
     for (const [subscriptionId, subscription] of subscriptions) {
       try {
-        if (subscription.kind === "client") {
+        if (subscription.kind === "thread") {
+          const thread = entry.threads.get(subscription.key);
+          if (thread) attachThreadSubscription(entry, thread, subscription.key, subscriptionId);
+        } else if (subscription.kind === "client") {
           attachClientSubscription(entry, client, subscriptionId);
-        } else if (subscription.kind === "providers") {
-          attachProvidersSubscription(entry, client, subscriptionId);
         } else {
-          const thread = subscription.key !== undefined ? entry.threads.get(subscription.key) : undefined;
-          if (thread && subscription.key !== undefined) {
-            attachThreadSubscription(entry, thread, subscription.key, subscriptionId);
-          }
+          attachProvidersSubscription(entry, client, subscriptionId);
         }
       } catch (error) {
         log(`[ade-electron] could not move subscription ${subscriptionId} to the new client: ${errorMessage(error)}`);

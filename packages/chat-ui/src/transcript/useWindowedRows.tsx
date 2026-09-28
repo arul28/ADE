@@ -12,10 +12,12 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
   type MutableRefObject,
+  type ReactNode,
 } from "react";
 
 /** Distance from the bottom, in px, that still counts as "at the bottom". */
@@ -203,4 +205,31 @@ export function useWindowedRows<Row extends { key: string }>(
   const rendered = offsets ? visible.slice(start, end + 1) : visible;
 
   return { rendered, topSpacer, bottomSpacer, scrollRef, pinnedRef, onScroll, observer, offsets };
+}
+
+/**
+ * The measured wrapper around one row. Observed while mounted and released on
+ * unmount, so rows that scroll out of the window are not held by the observer.
+ */
+export function RowSlot({
+  rowKey,
+  observer,
+  children,
+}: {
+  rowKey: string;
+  observer: ResizeObserver | null;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node || !observer) return;
+    observer.observe(node);
+    return () => observer.unobserve(node);
+  }, [observer]);
+  return (
+    <div ref={ref} className="adechat-row-slot" data-row-key={rowKey}>
+      {children}
+    </div>
+  );
 }

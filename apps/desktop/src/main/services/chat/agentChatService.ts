@@ -588,7 +588,8 @@ import {
   type AgentChatWorkflowProgress,
   attachmentIsReferenceOnly,
   normalizeInboundFileRef,
-  referenceOnlyHintFor,
+  attachmentAgentPath,
+  attachmentPathHint,
 } from "../../../shared/types/chat";
 
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -7399,7 +7400,7 @@ async function buildStreamingUserContent(
         continue;
       }
       if (attachmentIsReferenceOnly(attachment)) {
-        parts.push({ type: "text", text: `\n${referenceOnlyHintFor(attachment)}` });
+        parts.push({ type: "text", text: `\n${attachmentPathHint(attachment)}` });
         continue;
       }
       const data = await args.readAttachmentBytes(attachment);
@@ -10506,7 +10507,7 @@ export function createAgentChatService(args: {
     attachment: ResolvedAgentChatFileRef,
   ): { type: "text"; text: string; text_elements: [] } => ({
     type: "text",
-    text: referenceOnlyHintFor(attachment),
+    text: attachmentPathHint(attachment),
     text_elements: [],
   });
 
@@ -28603,7 +28604,7 @@ export function createAgentChatService(args: {
       ? [
           "ADE attached files/images for this turn:",
           ...args.resolvedAttachments.map((attachment) => {
-            const pathText = attachment._resolvedPath || attachment.path;
+            const pathText = attachmentAgentPath(attachment);
             const label = path.basename(pathText) || pathText;
             return `- ${label}: ${pathText}`;
           }),
@@ -30544,7 +30545,7 @@ export function createAgentChatService(args: {
       const attachmentHint = formatAttachedContextHint(
         resolvedAttachments.map((attachment) => ({
           type: attachment.type,
-          path: attachment._resolvedPath || attachment.path,
+          path: attachmentAgentPath(attachment),
         })),
       );
       const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
@@ -44490,7 +44491,7 @@ export function createAgentChatService(args: {
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
       if (attachmentIsReferenceOnly(attachment)) {
-        blocks.push({ type: "text", text: referenceOnlyHintFor(attachment) });
+        blocks.push({ type: "text", text: attachmentPathHint(attachment) });
         continue;
       }
       try {
@@ -49351,7 +49352,7 @@ export function createAgentChatService(args: {
             .map((attachment) => attachment._resolvedPath));
           const referenceOnlyHints = preparedSteer.resolvedAttachments
             .filter(attachmentIsReferenceOnly)
-            .map((attachment) => referenceOnlyHintFor(attachment));
+            .map((attachment) => attachmentPathHint(attachment));
           const text = [
             buildChatContextAttachmentPrompt(preparedSteer.contextAttachments) || null,
             preparedSteer.submittedText,

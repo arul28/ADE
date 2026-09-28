@@ -322,7 +322,6 @@ export async function createAdeChat(
       pendingInputs: () => runtime.actionListed("pendingInputs"),
       historyPage: () => runtime.actionListed("getEventHistoryPage"),
     },
-    mcpPushed: new Map(),
   });
 
   /**

@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import type {
   AgentChatEventEnvelope,
-  BufferedEvent,
   PendingInputRequest,
   ProviderStatusRpcResult,
 } from "../src/types.js";
+import type { BufferedEvent } from "../src/wireTypes.js";
 
 /**
  * An in-test ADE runtime: a real `net.Server` on a real temp socket speaking

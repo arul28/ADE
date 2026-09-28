@@ -317,7 +317,7 @@ function readTurnId(event: AgentChatEvent): string | null {
  * synthetic one (`synthetic: true`) for a runtime that exited mid-turn, which
  * no `done` follows.
  *
- * `packages/sdk/src/thread.ts` applies the narrower `done`-only rule to the
+ * `packages/sdk/src/approvalTracker.ts` applies the narrower `done`-only rule to the
  * same stream, and that difference is deliberate. The SDK's set decides whether
  * `approve()` may still forward an id, so dropping an approval one envelope too
  * early throws `approval_not_found` for a request the runtime is still blocked

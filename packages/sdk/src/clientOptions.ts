@@ -342,8 +342,9 @@ export type ThreadOpenOptions = {
  * off the record, and a value passed here only fills a field the record lacks.
  * `permissions` means the stored policy or, for a key created on 0.3 or later
  * with a preset, the stored preset; a key written before 0.3 with a preset has
- * none on record, so the value passed here (or `"default"`) is used. Before 0.3 the call's options won instead, which let any caller that could
- * name a key — a renderer, over the Electron bridge — rebuild a lost thread
+ * none on record, so the value passed here (or `"default"`) is used. Before
+ * 0.3 the call's options won instead, which let any caller that could name a
+ * key — a renderer, over the Electron bridge — rebuild a lost thread
  * with a looser policy, another provider, or no MCP servers at all.
  *
  * `refresh.mcpServers` is the one field that does replace the stored value, on

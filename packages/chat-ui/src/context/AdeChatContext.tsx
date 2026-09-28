@@ -33,7 +33,7 @@ import type {
   ThreadUsage,
 } from "../sdkTypes";
 import type { ActivityLabelConfig } from "../activity/labels";
-import { readThreadModelSelection } from "../adapters/sdkClient";
+import { readThreadModelSelection } from "../models/modelSelection";
 import { TranscriptRowBuilder, type TranscriptRow } from "../transcript/transcriptRows";
 
 export type AdeChatContextValue = {
@@ -432,7 +432,7 @@ export function useAdeThread(
         rebuildRows(restored, restoredReadAt);
         setOlderCursor(cursor);
         restoredRef.current = { restored, at: restoredReadAt };
-        setModelInfo(opened.model ?? null);
+        setModelInfo(readThreadModelSelection(opened.model));
         setThread(opened);
         setError(null);
       })
