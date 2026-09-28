@@ -676,6 +676,20 @@ export function createBuiltInBrowserService(args: {
   demoEngine?: DemoEngine | null;
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
+  /**
+   * The window that hosts a project's browser when no window is bound to it.
+   *
+   * Tabs show every machine's sessions, so this computer's chat routinely sits
+   * in a window whose project tab is bound to another machine. Its browser is
+   * still this desktop's, and the window showing the chat is where it belongs;
+   * refusing ("No ADE browser window is open") left local agents with no
+   * browser at all. Consulted only after the caller's own window, the bound
+   * window, and a window already hosting the collection — so in practice by
+   * agents over the bridge, whose calls are still gated by their actor
+   * capability and the per-project agent-access setting. The collection stays
+   * keyed by `projectRoot` either way, and its views stay hidden until shown.
+   */
+  getFallbackWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
@@ -885,7 +899,8 @@ export function createBuiltInBrowserService(args: {
   const requestsPersonalCollection = (input: unknown): boolean =>
     isRecord(input) && input.tabCollection === "personal";
 
-  const liveWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
+  /** A live window that has the project open (active or as a tab), or null. */
+  const boundWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return null;
     const resolved = args.getWindowForProjectRoot?.(normalized) ?? null;
@@ -897,6 +912,41 @@ export function createBuiltInBrowserService(args: {
       if (projectRootsMatch(projectRootForWindow(win), normalized)) return win;
     }
     return null;
+  };
+
+  /** The live window already hosting this project's collection, if any. */
+  const hostingEntryForProjectRoot = (normalized: string): WindowBrowserEntry | null => {
+    const key = collectionForProjectRoot(normalized).key;
+    for (const entry of windowServices.values()) {
+      if (entry.collection.key === key && isLiveWindow(entry.win)) return entry;
+    }
+    return null;
+  };
+
+  /**
+   * Where a project's browser lives, for the creating write path only.
+   *
+   * A renderer call hosts it in the caller's own window: a pane positions a
+   * view in its own window, never in another one at its coordinates, and with
+   * every machine's sessions in every tab the project a pane shows need not be
+   * the one its window is bound to. A caller with no window (an agent over the
+   * bridge) gets the bound window, else the window already hosting the
+   * collection — so it joins the pane's service rather than racing a second
+   * one over the same saved state — and only then the app's fallback.
+   * `viaSource` marks the caller's window chosen for a project it is not bound
+   * to, which makes that collection the window's active one.
+   */
+  const hostWindowForProjectRoot = (
+    normalized: string,
+    sourceWindow?: BrowserWindow | null,
+  ): { win: BrowserWindow; viaSource: boolean } | null => {
+    if (isLiveWindow(sourceWindow)) return { win: sourceWindow, viaSource: true };
+    const bound = boundWindowForProjectRoot(normalized);
+    if (bound) return { win: bound, viaSource: false };
+    const hosting = hostingEntryForProjectRoot(normalized);
+    if (hosting) return { win: hosting.win, viaSource: false };
+    const fallback = args.getFallbackWindowForProjectRoot?.(normalized) ?? null;
+    return isLiveWindow(fallback) ? { win: fallback, viaSource: false } : null;
   };
 
   const detachInactiveWindowServices = (win: BrowserWindow, activeKey: string): void => {
@@ -963,10 +1013,31 @@ export function createBuiltInBrowserService(args: {
   const serviceForWindow = (win: BrowserWindow): WindowBrowserService =>
     serviceForWindowCollection(win, collectionForWindow(win), { markActive: true });
 
+  /**
+   * The project browser a window is showing, for a call that names no project.
+   *
+   * Normally the window's own collection. But when its pane is showing another
+   * binding's project (this computer's session in a tab bound elsewhere, see
+   * `hostWindowForProjectRoot`), that collection is the active one, and
+   * re-marking the window's own would detach the view on screen.
+   */
+  const serviceShownInWindow = (win: BrowserWindow): WindowBrowserService => {
+    const activeKey = activeServiceKeyByWindow.get(win.id);
+    const active = activeKey ? windowServices.get(activeKey) : null;
+    if (
+      active
+      && active.collection.projectRoot
+      && !projectRootsMatch(projectRootForWindow(win), active.collection.projectRoot)
+    ) {
+      return active.service;
+    }
+    return serviceForWindow(win);
+  };
+
   const activeService = (): WindowBrowserService => {
     if (activeWindowId != null) {
       const activeWindow = windowClosedListeners.get(activeWindowId)?.win;
-      if (isLiveWindow(activeWindow)) return serviceForWindow(activeWindow);
+      if (isLiveWindow(activeWindow)) return serviceShownInWindow(activeWindow);
       const activeKey = activeServiceKeyByWindow.get(activeWindowId);
       const active = activeKey ? windowServices.get(activeKey) : null;
       if (active) return active.service;
@@ -1005,15 +1076,22 @@ export function createBuiltInBrowserService(args: {
       && !(value as { isDestroyed: () => boolean }).isDestroyed()
     );
 
-  const serviceForProjectRoot = (projectRoot: string): WindowBrowserService => {
+  const serviceForProjectRoot = (
+    projectRoot: string,
+    sourceWindow?: BrowserWindow | null,
+    activateSource = true,
+  ): WindowBrowserService => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return activeService();
-    const win = liveWindowForProjectRoot(normalized);
-    if (!win) {
+    const host = hostWindowForProjectRoot(normalized, sourceWindow);
+    if (!host) {
       throw new Error(`No ADE browser window is open for project: ${normalized}`);
     }
+    const { win } = host;
     const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
-      markActive: projectRootsMatch(projectRootForWindow(win), normalized),
+      // The window's own project, or a project no window is bound to that this
+      // window's pane is showing: either way it is what is on screen.
+      markActive: projectRootsMatch(projectRootForWindow(win), normalized) || (activateSource && host.viaSource),
     });
     service.attachToWindow(win);
     return service;
@@ -1058,11 +1136,12 @@ export function createBuiltInBrowserService(args: {
   const serviceForInput = (
     input?: BuiltInBrowserProjectScopeArgs | null,
     sourceWindow?: BrowserWindow | null,
+    options: { activateSource?: boolean } = {},
   ): WindowBrowserService => {
     if (requestsPersonalCollection(input)) return serviceForPersonalCollection(sourceWindow);
     const projectRoot = projectRootFromInput(input);
-    if (projectRoot) return serviceForProjectRoot(projectRoot);
-    if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
+    if (projectRoot) return serviceForProjectRoot(projectRoot, sourceWindow, options.activateSource);
+    if (isLiveWindow(sourceWindow)) return serviceShownInWindow(sourceWindow);
     return activeService();
   };
 
@@ -1097,10 +1176,15 @@ export function createBuiltInBrowserService(args: {
   ): WindowBrowserService | null => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return null;
-    const win = liveWindowForProjectRoot(normalized);
-    if (!win) return null;
-    const key = serviceKey(win.id, collectionForProjectRoot(normalized));
-    return windowServices.get(key)?.service ?? null;
+    const win = boundWindowForProjectRoot(normalized);
+    if (win) {
+      const key = serviceKey(win.id, collectionForProjectRoot(normalized));
+      const bound = windowServices.get(key)?.service;
+      if (bound) return bound;
+    }
+    // A project no window is bound to may still be hosted by the window that
+    // shows its session (see `hostWindowForProjectRoot`).
+    return hostingEntryForProjectRoot(normalized)?.service ?? null;
   };
 
   /**
@@ -1110,13 +1194,14 @@ export function createBuiltInBrowserService(args: {
    * The distinction the read above cannot make on its own: "the desktop doesn't
    * have this project open" and "it does, you just haven't opened the Browser
    * tool" are opposite instructions, and giving the second user the first
-   * sentence tells them to open something already in front of them. Pure: this
-   * is window bookkeeping only, with no collection lookup and no construction.
+   * sentence tells them to open something already in front of them. Pure: a
+   * bound window, or a window already hosting the collection for a project no
+   * window is bound to; nothing is constructed.
    */
   const hasLiveWindowForProjectRoot = (projectRoot: string | null): boolean => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return false;
-    return liveWindowForProjectRoot(normalized) != null;
+    return boundWindowForProjectRoot(normalized) != null || hostingEntryForProjectRoot(normalized) != null;
   };
 
   /* ── Dev-server discovery ───────────────────────────────────────────────── */
@@ -1409,7 +1494,7 @@ export function createBuiltInBrowserService(args: {
     ): BuiltInBrowserStatus {
       const input = isLiveWindow(inputOrSourceWindow) ? null : inputOrSourceWindow ?? null;
       const win = sourceWindow ?? (isLiveWindow(inputOrSourceWindow) ? inputOrSourceWindow : null);
-      const status = serviceForInput(input, win).getStatusForInput(input ?? {});
+      const status = serviceForInput(input, win, { activateSource: false }).getStatusForInput(input ?? {});
       // Seed value for a surface that mounted mid-flight; the `agent-presence`
       // event carries every change after this. Scoped to the collection the
       // status describes, so one project's pane cannot report another's agent.

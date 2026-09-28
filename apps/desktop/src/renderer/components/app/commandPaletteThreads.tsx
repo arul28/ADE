@@ -491,9 +491,8 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
     session.lastActivityAt ?? session.settledAt ?? session.startedAt,
   );
   // Rows that are not on this Mac carry the same marker the sidebar puts on a
-  // foreign lane. Its amber tower is IDENTITY, not status — it lives in the
-  // context line and never in the status slot above, so it cannot be read as an
-  // attention call.
+  // foreign lane, which draws only while that machine is offline. It lives in
+  // the context line and never in the status slot above.
   //
   // `mode: "name"` is a deliberate exception to the sidebar's glyph-only rule:
   // there, a badge is read against neighbouring rows under a lane header that

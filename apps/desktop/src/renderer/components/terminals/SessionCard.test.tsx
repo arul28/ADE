@@ -2157,7 +2157,7 @@ describe("SessionCard where line", () => {
         machineMarker={{
           machineId: "studio",
           machineName: "Mac Studio",
-          online: true,
+          online: false,
           mode: "glyph",
           title: "Mac Studio",
           sameBranchElsewhere: false,
@@ -2166,7 +2166,7 @@ describe("SessionCard where line", () => {
     );
     const marker = badged.querySelector("[data-session-machine]") as HTMLElement;
     expect(marker.getAttribute("data-session-machine")).toBe("Mac Studio");
-    expect(marker.getAttribute("aria-label")).toBe("On Mac Studio");
+    expect(marker.getAttribute("aria-label")).toBe("On Mac Studio, offline");
     // Identity, not status: it sits beside the status slot, never inside it.
     expect(badged.querySelector("[data-session-status-slot]")?.contains(marker)).toBe(false);
   });

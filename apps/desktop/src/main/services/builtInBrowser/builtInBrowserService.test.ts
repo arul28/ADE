@@ -2005,6 +2005,44 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatusForProjectScope(null)?.tabs).toHaveLength(1);
   });
 
+  it("hosts an unbound project in the caller window without claiming it is already attached", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const fallback = vi.fn(() => null);
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: () => null,
+      getFallbackWindowForProjectRoot: fallback,
+    });
+    const win = fakeBrowserWindow();
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    projectRootByWindow.set(win.id, "/Users/ade/project-current-tab");
+
+    expect(service.hasWindowForProjectScope("/Users/ade/project-unbound")).toBe(false);
+    await service.createTab({
+      projectRoot: "/Users/ade/project-unbound",
+      url: "https://unbound.example.test",
+      activate: true,
+    }, browserWin);
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-unbound",
+      x: 12,
+      y: 24,
+      width: 640,
+      height: 360,
+      visible: true,
+    }, browserWin);
+
+    expect(win.contentView.children).toHaveLength(1);
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-unbound" }, browserWin)).toMatchObject({
+      attached: true,
+      collectionProjectRoot: "/Users/ade/project-unbound",
+      url: "https://unbound.example.test/",
+    });
+    expect(service.hasWindowForProjectScope("/Users/ade/project-unbound")).toBe(true);
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
   it("does not materialize a project's browser collection to answer a status poll", async () => {
     // The Work-tools mirror polls this on a timer, once per project, for a phone
     // that may not be looking. Constructing the collection here would restore
@@ -2261,6 +2299,27 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
       attached: false,
       visible: false,
+    });
+  });
+
+  it("keeps a background project status read from detaching the visible collection", async () => {
+    const scoped = projectScopedService(collector.onEvent);
+    const service = scoped.service;
+    const { browserWin } = scoped.openWindow("/Users/ade/project-alpha");
+
+    service.attachToWindow(browserWin);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWin);
+    await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true }, browserWin);
+
+    const beta = service.getStatus({ projectRoot: "/Users/ade/project-beta" }, browserWin);
+    const alpha = service.getStatus(browserWin);
+
+    expect(beta.collectionProjectRoot).toBe("/Users/ade/project-beta");
+    expect(alpha).toMatchObject({
+      collectionProjectRoot: "/Users/ade/project-alpha",
+      url: "https://alpha.example.test/",
+      attached: true,
+      visible: true,
     });
   });
 

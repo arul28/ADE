@@ -1714,6 +1714,21 @@ app.whenReady().then(async () => {
       const targetWindow = candidateWindows.find((win) => win.id === selection.windowId) ?? null;
       return targetWindow;
     },
+    getFallbackWindowForProjectRoot: (projectRoot) => {
+      // Only ADE app windows (never the hidden recording/demo renderers): one
+      // that opened this checkout, else the focused one, else any.
+      const normalizedRoot = normalizeProjectRoot(projectRoot);
+      const appWindows = BrowserWindow.getAllWindows().filter(
+        (win) => !win.isDestroyed()
+          && (windowProjectRoots.has(win.id) || windowProjectBindings.has(win.id)),
+      );
+      const knowsRoot = (win: BrowserWindow) =>
+        [...(windowKnownLocalProjectRoots.get(win.id) ?? [])].some((root) => pathsEqual(root, normalizedRoot));
+      return appWindows.find(knowsRoot)
+        ?? appWindows.find((win) => win.isFocused())
+        ?? appWindows[0]
+        ?? null;
+    },
     onEvent: (payload, targetWindow) => {
       if (targetWindow && !targetWindow.isDestroyed()) {
         try {
