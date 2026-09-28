@@ -12,11 +12,12 @@
  * SOURCE: originally extracted from the Claude Code binary shipped with
  * `@anthropic-ai/claude-agent-sdk@0.3.258` — CLI version 2.1.258, build
  * 2026-09-01T21:54:40Z, git sha b3cd543a1f6fcdf4d8fabc0f5e5538d2ee7f38e1 —
- * and re-checked against CLI 2.1.280 (SDK 0.3.280) when the pin moved: Explore
+ * and re-checked against CLI 2.1.280 (SDK 0.3.280) and again against CLI 2.1.284
+ * (SDK 0.3.284) when the pin moved: Explore
  * and Plan are still the same templates (tool-name holes where Glob, Grep,
  * Read, and Bash are filled) and general-purpose's shared lines are unchanged,
  * so this copy still tracks the pinned binary. The prompts below are therefore
- * the 2.1.280 copies; only the 2.1.258 extraction has recorded build metadata,
+ * the 2.1.284 copies; only the 2.1.258 extraction has recorded build metadata,
  * because the CLI does not expose it.
  *
  * FIDELITY: the built-ins build their prompts from a template whose holes are
@@ -33,7 +34,7 @@
 import { HARNESS_PRESET_AGENT_KEYS, type HarnessPresetAgentKey } from "./harnessPresets";
 
 /** The CLI build these prompts are taken from. */
-export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.280";
+export const CLAUDE_BUILTIN_AGENT_PROMPT_SOURCE_VERSION = "2.1.284";
 
 /**
  * Tools each read-only built-in declares as denied.

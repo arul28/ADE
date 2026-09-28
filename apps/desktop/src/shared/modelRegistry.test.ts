@@ -708,11 +708,12 @@ describe("modelRegistry", () => {
 
   describe("Claude descriptors", () => {
     it("orders the Claude model registry for picker display", () => {
-      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 5).map((model) => model.id)).toEqual([
+      expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 6).map((model) => model.id)).toEqual([
         "anthropic/claude-fable-5-1",
         "anthropic/claude-opus-5-5",
-        "anthropic/claude-sonnet-5",
+        "anthropic/claude-sonnet-5-5",
         "anthropic/claude-haiku-4-5",
+        "anthropic/claude-sonnet-5",
         "anthropic/claude-opus-5",
       ]);
       const fable = getModelById("anthropic/claude-fable-5-1");
@@ -779,12 +780,34 @@ describe("modelRegistry", () => {
       expect(sonnet).toBeTruthy();
       expect(sonnet).toMatchObject({
         displayName: "Claude Sonnet 5",
-        shortId: "sonnet",
+        shortId: "sonnet-5",
         providerModelId: "claude-sonnet-5",
         contextWindow: 1_000_000,
         maxOutputTokens: 128_000,
       });
       expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5");
+    });
+
+    it("adds Claude Sonnet 5.5 and keeps the generic sonnet alias on it", () => {
+      const sonnet = getModelById("anthropic/claude-sonnet-5-5");
+      expect(sonnet).toBeTruthy();
+      expect(sonnet).toMatchObject({
+        displayName: "Claude Sonnet 5.5",
+        shortId: "sonnet",
+        providerModelId: "claude-sonnet-5-5",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+        defaultReasoningEffort: "high",
+        inputPricePer1M: 2,
+        outputPricePer1M: 10,
+      });
+      expect(sonnet?.serviceTiers).toBeUndefined();
+      expect(getRuntimeModelRefForDescriptor(sonnet!, "claude")).toBe("claude-sonnet-5-5");
+      expect(resolveModelAlias("sonnet")?.id).toBe("anthropic/claude-sonnet-5-5");
+      expect(resolveModelAlias("sonnet-5.5")?.id).toBe("anthropic/claude-sonnet-5-5");
+      expect(resolveModelAlias("claude-sonnet-5")?.id).toBe("anthropic/claude-sonnet-5");
+      expect(normalizeAnthropicRuntimeAlias("sonnet")?.modelId).toBe("claude-sonnet-5-5");
     });
 
     it("drops Opus 4.8 entirely and forwards its aliases to Opus 5", () => {

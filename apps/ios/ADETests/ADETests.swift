@@ -20826,6 +20826,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(anthropicProvider?.models.map(\.id), [
       "claude-opus-5-5",
       "claude-fable-5-1",
+      "claude-sonnet-5-5",
       "claude-sonnet-5",
       "claude-haiku-4-5",
       "claude-opus-5",
@@ -20833,6 +20834,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(openCodeAnthropic?.models.map(\.id), [
       "opencode/anthropic/claude-fable-5-1",
       "opencode/anthropic/claude-opus-5-5",
+      "opencode/anthropic/claude-sonnet-5-5",
       "opencode/anthropic/claude-sonnet-5",
       "opencode/anthropic/claude-haiku-4-5",
       "opencode/anthropic/claude-opus-5",

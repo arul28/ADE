@@ -23,7 +23,7 @@ describe("resolveClaudeCliModel", () => {
   it("maps removed basic Opus and Sonnet aliases to supported Claude CLI model ids", () => {
     expect(resolveClaudeCliModel("claude-opus-4-7")).toBe("claude-opus-5");
     expect(resolveClaudeCliModel("claude-sonnet-4-6")).toBe("claude-sonnet-5");
-    expect(resolveClaudeCliModel("sonnet")).toBe("claude-sonnet-5");
+    expect(resolveClaudeCliModel("sonnet")).toBe("claude-sonnet-5-5");
   });
 
   it("maps retired Opus 4.7 1M and Fable 5 aliases onto current CLI ids", () => {

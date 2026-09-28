@@ -455,28 +455,26 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     costTier: "very_high",
   },
   {
-    id: "anthropic/claude-sonnet-5",
+    id: "anthropic/claude-sonnet-5-5",
     shortId: "sonnet",
     aliases: [
       "sonnet",
-      "sonnet-5",
-      "claude-sonnet-5",
-      "anthropic/claude-sonnet-5-api",
-      "sonnet-4-6",
-      "claude-sonnet-4-6",
-      "anthropic/claude-sonnet-4-6",
-      "anthropic/claude-sonnet-4-6-api",
+      "sonnet-5.5",
+      "sonnet-5-5",
+      "claude-sonnet-5-5",
+      "anthropic/claude-sonnet-5-5-api",
     ],
-    displayName: "Claude Sonnet 5",
+    displayName: "Claude Sonnet 5.5",
     family: "anthropic",
     authTypes: ["cli-subscription"],
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "max"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    defaultReasoningEffort: "high",
     color: "#8B5CF6",
     providerRoute: "claude-cli",
-    providerModelId: "claude-sonnet-5",
+    providerModelId: "claude-sonnet-5-5",
     cliCommand: "claude",
     isCliWrapped: true,
     inputPricePer1M: 2,
@@ -501,6 +499,34 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     inputPricePer1M: 1,
     outputPricePer1M: 5,
     costTier: "low",
+  },
+  {
+    id: "anthropic/claude-sonnet-5",
+    shortId: "sonnet-5",
+    aliases: [
+      "sonnet-5",
+      "claude-sonnet-5",
+      "anthropic/claude-sonnet-5-api",
+      "sonnet-4-6",
+      "claude-sonnet-4-6",
+      "anthropic/claude-sonnet-4-6",
+      "anthropic/claude-sonnet-4-6-api",
+    ],
+    displayName: "Claude Sonnet 5",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "max"],
+    color: "#8B5CF6",
+    providerRoute: "claude-cli",
+    providerModelId: "claude-sonnet-5",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 2,
+    outputPricePer1M: 10,
+    costTier: "medium",
   },
   {
     id: "anthropic/claude-opus-5",
@@ -1862,6 +1888,23 @@ export function normalizeAnthropicRuntimeAlias(modelId: string): {
     };
   }
   if (
+    normalized === "claude-sonnet-5-5"
+    || normalized === "sonnet-5.5"
+    || normalized === "sonnet-5-5"
+    || normalized === "sonnet"
+  ) {
+    return {
+      modelId: "claude-sonnet-5-5",
+      displayName: "Claude Sonnet 5.5",
+      contextWindow: 1_000_000,
+      maxOutputTokens: 128_000,
+      capabilities: ALL_CAPS,
+      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+      defaultReasoningEffort: "high",
+      wasAlias: normalized !== "claude-sonnet-5-5",
+    };
+  }
+  if (
     normalized === "claude-sonnet-5"
     || normalized === "claude-sonnet-4-6"
     || normalized === "sonnet-4-6"
@@ -3206,6 +3249,13 @@ export function listModelDescriptorsForProvider(
   provider: ModelProviderGroup,
 ): ModelDescriptor[] {
   const models = listProviderModelsInternal(provider);
+  // Claude and Codex have a curated registry order that IS the picker order on
+  // every surface (Settings, the desktop picker catalog, ADE Code). Do not hoist
+  // the provider default here: the two CLI providers already agree with each
+  // other, and promoting the default split the picker from Settings. Every other
+  // provider still leads with its default, which for most of them is the first
+  // curated row anyway.
+  if (provider === "claude" || provider === "codex") return models;
   const preferred = pickDefaultModelForProvider(provider, models);
   if (!preferred) return models;
   return [preferred, ...models.filter((model) => model.id !== preferred.id)];
