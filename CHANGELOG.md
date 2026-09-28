@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.80] - 2026-09-28
+
+### Themes
+
+- ADE theme engine, library, and gallery (#1354); advanced customizer (#1357); import and export, including VS Code themes (#1358).
+
+### Providers
+
+- Devin as a first-class provider (#1251). OpenCode 2.0 (#1361, #1350). Grok CLI version monitor and update (#1331, #1348). OpenCode Go limits (#1332).
+
+### Machines
+
+- Every machine in every tab and a new start screen (#1364). Lanes balance across machines (#1336). Auto-pull of the clean default branch (#1333). This Mac's chats stay in the Work sidebar (#1326).
+
+### Chat
+
+- Large pastes fold into an attachment (#1340). Unsent drafts and queued messages on session rows (#1342). ACP stderr on failure cards (#1334, #1346). Plain one-line previews (#1329).
+
+### Usage
+
+- Pooled live quota across machines (#1349). Claude banked resets (#1335, #1327). Header order and usage visibility settings (#1363).
+
+### Proof
+
+- Demo videos and one H.264 decoder (#1365). Proof in answers, drawer, and PRs (#1324).
+
+### PRs and diffs
+
+- Changed-file tree (#1338). Sort by blocked on me (#1341). Ignore-whitespace toggle and whitespace line fixes (#1330, #1347, #1352).
+
+### Apple devices
+
+- Duo hinge mode (#1344), hardware buttons (#1339), and simulator lifecycle fixes.
+
+### Desktop
+
+- Changelog after update and project tabs reopen (#1325). Windows editor discovery (#1328, #1345, #1353).
+
+### iOS
+
+- One Work list across machines, faster threads, host fleet support (#1362). Host slash commands (#1337).
+
+### CLI
+
+- `ade chat models` lists full model ids and providers (#1321).
+
 ## [1.2.79] - 2026-09-25
 
 ### Computer use
@@ -2136,7 +2182,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.79...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.80...HEAD
+[1.2.80]: https://github.com/arul28/ADE/compare/v1.2.79...v1.2.80
 [1.2.79]: https://github.com/arul28/ADE/compare/v1.2.78...v1.2.79
 [1.2.78]: https://github.com/arul28/ADE/compare/v1.2.77...v1.2.78
 [1.2.77]: https://github.com/arul28/ADE/compare/v1.2.76...v1.2.77
