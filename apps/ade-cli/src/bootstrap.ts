@@ -1584,7 +1584,7 @@ export async function createAdeRuntime(args: {
     // Windows/Linux App Control recording runs in the desktop's encoder, over
     // the desktop bridge. Set once the bridge client exists (below); null
     // while no desktop has attached here, which refuses a screencast start.
-    const appControlRecorderBridgeHolder: {
+    const desktopBridgeHolder: {
       current: ReturnType<typeof createAppControlRecorderBridgeClient> | null;
       /** The desktop's Chromium demo engine, over the same bridge. */
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
@@ -1608,9 +1608,9 @@ export async function createAdeRuntime(args: {
           return chatSession?.laneId ?? null;
         },
         getScreencastRecorder: () =>
-          appControlRecorderBridgeHolder.isAttached() ? appControlRecorderBridgeHolder.current : null,
+          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.current : null,
         getChromiumDemoEngine: () =>
-          appControlRecorderBridgeHolder.isAttached() ? appControlRecorderBridgeHolder.demoEngine : null,
+          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
         // A lane may not attach to an app another lane's Mac Desktop holds.
         // Read at call time: the Mac Desktop service is built just below.
         macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
@@ -1642,11 +1642,11 @@ export async function createAdeRuntime(args: {
     // through that client, and a client disposed first drops the cancels,
     // orphaning the desktop's encoder window for the lane.
     teardown.push(() => {
-      const bridge = appControlRecorderBridgeHolder.current;
-      appControlRecorderBridgeHolder.current = null;
+      const bridge = desktopBridgeHolder.current;
+      desktopBridgeHolder.current = null;
       bridge?.dispose();
-      const demoEngine = appControlRecorderBridgeHolder.demoEngine;
-      appControlRecorderBridgeHolder.demoEngine = null;
+      const demoEngine = desktopBridgeHolder.demoEngine;
+      desktopBridgeHolder.demoEngine = null;
       demoEngine?.dispose();
     });
     teardown.push(() => appControlService?.dispose());
@@ -1746,13 +1746,13 @@ export async function createAdeRuntime(args: {
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
-      appControlRecorderBridgeHolder.current = appControlRecorderBridge;
-      appControlRecorderBridgeHolder.demoEngine = createDemoEngineBridgeClient({
+      desktopBridgeHolder.current = appControlRecorderBridge;
+      desktopBridgeHolder.demoEngine = createDemoEngineBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
-      appControlRecorderBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
+      desktopBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
       // Released by the teardown step registered before appControlService's.
     }
     teardown.push(() => {

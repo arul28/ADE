@@ -24,7 +24,7 @@ import {
   RECORDING_MIN_FREE_DISK_BYTES,
 } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
-import { demoTrackRegistry as defaultRegistry, type DemoTrackRegistry } from "./demoTrackRegistry";
+import { demoTrackRegistry } from "./demoTrackRegistry";
 
 export type DemoRecordingLimit = "idle" | "disk";
 
@@ -57,13 +57,17 @@ export function watchDemoRecording(args: {
   key: string;
   rawPath: string;
   onLimit: (limit: DemoRecordingLimit, detail: string) => void;
-  logger: Logger;
+  logger: Logger | null;
+  /** The surface's clock, so its idle stop agrees with its own timers. */
   now?: () => number;
-  registry?: DemoTrackRegistry;
-  intervalMs?: number;
+  /**
+   * False when the surface cannot see a person's own input (a person driving
+   * the browser pane acts on the page directly), so "no action" would stop a
+   * recording someone is busy in. Size and disk limits still apply.
+   */
+  idleStop?: boolean;
 }): () => void {
   const now = args.now ?? (() => Date.now());
-  const registry = args.registry ?? defaultRegistry;
   const startedAtMs = now();
   let fired = false;
 
@@ -71,14 +75,14 @@ export function watchDemoRecording(args: {
     if (fired) return;
     fired = true;
     clearInterval(timer);
-    args.logger.info("demo_video.recording_limit", { key: args.key, limit, detail });
+    args.logger?.info("demo_video.recording_limit", { key: args.key, limit, detail });
     args.onLimit(limit, detail);
   };
 
   const check = () => {
     if (fired) return;
-    const lastActivity = registry.lastActivityAt(args.key) ?? startedAtMs;
-    if (now() - Math.max(lastActivity, startedAtMs) >= RECORDING_IDLE_STOP_MS) {
+    const lastActivity = demoTrackRegistry.lastActivityAt(args.key) ?? startedAtMs;
+    if (args.idleStop !== false && now() - Math.max(lastActivity, startedAtMs) >= RECORDING_IDLE_STOP_MS) {
       fire("idle", `nothing happened for ${Math.round(RECORDING_IDLE_STOP_MS / 60_000)} minutes`);
       return;
     }
@@ -93,7 +97,7 @@ export function watchDemoRecording(args: {
     }
   };
 
-  const timer = setInterval(check, args.intervalMs ?? CHECK_INTERVAL_MS);
+  const timer = setInterval(check, CHECK_INTERVAL_MS);
   (timer as unknown as { unref?: () => void }).unref?.();
   return () => {
     fired = true;
@@ -106,4 +110,9 @@ export function rawPathFor(finalPath: string, rawExtension = path.extname(finalP
   const extension = path.extname(finalPath);
   const base = extension ? finalPath.slice(0, -extension.length) : finalPath;
   return `${base}.raw${rawExtension.startsWith(".") ? rawExtension : `.${rawExtension}`}`;
+}
+
+/** The inverse of {@link rawPathFor}: `<base>.raw.<ext>` → `<base><finalExtension>`. */
+export function finalPathForRaw(rawPath: string, finalExtension = ".mp4"): string {
+  return rawPath.replace(/(\.raw)?\.[^./\\]+$/, finalExtension);
 }

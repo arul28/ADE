@@ -8,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import { confirmDialog } from "../ui/dialog/confirm";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { macDesktopPaneCaption } from "../../../shared/types/macDesktop";
 import type {
@@ -295,7 +296,6 @@ export function useMacDesktopPanelController({
    * for Reset while a display may still exist.
    */
   const [confirmStop, setConfirmStop] = useState(false);
-  const [confirmRestartCapture, setConfirmRestartCapture] = useState(false);
   const [restartingCapture, setRestartingCapture] = useState(false);
   /** The video has been connecting for longer than a connect ever takes. */
   const [connectSlow, setConnectSlow] = useState(false);
@@ -943,14 +943,19 @@ export function useMacDesktopPanelController({
   }, [display, errorText, refreshStatus, setStatus, setStatusError]);
 
   /**
-   * "Restart capture", after the pane's own question: a new driver process and
-   * a new screen for this lane. For a driver whose streams stopped sending
+   * "Restart capture", after a yes/no question: a new driver process and a new
+   * screen for this lane. For a driver whose streams stopped sending
    * frames while its screenshots still worked (2026-09-28); Reconnect only
    * restarted the stream inside the same stuck process. The old process takes
    * its screens with it, so the lane's open apps stay open on the main screen.
    */
   const restartCapture = useCallback(async () => {
-    setConfirmRestartCapture(false);
+    const confirmed = await confirmDialog({
+      title: "Restart the capture?",
+      message: "Apps open here stay open and move to your main screen.",
+      confirmLabel: "Restart",
+    });
+    if (!confirmed) return;
     setRestartingCapture(true);
     setStatusError(null);
     try {
@@ -991,7 +996,7 @@ export function useMacDesktopPanelController({
     viewRect, selectedWindowId, setSelectedWindowId, lastObservation, surfaceNode, videoHost, canvasSlot,
     attachCanvasSlot, attachSurface, errorText, display, lease, windows, supported, iHaveControl, parkedWindows,
     claimAppIcons, missingPermissions, permissionCheck, setPermissionCheck, confirmStop, setConfirmStop,
-    confirmRestartCapture, setConfirmRestartCapture, restartingCapture, restartCapture,
+    restartingCapture, restartCapture,
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording,
     toggleRecording, saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow,

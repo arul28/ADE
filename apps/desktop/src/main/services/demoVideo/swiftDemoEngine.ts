@@ -30,7 +30,12 @@ import type {
   DemoRenderRequest,
   DemoRenderResult,
 } from "../../../shared/demoVideo/demoContract";
-import { RECORDING_MAX_MS } from "../../../shared/demoVideo/demoContract";
+import {
+  DEMO_ANALYSIS_MIN_INTERVAL_SECONDS,
+  DEMO_ANALYSIS_PIXEL_DELTA,
+  DEMO_ANALYSIS_THUMBNAIL_LONG_SIDE,
+  RECORDING_MAX_MS,
+} from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v"]);
@@ -82,7 +87,14 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
       assertSupported();
       const stdout = await runAdeMedia({
         binaryPath,
-        args: ["analyze", inputPath],
+        // The contract's analysis rules, so both engines measure the same way.
+        args: [
+          "analyze",
+          inputPath,
+          String(DEMO_ANALYSIS_THUMBNAIL_LONG_SIDE),
+          String(DEMO_ANALYSIS_PIXEL_DELTA),
+          String(DEMO_ANALYSIS_MIN_INTERVAL_SECONDS),
+        ],
         timeoutMs: ANALYZE_TIMEOUT_MS,
         signal: options?.signal,
         logger,

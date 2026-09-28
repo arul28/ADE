@@ -7,8 +7,8 @@ import { RECORDING_MAX_MS } from "../../../../shared/demoVideo/demoContract";
 import { demoProofSentence, recordingStopSentence } from "../../../../shared/demoVideo/demoProofText";
 import { formatProofDuration, proofIdleCutLabel } from "../../../../shared/proofProvenance";
 import { createDemoEngineSet, type DemoEngineSet } from "../../demoVideo/demoEngines";
-import { rawPathFor, watchDemoRecording } from "../../demoVideo/demoRecordingGuard";
-import { produceDemoVideo } from "../../demoVideo/demoRenderService";
+import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../../demoVideo/demoRecordingGuard";
+import { demoLengths, produceDemoVideo } from "../../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../../demoVideo/demoTrackRegistry";
 import type { Logger } from "../../logging/logger";
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
@@ -240,19 +240,6 @@ export const AUTO_RECORDING_MAX_MS = RECORDING_MAX_MS;
  */
 export const MANUAL_RECORDING_MAX_MS = RECORDING_MAX_MS;
 
-/** The longest cap `maxSeconds` may ask for. */
-export const RECORDING_MAX_SECONDS_LIMIT = RECORDING_MAX_MS / 1000;
-
-/** A caller's `maxSeconds`, in ms, clamped to 1 s .. five minutes. Null when absent or not a number. */
-function capFromSeconds(maxSeconds: number | undefined): number | null {
-  if (typeof maxSeconds !== "number" || !Number.isFinite(maxSeconds) || maxSeconds <= 0) return null;
-  return Math.round(Math.min(Math.max(maxSeconds, 1), RECORDING_MAX_SECONDS_LIMIT) * 1000);
-}
-
-/** The cap for a manual recording: the caller's, else five minutes. Every recording has one. */
-function manualCapMs(args: { maxSeconds?: number }): number {
-  return capFromSeconds(args.maxSeconds) ?? MANUAL_RECORDING_MAX_MS;
-}
 
 /** The recording's key in the demo track registry. One recording per lane. */
 export function appleDemoKey(laneId: string): string {
@@ -688,7 +675,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     }
     const maxDurationMs = args.mode === "auto"
       ? AUTO_RECORDING_MAX_MS
-      : manualCapMs({ maxSeconds: args.maxSeconds });
+      : recordingCapMsFor(args.maxSeconds);
 
     const record: SimRecording = {
       id,
@@ -798,11 +785,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           });
           demo = produced.metadata;
           bytes = produced.bytes;
-          lengths = {
-            durationMs: Math.round(produced.metadata.outputSeconds * 1000),
-            wallDurationMs: Math.round(produced.metadata.sourceSeconds * 1000),
-            idleCutMs: Math.max(0, Math.round((produced.metadata.sourceSeconds - produced.metadata.outputSeconds) * 1000)),
-          };
+          lengths = demoLengths(produced.metadata);
         } catch (error) {
           warn("apple.recording.demo_failed", { laneId, error: String(error) });
           filedPath = entry.rawPath;
@@ -1039,7 +1022,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
     if (!record) return null;
     if (/\.raw\.mp4$/.test(moviePathFromHelper)) {
       // Nobody logged its track, but the stills and waits can still go.
-      const finalPath = moviePathFromHelper.replace(/\.raw\.mp4$/, ".mp4");
+      const finalPath = finalPathForRaw(moviePathFromHelper);
       try {
         const produced = await produceDemoVideo({
           rawPath: moviePathFromHelper,
@@ -1054,9 +1037,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           path: produced.path,
           bytes: produced.bytes,
           demo: produced.metadata,
-          durationMs: Math.round(produced.metadata.outputSeconds * 1000),
-          wallDurationMs: Math.round(produced.metadata.sourceSeconds * 1000),
-          idleCutMs: Math.max(0, Math.round((produced.metadata.sourceSeconds - produced.metadata.outputSeconds) * 1000)),
+          ...demoLengths(produced.metadata),
         };
       } catch (error) {
         warn("apple.recording.orphan_demo_failed", { udid, error: String(error) });
@@ -1147,7 +1128,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         if (existing.capTimer) clearTimeout(existing.capTimer);
         existing.capTimer = null;
         const owner = existing.record.chatSessionId ?? args.chatSessionId;
-        const maxDurationMs = manualCapMs({ maxSeconds: args.maxSeconds });
+        const maxDurationMs = recordingCapMsFor(args.maxSeconds);
         existing.capTimer = armCap(args.laneId, maxDurationMs);
         existing.record = {
           ...existing.record,
@@ -1155,6 +1136,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           label: args.label ?? existing.record.label,
           chatSessionId: owner,
           maxDurationMs,
+          // `record start --plain` on an automatic recording files it plain.
+          plain: args.plain === true || args.keepIdle === true ? true : existing.record.plain,
         };
         // An automatic recording taken over by `record start --zoom` gets the zoom.
         if (args.zoom === true) demoTrackRegistry.requestZoom(appleDemoKey(args.laneId));

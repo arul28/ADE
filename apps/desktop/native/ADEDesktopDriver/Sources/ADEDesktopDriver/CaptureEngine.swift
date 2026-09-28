@@ -366,14 +366,15 @@ final class CaptureEngine {
                 }
                 let settled = SettledFlag()
                 let failure = ValueBox<Error>()
-                let abandoned = SettledFlag()
+                let start = AbandonableStart()
                 stream.startCapture { error in
+                    let givenUp = start.answer()
                     failure.set(error)
                     settled.set()
                     // Given up on before it answered: stopped only now, once
                     // it has. Stopping a stream whose start was still pending
                     // interrupted every other stream in the process.
-                    if abandoned.isSet, error == nil { stream.stopCapture { _ in } }
+                    if givenUp, error == nil { stream.stopCapture { _ in } }
                 }
                 RunLoopPump.wait(until: { settled.isSet }, timeout: 10)
                 guard settled.isSet else {
@@ -381,8 +382,8 @@ final class CaptureEngine {
                     // never as a success: the old code carried on here, which
                     // handed back a stream that was not capturing and a reply
                     // that said it was. The stream is left to its completion
-                    // (see above).
-                    abandoned.set()
+                    // (see above), unless it answered just now.
+                    if start.abandon(), failure.value == nil { stream.stopCapture { _ in } }
                     throw CaptureError.failed("ScreenCaptureKit did not answer the \(label) start request.")
                 }
                 if let error = failure.value {

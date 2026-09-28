@@ -7,13 +7,13 @@
  * - The first engine that can read the raw file does the work: the Swift
  *   `ade-media` for an MP4/MOV on macOS, the desktop app's Chromium engine for
  *   an `.aderaw` capture.
- * - Every result ends under {@link DEMO_MAX_BYTES}. A render over it is done
- *   again at a fitted bitrate, a step smaller when needed, up to
- *   {@link DEMO_MAX_RENDER_ATTEMPTS} times.
+ * - A render over {@link DEMO_MAX_BYTES} is done again at a fitted bitrate, a
+ *   step smaller when needed (see `renderToFit`). No file over the limit is
+ *   ever returned.
  * - A demo render that fails is tried once more as a plain render. When that
- *   fails too, a raw MP4 is filed as it is (the fallback is recorded in the
- *   metadata, and it may be over the limit); a raw `.aderaw` cannot be played,
- *   so the error is thrown and nothing is filed.
+ *   fails too, a raw MP4 under the limit is filed as it is (the fallback is
+ *   recorded in the metadata); a larger one, or a raw `.aderaw` (which cannot
+ *   be played), is an error, and the raw file is left for the caller.
  * - The raw file never outlives this call when a file is returned: it is
  *   deleted after a render, or it becomes the output on the fallback. On a
  *   thrown error it is left for the caller, which decides.
@@ -33,6 +33,16 @@ import {
 } from "../../../shared/demoVideo/demoContract";
 import { demoMetadataFor, planDemo, planPlainDemo, refitPlanForSize } from "../../../shared/demoVideo/demoPlanner";
 import type { Logger } from "../logging/logger";
+
+/** A recording's three lengths: the video, the real time it covers, and what was cut. */
+export type DemoRecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs: number };
+
+/** The lengths a filed demo reports. */
+export function demoLengths(meta: DemoArtifactMetadata): DemoRecordingLengths {
+  const durationMs = Math.round(meta.outputSeconds * 1000);
+  const wallDurationMs = Math.round(meta.sourceSeconds * 1000);
+  return { durationMs, wallDurationMs, idleCutMs: Math.max(0, wallDurationMs - durationMs) };
+}
 
 export type ProducedDemoVideo = {
   path: string;
@@ -55,6 +65,19 @@ function removeQuietly(file: string): void {
   }
 }
 
+/** A plan whose output is no smaller than the last one's: the ladder is at its bottom. */
+function sameOutputSize(a: DemoPlan, b: DemoPlan): boolean {
+  return a.output.width === b.output.width && a.output.height === b.output.height && a.output.fps === b.output.fps;
+}
+
+/**
+ * Renders until the file fits under {@link DEMO_MAX_BYTES}: at a fitted
+ * bitrate, then a ladder step smaller each time. After
+ * {@link DEMO_MAX_RENDER_ATTEMPTS} renders it keeps going only while a
+ * smaller step is left, so a result never goes out over the limit; the
+ * bottom step holds a five-minute recording in under 2 MB. When even that is
+ * over, it throws, and the caller keeps the raw file.
+ */
 async function renderToFit(args: {
   engine: DemoEngine;
   rawPath: string;
@@ -65,31 +88,26 @@ async function renderToFit(args: {
   onProgress?: (fraction: number) => void;
 }): Promise<{ plan: DemoPlan; bytes: number }> {
   let plan = args.plan;
-  let smallest: { plan: DemoPlan; bytes: number } | null = null;
-  for (let attempt = 1; attempt <= DEMO_MAX_RENDER_ATTEMPTS; attempt += 1) {
+  const maxAttempts = DEMO_MAX_RENDER_ATTEMPTS * 2;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     args.signal?.throwIfAborted();
     await args.engine.render(
       { input: args.rawPath, output: args.outputPath, plan },
       {
         signal: args.signal,
         onProgress: args.onProgress
-          ? (fraction) => args.onProgress!(Math.min(1, (attempt - 1 + fraction) / DEMO_MAX_RENDER_ATTEMPTS))
+          ? (fraction) => args.onProgress!(Math.min(1, (Math.min(attempt, DEMO_MAX_RENDER_ATTEMPTS) - 1 + fraction) / DEMO_MAX_RENDER_ATTEMPTS))
           : undefined,
       },
     );
     const bytes = fs.statSync(args.outputPath).size;
     if (bytes <= DEMO_MAX_BYTES) return { plan, bytes };
     args.logger.info("demo_video.refit", { attempt, bytes, bitrate: plan.output.bitrate, width: plan.output.width, fps: plan.output.fps });
-    if (!smallest || bytes < smallest.bytes) smallest = { plan, bytes };
-    if (attempt < DEMO_MAX_RENDER_ATTEMPTS) plan = refitPlanForSize(plan, bytes, { stepDown: attempt >= 2 });
+    const next = refitPlanForSize(plan, bytes, { stepDown: attempt >= 2 });
+    if (attempt >= DEMO_MAX_RENDER_ATTEMPTS && sameOutputSize(next, plan)) break;
+    plan = next;
   }
-  // Out of attempts: the last render is on disk. The smallest one is the best
-  // answer; render it again only when the last one was not it.
-  if (smallest && smallest.plan !== plan) {
-    await args.engine.render({ input: args.rawPath, output: args.outputPath, plan: smallest.plan }, { signal: args.signal });
-    return { plan: smallest.plan, bytes: fs.statSync(args.outputPath).size };
-  }
-  return { plan, bytes: fs.statSync(args.outputPath).size };
+  throw new Error(`the video could not be made smaller than ${Math.round(DEMO_MAX_BYTES / (1024 * 1024))} MB`);
 }
 
 export async function produceDemoVideo(args: {
@@ -111,6 +129,11 @@ export async function produceDemoVideo(args: {
 
   const fileRawAsIs = (reason: string, analysis: DemoAnalysis | null): ProducedDemoVideo => {
     if (!rawIsPlayable) throw new Error(`The demo video could not be made: ${reason}`);
+    // The raw file answers to the same 10 MB limit as a demo. One over it is
+    // left for the caller, which keeps it and reports why.
+    if (fs.statSync(rawPath).size > DEMO_MAX_BYTES) {
+      throw new Error(`The demo video could not be made (${reason}), and the recording is over ${Math.round(DEMO_MAX_BYTES / (1024 * 1024))} MB as it was recorded.`);
+    }
     removeQuietly(outputPath);
     if (path.resolve(rawPath) !== path.resolve(outputPath)) fs.renameSync(rawPath, outputPath);
     const seconds = analysis?.durationSeconds ?? 0;

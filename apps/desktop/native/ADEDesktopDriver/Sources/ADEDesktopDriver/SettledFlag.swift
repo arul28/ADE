@@ -29,6 +29,33 @@ final class SettledFlag: @unchecked Sendable {
     }
 }
 
+/// A start request the caller may give up on before it answers. Whichever
+/// comes second — the answer or the give-up — learns it must clean up, under
+/// one lock, so exactly one side stops a stream that started late.
+final class AbandonableStart: @unchecked Sendable {
+    private let lock = NSLock()
+    private var answered = false
+    private var abandoned = false
+
+    init() {}
+
+    /// The start answered. True when the caller had already given up.
+    func answer() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        answered = true
+        return abandoned
+    }
+
+    /// The caller gives up. True when the start had already answered.
+    func abandon() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        abandoned = true
+        return answered
+    }
+}
+
 /// One value, written by a callback on some other queue and read by the main
 /// thread that is pumping its run loop waiting for it.
 ///

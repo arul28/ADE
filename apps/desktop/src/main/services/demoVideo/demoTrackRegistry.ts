@@ -89,19 +89,14 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
    * desktop app): key → owning chat and when the note stops counting, so a
    * stop that never reaches here cannot leave a chat "recording" forever.
    */
-  const external = new Map<string, { chatSessionId: string; expiresAtMs: number }>();
+  const external = new Map<string, { chatSessionId: string; expiry: ReturnType<typeof setTimeout> }>();
   const recordingListeners = new Set<(chatSessionId: string, recording: boolean) => void>();
 
   const chatIsRecording = (chatSessionId: string): boolean => {
     for (const entry of entries.values()) if (entry.chatSessionId === chatSessionId) return true;
-    const at = now();
-    for (const [key, note] of external) {
-      if (note.expiresAtMs <= at) {
-        external.delete(key);
-        continue;
-      }
-      if (note.chatSessionId === chatSessionId) return true;
-    }
+    // A note counts until a stop or its expiry timer removes it; the timer
+    // tells the listeners, so a status never stays on after it.
+    for (const note of external.values()) if (note.chatSessionId === chatSessionId) return true;
     return false;
   };
   /** Tells listeners when a chat starts or stops having any recording. */
@@ -194,8 +189,18 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
     noteExternalRecording(key: string, chatSessionId: string | null, running: boolean, maxMs: number): void {
       const owner = running ? chatSessionId : external.get(key)?.chatSessionId ?? chatSessionId;
       withRecordingChange(owner, () => {
-        if (running && chatSessionId) external.set(key, { chatSessionId, expiresAtMs: now() + maxMs });
-        else external.delete(key);
+        const previous = external.get(key);
+        if (previous?.expiry) clearTimeout(previous.expiry);
+        external.delete(key);
+        if (!running || !chatSessionId) return;
+        // A stop that never arrives: the note ends at its expiry, and the
+        // chat's status hears about it then.
+        const expiry: ReturnType<typeof setTimeout> = setTimeout(() => {
+          if (external.get(key)?.expiry !== expiry) return;
+          withRecordingChange(chatSessionId, () => external.delete(key));
+        }, maxMs);
+        expiry.unref?.();
+        external.set(key, { chatSessionId, expiry });
       });
     },
 
@@ -296,9 +301,17 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
     noteTurnEnded(chatSessionId: string, atMs?: number): void {
       const state = chats.get(chatSessionId);
       if (!state) return;
+      const at = atMs ?? now();
       state.inTurn = false;
       state.runningTools.clear();
-      switchSpan(state, null, atMs ?? now());
+      switchSpan(state, null, at);
+      // Every chat that emits events gets a state here. One whose last span
+      // ended before the retention horizon can tell no recording anything.
+      const horizon = at - CHAT_SPAN_RETENTION_MS;
+      for (const [id, chat] of chats) {
+        const last = chat.spans[chat.spans.length - 1];
+        if (!chat.inTurn && (!last || (last.endMs !== null && last.endMs < horizon))) chats.delete(id);
+      }
     },
 
     /** The recording stopped: its finished track, measured from its first frame. */

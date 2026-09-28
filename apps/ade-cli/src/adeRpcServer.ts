@@ -2484,6 +2484,17 @@ async function resolveProofDisplayTarget(
 }
 
 /**
+ * Notes a browser recording's start or stop for the owning chat's status.
+ * Keyed by chat, not tab: a start without `--tab` and a stop with one name
+ * the same recording.
+ */
+function noteBrowserRecording(session: SessionState, running: boolean): void {
+  const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!chatSessionId) return;
+  demoTrackRegistry.noteExternalRecording(`browser:${chatSessionId}`, chatSessionId, running, RECORDING_MAX_MS + 60_000);
+}
+
+/**
  * `ade proof capture` / `ade proof record` on the caller's lane display.
  *
  * Files through the Mac Desktop service's own proof path — the one the pane's
@@ -2492,14 +2503,6 @@ async function resolveProofDisplayTarget(
  * Refuses when the lane has no display: the real screen is the user's, and
  * the caller has to ask for it with `realScreen: true`.
  */
-/** Notes a browser recording's start or stop for the owning chat's status. */
-function noteBrowserRecording(session: SessionState, args: Record<string, unknown>, running: boolean): void {
-  const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  const tabId = asOptionalTrimmedString(args.tabId) ?? "active";
-  if (!chatSessionId) return;
-  demoTrackRegistry.noteExternalRecording(`browser:${chatSessionId}:${tabId}`, chatSessionId, running, RECORDING_MAX_MS + 60_000);
-}
-
 async function fileLaneDisplayProof(args: {
   runtime: AdeRuntime;
   session: SessionState;
@@ -5532,14 +5535,14 @@ async function runTool(args: {
     } catch (error) {
       undoBrowserActivityOnFailure?.();
       // A stop that failed still ended the recording in the desktop app.
-      if (domain === "built_in_browser" && action === "stopRecording") noteBrowserRecording(session, scopedObjectArgs, false);
+      if (domain === "built_in_browser" && action === "stopRecording") noteBrowserRecording(session, false);
       throw error;
     }
     noteBrowserActivityOnSuccess?.();
     // A browser recording runs in the desktop app. The chat's "Recording"
     // status lives here, so the start and the stop are noted as they pass.
     if (domain === "built_in_browser" && (action === "startRecording" || action === "stopRecording")) {
-      noteBrowserRecording(session, scopedObjectArgs, action === "startRecording");
+      noteBrowserRecording(session, action === "startRecording");
     }
     await rememberCaptureActionResult(runtime, domain, action, result);
     if (transformScopedResult) result = transformScopedResult(result);

@@ -114,9 +114,9 @@ import type {
   BuiltInBrowserElementTargetInput,
 } from "./builtInBrowserService";
 import { evaluateInTab } from "./builtInBrowserCdp";
-import { DEMO_RAW_FILE_EXTENSION, type DemoArtifactMetadata } from "../../../shared/demoVideo/demoContract";
-import { sharedChromiumDemoEngine } from "../demoVideo/chromiumDemoEngine";
+import { DEMO_RAW_FILE_EXTENSION, type DemoArtifactMetadata, type DemoEngine } from "../../../shared/demoVideo/demoContract";
 import { produceDemoVideo } from "../demoVideo/demoRenderService";
+import { watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 
 const DEFAULT_FIND_IN_PAGE_TIMEOUT_MS = 5_000;
@@ -292,6 +292,8 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * produces frames. Resolves once the view is ready to be captured.
    */
   holdCaptureSurface?: (tabId: string) => Promise<() => void>;
+  /** The desktop's Chromium demo engine, which makes a recording's video. */
+  demoEngine: DemoEngine | null;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
   targetTabFromInput: (
     input: BuiltInBrowserTabTargetArgs | undefined,
@@ -1266,10 +1268,30 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         }),
       );
       const held = releaseHoldWhenRecordingEnds(created, releaseCaptureHold);
+      // The limits every recording shares: no action for 2 minutes, a 2 GB
+      // raw file, or an almost full disk stop it and file it. A person's own
+      // clicks in the pane go to the page and are never noted, so the idle
+      // stop is only for a recording a chat started.
+      const stopLimitWatch = watchDemoRecording({
+        key: trackKey,
+        rawPath: path.join(directory, `${recordingId}${DEMO_RAW_FILE_EXTENSION}`),
+        logger: logger(),
+        idleStop: Boolean(stringOrNull(input.chatSessionId)),
+        onLimit: (limit) => {
+          void finishRecording(tab, session, limit).catch((error) => {
+            logger()?.warn("built_in_browser.recording_limit_stop_failed", { tabId: tab.id, limit, err: errorMessage(error) });
+          });
+        },
+      });
       // An aborted recording (handoff, tab teardown) files nothing; drop its track.
       session = {
         ...held,
+        stop: async () => {
+          stopLimitWatch();
+          return await held.stop();
+        },
         abort: () => {
+          stopLimitWatch();
           demoTrackRegistry.discard(trackKey);
           held.abort();
         },
@@ -1320,7 +1342,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   const finishRecording = async (
     tab: BrowserTabState,
     session: BuiltInBrowserRecordingSession,
-    endedBy: Extract<BuiltInBrowserRecordingEndedBy, "max_duration"> | null,
+    endedBy: Extract<BuiltInBrowserRecordingEndedBy, "max_duration" | "idle" | "disk"> | null,
     plainOverride: boolean | null = null,
   ): Promise<Omit<BuiltInBrowserStopRecordingResult, "status">> => {
     if (tab.recording === session) tab.recording = null;
@@ -1402,7 +1424,7 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         outputPath: `${rawPath.slice(0, -DEMO_RAW_FILE_EXTENSION.length)}.mp4`,
         track,
         plain,
-        engines: [sharedChromiumDemoEngine(log)],
+        engines: [deps.demoEngine],
         logger: log,
       });
       return { path: produced.path, format: "mp4", mimeType: "video/mp4", demo: produced.metadata };

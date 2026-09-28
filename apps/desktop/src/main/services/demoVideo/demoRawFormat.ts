@@ -13,9 +13,9 @@
 import fs from "node:fs";
 import {
   DEMO_RAW_FILE_MAGIC,
-  DEMO_RAW_KIND_H264_ACCESS_UNIT,
+  type DEMO_RAW_KIND_H264_ACCESS_UNIT,
   DEMO_RAW_KIND_H264_CONFIG,
-  DEMO_RAW_KIND_JPEG,
+  type DEMO_RAW_KIND_JPEG,
   DEMO_RAW_RECORD_HEADER_BYTES,
   RECORDING_MAX_RAW_BYTES,
 } from "../../../shared/demoVideo/demoContract";

@@ -141,7 +141,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
     captureNotice, setCaptureNotice, receipt, setReceipt, screenshotPending, viewRect, selectedWindowId, setSelectedWindowId,
     lastObservation, surfaceNode, videoHost, canvasSlot, attachCanvasSlot, attachSurface, errorText, display, lease, windows,
     supported, iHaveControl, parkedWindows, claimAppIcons, missingPermissions, permissionCheck, confirmStop, setConfirmStop,
-    confirmRestartCapture, setConfirmRestartCapture, restartingCapture, restartCapture,
+    restartingCapture, restartCapture,
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording, toggleRecording,
     saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow, releaseWindowById,
@@ -744,31 +744,11 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
             {stopped ? "Video stopped" : "The picture is not coming through"}
           </p>
           <p className="text-[12px] leading-5 text-muted-fg">
-            {confirmRestartCapture
-              ? "Restart the capture? Apps open here stay open and move to your main screen."
-              : restartingCapture
-                ? "Restarting the capture…"
-                : stopped ? "Mac Desktop is still running." : "Mac Desktop is up, but no video has arrived yet."}
+            {restartingCapture
+              ? "Restarting the capture…"
+              : stopped ? "Mac Desktop is still running." : "Mac Desktop is up, but no video has arrived yet."}
           </p>
-          {confirmRestartCapture ? (
-            <div className="flex items-center gap-3">
-              <button
-                type="button"
-                data-testid={`mac-desktop-restart-capture-yes${suffix}`}
-                className={cn(WORK_TOOL_PRIMARY_BUTTON, "h-7")}
-                onClick={() => void restartCapture()}
-              >
-                Restart
-              </button>
-              <button
-                type="button"
-                className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
-                onClick={() => setConfirmRestartCapture(false)}
-              >
-                Keep waiting
-              </button>
-            </div>
-          ) : restartingCapture ? null : (
+          {restartingCapture ? null : (
           <div className="flex items-center gap-3">
             {/* A fresh `startStream`, budget included: the automatic retries
                 give up after a few tries, and this is the way back after that. */}
@@ -789,7 +769,7 @@ export function MacDesktopPaneView({ controller }: { controller: MacDesktopPanel
               type="button"
               data-testid={`mac-desktop-restart-capture${suffix}`}
               className="text-[12px] text-muted-fg underline-offset-2 hover:text-fg hover:underline"
-              onClick={() => setConfirmRestartCapture(true)}
+              onClick={() => void restartCapture()}
             >
               Restart capture
             </button>

@@ -1216,7 +1216,8 @@ export type BuiltInBrowserRecordingStatus = {
  * action-trace entry carrying the same value, so `ade browser trace` explains it
  * to the agent.
  */
-export type BuiltInBrowserRecordingEndedBy = "handoff" | "max_duration";
+/** `idle` and `disk` are the limits every recording shares (`demoRecordingGuard.ts`). */
+export type BuiltInBrowserRecordingEndedBy = "handoff" | "max_duration" | "idle" | "disk";
 
 export type BuiltInBrowserStartRecordingArgs = BuiltInBrowserTabTargetArgs & {
   /** 30 or 60; anything else is rejected. */

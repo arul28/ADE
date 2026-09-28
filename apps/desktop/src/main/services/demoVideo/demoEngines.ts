@@ -19,12 +19,11 @@ export type DemoEngineSet = {
 export function createDemoEngineSet(args: {
   logger: Logger;
   getChromiumDemoEngine?: (() => DemoEngine | null) | null;
-  resolveSwiftBinary?: () => string | null;
 }): DemoEngineSet {
   let swift: DemoEngine | null | undefined;
   const swiftEngine = (): DemoEngine | null => {
     if (swift !== undefined) return swift;
-    const binaryPath = (args.resolveSwiftBinary ?? (() => resolveAdeMediaBinary({ logger: args.logger })))();
+    const binaryPath = resolveAdeMediaBinary({ logger: args.logger });
     swift = binaryPath ? createSwiftDemoEngine({ binaryPath, logger: args.logger }) : null;
     return swift;
   };

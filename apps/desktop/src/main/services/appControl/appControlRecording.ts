@@ -29,6 +29,7 @@
  *   start says so.
  */
 
+import fs from "node:fs";
 import type { DemoArtifactMetadata, DemoEngine, DemoTrack } from "../../../shared/demoVideo/demoContract";
 import { DEMO_RAW_FILE_EXTENSION } from "../../../shared/demoVideo/demoContract";
 import { demoProofSentence, recordingStopSentence } from "../../../shared/demoVideo/demoProofText";
@@ -51,17 +52,14 @@ import type { MacDesktopPermissions, MacDesktopPermissionState } from "../../../
 import { createComputerUseArtifactPath } from "../computerUse/localComputerUse";
 import type { Logger } from "../logging/logger";
 import {
-  MAC_DESKTOP_RECORDING_MAX_MS,
-  capFromSeconds,
-  demoLengths,
   readCaptureBytes,
   readLengths,
   type RecordingLengths,
 } from "../macDesktop/macDesktopRecording";
 import { clampFps } from "../macDesktop/macDesktopStreamServer";
 import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
-import { rawPathFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
-import { produceDemoVideo } from "../demoVideo/demoRenderService";
+import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
+import { demoLengths, produceDemoVideo } from "../demoVideo/demoRenderService";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 
 /** The broker's backend name for everything App Control files. */
@@ -578,7 +576,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
         },
       }),
     });
-    const maxDurationMs = capFromSeconds(args.maxSeconds ?? null) ?? MAC_DESKTOP_RECORDING_MAX_MS;
+    const maxDurationMs = recordingCapMsFor(args.maxSeconds);
     const status: AppControlRecordingStatus = {
       laneId,
       running: true,
@@ -737,7 +735,7 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       try {
         const produced = await produceDemoVideo({
           rawPath: rawFilePath,
-          outputPath: raw?.finalPath ?? rawFilePath.replace(/(\.raw)?\.[^./\\]+$/, ".mp4"),
+          outputPath: raw?.finalPath ?? finalPathForRaw(rawFilePath),
           track,
           plain: raw?.plain ?? false,
           engines: demoEngines.engines(),
@@ -749,8 +747,12 @@ export function createAppControlRecording(deps: AppControlRecordingDeps) {
       } catch (error) {
         demoError = error instanceof Error ? error.message : String(error);
         deps.logger.warn("app_control.recording_demo_failed", { laneId, error: demoError });
-        // A screencast's raw file cannot be played, so there is nothing to file.
-        if (rawFilePath.endsWith(DEMO_RAW_FILE_EXTENSION)) filePath = null;
+        // A screencast's raw file cannot be played, so there is nothing to
+        // file, and nothing will ever read it: it goes (it can be 2 GB).
+        if (rawFilePath.endsWith(DEMO_RAW_FILE_EXTENSION)) {
+          filePath = null;
+          await fs.promises.rm(rawFilePath, { force: true }).catch(() => {});
+        }
       }
     }
     const finished: AppControlRecordingStatus = {

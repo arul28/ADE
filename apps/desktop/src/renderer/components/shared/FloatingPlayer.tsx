@@ -374,8 +374,32 @@ export function useFloatingPlayerStop(stop: (() => Promise<unknown>) | null): {
   return { stopping, onStop };
 }
 
+/**
+ * A player's recording pill state: running from `startedAt`, "Making demo…"
+ * while the surface says so or a stop is in flight, and the stop itself. Null
+ * when there is nothing to show.
+ */
+export function useFloatingPlayerCapture(args: {
+  startedAt: string | null;
+  makingDemo: boolean;
+  stop: (() => Promise<unknown>) | null;
+}): FloatingPlayerCapture | null {
+  const { stopping, onStop } = useFloatingPlayerStop(args.stop);
+  const { startedAt, makingDemo } = args;
+  return useMemo(() => (
+    startedAt || makingDemo || stopping
+      ? { startedAt, makingDemo: makingDemo || stopping, onStop }
+      : null
+  ), [makingDemo, onStop, startedAt, stopping]);
+}
+
 /** The pill over the picture, ticking once a second only while it runs. */
-function FloatingPlayerCapturePill({ capture, attrPrefix }: { capture: FloatingPlayerCapture; attrPrefix: string }) {
+export function FloatingPlayerCapturePill({ capture, attrPrefix, marker }: {
+  capture: FloatingPlayerCapture;
+  attrPrefix: string;
+  /** Extra attributes on the pill, e.g. a card's "inert to my click" marker. */
+  marker?: Record<string, string>;
+}) {
   const running = Boolean(capture.startedAt) && !capture.makingDemo;
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -387,7 +411,7 @@ function FloatingPlayerCapturePill({ capture, attrPrefix }: { capture: FloatingP
   if (capture.makingDemo) {
     return (
       <MakingDemoPill
-        marker={{ [`data-${attrPrefix}-making-demo`]: "" }}
+        marker={{ ...marker, [`data-${attrPrefix}-making-demo`]: "" }}
         className="bottom-2 z-[3] px-2 text-[11px]"
       />
     );
@@ -396,7 +420,7 @@ function FloatingPlayerCapturePill({ capture, attrPrefix }: { capture: FloatingP
   const startedAt = Date.parse(capture.startedAt);
   return (
     <RecordingPill
-      marker={{ [`data-${attrPrefix}-recording-pill`]: "" }}
+      marker={{ ...marker, [`data-${attrPrefix}-recording-pill`]: "" }}
       elapsedMs={Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0}
       onStop={capture.onStop}
       className="bottom-2 z-[3] px-2 text-[11px]"

@@ -77,13 +77,7 @@ import {
 import type { Logger } from "../logging/logger";
 import { nowIso } from "../shared/utils";
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
-import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
-import {
-  demoElementLabel,
-  demoTrackTarget,
-  demoTypedLabel,
-  type DemoViewportSize,
-} from "../demoVideo/demoTrackTargets";
+import { demoElementLabel, demoTypedLabel, noteDemoPageAction } from "../demoVideo/demoTrackTargets";
 import { appControlRecordingKey } from "./appControlRecording";
 
 /**
@@ -574,26 +568,21 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     target: { point?: { x: number; y: number } | null; element?: AppControlElementSnapshot | null; label?: string },
   ): Promise<void> => {
     if (!session.laneId) return;
-    const key = appControlRecordingKey(session.laneId);
-    if (!demoTrackRegistry.isRecording(key)) return;
-    const atMs = Date.now();
-    let viewport: DemoViewportSize | null = null;
-    if (target.point || target.element) {
-      // The screencast shows the visual viewport; element frames and input
-      // points are CSS pixels in it.
-      const metrics = await client.send<{
-        cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
-      }>("Page.getLayoutMetrics").catch(() => null);
-      const width = metrics?.cssVisualViewport?.clientWidth ?? 0;
-      const height = metrics?.cssVisualViewport?.clientHeight ?? 0;
-      viewport = width > 0 && height > 0 ? { width, height } : null;
-    }
-    demoTrackRegistry.note(key, {
+    await noteDemoPageAction({
+      key: appControlRecordingKey(session.laneId),
       kind,
       by: "agent",
-      atMs,
-      ...demoTrackTarget(viewport, target.point ?? null, target.element ?? null),
-      ...(target.label ? { label: target.label } : {}),
+      target,
+      // The screencast shows the visual viewport; element frames and input
+      // points are CSS pixels in it.
+      readViewport: async () => {
+        const metrics = await client.send<{
+          cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
+        }>("Page.getLayoutMetrics");
+        const width = metrics?.cssVisualViewport?.clientWidth ?? 0;
+        const height = metrics?.cssVisualViewport?.clientHeight ?? 0;
+        return width > 0 && height > 0 ? { width, height } : null;
+      },
     });
   };
 

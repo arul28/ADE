@@ -18,7 +18,7 @@ import {
   FloatingPlayerShell,
   useCanvasPictureInPicture,
   useFloatingPlayerFrame,
-  useFloatingPlayerStop,
+  useFloatingPlayerCapture,
 } from "../shared/FloatingPlayer";
 import { showToast } from "../app/toast/toastStore";
 import { useAppleRecordings } from "./appleRecording";
@@ -268,7 +268,11 @@ function AppleMiniPlayerFrameView({
     });
     refreshRecordings();
   }, [refreshRecordings, target.chatSessionId, target.laneId]);
-  const stopControl = useFloatingPlayerStop(activeRecording ? stopRecording : null);
+  const capture = useFloatingPlayerCapture({
+    startedAt: activeRecording?.startedAt ?? null,
+    makingDemo: false,
+    stop: activeRecording ? stopRecording : null,
+  });
 
   const pipSupported = isWorkLivePictureInPictureSupported();
   /*
@@ -298,11 +302,7 @@ function AppleMiniPlayerFrameView({
       playerId={target.deviceUdid}
       ariaLabel={`${target.deviceName}, floating`}
       recording={recording || Boolean(activeRecording)}
-      capture={activeRecording || stopControl.stopping ? {
-        startedAt: activeRecording?.startedAt ?? null,
-        makingDemo: stopControl.stopping,
-        onStop: stopControl.onStop,
-      } : null}
+      capture={capture}
       onStartDrag={startDrag}
       onStartResize={startResize}
       onOpenInPane={() => {

@@ -392,7 +392,7 @@ import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/a
 import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createAppControlScreencastRecorderHost } from "./services/appControl/appControlScreencastRecorderHost";
-import { sharedChromiumDemoEngine } from "./services/demoVideo/chromiumDemoEngine";
+import { createChromiumDemoEngine } from "./services/demoVideo/chromiumDemoEngine";
 import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
@@ -1683,8 +1683,17 @@ app.whenReady().then(async () => {
     }
   };
 
+  // The desktop bridge's log, which the demo engine shares.
+  const builtInBrowserBridgeLogger = createFileLogger(
+    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
+  );
+  // The Chromium demo engine (renders `.aderaw` captures on any OS). One per
+  // desktop, shared by the built-in browser's recorder, App Control and the
+  // runtime daemon (over the bridge below), so jobs queue on one hidden renderer.
+  const chromiumDemoEngine = createChromiumDemoEngine({ logger: builtInBrowserBridgeLogger });
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
+    demoEngine: chromiumDemoEngine,
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {
       const normalizedRoot = normalizeProjectRoot(projectRoot);
@@ -1798,9 +1807,6 @@ app.whenReady().then(async () => {
   // service itself (it needs WebContentsView). The bridge socket lives under
   // `<adeHome>/sock/desktop-bridge.sock`; the daemon discovers it via
   // resolveMachineAdeLayout() or ADE_DESKTOP_BRIDGE_SOCKET_PATH.
-  const builtInBrowserBridgeLogger = createFileLogger(
-    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
-  );
   const builtInBrowserBridgeSocketPath =
     process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
     || machineAdeLayout.desktopBridgeSocketPath;
@@ -1811,10 +1817,6 @@ app.whenReady().then(async () => {
   const appControlScreencastRecorder = createAppControlScreencastRecorderHost({
     logger: builtInBrowserBridgeLogger,
   });
-  // The Chromium demo engine (renders `.aderaw` captures on any OS). One per
-  // desktop, shared with the built-in browser's recorder so jobs queue on one
-  // hidden renderer. Served to the runtime daemon over the bridge below.
-  const chromiumDemoEngine = sharedChromiumDemoEngine(builtInBrowserBridgeLogger);
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({

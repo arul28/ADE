@@ -45,8 +45,8 @@ import {
   macDesktopPaneCaption,
 } from "../../../shared/types/macDesktop";
 import type { DemoEngineSet } from "../demoVideo/demoEngines";
-import { rawPathFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
-import { produceDemoVideo } from "../demoVideo/demoRenderService";
+import { rawPathFor, recordingCapMsFor, watchDemoRecording } from "../demoVideo/demoRecordingGuard";
+import { demoLengths, produceDemoVideo, type DemoRecordingLengths } from "../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import type { Logger } from "../logging/logger";
 import type { MacDesktopObservations } from "./macDesktopObservations";
@@ -58,31 +58,7 @@ const TURN_CLIP_FPS = 4;
 /** How long any recording may run, whoever started it. */
 export const MAC_DESKTOP_RECORDING_MAX_MS = RECORDING_MAX_MS;
 
-/** The longest cap `maxSeconds` may ask for. */
-export const MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT = RECORDING_MAX_MS / 1000;
-
-/**
- * A caller's `maxSeconds`, in ms, clamped to 1 s .. five minutes. Null when absent or not a number.
- * Exported for App Control's window recording, which keeps the same cap rules.
- */
-export function capFromSeconds(maxSeconds: number | null | undefined): number | null {
-  if (typeof maxSeconds !== "number" || !Number.isFinite(maxSeconds) || maxSeconds <= 0) return null;
-  return Math.round(Math.min(Math.max(maxSeconds, 1), MAC_DESKTOP_RECORDING_MAX_SECONDS_LIMIT) * 1000);
-}
-
-/** The cap for a recording: the caller's, else five minutes. Every recording has one. */
-function recordingCapMs(args: { maxSeconds?: number | null }): number {
-  return capFromSeconds(args.maxSeconds) ?? MAC_DESKTOP_RECORDING_MAX_MS;
-}
-
-/** The lengths a filed demo reports: the video, the real time it covers, and the difference. */
-export function demoLengths(meta: DemoArtifactMetadata): RecordingLengths {
-  const durationMs = Math.round(meta.outputSeconds * 1000);
-  const wallDurationMs = Math.round(meta.sourceSeconds * 1000);
-  return { durationMs, wallDurationMs, idleCutMs: Math.max(0, wallDurationMs - durationMs) };
-}
-
-export type RecordingLengths = { durationMs: number; wallDurationMs: number; idleCutMs: number };
+export type RecordingLengths = DemoRecordingLengths;
 
 /**
  * The three lengths from a `record.stop` reply.
@@ -530,6 +506,10 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
       deps.requireDisplay(laneId);
       const provider = await deps.ensureProvider();
       deps.assertPermission("screenRecording");
+      // A stop still making its demo ends first. Its status would otherwise
+      // land on top of this new recording's, which then could not be stopped.
+      const inFlight = stopping.get(laneId);
+      if (inFlight) await inFlight.catch(() => null);
       const existing = recordings.get(laneId);
       if (existing?.running) return existing;
       // The helper records one file per lane. A turn clip already writing one
@@ -575,7 +555,7 @@ export function createMacDesktopRecording(deps: MacDesktopRecordingDeps) {
           },
         }),
       });
-      const maxDurationMs = recordingCapMs({ maxSeconds: args.maxSeconds });
+      const maxDurationMs = recordingCapMsFor(args.maxSeconds);
       const status: MacDesktopRecordingStatus = {
         laneId,
         running: true,

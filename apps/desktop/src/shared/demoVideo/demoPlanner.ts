@@ -326,14 +326,15 @@ function decideBins(track: DemoTrack | null, analysis: DemoAnalysis, duration: n
     return "none";
   };
 
+  /** Active plays, busy speeds up, still is still. */
+  const byLevel = (level: Level): Decision => (level === 2 ? "play" : level === 1 ? "speed" : "still");
   const decisions = new Array<Decision>(count);
   for (let bin = 0; bin < count; bin += 1) {
     const level = levels[bin]!;
     const time = (bin + 0.5) * BIN_SECONDS;
     if (moments[bin]) decisions[bin] = "play";
     else if (loads[bin]) decisions[bin] = level === 0 ? "still" : "speed";
-    else if (results[bin]) decisions[bin] = level === 2 ? "play" : level === 1 ? "speed" : "still";
-    else if (!knowsAgent) decisions[bin] = level === 2 ? "play" : level === 1 ? "speed" : "still";
+    else if (results[bin] || !knowsAgent) decisions[bin] = byLevel(level);
     else {
       const agent = agentAt(time);
       decisions[bin] = agent === "tool" ? (level === 0 ? "still" : "speed") : "still";

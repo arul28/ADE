@@ -26,7 +26,7 @@ import {
   FloatingPlayerShell,
   useCanvasPictureInPicture,
   useFloatingPlayerFrame,
-  useFloatingPlayerStop,
+  useFloatingPlayerCapture,
 } from "../shared/FloatingPlayer";
 import { floatingPlayerSourceSize, type FloatingPlayerSize } from "../shared/floatingPlayerLayout";
 import { isWorkLivePictureInPictureSupported } from "./workLiveIosPictureInPicture";
@@ -398,7 +398,11 @@ function AppControlMiniPlayerBox({
     });
     if (status) setCapture(captureStateFrom(status));
   }, [chatSessionId, laneId, runtimePinRef]);
-  const stopControl = useFloatingPlayerStop(stopRecording);
+  const pill = useFloatingPlayerCapture({
+    startedAt: capture.running ? capture.startedAt : null,
+    makingDemo: capture.makingDemo,
+    stop: stopRecording,
+  });
 
   const connected = session.status === "connected" || (session.status === "running" && Boolean(session.cdpEndpoint));
   const stateLabel = recording ? "recording" : appControlStatusWord(session);
@@ -414,11 +418,7 @@ function AppControlMiniPlayerBox({
       playerId={laneId}
       ariaLabel="App, floating"
       recording={recording}
-      capture={capture.running || capture.makingDemo || stopControl.stopping ? {
-        startedAt: capture.startedAt,
-        makingDemo: capture.makingDemo || stopControl.stopping,
-        onStop: stopControl.onStop,
-      } : null}
+      capture={pill}
       onStartDrag={startDrag}
       onStartResize={startResize}
       onOpenInPane={() => {

@@ -27,7 +27,7 @@ import {
   FloatingPlayerShell,
   useCanvasPictureInPicture,
   useFloatingPlayerFrame,
-  useFloatingPlayerStop,
+  useFloatingPlayerCapture,
   type FloatingPlayerCapture,
 } from "../shared/FloatingPlayer";
 import { showToast } from "../app/toast/toastStore";
@@ -411,17 +411,11 @@ export function MacDesktopMiniPlayer({
     });
     noteRecording(status);
   }, [chatSessionId, laneId, noteRecording]);
-  const stopControl = useFloatingPlayerStop(stopRecording);
-  const captureState = macScope.capture;
-  const capture = useMemo<FloatingPlayerCapture | null>(() => (
-    captureState.startedAt || captureState.makingDemo || stopControl.stopping
-      ? {
-          startedAt: captureState.startedAt,
-          makingDemo: captureState.makingDemo || stopControl.stopping,
-          onStop: stopControl.onStop,
-        }
-      : null
-  ), [captureState.makingDemo, captureState.startedAt, stopControl.onStop, stopControl.stopping]);
+  const capture = useFloatingPlayerCapture({
+    startedAt: macScope.capture.startedAt,
+    makingDemo: macScope.capture.makingDemo,
+    stop: stopRecording,
+  });
 
   if (!present || !laneId) return null;
   return (

@@ -67,8 +67,7 @@ import {
 } from "./workLiveCard";
 import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
 import { AppControlMiniPlayer } from "./AppControlMiniPlayer";
-import { MakingDemoPill, RecordingPill } from "../shared/RecordingReceipt";
-import { useFloatingPlayerStop } from "../shared/FloatingPlayer";
+import { FloatingPlayerCapturePill, useFloatingPlayerCapture } from "../shared/FloatingPlayer";
 import { showToast } from "../app/toast/toastStore";
 
 /**
@@ -918,9 +917,11 @@ export function WorkLiveCornerCard({
       });
     });
   }, [browserViewRoot, chatSessionId, recordingTabId, recordingTabOwned]);
-  const { stopping: stoppingRecording, onStop: onStopRecording } = useFloatingPlayerStop(
-    recordingTabId ? stopBrowserRecording : null,
-  );
+  const recordingCapture = useFloatingPlayerCapture({
+    startedAt: recordingStartedAt,
+    makingDemo: false,
+    stop: recordingTabId ? stopBrowserRecording : null,
+  });
 
   const activate = useCallback(() => {
     if (suppressClickRef.current || draggingRef.current || resizeStartRef.current || !tool) return;
@@ -1099,17 +1100,11 @@ export function WorkLiveCornerCard({
               pane draws, so a recording is never running behind a card that
               only has a red dot to say so. Inert to the card's own click.
             */}
-            {stoppingRecording ? (
-              <MakingDemoPill
-                marker={{ "data-live-card-inert": "", "data-live-card-making-demo": "" }}
-                className="bottom-2 px-2 text-[11px]"
-              />
-            ) : recordingStartedAt ? (
-              <RecordingPill
-                marker={{ "data-live-card-inert": "", "data-live-card-recording-pill": "" }}
-                elapsedMs={Math.max(0, nowTick - (Date.parse(recordingStartedAt) || nowTick))}
-                onStop={onStopRecording}
-                className="bottom-2 px-2 text-[11px]"
+            {recordingCapture ? (
+              <FloatingPlayerCapturePill
+                capture={recordingCapture}
+                attrPrefix="live-card"
+                marker={{ "data-live-card-inert": "" }}
               />
             ) : null}
 

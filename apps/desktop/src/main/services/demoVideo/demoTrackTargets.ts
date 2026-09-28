@@ -8,8 +8,9 @@
  * device pixel ratio.
  */
 
-import type { DemoRect, DemoTrackEvent } from "../../../shared/demoVideo/demoContract";
+import type { DemoRect, DemoTrackEvent, DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import type { AgentElementSnapshot } from "../../../shared/types/agentObservation";
+import { demoTrackRegistry } from "./demoTrackRegistry";
 
 export type DemoViewportSize = { width: number; height: number };
 
@@ -48,6 +49,32 @@ export function demoTrackTarget(
   };
 }
 
+/**
+ * A page action on a surface that is recording (the browser's tab, App
+ * Control's page), for its demo track. Costs nothing when the surface is not
+ * recording and never fails the action. The time is taken before the
+ * viewport read, so it is when the action happened.
+ */
+export async function noteDemoPageAction(args: {
+  key: string;
+  kind: DemoTrackEventKind;
+  by: DemoTrackEvent["by"];
+  target: { point?: { x: number; y: number } | null; element?: Pick<AgentElementSnapshot, "frame" | "center"> | null; label?: string };
+  readViewport: () => Promise<DemoViewportSize | null>;
+}): Promise<void> {
+  if (!demoTrackRegistry.isRecording(args.key)) return;
+  const atMs = Date.now();
+  const { target } = args;
+  const viewport = target.point || target.element ? await args.readViewport().catch(() => null) : null;
+  demoTrackRegistry.note(args.key, {
+    kind: args.kind,
+    by: args.by,
+    atMs,
+    ...demoTrackTarget(viewport, target.point ?? null, target.element ?? null),
+    ...(target.label ? { label: target.label } : {}),
+  });
+}
+
 /** The element's name as a viewer would say it: "Save", "Email". */
 export function demoElementLabel(element: Pick<AgentElementSnapshot, "label" | "text" | "placeholder" | "testId"> | null): string | undefined {
   const label = element?.label ?? element?.text ?? element?.placeholder ?? element?.testId ?? null;
@@ -68,7 +95,16 @@ export function demoTypedLabel(
   element: Pick<AgentElementSnapshot, "label" | "text" | "placeholder" | "testId" | "selector"> | null,
 ): string | undefined {
   if (!element) return undefined;
-  const names = [element.label, element.placeholder, element.testId, element.selector, element.text].filter(Boolean).join(" ");
+  return demoTypedLabelForField(text, [element.label, element.placeholder, element.testId, element.selector, element.text]);
+}
+
+/**
+ * The same rule for any surface: `fieldNames` are what the target field is
+ * called (label, title, id, placeholder). No name, or a name that suggests a
+ * secret, shows nothing.
+ */
+export function demoTypedLabelForField(text: string, fieldNames: ReadonlyArray<string | null | undefined>): string | undefined {
+  const names = fieldNames.filter(Boolean).join(" ");
   if (!names.trim() || SENSITIVE_FIELD.test(names)) return undefined;
   const flat = text.replace(/\s+/g, " ").trim();
   if (!flat) return undefined;

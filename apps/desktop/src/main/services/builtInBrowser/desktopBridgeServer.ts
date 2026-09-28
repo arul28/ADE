@@ -671,6 +671,12 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
  * directory is resolved through symlinks before the check, and the file is
  * rebuilt from that real directory so a link swapped in later cannot redirect it.
  */
+/** Whether a real directory is a project's `.ade/artifacts/computer-use`. */
+function isComputerUseArtifactsDir(realDir: string): boolean {
+  const tail = realDir.split(/[\\/]+/).filter(Boolean).map((segment) => pathComparisonKey(segment)).slice(-3);
+  return tail.length === 3 && tail[0] === ".ade" && tail[1] === "artifacts" && tail[2] === "computer-use";
+}
+
 async function resolveRecorderTargetPath(filePath: string | null): Promise<string> {
   const refuse = (): never => {
     throw new JsonRpcError(
@@ -681,17 +687,14 @@ async function resolveRecorderTargetPath(filePath: string | null): Promise<strin
   if (!filePath || !path.isAbsolute(filePath) || !/\.(mp4|webm|aderaw)$/i.test(filePath)) return refuse();
   const realDir = await fs.promises.realpath(path.dirname(filePath)).catch(() => null);
   if (!realDir) return refuse();
-  const segments = realDir.split(/[\\/]+/).filter(Boolean).map((segment) => pathComparisonKey(segment));
-  const tail = segments.slice(-3);
-  if (tail.length !== 3 || tail[0] !== ".ade" || tail[1] !== "artifacts" || tail[2] !== "computer-use") {
-    return refuse();
-  }
+  if (!isComputerUseArtifactsDir(realDir)) return refuse();
   return path.join(realDir, path.basename(filePath));
 }
 
 /**
  * A file the demo engine may read (`mustExist`) or write. Absolute, with the
- * one extension that job takes, in a directory that exists; resolved through
+ * one extension that job takes, in a project's `.ade/artifacts/computer-use`
+ * directory (the only place App Control's recordings live); resolved through
  * symlinks and rebuilt from the real directory, as for the recorder. The
  * engine writes a temporary sibling and renames it onto the output.
  */
@@ -699,12 +702,12 @@ async function resolveDemoEnginePath(filePath: string | null, extension: string,
   const refuse = (): never => {
     throw new JsonRpcError(
       JsonRpcErrorCode.invalidParams,
-      `The demo engine needs an absolute ${extension} path in an existing directory${mustExist ? ", of a file that exists" : ""}.`,
+      `The demo engine needs an absolute ${extension} path under a project's .ade/artifacts/computer-use directory${mustExist ? ", of a file that exists" : ""}.`,
     );
   };
   if (!filePath || !path.isAbsolute(filePath) || path.extname(filePath).toLowerCase() !== extension) return refuse();
   const realDir = await fs.promises.realpath(path.dirname(filePath)).catch(() => null);
-  if (!realDir) return refuse();
+  if (!realDir || !isComputerUseArtifactsDir(realDir)) return refuse();
   const resolved = path.join(realDir, path.basename(filePath));
   if (mustExist) {
     const stat = await fs.promises.stat(resolved).catch(() => null);

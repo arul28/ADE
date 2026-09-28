@@ -47,6 +47,14 @@ export const RECORDING_IDLE_STOP_MS = 2 * 60 * 1000;
 export const RECORDING_MAX_RAW_BYTES = 2 * 1024 * 1024 * 1024;
 /** Less free disk than this stops every recording on the volume. */
 export const RECORDING_MIN_FREE_DISK_BYTES = 5 * 1024 * 1024 * 1024;
+/**
+ * A recording's stop makes its demo before it answers: measure the raw file,
+ * render it, and render again when the first result is over 10 MB. A
+ * five-minute recording takes well under a minute on Apple silicon; this
+ * leaves room for a slow machine and the size refits. Every transport that
+ * carries a stop (renderer IPC, the desktop bridge) waits at least this long.
+ */
+export const DEMO_RECORDING_STOP_TIMEOUT_MS = 4 * 60_000;
 
 // ---------------------------------------------------------------------------
 // The track: what the brain logs while a recording runs

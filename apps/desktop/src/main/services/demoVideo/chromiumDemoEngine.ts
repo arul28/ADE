@@ -39,6 +39,12 @@ import {
   DEMO_ANALYSIS_THUMBNAIL_LONG_SIDE,
   DEMO_POINTER_POLYGON,
   DEMO_RAW_FILE_EXTENSION,
+  DEMO_RAW_FILE_MAGIC,
+  DEMO_RAW_FLAG_KEYFRAME,
+  DEMO_RAW_KIND_H264_ACCESS_UNIT,
+  DEMO_RAW_KIND_H264_CONFIG,
+  DEMO_RAW_KIND_JPEG,
+  DEMO_RAW_RECORD_HEADER_BYTES,
   type DemoAnalysis,
   type DemoEngine,
   type DemoPlan,
@@ -46,7 +52,7 @@ import {
   type DemoRenderResult,
 } from "../../../shared/demoVideo/demoContract";
 import type { Logger } from "../logging/logger";
-import { hasDemoRawMagic } from "./demoRawFormat";
+import { DEMO_RAW_MAX_PAYLOAD_BYTES, hasDemoRawMagic } from "./demoRawFormat";
 
 const PARTITION = "ade-demo-engine";
 const ORIGIN_HOST = "ade-demo-engine.invalid";
@@ -63,14 +69,16 @@ const RENAME_ATTEMPTS = 10;
  * Runs inside the hidden renderer. Plain script, no imports, no template
  * literals: it is evaluated with `executeJavaScript`.
  *
- * The raw-file framing here is the contract's; `demoRawFormat.ts` writes it.
+ * The raw-file framing constants are the contract's, interpolated below;
+ * `demoRawFormat.ts` writes the file.
  */
 const ENGINE_SOURCE = String.raw`
 (() => {
   if (window.__adeDemoEngine) return true;
-  var MAGIC = "ADERAW1\n";
-  var HEADER = 16;
-  var KIND_JPEG = 1, KIND_CONFIG = 2, KIND_AU = 3, FLAG_KEY = 1;
+  var MAGIC = ${JSON.stringify(DEMO_RAW_FILE_MAGIC)};
+  var HEADER = ${DEMO_RAW_RECORD_HEADER_BYTES};
+  var KIND_JPEG = ${DEMO_RAW_KIND_JPEG}, KIND_CONFIG = ${DEMO_RAW_KIND_H264_CONFIG}, KIND_AU = ${DEMO_RAW_KIND_H264_ACCESS_UNIT}, FLAG_KEY = ${DEMO_RAW_FLAG_KEYFRAME};
+  var MAX_PAYLOAD = ${DEMO_RAW_MAX_PAYLOAD_BYTES};
   var OUTBOX_LIMIT = 8 * 1024 * 1024;
 
   var state = {
@@ -160,7 +168,7 @@ const ENGINE_SOURCE = String.raw`
       if (kind !== KIND_JPEG && kind !== KIND_CONFIG && kind !== KIND_AU) {
         throw new Error("The raw capture has a record of unknown kind " + kind + ".");
       }
-      if (!isFinite(t) || length > 256 * 1024 * 1024) throw new Error("The raw capture is corrupt (impossible record header).");
+      if (!isFinite(t) || length > MAX_PAYLOAD) throw new Error("The raw capture is corrupt (impossible record header).");
       if (available < HEADER + length) return null;
       take(HEADER);
       return { kind: kind, flags: flags, t: t, payload: take(length) };
@@ -596,11 +604,12 @@ const ENGINE_SOURCE = String.raw`
       var padY = 0.5 * fontSize;
       var bar = 0.2 * fontSize;
       var lineHeight = 1.25 * fontSize;
-      var maxText = 0.8 * W - 2 * padX - bar;
+      // The accent bar sits inside the left padding, as in ade-media.
+      var maxText = 0.8 * W - 2 * padX;
       var lines = wrap(ctx, text, Math.max(fontSize, maxText));
       var textWidth = 0;
       for (var i = 0; i < lines.length; i += 1) textWidth = Math.max(textWidth, ctx.measureText(lines[i]).width);
-      var boxW = textWidth + 2 * padX + bar;
+      var boxW = textWidth + 2 * padX;
       var boxH = lines.length * lineHeight + 2 * padY;
       var boxX = (W - boxW) / 2;
       var boxY = H - style.captionMargin * S - boxH;
@@ -615,7 +624,7 @@ const ENGINE_SOURCE = String.raw`
       ctx.restore();
       ctx.fillStyle = "#FFFFFF";
       // One line sits at the left padding; two are each centred in the box.
-      var textLeft = boxX + bar + padX;
+      var textLeft = boxX + padX;
       for (var j = 0; j < lines.length; j += 1) {
         var lineX = lines.length > 1 ? textLeft + (textWidth - ctx.measureText(lines[j]).width) / 2 : textLeft;
         ctx.fillText(lines[j], lineX, boxY + padY + lineHeight * (j + 0.5));
@@ -632,6 +641,7 @@ const ENGINE_SOURCE = String.raw`
       var padX = 0.5 * fontSize;
       var padY = 0.25 * fontSize;
       var inset = 0.8 * fontSize;
+      text = ellipsize(ctx, text, 0.5 * W);
       var textWidth = ctx.measureText(text).width;
       var boxW = textWidth + 2 * padX;
       var boxH = 1.25 * fontSize + 2 * padY;
@@ -718,7 +728,9 @@ const ENGINE_SOURCE = String.raw`
 
       var caption = latestShowing(plan.captions || [], T);
       if (caption) {
-        var alpha = clamp(Math.min(1, (T - caption.start) / 0.15, (caption.end - T) / 0.15), 0, 1);
+        // A short fade at each end, never longer than half the caption (as ade-media).
+        var fade = Math.min(0.15, (caption.end - caption.start) / 2);
+        var alpha = fade > 0 ? clamp(Math.min(1, (T - caption.start) / fade, (caption.end - T) / fade), 0, 1) : 1;
         if (alpha > 0) drawCaption(ctx, W, H, S, caption.text, alpha);
       }
     }
@@ -1183,16 +1195,4 @@ export function createChromiumDemoEngine(deps: { logger: Logger }): ChromiumDemo
       failActive?.(new Error("The Chromium demo engine was shut down."));
     },
   };
-}
-
-let sharedEngine: ChromiumDemoEngine | null = null;
-
-/**
- * The desktop's one Chromium engine. The browser recorder, App Control and
- * the desktop bridge share it, so their jobs queue behind each other instead
- * of running several hidden renderers at once. The first caller's logger wins.
- */
-export function sharedChromiumDemoEngine(logger: Logger): ChromiumDemoEngine {
-  sharedEngine ??= createChromiumDemoEngine({ logger });
-  return sharedEngine;
 }

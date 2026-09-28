@@ -11,14 +11,23 @@ import Foundation
 public typealias DemoRect = [Double]
 
 /// How an engine measures change. Both engines use the same numbers, so the
-/// planner's thresholds mean the same thing on every OS.
+/// planner's thresholds mean the same thing on every OS. The desktop passes
+/// the contract's numbers (`DEMO_ANALYSIS_*` in `demoContract.ts`) on the
+/// command line, so the two engines cannot drift apart; these defaults match.
 public enum DemoAnalysisRules {
     /// Longest side of the greyscale thumbnail each frame is reduced to.
-    public static let thumbnailLongSide = 256
+    public private(set) static var thumbnailLongSide = 256
     /// A thumbnail pixel changed when it moved by more than this (0..255).
-    public static let pixelDelta = 24
+    public private(set) static var pixelDelta = 24
     /// Frames closer than this to the last analysed one may be skipped.
-    public static let minIntervalSeconds = 1.0 / 30
+    public private(set) static var minIntervalSeconds = 1.0 / 30
+
+    /// Set once, before the analysis starts. Values out of range are ignored.
+    public static func configure(thumbnailLongSide: Int?, pixelDelta: Int?, minIntervalSeconds: Double?) {
+        if let side = thumbnailLongSide, side >= 16, side <= 4096 { self.thumbnailLongSide = side }
+        if let delta = pixelDelta, delta >= 0, delta <= 255 { self.pixelDelta = delta }
+        if let interval = minIntervalSeconds, interval >= 0, interval <= 1 { self.minIntervalSeconds = interval }
+    }
 }
 
 /// The pointer, in pointer units: (0,0) is the tip, the shape is 1 unit tall.

@@ -3,7 +3,8 @@ import Foundation
 
 /// `ade-media`: ADE's demo-video engine on macOS.
 ///
-///     ade-media analyze <input.mp4|.mov|.m4v>   → one DemoAnalysis JSON on stdout
+///     ade-media analyze <input.mp4|.mov|.m4v> [<thumbnailLongSide> <pixelDelta> <minIntervalSeconds>]
+///                                               → one DemoAnalysis JSON on stdout
 ///     ade-media render <request.json>           → one DemoRenderResult JSON on stdout
 ///
 /// Both exit 0 on success. `render` reports `progress 0.42` lines on stderr, at
@@ -17,7 +18,14 @@ enum ADEMediaCommand {
         let arguments = Array(CommandLine.arguments.dropFirst())
         do {
             switch (arguments.first, arguments.count) {
-            case ("analyze", 2):
+            case ("analyze", 2), ("analyze", 5):
+                if arguments.count == 5 {
+                    DemoAnalysisRules.configure(
+                        thumbnailLongSide: Int(arguments[2]),
+                        pixelDelta: Int(arguments[3]),
+                        minIntervalSeconds: Double(arguments[4])
+                    )
+                }
                 let analysis = try await Analyzer.analyze(path: arguments[1])
                 try printJSON(analysis)
             case ("render", 2):
@@ -26,7 +34,7 @@ enum ADEMediaCommand {
                 let result = try await Renderer(request: request, progress: reporter.report).run()
                 try printJSON(result)
             default:
-                throw MediaError("Usage: ade-media analyze <input> | ade-media render <request.json>")
+                throw MediaError("Usage: ade-media analyze <input> [<thumbnailLongSide> <pixelDelta> <minIntervalSeconds>] | ade-media render <request.json>")
             }
             exit(0)
         } catch {

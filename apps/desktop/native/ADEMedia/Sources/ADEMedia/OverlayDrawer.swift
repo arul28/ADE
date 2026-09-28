@@ -49,7 +49,8 @@ final class OverlayDrawer {
         self.plan = plan
         self.width = width
         self.height = height
-        let rgb = DemoOverlayGeometry.parseHexColor(plan.style.accent) ?? (0.49, 0.36, 1.0)
+        // `DEMO_STYLE.accent` (#A78BFA) when the plan's colour does not parse.
+        let rgb = DemoOverlayGeometry.parseHexColor(plan.style.accent) ?? (167.0 / 255, 139.0 / 255, 250.0 / 255)
         accent = CGColor(srgbRed: rgb.red, green: rgb.green, blue: rgb.blue, alpha: 1)
         rings = plan.rings.filter { $0.t.isFinite && $0.x.isFinite && $0.y.isFinite }
         cursor = DemoCursorTrack(keys: plan.cursor)

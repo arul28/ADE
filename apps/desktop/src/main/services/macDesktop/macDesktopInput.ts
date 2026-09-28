@@ -13,6 +13,7 @@
 
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
 import { macDesktopDemoKey } from "./macDesktopRecording";
 import {
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
@@ -294,7 +295,11 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       by: action.by,
       ...(center ? { x: nx(center.x), y: ny(center.y) } : {}),
       ...(frame ? { rect: [nx(frame.x), ny(frame.y), frame.width / display.width, frame.height / display.height] } : {}),
-      label: action.label ?? action.element?.title ?? action.element?.label ?? undefined,
+      // A type event's label is the typed text itself (already filtered), never
+      // the field's name: the caption reads `Type "<label>"`.
+      label: action.kind === "type"
+        ? action.label ?? undefined
+        : action.label ?? action.element?.title ?? action.element?.label ?? undefined,
     });
   };
 
@@ -568,7 +573,15 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         silent,
         skipObservation: submit,
         caption,
-        demo: { kind: "type", label: args.text },
+        // Only for a named field that is not a secure (password) field: a demo
+        // goes to a pull request, and text typed into whatever had focus may
+        // be a password.
+        demo: {
+          kind: "type",
+          label: target.element && target.element.subrole !== "AXSecureTextField" && target.element.role !== "AXSecureTextField"
+            ? demoTypedLabelForField(args.text, [target.element.title, target.element.label, target.element.identifier, target.element.help])
+            : null,
+        },
         target: { ...target.payload },
       });
       if (!submit) return typed;
