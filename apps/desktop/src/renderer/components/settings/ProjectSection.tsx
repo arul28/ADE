@@ -268,6 +268,8 @@ export function ProjectSection() {
     >
       <SettingsCard
         anchor="project"
+        icon={<FolderOpen size={15} weight="duotone" />}
+        tone="green"
         title={healthy ? "Everything looks good" : "Needs attention"}
         description={
           healthy
@@ -292,8 +294,8 @@ export function ProjectSection() {
             <button
               type="button"
               style={actionableIssues > 0
-                ? primaryButton({ height: 28, padding: "0 10px", fontSize: 11 })
-                : outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                ? primaryButton({ height: 28, padding: "0 10px", fontSize: 12 })
+                : outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
               disabled={busy != null}
               onClick={() => void runAction("repair", () => window.ade.project.initializeOrRepair(pin))}
             >
@@ -301,7 +303,7 @@ export function ProjectSection() {
             </button>
             <button
               type="button"
-              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
               disabled={busy != null}
               onClick={() => void runAction("integrity", () => window.ade.project.runIntegrityCheck(pin))}
             >

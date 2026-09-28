@@ -86,9 +86,11 @@ export type ChatAppearancePreviewProps = {
   shellGeometry: ChatShellGeometry;
   /** When true, draw the user-message minimap rail in each preview column. */
   chatUserMinimapEnabled?: boolean;
+  /** Draw one runtime's thread. Omitted, every runtime is drawn side by side. */
+  provider?: PreviewProviderKey;
 };
 
-const PREVIEW_PROVIDER_META = {
+export const PREVIEW_PROVIDER_META = {
   codex: { name: "Codex", Logo: CodexLogo },
   claude: { name: "Claude", Logo: ClaudeLogo },
   opencode: { name: "OpenCode", Logo: OpenCodeLogo },
@@ -97,7 +99,9 @@ const PREVIEW_PROVIDER_META = {
   pi: { name: "Pi", Logo: PiLogo },
 } as const;
 
-type PreviewProviderKey = keyof typeof PREVIEW_PROVIDER_META;
+export type PreviewProviderKey = keyof typeof PREVIEW_PROVIDER_META;
+
+export const PREVIEW_PROVIDER_KEYS: readonly PreviewProviderKey[] = ["codex", "claude", "opencode", "cursor", "droid", "pi"];
 
 /** Sample model line per column — structure matches `AgentChatMessageList` “done” usage row. */
 const PREVIEW_USAGE_MODEL: Record<
@@ -283,26 +287,43 @@ function SharedAppearanceTranscript({
   );
 }
 
-const PREVIEW_COLUMNS: ReadonlyArray<{ provider: PreviewProviderKey; fallbackAccent: string }> = (
-  ["codex", "claude", "opencode", "cursor", "droid", "pi"] as const
-).map((provider) => ({ provider, fallbackAccent: PROVIDER_CHAT_ACCENTS[provider]! }));
+const PREVIEW_COLUMNS: ReadonlyArray<{ provider: PreviewProviderKey; fallbackAccent: string }> = PREVIEW_PROVIDER_KEYS.map((provider) => ({ provider, fallbackAccent: PROVIDER_CHAT_ACCENTS[provider]! }));
 
 export function ChatAppearancePreview({
-  theme,
   chatFontSizePx,
   transcriptDensity,
   chromeTint,
   shellGeometry,
   chatUserMinimapEnabled = false,
+  provider,
 }: ChatAppearancePreviewProps) {
   const rootStyle = buildChatAppearanceRootStyle({
     chatFontSizePx,
     transcriptDensity,
   });
 
+  if (provider) {
+    return (
+      <PreviewColumn
+        provider={provider}
+        accentColor={providerChatAccent(provider) ?? PROVIDER_CHAT_ACCENTS[provider]!}
+        shellGeometry={shellGeometry}
+        chromeTint={chromeTint}
+      >
+        <SharedAppearanceTranscript
+          rootStyle={rootStyle}
+          provider={provider}
+          chromeTint={chromeTint}
+          chatUserMinimapEnabled={chatUserMinimapEnabled}
+        />
+      </PreviewColumn>
+    );
+  }
+
   return (
+    // No `data-theme` here: the preview inherits the active theme from <html>,
+    // and a local attribute would reset a custom palette to its base mode.
     <div
-      data-theme={theme}
       // 6 runtimes: 1-up on narrow, 2-up at lg, 3-up at xl — two even rows of
       // three, which is why the sixth tile slots in without a layout change.
       className="grid w-full min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-[repeat(2,minmax(0,1fr))] xl:grid-cols-[repeat(3,minmax(0,1fr))]"

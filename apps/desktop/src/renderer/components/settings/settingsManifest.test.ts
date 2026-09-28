@@ -63,7 +63,17 @@ describe("settings manifest", () => {
     "appearance.launch-prompt": "chat",
     "appearance.preview": "chat",
     "agents.dictation": "chat",
-    "agents.scheduled-work": "activity",
+    "agents.scheduled-work": "notifications",
+    // The Activity settings now sit on Notifications, but their ids keep the
+    // `activity.` namespace and their anchors are still what old deeplinks use.
+    "activity.notch-enabled": "notifications",
+    "activity.notch-reveal": "notifications",
+    "activity.notch-expanded": "notifications",
+    "activity.celebrations": "notifications",
+    "activity.sounds": "notifications",
+    "activity.hide-details": "notifications",
+    "activity.dock-badge": "notifications",
+    "activity.machines": "notifications",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {
@@ -129,20 +139,22 @@ describe("settings manifest", () => {
   });
 
   it("follows the legacy Activity-settings aliases already in the wild", () => {
-    // `?tab=notifications#attention-notch` shipped in tour steps and deeplinks
-    // before Activity had a tab of its own. Landing those on Notifications —
-    // which no longer holds the card — would be an invisible dead end.
+    // These cards used to live on an Activity tab of their own. That tab is
+    // gone and its settings now sit on Notifications, so the old hashes and
+    // the old `attention`/`activity` tab names must land on Notifications —
+    // landing them anywhere else would be an invisible dead end.
     for (const [hash, expectedTab] of [
-      ["attention-notch", "activity"],
-      ["celebrations", "activity"],
-      ["attention-sounds", "activity"],
-      ["hide-previews", "activity"],
+      ["attention-notch", "notifications"],
+      ["celebrations", "notifications"],
+      ["attention-sounds", "notifications"],
+      ["hide-previews", "notifications"],
     ] as const) {
       const entry = resolveSettingsHash(hash);
       expect(entry, `hash "${hash}" did not resolve`).not.toBeNull();
       expect(entry!.tab).toBe(expectedTab);
     }
-    expect(resolveSettingsTab("attention")).toBe("activity");
+    expect(resolveSettingsTab("attention")).toBe("notifications");
+    expect(resolveSettingsTab("activity")).toBe("notifications");
   });
 
   it("resolves a live anchor directly, without needing an alias", () => {

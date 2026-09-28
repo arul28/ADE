@@ -138,10 +138,15 @@ beforeEach(() => {
 
 describe("accountSettingsSync (renderer)", () => {
   it("registers exactly the account-scoped persisted preferences", () => {
+    // `theme` (the painted base mode) is deliberately absent: a machine that
+    // follows its OS derives it, so syncing it would let one machine's OS event
+    // become another machine's choice. `themeId` + `themeFollowsSystem` carry
+    // the real choices and reconstruct `theme` locally.
     expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).toEqual([
-      "theme",
       "themeId",
       "customThemes",
+      "themeFollowsSystem",
+      "interfacePreferences",
       "terminalPreferences",
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",
@@ -567,3 +572,4 @@ describe("accountSettingsSync (renderer)", () => {
     expect(api.set).not.toHaveBeenCalled();
   });
 });
+

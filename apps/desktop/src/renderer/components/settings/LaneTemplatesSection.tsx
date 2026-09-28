@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { Stack } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
@@ -315,7 +316,7 @@ export function LaneTemplatesSection() {
 
   if (loading) {
     return (
-      <SettingsManagerPage anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
+      <SettingsManagerPage icon={<Stack size={15} weight="duotone" />} tone="violet" anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
         <div style={{ fontSize: 12, color: COLORS.textMuted }}>Loading templates...</div>
       </SettingsManagerPage>
     );
@@ -323,7 +324,7 @@ export function LaneTemplatesSection() {
 
   if (editing) {
     return (
-      <SettingsManagerPage anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
+      <SettingsManagerPage icon={<Stack size={15} weight="duotone" />} tone="violet" anchor={ANCHOR} title={TITLE} description={DESCRIPTION}>
         <TemplateEditor
           template={editing}
           onSave={handleSave}
@@ -335,12 +336,14 @@ export function LaneTemplatesSection() {
 
   return (
     <SettingsManagerPage
+      icon={<Stack size={15} weight="duotone" />}
+      tone="violet"
       anchor={ANCHOR}
       title={TITLE}
       description={DESCRIPTION}
       toolbar={
         <button
-          style={outlineButton({ height: 28, fontSize: 11 })}
+          style={outlineButton({ height: 28, fontSize: 12 })}
           onClick={() => setEditing(emptyTemplate())}
         >
           + New template
@@ -373,7 +376,7 @@ export function LaneTemplatesSection() {
             description="A template says what happens when a lane is created: which files get copied in, what gets installed, and what script runs."
             action={
               <button
-                style={primaryButton({ height: 34, fontSize: 12 })}
+                style={primaryButton({ fontSize: 12 })}
                 onClick={() => setEditing(emptyTemplate())}
               >
                 Create your first template
@@ -437,7 +440,7 @@ function TemplateRow({
         actions={
           <>
             <button
-              style={outlineButton({ height: 26, fontSize: 10, padding: "0 10px", borderRadius: 6 })}
+              style={outlineButton({ height: 26, fontSize: 12, padding: "0 10px", borderRadius: 6 })}
               onClick={onEdit}
             >
               Edit
@@ -654,7 +657,7 @@ function TemplateEditor({
           </div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
-          <button style={outlineButton({ height: 30, fontSize: 11 })} onClick={onCancel}>Cancel</button>
+          <button style={outlineButton({ height: 30, fontSize: 12 })} onClick={onCancel}>Cancel</button>
           <button
             style={primaryButton({ height: 30, fontSize: 11, opacity: name.trim() ? 1 : 0.4 })}
             disabled={!name.trim()}
@@ -713,7 +716,7 @@ function TemplateEditor({
             </div>
           ))}
           <button
-            style={outlineButton({ height: 28, fontSize: 10 })}
+            style={outlineButton({ height: 28, fontSize: 12 })}
             onClick={() => setCopyPaths([...copyPaths, { source: "" }])}
           >
             + Add file or folder
@@ -751,7 +754,7 @@ function TemplateEditor({
             </div>
           ))}
           <button
-            style={outlineButton({ height: 28, fontSize: 10 })}
+            style={outlineButton({ height: 28, fontSize: 12 })}
             onClick={() => setEnvFiles([...envFiles, { source: "", dest: "" }])}
           >
             + Add env file
@@ -783,7 +786,7 @@ function TemplateEditor({
             </div>
           ))}
           <button
-            style={outlineButton({ height: 28, fontSize: 10 })}
+            style={outlineButton({ height: 28, fontSize: 12 })}
             onClick={() => setDependencies([...dependencies, { command: [] }])}
           >
             + Add command
@@ -1005,7 +1008,7 @@ function AdvancedFields({
           </div>
         ))}
         <button
-          style={outlineButton({ height: 28, fontSize: 10 })}
+          style={outlineButton({ height: 28, fontSize: 12 })}
           onClick={() => onChange({ mountPoints: [...mountPoints, { source: "", dest: "" }] })}
         >
           + Add file
@@ -1042,7 +1045,7 @@ function AdvancedFields({
           </div>
         ))}
         <button
-          style={outlineButton({ height: 28, fontSize: 10 })}
+          style={outlineButton({ height: 28, fontSize: 12 })}
           onClick={() => onChange({ envVars: [...envVars, { key: "", value: "" }] })}
         >
           + Add variable

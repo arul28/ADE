@@ -11,8 +11,9 @@ vi.mock("../../lib/account", () => ({
   useAccountStatus: () => ({ status: { signedIn: true, userId: "user-1" } }),
 }));
 
-// Notch presentation, celebrations, previews, and per-machine mute moved to
-// the Activity tab; their coverage moved with them to ActivitySection.test.tsx.
+// Activity's settings now live on this page too, so the notifications section
+// mounts the notch, privacy, machine, sound, and scheduled-work sections as
+// well as the event policy rows.
 function installAdeMock() {
   const putPreferences = vi.fn(async (_ownerId: string, _prefs: any) => {});
   const getPreferences = vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES);
@@ -21,6 +22,15 @@ function installAdeMock() {
   (window as any).ade = {
     attention: { getPreferences, putPreferences },
     attentionNotch: { updateSettings },
+    ai: { updateConfig: vi.fn(async () => {}) },
+    agentChat: {
+      listScheduledWork: vi.fn(async () => []),
+      cancelScheduledWork: vi.fn(async () => ({
+        schedule: { id: "wake-1", status: "cancelled" },
+        providerCancellationRequested: false,
+        providerCancellationConfirmed: true,
+      })),
+    },
     projectConfig: {
       get: vi.fn(async () => ({
         shared: {},
@@ -42,7 +52,7 @@ describe("NotificationsSection", () => {
   it("renders every anchor the settings manifest promises for this tab", async () => {
     installAdeMock();
     const { container } = render(<NotificationsSection />);
-    await screen.findByText("Notify me about");
+    await screen.findByText("Events");
 
     // A manifest entry whose anchor is never rendered is an invisible break:
     // Cmd-K offers the setting, navigates, and lands on nothing.
@@ -58,14 +68,14 @@ describe("NotificationsSection", () => {
   it("exposes a per-event policy control for each event and saves the change", async () => {
     const { putPreferences } = installAdeMock();
     render(<NotificationsSection />);
-    await screen.findByText("Notify me about");
+    await screen.findByText("Events");
 
     // The delivery model shipped with these policies but no UI ever exposed
     // them; this is the control that makes them reachable.
     const group = screen.getByRole("radiogroup", { name: "CI fails" });
     expect(group).toBeTruthy();
 
-    fireEvent.click(within(group).getByRole("radio", { name: /Ambient/ }));
+    fireEvent.click(within(group).getByRole("radio", { name: /Activity/ }));
 
     await waitFor(() => expect(putPreferences).toHaveBeenCalledTimes(1));
     const saved = putPreferences.mock.calls[0]![1];
@@ -81,7 +91,7 @@ describe("NotificationsSection", () => {
   it("saves without a Save button", async () => {
     const { putPreferences } = installAdeMock();
     render(<NotificationsSection />);
-    await screen.findByText("Notify me about");
+    await screen.findByText("Events");
 
     expect(screen.queryByRole("button", { name: /^save$/i })).toBeNull();
 
@@ -93,10 +103,10 @@ describe("NotificationsSection", () => {
   it("reveals quiet-hour times only once quiet hours are on", async () => {
     installAdeMock();
     render(<NotificationsSection />);
-    await screen.findByText("Notify me about");
+    await screen.findByText("Events");
 
-    expect(screen.queryByLabelText("From")).toBeNull();
+    expect(screen.queryByLabelText("Quiet hours from")).toBeNull();
     fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
-    expect(await screen.findByLabelText("From")).toBeTruthy();
+    expect(await screen.findByLabelText("Quiet hours from")).toBeTruthy();
   });
 });

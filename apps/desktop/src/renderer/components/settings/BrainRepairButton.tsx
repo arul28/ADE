@@ -25,7 +25,7 @@ export function BrainRepairButton({
         disabled={blocked}
         onClick={repair.run}
         style={{
-          ...outlineButton({ height, padding: "0 9px", fontSize: 11, flexShrink: 0 }),
+          ...outlineButton({ height, padding: "0 9px", fontSize: 12, flexShrink: 0 }),
           opacity: blocked ? 0.6 : 1,
         }}
       >

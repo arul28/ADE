@@ -1,5 +1,5 @@
 import React, { useRef, useState } from "react";
-import { useAppStore } from "../../state/appStore";
+import { selectEffectiveThemeId, useAppStore } from "../../state/appStore";
 import {
   allThemeOptions,
   importVscodeTheme,
@@ -11,8 +11,10 @@ import {
   type AdeTheme,
   type AdeThemeSource,
 } from "../../../shared/theme";
+import { DownloadSimple, UploadSimple } from "@phosphor-icons/react";
 import { Dialog } from "../ui/dialog";
-import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { SettingsSectionAction } from "./primitives";
 import { showToast } from "../app/toast/toastStore";
 import { upsertCustomTheme } from "./themeCustomizerModel";
 
@@ -38,7 +40,9 @@ function looksLikeVscodeTheme(value: unknown): boolean {
 }
 
 export function ThemeImportExport() {
-  const themeId = useAppStore((s) => s.themeId);
+  // Export what is on screen, which differs from the chosen variant when the
+  // theme follows the system.
+  const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
   const setTheme = useAppStore((s) => s.setTheme);
   const setCustomThemes = useAppStore((s) => s.setCustomThemes);
@@ -101,7 +105,7 @@ export function ThemeImportExport() {
   };
 
   return (
-    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 12 }}>
+    <>
       <input
         ref={fileInputRef}
         type="file"
@@ -114,15 +118,18 @@ export function ThemeImportExport() {
           if (file) void handleFile(file);
         }}
       />
-      <button type="button" onClick={() => fileInputRef.current?.click()} style={toolbarButton}>
-        Import theme…
-      </button>
-      <button type="button" onClick={() => void handleExport()} style={toolbarButton}>
-        Export current
-      </button>
-      <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>
-        ADE or VS Code theme JSON
-      </span>
+      <SettingsSectionAction
+        icon={<UploadSimple size={13} />}
+        label="Import"
+        title="Import an ADE or VS Code theme file"
+        onClick={() => fileInputRef.current?.click()}
+      />
+      <SettingsSectionAction
+        icon={<DownloadSimple size={13} />}
+        label="Export"
+        title={`Export ${activeTheme.name} as a theme file`}
+        onClick={() => void handleExport()}
+      />
 
       <Dialog
         open={unmapped != null}
@@ -149,8 +156,6 @@ export function ThemeImportExport() {
           </div>
         ) : null}
       </Dialog>
-    </div>
+    </>
   );
 }
-
-const toolbarButton: React.CSSProperties = outlineButton({ height: 26, padding: "0 10px", fontSize: 11 });

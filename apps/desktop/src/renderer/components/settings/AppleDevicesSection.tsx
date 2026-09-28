@@ -1,4 +1,5 @@
 import React from "react";
+import { DeviceMobile, HandTap, Keyboard, WifiHigh, HardDrives } from "@phosphor-icons/react";
 import {
   APPLE_REMOTE_BITRATE_KBPS_MAX,
   APPLE_REMOTE_BITRATE_KBPS_MIN,
@@ -6,11 +7,11 @@ import {
   warnGibFromBytes,
 } from "../../../shared/appleDeviceSettings";
 import { useAppStore } from "../../state/appStore";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import {
-  SettingsCard,
-  SettingsGroup,
   SettingsNumber,
+  SettingsPanel,
+  SettingsRow,
+  SettingsSection,
   SettingsToggle,
 } from "./primitives";
 
@@ -28,113 +29,89 @@ export function AppleDevicesSection() {
   const setAppleDevicePreferences = useAppStore((s) => s.setAppleDevicePreferences);
 
   return (
-    <SettingsGroup title="Apple Development">
-      <SettingsCard
-        anchor="apple-realistic-body"
-        title="Realistic body"
-        description="Show the real device body in 3D view. Off draws a plain body."
-        control={
-          <SettingsToggle
-            label="Realistic body"
-            checked={appleDevice.realisticBody}
-            onChange={(realisticBody) => setAppleDevicePreferences({ realisticBody })}
-          />
-        }
-      />
-
-      <SettingsCard
-        anchor="apple-tap-rings"
-        title="Recording overlays"
-        description="Drawn into saved recordings only. The live view stays clean."
-        stacked
-      >
-        <OverlayRow
-          id="apple-tap-rings-control"
-          label="Tap rings"
-          description="A ring where each tap lands."
-          checked={appleDevice.recordingTapRings}
-          onChange={(recordingTapRings) => setAppleDevicePreferences({ recordingTapRings })}
+    <SettingsSection title="Apple Development">
+      <SettingsPanel>
+        <SettingsRow
+          anchor="apple-realistic-body"
+          icon={<DeviceMobile size={15} weight="duotone" />}
+          tone="slate"
+          title="Realistic body"
+          description="Show the real device body in 3D view."
+          control={
+            <SettingsToggle
+              label="Realistic body"
+              checked={appleDevice.realisticBody}
+              onChange={(realisticBody) => setAppleDevicePreferences({ realisticBody })}
+            />
+          }
         />
-        <div id="apple-typed-badges" data-settings-anchor="apple-typed-badges">
-          <OverlayRow
-            id="apple-typed-badges-control"
-            label="Typed-text badges"
-            description="Show what was typed. Password fields are never shown."
-            checked={appleDevice.recordingKeyBadges}
-            onChange={(recordingKeyBadges) => setAppleDevicePreferences({ recordingKeyBadges })}
-          />
-        </div>
-      </SettingsCard>
-
-      <SettingsCard
-        anchor="apple-remote-bitrate"
-        title="Remote viewer bitrate cap"
-        description="Applies to the web client, the phone, and a desktop bound to another Mac. A viewer on this machine is never capped."
-        control={
-          <SettingsNumber
-            ariaLabel="Remote viewer bitrate cap"
-            value={appleDevice.remoteBitrateKbpsCap}
-            min={APPLE_REMOTE_BITRATE_KBPS_MIN}
-            max={APPLE_REMOTE_BITRATE_KBPS_MAX}
-            suffix="kbit/s"
-            onChange={(remoteBitrateKbpsCap) => setAppleDevicePreferences({ remoteBitrateKbpsCap })}
-          />
-        }
-      />
-
-      <SettingsCard
-        anchor="apple-recordings-warn"
-        title="Recordings storage warning"
-        description="Diagnostics warns when Apple recordings pass this size. ADE never deletes them."
-        control={
-          <SettingsNumber
-            ariaLabel="Recordings storage warning"
-            value={warnGibFromBytes(appleDevice.recordingsWarnBytes)}
-            min={1}
-            max={100}
-            suffix="GiB"
-            onChange={(gib) => setAppleDevicePreferences({
-              recordingsWarnBytes: warnBytesFromGib(gib),
-            })}
-          />
-        }
-      />
-    </SettingsGroup>
-  );
-}
-
-function OverlayRow({
-  id,
-  label,
-  description,
-  checked,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  description: string;
-  checked: boolean;
-  onChange: (value: boolean) => void;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 16,
-        padding: "8px 0",
-      }}
-    >
-      <div style={{ minWidth: 0 }}>
-        <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 550, color: COLORS.textPrimary }}>
-          {label}
-        </div>
-        <div style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-          {description}
-        </div>
-      </div>
-      <SettingsToggle id={id} label={label} checked={checked} onChange={onChange} />
-    </div>
+        <SettingsRow
+          anchor="apple-tap-rings"
+          icon={<HandTap size={15} weight="duotone" />}
+          tone="pink"
+          title="Tap rings"
+          description="Drawn where each tap lands, in saved recordings only."
+          control={
+            <SettingsToggle
+              id="apple-tap-rings-control"
+              label="Tap rings"
+              checked={appleDevice.recordingTapRings}
+              onChange={(recordingTapRings) => setAppleDevicePreferences({ recordingTapRings })}
+            />
+          }
+        />
+        <SettingsRow
+          anchor="apple-typed-badges"
+          icon={<Keyboard size={15} weight="duotone" />}
+          tone="violet"
+          title="Typed-text badges"
+          description="Show typed text in saved recordings. Never for password fields."
+          control={
+            <SettingsToggle
+              id="apple-typed-badges-control"
+              label="Typed-text badges"
+              checked={appleDevice.recordingKeyBadges}
+              onChange={(recordingKeyBadges) => setAppleDevicePreferences({ recordingKeyBadges })}
+            />
+          }
+        />
+        <SettingsRow
+          anchor="apple-remote-bitrate"
+          icon={<WifiHigh size={15} weight="duotone" />}
+          tone="blue"
+          title="Remote viewer bitrate cap"
+          description="For the web client, the phone, and other Macs. Viewers on this Mac are never capped."
+          control={
+            <SettingsNumber
+              ariaLabel="Remote viewer bitrate cap"
+              value={appleDevice.remoteBitrateKbpsCap}
+              min={APPLE_REMOTE_BITRATE_KBPS_MIN}
+              max={APPLE_REMOTE_BITRATE_KBPS_MAX}
+              suffix="kbit/s"
+              onChange={(remoteBitrateKbpsCap) => setAppleDevicePreferences({ remoteBitrateKbpsCap })}
+            />
+          }
+        />
+        <SettingsRow
+          anchor="apple-recordings-warn"
+          icon={<HardDrives size={15} weight="duotone" />}
+          tone="amber"
+          title="Recordings storage warning"
+          description="Diagnostics warns past this size. ADE never deletes recordings."
+          control={
+            <SettingsNumber
+              ariaLabel="Recordings storage warning"
+              value={warnGibFromBytes(appleDevice.recordingsWarnBytes)}
+              min={1}
+              max={100}
+              suffix="GiB"
+              onChange={(gib) => setAppleDevicePreferences({
+                recordingsWarnBytes: warnBytesFromGib(gib),
+              })}
+            />
+          }
+        />
+      </SettingsPanel>
+    </SettingsSection>
   );
 }

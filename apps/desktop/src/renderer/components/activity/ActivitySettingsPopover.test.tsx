@@ -181,7 +181,7 @@ describe("ActivitySettingsPopover", () => {
 
       fireEvent.click(await screen.findByRole("button", { name: /All Activity settings/ }));
 
-      expect(targets).toEqual([{ kind: "settings", tab: "activity" }]);
+      expect(targets).toEqual([{ kind: "settings", tab: "notifications" }]);
     } finally {
       window.removeEventListener("ade:navigate-target", onNavigate);
     }

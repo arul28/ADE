@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { ArrowsClockwise, HourglassMedium } from "@phosphor-icons/react";
 import {
   DEFAULT_AUTO_UPDATE_PREFERENCES,
   type AutoUpdatePreferences,
@@ -55,6 +56,8 @@ export function AutoUpdatesControls() {
     <>
       <SettingsCard
         anchor="auto-updates"
+        icon={<ArrowsClockwise size={15} weight="duotone" />}
+        tone="green"
         title="Install ADE updates automatically"
         description="ADE shows a cancelable countdown before restarting. Leave this off to install updates from the top-right control."
         control={
@@ -78,6 +81,8 @@ export function AutoUpdatesControls() {
       {current.automaticInstall ? (
         <SettingsCard
           anchor="auto-updates-only-when-idle"
+          icon={<HourglassMedium size={15} weight="duotone" />}
+          tone="amber"
           title="Wait until active work finishes"
           description="Start the restart countdown only when there are no active agent turns or work sessions."
           control={

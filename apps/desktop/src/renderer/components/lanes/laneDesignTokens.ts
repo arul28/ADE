@@ -65,14 +65,12 @@ export const LABEL_STYLE: CSSProperties = {
   color: COLORS.textMuted,
 };
 
-/** Uppercase mono heading used for the section bands inside settings panels. */
+/** The quiet sentence-case heading for bands inside settings panels. */
 export const SECTION_LABEL_STYLE: CSSProperties = {
-  fontSize: 10,
-  fontFamily: MONO_FONT,
-  textTransform: "uppercase",
-  letterSpacing: "1px",
+  fontSize: 12,
+  fontFamily: SANS_FONT,
   color: COLORS.textMuted,
-  fontWeight: 700,
+  fontWeight: 500,
 };
 
 export function inlineBadge(color: string, overrides?: CSSProperties): CSSProperties {
@@ -173,9 +171,9 @@ export function outlineButton(overrides?: CSSProperties): CSSProperties {
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    height: 32,
+    height: 30,
     padding: "0 12px",
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: 500,
     fontFamily: SANS_FONT,
     color: COLORS.textSecondary,
@@ -193,9 +191,9 @@ export function primaryButton(overrides?: CSSProperties): CSSProperties {
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    height: 32,
+    height: 30,
     padding: "0 14px",
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: 500,
     fontFamily: SANS_FONT,
     color: "var(--color-bg)",
@@ -213,9 +211,9 @@ export function dangerButton(overrides?: CSSProperties): CSSProperties {
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    height: 32,
+    height: 30,
     padding: "0 14px",
-    fontSize: 12,
+    fontSize: 12.5,
     fontWeight: 500,
     fontFamily: SANS_FONT,
     color: COLORS.danger,

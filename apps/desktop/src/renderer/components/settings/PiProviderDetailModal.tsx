@@ -104,7 +104,7 @@ export function PiProviderDetailModal({
               {modelIds.length > shown.length ? (
                 <button
                   type="button"
-                  style={{ ...outlineButton({ height: 24, fontSize: 10 }), alignSelf: "flex-start" }}
+                  style={{ ...outlineButton({ height: 24, fontSize: 12 }), alignSelf: "flex-start" }}
                   onClick={() => setExpanded(true)}
                 >
                   Show {modelIds.length - shown.length} more

@@ -503,7 +503,7 @@ export function attentionNotchAppNavigation(
   if (output.type === "open_settings") {
     return {
       request: {
-        target: { kind: "settings", tab: "activity", anchor: null },
+        target: { kind: "settings", tab: "notifications", anchor: null },
         source: "attention-notch",
       },
       activatesApp: true,

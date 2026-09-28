@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowCircleUp, ArrowsClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
+import { Info, Cpu, ArrowCircleUp, ArrowsClockwise, CheckCircle, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
@@ -193,6 +193,8 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
         <SettingsGroup title="About">
           <SettingsCard
             anchor="about-app"
+            icon={<Info size={15} weight="duotone" />}
+            tone="blue"
             title={embedded ? "App" : "ADE"}
             description="Loading app info..."
           />
@@ -245,7 +247,7 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
       <SettingsGroup title="About">
-        <SettingsCard anchor="about-app" title={embedded ? "App" : "ADE"} control={pill}>
+        <SettingsCard anchor="about-app" icon={<Info size={15} weight="duotone" />} tone="blue" title={embedded ? "App" : "ADE"} control={pill}>
           <div style={{ display: "grid", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
               <span style={labelStyle}>Running</span>
@@ -337,6 +339,8 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
         {info.localRuntime ? (
           <SettingsCard
             anchor="about-runtime-service"
+            icon={<Cpu size={15} weight="duotone" />}
+            tone="violet"
             title={embedded ? "Background service" : "ADE runtime service"}
             control={
               <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>

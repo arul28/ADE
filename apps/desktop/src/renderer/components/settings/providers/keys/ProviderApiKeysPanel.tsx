@@ -116,7 +116,7 @@ function KeyRow({
           {canVerify ? (
             <button
               type="button"
-              style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11 })}
+              style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12 })}
               disabled={verifyState.busy}
               onClick={onVerify}
             >
@@ -127,14 +127,14 @@ function KeyRow({
             <>
               <button
                 type="button"
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11 })}
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12 })}
                 onClick={onReplace}
               >
                 Replace
               </button>
               <button
                 type="button"
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, color: COLORS.danger })}
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12, color: COLORS.danger })}
                 onClick={onDelete}
               >
                 Delete
@@ -265,7 +265,7 @@ export function ProviderApiKeysPanel({
         <button
           type="button"
           aria-label={`Add a ${providerLabel} API key`}
-          style={outlineButton({ height: 26, padding: "0 9px", fontSize: 11 })}
+          style={outlineButton({ height: 26, padding: "0 9px", fontSize: 12 })}
           onClick={() => {
             setWriteError(null);
             setSheet({ existing: null });

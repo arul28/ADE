@@ -355,7 +355,7 @@ function PiProviderBrowser({
                 <div style={SECTION_LABEL_STYLE}>Local Model Servers</div>
                 <button
                   type="button"
-                  style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
+                  style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })}
                   disabled={loadingProviders}
                   onClick={onRefreshDetection}
                 >
@@ -555,7 +555,7 @@ function PiSignInFlowCard({
           <button
             ref={retryButtonRef}
             type="button"
-            style={outlineButton({ height: 24, fontSize: 11 })}
+            style={outlineButton({ height: 24, fontSize: 12 })}
             onClick={() => onRetry(outcome)}
           >
             Try again

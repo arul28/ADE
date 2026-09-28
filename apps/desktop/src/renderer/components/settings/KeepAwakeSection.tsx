@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { WarningCircle } from "@phosphor-icons/react";
+import { Coffee, WarningCircle } from "@phosphor-icons/react";
 import type {
   KeepAwakeLevel,
   KeepAwakeSnapshot,
@@ -253,7 +253,7 @@ export function KeepAwakeControls() {
             type="button"
             disabled={busy}
             onClick={() => void choose("lid-closed")}
-            style={outlineButton({ height: 24, padding: "0 9px", fontSize: 11 })}
+            style={outlineButton({ height: 24, padding: "0 9px", fontSize: 12 })}
           >
             Turn on again
           </button>
@@ -322,7 +322,7 @@ export function KeepAwakeControls() {
               disabled={busy}
               onClick={() => void fix()}
               style={{
-                ...outlineButton({ height: 26, padding: "0 10px", fontSize: 11 }),
+                ...outlineButton({ height: 26, padding: "0 10px", fontSize: 12 }),
                 justifySelf: "end",
               }}
             >
@@ -351,6 +351,8 @@ export function KeepAwakeSection() {
     <SettingsGroup title="Sleep">
       <SettingsCard
         anchor="keep-awake"
+        icon={<Coffee size={15} weight="duotone" />}
+        tone="amber"
         title={mac
           ? "Keep this Mac awake while agents work"
           : "Keep this PC awake while agents work"}

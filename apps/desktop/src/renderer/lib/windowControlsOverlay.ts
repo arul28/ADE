@@ -23,10 +23,10 @@ import { rendererPlatformAttribute } from "./platform";
 import { DEFAULT_ZOOM, zoomFactorForDisplay } from "./zoom";
 
 /**
- * Deliberately not `--shell-header-padding-end`: `data-theme` is set on <html>,
- * <body>, and the shell wrapper, so each of those re-declares the padding
- * tokens and would shadow a value inherited from <html>. See the platform-inset
- * block in index.css.
+ * Deliberately not `--shell-header-padding-end`: the inset token is the
+ * clearance the header reads (with the padding token as its fallback), so the
+ * Windows caption width and the macOS traffic-light clearance stay separate
+ * values. See the platform-inset block in index.css.
  */
 export const SHELL_HEADER_INSET_END_PROPERTY = "--shell-header-inset-end";
 

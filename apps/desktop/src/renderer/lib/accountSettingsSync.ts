@@ -112,16 +112,22 @@ function pref<Value>(
  * travel.
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
-  pref("theme", (state) => state.theme, (state, value) => state.setTheme(value)),
-  // The active theme's id travels with the base mode so "themes follow you to
-  // another machine" is true for a custom theme, not just dark/light. A custom
-  // id whose definition has not landed yet paints as the default until its row
-  // arrives; `setTheme` keeps the id rather than resolving it.
+  // The chosen theme id is the account preference; the painted base mode is
+  // NOT synced. A machine that follows the system derives `theme` from its own
+  // OS, so syncing it would let one machine's OS event overwrite another
+  // machine's manual choice. `themeId` carries the family and variant, and the
+  // flag below carries the mode policy, so `setTheme` reconstructs `theme` on
+  // the receiving machine from the two values that really are choices.
+  //
+  // A custom id whose definition has not landed yet paints as the default until
+  // its row arrives; `setTheme` keeps the id rather than resolving it.
   pref("themeId", (state) => state.themeId, (state, value) => state.setTheme(value)),
   // Custom themes are one account-scoped list, like harness presets: the whole
   // list is one value under one key, so newer-wins applies to the list and two
   // machines never interleave half of each other's themes.
   pref("customThemes", (state) => state.customThemes, (state, value) => state.setCustomThemes(value as AdeTheme[])),
+  pref("themeFollowsSystem", (state) => state.themeFollowsSystem, (state, value) => state.setThemeFollowsSystem(value)),
+  pref("interfacePreferences", (state) => state.interfacePreferences, (state, value) => state.setInterfacePreferences(value)),
   pref("terminalPreferences", (state) => state.terminalPreferences, (state, value) => state.setTerminalPreferences(value)),
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
   pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),

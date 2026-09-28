@@ -4326,6 +4326,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openPathInEditor: resolvedArg(undefined),
       logDebugEvent: () => {},
     },
+    // Sample project secrets so the Secrets page renders its list in the preview.
+    projectSecrets: {
+      list: resolved({
+        secrets: [
+          { name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account" },
+          { name: "OPENAI_API_KEY", createdAt: now, updatedAt: now, valueLength: 51, storage: "account" },
+          { name: "DATABASE_URL", createdAt: now, updatedAt: now, valueLength: 64, storage: "device" },
+        ],
+        storage: { path: `${MOCK_PROJECT.rootPath}/.ade/secrets`, encrypted: true, scope: "project" },
+      }),
+      get: resolvedArg({ name: "STRIPE_API_KEY", createdAt: now, updatedAt: now, valueLength: 32, storage: "account", value: "sk_test_preview" }),
+      set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" }),
+      delete: resolvedArg({ deleted: true, name: "" }),
+      chooseEnvFile: resolved(null),
+      importEnv: resolvedArg({ imported: [], replaced: [] }),
+      exportEnv: resolved({ filePath: "", secretCount: 0 }),
+    },
     storage: {
       getPressure: resolved({
         state: "normal" as const,
@@ -5521,6 +5538,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onProxyEvent: noop,
     },
     sessions: {
+      getLifecycleSettings: resolved({ autoSettleLaneSessionsOnPrMerge: true }),
+      updateLifecycleSettings: resolvedArg({ autoSettleLaneSessionsOnPrMerge: true }),
       list: async (args: any = {}) => {
         let rows = MOCK_SESSIONS;
         if (typeof args?.laneId === "string" && args.laneId.trim()) {
@@ -6156,6 +6175,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
     },
     appControl: createMockAppControl(),
+    // No tools pane runs in the preview; the Work keep-alive still subscribes.
+    workTools: {
+      getLaneState: resolved(null),
+      setActiveTool: resolvedArg(undefined),
+      readObservationPreview: resolvedArg(null),
+      onShowRequest: noop,
+      acknowledgeShow: resolvedArg({ ok: false }),
+    },
     iosSimulator: {
       /*
        * Supported, with a device list, so the Apple picker renders in the web

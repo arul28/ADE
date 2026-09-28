@@ -370,7 +370,7 @@ export function ThisMacCard({
               type="button"
               onClick={onOpenYourComputers}
               title="Open Settings > Account > Your computers"
-              style={outlineButton({ height: 24, padding: "0 9px", fontSize: 11, flexShrink: 0 })}
+              style={outlineButton({ height: 24, padding: "0 9px", fontSize: 12, flexShrink: 0 })}
             >
               Your computers
             </button>
@@ -434,7 +434,7 @@ export function ThisMacCard({
                   type="button"
                   disabled={reconnectAction.disabled}
                   onClick={reconnectAction.onClick}
-                  style={outlineButton({ height: 24, padding: "0 9px", fontSize: 11 })}
+                  style={outlineButton({ height: 24, padding: "0 9px", fontSize: 12 })}
                 >
                   {reconnectAction.label}
                 </button>
@@ -482,7 +482,7 @@ export function ThisMacCard({
                     style={outlineButton({
                       height: 24,
                       padding: "0 9px",
-                      fontSize: 11,
+                      fontSize: 12,
                       flexShrink: 0,
                       opacity: startingSync ? 0.6 : 1,
                       cursor: startingSync ? "not-allowed" : "pointer",
@@ -662,7 +662,7 @@ function MachineNameRow({
           type="submit"
           aria-label="Save machine name"
           disabled={busy || !value.trim()}
-          style={outlineButton({ height: 28, padding: "0 8px", fontSize: 11 })}
+          style={outlineButton({ height: 28, padding: "0 8px", fontSize: 12 })}
         >
           <Check size={13} weight="bold" />
         </button>
@@ -671,7 +671,7 @@ function MachineNameRow({
           aria-label="Cancel rename"
           disabled={busy}
           onClick={() => setEditing(false)}
-          style={outlineButton({ height: 28, padding: "0 8px", fontSize: 11 })}
+          style={outlineButton({ height: 28, padding: "0 8px", fontSize: 12 })}
         >
           <X size={13} weight="bold" />
         </button>
@@ -1029,7 +1029,7 @@ export function WebConnectionsTab({
             </div>
             <button
               type="button"
-              style={primaryButton({ height: 32, justifySelf: "start" })}
+              style={primaryButton({justifySelf: "start" })}
               onClick={() => openExternalUrl(WEB_CLIENT_BASE_URL)}
             >
               <ArrowSquareOut size={15} weight="bold" />
@@ -1044,7 +1044,7 @@ export function WebConnectionsTab({
             </div>
             <button
               type="button"
-              style={primaryButton({ height: 32, justifySelf: "start" })}
+              style={primaryButton({justifySelf: "start" })}
               onClick={() => onAccountRequested?.()}
             >
               Sign in to use the web client
@@ -1554,7 +1554,7 @@ function DeviceRow({
       {readOnly ? null : (
         <button
           type="button"
-          style={{ ...dangerButton({ height: 30, padding: "0 12px", fontSize: 11 }), opacity: hovered ? 1 : 0.7 }}
+          style={{ ...dangerButton({ height: 30, padding: "0 12px", fontSize: 12 }), opacity: hovered ? 1 : 0.7 }}
           disabled={busy}
           onClick={() => void handleRevoke()}
         >

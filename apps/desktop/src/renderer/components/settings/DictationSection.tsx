@@ -1,5 +1,5 @@
 import React, { useCallback } from "react";
-import { CheckCircle, DownloadSimple } from "@phosphor-icons/react";
+import { Microphone, CheckCircle, DownloadSimple } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
@@ -10,23 +10,12 @@ import {
 import { useAppStore } from "../../state/appStore";
 import { useVoiceModelInstall } from "../../hooks/useVoiceModelInstall";
 import { VOICE_MODEL_SIZE_LABEL } from "../../services/globalVoiceModelInstaller";
-import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { SettingsPanel, SettingsRow, SettingsSection, SettingsToggle } from "./primitives";
 
 const detailPanelStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 12,
-};
-
-const bulletListStyle: React.CSSProperties = {
-  margin: 0,
-  paddingLeft: 18,
-  display: "grid",
-  gap: 6,
-  fontSize: 12,
-  fontFamily: SANS_FONT,
-  color: COLORS.textMuted,
-  lineHeight: 1.55,
 };
 
 function formatMb(bytes: number): string {
@@ -58,106 +47,86 @@ export function DictationSection() {
   const needsDownload = !isDownloading && !alreadyInstalled;
 
   return (
-    <SettingsGroup
-      title="Voice input"
-      description="Dictate into chat composers with on-device transcription. Nothing leaves your machine."
-    >
-      <SettingsCard
-        anchor="voice-input"
-        title="Enable voice input in chat"
-        description="Adds a mic button to chat composers. Speech is transcribed locally and inserted at your cursor."
-        control={
-          <SettingsToggle
-            label="Enable voice input in chat"
-            checked={voiceInputEnabled}
-            onChange={setVoiceInputEnabled}
-          />
-        }
-      >
-        {voiceInputEnabled ? (
-          <div style={detailPanelStyle}>
-            {isDownloading ? (
-              <>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                    Downloading speech model
-                  </span>
-                  <span style={inlineBadge(COLORS.accent)}>{percent != null ? `${percent}%` : "Starting"}</span>
-                </div>
+    <SettingsSection title="Voice input">
+      <SettingsPanel>
+        <SettingsRow
+          anchor="voice-input"
+          icon={<Microphone size={15} weight="duotone" />}
+          tone="red"
+          title="Dictation"
+          description={
+            alreadyInstalled && voiceInputEnabled
+              ? "Ready. Tap the mic in any composer. Speech never leaves this machine."
+              : "A mic in chat composers, transcribed on this machine. Nothing is uploaded."
+          }
+          control={(
+            <>
+              {alreadyInstalled && voiceInputEnabled ? (
+                <CheckCircle size={16} weight="fill" aria-label="Speech model installed" style={{ color: COLORS.success }} />
+              ) : null}
+              <SettingsToggle
+                label="Enable voice input in chat"
+                checked={voiceInputEnabled}
+                onChange={setVoiceInputEnabled}
+              />
+            </>
+          )}
+        >
+          {voiceInputEnabled && isDownloading ? (
+            <div style={detailPanelStyle}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                <span style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                  Downloading speech model
+                </span>
+                <span style={inlineBadge(COLORS.accent)}>{percent != null ? `${percent}%` : "Starting"}</span>
+              </div>
+              <div
+                style={{
+                  height: 6,
+                  borderRadius: 999,
+                  background: "color-mix(in srgb, var(--color-accent) 18%, transparent)",
+                  overflow: "hidden",
+                }}
+              >
                 <div
                   style={{
-                    height: 6,
+                    height: "100%",
+                    width: percent != null ? `${percent}%` : "35%",
+                    background: COLORS.accent,
                     borderRadius: 999,
-                    background: "color-mix(in srgb, var(--chat-accent) 18%, transparent)",
-                    overflow: "hidden",
+                    transition: "width 120ms linear",
                   }}
-                >
-                  <div
-                    style={{
-                      height: "100%",
-                      width: percent != null ? `${percent}%` : "35%",
-                      background: COLORS.accent,
-                      borderRadius: 999,
-                      transition: "width 120ms linear",
-                    }}
-                  />
-                </div>
-                <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                  {percent != null
-                    ? `${formatMb(install.receivedBytes)} of ~${VOICE_MODEL_SIZE_LABEL}`
-                    : `Downloaded ${formatMb(install.receivedBytes)} so far`}
-                </div>
-                <p style={{ margin: 0, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                  You can leave Settings — the download continues in the background and the mic enables automatically when it finishes.
-                </p>
-              </>
-            ) : alreadyInstalled ? (
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                <CheckCircle size={18} weight="fill" style={{ color: COLORS.success, flexShrink: 0, marginTop: 1 }} />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                    Ready to use
-                  </div>
-                  <p style={{ margin: "4px 0 0", fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.6 }}>
-                    The speech model is installed. Tap the mic in any chat composer to start dictating.
-                  </p>
-                </div>
+                />
               </div>
-            ) : needsDownload ? (
-              <>
-                <div style={{ fontSize: 13, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                  One-time setup
-                </div>
-                <ul style={bulletListStyle}>
-                  <li>Downloads a ~{VOICE_MODEL_SIZE_LABEL} on-device speech model once</li>
-                  <li>Runs fully offline after install — no cloud transcription</li>
-                  <li>Mic enables as soon as the download finishes — no restart needed</li>
-                </ul>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-                  <button type="button" style={primaryButton({ height: 34 })} onClick={handleDownload}>
-                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                      <DownloadSimple size={14} weight="bold" />
-                      {install.phase === "error" ? "Retry download" : "Download speech model"}
-                    </span>
-                  </button>
-                  <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-                    ~{VOICE_MODEL_SIZE_LABEL}
+              <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
+                {percent != null
+                  ? `${formatMb(install.receivedBytes)} of ~${VOICE_MODEL_SIZE_LABEL}`
+                  : `Downloaded ${formatMb(install.receivedBytes)} so far`}
+                {" · keeps going if you leave Settings"}
+              </div>
+            </div>
+          ) : voiceInputEnabled && needsDownload ? (
+            <div style={detailPanelStyle}>
+              <span style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+                One ~{VOICE_MODEL_SIZE_LABEL} download, then fully offline. The mic turns on when it finishes.
+              </span>
+              <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <button type="button" style={primaryButton()} onClick={handleDownload}>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                    <DownloadSimple size={14} weight="bold" />
+                    {install.phase === "error" ? "Retry download" : "Download speech model"}
                   </span>
+                </button>
+              </div>
+              {install.phase === "error" && install.error ? (
+                <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: 1.5 }}>
+                  {install.error}
                 </div>
-                {install.phase === "error" && install.error ? (
-                  <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.danger, lineHeight: 1.5 }}>
-                    {install.error}
-                  </div>
-                ) : null}
-              </>
-            ) : null}
-          </div>
-        ) : (
-          <p style={{ margin: 0, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.6 }}>
-            Turn this on to add a mic to chat composers and download the offline speech model.
-          </p>
-        )}
-      </SettingsCard>
-    </SettingsGroup>
+              ) : null}
+            </div>
+          ) : null}
+        </SettingsRow>
+      </SettingsPanel>
+    </SettingsSection>
   );
 }

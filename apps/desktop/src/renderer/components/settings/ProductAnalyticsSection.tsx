@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { ChartBar } from "@phosphor-icons/react";
 import type { ProductAnalyticsStatus } from "../../../shared/types/productAnalytics";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
@@ -57,6 +58,8 @@ export function ProductAnalyticsSection() {
     <SettingsGroup title="Privacy">
       <SettingsCard
         anchor="product-analytics"
+        icon={<ChartBar size={15} weight="duotone" />}
+        tone="violet"
         title="Anonymous product analytics"
         description="Help improve ADE by sharing anonymous usage events and a daily usage summary."
         control={

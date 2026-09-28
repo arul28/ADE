@@ -53,7 +53,11 @@ describe("SecretsSection env import and export", () => {
     render(<SecretsSection />);
 
     await screen.findByText("EXISTING");
-    expect(screen.getByText("Account")).toBeTruthy();
+    // The storage chip lives in the saved-secrets list; the add form also has
+    // an "Account" destination, so scope the query to the list section.
+    const listSection = screen.getByText("Saved secrets").closest("section");
+    expect(listSection).toBeTruthy();
+    expect(within(listSection as HTMLElement).getByText("Account")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Import .env" }));
 
     const dialog = await screen.findByRole("dialog", { name: /Import secrets from \.env\.local/ });
@@ -93,7 +97,7 @@ describe("SecretsSection env import and export", () => {
     const { exportEnv } = installAdeMock();
     render(<SecretsSection />);
 
-    expect(await screen.findByText(/Export writes an unencrypted \.env file containing all project secret values/)).toBeTruthy();
+    expect(await screen.findByText(/Writes every value, unencrypted/)).toBeTruthy();
     const button = await screen.findByRole("button", { name: "Export .env" });
     fireEvent.click(button);
     expect(exportEnv).not.toHaveBeenCalled();

@@ -348,6 +348,22 @@ export function resolveCssVars(theme: AdeTheme, palette: ResolvedAdeThemePalette
     "--work-popover-item-hover": alphaCss(fg, isDark ? 0.06 : 0.08, WHITE),
     "--work-popover-item-active": alphaCss(fg, isDark ? 0.08 : 0.1, WHITE),
 
+    // Shell chrome. The dark block hard-codes these in ADE's violet ink, so a
+    // theme that left them alone kept a violet header and sidebar.
+    "--shell-header-bg": isDark
+      ? alphaCss(bg, 0.82, rgb(bg, BLACK))
+      : `color-mix(in srgb, ${p.surfaceRaised} 90%, ${bg})`,
+    "--shell-sidebar-bg": isDark
+      ? `linear-gradient(180deg, ${alphaCss(surface, 0.88, rgb(surface, BLACK))} 0%, ${alphaCss(bg, 0.92, rgb(bg, BLACK))} 100%)`
+      : `linear-gradient(180deg, ${alphaCss(p.surfaceRaised, 0.95, rgb(p.surfaceRaised, WHITE))} 0%, ${alphaCss(bg, 0.98, rgb(bg, WHITE))} 100%)`,
+    "--shell-sidebar-item-active-bg": alphaCss(accent, isDark ? 0.1 : 0.1, rgb(accent, BLACK)),
+    "--shell-control-open-bg": alphaCss(accent, 0.1, rgb(accent, BLACK)),
+    "--shell-control-open-border": alphaCss(accent, 0.2, rgb(accent, BLACK)),
+    "--shell-control-focus-border": alphaCss(accent, 0.2, rgb(accent, BLACK)),
+    "--shell-control-focus-ring": alphaCss(accent, 0.12, rgb(accent, BLACK)),
+    // The second colour lobe of the Work backdrop's static gradient.
+    "--backdrop-lobe": toHex(mixColors(rgb(p.accentDeep, BLACK), rgb(p.info, BLACK), 0.5)),
+
     "--color-success": p.success,
     "--color-warning": p.warning,
     "--color-error": p.error,

@@ -13,7 +13,6 @@ import {
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
 import { COLORS, SANS_FONT, MONO_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
-import { Button } from "../ui/Button";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   SettingsManagerPage,
@@ -466,16 +465,15 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           isConnected ? (
             <>
               {!isRemoteRuntime ? (
-                <Button
+                <button
                   type="button"
-                  variant="outline"
-                  size="sm"
+                  className="ade-settings-button"
                   onClick={() => void handleStartOAuth()}
                   disabled={oauthStarting || validating || connection?.oauthAvailable === false}
                 >
                   {oauthStarting ? <CircleNotch size={12} className="animate-spin" /> : null}
                   {oauthStarting ? "Waiting for Linear..." : "Reconnect current workspace"}
-                </Button>
+                </button>
               ) : null}
               <button
                 type="button"
@@ -502,12 +500,12 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <SettingsManagerTable
               columns={[
-                { label: "Workspace" },
-                { label: "Signed in as" },
-                { label: "Connection" },
-                { label: "Projects", align: "right" },
+                { label: "Workspace", width: "minmax(110px, 1.2fr)" },
+                { label: "Signed in as", width: "minmax(100px, 1fr)" },
+                { label: "Connection", width: "minmax(90px, 0.9fr)" },
+                { label: "Projects", width: "minmax(60px, 0.5fr)", align: "right" },
               ]}
-              minWidth={560}
+              minWidth={440}
             >
               <SettingsManagerRow>
                 <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
@@ -545,8 +543,8 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
             {/* Project list */}
             {projects.length > 0 ? (
               <div>
-                <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 8 }}>
-                  PROJECTS ({projects.length})
+                <div style={{ ...LABEL_STYLE, fontSize: 12, marginBottom: 8 }}>
+                  Projects ({projects.length})
                 </div>
                 <SettingsManagerTable
                   columns={[{ label: "Project" }, { label: "Team", align: "right" }]}
@@ -604,9 +602,9 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
                   Connects the workspace currently selected in Linear.
                 </div>
               </div>
-              <Button
-                size="md"
-                variant="primary"
+              <button
+                className="ade-settings-button"
+                data-variant="primary"
                 onClick={() => void handleStartOAuth()}
                 disabled={oauthStarting || validating || connection?.oauthAvailable === false || isRemoteRuntime}
                 title={isRemoteRuntime ? "Browser sign-in isn't available over a remote connection — use an API key below." : undefined}
@@ -624,7 +622,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
                   <ArrowSquareOut size={13} />
                 )}
                 {oauthStarting ? "Waiting for Linear..." : "Sign in with Linear"}
-              </Button>
+              </button>
               {isRemoteRuntime ? (
                 <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
                   Browser sign-in isn&rsquo;t available over a remote connection. Use an API key below — it&rsquo;s saved on the remote machine.
@@ -685,14 +683,13 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
                   onFocus={(e) => { e.currentTarget.style.borderColor = `${LINEAR_BRAND}50`; }}
                   onBlur={(e) => { e.currentTarget.style.borderColor = COLORS.border; }}
                 />
-                <Button
-                  size="md"
-                  variant="outline"
+                <button
+                  className="ade-settings-button"
                   onClick={() => void handleValidate()}
                   disabled={validating || oauthStarting || oauthSessionId !== null || !tokenInput.trim()}
                 >
                   {validating ? <CircleNotch size={12} className="animate-spin" /> : "Connect"}
-                </Button>
+                </button>
               </div>
               <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
                 Get one at{" "}
@@ -719,23 +716,22 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
         <div>
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
             <div>
-              <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 6, letterSpacing: "0.06em" }}>
-                GITHUB REFERENCE LINKS
+              <div style={{ ...LABEL_STYLE, fontSize: 12, marginBottom: 6 }}>
+                GitHub reference links
               </div>
               <div style={{ fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "17px" }}>
                 GitHub autolinks make Linear issue keys (like ENG-123) and ADE PR refs clickable wherever they appear in PRs, commits, and comments — no full URLs needed. Applies to the repo below for this project.
               </div>
             </div>
-            <Button
+            <button
               type="button"
-              variant="outline"
-              size="sm"
+              className="ade-settings-button"
               onClick={() => void loadGithubAutolinks()}
               disabled={autolinksLoading || creatingAutolinkId !== null}
             >
               {autolinksLoading ? <CircleNotch size={12} className="animate-spin" /> : null}
               Refresh
-            </Button>
+            </button>
           </div>
           <div style={{
             display: "flex",
@@ -758,70 +754,57 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
           <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginBottom: 8 }}>
             Click <strong style={{ color: COLORS.textSecondary, fontWeight: 600 }}>Create</strong> to add a link to this repo automatically, or copy the <code style={{ fontFamily: MONO_FONT }}>gh</code> command below it to run it yourself.
           </div>
-          <SettingsManagerTable
-            columns={[
-              { label: "Reference", width: "minmax(220px, 1.4fr)" },
-              { label: "Prefix", width: "minmax(90px, 0.5fr)" },
-              { label: "Command", width: "minmax(220px, 1.6fr)" },
-              { label: "Actions", width: "minmax(110px, auto)", align: "right" },
-            ]}
-            minWidth={680}
-          >
+          {/* Stacked rows, not a table: the command is long and the column
+              is narrow, and a table this wide scrolled sideways and clipped
+              its own Create button. */}
+          <div className="ade-settings-panel">
             {autolinkCandidates.map((candidate) => {
               const busy = creatingAutolinkId === candidate.id;
               return (
-                <SettingsManagerRow
-                  key={candidate.id}
-                  actions={
-                    <Button
+                <div key={candidate.id} className="ade-settings-row" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                        {candidate.configured ? <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} /> : null}
+                        <span style={{ fontSize: 13, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                          {candidate.title}
+                        </span>
+                        <code className="ade-settings-chip" style={{ fontFamily: MONO_FONT }}>{candidate.keyPrefix}</code>
+                      </div>
+                      <div style={{ marginTop: 3, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.45 }}>
+                        {candidate.desc}
+                      </div>
+                    </div>
+                    <button
                       type="button"
-                      variant={candidate.configured ? "ghost" : "outline"}
-                      size="sm"
+                      className="ade-settings-button"
+                      data-variant={candidate.configured ? "ghost" : undefined}
                       onClick={() => void handleCreateAutolink(candidate)}
                       disabled={!githubRepo || candidate.configured || autolinksLoading || creatingAutolinkId !== null}
-                      style={{ whiteSpace: "nowrap" }}
                     >
                       {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
                       {candidate.configured ? "Configured" : "Create"}
-                    </Button>
-                  }
-                >
-                  <span style={{ minWidth: 0 }}>
-                    <span style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}>
-                      {candidate.configured ? <CheckCircle size={13} weight="fill" style={{ color: COLORS.success }} /> : null}
-                      <span style={{ fontSize: 12, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                        {candidate.title}
-                      </span>
-                    </span>
-                    <span style={{ display: "block", fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: "15px" }}>
-                      {candidate.desc}
-                    </span>
-                  </span>
-                  <code style={{
-                    fontSize: 10,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.textDim,
-                    padding: "2px 5px",
-                    borderRadius: 5,
-                    background: "rgba(255,255,255,0.04)",
-                    justifySelf: "start",
-                  }}>
-                    {candidate.keyPrefix}
-                  </code>
-                  <span style={{
-                    fontSize: 10,
-                    fontFamily: MONO_FONT,
-                    color: COLORS.textDim,
-                    lineHeight: "15px",
-                    overflowWrap: "anywhere",
-                    minWidth: 0,
-                  }}>
+                    </button>
+                  </div>
+                  <code
+                    style={{
+                      display: "block",
+                      padding: "8px 10px",
+                      borderRadius: 8,
+                      background: "color-mix(in srgb, var(--color-bg) 55%, transparent)",
+                      fontSize: 11.5,
+                      fontFamily: MONO_FONT,
+                      color: COLORS.textMuted,
+                      lineHeight: 1.5,
+                      overflowWrap: "anywhere",
+                    }}
+                  >
                     {candidate.command}
-                  </span>
-                </SettingsManagerRow>
+                  </code>
+                </div>
               );
             })}
-          </SettingsManagerTable>
+          </div>
           {!teamKeys.length ? (
             <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: "15px", marginTop: 10 }}>
               Connect Linear and load projects to add team-key references such as TEAM-123 for this workspace.
@@ -849,8 +832,8 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
 
         {/* ── Feature Preview ── */}
         <div>
-          <div style={{ ...LABEL_STYLE, fontSize: 10, marginBottom: 12, letterSpacing: "0.06em" }}>
-            WHAT LINEAR INTEGRATION ENABLES
+          <div style={{ ...LABEL_STYLE, fontSize: 12, marginBottom: 12 }}>
+            What the Linear integration adds
           </div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 10 }}>
             {FEATURES.map(({ icon: Icon, title, desc }) => (

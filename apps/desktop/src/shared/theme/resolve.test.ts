@@ -82,8 +82,8 @@ describe("contrast reporting", () => {
     });
   });
 
-  it("reports nothing for the shipped high-contrast theme", () => {
-    const resolved = resolveTheme(getShippedTheme("high-contrast")!);
+  it("reports nothing for the shipped mono theme (the retired high-contrast id)", () => {
+    const resolved = resolveTheme(getShippedTheme("mono-dark")!);
     const textIssues = resolved.contrastIssues.filter((issue) => issue.threshold === 4.5);
     expect(textIssues).toEqual([]);
   });

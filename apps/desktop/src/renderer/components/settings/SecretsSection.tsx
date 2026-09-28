@@ -1,59 +1,25 @@
 import React from "react";
-import { Check, Copy, DownloadSimple, Eye, EyeSlash, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
+import { Key, Check, Copy, DownloadSimple, Eye, EyeSlash, Plus, Trash, UploadSimple, X } from "@phosphor-icons/react";
 import type {
   ProjectSecretStorage,
-  ProjectSecretSummary,
   ProjectSecretsImportPreview,
   ProjectSecretsListResult,
 } from "../../../shared/types";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { relativeTimeCompact } from "../../lib/format";
 import { SecretsImportEnvModal } from "./SecretsImportEnvModal";
 import {
-  SettingsManagerEmpty,
-  SettingsManagerPage,
-  SettingsManagerRow,
-  SettingsManagerTable,
-} from "./primitives/SettingsManagerPage";
-import { SettingsSegmented, SettingsTextField } from "./primitives";
+  SettingsColumn,
+  SettingsPanel,
+  SettingsRow,
+  SettingsSection,
+  SettingsSegmented,
+  SettingsSplit,
+} from "./primitives";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 /** The anchor `secrets.secrets` in `settingsManifest.ts` points at. */
 const ANCHOR = "secrets";
-
-/** Name, value, storage, updated, actions — shared by the header and every row. */
-const SECRET_COLUMNS = [
-  { label: "Name", width: "minmax(160px, 1fr)" },
-  { label: "Value", width: "minmax(180px, 1.4fr)" },
-  { label: "Where", width: "110px" },
-  { label: "Updated", width: "minmax(140px, 0.9fr)" },
-  { label: "Actions", width: "132px", align: "right" as const },
-];
-
-const inputStyle: React.CSSProperties = {
-  border: `1px solid ${COLORS.outlineBorder}`,
-  borderRadius: 8,
-  background: "var(--color-card)",
-  color: COLORS.textPrimary,
-  fontFamily: SANS_FONT,
-  fontSize: 12,
-  minHeight: 34,
-  padding: "8px 10px",
-  outline: "none",
-};
-
-const iconButtonStyle: React.CSSProperties = {
-  width: 30,
-  height: 30,
-  borderRadius: 8,
-  border: `1px solid ${COLORS.outlineBorder}`,
-  background: "var(--color-card)",
-  color: COLORS.textSecondary,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  cursor: "pointer",
-  flexShrink: 0,
-};
 
 function formatUpdatedAt(value: string): string {
   const date = new Date(value);
@@ -61,36 +27,11 @@ function formatUpdatedAt(value: string): string {
   return date.toLocaleString();
 }
 
-function SecretValueCell({
-  secret,
-  value,
-  visible,
-}: {
-  secret: ProjectSecretSummary;
-  value: string | null;
-  visible: boolean;
-}) {
-  const displayValue = visible && value != null ? value : "*".repeat(Math.min(Math.max(secret.valueLength, 8), 24));
-  return (
-    <code
-      style={{
-        display: "block",
-        maxWidth: "min(38vw, 420px)",
-        minHeight: 28,
-        padding: "6px 8px",
-        borderRadius: 8,
-        border: `1px solid ${COLORS.outlineBorder}`,
-        background: "color-mix(in srgb, var(--color-card) 72%, var(--color-bg))",
-        color: visible ? COLORS.textPrimary : COLORS.textMuted,
-        fontSize: 12,
-        whiteSpace: "nowrap",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-      }}
-    >
-      {displayValue}
-    </code>
-  );
+/** "2m ago", "3d ago"; the exact time is in the tooltip. */
+function updatedLabel(value: string): string {
+  const compact = relativeTimeCompact(value);
+  if (!compact) return "";
+  return compact === "now" ? "just now" : `${compact} ago`;
 }
 
 export function SecretsSection() {
@@ -330,202 +271,238 @@ export function SecretsSection() {
   };
 
   const secrets = snapshot?.secrets ?? [];
+  const canAdd = !saving && Boolean(name.trim()) && Boolean(value);
+
+  const list = (
+    // One-line headings on both sides, so the two panels start level.
+    <SettingsSection
+      title="Saved secrets"
+      actions={<span className="ade-settings-summary">{secrets.length} saved · encrypted</span>}
+    >
+      <div className="ade-settings-panel">
+        {secrets.length === 0 ? (
+          <div className="ade-settings-row" style={{ padding: "36px 16px", textAlign: "center" }}>
+            <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 500, color: COLORS.textPrimary }}>No secrets yet</div>
+            <div style={{ marginTop: 4, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
+              Add one on the right, or import a .env file.
+            </div>
+          </div>
+        ) : (
+          secrets.map((secret) => {
+            const isVisible = Boolean(visibleNames[secret.name]);
+            const isBusy = busyName === secret.name;
+            const isConfirmingDelete = confirmDeleteName === secret.name;
+            const rowCopied = isCopied(secret.name);
+            const revealed = revealedValues[secret.name];
+            return (
+              <div key={secret.name} className="ade-settings-row ade-secret-row">
+                <span aria-hidden className="ade-settings-row-icon" style={{ ["--tone" as string]: "#F5A524" } as React.CSSProperties}>
+                  <Key size={15} weight="duotone" />
+                </span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      fontFamily: MONO_FONT,
+                      fontSize: 12.5,
+                      fontWeight: 600,
+                      color: COLORS.textPrimary,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={secret.name}
+                  >
+                    {secret.name}
+                  </div>
+                  <div
+                    style={{
+                      marginTop: 3,
+                      fontFamily: isVisible && revealed != null ? MONO_FONT : SANS_FONT,
+                      fontSize: 12,
+                      color: isVisible && revealed != null ? COLORS.textSecondary : COLORS.textDim,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {isVisible && revealed != null
+                      ? revealed
+                      : `${"•".repeat(Math.min(Math.max(secret.valueLength, 8), 12))}  ${secret.valueLength} characters`}
+                  </div>
+                </div>
+                <span className="ade-settings-chip">{secret.storage === "account" ? "Account" : "This device"}</span>
+                <span
+                  style={{ width: 74, textAlign: "right", fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim, flexShrink: 0 }}
+                  title={formatUpdatedAt(secret.updatedAt)}
+                >
+                  {updatedLabel(secret.updatedAt)}
+                </span>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+                  <button
+                    type="button"
+                    className="ade-settings-ghost-icon"
+                    title={isVisible ? "Hide value" : "Show value"}
+                    aria-label={isVisible ? `Hide ${secret.name}` : `Reveal ${secret.name}`}
+                    disabled={isBusy}
+                    onClick={() => void toggleReveal(secret.name)}
+                  >
+                    {isVisible ? <EyeSlash size={15} /> : <Eye size={15} />}
+                  </button>
+                  <button
+                    type="button"
+                    className="ade-settings-ghost-icon"
+                    data-tone={rowCopied ? "success" : undefined}
+                    title={rowCopied ? "Copied" : "Copy value"}
+                    aria-label={rowCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
+                    disabled={isBusy}
+                    onClick={() => void copySecret(secret.name)}
+                  >
+                    {rowCopied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
+                  </button>
+                  {isConfirmingDelete ? (
+                    <button
+                      type="button"
+                      className="ade-settings-button"
+                      data-variant="danger"
+                      style={{ height: 28, padding: "0 10px" }}
+                      aria-label={`Confirm delete ${secret.name}`}
+                      disabled={isBusy}
+                      onClick={() => void deleteSecret(secret.name)}
+                    >
+                      Delete
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      className="ade-settings-ghost-icon"
+                      data-tone="danger"
+                      title="Delete secret"
+                      aria-label={`Delete ${secret.name}`}
+                      disabled={isBusy}
+                      onClick={() => void deleteSecret(secret.name)}
+                    >
+                      <Trash size={15} />
+                    </button>
+                  )}
+                </span>
+              </div>
+            );
+          })
+        )}
+      </div>
+    </SettingsSection>
+  );
+
+  const side = (
+    <>
+      <SettingsSection title="Add a secret">
+        <form onSubmit={handleSave} className="ade-settings-panel" style={{ padding: 16, gap: 14 }}>
+          <label className="ade-settings-field">
+            <span>Name</span>
+            <input
+              className="ade-settings-input"
+              data-mono=""
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="STRIPE_API_KEY"
+              aria-label="Secret name"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
+          <label className="ade-settings-field">
+            <span>Value</span>
+            <input
+              className="ade-settings-input"
+              data-mono=""
+              type="password"
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+              placeholder="Paste the value"
+              aria-label="Secret value"
+              autoComplete="new-password"
+              autoCapitalize="off"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </label>
+          <div className="ade-settings-field">
+            <span>Save to</span>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <SettingsSegmented
+                ariaLabel="Secret storage"
+                value={storage}
+                onChange={setStorage}
+                options={[
+                  { value: "account", label: "Account" },
+                  { value: "device", label: "This device only" },
+                ]}
+              />
+              <button type="submit" className="ade-settings-button" data-variant="primary" disabled={!canAdd}>
+                <Plus size={13} weight="bold" />
+                {saving ? "Saving…" : "Add secret"}
+              </button>
+            </div>
+            <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45, color: COLORS.textDim }}>
+              {storage === "account"
+                ? "Follows your account to every machine that opens this repository."
+                : "Stays on this computer only."}
+            </p>
+          </div>
+        </form>
+      </SettingsSection>
+
+      <SettingsSection title=".env files">
+        <SettingsPanel>
+          <SettingsRow
+            icon={<UploadSimple size={15} weight="duotone" />}
+            tone="blue"
+            title="Import"
+            description="Choose which keys to add from a .env file on this computer."
+            control={
+              <button type="button" className="ade-settings-button" aria-label="Import .env" disabled={choosingImport} onClick={() => void chooseEnvFile()}>
+                {choosingImport ? "Opening…" : "Import…"}
+              </button>
+            }
+          />
+          <SettingsRow
+            icon={<DownloadSimple size={15} weight="duotone" />}
+            tone={confirmingExport ? "red" : "orange"}
+            title="Export"
+            description={
+              confirmingExport
+                ? "Writes every value unencrypted to Downloads. Click again to confirm."
+                : "Writes every value, unencrypted, to a .env file in Downloads."
+            }
+            control={
+              <button
+                type="button"
+                className="ade-settings-button"
+                data-variant={confirmingExport ? "danger" : undefined}
+                aria-label={confirmingExport ? "Confirm plaintext export" : "Export .env"}
+                disabled={exporting || secrets.length === 0}
+                onClick={() => void exportSecrets()}
+              >
+                {exporting ? "Exporting…" : confirmingExport ? "Confirm export" : "Export"}
+              </button>
+            }
+          />
+        </SettingsPanel>
+      </SettingsSection>
+    </>
+  );
 
   return (
-    <SettingsManagerPage
-      anchor={ANCHOR}
-      title="Secrets"
-      description="Encrypted project secrets for ADE agents, desktop, and CLI. Import reads a file from this computer. Export writes an unencrypted .env file containing all project secret values to Downloads on the machine hosting this project."
-      toolbar={
-        <>
-          <button
-            type="button"
-            disabled={choosingImport}
-            onClick={() => void chooseEnvFile()}
-            style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: choosingImport ? "not-allowed" : "pointer", opacity: choosingImport ? 0.55 : 1 }}
-          >
-            <UploadSimple size={14} />
-            {choosingImport ? "Opening…" : "Import .env"}
-          </button>
-          <button
-            type="button"
-            disabled={exporting || secrets.length === 0}
-            onClick={() => void exportSecrets()}
-            style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 6, cursor: exporting || secrets.length === 0 ? "not-allowed" : "pointer", opacity: exporting || secrets.length === 0 ? 0.55 : 1 }}
-          >
-            <DownloadSimple size={14} />
-            {exporting ? "Exporting…" : confirmingExport ? "Confirm plaintext export" : "Export .env"}
-          </button>
-        </>
-      }
-    >
-      <div style={{ display: "flex", flexDirection: "column", gap: 18, fontFamily: SANS_FONT }}>
-        <form
-          onSubmit={handleSave}
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
-            gap: 10,
-            alignItems: "center",
-          }}
-        >
-          <SettingsTextField
-            value={name}
-            onChange={setName}
-            placeholder="STRIPE_API_KEY"
-            ariaLabel="Secret name"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <SettingsTextField
-            value={value}
-            onChange={setValue}
-            placeholder="Secret value"
-            ariaLabel="Secret value"
-            type="password"
-            autoComplete="new-password"
-            autoCapitalize="off"
-            autoCorrect="off"
-            spellCheck={false}
-            style={inputStyle}
-          />
-          <SettingsSegmented
-            ariaLabel="Secret storage"
-            value={storage}
-            onChange={setStorage}
-            options={[
-              { value: "account", label: "Save to account" },
-              { value: "device", label: "This device only" },
-            ]}
-          />
-          <button
-            type="submit"
-            disabled={saving || !name.trim() || !value}
-            style={{
-              minHeight: 34,
-              borderRadius: 8,
-              border: "none",
-              background: COLORS.accent,
-              color: "white",
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: 700,
-              padding: "0 12px",
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 6,
-              cursor: saving || !name.trim() || !value ? "not-allowed" : "pointer",
-              opacity: saving || !name.trim() || !value ? 0.55 : 1,
-              whiteSpace: "nowrap",
-            }}
-          >
-            <Plus size={14} weight="bold" />
-            {saving ? "Saving" : "Add secret"}
-          </button>
-        </form>
-
+    <SettingsColumn wide>
+      <div id={ANCHOR} data-settings-anchor={ANCHOR} className="ade-settings-split-stack" style={{ scrollMarginTop: 16 }}>
         {(message || error) && (
-          <div
-            role={error ? "alert" : "status"}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              color: error ? "#dc2626" : "#15803d",
-              fontSize: 12,
-              minHeight: 18,
-            }}
-          >
+          <div role={error ? "alert" : "status"} className="ade-settings-note" style={{ color: error ? COLORS.danger : COLORS.success }}>
             {error ? <X size={14} weight="bold" /> : <Check size={14} weight="bold" />}
             <span>{error ?? message}</span>
           </div>
         )}
-
-        <SettingsManagerTable columns={SECRET_COLUMNS} minWidth={780}>
-          {secrets.length === 0 ? (
-            <SettingsManagerEmpty
-              title="No secrets saved."
-              description="Add one above, or import a .env file from this computer."
-            />
-          ) : (
-            secrets.map((secret) => {
-              const isVisible = Boolean(visibleNames[secret.name]);
-              const isBusy = busyName === secret.name;
-              const isConfirmingDelete = confirmDeleteName === secret.name;
-              const rowCopied = isCopied(secret.name);
-              return (
-                <SettingsManagerRow
-                  key={secret.name}
-                  actions={
-                    <>
-                      <button
-                        type="button"
-                        title={isVisible ? "Hide secret" : "Reveal secret"}
-                        aria-label={isVisible ? `Hide ${secret.name}` : `Reveal ${secret.name}`}
-                        disabled={isBusy}
-                        onClick={() => void toggleReveal(secret.name)}
-                        style={{ ...iconButtonStyle, opacity: isBusy ? 0.5 : 1 }}
-                      >
-                        {isVisible ? <EyeSlash size={15} /> : <Eye size={15} />}
-                      </button>
-                      <button
-                        type="button"
-                        title={rowCopied ? "Copied" : "Copy secret"}
-                        aria-label={rowCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
-                        disabled={isBusy}
-                        onClick={() => void copySecret(secret.name)}
-                        style={{
-                          ...iconButtonStyle,
-                          color: rowCopied ? "#15803d" : COLORS.textSecondary,
-                          borderColor: rowCopied ? "color-mix(in srgb, #15803d 42%, transparent)" : COLORS.outlineBorder,
-                          background: rowCopied ? "color-mix(in srgb, #15803d 12%, var(--color-card))" : "var(--color-card)",
-                          opacity: isBusy ? 0.5 : 1,
-                        }}
-                      >
-                        {rowCopied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
-                      </button>
-                      <button
-                        type="button"
-                        title={isConfirmingDelete ? "Confirm delete" : "Delete secret"}
-                        aria-label={isConfirmingDelete ? `Confirm delete ${secret.name}` : `Delete ${secret.name}`}
-                        disabled={isBusy}
-                        onClick={() => void deleteSecret(secret.name)}
-                        style={{
-                          ...iconButtonStyle,
-                          width: isConfirmingDelete ? 72 : 30,
-                          color: isConfirmingDelete ? "white" : "#dc2626",
-                          background: isConfirmingDelete ? "#dc2626" : "var(--color-card)",
-                          borderColor: isConfirmingDelete ? "#dc2626" : COLORS.outlineBorder,
-                          opacity: isBusy ? 0.5 : 1,
-                        }}
-                      >
-                        {isConfirmingDelete ? "Confirm" : <Trash size={15} />}
-                      </button>
-                    </>
-                  }
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ color: COLORS.textPrimary, fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {secret.name}
-                    </div>
-                    <div style={{ color: COLORS.textMuted, fontSize: 11 }}>
-                      {secret.valueLength} chars
-                    </div>
-                  </div>
-                  <SecretValueCell secret={secret} value={revealedValues[secret.name] ?? null} visible={isVisible} />
-                  <div style={{ color: COLORS.textMuted, fontSize: 12, minWidth: 0 }}>
-                    {secret.storage === "account" ? "Account" : "This device"}
-                  </div>
-                  <div style={{ color: COLORS.textMuted, fontSize: 12, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {formatUpdatedAt(secret.updatedAt)}
-                  </div>
-                </SettingsManagerRow>
-              );
-            })
-          )}
-        </SettingsManagerTable>
+        <SettingsSplit ratio="start-wide" start={list} end={side} />
       </div>
       {importPreview && (
         <SecretsImportEnvModal
@@ -543,6 +520,6 @@ export function SecretsSection() {
           onSave={() => void importSelectedSecrets()}
         />
       )}
-    </SettingsManagerPage>
+    </SettingsColumn>
   );
 }

@@ -167,7 +167,7 @@ export function BudgetCapEditor({
             <button
               type="button"
               onClick={() => setExpanded((value) => !value)}
-              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+              style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
             >
               {expanded ? "Collapse" : `${caps.length} cap${caps.length !== 1 ? "s" : ""}`}
             </button>
@@ -209,7 +209,7 @@ export function BudgetCapEditor({
                 <span style={fieldLabelStyle}>Cap rules</span>
                 <button
                   type="button"
-                  style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                  style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
                   onClick={() => {
                     setDraft((current) => ({
                       ...current,
@@ -292,7 +292,7 @@ export function BudgetCapEditor({
                     </span>
                     <button
                       type="button"
-                      style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                      style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
                       onClick={() => {
                         setDraft((current) => ({ ...current, caps: current.caps.filter((entry) => entry.rowId !== cap.rowId) }));
                         setDirty(true);
@@ -324,7 +324,7 @@ export function BudgetCapEditor({
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 8 }}>
               <button
                 type="button"
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
                 onClick={() => {
                   setDraft(toDraft(config));
                   setDirty(false);
@@ -335,7 +335,7 @@ export function BudgetCapEditor({
               </button>
               <button
                 type="button"
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
+                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 12 })}
                 onClick={() => void handleSave()}
                 disabled={!dirty || saving || !onSave}
               >

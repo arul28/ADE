@@ -50,6 +50,11 @@ const GITHUB_CLASSIC_TOKENS_URL = "https://github.com/settings/tokens";
 const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&checks=write&statuses=read&workflows=write";
 const GITHUB_FINE_GRAINED_TOKENS_URL = "https://github.com/settings/personal-access-tokens";
 
+function sentenceCase(text: string): string {
+  const lower = text.toLowerCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
 const REQUIRED_GITHUB_REPOSITORY_PERMISSIONS = [
   "Contents: Read and write",
   "Pull requests: Read and write",
@@ -411,8 +416,15 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
       >
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <SettingsManagerTable
-            columns={[{ label: "User" }, { label: "Repository" }, { label: "Reads with" }, { label: "Writes with" }]}
-            minWidth={560}
+            // Narrow tracks, so the summary fits a half-width column without
+            // scrolling sideways.
+            columns={[
+              { label: "User", width: "minmax(90px, 1fr)" },
+              { label: "Repository", width: "minmax(110px, 1.2fr)" },
+              { label: "Reads with", width: "minmax(96px, 1fr)" },
+              { label: "Writes with", width: "minmax(96px, 1fr)" },
+            ]}
+            minWidth={470}
           >
             <SettingsManagerRow>
               {summaryCell(githubStatus?.userLogin ?? null)}
@@ -516,7 +528,9 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
 
           <div>
             <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>
-              {credentialPresentation.permissionHeading}
+              {/* The model names the heading in capitals; the page reads in
+                  sentence case. */}
+              {sentenceCase(credentialPresentation.permissionHeading)}
             </div>
             {permissionMode === "auth-failure" ? (
               <Banner
@@ -742,7 +756,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           </div>
 
           <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            <span style={LABEL_STYLE}>PERSONAL ACCESS TOKEN</span>
+            <span style={LABEL_STYLE}>Personal access token</span>
             <SettingsTextField
               type="password"
               value={githubTokenDraft}

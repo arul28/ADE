@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { useAppStore } from "../../state/appStore";
+import { selectEffectiveThemeId, useAppStore } from "../../state/appStore";
 import {
   DEFAULT_THEME_ID,
   allThemeOptions,
@@ -160,7 +160,9 @@ function TokenRow({
 }
 
 export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
-  const themeId = useAppStore((s) => s.themeId);
+  // Start from what is on screen: with "System" on, that is the variant for
+  // the OS mode, not necessarily the one stored as the choice.
+  const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
   const setTheme = useAppStore((s) => s.setTheme);
   const setCustomThemes = useAppStore((s) => s.setCustomThemes);
@@ -316,4 +318,4 @@ export function ThemeCustomizer({ open, onOpenChange }: { open: boolean; onOpenC
   );
 }
 
-const customizerButton: React.CSSProperties = outlineButton({ height: 28, padding: "0 10px", fontSize: 11 });
+const customizerButton: React.CSSProperties = outlineButton({ height: 28, padding: "0 10px", fontSize: 12 });
