@@ -28,7 +28,7 @@ import {
   LOCAL_PROVIDER_LABELS,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
-import { CaretRight } from "@phosphor-icons/react";
+import { CaretRight, Robot } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
@@ -39,11 +39,8 @@ import {
   type ApiKeySource,
   type OpenCodeProviderDetail,
 } from "./OpenCodeProviderDetailModal";
-import {
-  SettingsManagerPage,
-  SettingsManagerRow,
-  SettingsManagerTable,
-} from "./primitives/SettingsManagerPage";
+import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
+import { SettingsToggle } from "./primitives";
 import { HarnessesPage } from "./harnesses/HarnessesPage";
 import { useHarnessPresets } from "./harnesses/useHarnessPresets";
 import { CustomToolMark } from "../shared/CustomToolMark";
@@ -107,18 +104,11 @@ const API_KEY_PROVIDERS: Array<{
 ];
 
 /**
- * The provider list is a manager page: a table you scan, with one row per
- * provider and its own page behind each row. The columns are the three facts
- * the old tile stacked vertically — who it is, what state it is in, and what
- * ADE knows about it — which is why ten providers now read as a list instead
- * of as ten little dashboards.
+ * The provider list is a grid of tiles: who it is, what state it is in, and
+ * what ADE knows about it, with its own page behind each tile. The grid takes
+ * as many columns as the page is wide, so a wide window shows the whole roster
+ * without scrolling and a narrow one stacks it.
  */
-const PROVIDER_COLUMNS = [
-  { label: "Provider", width: "minmax(180px, 1.1fr)" },
-  { label: "Status", width: "minmax(130px, 0.7fr)" },
-  { label: "Details", width: "minmax(200px, 1.5fr)" },
-  { label: "", width: "20px", align: "right" as const },
-];
 
 /**
  * One provider row.
@@ -165,68 +155,48 @@ function ProviderManagerRow({
   ];
 
   return (
-    <SettingsManagerRow>
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={`Open ${descriptor.label} settings`}
-        style={{
-          gridColumn: "1 / -1",
-          display: "grid",
-          gridTemplateColumns: "var(--settings-manager-columns)",
-          gap: 12,
-          alignItems: "center",
-          width: "100%",
-          margin: 0,
-          padding: 0,
-          border: "none",
-          background: "transparent",
-          textAlign: "left",
-          cursor: "pointer",
-          font: "inherit",
-          color: "inherit",
-        }}
-      >
-        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {descriptor.logo(22)}
-          <span
-            data-testid={`provider-tile-name-${descriptor.id}`}
-            style={{
-              fontSize: 12,
-              fontFamily: SANS_FONT,
-              color: COLORS.textPrimary,
-              minWidth: 0,
-              // Never clipped: the name is the row's identity, and
-              // "GitHub Co…" is a worse row than a two-line title.
-              overflowWrap: "anywhere",
-              lineHeight: 1.3,
-            }}
-          >
-            {descriptor.label}
+    <button
+      type="button"
+      onClick={onOpen}
+      aria-label={`Open ${descriptor.label} settings`}
+      className="ade-provider-tile"
+      data-state={status.state}
+    >
+      <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+        {descriptor.logo(26)}
+        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0, flex: 1 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+            <span
+              data-testid={`provider-tile-name-${descriptor.id}`}
+              style={{
+                fontSize: 13,
+                fontWeight: 500,
+                fontFamily: SANS_FONT,
+                color: COLORS.textPrimary,
+                minWidth: 0,
+                // Never clipped: the name is the tile's identity.
+                overflowWrap: "anywhere",
+                lineHeight: 1.3,
+              }}
+            >
+              {descriptor.label}
+            </span>
+            {descriptor.preview ? <PreviewChip /> : null}
           </span>
-          {descriptor.preview ? <PreviewChip /> : null}
-        </span>
-
-        <span style={{ minWidth: 0 }}>
           <ProviderStatusChip state={status.state} label={status.label} />
         </span>
-
-        <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+        <span aria-hidden style={{ display: "flex", color: COLORS.textDim, flexShrink: 0 }}>
+          <CaretRight size={13} />
+        </span>
+      </span>
+      <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0 }}>
+        {metaParts.length > 0 ? (
+          <span style={{ fontSize: 11.5, fontFamily: SANS_FONT, color: COLORS.textMuted }}>{metaParts.join(" · ")}</span>
+        ) : null}
+        {message ? (
           <span
             style={{
-              fontSize: 10,
-              fontFamily: SANS_FONT,
-              color: COLORS.textMuted,
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-            }}
-          >
-            {metaParts.join(" · ")}
-          </span>
-          <span
-            style={{
-              fontSize: 10,
+              fontSize: 11.5,
               fontFamily: SANS_FONT,
               // The dot already carries the state; red here is reserved for a
               // real probe failure so it still means something.
@@ -238,17 +208,13 @@ function ProviderManagerRow({
               overflow: "hidden",
               overflowWrap: "anywhere",
             }}
-            {...(message ? { title: message } : {})}
+            title={message}
           >
             {message}
           </span>
-        </span>
-
-        <span aria-hidden style={{ display: "flex", justifyContent: "flex-end", color: COLORS.textDim }}>
-          <CaretRight size={13} />
-        </span>
-      </button>
-    </SettingsManagerRow>
+        ) : null}
+      </span>
+    </button>
   );
 }
 
@@ -1229,20 +1195,20 @@ export function ProvidersSection({
           anchor="ai-providers"
           title="AI providers"
           description="Every coding agent ADE can run. Open one to sign in, choose models, or turn it off."
+          icon={<Robot size={15} weight="duotone" />}
+          tone="violet"
           toolbar={(
-            <button
-              type="button"
-              role="switch"
-              aria-checked={usageHeaderPreferences.showInHeader}
-              onClick={() => setUsageHeaderVisible(!usageHeaderPreferences.showInHeader)}
-              style={{ ...outlineButton(), display: "inline-flex", alignItems: "center", gap: 7 }}
-            >
-              <span aria-hidden>{usageHeaderPreferences.showInHeader ? "◉" : "○"}</span>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 10, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
               Show usage in header
-            </button>
+              <SettingsToggle
+                label="Show usage in header"
+                checked={usageHeaderPreferences.showInHeader}
+                onChange={(next) => setUsageHeaderVisible(next)}
+              />
+            </label>
           )}
         >
-          <SettingsManagerTable columns={PROVIDER_COLUMNS} minWidth={620}>
+          <div className="ade-provider-grid" role="list">
             {descriptors.map((descriptor) => (
               <ProviderManagerRow
                 key={descriptor.id}
@@ -1254,7 +1220,7 @@ export function ProvidersSection({
                 onOpen={() => selectProvider(descriptor.id)}
               />
             ))}
-          </SettingsManagerTable>
+          </div>
         </SettingsManagerPage>
       )}
 

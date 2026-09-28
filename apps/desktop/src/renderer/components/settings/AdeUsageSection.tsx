@@ -24,6 +24,7 @@ import { formatCost, formatTokens, relativeTimeCompact } from "../../lib/format"
 import { useAppStore } from "../../state/appStore";
 import { ActivityModule, RANGE_OPTIONS } from "../usage/ActivityModule";
 import { providerColor } from "../usage/providerColors";
+import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import {
   UsageChartLegend,
@@ -31,21 +32,18 @@ import {
   buildDayColumns,
   selectTopSeries,
 } from "../usage/UsageDailyChart";
-import { UsageSegmented } from "../usage/UsageSegmented";
 import { UsagePooledLimits } from "../usage/UsagePooledLimits";
 import {
   USAGE_BUTTON_CLASS,
-  USAGE_CARD_CLASS,
   USAGE_DIVIDER_COLOR_CLASS,
   USAGE_EYEBROW_CLASS,
   USAGE_HAIRLINE_CLASS,
   USAGE_HOVER_ROW_CLASS,
   USAGE_NUMERIC_CLASS,
-  USAGE_PANEL_HEADER_CLASS,
   USAGE_TEXT,
 } from "../usage/usageDesign";
 import { formatUpdatedAge } from "../usage/usageWindowFormat";
-import { SettingsDashboardPage, SettingsDashboardStat } from "./primitives/SettingsDashboardPage";
+import { SettingsColumn, SettingsSection, SettingsSegmented, SettingsSplit } from "./primitives";
 
 const SCOPE_STORAGE_KEY = "ade.stats.scope.v1";
 const RANGE_STORAGE_KEY = "ade.stats.range.v1";
@@ -288,16 +286,16 @@ function Metric({
   source?: MetricSource;
 }) {
   return (
-    <SettingsDashboardStat
-      label={
-        <span className="flex items-baseline justify-between gap-2">
-          <span className="min-w-0 truncate">{label}</span>
-          {source ? <span className="shrink-0 opacity-70">{source}</span> : null}
-        </span>
-      }
-      value={value}
-      hint={detail}
-    />
+    <div className="ade-usage-total">
+      {/* The source stays visible: provider-ledger tokens and GitHub's pull
+          request counts are different kinds of number, side by side. */}
+      <span className="flex items-baseline justify-between gap-2">
+        <span className={cn(USAGE_TEXT.detail, "min-w-0 truncate text-muted-fg")}>{label}</span>
+        {source ? <span className={cn(USAGE_TEXT.micro, "shrink-0 text-muted-fg opacity-70")}>{source}</span> : null}
+      </span>
+      <span className={cn(USAGE_TEXT.title, USAGE_NUMERIC_CLASS, "font-semibold text-fg")}>{value}</span>
+      {detail ? <span className={cn(USAGE_TEXT.micro, "truncate text-muted-fg")}>{detail}</span> : null}
+    </div>
   );
 }
 
@@ -344,45 +342,6 @@ function codeMovementMetric(stats: AdeUsageStats | null): {
   }
 
   return { value: "—", detail: "no code changes recorded in this range" };
-}
-
-/**
- * A titled band of the page.
- *
- * The page previously ran section headings straight onto the page background,
- * which is why it read as one undifferentiated sheet — "everything feels like
- * chalk". Each band is now the same card surface the rest of the app uses, so
- * the page has the layering ADE has everywhere else.
- */
-function Panel({
-  title,
-  actions,
-  children,
-  className,
-  bodyClassName,
-}: {
-  title?: string;
-  actions?: React.ReactNode;
-  children: React.ReactNode;
-  className?: string;
-  bodyClassName?: string;
-}) {
-  return (
-    <section className={cn(USAGE_CARD_CLASS, "overflow-hidden", className)}>
-      {title || actions ? (
-        <div
-          className={cn(
-            "flex flex-wrap items-center justify-between gap-3 px-6 py-3.5",
-            USAGE_PANEL_HEADER_CLASS,
-          )}
-        >
-          {title ? <h2 className={cn(USAGE_TEXT.body, "m-0 font-medium text-fg")}>{title}</h2> : <span />}
-          {actions ? <div className="flex items-center gap-4">{actions}</div> : null}
-        </div>
-      ) : null}
-      <div className={cn("p-6", bodyClassName)}>{children}</div>
-    </section>
-  );
 }
 
 /**
@@ -493,14 +452,17 @@ function ProviderCostSplit({
           >
             <div className="flex items-baseline justify-between gap-3">
               <span className={cn(USAGE_TEXT.body, "flex items-center gap-2 text-fg")}>
+                {/* The logo names the provider; the ring in its chart colour ties
+                    the row to its band in the chart. */}
                 <span
                   aria-hidden
-                  className="inline-block h-2.5 w-2.5 shrink-0 rounded-full transition-shadow duration-150 motion-reduce:transition-none"
+                  className="inline-grid h-5 w-5 shrink-0 place-items-center rounded-full transition-shadow duration-150 motion-reduce:transition-none"
                   style={{
-                    background: color,
-                    boxShadow: focused ? `0 0 0 3px color-mix(in srgb, ${color} 28%, transparent)` : undefined,
+                    boxShadow: `0 0 0 ${focused ? 2.5 : 1.5}px ${color}`,
                   }}
-                />
+                >
+                  <ProviderLogo family={provider.provider} size={14} />
+                </span>
                 {humanizeProvider(provider.provider)}
               </span>
               <span className={cn(USAGE_TEXT.body, USAGE_NUMERIC_CLASS, "text-fg")}>
@@ -524,7 +486,7 @@ function ProviderCostSplit({
 }
 
 /** Top models by cost. */
-function ModelBreakdown({ models, theme }: { models: AdeUsageModelSummary[]; theme: "dark" | "light" }) {
+function ModelBreakdown({ models }: { models: AdeUsageModelSummary[] }) {
   const top = models.slice(0, 10);
   const total = models.reduce((sum, model) => sum + Math.max(0, model.costUsd), 0);
 
@@ -565,11 +527,7 @@ function ModelBreakdown({ models, theme }: { models: AdeUsageModelSummary[]; the
                 >
                   <td className="py-2 pl-2 text-fg">
                     <span className="flex items-center gap-2">
-                      <span
-                        aria-hidden
-                        className="inline-block h-2 w-2 shrink-0 rounded-full"
-                        style={{ background: providerColor(model.provider, theme) }}
-                      />
+                      <ProviderLogo family={model.provider} size={14} />
                       {model.model}
                     </span>
                   </td>
@@ -936,203 +894,199 @@ export function AdeUsageSection() {
     ? relativeTimeCompact(stats.freshness?.providerUpdatedAt ?? stats.generatedAt)
     : null;
 
+  const chartActions = costChartUnavailable ? (
+    <ChartCostUnavailable scope={scope} onShowMachine={() => changeScope("machine")} />
+  ) : (
+    <SettingsSegmented
+      ariaLabel="Chart metric"
+      options={[
+        { value: "cost", label: "Cost" },
+        { value: "tokens", label: "Tokens" },
+      ]}
+      value={metric}
+      onChange={setMetric}
+    />
+  );
+
+  const breakdown = (
+    <SettingsSection title="Breakdown" description="Top models in this range.">
+      <div className="ade-settings-panel" style={{ padding: "4px 14px" }}>
+        <ModelBreakdown models={stats?.models ?? []} />
+      </div>
+    </SettingsSection>
+  );
+
   return (
-    // Read-only figures end to end, so this is a dashboard page. It also gives
-    // `#ade-usage` — the anchor the manifest, ⌘K and the header usage control
-    // all link to — somewhere to land: before this, nothing in the DOM carried
-    // it and the deeplink scrolled nowhere. The title is the manifest's own
-    // label ("Usage & spend"), not a second copy of the shell's "Usage".
-    <SettingsDashboardPage anchor="ade-usage" title="Usage & spend">
-      <div className="flex flex-col gap-6">
-      {/* The Settings shell already prints "Usage" and its one-line
-          description above this component, so the page does not print them a
-          second time. What the shell cannot know — which range is on screen and
-          how old the reading is — sits with the controls that change it. */}
-      <header className="flex flex-wrap items-center justify-between gap-3">
-        <p className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "m-0 text-muted-fg")}>
-          {formatRangeLabel(stats)}
-          {updatedLabel ? ` · updated ${updatedLabel} ago` : ""}
-        </p>
+    // `#ade-usage` is the anchor the manifest, ⌘K and the header usage control
+    // all link to, so the page root carries it.
+    <SettingsColumn wide>
+      <div id="ade-usage" data-settings-anchor="ade-usage" className="ade-settings-split-stack" style={{ scrollMarginTop: 16 }}>
+        {/* What the Settings shell cannot know — which range is on screen and
+            how old the reading is — sits with the controls that change it. */}
+        <header className="flex flex-wrap items-center justify-between gap-3">
+          <p className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "m-0 text-muted-fg")}>
+            {formatRangeLabel(stats)}
+            {updatedLabel ? ` · updated ${updatedLabel} ago` : ""}
+          </p>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <SettingsSegmented
+              ariaLabel="Usage scope"
+              options={[
+                { value: "account", label: "All machines" },
+                { value: "machine", label: "This machine" },
+                { value: "project", label: "This project" },
+              ]}
+              value={scope}
+              onChange={changeScope}
+            />
+            <SettingsSegmented
+              ariaLabel="Date range"
+              options={RANGE_OPTIONS.map((option) => ({ value: option.preset, label: option.label }))}
+              value={preset}
+              onChange={changePreset}
+            />
+            <button
+              type="button"
+              onClick={() => cacheScope && loadStats(preset, scope, cacheScope, true)}
+              disabled={refreshing || !cacheScope}
+              aria-label="Refresh usage"
+              title="Refresh"
+              className="ade-settings-icon-button"
+            >
+              <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
+            </button>
+          </div>
+        </header>
 
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <UsageSegmented
-            ariaLabel="Usage scope"
-            options={[
-              { value: "account", label: "All machines" },
-              { value: "machine", label: "This machine" },
-              { value: "project", label: "This project" },
-            ]}
-            value={scope}
-            onChange={changeScope}
-          />
-          <UsageSegmented
-            ariaLabel="Date range"
-            options={RANGE_OPTIONS.map((option) => ({ value: option.preset, label: option.label }))}
-            value={preset}
-            onChange={changePreset}
-          />
-          <button
-            type="button"
-            onClick={() => cacheScope && loadStats(preset, scope, cacheScope, true)}
-            disabled={refreshing || !cacheScope}
-            aria-label="Refresh usage"
-            className={cn(USAGE_TEXT.micro, USAGE_BUTTON_CLASS, "min-h-8 px-3")}
-          >
-            <ArrowClockwise size={13} className={refreshing ? "animate-spin" : undefined} />
-            {refreshing ? "Refreshing" : "Refresh"}
-          </button>
-        </div>
-      </header>
+        {error ? <div className="ade-settings-note">{error}</div> : null}
 
-      {error ? (
-        <div className={cn(USAGE_CARD_CLASS, USAGE_TEXT.detail, "px-6 py-4 text-muted-fg")}>{error}</div>
-      ) : null}
-
-      {/* Pooled live limits belong to the account scope only: "This machine"
-          and "This project" are single-environment views, and the top-bar
-          popover already carries this machine's live limits everywhere. */}
-      {scope === "account" && stats?.liveQuota ? (
-        <UsagePooledLimits environments={stats.liveQuota.environments} />
-      ) : null}
-
-      {isEmpty ? (
-        <div className={cn(USAGE_CARD_CLASS, "flex flex-col items-center gap-2 px-6 py-16 text-center")}>
-          <span className={cn(USAGE_TEXT.body, "font-medium text-fg")}>Nothing here yet</span>
-          <span className={cn(USAGE_TEXT.detail, "max-w-[46ch] text-muted-fg")}>
-            Your first Claude or Codex turn shows up within a minute.
-          </span>
-        </div>
-      ) : (
-        <>
-          {/* Cost first, then the shape of it. The summary and the chart follow
-              the same metric toggle so the headline and the series are always
-              reading in the same units. */}
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)]">
-            <Panel bodyClassName="flex flex-col gap-5">
-              <CostHero
-                costUsd={summary?.observedProviderCostRangeUsd ?? 0}
-                providers={stats?.providers ?? []}
-                // `!stats` on its own, not `loading && !stats`: a load that
-                // failed with nothing cached clears `loading` while `stats`
-                // stays null, and the hero then printed a confident "$0.00"
-                // over an error banner. No data is not zero.
-                loading={loading || !stats}
-                pricingUpdatedAt={stats?.pricingUpdatedAt}
-              />
-              <ProviderCostSplit
-                providers={stats?.providers ?? []}
-                theme={theme}
-                highlightedMembers={highlightedMembers}
-                onHighlight={setHighlighted}
-              />
-            </Panel>
-
-            <Panel
-              title={`Daily ${effectiveMetric === "tokens" ? "tokens" : "cost"}`}
-              actions={
-                <>
-                  {costChartUnavailable ? (
-                    <ChartCostUnavailable
-                      scope={scope}
-                      onShowMachine={() => changeScope("machine")}
+        {isEmpty ? (
+          <div className="ade-settings-panel" style={{ alignItems: "center", padding: "56px 24px", textAlign: "center", gap: 6 }}>
+            <span className={cn(USAGE_TEXT.body, "font-medium text-fg")}>Nothing here yet</span>
+            <span className={cn(USAGE_TEXT.detail, "max-w-[46ch] text-muted-fg")}>
+              Your first Claude or Codex turn shows up within a minute.
+            </span>
+          </div>
+        ) : (
+          <>
+            {/* Cost first, then the shape of it. The total and the chart read in
+                the same units because they share the metric toggle. */}
+            <SettingsSection title="Spend" actions={<span className="ade-settings-toolbar-plain">{chartActions}</span>}>
+              <div className="ade-usage-stage">
+                <div className="flex min-w-0 flex-col gap-5">
+                  <CostHero
+                    costUsd={summary?.observedProviderCostRangeUsd ?? 0}
+                    providers={stats?.providers ?? []}
+                    // `!stats`, not `loading && !stats`: a failed load with nothing
+                    // cached clears `loading` while `stats` stays null. No data is
+                    // not zero.
+                    loading={loading || !stats}
+                    pricingUpdatedAt={stats?.pricingUpdatedAt}
+                  />
+                  <ProviderCostSplit
+                    providers={stats?.providers ?? []}
+                    theme={theme}
+                    highlightedMembers={highlightedMembers}
+                    onHighlight={setHighlighted}
+                  />
+                </div>
+                <div className="flex min-w-0 flex-col gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <span className={cn(USAGE_TEXT.detail, "font-medium text-fg")}>
+                      {`Daily ${effectiveMetric === "tokens" ? "tokens" : "cost"}`}
+                    </span>
+                    <UsageChartLegend
+                      series={chartSeries}
+                      metric={effectiveMetric}
+                      theme={theme}
+                      highlightedProvider={highlighted}
+                      onHighlight={setHighlighted}
                     />
-                  ) : (
-                    <UsageSegmented
-                      ariaLabel="Chart metric"
-                      options={[
-                        { value: "cost", label: "Cost" },
-                        { value: "tokens", label: "Tokens" },
-                      ]}
-                      value={metric}
-                      onChange={setMetric}
-                    />
-                  )}
-                  <UsageChartLegend
-                    series={chartSeries}
+                  </div>
+                  <UsageDailyChart
+                    days={days}
+                    daily={daily}
                     metric={effectiveMetric}
                     theme={theme}
                     highlightedProvider={highlighted}
-                    onHighlight={setHighlighted}
                   />
-                </>
-              }
-            >
-              <UsageDailyChart
-                days={days}
-                daily={daily}
-                metric={effectiveMetric}
-                theme={theme}
-                highlightedProvider={highlighted}
-              />
-            </Panel>
-          </div>
+                </div>
+              </div>
+            </SettingsSection>
 
-          {/* The strip is five dashboard stats. Each tile is self-contained and
-              bordered by the template, so the grid just spaces them — the old
-              hairline-through-a-1px-gap trick belonged to a hand-drawn card. */}
-          <section className="grid grid-cols-2 gap-3 md:grid-cols-5">
-            <Metric
-              label="Processed tokens"
-              source="Providers"
-              value={summary ? formatTokens(summary.totalTokens) : "—"}
-              detail={summary ? `${formatTokens(summary.observedProviderInputTokens)} in` : ""}
-            />
-            <Metric
-              label="Cached input"
-              source="Providers"
-              value={summary ? formatTokens(summary.observedProviderCachedTokens) : "—"}
-              detail="reads served from cache"
-            />
-            <Metric
-              label="Output"
-              source="Providers"
-              value={summary ? formatTokens(summary.observedProviderOutputTokens) : "—"}
-              detail={summary ? `${formatUsd(summary.observedProviderCostTodayUsd)} today` : ""}
-            />
-            <Metric label="Lines changed" {...codeMovement} />
-            <Metric
-              label="Pull requests"
-              source="GitHub"
-              value={summary ? formatWhole(prsTracked) : "—"}
-              detail={summary ? `${formatWhole(prsMerged)} merged` : ""}
-            />
-          </section>
+            <SettingsSection title="Totals">
+              <div className="ade-usage-totals">
+                <Metric
+                  label="Processed tokens"
+                  source="Providers"
+                  value={summary ? formatTokens(summary.totalTokens) : "—"}
+                  detail={summary ? `${formatTokens(summary.observedProviderInputTokens)} in` : ""}
+                />
+                <Metric
+                  label="Cached input"
+                  source="Providers"
+                  value={summary ? formatTokens(summary.observedProviderCachedTokens) : "—"}
+                  detail="served from cache"
+                />
+                <Metric
+                  label="Output"
+                  source="Providers"
+                  value={summary ? formatTokens(summary.observedProviderOutputTokens) : "—"}
+                  detail={summary ? `${formatUsd(summary.observedProviderCostTodayUsd)} today` : ""}
+                />
+                <Metric label="Lines changed" {...codeMovement} />
+                <Metric
+                  label="Pull requests"
+                  source="GitHub"
+                  value={summary ? formatWhole(prsTracked) : "—"}
+                  detail={summary ? `${formatWhole(prsMerged)} merged` : ""}
+                />
+              </div>
+            </SettingsSection>
 
-          {/* The activity module brings its own card, so this band is a heading
-              and the module — not a card inside a card. */}
-          <section className="flex flex-col gap-3">
-            <h2 className={cn(USAGE_TEXT.body, "m-0 font-medium text-fg")}>Activity</h2>
-            <ActivityModule
-              stats={stats}
-              loading={loading && !stats}
-              variant="full"
-              preset={preset}
-              showRangeControl={false}
-            />
-          </section>
-
-          <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,18rem)]">
-            <Panel title="Breakdown">
-              <ModelBreakdown models={stats?.models ?? []} theme={theme} />
-            </Panel>
-            {machines.length > 0 ? (
-              <Panel title="Machines">
-                <MachineList machines={machines} />
-              </Panel>
+            {/* Pooled live limits belong to the account scope only: "This
+                machine" and "This project" are single-environment views, and
+                the top-bar popover already carries this machine's limits. */}
+            {scope === "account" && stats?.liveQuota ? (
+              <SettingsSection title="Live limits" description="Every signed-in machine, pooled. The top bar shows this one.">
+                <UsagePooledLimits environments={stats.liveQuota.environments} />
+              </SettingsSection>
             ) : null}
-          </div>
 
-          {/* Host-provided caveats about how these numbers were gathered. They
-              are the host's own words about its data, so they are surfaced
-              verbatim rather than summarised away. */}
-          {sourceNotes.length > 0 ? (
-            <p className={cn(USAGE_TEXT.micro, "m-0 leading-relaxed text-muted-fg")}>
-              {sourceNotes.join(" · ")}
-            </p>
-          ) : null}
-        </>
-      )}
+            {machines.length > 0 ? (
+              <SettingsSplit
+                ratio="start-wide"
+                start={breakdown}
+                end={(
+                  <SettingsSection title="Machines" description="Who reported, and when.">
+                    <div className="ade-settings-panel" style={{ padding: "4px 14px" }}>
+                      <MachineList machines={machines} />
+                    </div>
+                  </SettingsSection>
+                )}
+              />
+            ) : breakdown}
+
+            <SettingsSection title="Activity">
+              <ActivityModule
+                stats={stats}
+                loading={loading && !stats}
+                variant="full"
+                preset={preset}
+                showRangeControl={false}
+              />
+            </SettingsSection>
+
+            {/* The host's own caveats about how these numbers were gathered,
+                verbatim rather than summarised away. */}
+            {sourceNotes.length > 0 ? (
+              <p className={cn(USAGE_TEXT.micro, "m-0 leading-relaxed text-muted-fg")}>
+                {sourceNotes.join(" · ")}
+              </p>
+            ) : null}
+          </>
+        )}
       </div>
-    </SettingsDashboardPage>
+    </SettingsColumn>
   );
 }

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { GithubLogo } from "@phosphor-icons/react";
+import { ChatText, GithubLogo } from "@phosphor-icons/react";
 import { Banner } from "../ui/notice";
 import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
@@ -58,6 +58,8 @@ export function PrChatTranscriptsSection() {
     >
       <SettingsCard
         anchor="pr-chat-transcripts"
+        icon={<ChatText size={15} weight="duotone" />}
+        tone="teal"
         title="Transcript links on PRs"
         description="Attach ADE chat transcript links when creating or linking PRs. Transcripts are published as secret gists, which are link-accessible. ADE publishes only structured chat turns, not raw terminal logs."
         control={

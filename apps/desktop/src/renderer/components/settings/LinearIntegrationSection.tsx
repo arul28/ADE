@@ -9,7 +9,7 @@ export function LinearIntegrationSection() {
   return (
     <SettingsSectionShell
       title="Linear integration"
-      description="Connect Linear for issue routing, lane context, PR linkage, and CTO workflows."
+      description="Issue routing, lane context, PR links, and CTO workflows."
       brandColor={LINEAR_BRAND}
       iconNode={<LinearMark size={22} />}
     >

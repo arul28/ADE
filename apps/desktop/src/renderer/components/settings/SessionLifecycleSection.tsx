@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { CheckSquare } from "@phosphor-icons/react";
 import type { SessionLifecycleSettings } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
@@ -48,6 +49,8 @@ export function SessionLifecycleSection() {
     >
       <SettingsCard
         anchor="session-lifecycle"
+        icon={<CheckSquare size={15} weight="duotone" />}
+        tone="green"
         title="Auto-settle sessions when lane PR merges"
         description="A merged PR settles the sessions it covers. ADE waits until a running turn finishes. An interrupted settle leaves the session active, and ADE tries again later."
         control={

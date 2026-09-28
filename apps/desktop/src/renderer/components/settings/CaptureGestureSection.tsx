@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Camera } from "@phosphor-icons/react";
 
 import type { CaptureGestureHealth } from "../../../shared/types/captureGesture";
 import {
@@ -95,6 +96,8 @@ export function CaptureGestureSection() {
     >
       <SettingsCard
         anchor="capture-gesture"
+        icon={<Camera size={15} weight="duotone" />}
+        tone="pink"
         title="Capture with a key gesture"
         description={
           available

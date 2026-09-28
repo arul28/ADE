@@ -25,6 +25,8 @@ export function clearAppliedTheme(root: HTMLElement = document.documentElement):
 /**
  * Paint `resolved` onto the document: inline custom properties on `<html>`,
  * `data-theme` for the structural block, and `data-theme-id` for identity.
+ * Nothing below `<html>` may carry `data-theme` except a deliberately scoped
+ * preview.
  *
  * Call it once per theme change — never per frame. The work is a fixed number
  * of `setProperty` calls and no layout reads, so it does not force reflow.
@@ -41,9 +43,14 @@ export function applyAdeTheme(resolved: ResolvedAdeTheme, doc: Document = docume
   root.setAttribute("data-theme-id", id);
   // Native form controls, scrollbars and the caret follow this.
   root.style.colorScheme = baseMode;
+  // Only `<html>` may carry the theme attributes. The stylesheet declares every
+  // `--color-*` variable on `[data-theme]`, so the same attribute on `<body>`
+  // or the app root redeclares the base palette one level down and hides the
+  // inline overrides above. That made every shipped theme look like plain
+  // dark or light.
   if (doc.body) {
-    doc.body.setAttribute("data-theme", baseMode);
-    doc.body.setAttribute("data-theme-id", id);
+    doc.body.removeAttribute("data-theme");
+    doc.body.removeAttribute("data-theme-id");
   }
 }
 

@@ -53,7 +53,7 @@ export function CodexBody(_props: { ctx: ProvidersViewContext }) {
         <div style={SECTION_LABEL_STYLE}>Plugins</div>
         <button
           type="button"
-          style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
+          style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })}
           disabled={refreshing}
           onClick={() => { void loadPlugins(); }}
         >

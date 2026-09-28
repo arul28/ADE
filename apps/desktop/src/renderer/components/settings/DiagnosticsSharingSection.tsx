@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { FirstAid } from "@phosphor-icons/react";
 import type {
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
@@ -67,6 +68,8 @@ export function DiagnosticsSharingSection() {
     >
       <SettingsCard
         anchor="diagnostics-sharing"
+        icon={<FirstAid size={15} weight="duotone" />}
+        tone="red"
         title="Share diagnostics with ADE when something breaks"
         description={'ADE sends the same report the "Report issue" button makes: app and system versions, recent ADE logs, disk space and the failure code. Paths, names, emails and credentials are removed first. Never your code, chats or terminal output.'}
         control={

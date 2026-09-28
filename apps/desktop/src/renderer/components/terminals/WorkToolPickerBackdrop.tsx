@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from "react";
-import type { ThemeId } from "../../state/appStore";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { selectEffectiveThemeId, useAppStore, type ThemeId } from "../../state/appStore";
+import { resolveTheme, resolveThemeById, STYLESHEET_THEME_IDS } from "../../../shared/theme";
 import { cn } from "../ui/cn";
 import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerBackdropRenderer";
 
@@ -66,6 +67,16 @@ export function WorkToolPickerBackdrop({
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<BackdropRenderer | null>(null);
+  // The two stylesheet themes keep their hand-tuned ramps; every other theme
+  // paints the mesh from its own accent, so the header and the start screen
+  // change with the theme instead of staying violet.
+  const themeId = useAppStore(selectEffectiveThemeId);
+  const customThemes = useAppStore((s) => s.customThemes);
+  const palette = useMemo(() => {
+    const resolved = resolveThemeById(themeId, customThemes);
+    if (resolved.source === "builtin" && STYLESHEET_THEME_IDS.includes(resolved.id)) return undefined;
+    return resolveTheme(resolved).palette;
+  }, [themeId, customThemes]);
   const playingRef = useRef(playing);
   playingRef.current = playing;
   // Optimistic: the canvas mounts, and only a refused context downgrades the
@@ -91,6 +102,7 @@ export function WorkToolPickerBackdrop({
     const renderer = createBackdropRenderer({
       canvas,
       theme,
+      palette,
       playing: playingRef.current,
       clockOrigin,
       field,
@@ -101,7 +113,7 @@ export function WorkToolPickerBackdrop({
       renderer?.dispose();
       if (rendererRef.current === renderer) rendererRef.current = null;
     };
-  }, [theme, clockOrigin, field, webglRefused, motionEpoch]);
+  }, [theme, palette, clockOrigin, field, webglRefused, motionEpoch]);
 
   useEffect(() => {
     rendererRef.current?.setPlaying(playing);

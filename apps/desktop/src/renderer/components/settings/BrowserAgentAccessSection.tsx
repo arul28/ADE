@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Globe } from "@phosphor-icons/react";
 import type { BuiltInBrowserAgentAccessMode } from "../../../shared/types/builtInBrowser";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import {
@@ -66,6 +67,8 @@ export function BrowserAgentAccessSection() {
     <SettingsGroup title="ADE browser">
       <SettingsCard
         anchor="browser-agent-access"
+        icon={<Globe size={15} weight="duotone" />}
+        tone="blue"
         title={BROWSER_AGENT_ACCESS_TITLE}
         description="The ADE browser keeps one signed-in profile for this computer. An agent that uses it can act as you on any site you are logged in to."
         stacked
@@ -158,7 +161,7 @@ export function BrowserAgentAccessSection() {
                     type="button"
                     disabled={busy}
                     onClick={() => void act(() => browserAgentAccessActions.revoke({ kind: "all" }))}
-                    style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 11 }), marginLeft: "auto" }}
+                    style={{ ...outlineButton({ height: 22, padding: "0 8px", fontSize: 12 }), marginLeft: "auto" }}
                   >
                     Remove all
                   </button>
@@ -211,7 +214,7 @@ export function BrowserAgentAccessSection() {
                         disabled={busy}
                         aria-label={`Remove ${grant.kind.toLowerCase()} ${grant.name}`}
                         onClick={() => void act(grant.revoke)}
-                        style={outlineButton({ height: 22, padding: "0 8px", fontSize: 11 })}
+                        style={outlineButton({ height: 22, padding: "0 8px", fontSize: 12 })}
                       >
                         Remove
                       </button>

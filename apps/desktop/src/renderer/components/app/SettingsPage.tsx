@@ -14,18 +14,16 @@ import {
   MagnifyingGlass,
   Palette,
   PlugsConnected,
-  Pulse as PulseIcon,
   UserCircle,
 } from "@phosphor-icons/react";
 import { AccountPage } from "../account/AccountPage";
-import { ActivitySection } from "../settings/ActivitySection";
 import { AppearanceSection } from "../settings/AppearanceSection";
+import { SettingsColumn } from "../settings/primitives";
 import { ChatSection } from "../settings/ChatSection";
 import { BudgetCapSettings } from "../settings/BudgetCapEditor";
 import { AboutSection } from "../settings/AboutSection";
 import { AdeCliSection } from "../settings/AdeCliSection";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
-import { DictationSection } from "../settings/DictationSection";
 import { GitHubIntegrationSection } from "../settings/GitHubIntegrationSection";
 import { KeepAwakeSection } from "../settings/KeepAwakeSection";
 import { CaptureGestureSection } from "../settings/CaptureGestureSection";
@@ -102,11 +100,32 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   "lanes-git": GitBranch,
   integrations: PlugsConnected,
   notifications: Bell,
-  activity: PulseIcon,
   secrets: Key,
   storage: HardDrives,
   stats: ChartLineUp,
 };
+
+/** Tabs whose content sits in the centred `SettingsColumn`. */
+const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
+  "appearance",
+  "chat",
+  "notifications",
+  "stats",
+  "secrets",
+  "general",
+  "agents",
+  "lanes-git",
+  "integrations",
+  "storage",
+]);
+
+/** Tabs whose sections `TabContent` flows into the two-column layout. */
+const FLOW_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
+  "general",
+  "lanes-git",
+  "integrations",
+  "storage",
+]);
 
 /** Tour targets kept stable across the nine-tab split. */
 const TOUR_IDS: Partial<Record<SettingsTabId, string>> = {
@@ -184,7 +203,7 @@ function providerIdFromHash(hash: string): string | null {
  * manifest entry for each provider deeplinks straight to it. While a provider
  * is open the tab shows only that page — the OpenAI voice key below the
  * provider list is not part of the provider you drilled into. Dictation lives
- * on the chat tab; scheduled work lives on activity.
+ * on the chat tab; scheduled work lives on notifications.
  */
 function AgentsTabContent() {
   const location = useLocation();
@@ -283,6 +302,10 @@ type TabSection = {
   machine?: MachineSectionKind;
   /** How the section is named in "not available here" notes. */
   title?: string;
+  /** `full` spans both columns of a wide page instead of taking one. */
+  span?: "full";
+  /** Stack under the previous section in the same cell of a wide page. */
+  stack?: true;
 };
 
 /**
@@ -323,9 +346,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       title: "About ADE and updates",
     },
     { entryIds: ["general.project"], render: () => <ProjectSection />, machine: "routed", title: "Project health" },
-    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line" },
+    { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", stack: true },
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
-    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
+    { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture", stack: true },
     {
       entryIds: ["general.browser-agent-access"],
       render: () => <BrowserAgentAccessSection />,
@@ -336,7 +359,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     // checkout, so it has an effect only on the tab's own machine.
     { entryIds: ["general.link-open-mode"], render: () => <BrowserLinksSection />, machine: "bound", title: "Open links" },
     // Consent files in this install's ADE home (`~/.ade`), not the account.
-    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics" },
+    { entryIds: ["general.analytics"], render: () => <ProductAnalyticsSection />, machine: "local", title: "Product analytics", stack: true },
     {
       entryIds: ["general.diagnostics-sharing"],
       render: () => <DiagnosticsSharingSection />,
@@ -348,13 +371,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   chat: [
     {
       entryIds: "tab",
-      render: () => (
-        <>
-          <ChatSection />
-          {/* Voice input is chat dictation, so it lives with chat. */}
-          <DictationSection />
-        </>
-      ),
+      render: () => <ChatSection />,
     },
   ],
   "lanes-git": [
@@ -369,13 +386,15 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       machine: "routed",
       title: "Lane behaviour",
     },
-    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates" },
     {
       entryIds: ["lanes-git.pr-chat-transcripts"],
       render: () => <PrChatTranscriptsSection />,
       machine: "routed",
       title: "PR chat transcripts",
     },
+    // Last, so the two short sections above pair up and the full-width
+    // template manager sits under them.
+    { entryIds: ["lanes-git.lane-templates"], render: () => <LaneTemplatesSection />, machine: "routed", title: "Lane templates", span: "full" },
   ],
   // Connections live in the machine's credential store and are read by its
   // runtime. Their calls follow the tab's binding (no pin yet), so they are
@@ -385,7 +404,6 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "bound", title: "Linear" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
-  activity: [{ entryIds: "tab", render: () => <ActivitySection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   storage: [
     {
@@ -393,12 +411,14 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       render: () => <StorageSection />,
       machine: "routed",
       title: "Disk usage and cleanup",
+      span: "full",
     },
     {
       entryIds: ["storage.session-lifecycle"],
       render: () => <SessionLifecycleSection />,
       machine: "routed",
       title: "Session lifecycle",
+      span: "full",
     },
   ],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
@@ -435,7 +455,11 @@ function TabContent({
     if (machine && !machineSectionAvailable(AGENTS_TAB_KIND, machine)) {
       return <MachineUnavailableNotice machine={machine} unavailableTitles={["Providers"]} />;
     }
-    return <AgentsTabContent />;
+    return (
+      <SettingsColumn wide>
+        <AgentsTabContent />
+      </SettingsColumn>
+    );
   }
   const sections = TAB_SECTIONS[tab];
   if (!sections) return null;
@@ -446,20 +470,46 @@ function TabContent({
     ? sections.filter((section) => !shown.includes(section)).map((section) => section.title ?? "")
       .filter(Boolean)
     : [];
+  const items = shown.map((section) => {
+    const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
+    return { section, entryIds, node: (
+      <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
+        {section.render()}
+      </WebSettingsSection>
+    ) };
+  });
+  const notice = machine && hiddenTitles.length > 0 ? (
+    <MachineUnavailableNotice machine={machine} unavailableTitles={hiddenTitles} />
+  ) : null;
+  // A tab whose one section is the whole page lays itself out.
+  if (items.length === 1 && TAB_SECTIONS[tab]!.length === 1 && !FLOW_TABS.has(tab)) {
+    return (
+      <>
+        {items[0]!.node}
+        {notice}
+      </>
+    );
+  }
+  // Otherwise the sections flow into a two-column grid on a wide page. A
+  // `stack` section joins the previous cell, so a short pair can sit beside
+  // one tall section and the row still lines up.
+  const cells: { key: string; span?: "full"; nodes: React.ReactNode[] }[] = [];
+  for (const { section, entryIds, node } of items) {
+    const last = cells[cells.length - 1];
+    if (section.stack && last) last.nodes.push(node);
+    else cells.push({ key: entryIds.join(","), span: section.span, nodes: [node] });
+  }
   return (
-    <>
-      {shown.map((section) => {
-        const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
-        return (
-          <WebSettingsSection key={entryIds.join(",")} entryIds={entryIds}>
-            {section.render()}
-          </WebSettingsSection>
-        );
-      })}
-      {machine && hiddenTitles.length > 0 ? (
-        <MachineUnavailableNotice machine={machine} unavailableTitles={hiddenTitles} />
-      ) : null}
-    </>
+    <SettingsColumn wide>
+      <div className="ade-settings-flow">
+        {cells.map((cell) => (
+          <div key={cell.key} className="ade-settings-flow-item" data-span={cell.span}>
+            {cell.nodes}
+          </div>
+        ))}
+      </div>
+      {notice}
+    </SettingsColumn>
   );
 }
 
@@ -944,7 +994,10 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {isWebClientMode() || machinePageScope ? null : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
-        <header style={{ marginBottom: 20 }}>
+        {/* Pages built on the centred settings column get a page wrapper of the
+            same measure, so the title and search line up with the content. */}
+        <div className={CENTERED_COLUMN_TABS.has(section) ? "ade-settings-page--column" : undefined}>
+        <header className="ade-settings-page-header" style={{ marginBottom: 20 }}>
           <div
             style={{
               display: "flex",
@@ -1069,6 +1122,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           ) : (
             <TabContent tab={section} machine={null} />
           )}
+        </div>
         </div>
       </div>
     </div>

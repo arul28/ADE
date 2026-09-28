@@ -479,7 +479,7 @@ export function OAuthConnectModal({
                 <span style={labelStyle}>Sign-in link</span>
                 <button
                   type="button"
-                  style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: "none" }}
+                  style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 12 }), border: "none" }}
                   onClick={() => setShowFullUrl((v) => !v)}
                 >
                   {showFullUrl ? "Hide" : "View full link"}

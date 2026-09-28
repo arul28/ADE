@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type CSSProperties } from "react";
-import { ArrowsClockwise, CheckCircle, Warning } from "@phosphor-icons/react";
+import { TerminalWindow, ArrowsClockwise, CheckCircle, Warning } from "@phosphor-icons/react";
 import type { AdeCliStatus } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { rendererPlatformAttribute } from "../../lib/platform";
@@ -92,6 +92,8 @@ export function AdeCliSection({ embedded = false }: Props) {
     <SettingsGroup title="Command line">
       <SettingsCard
         anchor="ade-cli"
+        icon={<TerminalWindow size={15} weight="duotone" />}
+        tone="slate"
         title={embedded ? "Terminal CLI" : "ADE command"}
         description={embedded
           ? <>Use <code style={codeStyle()}>ade</code> in your own Terminal. Agents launched by ADE already get the bundled CLI.</>
@@ -140,13 +142,13 @@ export function AdeCliSection({ embedded = false }: Props) {
         ) : null}
 
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 14, flexWrap: "wrap" }}>
-          <button type="button" style={outlineButton({ height: 32 })} disabled={loading || installing} onClick={() => void refresh()}>
+          <button type="button" style={outlineButton()} disabled={loading || installing} onClick={() => void refresh()}>
             <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
               <ArrowsClockwise size={13} weight="bold" />
               Refresh
             </span>
           </button>
-          <button type="button" style={primaryButton({ height: 32 })} disabled={installDisabled} onClick={() => void installForUser()}>
+          <button type="button" style={primaryButton()} disabled={installDisabled} onClick={() => void installForUser()}>
             {installing ? "Installing..." : terminalReady ? "Installed" : "Install for Terminal"}
           </button>
         </div>

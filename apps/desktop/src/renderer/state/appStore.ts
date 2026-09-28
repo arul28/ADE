@@ -38,14 +38,38 @@ import {
 import {
   DEFAULT_THEME_ID,
   baseModeForThemeId,
+  canonicalThemeId,
   normalizeAdeThemeList,
   resolveTheme,
   resolveThemeById,
+  themeIdForMode,
   type AdeTheme,
 } from "../../shared/theme";
 import { applyAdeTheme } from "../theme/applyTheme";
+import { applyInterfacePreferences } from "../theme/applyInterface";
 
 export type ThemeId = "dark" | "light";
+
+/**
+ * The theme id to paint. `themeId` is the user's choice and the synced value;
+ * when the theme follows the system, the same family's variant for the OS mode
+ * is painted instead. A custom theme has one mode and paints as it is.
+ */
+export function effectiveThemeId(themeId: string, followsSystem: boolean, systemColorScheme: ThemeId): string {
+  return followsSystem ? themeIdForMode(themeId, systemColorScheme) : themeId;
+}
+
+/** The OS colour scheme now. Local to this machine; never persisted or synced. */
+export function readSystemColorScheme(): ThemeId {
+  try {
+    if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+      return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+    }
+  } catch {
+    // Fall through to the default.
+  }
+  return "dark";
+}
 export const THEME_IDS: ThemeId[] = ["dark", "light"];
 export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "ui-monospace",
@@ -57,6 +81,32 @@ export const DEFAULT_TERMINAL_FONT_FAMILY = [
   "\"Geist Mono\"",
   "monospace",
 ].join(", ");
+/** The interface and code faces ADE ships, plus the platform's own. */
+export type InterfaceSansFont = "geist" | "system" | "geist-mono";
+export type InterfaceMonoFont = "jetbrains" | "geist-mono" | "system";
+
+export type InterfacePreferences = {
+  sansFont: InterfaceSansFont;
+  monoFont: InterfaceMonoFont;
+  /** Stops transitions and animations across the app, whatever the OS says. */
+  reduceMotion: boolean;
+};
+
+export const DEFAULT_INTERFACE_PREFERENCES: InterfacePreferences = {
+  sansFont: "geist",
+  monoFont: "jetbrains",
+  reduceMotion: false,
+};
+
+export function normalizeInterfacePreferences(value: unknown): InterfacePreferences {
+  const raw = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  const sansFont: InterfaceSansFont =
+    raw.sansFont === "system" || raw.sansFont === "geist-mono" ? raw.sansFont : "geist";
+  const monoFont: InterfaceMonoFont =
+    raw.monoFont === "geist-mono" || raw.monoFont === "system" ? raw.monoFont : "jetbrains";
+  return { sansFont, monoFont, reduceMotion: raw.reduceMotion === true };
+}
+
 export type TerminalPreferences = {
   fontFamily: string;
   fontSize: number;
@@ -955,6 +1005,9 @@ type PersistedUserPreferences = {
   themeId: string;
   /** User-authored / imported themes. Shipped themes are not in this list. */
   customThemes: AdeTheme[];
+  /** Paint the shipped theme's variant for the OS colour scheme. */
+  themeFollowsSystem: boolean;
+  interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
@@ -1035,7 +1088,8 @@ function coerceTheme(value: unknown): ThemeId | null {
 function coerceThemeId(value: unknown): string {
   if (typeof value === "string") {
     const trimmed = value.trim();
-    if (trimmed) return trimmed;
+    // A retired shipped id maps to the variant that replaced it.
+    if (trimmed) return canonicalThemeId(trimmed);
   }
   return DEFAULT_THEME_ID;
 }
@@ -1049,6 +1103,8 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       theme: coerceTheme(parsed.theme) ?? "dark",
       themeId: coerceThemeId(parsed.themeId ?? parsed.theme),
       customThemes: normalizeAdeThemeList(parsed.customThemes),
+      themeFollowsSystem: parsed.themeFollowsSystem === true,
+      interfacePreferences: normalizeInterfacePreferences(parsed.interfacePreferences),
       terminalPreferences: normalizeTerminalPreferences(parsed.terminalPreferences),
       // Detailed tooltips are an onboarding aid that defaults OFF in the browser
       // web client (clutter for an already oriented user), and ON on desktop. An
@@ -1103,6 +1159,8 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     theme,
     themeId: theme,
     customThemes: [],
+    themeFollowsSystem: false,
+    interfacePreferences: { ...DEFAULT_INTERFACE_PREFERENCES },
     terminalPreferences,
     smartTooltipsEnabled,
     launchPromptClipboardEnabled: true,
@@ -1141,6 +1199,8 @@ function persistUserPreferencesFrom(state: {
   theme: ThemeId;
   themeId: string;
   customThemes: AdeTheme[];
+  themeFollowsSystem: boolean;
+  interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   smartTooltipsEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
@@ -1164,6 +1224,8 @@ function persistUserPreferencesFrom(state: {
     theme: state.theme,
     themeId: state.themeId,
     customThemes: state.customThemes,
+    themeFollowsSystem: state.themeFollowsSystem,
+    interfacePreferences: state.interfacePreferences,
     terminalPreferences: state.terminalPreferences,
     smartTooltipsEnabled: state.smartTooltipsEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
@@ -1195,6 +1257,12 @@ function readInitialUserPreferences(): PersistedUserPreferences {
 
 const initialPersistedWorkViews = readPersistedWorkViewState();
 const initialUserPreferences = readInitialUserPreferences();
+const initialSystemColorScheme = readSystemColorScheme();
+const initialEffectiveThemeId = effectiveThemeId(
+  initialUserPreferences.themeId,
+  initialUserPreferences.themeFollowsSystem,
+  initialSystemColorScheme,
+);
 
 /**
  * Paint the stored theme before React's first frame.
@@ -1208,7 +1276,8 @@ const initialUserPreferences = readInitialUserPreferences();
  */
 if (typeof document !== "undefined" && document.documentElement) {
   try {
-    applyAdeTheme(resolveTheme(resolveThemeById(initialUserPreferences.themeId, initialUserPreferences.customThemes)));
+    applyAdeTheme(resolveTheme(resolveThemeById(initialEffectiveThemeId, initialUserPreferences.customThemes)));
+    applyInterfacePreferences(initialUserPreferences.interfacePreferences);
   } catch {
     // A failed early paint must never block the app; the App effect retries.
   }
@@ -1355,10 +1424,15 @@ export type AppState = {
   focusedSessionId: string | null;
   projectRevision: number;
   theme: ThemeId;
-  /** Active theme id: a shipped id ("dark", "obsidian", …) or a custom theme id. */
+  /** Chosen theme id: a shipped id ("dark", "ocean-light", …) or a custom theme id. */
   themeId: string;
   /** User-authored and imported themes available to select. */
   customThemes: AdeTheme[];
+  /** Paint the chosen family's variant for the OS colour scheme. */
+  themeFollowsSystem: boolean;
+  /** The OS colour scheme. Machine-local: never persisted or synced. */
+  systemColorScheme: ThemeId;
+  interfacePreferences: InterfacePreferences;
   terminalPreferences: TerminalPreferences;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
@@ -1511,6 +1585,10 @@ export type AppState = {
   setTheme: (themeId: string) => void;
   /** Replace the whole custom-theme list (import / delete / rename / save). */
   setCustomThemes: (themes: AdeTheme[]) => void;
+  setThemeFollowsSystem: (followsSystem: boolean) => void;
+  setInterfacePreferences: (next: Partial<InterfacePreferences>) => void;
+  /** Record the OS colour scheme; repaints only when the theme follows it. */
+  setSystemColorScheme: (scheme: ThemeId) => void;
   setCodeBlockCopyButtonPosition: (position: CodeBlockCopyButtonPosition) => void;
   setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
   setAgentTurnCompletionSoundVolume: (volume: number) => void;
@@ -1614,6 +1692,13 @@ export type AppState = {
   /// the tab — otherwise disconnecting the last tab loses the open chat.
   closeProject: (options?: { preserveRemoteViewState?: boolean }) => Promise<void>;
 };
+
+/** The theme id to paint, after the follow-the-system rule. */
+export function selectEffectiveThemeId(
+  state: Pick<AppState, "themeId" | "themeFollowsSystem" | "systemColorScheme">,
+): string {
+  return effectiveThemeId(state.themeId, state.themeFollowsSystem, state.systemColorScheme);
+}
 
 export function selectActiveProjectRoot(state: Pick<AppState, "project" | "projectBinding">): string | null {
   const root = state.projectBinding?.kind === "remote"
@@ -1911,9 +1996,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   selectedLaneId: null,
   focusedSessionId: null,
   projectRevision: 0,
-  theme: baseModeForThemeId(initialUserPreferences.themeId, initialUserPreferences.customThemes),
+  theme: baseModeForThemeId(initialEffectiveThemeId, initialUserPreferences.customThemes),
   themeId: initialUserPreferences.themeId,
   customThemes: initialUserPreferences.customThemes,
+  themeFollowsSystem: initialUserPreferences.themeFollowsSystem,
+  interfacePreferences: initialUserPreferences.interfacePreferences,
+  systemColorScheme: initialSystemColorScheme,
   terminalPreferences: initialUserPreferences.terminalPreferences,
   codeBlockCopyButtonPosition: initialUserPreferences.codeBlockCopyButtonPosition,
   agentTurnCompletionSound: initialUserPreferences.agentTurnCompletionSound,
@@ -2353,7 +2441,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setTheme: (themeId) =>
     set((prev) => {
       const nextThemeId = coerceThemeId(themeId);
-      const theme = baseModeForThemeId(nextThemeId, prev.customThemes);
+      const theme = baseModeForThemeId(
+        effectiveThemeId(nextThemeId, prev.themeFollowsSystem, prev.systemColorScheme),
+        prev.customThemes,
+      );
       const next = { ...prev, theme, themeId: nextThemeId };
       persistUserPreferencesFrom(next);
       return { theme, themeId: nextThemeId };
@@ -2361,10 +2452,42 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setCustomThemes: (themes) =>
     set((prev) => {
       const customThemes = normalizeAdeThemeList(themes);
-      const theme = baseModeForThemeId(prev.themeId, customThemes);
+      const theme = baseModeForThemeId(
+        effectiveThemeId(prev.themeId, prev.themeFollowsSystem, prev.systemColorScheme),
+        customThemes,
+      );
       const next = { ...prev, theme, customThemes };
       persistUserPreferencesFrom(next);
       return { theme, customThemes };
+    }),
+  setThemeFollowsSystem: (followsSystem) =>
+    set((prev) => {
+      const themeFollowsSystem = followsSystem === true;
+      const theme = baseModeForThemeId(
+        effectiveThemeId(prev.themeId, themeFollowsSystem, prev.systemColorScheme),
+        prev.customThemes,
+      );
+      persistUserPreferencesFrom({ ...prev, theme, themeFollowsSystem });
+      return { theme, themeFollowsSystem };
+    }),
+  setInterfacePreferences: (next) =>
+    set((prev) => {
+      const interfacePreferences = normalizeInterfacePreferences({ ...prev.interfacePreferences, ...next });
+      persistUserPreferencesFrom({ ...prev, interfacePreferences });
+      return { interfacePreferences };
+    }),
+  setSystemColorScheme: (scheme) =>
+    set((prev) => {
+      const systemColorScheme: ThemeId = scheme === "light" ? "light" : "dark";
+      if (systemColorScheme === prev.systemColorScheme) return {};
+      const theme = baseModeForThemeId(
+        effectiveThemeId(prev.themeId, prev.themeFollowsSystem, systemColorScheme),
+        prev.customThemes,
+      );
+      // Persist the painted base mode so the next launch paints it before the
+      // OS is asked; the choice itself (`themeId`) does not change.
+      if (theme !== prev.theme) persistUserPreferencesFrom({ ...prev, theme });
+      return { theme, systemColorScheme };
     }),
   setCodeBlockCopyButtonPosition: (position) =>
     set((prev) => {
@@ -2453,10 +2576,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ...prev,
         theme: nextTheme,
         themeId: DEFAULT_THEME_ID,
+        themeFollowsSystem: false,
         chatFontSizePx: nextFont,
         userOverrodeChatFontSize: false,
       });
-      return { theme: nextTheme, themeId: DEFAULT_THEME_ID, chatFontSizePx: nextFont, userOverrodeChatFontSize: false };
+      return {
+        theme: nextTheme,
+        themeId: DEFAULT_THEME_ID,
+        themeFollowsSystem: false,
+        chatFontSizePx: nextFont,
+        userOverrodeChatFontSize: false,
+      };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {
@@ -3316,6 +3446,9 @@ export function createProjectAppStore(
     theme: rootState.theme,
     themeId: rootState.themeId,
     customThemes: rootState.customThemes,
+    themeFollowsSystem: rootState.themeFollowsSystem,
+    interfacePreferences: rootState.interfacePreferences,
+    systemColorScheme: rootState.systemColorScheme,
     terminalPreferences: rootState.terminalPreferences,
     codeBlockCopyButtonPosition: rootState.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: rootState.agentTurnCompletionSound,
@@ -3335,6 +3468,9 @@ export function createProjectAppStore(
     voiceInputEnabled: rootState.voiceInputEnabled,
     setTheme: rootState.setTheme,
     setCustomThemes: rootState.setCustomThemes,
+    setThemeFollowsSystem: rootState.setThemeFollowsSystem,
+    setInterfacePreferences: rootState.setInterfacePreferences,
+    setSystemColorScheme: rootState.setSystemColorScheme,
     setTerminalPreferences: rootState.setTerminalPreferences,
     setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
     setAgentTurnCompletionSound: rootState.setAgentTurnCompletionSound,

@@ -1,4 +1,5 @@
 import type { ThemeId } from "../../state/appStore";
+import type { ResolvedAdeThemePalette } from "../../../shared/theme";
 import {
   BACKDROP_FRAME_MS,
   BACKDROP_IDLE_FRAME_MS,
@@ -78,6 +79,8 @@ export type BackdropRenderer = {
 export function createBackdropRenderer(options: {
   canvas: HTMLCanvasElement;
   theme: ThemeId;
+  /** The active theme's palette; omitted for the two stylesheet themes. */
+  palette?: ResolvedAdeThemePalette;
   onRefused: () => void;
   /** When false, the last frame stays on the canvas and the loop does not run. */
   playing?: boolean;
@@ -186,7 +189,7 @@ export function createBackdropRenderer(options: {
     view: context.getUniformLocation(program, "u_view"),
   };
 
-  const palette = backdropThemeFor(theme);
+  const palette = backdropThemeFor(theme, options.palette);
   const colorCount = Math.min(palette.colors.length, 8);
   const flat = new Float32Array(24);
   for (let i = 0; i < colorCount; i += 1) {

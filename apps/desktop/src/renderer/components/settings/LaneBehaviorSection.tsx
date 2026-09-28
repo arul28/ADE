@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { GitBranch, GitMerge, Lightbulb, Hash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
@@ -151,6 +152,8 @@ export function LaneBehaviorSection() {
       <SettingsGroup title="Starting lanes">
         <SettingsCard
           anchor="new-lane-base"
+          icon={<GitBranch size={15} weight="duotone" />}
+          tone="blue"
           title="New lane base"
           description="Whether new root lanes and chat-created lanes start from the fetched remote branch or your local tip."
           control={
@@ -173,6 +176,8 @@ export function LaneBehaviorSection() {
       <SettingsGroup title="Rebase & stacking">
         <SettingsCard
           anchor="auto-rebase"
+          icon={<GitMerge size={15} weight="duotone" />}
+          tone="green"
           title="Auto-rebase child lanes"
           description="Rebase dependent lanes when a parent advances, keeping stacks aligned."
           control={
@@ -192,6 +197,8 @@ export function LaneBehaviorSection() {
 
         <SettingsCard
           anchor="rebase-suggestions"
+          icon={<Lightbulb size={15} weight="duotone" />}
+          tone="amber"
           title="Rebase suggestions"
           description="How ADE tells you a lane has fallen behind. Off also skips the scan, so it costs nothing."
           control={
@@ -213,6 +220,8 @@ export function LaneBehaviorSection() {
 
         <SettingsCard
           anchor="rebase-min-behind"
+          icon={<Hash size={15} weight="duotone" />}
+          tone="slate"
           title="Only suggest after"
           description="Ignore lanes that are behind by fewer commits than this."
           disabled={rebaseSuggestions === "off"}
@@ -232,11 +241,12 @@ export function LaneBehaviorSection() {
           }
         />
 
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        {/* A footer row of the group's panel, so it sits inside the panel. */}
+        <div className="ade-settings-row" style={{ display: "flex", justifyContent: "flex-end", padding: "10px 16px" }}>
           <button
             type="button"
             style={{
-              ...outlineButton({ height: 28, padding: "0 10px", fontSize: 11 }),
+              ...outlineButton({ height: 28, padding: "0 10px", fontSize: 12 }),
               fontFamily: SANS_FONT,
               color: COLORS.textSecondary,
             }}

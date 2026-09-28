@@ -46,7 +46,7 @@ import type {
 } from "../../shared/types/accountSettings";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
-import type { AdeTheme } from "../../shared/theme";
+import { themeIdForMode, type AdeTheme } from "../../shared/theme";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -112,7 +112,13 @@ function pref<Value>(
  * travel.
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
-  pref("theme", (state) => state.theme, (state, value) => state.setTheme(value)),
+  // `theme` is the painted base mode, which a machine that follows the system
+  // derives from its own OS. Applying it as a choice would let two machines in
+  // different OS modes overwrite each other's theme, so it only moves the
+  // chosen family to the matching variant on a machine that picks by hand.
+  pref("theme", (state) => state.theme, (state, value) => {
+    if (!state.themeFollowsSystem) state.setTheme(themeIdForMode(state.themeId, value));
+  }),
   // The active theme's id travels with the base mode so "themes follow you to
   // another machine" is true for a custom theme, not just dark/light. A custom
   // id whose definition has not landed yet paints as the default until its row
@@ -122,6 +128,8 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // list is one value under one key, so newer-wins applies to the list and two
   // machines never interleave half of each other's themes.
   pref("customThemes", (state) => state.customThemes, (state, value) => state.setCustomThemes(value as AdeTheme[])),
+  pref("themeFollowsSystem", (state) => state.themeFollowsSystem, (state, value) => state.setThemeFollowsSystem(value)),
+  pref("interfacePreferences", (state) => state.interfacePreferences, (state, value) => state.setInterfacePreferences(value)),
   pref("terminalPreferences", (state) => state.terminalPreferences, (state, value) => state.setTerminalPreferences(value)),
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
   pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),

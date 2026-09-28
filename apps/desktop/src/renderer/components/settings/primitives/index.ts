@@ -4,6 +4,16 @@
  */
 export { SettingsCard, SettingsGroup, SavedFlash, useSavedFlash } from "./SettingsCard";
 export { SettingsDisclosure } from "./SettingsDisclosure";
+export {
+  SettingsColumn,
+  SettingsPanel,
+  SettingsRow,
+  SettingsSection,
+  SettingsSectionAction,
+  SettingsSplit,
+  SETTINGS_TONES,
+  type SettingsTone,
+} from "./SettingsRows";
 
 // The other two page templates. A settings page is a preference page (cards in
 // groups, above), a manager page (toolbar + table), or a dashboard (read-only)

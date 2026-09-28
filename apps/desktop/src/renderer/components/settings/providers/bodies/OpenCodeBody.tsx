@@ -149,7 +149,7 @@ function LocalModelServers({ ctx }: { ctx: ProvidersViewContext }) {
         <div style={SECTION_LABEL_STYLE}>Local Model Servers</div>
         <button
           type="button"
-          style={outlineButton({ height: 26, padding: "0 10px", fontSize: 11 })}
+          style={outlineButton({ height: 26, padding: "0 10px", fontSize: 12 })}
           disabled={ctx.loading}
           onClick={() => void ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true })}
         >

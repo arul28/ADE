@@ -109,7 +109,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
         <button
           type="button"
           aria-label="Add a custom provider"
-          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11 })}
+          style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12 })}
           onClick={() => {
             setError(null);
             setSheet({ existing: null });
@@ -153,7 +153,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
               <button
                 type="button"
                 aria-label={`Edit ${entry.id}`}
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11 })}
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12 })}
                 onClick={() => {
                   setError(null);
                   setSheet({ existing: asCredential(entry) });
@@ -164,7 +164,7 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
               <button
                 type="button"
                 aria-label={`Delete ${entry.id}`}
-                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 11, color: COLORS.danger })}
+                style={outlineButton({ height: 24, padding: "0 8px", fontSize: 12, color: COLORS.danger })}
                 onClick={() => void remove(entry)}
               >
                 Delete

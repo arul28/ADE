@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { LinkSimple } from "@phosphor-icons/react";
 
 import type { BrowserLinkOpenMode } from "../../../shared/types";
 import { modifierKeyLabel } from "../../lib/platform";
@@ -78,6 +79,8 @@ export function BrowserLinksSection() {
     <SettingsGroup title="Links">
       <SettingsCard
         anchor="link-open-mode"
+        icon={<LinkSimple size={15} weight="duotone" />}
+        tone="teal"
         title="Links"
         description={
           <>

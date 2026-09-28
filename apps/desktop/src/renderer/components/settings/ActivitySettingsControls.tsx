@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  EyeSlash,
+  NumberCircleOne,
   Confetti,
   DesktopTower,
   HourglassMedium,
@@ -31,8 +33,8 @@ import {
 import { useAccountStatus } from "../../lib/account";
 import { supportsNativeNotch } from "../../lib/platform";
 import { useActivityStore } from "../../state/activityStore";
-import { SettingsCard, SettingsGroup, SettingsSelect, SettingsToggle } from "./primitives";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { SettingsPanel, SettingsRow, SettingsSection, SettingsSelect, SettingsToggle } from "./primitives";
+import { COLORS } from "../lanes/laneDesignTokens";
 
 /**
  * Every Activity setting, once.
@@ -577,31 +579,36 @@ export function ActivitySettingsControls({
     );
   }
 
+  // The settings page composes the row sections below in its own layout.
   return (
     <>
-      <SettingsGroup
-        title="Notch & menu bar"
-        description={
-          notchSupported
-            // Prose about a macOS surface, not a scope label — "menu bar"
-            // already commits the sentence to macOS, and this branch only
-            // renders there. Half-renaming it to "this computer" would read
-            // worse and claim no more. Deliberately unlike the popover badges.
-            ? "The ambient HUD near the menu bar on this Mac."
-            // `notchSupported` is false for two unrelated reasons and the old
-            // copy assumed only one of them: the web client (no `attentionNotch`
-            // bridge) and any non-macOS desktop. A Windows user was told they
-            // were running the web client.
-            : supportsNativeNotch
-              ? "The notch is a native macOS surface and isn’t available in the web client."
-              : "The notch is a native macOS surface and isn’t available on this computer."
-        }
-      >
-        <SettingsCard
+      <ActivityNotchSection model={model} />
+      <ActivityPrivacySection model={model} />
+      <ActivityMachinesSection model={model} />
+    </>
+  );
+}
+
+/** The notch and its flourish. Rendered disabled, with the reason, off macOS. */
+export function ActivityNotchSection({ model }: { model: ActivitySettingsModel }) {
+  const { account, loading, signedOut, notchEnabled, notchPresentation, notchSupported, updateAccount, toggleNotchEnabled, setNotchPresentation } = model;
+  const busy = loading || signedOut;
+  const notchOff = !notchSupported || !notchEnabled;
+  return (
+    <SettingsSection title="Notch">
+      <SettingsPanel>
+        <SettingsRow
           anchor="activity-notch"
+          icon={<Notches size={15} weight="duotone" />}
+          tone="accent"
           title="ADE notch"
-          description="A small HUD near the menu bar for work that needs you."
-          disabled={!notchSupported}
+          description={
+            notchSupported
+              ? "A small HUD by the menu bar for work that needs you."
+              : supportsNativeNotch
+                ? "A macOS surface. Not available in the web client."
+                : "A macOS surface. Not available on this computer."
+          }
           control={
             <SettingsToggle
               label="ADE notch"
@@ -611,39 +618,41 @@ export function ActivitySettingsControls({
             />
           }
         />
-        <SettingsCard
+        <SettingsRow
           anchor="activity-notch-reveal"
-          title="Notch behavior"
+          icon={<CursorClick size={15} weight="duotone" />}
+          tone="blue"
+          title="Show the strip"
           description={NOTCH_REVEAL_HELP[notchPresentation.revealMode]}
-          disabled={!notchSupported || !notchEnabled}
           control={
             <SettingsSelect
               ariaLabel="Notch behavior"
               value={notchPresentation.revealMode}
               options={REVEAL_OPTIONS}
-              disabled={!notchSupported || !notchEnabled}
+              disabled={notchOff}
               onChange={(revealMode) => setNotchPresentation({ revealMode })}
             />
           }
         />
-        <SettingsCard
+        <SettingsRow
           anchor="activity-notch-expanded"
+          icon={<ArrowsOutSimple size={15} weight="duotone" />}
+          tone="teal"
           title="Expanded panel"
-          description="Allow the notch to grow into a full list of sessions."
-          disabled={!notchSupported || !notchEnabled}
+          description="Let the notch open into the full list of sessions."
           control={
             <SettingsToggle
               label="Expanded panel"
               checked={notchPresentation.expandedPanelEnabled}
-              disabled={!notchSupported || !notchEnabled}
+              disabled={notchOff}
               onChange={(expandedPanelEnabled) => setNotchPresentation({ expandedPanelEnabled })}
             />
           }
         />
-        {/* The `activity-auto-reveal` and `activity-ticker` cards are gone with
-            their settings — see the note in the popover variant above. */}
-        <SettingsCard
+        <SettingsRow
           anchor="activity-celebrations"
+          icon={<Confetti size={15} weight="duotone" />}
+          tone="pink"
           title="Celebrations"
           description="A brief flourish when meaningful work lands."
           control={
@@ -655,29 +664,24 @@ export function ActivitySettingsControls({
             />
           }
         />
-      </SettingsGroup>
+      </SettingsPanel>
+    </SettingsSection>
+  );
+}
 
-      <SettingsGroup title="Sound">
-        <SettingsCard
-          anchor="activity-sounds"
-          title="Activity sounds"
-          description="Restrained cues for events that need you."
-          control={
-            <SettingsToggle
-              label="Activity sounds"
-              checked={account.soundsEnabled}
-              disabled={busy}
-              onChange={(soundsEnabled) => updateAccount({ soundsEnabled })}
-            />
-          }
-        />
-      </SettingsGroup>
-
-      <SettingsGroup title="Privacy">
-        <SettingsCard
+/** What Activity reveals, and what the Dock badge counts. */
+export function ActivityPrivacySection({ model }: { model: ActivitySettingsModel }) {
+  const { account, loading, signedOut, updateAccount } = model;
+  const busy = loading || signedOut;
+  return (
+    <SettingsSection title="Privacy and badges">
+      <SettingsPanel>
+        <SettingsRow
           anchor="activity-hide-details"
+          icon={<EyeSlash size={15} weight="duotone" />}
+          tone="slate"
           title="Hide previews"
-          description="Use private summaries instead of agent text on the notch, the phone, and the lock screen."
+          description="Show private summaries, not agent text, on the notch, the phone, and the lock screen."
           control={
             <SettingsToggle
               label="Hide previews"
@@ -687,16 +691,12 @@ export function ActivitySettingsControls({
             />
           }
         />
-      </SettingsGroup>
-
-      <SettingsGroup
-        title="Account"
-        description="Choose how Activity rolls up work from your signed-in machines."
-      >
-        <SettingsCard
+        <SettingsRow
           anchor="activity-dock-badge"
+          icon={<NumberCircleOne size={15} weight="duotone" />}
+          tone="red"
           title="Dock badge counts"
-          description="Count work waiting on this computer, or across every machine on your account."
+          description="Work waiting on this computer, or on every machine."
           control={
             <SettingsSelect
               ariaLabel="Dock badge counts"
@@ -707,67 +707,57 @@ export function ActivitySettingsControls({
             />
           }
         />
-      </SettingsGroup>
+      </SettingsPanel>
+    </SettingsSection>
+  );
+}
 
-      <SettingsGroup
-        title="Machines"
-        description="Activity always shows every machine. Muting one stops it notifying you."
-      >
-        <SettingsCard
-          anchor="activity-machines"
-          title="Notify me about"
-          description="Machines currently reporting to your account."
-          stacked
-        >
+/** One switch per machine. Muted machines still show in Activity. */
+export function ActivityMachinesSection({ model }: { model: ActivitySettingsModel }) {
+  const { machines, signedOut, setMachineMuted, machineMuted } = model;
+  return (
+    <SettingsSection title="Machines">
+      <SettingsPanel>
+        <div id="activity-machines" data-settings-anchor="activity-machines" className="ade-settings-row-group">
           {machines.length === 0 ? (
-            <p
-              style={{
-                margin: 0,
-                fontFamily: SANS_FONT,
-                fontSize: 11,
-                color: COLORS.textMuted,
-              }}
-            >
-              No machines have reported Activity yet.
-            </p>
+            <SettingsRow title="No machines yet" description="Machines appear here once they report Activity." />
           ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {machines.map((machine, index) => (
-                <div
+            machines.map((machine) => {
+              const muted = machineMuted(machine.machineKey);
+              return (
+                <SettingsRow
                   key={machine.machineKey}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "space-between",
-                    gap: 16,
-                    padding: "8px 0",
-                    borderTop: index === 0 ? "none" : `1px solid ${COLORS.borderMuted}`,
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>
-                      {machine.name}
-                    </div>
-                    <div style={{ marginTop: 2, fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                      {machineMuted(machine.machineKey)
-                        ? "Muted — visible in Activity, never notifies."
-                        : machine.online
-                          ? "Online"
-                          : "Offline"}
-                    </div>
-                  </div>
-                  <SettingsToggle
-                    label={`Notify me about ${machine.name}`}
-                    checked={!machineMuted(machine.machineKey)}
-                    disabled={signedOut}
-                    onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
-                  />
-                </div>
-              ))}
-            </div>
+                  icon={<DesktopTower size={15} weight="duotone" />}
+                  tone={machine.online ? "green" : "slate"}
+                  title={machine.name}
+                  description={
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span
+                        aria-hidden
+                        style={{
+                          width: 6,
+                          height: 6,
+                          borderRadius: 999,
+                          background: machine.online ? COLORS.success : COLORS.textDim,
+                        }}
+                      />
+                      {muted ? "Muted · still shown in Activity" : machine.online ? "Online" : "Offline"}
+                    </span>
+                  }
+                  control={
+                    <SettingsToggle
+                      label={`Notify me about ${machine.name}`}
+                      checked={!muted}
+                      disabled={signedOut}
+                      onChange={(enabled) => void setMachineMuted(machine.machineKey, !enabled)}
+                    />
+                  }
+                />
+              );
+            })
           )}
-        </SettingsCard>
-      </SettingsGroup>
-    </>
+        </div>
+      </SettingsPanel>
+    </SettingsSection>
   );
 }

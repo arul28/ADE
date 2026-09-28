@@ -293,7 +293,7 @@ function Hero({
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 8 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
             {onCleanSafely && reclaimableBytes > 0 ? (
-              <button type="button" onClick={onCleanSafely} style={primaryButton({ height: 32 })}>
+              <button type="button" onClick={onCleanSafely} style={primaryButton()}>
                 <Broom size={14} />
                 Clean up safely · {formatApproxBytes(reclaimableBytes)}
               </button>
@@ -302,7 +302,7 @@ function Hero({
               type="button"
               onClick={onRescan}
               disabled={refreshing}
-              style={{ ...outlineButton({ height: 32 }), opacity: refreshing ? 0.7 : 1 }}
+              style={{ ...outlineButton(), opacity: refreshing ? 0.7 : 1 }}
             >
               <ArrowClockwise size={14} className={refreshing ? "animate-spin" : undefined} />
               {refreshing ? "Rescanning" : "Rescan"}
@@ -392,7 +392,7 @@ function ActionButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      style={{ ...outlineButton({ height: 30, fontSize: 11.5 }), opacity: disabled ? 0.6 : 1, cursor: disabled ? "not-allowed" : "pointer" }}
+      style={{ ...outlineButton({ height: 30, fontSize: 12.5 }), opacity: disabled ? 0.6 : 1, cursor: disabled ? "not-allowed" : "pointer" }}
     >
       {icon}
       {label}
@@ -453,7 +453,7 @@ function ItemRow({
 
 function GroupLabel({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ ...LABEL_STYLE, textTransform: "uppercase", letterSpacing: 0.8, fontSize: 10, marginTop: 4 }}>
+    <div style={{ ...LABEL_STYLE, fontSize: 12, marginTop: 4 }}>
       {children}
     </div>
   );
@@ -778,10 +778,12 @@ function StoragePolicyPanel({
   // splitting them into four cards would mint four anchors the manifest does
   // not know and settings search would hide them.
   return (
-    <SettingsGroup title="Lane storage rules">
+    <SettingsGroup title="Lane storage">
       <SettingsCard
         anchor="lane-storage-rules"
-        title="Lane storage rules"
+        icon={<Archive size={15} weight="duotone" />}
+        tone="orange"
+        title="Archive idle lanes"
         description="ADE can archive lanes when they are safely idle. It never removes lane folders in the background."
         control={
           busy ? (
@@ -900,12 +902,12 @@ function ReclaimConfirmDialog({
           />
         </label>
         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-          <button type="button" onClick={onClose} disabled={busy} style={outlineButton({ height: 32 })}>Cancel</button>
+          <button type="button" onClick={onClose} disabled={busy} style={outlineButton()}>Cancel</button>
           <button
             type="button"
             onClick={onConfirm}
             disabled={busy || blocked || dirtyNotConfirmed || value !== "RECLAIM"}
-            style={{ ...primaryButton({ height: 32 }), opacity: busy || blocked || dirtyNotConfirmed || value !== "RECLAIM" ? 0.55 : 1 }}
+            style={{ ...primaryButton(), opacity: busy || blocked || dirtyNotConfirmed || value !== "RECLAIM" ? 0.55 : 1 }}
           >
             {busy
               ? "Reclaiming…"
@@ -1284,7 +1286,7 @@ export function StorageSection() {
             <div style={{ display: "flex", flexDirection: "column", gap: 12, alignItems: "flex-start" }}>
               <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>ADE couldn't measure storage right now.</div>
               <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{error}</div>
-              <button type="button" onClick={() => void load({ force: true })} style={outlineButton({ height: 32 })}>
+              <button type="button" onClick={() => void load({ force: true })} style={outlineButton()}>
                 <ArrowClockwise size={14} /> Try again
               </button>
             </div>
@@ -1462,7 +1464,7 @@ function CategoryCardBody({
                 type="button"
                 onClick={onCompress}
                 disabled={compressing}
-                style={{ ...outlineButton({ height: 30, fontSize: 11.5 }), opacity: compressing ? 0.7 : 1 }}
+                style={{ ...outlineButton({ height: 30, fontSize: 12.5 }), opacity: compressing ? 0.7 : 1 }}
               >
                 <FileZip size={13} className={compressing ? "animate-spin" : undefined} />
                 {compressing ? "Compressing…" : "Compress old history"}

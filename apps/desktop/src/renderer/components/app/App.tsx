@@ -39,6 +39,7 @@ import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { applyAdeTheme } from "../../theme/applyTheme";
+import { applyInterfacePreferences } from "../../theme/applyInterface";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 
 function createPreloadableRoute<TProps extends object>(
@@ -113,6 +114,7 @@ import {
   releaseProjectAppStore,
   retainProjectAppStoreState,
   selectActiveProjectRoot,
+  selectEffectiveThemeId,
   useAppStore,
   type AppStoreApi,
 } from "../../state/appStore";
@@ -669,6 +671,9 @@ function ProjectTabHost() {
     theme: s.theme,
     themeId: s.themeId,
     customThemes: s.customThemes,
+    themeFollowsSystem: s.themeFollowsSystem,
+    interfacePreferences: s.interfacePreferences,
+    systemColorScheme: s.systemColorScheme,
     terminalPreferences: s.terminalPreferences,
     codeBlockCopyButtonPosition: s.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: s.agentTurnCompletionSound,
@@ -1361,9 +1366,14 @@ function BrowserHashRouteBridge() {
 }
 
 export function App() {
-  const theme = useAppStore((s) => s.theme);
-  const themeId = useAppStore((s) => s.themeId);
+  const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
+  const setSystemColorScheme = useAppStore((s) => s.setSystemColorScheme);
+  const interfacePreferences = useAppStore((s) => s.interfacePreferences);
+
+  React.useEffect(() => {
+    applyInterfacePreferences(interfacePreferences);
+  }, [interfacePreferences]);
   const projectRoot = useAppStore(selectActiveProjectRoot);
 
   // Account-scoped preferences follow the signed-in account between machines.
@@ -1383,6 +1393,17 @@ export function App() {
     void getAiStatusCached({ projectRoot: projectRoot ?? null }).catch(() => undefined);
   }, [projectRoot]);
 
+  // Track the OS colour scheme on the root store. The painted theme follows it
+  // only when the user chose "System"; the listener itself is always cheap.
+  React.useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const query = window.matchMedia("(prefers-color-scheme: light)");
+    const sync = () => setSystemColorScheme(query.matches ? "light" : "dark");
+    sync();
+    query.addEventListener("change", sync);
+    return () => query.removeEventListener("change", sync);
+  }, [setSystemColorScheme]);
+
   React.useEffect(() => {
     // One pass per theme change: inline custom properties on <html> for a
     // custom/imported theme, plus `data-theme` for the structural block and
@@ -1399,8 +1420,6 @@ export function App() {
     <LaunchGate>
       <Router>
         <div
-          data-theme={theme}
-          data-theme-id={themeId}
           className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30"
         >
           <OnboardingBootstrap />

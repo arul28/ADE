@@ -184,15 +184,8 @@ export function SettingsSegmented<T extends string>({
     <div
       role="radiogroup"
       aria-label={ariaLabel}
-      style={{
-        display: "inline-flex",
-        padding: 2,
-        gap: 2,
-        background: COLORS.recessedBg,
-        border: `1px solid ${COLORS.borderMuted}`,
-        borderRadius: 9,
-        opacity: disabled ? 0.5 : 1,
-      }}
+      className="ade-settings-segmented"
+      style={{ opacity: disabled ? 0.5 : 1 }}
     >
       {options.map((option) => {
         const active = option.value === value;
@@ -204,26 +197,12 @@ export function SettingsSegmented<T extends string>({
             aria-checked={active}
             disabled={disabled}
             onClick={() => { if (!active) onChange(option.value); }}
+            className="ade-settings-segmented-option"
             style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "flex-start",
-              justifyContent: "center",
-              gap: 1,
+              alignItems: hasHints ? "flex-start" : "center",
               minHeight: hasHints ? 40 : 26,
               padding: hasHints ? "5px 12px" : "0 12px",
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              fontWeight: active ? 600 : 500,
-              color: active ? COLORS.textPrimary : COLORS.textMuted,
-              background: active ? "color-mix(in srgb, var(--color-accent) 16%, transparent)" : "transparent",
-              border: active
-                ? "1px solid color-mix(in srgb, var(--color-accent) 40%, transparent)"
-                : "1px solid transparent",
-              borderRadius: 7,
               cursor: disabled ? "not-allowed" : "pointer",
-              transition: "background 120ms ease, color 120ms ease",
-              whiteSpace: "nowrap",
             }}
           >
             <span>{option.label}</span>
@@ -341,14 +320,14 @@ export function SettingsSelect<T extends string>({
       value={value}
       disabled={disabled}
       onChange={(event) => onChange(event.target.value as T)}
+      className="ade-settings-select"
       style={{
         height: 30,
         minWidth: 128,
-        padding: "0 8px",
+        padding: "0 28px 0 10px",
         fontFamily: SANS_FONT,
         fontSize: 12,
         color: COLORS.textPrimary,
-        background: COLORS.recessedBg,
         border: `1px solid ${COLORS.outlineBorder}`,
         borderRadius: 8,
         cursor: disabled ? "not-allowed" : "pointer",
@@ -393,7 +372,12 @@ export function SettingsSlider({
         step={step}
         value={value}
         onChange={(event) => onChange(Number(event.target.value))}
-        style={{ flex: 1, accentColor: "var(--color-accent)" }}
+        className="ade-settings-slider"
+        style={{
+          flex: 1,
+          // The filled part of the track, as a percentage for the CSS gradient.
+          ["--fill" as string]: `${max > min ? ((value - min) / (max - min)) * 100 : 0}%`,
+        } as React.CSSProperties}
       />
       {valueLabel ? (
         <span

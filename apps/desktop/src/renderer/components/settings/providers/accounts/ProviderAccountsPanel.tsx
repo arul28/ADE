@@ -307,7 +307,7 @@ function AccountRow({
           <button
             type="button"
             onClick={() => onSignIn(instance)}
-            style={{ ...outlineButton({ height: 20, padding: "0 8px", fontSize: 10 }), marginLeft: 4, flexShrink: 0 }}
+            style={{ ...outlineButton({ height: 20, padding: "0 8px", fontSize: 12 }), marginLeft: 4, flexShrink: 0 }}
           >
             Sign in
           </button>
@@ -523,7 +523,7 @@ export function ProviderAccountsPanel({
               does not look for "add". */}
           <button
             type="button"
-            style={outlineButton({ height: 26, padding: "0 9px", fontSize: 11 })}
+            style={outlineButton({ height: 26, padding: "0 9px", fontSize: 12 })}
             onClick={() => setSheet({ existing: null })}
           >
             <Plus size={11} weight="bold" /> Add account

@@ -2503,7 +2503,7 @@ button, [role="button"] {
   background:
     radial-gradient(
       130% 100% at 18% 12%,
-      color-mix(in srgb, #6366F1 28%, transparent),
+      color-mix(in srgb, var(--backdrop-lobe, #6366F1) 28%, transparent),
       transparent 64%
     ),
     radial-gradient(
@@ -2524,7 +2524,7 @@ button, [role="button"] {
   background:
     radial-gradient(
       130% 100% at 18% 12%,
-      color-mix(in srgb, #A5B4FC 30%, transparent),
+      color-mix(in srgb, var(--backdrop-lobe, #A5B4FC) 30%, transparent),
       transparent 64%
     ),
     radial-gradient(
@@ -5262,4 +5262,973 @@ button, [role="button"] {
 }
 [data-radix-popper-content-wrapper] > * {
   zoom: var(--ade-web-zoom-factor, 1);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Settings — grouped rows and the Appearance page
+   ═══════════════════════════════════════════════════════════ */
+
+.ade-settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ade-settings-panel {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  overflow: hidden;
+}
+
+.ade-settings-row {
+  padding: 14px 16px;
+}
+
+.ade-settings-row + .ade-settings-row {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.ade-settings-toolbar {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+}
+
+.ade-settings-toolbar > :first-child,
+.ade-settings-toolbar > :first-child > .ade-settings-section-action {
+  border-top-left-radius: 7px;
+  border-bottom-left-radius: 7px;
+}
+
+.ade-settings-toolbar > :last-child,
+.ade-settings-toolbar > :last-child > .ade-settings-section-action {
+  border-top-right-radius: 7px;
+  border-bottom-right-radius: 7px;
+}
+
+.ade-settings-toolbar > * + * {
+  border-left: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+
+.ade-settings-section-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  min-width: 30px;
+  padding: 0 10px;
+  border: none;
+  background: transparent;
+  color: var(--color-secondary-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.ade-settings-section-action:hover {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-settings-section-action:focus-visible,
+.ade-theme-mode-option:focus-visible,
+.ade-swatch-half:focus-visible,
+.ade-swatch-single:focus-visible,
+.ade-swatch-name:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* The theme stage: the active theme large on the left, its spec sheet on the
+   right. */
+.ade-theme-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr);
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  overflow: hidden;
+}
+
+.ade-theme-stage-canvas {
+  padding: 22px;
+  border-right: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  transition: background 300ms ease;
+}
+
+.ade-theme-stage-preview {
+  border-radius: 10px;
+  box-shadow: 0 24px 48px -28px rgba(0, 0, 0, 0.7);
+  animation: ade-theme-stage-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@keyframes ade-theme-stage-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+
+.ade-theme-stage-spec {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 22px 20px;
+}
+
+.ade-theme-chip {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 14%, transparent);
+}
+
+.ade-theme-mode {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.ade-theme-mode-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.ade-theme-mode-option:hover {
+  color: var(--color-fg);
+}
+
+.ade-theme-mode-option[aria-checked="true"] {
+  background: var(--color-card);
+  color: var(--color-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+/* The family grid: a swatch split on the diagonal, light over dark. */
+.ade-swatch-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 14px 12px;
+}
+
+@container settings-column (max-width: 640px) {
+  .ade-swatch-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+.ade-swatch-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ade-swatch {
+  position: relative;
+  height: 76px;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+  transition: box-shadow 150ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ade-swatch-tile:hover .ade-swatch {
+  transform: translateY(-2px);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 22%, var(--color-border)), 0 12px 24px -16px rgba(0, 0, 0, 0.6);
+}
+
+.ade-swatch-tile[data-active="true"] .ade-swatch {
+  box-shadow: 0 0 0 2px var(--color-accent), 0 12px 28px -16px var(--color-accent);
+}
+
+.ade-swatch-half,
+.ade-swatch-single {
+  position: absolute;
+  inset: 0;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.ade-swatch-half[data-side="light"] {
+  clip-path: polygon(0 0, 100% 0, 0 100%);
+}
+
+.ade-swatch-half[data-side="dark"] {
+  clip-path: polygon(100% 0, 100% 100%, 0 100%);
+}
+
+/* A hairline of light along the diagonal, so the two halves meet on a seam
+   instead of a hard cut. `to bottom right` puts the 50% line through the
+   top-right and bottom-left corners, which is exactly where the halves meet. */
+.ade-swatch::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    rgba(255, 255, 255, 0.22) 50%,
+    transparent calc(50% + 1px)
+  );
+}
+
+.ade-swatch:has(> .ade-swatch-single)::after {
+  display: none;
+}
+
+.ade-swatch-hint {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  pointer-events: none;
+}
+
+.ade-swatch-mark {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent);
+  pointer-events: none;
+}
+
+.ade-swatch-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ade-swatch-tile[data-active="true"] .ade-swatch-name {
+  font-weight: 600;
+}
+
+.ade-swatch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-swatch,
+  .ade-swatch-tile:hover .ade-swatch,
+  .ade-theme-stage-preview {
+    transition: none;
+    transform: none;
+    animation: none;
+  }
+}
+
+@media (max-width: 900px) {
+  .ade-theme-stage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ade-theme-stage-canvas {
+    border-right: none;
+    border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  }
+}
+
+/* The settings select draws its own chevron so it matches the other controls
+   instead of the platform's default arrow. */
+.ade-settings-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-color: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  /* A mid grey reads on both dark and light surfaces. */
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b8b96' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: calc(100% - 11px) 50%;
+  background-size: 10px 6px;
+  background-repeat: no-repeat;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.ade-settings-select:hover:not(:disabled) {
+  background-color: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+
+.ade-settings-select:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+.ade-settings-select option {
+  background: var(--color-popup-bg);
+  color: var(--color-fg);
+}
+
+/* Settings → Appearance → Reduce motion. Stronger than the OS query: it stops
+   every transition and animation, including ones that ignore that query. */
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* The settings segmented control: the checked option lifts as a card, the
+   same treatment as the Appearance mode switch. */
+.ade-settings-segmented {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+.ade-settings-segmented-option {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease;
+}
+
+.ade-settings-segmented-option:hover:not(:disabled) {
+  color: var(--color-fg);
+}
+
+.ade-settings-segmented-option[aria-checked="true"] {
+  background: var(--color-card);
+  color: var(--color-fg);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25), 0 0 0 1px color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.ade-settings-segmented-option:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* The centred column every redesigned settings page sits in. A wide column
+   is a size container: below the split width its children keep the narrow
+   measure, above it `.ade-settings-split` puts sections side by side. */
+.ade-settings-column {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  width: 100%;
+  max-width: 860px;
+  margin: 0 auto;
+  padding-bottom: 32px;
+}
+
+.ade-settings-column--wide {
+  max-width: 1440px;
+  container: settings-column / inline-size;
+}
+
+.ade-settings-split {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.ade-settings-split-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  min-width: 0;
+}
+
+@container settings-column (max-width: 999px) {
+  .ade-settings-column--wide > * {
+    width: 100%;
+    max-width: 860px;
+    margin-inline: auto;
+  }
+}
+
+@container settings-column (min-width: 1000px) {
+  .ade-settings-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 32px 28px;
+  }
+  .ade-settings-split[data-ratio="start-wide"] {
+    grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  }
+  .ade-settings-split-stack[data-sticky] {
+    position: sticky;
+    top: 12px;
+  }
+}
+
+/* Settings → Chat preview: one thread on a stage, capped in height and faded
+   at the foot so it reads as a window onto the chat, not a wall. */
+.ade-chat-preview-stage {
+  position: relative;
+  padding: 22px 22px 0;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background:
+    radial-gradient(90% 70% at 50% 0%, color-mix(in srgb, var(--color-accent) 14%, transparent), transparent 70%),
+    color-mix(in srgb, var(--color-card) 40%, var(--color-bg) 60%);
+  overflow: hidden;
+}
+
+.ade-chat-preview-frame {
+  max-height: 460px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent);
+}
+
+/* The small menu settings pickers open. */
+.ade-settings-menu {
+  min-width: 180px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: var(--color-popup-bg);
+  box-shadow: var(--shadow-popup);
+}
+
+.ade-settings-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 30px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-fg);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ade-settings-menu-item:hover,
+.ade-settings-menu-item:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  outline: none;
+}
+
+/* The settings slider: a thin track filled to the value in the accent, and a
+   round thumb. `--fill` comes from the component. */
+.ade-settings-slider {
+  appearance: none;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to right,
+    var(--color-accent) 0,
+    var(--color-accent) var(--fill, 0%),
+    color-mix(in srgb, var(--color-fg) 14%, transparent) var(--fill, 0%)
+  );
+  cursor: pointer;
+}
+
+.ade-settings-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--color-fg);
+  border: 3px solid var(--color-accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  transition: transform 120ms ease;
+}
+
+.ade-settings-slider:hover::-webkit-slider-thumb {
+  transform: scale(1.1);
+}
+
+.ade-settings-slider:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+}
+
+/* Appearance: the theme stage and the swatches stack, and sit side by side on
+   a wide column. */
+.ade-theme-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+@container settings-column (min-width: 1000px) {
+  .ade-theme-layout {
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+    align-items: start;
+    gap: 24px;
+  }
+  /* Beside the stage the preview gets the height the page has. */
+  .ade-chat-preview-frame {
+    max-height: calc(100vh - 230px);
+  }
+}
+
+/* A group of rows that shares one search anchor (a machine list, a job list). */
+.ade-settings-row-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.ade-settings-row-group + .ade-settings-row,
+.ade-settings-row + .ade-settings-row-group {
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* A small square icon button beside a row's control (preview, cancel). */
+.ade-settings-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-fg);
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.ade-settings-icon-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+.ade-settings-icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ade-settings-icon-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* A quiet inline note at the top of a page (signed out, load errors). */
+.ade-settings-note {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+}
+
+/* A status chip in a section's toolbar ("6 of 11 notify", "Saved"). */
+.ade-settings-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.ade-settings-time {
+  height: 30px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  color-scheme: inherit;
+}
+
+/* Usage → live limits: one card per window, several to a row. */
+.ade-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.ade-limit-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  min-width: 0;
+}
+
+/* Usage → the spend stage: the total and its split beside the daily chart. */
+.ade-usage-stage {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+  padding: 22px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+}
+
+@container settings-column (min-width: 760px) {
+  .ade-usage-stage {
+    grid-template-columns: minmax(0, 19rem) minmax(0, 1fr);
+  }
+}
+
+/* Usage → totals: figures in a row, divided by hairlines, no boxes. */
+.ade-usage-totals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-card) 55%, var(--color-bg) 45%);
+  overflow: hidden;
+}
+
+.ade-usage-total {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 14px 16px;
+  min-width: 0;
+  box-shadow: -1px 0 0 color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* A section action that is its own control (a segmented switch, a note) and
+   needs no toolbar frame around it. */
+.ade-settings-toolbar:has(> .ade-settings-toolbar-plain) {
+  border: none;
+  background: transparent;
+}
+
+/* A label row at the top of a panel, naming the rows beneath it. */
+.ade-settings-panel-head {
+  padding: 10px 16px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+}
+
+/* The page wrapper for tabs built on the centred column: the same measure as
+   `.ade-settings-column--wide`, and the narrow measure below the split width,
+   so the title and search box line up with the content under them. */
+.ade-settings-page--column {
+  max-width: 1440px;
+  margin: 0 auto;
+  container: settings-page / inline-size;
+}
+
+@container settings-page (max-width: 999px) {
+  .ade-settings-page--column > .ade-settings-page-header {
+    max-width: 860px;
+    margin-inline: auto;
+  }
+}
+
+/* The tinted tile a settings row can lead with. */
+.ade-settings-row-icon {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: var(--tone);
+  background: color-mix(in srgb, var(--tone) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--tone) 22%, transparent);
+}
+
+/* Section pages (General, Lanes, Integrations, Diagnostics, Secrets): one
+   column that becomes two balanced columns on a wide page. A `full` item
+   spans both. */
+.ade-settings-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.ade-settings-flow-item {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+  min-width: 0;
+}
+
+@container settings-column (min-width: 1180px) {
+  /* Rows, not masonry: each pair of sections starts on the same line, and the
+     panels in a row stretch to the same height, so headings and edges align. */
+  .ade-settings-flow {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: stretch;
+    gap: 32px 28px;
+  }
+  .ade-settings-flow-item {
+    display: flex;
+    flex-direction: column;
+  }
+  .ade-settings-flow-item[data-span="full"] {
+    grid-column: 1 / -1;
+  }
+  .ade-settings-flow-item {
+    gap: 32px;
+  }
+  /* Every heading in a row takes the same height (a title and one line), so
+     panels side by side start level whether or not a heading has a caption. */
+  .ade-settings-flow-item:not([data-span="full"]) .ade-settings-head {
+    min-height: 42px;
+  }
+}
+
+/* Settings → Providers: one tile per provider, as many across as fit. */
+.ade-provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 10px;
+}
+
+.ade-provider-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: border-color 150ms ease, background-color 150ms ease, transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ade-provider-tile:hover {
+  border-color: color-mix(in srgb, var(--color-fg) 22%, var(--color-border));
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  transform: translateY(-1px);
+}
+
+.ade-provider-tile[data-state="connected"] {
+  border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-border));
+}
+
+.ade-provider-tile:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-provider-tile,
+  .ade-provider-tile:hover {
+    transition: none;
+    transform: none;
+  }
+}
+
+/* Settings buttons: sized to their label, one height (30px) everywhere. */
+.ade-settings-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease;
+}
+
+.ade-settings-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+.ade-settings-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.ade-settings-button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.ade-settings-button[data-variant="primary"] {
+  border-color: transparent;
+  background: var(--color-accent);
+  color: var(--color-accent-fg);
+}
+
+.ade-settings-button[data-variant="primary"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 88%, var(--color-fg));
+}
+
+.ade-settings-button[data-variant="danger"] {
+  border-color: transparent;
+  background: var(--color-error);
+  color: #fff;
+}
+
+/* A borderless icon button for row actions. */
+.ade-settings-ghost-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.ade-settings-ghost-icon:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-settings-ghost-icon[data-tone="danger"]:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-error) 14%, transparent);
+  color: var(--color-error);
+}
+
+.ade-settings-ghost-icon[data-tone="success"] {
+  color: var(--color-success);
+}
+
+.ade-settings-ghost-icon:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.ade-settings-ghost-icon:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+
+/* A labelled form field inside a settings panel. */
+.ade-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.ade-settings-field > span {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+}
+
+.ade-settings-input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 60%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 12.5px;
+  outline: none;
+  min-width: 0;
+  transition: border-color 120ms ease;
+}
+
+.ade-settings-input:focus {
+  border-color: color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+
+.ade-settings-input[data-mono] {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+/* A small quiet chip in a row ("Account", "This device"). */
+.ade-settings-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--color-muted-fg);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+/* Settings → Secrets: one row per secret. */
+.ade-secret-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ade-settings-button[data-variant="ghost"] {
+  border-color: transparent;
+  background: transparent;
+  color: var(--color-muted-fg);
 }

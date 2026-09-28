@@ -8,6 +8,7 @@ import {
   DEFAULT_TERMINAL_PREFERENCES,
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
+  selectEffectiveThemeId,
   useAppStore,
   type TerminalPreferences,
   type ThemeId,
@@ -3255,7 +3256,7 @@ export function TerminalView({
   toolType?: TerminalToolType | null;
 }) {
   const appTheme = useAppStore((s) => s.theme);
-  const themeId = useAppStore((s) => s.themeId);
+  const themeId = useAppStore(selectEffectiveThemeId);
   const customThemes = useAppStore((s) => s.customThemes);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   // Keyboard-scroll hint: web only, and only for a session whose provider we

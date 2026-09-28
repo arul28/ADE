@@ -1,7 +1,11 @@
-import React, { useState } from "react";
+import React, { useMemo, useState } from "react";
+import { TextAa, Code, Waves, TerminalWindow, ArrowsDownUp, ClockCounterClockwise, ArrowCounterClockwise, PaintBrush } from "@phosphor-icons/react";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
+  selectEffectiveThemeId,
   useAppStore,
+  type InterfaceMonoFont,
+  type InterfaceSansFont,
 } from "../../state/appStore";
 import type {
   ChatChromeTint,
@@ -15,14 +19,20 @@ import {
   TERMINAL_LINE_HEIGHT_OPTIONS,
   TERMINAL_SCROLLBACK_OPTIONS,
 } from "./terminalOptions";
-import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { resolveTheme, resolveThemeById, type AdeTerminalPalette } from "../../../shared/theme";
+import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import {
-  SettingsCard,
-  SettingsGroup,
+  SettingsColumn,
+  SettingsPanel,
+  SettingsRow,
+  SettingsSection,
+  SettingsSplit,
+  SettingsSectionAction,
   SettingsSelect,
+  SettingsToggle,
 } from "./primitives";
 import { AppleDevicesSection } from "./AppleDevicesSection";
-import { ThemeGallery } from "./ThemeGallery";
+import { ThemeGallery, ThemeStage } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
 import { ThemeImportExport } from "./ThemeImportExport";
 
@@ -30,8 +40,9 @@ import { ThemeImportExport } from "./ThemeImportExport";
  * Appearance settings.
  *
  * Theme, terminal, and Apple device rows persist in the renderer `appStore`
- * (localStorage) and the Apple keys also sync with the signed-in account,
- * same as the rest of Appearance. Writes land immediately.
+ * (localStorage) and sync with the signed-in account. Writes apply
+ * immediately. The page is one centred column of sections, each a quiet label
+ * over one panel of rows, so the whole page reads as one surface.
  */
 
 export const COPY_POSITION_META: Record<CodeBlockCopyButtonPosition, { label: string; hint: string }> = {
@@ -61,6 +72,8 @@ export function AppearanceSection() {
   const resetThemeAndChatFontDefaults = useAppStore((s) => s.resetThemeAndChatFontDefaults);
   const [customizerOpen, setCustomizerOpen] = useState(false);
 
+  const interfacePreferences = useAppStore((s) => s.interfacePreferences);
+  const setInterfacePreferences = useAppStore((s) => s.setInterfacePreferences);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   const setTerminalPreferences = useAppStore((s) => s.setTerminalPreferences);
 
@@ -68,151 +81,260 @@ export function AppearanceSection() {
     .some((option) => option.value === terminalPreferences.fontFamily);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>
-      <SettingsGroup title="Theme">
-        <SettingsCard
-          anchor="theme"
+    <SettingsColumn wide>
+      <div id="theme" data-settings-anchor="theme" style={{ scrollMarginTop: 16 }}>
+        <SettingsSection
           title="Theme"
-          description="Applies to every ADE surface, not just chat."
-          control={
-            <div style={{ display: "flex", gap: 8 }}>
-              <button
-                type="button"
+          actions={(
+            <>
+              <SettingsSectionAction
+                icon={<PaintBrush size={13} />}
+                label="Customize"
+                title="Change colours and save the result as your own theme"
                 onClick={() => setCustomizerOpen(true)}
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
-                title="Override individual colours and save the result as a custom theme."
-              >
-                Customize…
-              </button>
-              <button
-                type="button"
+              />
+              <ThemeImportExport />
+              <SettingsSectionAction
+                icon={<ArrowCounterClockwise size={13} />}
+                title="Restore defaults: ADE, dark, and a 14px chat font"
                 onClick={() => resetThemeAndChatFontDefaults()}
-                style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
-                title="Sets the theme to ADE Dark and chat font to 14px. Density, tint, and geometry stay as set."
-              >
-                Restore defaults
-              </button>
-            </div>
-          }
-          stacked
+              />
+            </>
+          )}
         >
-          <ThemeImportExport />
-          <ThemeGallery />
-        </SettingsCard>
-      </SettingsGroup>
-
-      <SettingsGroup title="Terminal">
-        <SettingsCard
-          anchor="terminal-text"
-          title="Terminal text"
-          description="Applies to work terminals, lane shells, resolver terminals, and the chat drawer."
-          stacked
-        >
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
-              gap: 12,
-            }}
-          >
-            <TerminalField label="Font family">
-              <SettingsSelect
-                ariaLabel="Terminal font family"
-                value={usingCustomTerminalFont ? "__custom__" : terminalPreferences.fontFamily}
-                onChange={(next) => {
-                  if (next === "__custom__") return;
-                  setTerminalPreferences({ fontFamily: next });
-                }}
-                options={[
-                  ...TERMINAL_FONT_FAMILY_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
-                  { value: "__custom__", label: "Custom stack…" },
-                ]}
-              />
-            </TerminalField>
-
-            <TerminalField label="Font size">
-              <SettingsSelect
-                ariaLabel="Terminal font size"
-                value={String(terminalPreferences.fontSize)}
-                onChange={(next) => setTerminalPreferences({ fontSize: Number(next) })}
-                options={TERMINAL_FONT_SIZE_OPTIONS.map((value) => ({
-                  value: String(value),
-                  label: `${value.toFixed(1).replace(/\.0$/, "")} px`,
-                }))}
-              />
-            </TerminalField>
-
-            <TerminalField label="Line height">
-              <SettingsSelect
-                ariaLabel="Terminal line height"
-                value={String(terminalPreferences.lineHeight)}
-                onChange={(next) => setTerminalPreferences({ lineHeight: Number(next) })}
-                options={TERMINAL_LINE_HEIGHT_OPTIONS.map((value) => ({
-                  value: String(value),
-                  label: value.toFixed(2).replace(/0$/, ""),
-                }))}
-              />
-            </TerminalField>
-
-            <TerminalField label="Scrollback">
-              <SettingsSelect
-                ariaLabel="Terminal scrollback"
-                value={String(terminalPreferences.scrollback)}
-                onChange={(next) => setTerminalPreferences({ scrollback: Number(next) })}
-                options={TERMINAL_SCROLLBACK_OPTIONS.map((value) => ({
-                  value: String(value),
-                  label: `${value.toLocaleString()} lines`,
-                }))}
-              />
-            </TerminalField>
+          <div className="ade-theme-layout">
+            <ThemeStage />
+            <ThemeGallery />
           </div>
+        </SettingsSection>
+      </div>
 
-          {/* Only worth the space once "Custom stack…" is the active choice. */}
-          {usingCustomTerminalFont ? (
-            <div style={{ marginTop: 12, display: "grid", gap: 6 }}>
-              <label
-                htmlFor="terminal-custom-font"
-                style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}
-              >
-                Custom font stack
-              </label>
-              <input
-                id="terminal-custom-font"
-                value={terminalPreferences.fontFamily}
-                onChange={(event) => setTerminalPreferences({ fontFamily: event.target.value })}
-                placeholder={DEFAULT_TERMINAL_FONT_FAMILY}
-                style={{
-                  height: 30,
-                  padding: "0 10px",
-                  fontFamily: MONO_FONT,
-                  fontSize: 12,
-                  color: COLORS.textPrimary,
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  borderRadius: 8,
-                }}
-              />
-              <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim }}>
-                A CSS font-family stack, e.g.{" "}
-                <span style={{ fontFamily: MONO_FONT }}>"JetBrains Mono", monospace</span>
-              </span>
-            </div>
-          ) : null}
-        </SettingsCard>
-      </SettingsGroup>
+      <SettingsSplit
+        start={(
+          <>
+            <SettingsSection title="Terminal">
+              <SettingsPanel>
+                <SettingsRow
+                  anchor="terminal-text"
+                  icon={<TerminalWindow size={15} weight="duotone" />}
+                  tone="green"
+                  title="Font"
+                  description="Work terminals, lane shells, and the chat drawer."
+                  control={(
+                    <>
+                      <SettingsSelect
+                        ariaLabel="Terminal font family"
+                        value={usingCustomTerminalFont ? "__custom__" : terminalPreferences.fontFamily}
+                        onChange={(next) => {
+                          if (next === "__custom__") return;
+                          setTerminalPreferences({ fontFamily: next });
+                        }}
+                        options={[
+                          ...TERMINAL_FONT_FAMILY_OPTIONS.map((option) => ({ value: option.value, label: option.label })),
+                          { value: "__custom__", label: "Custom stack…" },
+                        ]}
+                        style={{ minWidth: 150 }}
+                      />
+                      <SettingsSelect
+                        ariaLabel="Terminal font size"
+                        value={String(terminalPreferences.fontSize)}
+                        onChange={(next) => setTerminalPreferences({ fontSize: Number(next) })}
+                        options={TERMINAL_FONT_SIZE_OPTIONS.map((value) => ({
+                          value: String(value),
+                          label: `${value.toFixed(1).replace(/\.0$/, "")} px`,
+                        }))}
+                        style={{ minWidth: 84 }}
+                      />
+                    </>
+                  )}
+                >
+                  {/* Only worth the space once "Custom stack…" is the active choice. */}
+                  {usingCustomTerminalFont ? (
+                    <input
+                      id="terminal-custom-font"
+                      aria-label="Custom font stack"
+                      value={terminalPreferences.fontFamily}
+                      onChange={(event) => setTerminalPreferences({ fontFamily: event.target.value })}
+                      placeholder={DEFAULT_TERMINAL_FONT_FAMILY}
+                      style={{
+                        width: "100%",
+                        height: 30,
+                        marginBottom: 12,
+                        padding: "0 10px",
+                        fontFamily: MONO_FONT,
+                        fontSize: 12,
+                        color: COLORS.textPrimary,
+                        background: COLORS.recessedBg,
+                        border: `1px solid ${COLORS.outlineBorder}`,
+                        borderRadius: 8,
+                        boxSizing: "border-box",
+                      }}
+                    />
+                  ) : null}
+                  <TerminalPreview
+                    fontFamily={terminalPreferences.fontFamily}
+                    fontSize={terminalPreferences.fontSize}
+                    lineHeight={terminalPreferences.lineHeight}
+                  />
+                </SettingsRow>
 
-      <AppleDevicesSection />
+                <SettingsRow
+                  title="Line height"
+                  icon={<ArrowsDownUp size={15} weight="duotone" />}
+                  tone="slate"
+                  control={(
+                    <SettingsSelect
+                      ariaLabel="Terminal line height"
+                      value={String(terminalPreferences.lineHeight)}
+                      onChange={(next) => setTerminalPreferences({ lineHeight: Number(next) })}
+                      options={TERMINAL_LINE_HEIGHT_OPTIONS.map((value) => ({
+                        value: String(value),
+                        label: value.toFixed(2).replace(/0$/, ""),
+                      }))}
+                      style={{ minWidth: 84 }}
+                    />
+                  )}
+                />
+
+                <SettingsRow
+                  title="Scrollback"
+                  icon={<ClockCounterClockwise size={15} weight="duotone" />}
+                  tone="blue"
+                  description="Lines each terminal keeps."
+                  control={(
+                    <SettingsSelect
+                      ariaLabel="Terminal scrollback"
+                      value={String(terminalPreferences.scrollback)}
+                      onChange={(next) => setTerminalPreferences({ scrollback: Number(next) })}
+                      options={TERMINAL_SCROLLBACK_OPTIONS.map((value) => ({
+                        value: String(value),
+                        label: `${value.toLocaleString()} lines`,
+                      }))}
+                      style={{ minWidth: 120 }}
+                    />
+                  )}
+                />
+              </SettingsPanel>
+            </SettingsSection>
+          </>
+        )}
+        end={(
+          <>
+            <SettingsSection title="Interface">
+              <SettingsPanel>
+                <SettingsRow
+                  anchor="interface-font"
+            icon={<TextAa size={15} weight="duotone" />}
+            tone="violet"
+                  title="Interface font"
+                  description="Everything outside code and the terminal."
+                  control={(
+                    <SettingsSelect<InterfaceSansFont>
+                      ariaLabel="Interface font"
+                      value={interfacePreferences.sansFont}
+                      onChange={(sansFont) => setInterfacePreferences({ sansFont })}
+                      options={[
+                        { value: "geist", label: "Geist" },
+                        { value: "system", label: "System" },
+                        { value: "geist-mono", label: "Geist Mono" },
+                      ]}
+                      style={{ minWidth: 140 }}
+                    />
+                  )}
+                />
+                <SettingsRow
+                  anchor="code-font"
+            icon={<Code size={15} weight="duotone" />}
+            tone="blue"
+                  title="Code font"
+                  description="Code blocks, diffs, and file previews."
+                  control={(
+                    <SettingsSelect<InterfaceMonoFont>
+                      ariaLabel="Code font"
+                      value={interfacePreferences.monoFont}
+                      onChange={(monoFont) => setInterfacePreferences({ monoFont })}
+                      options={[
+                        { value: "jetbrains", label: "JetBrains Mono" },
+                        { value: "geist-mono", label: "Geist Mono" },
+                        { value: "system", label: "System mono" },
+                      ]}
+                      style={{ minWidth: 140 }}
+                    />
+                  )}
+                />
+                <SettingsRow
+                  anchor="reduce-motion"
+            icon={<Waves size={15} weight="duotone" />}
+            tone="teal"
+                  title="Reduce motion"
+                  description="Turn off animations and transitions everywhere."
+                  control={(
+                    <SettingsToggle
+                      label="Reduce motion"
+                      checked={interfacePreferences.reduceMotion}
+                      onChange={(reduceMotion) => setInterfacePreferences({ reduceMotion })}
+                    />
+                  )}
+                />
+              </SettingsPanel>
+            </SettingsSection>
+            <AppleDevicesSection />
+          </>
+        )}
+      />
 
       <ThemeCustomizer open={customizerOpen} onOpenChange={setCustomizerOpen} />
-    </div>
+    </SettingsColumn>
   );
 }
 
-function TerminalField({ label, children }: { label: string; children: React.ReactNode }) {
+/**
+ * A few lines of a real-looking session in the active theme's terminal colours
+ * and the chosen font, so a font or theme change shows before a terminal opens.
+ */
+function TerminalPreview({
+  fontFamily,
+  fontSize,
+  lineHeight,
+}: {
+  fontFamily: string;
+  fontSize: number;
+  lineHeight: number;
+}) {
+  const themeId = useAppStore(selectEffectiveThemeId);
+  const customThemes = useAppStore((s) => s.customThemes);
+  const t: AdeTerminalPalette = useMemo(
+    () => resolveTheme(resolveThemeById(themeId, customThemes)).terminal,
+    [themeId, customThemes],
+  );
+  const c = (color: string | undefined, children: React.ReactNode, bold = false) => (
+    <span style={{ color, fontWeight: bold ? 700 : undefined }}>{children}</span>
+  );
   return (
-    <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
-      <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>{label}</span>
-      {children}
+    <div
+      aria-hidden
+      style={{
+        borderRadius: 10,
+        padding: "12px 14px",
+        background: t.background,
+        color: t.foreground,
+        border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
+        fontFamily,
+        fontSize,
+        lineHeight,
+        whiteSpace: "pre",
+        overflow: "hidden",
+      }}
+    >
+      <div>{c(t.green, "➜", true)} {c(t.cyan, "ade", true)} {c(t.blue, "git:(")}{c(t.red, "main")}{c(t.blue, ")")} npm run dev</div>
+      <div>{" "}</div>
+      <div>  {c(t.green, "VITE", true)} {c(t.green, "v7.1.1")}  ready in {c(t.foreground, "1.24s", true)}</div>
+      <div>  {c(t.green, "➜")}  Local:   {c(t.cyan, "http://127.0.0.1:5173/")}</div>
+      <div>  {c(t.brightBlack, "✓")} {c(t.green, "85 passed")}  {c(t.yellow, "△ 2 warnings")}  {c(t.red, "✗ 0 failed")}</div>
+      <div>
+        {c(t.green, "➜", true)} {c(t.cyan, "ade", true)}{" "}
+        <span style={{ display: "inline-block", width: "0.6em", height: "1.1em", verticalAlign: "text-bottom", background: t.cursor }} />
+      </div>
     </div>
   );
 }

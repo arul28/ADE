@@ -1,6 +1,7 @@
 import React from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { SettingsPageShell } from "./SettingsPageShell";
+import { SettingsRowIcon, type SettingsTone } from "./SettingsRows";
 
 /**
  * The manager page: a toolbar and a table.
@@ -30,6 +31,8 @@ export function SettingsManagerPage({
   title,
   description,
   leading,
+  icon,
+  tone,
   titleAdornment,
   toolbar,
   children,
@@ -37,6 +40,9 @@ export function SettingsManagerPage({
   anchor: string;
   title: string;
   description?: React.ReactNode;
+  /** A glyph in a tinted tile before the title. */
+  icon?: React.ReactNode;
+  tone?: SettingsTone | string;
   /** Sits before the title — a back control, a section mark. */
   leading?: React.ReactNode;
   /** Sits after the title — a help hint, a count. */
@@ -51,6 +57,7 @@ export function SettingsManagerPage({
       title={title}
       description={description}
       leading={leading}
+      icon={icon ? <SettingsRowIcon icon={icon} tone={tone} /> : undefined}
       titleAdornment={titleAdornment}
       sectionAttrs={{ "data-settings-manager": anchor }}
       sectionStyle={{ fontFamily: SANS_FONT, display: "flex", flexDirection: "column", gap: 16 }}
@@ -125,8 +132,8 @@ export function SettingsManagerRow({
         gap: 12,
         alignItems: "center",
         padding: "10px 12px",
-        borderTop: `1px solid ${COLORS.outlineBorder}`,
-        minHeight: 54,
+        borderTop: "1px solid color-mix(in srgb, var(--color-border) 60%, transparent)",
+        minHeight: 52,
         fontFamily: SANS_FONT,
         fontSize: 12,
         color: COLORS.textPrimary,
