@@ -56,7 +56,7 @@ function setProcessArch(arch: NodeJS.Architecture): void {
 
 function makeExecutable(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, "#!/bin/sh\nexit 0\n", "utf8");
+  fs.writeFileSync(filePath, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 'opencode v2.0.18'; fi\nexit 0\n", "utf8");
   fs.chmodSync(filePath, 0o755);
 }
 

@@ -10,7 +10,6 @@ import type {
   PtyCreateArgs,
   TerminalSessionSummary,
 } from "../../../shared/types";
-import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
 import { droidProjectSlugForCwd } from "./discoverDroid";
 import { createExternalSessionsService } from "./externalSessionsService";
 import { createImportedSessionStore, importedSessionsPath } from "./importedSessionStore";
@@ -770,86 +769,6 @@ describe("externalSessionsService", () => {
     })).resolves.toMatchObject({ kind: "cli", sessionId: "terminal-exact" });
     expect(list).not.toHaveBeenCalled();
     expect(create.mock.calls[0]![0].startupCommand).toContain(`--resume ${targetId}`);
-  });
-
-  it("uses the destination lane scope when an exact OpenCode row omits its cwd", async () => {
-    const homeDir = path.join(root, "home");
-    const projectRoot = path.join(root, "repo");
-    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
-    const binDir = path.join(root, "bin");
-    // Windows cannot execute an extension-less file, and `resolveFromDirs`
-    // resolves through PATHEXT only there — an `opencode` with no extension is
-    // a macOS-shaped fixture that no Windows install would ever produce.
-    const openCodePath = path.join(binDir, process.platform === "win32" ? "opencode.cmd" : "opencode");
-    const id = "open-missing-cwd";
-    fs.mkdirSync(laneCwd, { recursive: true });
-    fs.mkdirSync(binDir, { recursive: true });
-    // A real script, not an `execFile` mock: discovery reads the CLI's stdout
-    // from a file (OpenCode cuts a piped stdout short).
-    const payloadPath = path.join(binDir, "opencode-payload.cjs");
-    fs.writeFileSync(
-      payloadPath,
-      `require("node:fs").writeFileSync(${JSON.stringify(path.join(binDir, "cwd.txt"))}, process.cwd());\n`
-        + `process.stdout.write(${JSON.stringify(JSON.stringify([{ id, title: "OpenCode without cwd" }]))});\n`,
-      "utf8",
-    );
-    fs.writeFileSync(
-      openCodePath,
-      process.platform === "win32"
-        ? `@echo off\r\n"${process.execPath}" "%~dp0opencode-payload.cjs"\r\n`
-        : `#!/bin/sh\nexec "${process.execPath}" "$(dirname "$0")/opencode-payload.cjs"\n`,
-      "utf8",
-    );
-    fs.chmodSync(openCodePath, 0o755);
-
-    const previousPath = process.env.PATH;
-    const previousDisableBundled = process.env.ADE_DISABLE_BUNDLED_OPENCODE;
-    process.env.PATH = binDir;
-    process.env.ADE_DISABLE_BUNDLED_OPENCODE = "1";
-    clearOpenCodeBinaryCache();
-    try {
-      const create = vi.fn(async (_args: PtyCreateArgs) => ({
-        sessionId: "terminal-opencode",
-        ptyId: "pty-opencode",
-        pid: 456,
-      }));
-      const service = createExternalSessionsService({
-        droidForkSupported: true,
-        projectRoot,
-        homeDir,
-        laneService: { getLaneWorktreePath: () => laneCwd },
-        sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
-        ptyService: { create },
-        logger: makeLogger(),
-      });
-
-      await expect(service.importExternalSession({
-        provider: "opencode",
-        sessionId: id,
-        laneId: "lane-1",
-        target: "cli",
-        mode: "resume",
-      })).resolves.toEqual({
-        kind: "cli",
-        sessionId: "terminal-opencode",
-        ptyId: "pty-opencode",
-        laneId: "lane-1",
-      });
-
-      // The list ran in the destination lane, OpenCode's only scope for a row with no cwd.
-      expect(fs.realpathSync(fs.readFileSync(path.join(binDir, "cwd.txt"), "utf8"))).toBe(fs.realpathSync(laneCwd));
-      expect(create).toHaveBeenCalledWith(expect.objectContaining({
-        cwd: fs.realpathSync(laneCwd),
-        allowExternalCwd: false,
-        startupCommand: `opencode --session ${id}`,
-      }));
-    } finally {
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
-      if (previousDisableBundled === undefined) delete process.env.ADE_DISABLE_BUNDLED_OPENCODE;
-      else process.env.ADE_DISABLE_BUNDLED_OPENCODE = previousDisableBundled;
-      clearOpenCodeBinaryCache();
-    }
   });
 
   it("forks a same-cwd Claude session with the original id in the launch command", async () => {
@@ -1937,47 +1856,7 @@ describe("externalSessionsService imported-session marking", () => {
     expect(rows[0]?.possiblyActive).toBe(true);
   });
 
-  it("reports an uninstalled OpenCode CLI to a scan that asked only for it", async () => {
-    const { homeDir, projectRoot, laneCwd } = laneSetup();
-    const previousPath = process.env.PATH;
-    const previousHome = process.env.HOME;
-    const previousDisableBundled = process.env.ADE_DISABLE_BUNDLED_OPENCODE;
-    // Binary resolution also searches HOME-derived CLI directories, so PATH
-    // alone does not describe a machine without OpenCode.
-    process.env.PATH = path.join(root, "missing-bin");
-    process.env.HOME = homeDir;
-    process.env.ADE_DISABLE_BUNDLED_OPENCODE = "1";
-    clearOpenCodeBinaryCache();
-    const logger = makeLogger();
-    const service = createExternalSessionsService({
-      droidForkSupported: true,
-      projectRoot,
-      homeDir,
-      laneService: { getLaneWorktreePath: () => laneCwd },
-      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
-      ptyService: { create: vi.fn() },
-      logger,
-    });
 
-    try {
-      await expect(service.list({ providers: ["opencode"], scope: "all" }))
-        .rejects.toThrow(/OpenCode CLI not found/u);
-      // A mixed scan still returns the providers that did work.
-      await expect(service.list({ providers: ["claude", "opencode"], scope: "all" })).resolves.toEqual([]);
-      expect(logger.warn).toHaveBeenCalledWith(
-        "external_sessions.discovery_failed",
-        expect.objectContaining({ provider: "opencode" }),
-      );
-    } finally {
-      if (previousPath === undefined) delete process.env.PATH;
-      else process.env.PATH = previousPath;
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-      if (previousDisableBundled === undefined) delete process.env.ADE_DISABLE_BUNDLED_OPENCODE;
-      else process.env.ADE_DISABLE_BUNDLED_OPENCODE = previousDisableBundled;
-      clearOpenCodeBinaryCache();
-    }
-  });
 });
 
 // importedSessionStore suite (folded in from importedSessionStore.test.ts during

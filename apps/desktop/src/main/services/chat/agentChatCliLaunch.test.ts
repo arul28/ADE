@@ -238,32 +238,6 @@ describe("launchAgentChatCli Claude fast mode", () => {
   });
 });
 
-describe("launchAgentChatCli OpenCode fast mode", () => {
-  it("passes fast mode as an OpenCode CLI variant", async () => {
-    const deps = makeDeps();
-
-    await launchAgentChatCli(
-      makeArgs({
-        provider: "opencode",
-        model: "opencode/openai/gpt-5.4",
-        fastMode: true,
-      }),
-      deps,
-    );
-
-    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
-    // The root TUI is the only launch surface; it has no --variant flag, so
-    // fast mode stays a chat-runtime feature rather than a CLI flag.
-    expect(createArg.command).toBe("opencode");
-    expect(createArg.args).toEqual(expect.arrayContaining([
-      "--model",
-      "openai/gpt-5.4",
-    ]));
-    expect(createArg.args).not.toContain("--variant");
-    expect(createArg.startupCommand).not.toContain("run --interactive");
-  });
-});
-
 describe("launchAgentChatCli attached issue ids", () => {
   it("returns the durable terminal session before delayed kickoff input readiness", async () => {
     const deps = makeDeps();

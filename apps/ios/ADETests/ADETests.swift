@@ -14240,12 +14240,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(codex.agentLabel, "Codex")
     XCTAssertEqual(WorkActiveSendCapability.forProvider("openai").modes, [.inline, .queue])
 
-    // OpenCode is queue-only: its turns run on the legacy prompt loop, which
-    // does not drain a mid-turn input, so an inline mode would promise a
-    // delivery the transport cannot honor. No interrupt either.
+    // OpenCode admits inline steer and queue delivery through its session inbox.
+    // It has no interrupt mode.
     let opencode = WorkActiveSendCapability.forProvider("opencode")
-    XCTAssertEqual(opencode.modes, [.queue])
-    XCTAssertEqual(opencode.defaultMode, .queue)
+    XCTAssertEqual(opencode.modes, [.inline, .queue])
+    XCTAssertEqual(opencode.defaultMode, .inline)
     XCTAssertFalse(opencode.interruptContinues)
     XCTAssertEqual(opencode.agentLabel, "OpenCode")
 
