@@ -505,6 +505,15 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             defaultReasoningEffort: "high",
             serviceTiers: ["fast"]
           ),
+          WorkModelOption(
+            id: "claude-sonnet-5-5",
+            displayName: "Claude Sonnet 5.5",
+            tier: .balanced,
+            tagline: "Balanced · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "high"
+          ),
           WorkModelOption(id: "claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced · 1M context", provider: "claude"),
           WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
           WorkModelOption(
@@ -722,6 +731,15 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
             reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
             defaultReasoningEffort: "medium",
             serviceTiers: ["fast"]
+          ),
+          WorkModelOption(
+            id: "opencode/anthropic/claude-sonnet-5-5",
+            displayName: "Claude Sonnet 5.5",
+            tier: .balanced,
+            tagline: "Balanced coder · 1M context",
+            provider: "claude",
+            reasoningEfforts: workClaudeOpus5ReasoningEfforts(),
+            defaultReasoningEffort: "high"
           ),
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-5", displayName: "Claude Sonnet 5", tier: .balanced, tagline: "Balanced coder · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
@@ -1120,7 +1138,11 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "anthropic/claude-opus-5"
-  case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
+  case "sonnet", "sonnet-5.5", "sonnet-5-5",
+       "claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5-api",
+       "opencode/anthropic/claude-sonnet-5-5":
+    return "anthropic/claude-sonnet-5-5"
+  case "claude-sonnet-5", "sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "anthropic/claude-sonnet-5"
@@ -1158,7 +1180,11 @@ private func workClaudeRuntimeModelId(for raw: String) -> String? {
   case "opus[1m]", "opus-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]", "anthropic/claude-opus-4-7-1m",
        "opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]", "anthropic/claude-opus-4-6-1m":
     return "claude-opus-5"
-  case "sonnet", "claude-sonnet-5", "anthropic/claude-sonnet-5",
+  case "sonnet", "sonnet-5.5", "sonnet-5-5",
+       "claude-sonnet-5-5", "anthropic/claude-sonnet-5-5", "anthropic/claude-sonnet-5-5-api",
+       "opencode/anthropic/claude-sonnet-5-5":
+    return "claude-sonnet-5-5"
+  case "claude-sonnet-5", "sonnet-5", "anthropic/claude-sonnet-5",
        "claude-sonnet-4-6", "anthropic/claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "claude-sonnet-5"
@@ -1301,7 +1327,11 @@ func workKnownModelDisplayName(_ raw: String?) -> String? {
   case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]",
        "opus-4-6-1m", "anthropic/claude-opus-4-6-1m", "claude-opus-4-6-1m", "claude-opus-4-6[1m]":
     return "Claude Opus 5"
-  case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5", "cursor/claude-4.6-sonnet-medium",
+  case "sonnet", "sonnet-5.5", "sonnet-5-5",
+       "anthropic/claude-sonnet-5-5", "claude-sonnet-5-5",
+       "opencode/anthropic/claude-sonnet-5-5":
+    return "Claude Sonnet 5.5"
+  case "anthropic/claude-sonnet-5", "claude-sonnet-5", "sonnet-5", "cursor/claude-4.6-sonnet-medium",
        "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
        "opencode/anthropic/claude-sonnet-5":
     return "Claude Sonnet 5"

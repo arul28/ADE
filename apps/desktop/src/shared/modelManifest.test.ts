@@ -70,7 +70,7 @@ describe("bundled model manifest", () => {
     expect(getAppDefaultModelDescriptor()?.id).toBe("anthropic/claude-opus-5-5");
     expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-opus-5-5");
     expect(getDefaultModelDescriptor("codex")?.id).toBe("openai/gpt-6-astra");
-    expect(listModelDescriptorsForProvider("claude")[0]?.id).toBe("anthropic/claude-opus-5-5");
+    expect(listModelDescriptorsForProvider("claude")[0]?.id).toBe("anthropic/claude-fable-5-1");
   });
 });
 

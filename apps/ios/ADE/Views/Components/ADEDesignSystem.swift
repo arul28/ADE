@@ -161,6 +161,8 @@ enum ADEColor {
     "claude-opus-5": 0xD97706,
     "anthropic/claude-opus-4-8": 0xD97706,
     "claude-opus-4-8": 0xD97706,
+    "anthropic/claude-sonnet-5-5": 0x8B5CF6,
+    "claude-sonnet-5-5": 0x8B5CF6,
     "anthropic/claude-sonnet-5": 0x8B5CF6,
     "claude-sonnet-5": 0x8B5CF6,
     "sonnet": 0x8B5CF6,
@@ -287,13 +289,18 @@ enum ADEColor {
     case "opus[1m]", "opus-1m", "anthropic/claude-opus-4-7-1m", "claude-opus-4-7-1m", "claude-opus-4-7[1m]":
       append("anthropic/claude-opus-5")
       append("claude-opus-5")
-    case "sonnet", "anthropic/claude-sonnet-5", "claude-sonnet-5",
+    case "sonnet", "sonnet-5.5", "sonnet-5-5", "anthropic/claude-sonnet-5-5",
+         "claude-sonnet-5-5", "opencode/anthropic/claude-sonnet-5-5":
+      append("anthropic/claude-sonnet-5-5")
+      append("claude-sonnet-5-5")
+      append("opencode/anthropic/claude-sonnet-5-5")
+      append("sonnet")
+    case "anthropic/claude-sonnet-5", "claude-sonnet-5", "sonnet-5",
          "anthropic/claude-sonnet-4-6", "claude-sonnet-4-6",
          "opencode/anthropic/claude-sonnet-5":
       append("anthropic/claude-sonnet-5")
       append("claude-sonnet-5")
       append("opencode/anthropic/claude-sonnet-5")
-      append("sonnet")
     case "haiku", "anthropic/claude-haiku-4-5", "claude-haiku-4-5",
          "opencode/anthropic/claude-haiku-4-5":
       append("anthropic/claude-haiku-4-5")
@@ -358,9 +365,11 @@ enum ADEColor {
     "claude-opus-5": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
     "claude-opus-4-8": ["low", "medium", "high", "xhigh", "max"],
+    "anthropic/claude-sonnet-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "claude-sonnet-5-5": ["low", "medium", "high", "xhigh", "max"],
+    "sonnet": ["low", "medium", "high", "xhigh", "max"],
     "anthropic/claude-sonnet-5": ["low", "medium", "high", "max"],
     "claude-sonnet-5": ["low", "medium", "high", "max"],
-    "sonnet": ["low", "medium", "high", "max"],
     // Claude Haiku intentionally absent — no reasoning tiers.
     // OpenAI / Codex
     "openai/gpt-6-astra": ["low", "medium", "high", "xhigh", "max"],
