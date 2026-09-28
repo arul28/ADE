@@ -12,6 +12,7 @@ import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentChatEventEnvelope,
+  AgentChatEventHistorySnapshot,
   CrsqlChangeRow,
   PersonalChatAction,
   PersonalChatScopeContract,
@@ -286,6 +287,37 @@ describe("resolveSyncHostInboundProjectScope", () => {
 });
 
 describe("buildSyncHostHelloOkPayload", () => {
+  it("advertises rosterPeer only when the roster feed is enabled", () => {
+    const peer = {
+      deviceId: "ios-phone",
+      deviceName: "Phone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "ios-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const base = {
+      peer,
+      brain: peer,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+    };
+
+    const withoutRoster = buildSyncHostHelloOkPayload({ ...base, rosterEnabled: false });
+    const withRoster = buildSyncHostHelloOkPayload({ ...base, rosterEnabled: true });
+    expect(withoutRoster.features).not.toHaveProperty("rosterPeer");
+    expect(withRoster.features.rosterPeer).toEqual({ enabled: true });
+    expect(withRoster.features.roster).toEqual({ enabled: true });
+  });
+
   it("selects deflate only when the peer explicitly offers it", () => {
     expect(negotiateSyncApplicationCompression(undefined)).toBeNull();
     expect(negotiateSyncApplicationCompression([])).toBeNull();
@@ -1145,7 +1177,13 @@ describe("brain project actions fallback handler", () => {
     const secretsDir = path.join(projectRoot, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
     const transcriptPath = path.join(projectRoot, "personal-chat.jsonl");
-    fs.writeFileSync(transcriptPath, "");
+    const transcriptEvent: AgentChatEventEnvelope = {
+      sessionId: "personal-1",
+      timestamp: "2026-04-23T10:00:00.000Z",
+      sequence: 1,
+      event: { type: "text", text: "personal transcript history" },
+    };
+    fs.writeFileSync(transcriptPath, `${JSON.stringify(transcriptEvent)}\n`);
     const credentialStore = new EncryptedFileCredentialStore({
       secretsDir,
       keyMaterial: { read: () => null },
@@ -1183,6 +1221,12 @@ describe("brain project actions fallback handler", () => {
       transcriptPath: vi.fn(async () => transcriptPath),
       isTurnActive: vi.fn(async () => true),
     };
+    const executeRoutedCommand = vi.fn(async (payload: SyncCommandPayload & { projectId: string }) => {
+      if (payload.action === "chat.fail") {
+        throw Object.assign(new Error("coded route failure"), { code: "coded_failure" });
+      }
+      return { text: payload.args.text };
+    });
     const handler = createBrainProjectActionsSyncHandler({
       logger,
       projectCatalogProvider: {
@@ -1196,6 +1240,24 @@ describe("brain project actions fallback handler", () => {
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
       pollIntervalMs: 100,
       personalChatScope,
+      rosterProvider: { buildSnapshot: async () => [] },
+      projectCommandRouter: {
+        resolveProjectId: ({ projectId, projectRootPath }: { projectId?: string | null; projectRootPath?: string | null }) =>
+          projectId ?? (projectRootPath === "/registered/project" ? "project-1" : null),
+        listDescriptors: async () => [
+          { action: "chat.send", scope: "project", policy: { viewerAllowed: true } },
+          { action: "chat.fail", scope: "project", policy: { viewerAllowed: true } },
+          { action: "macDesktop.capture", scope: "project", policy: { viewerAllowed: true } },
+          { action: "appControl.launch", scope: "project", policy: { viewerAllowed: true } },
+          { action: "analytics.capture", scope: "project", policy: { viewerAllowed: true } },
+          { action: "chat.local", scope: "project", policy: { viewerAllowed: true, localOnly: true } },
+        ] satisfies SyncRemoteCommandDescriptor[],
+        getDescriptor: async (_projectId: string, action: string) =>
+          ["chat.send", "chat.fail"].includes(action)
+            ? { action, scope: "project", policy: { viewerAllowed: true } }
+            : null,
+        execute: executeRoutedCommand,
+      },
     });
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     server.on("connection", (ws, request) => handler({
@@ -1235,6 +1297,80 @@ describe("brain project actions fallback handler", () => {
           },
         },
       });
+      const rosterPeer = await connectPeer(port, "bootstrap-token", "descriptor-roster-peer", {
+        syncRole: "roster",
+      });
+      const rosterHello = rosterPeer.envelopes.find((envelope) => envelope.type === "hello_ok");
+      expect(rosterHello?.payload).toMatchObject({ projects: [] });
+      const advertisedActions = (rosterHello?.payload as {
+        features: { commandRouting: { actions: Array<{ action: string }> } };
+      }).features.commandRouting.actions.map(({ action }) => action);
+      expect(advertisedActions).toContain("chat.send");
+      expect(advertisedActions).not.toEqual(expect.arrayContaining([
+        "macDesktop.capture",
+        "appControl.launch",
+        "analytics.capture",
+        "chat.local",
+      ]));
+      rosterPeer.ws.close();
+
+      const routeCommand = (
+        requestId: string,
+        payload: Record<string, unknown>,
+      ) => client!.send(encodeSyncEnvelope({ type: "command", requestId, payload }));
+      routeCommand("route-first", {
+        commandId: "route-retry-1",
+        projectId: "project-1",
+        action: "chat.send",
+        args: { text: "send once" },
+      });
+      const firstRouteResult = await waitForEnvelope(envelopes, "command_result", "route-first");
+      expect(firstRouteResult.payload).toMatchObject({
+        commandId: "route-retry-1",
+        ok: true,
+        result: { text: "send once" },
+      });
+      routeCommand("route-retry", {
+        commandId: "route-retry-1",
+        projectId: "project-1",
+        action: "chat.send",
+        args: { text: "send once" },
+      });
+      await waitForEnvelope(envelopes, "command_result", "route-retry");
+      expect(executeRoutedCommand).toHaveBeenCalledTimes(1);
+      routeCommand("route-mismatch", {
+        commandId: "route-retry-1",
+        projectId: "project-1",
+        action: "chat.send",
+        args: { text: "different payload" },
+      });
+      const mismatch = await waitForEnvelope(envelopes, "command_result", "route-mismatch");
+      expect(mismatch.payload).toMatchObject({ error: { code: "duplicate_command_mismatch" } });
+      routeCommand("route-root-only", {
+        commandId: "route-root-only",
+        projectRootPath: "/registered/project",
+        action: "chat.send",
+        args: {},
+      });
+      const rootOnly = await waitForEnvelope(envelopes, "command_result", "route-root-only");
+      expect(rootOnly.payload).toMatchObject({ error: { code: "missing_project" } });
+      routeCommand("route-unsupported", {
+        commandId: "route-unsupported",
+        projectId: "project-1",
+        action: "unknown.action",
+        args: {},
+      });
+      const unsupported = await waitForEnvelope(envelopes, "command_result", "route-unsupported");
+      expect(unsupported.payload).toMatchObject({ error: { code: "unsupported_command" } });
+      routeCommand("route-coded-error", {
+        commandId: "route-coded-error",
+        projectId: "project-1",
+        action: "chat.fail",
+        args: {},
+      });
+      const codedError = await waitForEnvelope(envelopes, "command_result", "route-coded-error");
+      expect(codedError.payload).toMatchObject({ error: { code: "coded_failure" } });
+      expect(executeRoutedCommand).toHaveBeenCalledTimes(2);
 
       client.send(encodeSyncEnvelope({
         type: "command",
@@ -1260,7 +1396,7 @@ describe("brain project actions fallback handler", () => {
       const snapshot = await waitForEnvelope(envelopes, "chat_subscribe", "personal-subscribe");
       expect(snapshot.payload).toMatchObject({
         sessionId: "personal-1",
-        events: [],
+        events: [transcriptEvent],
         turnActive: true,
       });
 
@@ -1276,8 +1412,9 @@ describe("brain project actions fallback handler", () => {
       const historyPage = await waitForEnvelope(envelopes, "chat_history", "personal-history");
       expect(historyPage.payload).toMatchObject({
         sessionId: "personal-1",
-        startOffset: 1_024,
-        hasMore: true,
+        events: [transcriptEvent],
+        startOffset: 0,
+        hasMore: false,
         sessionFound: true,
       });
 
@@ -1297,14 +1434,11 @@ describe("brain project actions fallback handler", () => {
       );
       expect(failedHistoryPage.payload).toMatchObject({
         sessionId: "personal-1",
-        startOffset: 4_096,
-        unavailable: true,
+        events: [transcriptEvent],
+        hasMore: false,
+        sessionFound: true,
       });
-      expect(logger.warn).toHaveBeenCalledWith("sync_brain.chat_history_failed", {
-        sessionId: "personal-1",
-        beforeOffset: 4_096,
-        error: "personal history unavailable",
-      });
+      expect(personalChatScope.call).not.toHaveBeenCalledWith("getEventHistoryPage", expect.anything());
 
       client.send(encodeSyncEnvelope({
         type: "chat_history",
@@ -6302,6 +6436,15 @@ describe("CTO-gated Linear sync commands", () => {
         releaseStreamSubscription: vi.fn(async () => {}),
         subscribe: vi.fn(() => () => {}),
       },
+      // A runtime with an App Control service injects its live-view stream,
+      // which is what registers the optional `appControl.*` actions.
+      appControlSyncStream: {
+        getStatus: vi.fn(async () => ({ laneId: null, activeSession: null, sessions: [] })),
+        subscribe: vi.fn(async () => ({ ok: true })),
+        unsubscribe: vi.fn(() => ({ ok: true })),
+        releaseConnection: vi.fn(),
+        dispose: vi.fn(),
+      },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
 
@@ -8573,6 +8716,79 @@ describe("inbound changeset_batch guards", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
   }
 
+  it("keeps roster sockets out of inbound and outbound replica sync", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const upsertPeerMetadata = vi.fn();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      pollIntervalMs: 25,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-roster-gate",
+          getDbVersion: () => 1,
+          exportChangesSince: (fromDbVersion: number) =>
+            fromDbVersion < 1 ? [makePeerChange("kv", 1, 0)] : [],
+          applyChanges,
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: { ...base.deviceRegistryService, upsertPeerMetadata },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let roster: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let replica: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      roster = await connectPeer(port, host.getBootstrapToken(), "roster-only", { syncRole: "roster" });
+      replica = await connectPeer(port, host.getBootstrapToken(), "replica-peer");
+      await waitForValue(
+        () => replica?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "replica catch-up batch",
+      );
+      expect(roster.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(upsertPeerMetadata.mock.calls.some(([metadata]) =>
+        (metadata as SyncPeerMetadata | undefined)?.deviceId === "roster-only"
+      )).toBe(false);
+
+      roster.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId: "roster-inbound-batch",
+        payload: {
+          batchId: "roster-inbound-batch",
+          fromDbVersion: 0,
+          toDbVersion: 1,
+          changes: [makePeerChange("kv", 1, 1)],
+        },
+      }));
+      await waitForValue(
+        () => base.logger.debug.mock.calls.find(([event]) => event === "sync_host.roster_peer_changeset_ignored"),
+        "roster changeset rejection",
+      );
+      expect(applyChanges).not.toHaveBeenCalled();
+
+      replica.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId: "replica-inbound-batch",
+        payload: {
+          batchId: "replica-inbound-batch",
+          fromDbVersion: 0,
+          toDbVersion: 1,
+          changes: [makePeerChange("kv", 1, 2)],
+        },
+      }));
+      const ack = await waitForEnvelope(replica.envelopes, "changeset_ack", "replica-inbound-batch");
+      expect(ack.payload).toMatchObject({ ok: true, appliedCount: 1 });
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+    } finally {
+      roster?.ws.close();
+      replica?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("rejects an oversized inbound batch with changeset_too_large and does not apply it (M6)", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const applyChanges = vi.fn(() => ({ appliedCount: 0 }));
@@ -9332,6 +9548,7 @@ describe("sync host handoff over a shared listener", () => {
       isTurnActive: vi.fn(async () => false),
     };
     let client: WebSocket | null = null;
+    let rosterPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     let hostA: ReturnType<typeof createSyncHostService> | null = null;
     let hostB: ReturnType<typeof createSyncHostService> | null = null;
     try {
@@ -9373,6 +9590,9 @@ describe("sync host handoff over a shared listener", () => {
         () => envelopes.find((envelope) => envelope.type === "hello_ok"),
         "hello_ok from host A",
       );
+      rosterPeer = await connectPeer(port, hostA.getBootstrapToken(), "roster-phone", {
+        syncRole: "roster",
+      });
 
       client.send(encodeSyncEnvelope({
         type: "chat_subscribe",
@@ -9437,6 +9657,15 @@ describe("sync host handoff over a shared listener", () => {
         },
       } as unknown as Parameters<typeof createSyncHostService>[0]);
       await hostB.waitUntilListening();
+
+      const rosterClosed = await waitForValue(
+        () => rosterPeer?.closeEvents[0],
+        "roster peer closed at project handoff",
+      );
+      expect(rosterClosed).toMatchObject({
+        code: 4002,
+        reason: "Sync host changed projects",
+      });
 
       const handedOffEnvelopes = () => envelopes.slice(envelopeCountAfterDispose);
       await waitForValue(
@@ -10005,6 +10234,107 @@ describe("sync host reliability guards", () => {
       cleanup();
     }
 	  });
+
+  // The incident: one `prs.refresh` reply was 17 MB on its own, the host closed
+  // the socket with 4001, the phone reconnected and asked again, forever.
+  it("answers an oversized command result with result_too_large and keeps the peer open", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    const hugeTitle = "x".repeat(13 * 1024 * 1024);
+    const listAll = vi.fn()
+      .mockResolvedValueOnce([{ id: "pr-1", title: hugeTitle }])
+      .mockResolvedValue([{ id: "pr-1", title: "small" }]);
+    const base = createHostArgs(projectRoot, []);
+    const host = createReliabilityHost(projectRoot, { logger, prService: { ...base.prService, listAll } } as never);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-oversized-result");
+      const sendList = (id: string) => peer!.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: id,
+        projectId: "project-1",
+        payload: { commandId: id, projectId: "project-1", action: "prs.list", args: {} } satisfies SyncCommandPayload,
+      }));
+
+      sendList("oversized-list");
+      const failed = await waitForEnvelope(peer.envelopes, "command_result", "oversized-list");
+      expect(failed.payload).toMatchObject({
+        commandId: "oversized-list",
+        ok: false,
+        error: {
+          code: "result_too_large",
+          limitBytes: 12 * 1024 * 1024,
+          bytes: expect.any(Number),
+          message: expect.stringContaining("prs.list"),
+        },
+      });
+
+      sendList("follow-up-list");
+      const ok = await waitForEnvelope(peer.envelopes, "command_result", "follow-up-list");
+      expect(ok.payload).toMatchObject({ ok: true, result: [{ id: "pr-1", title: "small" }] });
+      expect(peer.closeEvents).toEqual([]);
+      expect(peer.ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("fails a reply that does not fit the send budget without closing the peer", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const logger = createDiscoveryLogger();
+    const listAll = vi.fn().mockResolvedValue([{ id: "pr-1", title: "y".repeat(2 * 1024 * 1024) }]);
+    const base = createHostArgs(projectRoot, []);
+    const host = createReliabilityHost(projectRoot, { logger, prService: { ...base.prService, listAll } } as never);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-reply-does-not-fit");
+      // The client is draining (not backpressured for long), but 15 MiB is
+      // already queued, so a 2 MiB reply cannot fit the 16 MiB budget.
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(15 * 1024 * 1024);
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId: "does-not-fit",
+        projectId: "project-1",
+        payload: { commandId: "does-not-fit", projectId: "project-1", action: "prs.list", args: {} } satisfies SyncCommandPayload,
+      }));
+
+      const failed = await waitForEnvelope(peer.envelopes, "command_result", "does-not-fit");
+      expect(failed.payload).toMatchObject({
+        commandId: "does-not-fit",
+        ok: false,
+        error: { code: "result_too_large", limitBytes: 1024 * 1024 },
+      });
+      expect(logger.warn).toHaveBeenCalledWith("sync_host.required_send_oversized", expect.objectContaining({
+        type: "command_result",
+        action: "prs.list",
+        requestId: "does-not-fit",
+        repliedWithError: true,
+      }));
+      expect(logger.warn).not.toHaveBeenCalledWith("sync_host.required_send_backpressured", expect.anything());
+      expect(peer.closeEvents).toEqual([]);
+    } finally {
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
 
   it("closes peers instead of dropping project catalog chunks under backpressure", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
@@ -14346,6 +14676,289 @@ describe("peer changeset cursor watermarks", () => {
       await second?.host.dispose();
       if (!firstDisposed) await first.host.dispose();
       cleanup();
+    }
+  });
+});
+
+describe("chatLogV2 durable chat log", () => {
+  const SESSION_ID = "log-chat";
+  const envelopeRow = (sequence: number, text = `t${sequence}`): AgentChatEventEnvelope => ({
+    sessionId: SESSION_ID,
+    timestamp: `2026-09-23T10:00:${String(sequence % 60).padStart(2, "0")}.${String(sequence).padStart(3, "0")}Z`,
+    sequence,
+    event: { type: "text", text, turnId: "turn-1" },
+  });
+  const line = (envelope: AgentChatEventEnvelope) => `${JSON.stringify(envelope)}\n`;
+
+  async function startLogHost(options: {
+    generation?: number;
+    maxSequence?: number;
+    history?: Partial<AgentChatEventHistorySnapshot>;
+    legacyTranscript?: string;
+  } = {}) {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const durablePath = path.join(projectRoot, ".ade", "transcripts", "chat", `${SESSION_ID}.jsonl`);
+    const legacyPath = path.join(projectRoot, "transcripts", `${SESSION_ID}.chat.jsonl`);
+    fs.mkdirSync(path.dirname(durablePath), { recursive: true });
+    fs.mkdirSync(path.dirname(legacyPath), { recursive: true });
+    fs.writeFileSync(legacyPath, options.legacyTranscript ?? "", "utf8");
+    let liveListener: ((event: AgentChatEventEnvelope) => void) | null = null;
+    const agentChatService = {
+      subscribeToEvents: vi.fn((listener: (event: AgentChatEventEnvelope) => void) => {
+        liveListener = listener;
+        return () => {};
+      }),
+      resolveChatTranscriptPath: vi.fn(async () => durablePath),
+      getChatLogState: vi.fn(() => ({
+        historyGeneration: options.generation ?? 1,
+        maxSequence: options.maxSequence ?? 0,
+      })),
+      getChatEventHistory: vi.fn(async () => ({
+        sessionId: SESSION_ID,
+        events: [],
+        truncated: false,
+        sessionFound: true,
+        ...options.history,
+      })),
+      getChatEventHistoryPage: vi.fn(async () => ({
+        sessionId: SESSION_ID,
+        events: [envelopeRow(1)],
+        startOffset: 0,
+        hasMore: false,
+        sessionFound: true,
+      })),
+      getSessionSummary: vi.fn(() => Promise.resolve({ status: "idle" })),
+    };
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      projectId: "project-1",
+      discoveryEnabled: false,
+      pollIntervalMs: 50,
+      db: {
+        sync: {
+          getSiteId: () => "site-chat-log",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      sessionService: {
+        list: () => [],
+        get: (sessionId: string) => sessionId === SESSION_ID
+          ? { id: sessionId, transcriptPath: legacyPath, status: "running" }
+          : null,
+        readTranscriptTail: async () => "",
+      },
+      agentChatService,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const clients: WebSocket[] = [];
+    const connect = async (deviceId: string, capabilities: string[] = []) => {
+      const port = await host.waitUntilListening();
+      const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+      clients.push(ws);
+      const tracked = trackClientEnvelopes(ws);
+      await new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", reject);
+      });
+      ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: `${deviceId}-hello`,
+        payload: {
+          peer: {
+            deviceId,
+            deviceName: deviceId,
+            platform: "macOS",
+            deviceType: "browser",
+            siteId: `${deviceId}-site`,
+            dbVersion: 0,
+            capabilities,
+          },
+          auth: { kind: "bootstrap", token: host.getBootstrapToken() },
+        },
+      }));
+      await waitForEnvelope(tracked.envelopes, "hello_ok", `${deviceId}-hello`);
+      const send = (type: string, requestId: string, payload: Record<string, unknown>) => ws.send(encodeSyncEnvelope({
+        type: type as never,
+        requestId,
+        projectId: "project-1",
+        payload,
+      }));
+      return { ws, ...tracked, send };
+    };
+    const chatEventSequences = (envelopes: ParsedSyncEnvelope[]) => envelopes
+      .filter((envelope) => envelope.type === "chat_event")
+      .map((envelope) => (envelope.payload as AgentChatEventEnvelope).sequence);
+    return {
+      host,
+      durablePath,
+      legacyPath,
+      agentChatService,
+      connect,
+      chatEventSequences,
+      emitLive: (event: AgentChatEventEnvelope) => liveListener?.(event),
+      dispose: async () => {
+        for (const ws of clients) {
+          try { ws.close(); } catch { /* ignore */ }
+        }
+        await host.dispose();
+        cleanup();
+      },
+    };
+  }
+
+  it("advertises chatLogV2 in hello_ok", async () => {
+    const harness = await startLogHost();
+    try {
+      const client = await harness.connect("phone-features");
+      const hello = client.envelopes.find((envelope) => envelope.type === "hello_ok");
+      expect((hello?.payload as { features?: Record<string, unknown> }).features?.chatLogV2).toEqual({
+        enabled: true,
+        resumeMaxBytes: 2_000_000,
+      });
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("resumes by durable sequence on a fresh host, then streams new rows once each", async () => {
+    // A fresh host has no in-memory ring: this is the brain-restart case.
+    const harness = await startLogHost({ maxSequence: 6 });
+    fs.writeFileSync(harness.durablePath, [1, 2, 3, 4, 5, 6].map((sequence) => line(envelopeRow(sequence))).join(""));
+    try {
+      const client = await harness.connect("phone-resume", ["mobileChatSlimV1"]);
+      client.send("chat_subscribe", "resume-1", { sessionId: SESSION_ID, sinceSequence: 3, generation: 1, chatLogV2: true });
+      const ack = await waitForEnvelope(client.envelopes, "chat_subscribe", "resume-1");
+      expect(ack.payload).toMatchObject({
+        resumed: true,
+        resumeKind: "sequence",
+        historyGeneration: 1,
+        maxSequence: 6,
+        events: [],
+      });
+      expect((ack.payload as { gap?: boolean }).gap).toBeUndefined();
+      await waitForValue(() => (harness.chatEventSequences(client.envelopes).length >= 3 ? true : null), "resumed rows");
+      expect(harness.chatEventSequences(client.envelopes)).toEqual([4, 5, 6]);
+      expect(harness.agentChatService.getChatEventHistory).not.toHaveBeenCalled();
+
+      // Row 7 arrives on both paths (live broadcast and the transcript pump);
+      // row 8 only via the pump. Each reaches the client exactly once.
+      const seven = envelopeRow(7);
+      fs.appendFileSync(harness.durablePath, line(seven));
+      harness.emitLive(seven);
+      fs.appendFileSync(harness.durablePath, line(envelopeRow(8)));
+      await waitForValue(() => (harness.chatEventSequences(client.envelopes).includes(8) ? true : null), "row 8");
+      expect(harness.chatEventSequences(client.envelopes)).toEqual([4, 5, 6, 7, 8]);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("answers with an authoritative gap snapshot when the generation changed", async () => {
+    const snapshotEvents = [envelopeRow(10), envelopeRow(11)];
+    const harness = await startLogHost({ generation: 2, maxSequence: 11, history: { events: snapshotEvents } });
+    fs.writeFileSync(harness.durablePath, snapshotEvents.map(line).join(""));
+    try {
+      const client = await harness.connect("phone-generation");
+      client.send("chat_subscribe", "gen-1", { sessionId: SESSION_ID, sinceSequence: 3, generation: 1 });
+      const ack = await waitForEnvelope(client.envelopes, "chat_subscribe", "gen-1");
+      expect(ack.payload).toMatchObject({ gap: true, historyGeneration: 2, maxSequence: 11 });
+      expect((ack.payload as { resumed?: boolean }).resumed).toBeUndefined();
+      expect((ack.payload as { events: AgentChatEventEnvelope[] }).events.map((event) => event.sequence)).toEqual([10, 11]);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("answers with a gap snapshot when the missed span exceeds the resume cap", async () => {
+    const harness = await startLogHost({ maxSequence: 30 });
+    const rows = [line(envelopeRow(1))];
+    for (let sequence = 2; sequence <= 30; sequence += 1) rows.push(line(envelopeRow(sequence, "y".repeat(100_000))));
+    fs.writeFileSync(harness.durablePath, rows.join(""));
+    try {
+      const client = await harness.connect("phone-gap");
+      client.send("chat_subscribe", "gap-1", { sessionId: SESSION_ID, sinceSequence: 1, generation: 1 });
+      const ack = await waitForEnvelope(client.envelopes, "chat_subscribe", "gap-1");
+      expect(ack.payload).toMatchObject({ gap: true, historyGeneration: 1 });
+      expect(harness.agentChatService.getChatEventHistory).toHaveBeenCalledTimes(1);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("tails the durable transcript past the legacy 8 MB cap", async () => {
+    // The legacy session-row file stopped at its cap; the durable file keeps
+    // growing past it. The pump must follow the durable one.
+    const harness = await startLogHost({
+      legacyTranscript: `${line(envelopeRow(1))}[transcript truncated]\n`,
+    });
+    const padding = "z".repeat(1_000_000);
+    const bigRows = Array.from({ length: 9 }, (_, index) => line(envelopeRow(index + 1, padding)));
+    fs.writeFileSync(harness.durablePath, bigRows.join(""));
+    expect(fs.statSync(harness.durablePath).size).toBeGreaterThan(8 * 1024 * 1024);
+    try {
+      const client = await harness.connect("phone-big");
+      client.send("chat_subscribe", "big-1", { sessionId: SESSION_ID });
+      await waitForEnvelope(client.envelopes, "chat_subscribe", "big-1");
+      fs.appendFileSync(harness.durablePath, line(envelopeRow(10, "after the cap")));
+      await waitForValue(() => (harness.chatEventSequences(client.envelopes).includes(10) ? true : null), "row past the cap");
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("asks for a turn-aligned snapshot and returns pinned approvals only when the client opts in", async () => {
+    const pinned = {
+      sessionId: SESSION_ID,
+      timestamp: "2026-09-23T09:00:00.000Z",
+      sequence: 1,
+      event: { type: "approval_request", itemId: "approval-1", kind: "command", description: "Run" },
+    } as AgentChatEventEnvelope;
+    const harness = await startLogHost({ history: { events: [envelopeRow(5)], pinnedEvents: [pinned] } });
+    try {
+      const v2 = await harness.connect("phone-v2");
+      v2.send("chat_subscribe", "v2-1", { sessionId: SESSION_ID, chatLogV2: true });
+      const ack = await waitForEnvelope(v2.envelopes, "chat_subscribe", "v2-1");
+      expect(harness.agentChatService.getChatEventHistory).toHaveBeenLastCalledWith(
+        SESSION_ID,
+        expect.objectContaining({ turnBoundaryAligned: true, separatePinnedEvents: true }),
+      );
+      expect((ack.payload as { pinnedEvents?: AgentChatEventEnvelope[] }).pinnedEvents?.map((event) => event.sequence)).toEqual([1]);
+
+      const legacy = await harness.connect("phone-legacy");
+      legacy.send("chat_subscribe", "legacy-1", { sessionId: SESSION_ID });
+      const legacyAck = await waitForEnvelope(legacy.envelopes, "chat_subscribe", "legacy-1");
+      expect(harness.agentChatService.getChatEventHistory).toHaveBeenLastCalledWith(
+        SESSION_ID,
+        expect.not.objectContaining({ turnBoundaryAligned: true }),
+      );
+      expect((legacyAck.payload as { pinnedEvents?: unknown }).pinnedEvents).toBeUndefined();
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("pages chat_history by sequence cursor and stamps the generation", async () => {
+    const harness = await startLogHost({ generation: 3 });
+    try {
+      const client = await harness.connect("phone-history");
+      client.send("chat_subscribe", "hist-sub", { sessionId: SESSION_ID });
+      await waitForEnvelope(client.envelopes, "chat_subscribe", "hist-sub");
+      client.send("chat_history", "hist-1", { sessionId: SESSION_ID, beforeOffset: 0, beforeSequence: 40 });
+      const page = await waitForEnvelope(client.envelopes, "chat_history", "hist-1");
+      expect(harness.agentChatService.getChatEventHistoryPage).toHaveBeenCalledWith(
+        SESSION_ID,
+        expect.objectContaining({ beforeSequence: 40 }),
+      );
+      expect(page.payload).toMatchObject({ historyGeneration: 3, sessionFound: true });
+    } finally {
+      await harness.dispose();
     }
   });
 });

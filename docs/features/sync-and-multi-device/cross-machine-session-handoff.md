@@ -94,7 +94,7 @@ Provider handling is explicit:
 
 - **Claude:** ADE sends the session JSONL and, when they fit, its sibling `subagents/` and `tool-results/` sidecars. The destination assigns a new UUID and rewrites JSONL `sessionId` and `cwd` fields in both the main transcript and JSONL sidecars before wiring the Claude resume pointer.
 - **Codex:** ADE sends the discovered rollout JSONL. The destination installs it under its own `CODEX_HOME/sessions/YYYY/MM/DD/` store, then calls app-server `thread/fork` with `excludeTurns: true` and persists the returned thread as the chat resume target. `.jsonl.zst` rollouts are not relocated in this phase and fall back to brief mode.
-- **OpenCode:** the source runs `opencode export <session> --sanitize`. The destination runs `opencode import`, then calls native `session.fork` on the imported session and persists the forked session ID.
+- **OpenCode:** the source calls `session.export({ sessionID, sanitize: true })`. The destination calls `session.import` with the exported payload, then `session.fork` on the imported session and `session.move` to the destination lane, and persists the forked session ID.
 
 ADE transcript envelopes keep their existing provenance and gain `providerOrigin: "handoff_fork"` plus the source ADE session ID. If the transcript exceeds 3 MiB, ADE drops the oldest envelopes and keeps the newest JSONL tail in order. Provider-native blobs are not secret-redacted because full provider history is the feature being requested; the review UI discloses that scope before transport.
 

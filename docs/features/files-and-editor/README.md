@@ -231,9 +231,18 @@ Renderer:
   last mode across viewer remounts (e.g. the reload after a save).
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
-  `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
-  diffs delegate to `MonacoDiffView`. Also used from `LaneDiffPane`,
-  `ChatFileChangesPanel`, and `PrDetailPane`.
+  `PatchDiff` with split/unified, wrap, line numbers, and an
+  **Ignore whitespace** toggle); editable working-tree diffs delegate to
+  `MonacoDiffView`. Also used from `LaneDiffPane`,
+  `ChatFileChangesPanel`, and `PrDetailPane`. The toggle is persisted per
+  view under `ade:diff:ignoreWhitespace:<persistKey>` (the PR code tab and
+  chat turn diff panel pass one; default off). `diffWhitespace.ts` owns the
+  pure rule: full-contents diffs set `parseDiffOptions.ignoreWhitespace`,
+  and pre-parsed patches turn a `-`/`+` pair equal after `trim()` back into a
+  context line (the new-side text, as `git diff -w` prints it) rather than
+  deleting it, so the hunk keeps its order and its own `@@` start and counts
+  stay exact. A file left with no change lines shows a
+  "whitespace-only changes hidden" state instead of an empty diff.
 - `apps/desktop/src/renderer/components/files/v2/*.test.ts(x)` and
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
   — renderer workbench state and model-lifetime tests, including
@@ -316,12 +325,11 @@ subscribing to the new one. A ref would have lied — a callback built before th
 pin arrived would read the current value, and a chokidar watcher could be left
 running on a remote host with nothing left to stop it.
 
-In the UI a pin is entered by clicking a file in a chat on another machine, not
-by choosing a machine. The workbench shows the amber machine chip
-(`LaneMachineMarker`) with "Files on this machine. Edits save there." — or, if
-that machine has gone offline, why the tree stopped answering — plus one
-obvious way out, **Back to this computer**. Picking any workspace from the
-bound machine clears the pin too.
+The workspace picker groups lanes by machine and labels each group. Choosing a
+lane on another machine pins the workbench to that lane's owner without
+rebinding the project tab. The workbench keeps the machine chip and an explicit
+way back to the tab's machine; an offline owner remains identifiable while its
+file actions are unavailable.
 
 ## Workspace model
 
@@ -631,8 +639,9 @@ the renderer only names a target from `EDITOR_TARGETS`.
 | Piece | Role |
 |-------|------|
 | `shared/editorTargets.ts` | Catalog (`vscode`, `cursor`, `zed`, JetBrains, Xcode, …), `OpenPathTarget` (`default` / `finder` / editor id), `OpenInTarget`, `resolveOpenInTarget` / `canOfferOpenIn` / `isRemoteEditorOpenRequest`, and `buildRemoteEditorUrl`. |
-| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Duplicate macOS apps that share `macAppName` (`zed` / `zeditor`) collapse to one. |
-| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
+| `services/editors/editorDetection.ts` | `detectInstalledEditorTargets`: macOS `open -Ra <macAppName>`, else `which` / `where.exe`, PATH augmented by `editorProcessEnv`. Every target is probed in parallel. Targets that share one app (`zed` / `zeditor`) collapse to a single entry on every platform — on Windows both resolve to the same executable. On Windows a miss off PATH falls through to `editorWindowsInstall.ts` and records the resolved absolute executable for the open action. |
+| `services/editors/editorWindowsInstall.ts` | Windows-only, read-only resolution beyond PATH: `%ProgramFiles%` / `%ProgramFiles(x86)%` / `%LOCALAPPDATA%\Programs` install folders, `<ProgramFiles>\JetBrains\<Product>*\bin`, `%LOCALAPPDATA%\JetBrains\Toolbox\apps\<Product>\ch-*\`, and the `HKLM`/`HKCU` uninstall registry keys (`DisplayName` + `InstallLocation` / `DisplayIcon`). `reg.exe` is resolved through `resolveTrustedWindowsTool` (never a bare name), and a host that refuses the lookup just skips registry discovery. Registry `DisplayName` matching prefers an exact name and never claims an entry a more specific editor names more fully (so vscode does not match "Visual Studio Code - Insiders"). Every path is verified to exist; the executable and registry rows each cache for five minutes, and it never launches a GUI or asks for elevation. |
+| `services/editors/openPathInEditor.ts` | Local: `open -a` then CLI spawn; on Windows uses the executable `editorDetection` resolved (falling back to the bare command); `default` uses `shell.openPath`; `finder` uses `shell.showItemInFolder`. Remote SSH: mint a URL and `openEditorExternalUrl`. |
 | `ade.app.getInstalledEditors` / `ade.app.openPathInEditor` | Direct IPC (not a runtime action). Local `rootPath` must sit under a known workspace root. |
 | `OpenInSubmenu` | Shared UI on `LaneContextMenu`, `LaneActionsSubmenu`, `SessionContextMenu`, and `ForeignLaneContextMenu`. |
 

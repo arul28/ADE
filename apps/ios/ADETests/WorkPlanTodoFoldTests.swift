@@ -146,7 +146,7 @@ final class WorkPlanTodoFoldTests: XCTestCase {
 
     let closed = workApplyingTurnFolds(timeline)
     XCTAssertTrue(closed.contains { $0.id == job.id })
-    XCTAssertTrue(closed.contains { if case .turnFold = $0.payload { return true }; return false })
+    XCTAssertFalse(closed.contains { if case .turnFold = $0.payload { return true }; return false })
   }
 
   func testBackgroundTaskUpdatesProduceOneAnchoredTimelineLine() {

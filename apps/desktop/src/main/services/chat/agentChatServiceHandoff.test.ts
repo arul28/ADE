@@ -219,12 +219,12 @@ describe("createAgentChatService", () => {
       const { service, sessionService } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
         sessionProfile: "light",
         reasoningEffort: "high",
-        opencodePermissionMode: "full-auto",
+        permissionMode: "full-auto",
       });
       source.executionMode = "parallel";
       sessionService.updateMeta({
@@ -238,17 +238,15 @@ describe("createAgentChatService", () => {
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
       });
 
       expect(result.usedFallbackSummary).toBe(true);
       expect(result.session.laneId).toBe(source.laneId);
-      expect(result.session.modelId).toBe("opencode/openai/gpt-5.4-mini");
+      expect(result.session.modelId).toBe("openai/gpt-5.5");
       expect(result.session.sessionProfile).toBe("light");
       expect(result.session.reasoningEffort).toBe("high");
-      expect(result.session.opencodePermissionMode).toBe("full-auto");
       expect(result.session.executionMode).toBe("parallel");
-      expect(mockState.sessions.get(result.session.id)?.goal).toBe("Fix the work-tab handoff UI.");
 
       const transcriptPath = mockState.sessions.get(result.session.id)?.transcriptPath;
       expect(transcriptPath).toBeTruthy();
@@ -269,34 +267,34 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
         targetLaneId: "lane-2",
       });
 
       expect(result.session.laneId).toBe("lane-2");
-      expect(result.session.provider).toBe("opencode");
-      expect(result.session.modelId).toBe("opencode/openai/gpt-5.4-mini");
+      expect(result.session.provider).toBe("codex");
+      expect(result.session.modelId).toBe("openai/gpt-5.5");
     });
 
     it("brief handoff rejects an unknown target lane", async () => {
       const { service } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
 
       await expect(service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
         targetLaneId: "lane-nope",
       })).rejects.toThrow("Unknown or unavailable lane");
       expect(source.laneId).toBe("lane-1");
@@ -550,48 +548,6 @@ describe("createAgentChatService", () => {
       });
     });
 
-    it("forks an OpenCode chat from the source session without injecting a summary prompt", async () => {
-      vi.mocked(streamText).mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      } as any);
-
-      const { service, aiIntegrationService } = createService();
-      const source = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-      await service.sendMessage({
-        sessionId: source.id,
-        text: "hi",
-      }, { awaitDispatch: true });
-      await vi.waitFor(() => {
-        expect(source.status).toBe("idle");
-      });
-      const promptCountBeforeFork = [...mockState.openCodeSessions.values()]
-        .reduce((count, state) => count + state.promptBodies.length, 0);
-
-      const result = await service.handoffSession({
-        sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
-        mode: "fork",
-      });
-      const persisted = readPersistedChatState(result.session.id);
-      const promptCountAfterFork = [...mockState.openCodeSessions.values()]
-        .reduce((count, state) => count + state.promptBodies.length, 0);
-
-      expect(result.usedFallbackSummary).toBe(false);
-      expect(result.session.provider).toBe("opencode");
-      expect(mockState.openCodeForkCalls.length).toBeGreaterThanOrEqual(1);
-      expect(persisted.providerSessionId).toEqual(expect.stringMatching(/-fork$/));
-      expect(promptCountAfterFork).toBe(promptCountBeforeFork);
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
-        expect.objectContaining({ taskType: "handoff_summary" }),
-      );
-    });
 
     it("forks a Droid chat and resumes the forked session id", async () => {
       const { service, aiIntegrationService } = createService();
@@ -2358,24 +2314,22 @@ describe("createAgentChatService", () => {
       const { service } = createService();
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
       source.interactionMode = "plan";
       source.permissionMode = "plan";
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
-        opencodePermissionMode: "full-auto",
+        targetModelId: "openai/gpt-5.5",
         permissionMode: "full-auto",
       });
 
-      expect(result.session.provider).toBe("opencode");
+      expect(result.session.provider).toBe("codex");
       expect(result.session.interactionMode).toBeUndefined();
-      expect(result.session.permissionMode).toBe("full-auto");
-      expect(result.session.opencodePermissionMode).toBe("full-auto");
+      expect(result.session.permissionMode).toBe("default");
     });
 
     it("uses AI-generated handoff summaries when a summary model is available", async () => {
@@ -2405,7 +2359,7 @@ describe("createAgentChatService", () => {
         ].join("\n"),
         structuredOutput: null,
         provider: "codex",
-        model: "opencode/openai/gpt-5.4",
+        model: "openai/gpt-5.5",
         sessionId: null,
         inputTokens: null,
         outputTokens: null,
@@ -2413,9 +2367,9 @@ describe("createAgentChatService", () => {
       } as any);
       const source = await service.createSession({
         laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
+        provider: "codex",
+        model: "gpt-5.5",
+        modelId: "openai/gpt-5.5",
       });
       sessionService.updateMeta({
         sessionId: source.id,
@@ -2424,7 +2378,7 @@ describe("createAgentChatService", () => {
 
       const result = await service.handoffSession({
         sourceSessionId: source.id,
-        targetModelId: "opencode/openai/gpt-5.4-mini",
+        targetModelId: "openai/gpt-5.5",
       });
 
       expect(result.usedFallbackSummary).toBe(false);
@@ -3122,50 +3076,6 @@ describe("createAgentChatService", () => {
         expect(sessionService.setResumeCommand).toHaveBeenCalledWith(accepted.session.id, "chat:codex:forked-thread");
       });
 
-      it.each([
-        ["plain-text", "Imported session: ses_imported1", "ses_imported1"],
-        ["JSON", JSON.stringify({ sessionID: "ses_json1" }), "ses_json1"],
-      ])("exports, imports, and forks an OpenCode session with %s import output", async (_shape, importStdout, importedId) => {
-        installCleanCrossMachineGitFixture();
-        installCliCaptureMock((args) => {
-          if (args[0] === "export") return { stdout: JSON.stringify({ id: args[1], messages: [] }) };
-          if (args[0] === "import") return { stdout: importStdout };
-          return { stdout: "", stderr: "unexpected CLI call", exitCode: 1 };
-        });
-        vi.mocked(streamText).mockReturnValue({
-          fullStream: (async function* () {
-            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-          })(),
-        } as any);
-        const { service, sessionService } = createService();
-        const source = await service.createSession({
-          laneId: "lane-1",
-          provider: "opencode",
-          model: "",
-          modelId: "opencode/openai/gpt-5.4",
-        });
-        await service.sendMessage({ sessionId: source.id, text: "Create provider history" }, { awaitDispatch: true });
-        await vi.waitFor(() => expect(source.status).toBe("idle"));
-
-        const prepared = await service.prepareCrossMachineHandoff({
-          sourceSessionId: source.id,
-          handoffId: "handoff-opencode-fork-1",
-          targetModelId: "opencode/openai/gpt-5.4",
-          mode: "fork",
-        });
-        expect(prepared.capsule.forkTransport?.kind).toBe("opencode-export");
-
-        const accepted = await service.acceptCrossMachineHandoff({
-          capsule: prepared.capsule,
-          capsuleFingerprint: prepared.capsuleFingerprint,
-        });
-        expect(mockState.openCodeForkCalls).toEqual(expect.arrayContaining([{ id: importedId }]));
-        expect(readPersistedChatState(accepted.session.id).providerSessionId).toBe(`${importedId}-fork`);
-        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
-          accepted.session.id,
-          `chat:opencode:${accepted.session.id}`,
-        );
-      });
 
       it("reports destination fork capability without changing legacy brief preflight", async () => {
         installCleanCrossMachineGitFixture();
@@ -3534,7 +3444,7 @@ describe("createAgentChatService", () => {
       })).rejects.toThrow("Commit or discard every source lane change");
     });
 
-    it("invalidates a capsule when chat activity arrives while the handoff brief is being generated", async () => {
+    it("blocks handoff when a source turn starts during brief generation", async () => {
       vi.useFakeTimers();
       try {
         vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
@@ -3563,21 +3473,21 @@ describe("createAgentChatService", () => {
         const { service, aiIntegrationService } = createService();
         const source = await service.createSession({
           laneId: "lane-1",
-          provider: "opencode",
-          model: "",
-          modelId: "opencode/openai/gpt-5.4",
+          provider: "codex",
+          model: "gpt-5.5",
+          modelId: "openai/gpt-5.5",
         });
         vi.mocked(aiIntegrationService.summarizeTerminal).mockImplementationOnce(async () => {
           vi.setSystemTime(new Date("2026-07-10T12:00:01.000Z"));
-          await service.runSessionTurn({
+          await service.sendMessage({
             sessionId: source.id,
             text: "This arrived while the handoff brief was being generated.",
-          });
+          }, { awaitDispatch: true });
           return {
             text: "## Current goal\n- Continue after the source chat changed.",
             structuredOutput: null,
             provider: "codex",
-            model: "openai/gpt-5.4-mini",
+            model: "openai/gpt-5.5",
             sessionId: null,
             inputTokens: null,
             outputTokens: null,
@@ -3588,7 +3498,7 @@ describe("createAgentChatService", () => {
         const prepared = await service.prepareCrossMachineHandoff({
           sourceSessionId: source.id,
           handoffId: "handoff-mid-prepare-activity-1",
-          targetModelId: "opencode/openai/gpt-5.4-mini",
+          targetModelId: "openai/gpt-5.5",
         });
 
         expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
@@ -3597,7 +3507,7 @@ describe("createAgentChatService", () => {
           sourceSessionId: source.id,
           capsule: prepared.capsule,
           capsuleFingerprint: prepared.capsuleFingerprint,
-        })).rejects.toThrow("source chat changed after the handoff brief was prepared");
+        })).rejects.toThrow("Wait for the current response to finish before handing off this chat.");
       } finally {
         vi.useRealTimers();
       }
@@ -3631,15 +3541,15 @@ describe("createAgentChatService", () => {
         source: {
           machineName: "MacBook",
           sessionId: "source-session",
-          provider: "opencode",
-          model: "opencode/openai/gpt-5.4",
+          provider: "codex",
+          model: "openai/gpt-5.5",
           title: "Cross-machine handoff",
           laneName: "Feature handoff",
           branchRef,
           headSha: HANDOFF_TEST_SHA,
           originUrl: "https://github.com/example/ade.git",
         },
-        target: { targetModelId: "opencode/openai/gpt-5.4" },
+        target: { targetModelId: "openai/gpt-5.5" },
         brief: "## Current goal\n- Finish the handoff.",
         artifacts: { fileChanges: ["modify src/handoff.ts"], commands: [], errors: [] },
         linearIssues: [],
@@ -3704,15 +3614,15 @@ describe("createAgentChatService", () => {
         source: {
           machineName: "MacBook",
           sessionId: "source-session",
-          provider: "opencode",
-          model: "opencode/openai/gpt-5.4",
+          provider: "codex",
+          model: "openai/gpt-5.5",
           title: "Concurrent handoff",
           laneName: "Concurrent handoff",
           branchRef,
           headSha: HANDOFF_TEST_SHA,
           originUrl: "https://github.com/example/ade.git",
         },
-        target: { targetModelId: "opencode/openai/gpt-5.4" },
+        target: { targetModelId: "openai/gpt-5.5" },
         brief: "Continue the same task.",
         artifacts: { fileChanges: [], commands: [], errors: [] },
         linearIssues: [],
@@ -3728,7 +3638,7 @@ describe("createAgentChatService", () => {
       expect(second.session.id).toBe(first.session.id);
       expect(laneService.importBranch).toHaveBeenCalledTimes(1);
       expect(sessionService.create).toHaveBeenCalledTimes(1);
-      expect(streamText).toHaveBeenCalledTimes(1);
+      expect(mockState.codexRequestPayloads.filter((payload) => payload.method === "thread/start")).toHaveLength(1);
     });
 
     it("does not treat an optimistic user message as a successful dispatch acknowledgement", async () => {

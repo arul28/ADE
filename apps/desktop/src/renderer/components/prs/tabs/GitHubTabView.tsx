@@ -1,5 +1,5 @@
 import React from "react";
-import { CircleNotch, GitMerge, GithubLogo } from "@phosphor-icons/react";
+import { CircleNotch, GitMerge, GithubLogo, HandPalm } from "@phosphor-icons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
   GitHubPrListItem,
@@ -30,6 +30,7 @@ import {
   type GitHubFilter,
   type GitHubFilterCounts,
 } from "./githubTabModel";
+import type { GitHubTabSort } from "./prBlockedSort";
 import { prRouteCoordinatesMatch } from "../prsRouteState";
 import { PRS_LIST_ROOT_CLASS, PrsListPortal, usePrsListHost } from "../shared/PrsListHost";
 
@@ -57,6 +58,7 @@ type GitHubTabViewList = {
   parentRef: React.RefObject<HTMLDivElement>;
   filter: GitHubFilter;
   filterCounts: GitHubFilterCounts;
+  sort: GitHubTabSort;
   loading: boolean;
   loadingFilter: GitHubFilter | null;
   loadingOlderHistory: boolean;
@@ -68,6 +70,7 @@ type GitHubTabViewList = {
   prsByIdMap: Map<string, PrSummary>;
   canLoadOlderHistory: boolean;
   onFilterChange: (filter: GitHubFilter) => void;
+  onSortChange: (sort: GitHubTabSort) => void;
   onSelect: (item: GitHubPrListItem) => void;
   onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
   onLoadOlderHistory: () => void;
@@ -154,6 +157,49 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
  * The list side: search, the open/merged/closed filter, the rows, and the
  * repo sync line at the bottom.
  */
+/**
+ * True when the filter row cannot fit its full contents, measured on the row
+ * itself (the sidebar is user-resizable, so a window breakpoint says nothing).
+ * Collapsing is decided by overflow; expanding waits until the row is back to
+ * the width the full row needed, so it never flickers at the boundary.
+ */
+function useRowOverflowCollapse(): {
+  ref: React.RefObject<HTMLDivElement>;
+  collapsed: boolean;
+} {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [collapsed, setCollapsed] = React.useState(false);
+  const collapsedRef = React.useRef(false);
+  const neededWidthRef = React.useRef(0);
+  const measure = React.useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const width = el.clientWidth;
+    if (!collapsedRef.current) {
+      if (el.scrollWidth > width + 1) {
+        neededWidthRef.current = el.scrollWidth;
+        collapsedRef.current = true;
+        setCollapsed(true);
+      }
+    } else if (width >= neededWidthRef.current) {
+      collapsedRef.current = false;
+      setCollapsed(false);
+    }
+  }, []);
+  // Counts and labels change the needed width too.
+  React.useLayoutEffect(() => {
+    measure();
+  });
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measure]);
+  return { ref, collapsed };
+}
+
 function GitHubTabListColumn({
   chrome,
   list,
@@ -161,12 +207,16 @@ function GitHubTabListColumn({
   chrome: GitHubTabViewChrome;
   list: GitHubTabViewList;
 }) {
+  // In a narrow sidebar the Blocked sort collapses to its hand icon.
+  const filterRow = useRowOverflowCollapse();
+  const blockedCompact = filterRow.collapsed;
   return (
     <div className={PRS_LIST_ROOT_CLASS}>
       <div style={{ display: "flex", padding: "0 10px 6px", flexShrink: 0 }}>
         <GitHubPrSearchInput value={chrome.searchQuery} onChange={chrome.onSearchQueryChange} />
       </div>
       <div
+        ref={filterRow.ref}
         role="group"
         aria-label="Pull request state"
         style={{
@@ -174,6 +224,7 @@ function GitHubTabListColumn({
           alignItems: "center",
           padding: "0 6px",
           flexShrink: 0,
+          overflow: "hidden",
           borderBottom: "1px solid rgba(255,255,255,0.06)",
         }}
       >
@@ -237,6 +288,37 @@ function GitHubTabListColumn({
           );
         })}
         <div style={{ flex: 1 }} />
+        <button
+          type="button"
+          aria-pressed={list.sort === "blocked"}
+          aria-label="Blocked: sort pull requests by blocked on me"
+          title={list.sort === "blocked"
+            ? "Blocked — sorted by what is blocked on you. Click for recently updated."
+            : "Blocked — sort by what is blocked on you"}
+          data-compact={blockedCompact ? "true" : undefined}
+          onClick={() => list.onSortChange(list.sort === "blocked" ? "updated" : "blocked")}
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: 4,
+            height: 22,
+            padding: blockedCompact ? "0 5px" : "0 7px",
+            marginRight: 4,
+            borderRadius: 6,
+            border: `1px solid ${list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 40%, transparent)` : "rgba(255,255,255,0.08)"}`,
+            background: list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 14%, transparent)` : "transparent",
+            color: list.sort === "blocked" ? COLORS.warning : COLORS.textMuted,
+            fontFamily: SANS_FONT,
+            fontSize: 10.5,
+            fontWeight: 600,
+            cursor: "pointer",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+          }}
+        >
+          <HandPalm size={11} weight={list.sort === "blocked" ? "fill" : "regular"} aria-hidden />
+          {blockedCompact ? null : "Blocked"}
+        </button>
         {list.showLoadingIndicator ? (
           <span
             role="status"

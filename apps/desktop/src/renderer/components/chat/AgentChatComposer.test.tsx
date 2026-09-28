@@ -18,10 +18,8 @@ import {
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE,
-  cursorBooleanConfigLabel,
   resolveCloudSendBlock,
   HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
-  nextCursorBooleanConfigValue,
 } from "./AgentChatComposer";
 import {
   createDynamicOpenCodeModelDescriptor,
@@ -3188,6 +3186,72 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  it("folds a large plain-text paste into a text attachment instead of the draft", async () => {
+    if (typeof Blob.prototype.arrayBuffer !== "function") {
+      // jsdom's Blob predates arrayBuffer; the staging bytes leg reads it.
+      Object.defineProperty(Blob.prototype, "arrayBuffer", {
+        configurable: true,
+        value(this: Blob) {
+          return new Promise<ArrayBuffer>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(reader.result as ArrayBuffer);
+            reader.onerror = () => reject(reader.error);
+            reader.readAsArrayBuffer(this);
+          });
+        },
+      });
+    }
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-pasted-text.txt" });
+    (window as any).ade = {
+      app: {},
+      agentChat: { saveTempAttachment },
+    };
+
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const pastedLog = Array.from({ length: 200 }, (_, index) => `log line ${index}`).join("\n");
+    const clipboardData = {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (type === "text/plain" ? pastedLog : "")),
+    };
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", { configurable: true, value: clipboardData });
+    fireEvent(screen.getByPlaceholderText("Type to vibecode..."), pasteEvent);
+
+    await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
+      path: "/tmp/ade-pasted-text.txt",
+      type: "file",
+    }));
+    expect(pasteEvent.defaultPrevented).toBe(true);
+    expect(saveTempAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({ filename: "pasted-text.txt" }),
+      null,
+    );
+    expect(props.onDraftChange).not.toHaveBeenCalledWith(pastedLog);
+  });
+
+  it("leaves a small paste on the native draft path", () => {
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/unused.txt" });
+    (window as any).ade = {
+      app: {},
+      agentChat: { saveTempAttachment },
+    };
+
+    const props = renderComposer({ turnActive: false, draft: "" });
+    const clipboardData = {
+      files: [],
+      items: [],
+      getData: vi.fn((type: string) => (type === "text/plain" ? "just a sentence" : "")),
+    };
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", { configurable: true, value: clipboardData });
+    fireEvent(screen.getByPlaceholderText("Type to vibecode..."), pasteEvent);
+
+    expect(pasteEvent.defaultPrevented).toBe(false);
+    expect(saveTempAttachment).not.toHaveBeenCalled();
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+  });
+
   it("clears the drop highlight when a URL drop is rejected", async () => {
     const props = renderComposer({
       turnActive: false,
@@ -3969,38 +4033,6 @@ describe("resolveCloudSendBlock", () => {
       modelReady: true,
       hasContent: true,
     })).toBeNull();
-  });
-});
-
-describe("Cursor model options in the composer", () => {
-  it("cycles a boolean option Default, On, Off, and back to Default", () => {
-    expect([null, true, false].map(cursorBooleanConfigLabel)).toEqual(["Default", "On", "Off"]);
-    expect(nextCursorBooleanConfigValue(null)).toBe(true);
-    expect(nextCursorBooleanConfigValue(undefined)).toBe(true);
-    expect(nextCursorBooleanConfigValue(true)).toBe(false);
-    expect(nextCursorBooleanConfigValue(false)).toBeNull();
-  });
-
-  it("shows an option the chat never set as Default, and sets it only on a click", () => {
-    const onCursorConfigChange = vi.fn();
-    renderComposer({
-      sessionProvider: "cursor",
-      modelId: "cursor/composer-2",
-      availableModelIds: ["cursor/composer-2"],
-      turnActive: false,
-      onCursorConfigChange,
-      cursorModeSnapshot: {
-        currentModeId: "agent",
-        availableModeIds: ["agent", "plan"],
-        configOptions: [{ id: "max_context", name: "Max context", category: "model", type: "boolean", currentValue: null }],
-      },
-    });
-
-    const chip = screen.getByRole("button", { name: /Max context/ });
-    expect(chip.textContent).toContain("Default");
-    expect(onCursorConfigChange).not.toHaveBeenCalled();
-    fireEvent.click(chip);
-    expect(onCursorConfigChange).toHaveBeenCalledWith("max_context", true);
   });
 });
 

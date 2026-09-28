@@ -85,7 +85,15 @@ export function WebConnectionsChip() {
   const [menuKey, setMenuKey] = useState<string | null>(null);
   const [renameKey, setRenameKey] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  /**
+   * The last failed action, tied to the row that failed. Without the row name a
+   * dead leftover row's "Can't reach this computer" reads as a verdict on the
+   * machine this tab is connected to. Cleared when the popover closes.
+   */
+  const [error, setError] = useState<{ machineKey: string; label: string; message: string } | null>(null);
+  useEffect(() => {
+    if (!open) setError(null);
+  }, [open]);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const popoverRef = useRef<HTMLDivElement | null>(null);
 
@@ -199,7 +207,11 @@ export function WebConnectionsChip() {
     try {
       await operation();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError({
+        machineKey: machine.key,
+        label: webMachineRowLabel(machine),
+        message: cause instanceof Error ? cause.message : String(cause),
+      });
     } finally {
       setBusyKey(null);
     }
@@ -301,7 +313,7 @@ export function WebConnectionsChip() {
             <Banner
               layout="inline"
               style={{ margin: "8px 12px" }}
-              model={{ id: "web-connections-error", tone: "error", title: error }}
+              model={{ id: "web-connections-error", tone: "error", title: `${error.label}: ${error.message}` }}
             />
           ) : null}
           <div

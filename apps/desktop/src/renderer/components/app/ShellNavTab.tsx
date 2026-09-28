@@ -30,7 +30,7 @@ export function ShellNavTab({
       tabIndex={0}
       aria-label={label}
       className={cn(
-        "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 items-center gap-1.5 px-2.5",
+        "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] items-center gap-1.5 px-2.5",
         "cursor-pointer font-semibold transition-[background-color,color,border-color,box-shadow] duration-150",
         className,
       )}

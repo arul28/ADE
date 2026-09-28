@@ -378,7 +378,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
   it("disables Add project when the account has no machine to add it on", async () => {
     renderWebWelcome(accountSnapshot({ state: "signed_in" }));
 
-    const button = (await screen.findByText("ADD PROJECT")).closest("button");
+    const button = (await screen.findByText("Add project")).closest("button");
     expect((button as HTMLButtonElement).disabled).toBe(true);
     expect((button as HTMLButtonElement).title).toContain("Connect a machine first");
   });
@@ -388,7 +388,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
       accountSnapshot({ state: "signed_in", machines: [accountMachine()] as any }),
     );
 
-    const button = (await screen.findByText("ADD PROJECT")).closest("button");
+    const button = (await screen.findByText("Add project")).closest("button");
     expect((button as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.click(button as HTMLButtonElement);
@@ -409,7 +409,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
   it("leaves the desktop Add project flow alone", async () => {
     renderWelcome();
 
-    const button = (await screen.findByText("ADD PROJECT")).closest("button");
+    const button = (await screen.findByText("Add project")).closest("button");
     expect((button as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(button as HTMLButtonElement);
 

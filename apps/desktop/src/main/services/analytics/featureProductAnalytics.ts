@@ -190,12 +190,13 @@ export function captureResetCreditAnalytics(args: {
   analytics: FeatureAnalytics | null | undefined;
   surface: ProductAnalyticsSurface;
   outcome: ResetCreditAnalyticsOutcome;
+  /** The provider whose credit was spent; omitted when no account was named. */
+  provider?: "claude" | "codex";
 }): void {
   captureFeatureUsedAnalytics({
     ...args,
     feature: "usage",
     action: "reset_credit_consumed",
-    provider: "codex",
   });
 }
 

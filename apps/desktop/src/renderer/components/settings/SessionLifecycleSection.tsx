@@ -2,15 +2,19 @@ import React, { useEffect, useState } from "react";
 import type { SessionLifecycleSettings } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 export function SessionLifecycleSection() {
+  // Stored in each machine's runtime; read and written on the machine shown.
+  const { pin } = useSettingsMachineScope();
   const [settings, setSettings] = useState<SessionLifecycleSettings | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.sessions.getLifecycleSettings()
+    setSettings(null);
+    void window.ade.sessions.getLifecycleSettings(pin)
       .then((next) => {
         if (!cancelled) setSettings(next);
       })
@@ -20,7 +24,7 @@ export function SessionLifecycleSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pin]);
 
   const update = async (enabled: boolean) => {
     if (saving) return;
@@ -29,7 +33,7 @@ export function SessionLifecycleSection() {
     try {
       setSettings(await window.ade.sessions.updateLifecycleSettings({
         autoSettleLaneSessionsOnPrMerge: enabled,
-      }));
+      }, pin));
     } catch {
       setError("ADE could not save this session lifecycle preference.");
     } finally {

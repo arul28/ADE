@@ -1,6 +1,7 @@
 import Foundation
 import OSLog
 import SwiftUI
+import UIKit
 
 // MARK: - Harness
 //
@@ -221,6 +222,17 @@ struct WorkChatScrollBenchOptions {
   /// live turn arriving while the reader is in the transcript.
   var streamCount: Int = 0
   var streamIntervalMs: Int = 120
+  /// Show the chat-info and PR badge chips over the composer.
+  var chips: Bool = false
+  /// Render the composer the way the CTO session does (`compactComposer`).
+  var compactComposer: Bool = false
+  /// Synthetic proof: one screenshot artifact inside each of the last N
+  /// finished turns, with a generated thumbnail, so the turn-end proof chip
+  /// and its filmstrip can be seen without a brain.
+  var proofTurns: Int = 0
+  /// Open the last finished turn's fold and one of its disclosures
+  /// (`tools`, `files` or `proof`), as if the reader had tapped them.
+  var openLastTurn: String?
 
   static func fromLaunchArguments(_ arguments: [String] = ProcessInfo.processInfo.arguments)
     -> WorkChatScrollBenchOptions
@@ -235,52 +247,62 @@ struct WorkChatScrollBenchOptions {
     options.limit = value("-adeBenchLimit").flatMap(Int.init) ?? 0
     options.streamCount = value("-adeBenchStream").flatMap(Int.init) ?? 0
     options.streamIntervalMs = value("-adeBenchStreamIntervalMs").flatMap(Int.init) ?? 120
+    options.chips = value("-adeBenchChips") == "1"
+    options.compactComposer = arguments.contains("-adeBenchCompactComposer")
+    options.proofTurns = value("-adeBenchProof").flatMap(Int.init) ?? 0
+    options.openLastTurn = value("-adeBenchOpenLastTurn")
     return options
   }
 }
 
-/// Reads an ADE chat transcript JSONL off disk into the same envelope type the
-/// sync path produces, so the bench renders the real view over real data with
-/// no brain, no pairing, and no network.
+/// Reads an ADE chat transcript JSONL off disk into the same decoded wire
+/// events the sync path hands the thread engine (envelope + raw bytes), so the
+/// bench renders the real view through the real engine with no brain, no
+/// pairing, and no network.
 enum WorkChatScrollBenchLoader {
-  static func load(path: String, limit: Int) -> [AgentChatEventEnvelope] {
+  static func load(path: String, limit: Int) -> [ChatThreadLiveEvent] {
     guard let data = FileManager.default.contents(atPath: path),
           let text = String(data: data, encoding: .utf8) else {
       return []
     }
-    let decoder = JSONDecoder()
-    var envelopes: [AgentChatEventEnvelope] = []
-    envelopes.reserveCapacity(4096)
+    var events: [ChatThreadLiveEvent] = []
+    events.reserveCapacity(4096)
     var sequence = 0
     text.enumerateLines { line, _ in
       let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !trimmed.isEmpty, let lineData = trimmed.data(using: .utf8) else { return }
+      guard !trimmed.isEmpty,
+            let lineData = trimmed.data(using: .utf8),
+            var object = (try? JSONSerialization.jsonObject(with: lineData)) as? [String: Any]
+      else { return }
       // The first line is a `session_init` header with no `event` object; every
       // other line is an envelope. A row this decoder cannot read is skipped
       // rather than failing the load — a bench over 20k rows should not die on
       // one legacy frame.
-      guard var envelope = try? decoder.decode(AgentChatEventEnvelope.self, from: lineData) else {
-        return
-      }
+      guard object["event"] != nil else { return }
       sequence += 1
-      if envelope.sequence == nil {
-        envelope.sequence = sequence
+      if object["sequence"] == nil {
+        object["sequence"] = sequence
       }
-      envelopes.append(envelope)
+      guard let event = chatThreadDecodeLiveEvent(object) else { return }
+      events.append(event)
     }
-    guard limit > 0, envelopes.count > limit else { return envelopes }
-    return Array(envelopes.suffix(limit))
+    guard limit > 0, events.count > limit else { return events }
+    return Array(events.suffix(limit))
   }
 }
 
-/// Renders the real `WorkChatSessionView` over a transcript file.
+/// Renders the real `WorkChatSessionView` over a transcript file, fed through a
+/// store-less thread engine: the opening load is one `chat_subscribe`-shaped
+/// snapshot, and the held-back tail arrives as live events on a timer. Emits
+/// `thread.open.firstPaint` and `thread.delta.onScreen` (signposts, and `note`
+/// lines under `-adeScrollTrace`), plus a summary line when streaming ends.
 struct WorkChatScrollBenchScreen: View {
   let options: WorkChatScrollBenchOptions
 
-  @State private var loaded: [AgentChatEventEnvelope] = []
-  @State private var held: [AgentChatEventEnvelope] = []
-  @State private var transcript: [WorkChatEnvelope] = []
-  @State private var incrementalDelta: [WorkChatEnvelope] = []
+  @State private var registry = ChatThreadRegistry(store: nil)
+  @State private var thread: ChatThreadModel?
+  @State private var sessionId = "scroll-bench-session"
+  @State private var held: [ChatThreadLiveEvent] = []
   @State private var cardExpansion = WorkCardExpansionState(expandedIds: [])
   @State private var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State private var fullscreenImage: WorkFullscreenImage?
@@ -288,9 +310,10 @@ struct WorkChatScrollBenchScreen: View {
   @State private var sending = false
   @State private var errorMessage: String?
   @State private var didLoad = false
+  @State private var benchArtifacts: [ComputerUseArtifactSummary] = []
 
-  private var sessionId: String {
-    loaded.first?.sessionId ?? "scroll-bench-session"
+  private var key: ChatThreadKey {
+    ChatThreadKey(machineKey: "bench", sessionId: sessionId, scope: .project("bench"))
   }
 
   var body: some View {
@@ -306,7 +329,9 @@ struct WorkChatScrollBenchScreen: View {
 
   @ViewBuilder
   private var content: some View {
-    if transcript.isEmpty {
+    if let thread {
+      chatView(thread)
+    } else {
       VStack(spacing: 12) {
         Text("Scroll bench")
           .font(.headline)
@@ -317,27 +342,15 @@ struct WorkChatScrollBenchScreen: View {
           .font(.footnote)
       }
       .padding()
-    } else {
-      chatView
     }
   }
 
-  private var chatView: some View {
-    WorkChatSessionView(
+  private func chatView(_ thread: ChatThreadModel) -> some View {
+    var view = WorkChatSessionView(
       session: WorkChatSessionRenderContext(benchTerminalSession(sessionId: sessionId)),
       chatSummaryContext: WorkChatSummaryRenderContext(benchChatSummary(sessionId: sessionId)),
-      transcript: transcript,
-      transcriptRenderSignature: workChatEnvelopeListRenderSignature(transcript),
-      allowsIncrementalTranscriptUpdate: false,
-      transcriptIncrementalDelta: $incrementalDelta,
-      fallbackEntries: [],
-      fallbackEntriesRenderSignature: workFallbackEntriesRenderSignature([]),
-      artifacts: [],
-      artifactsRenderSignature: workArtifactSummariesRenderSignature([]),
-      optimisticPendingSteers: [],
-      optimisticPendingSteersRenderSignature: workPendingSteersRenderSignature([]),
-      localEchoMessages: [],
-      localEchoMessagesRenderSignature: workLocalEchoMessagesRenderSignature([]),
+      thread: thread,
+      artifacts: benchArtifacts,
       cardExpansionSnapshot: cardExpansion,
       cardExpansionRenderSignature: workCardExpansionRenderSignature(cardExpansion),
       artifactContentRenderSignature: workLoadedArtifactContentRenderSignature([:]),
@@ -387,7 +400,55 @@ struct WorkChatScrollBenchScreen: View {
       onSelectCodexFastMode: { _ in true },
       lanesRenderSignature: workLaneListRenderSignature([]),
       subagentSnapshotsRenderSignature: workSubagentSnapshotsRenderSignature([]),
-      scheduledWorkSnapshotsRenderSignature: workScheduledWorkSnapshotsRenderSignature([])
+      scheduledWorkSnapshots: benchScheduledWork,
+      scheduledWorkSnapshotsRenderSignature: workScheduledWorkSnapshotsRenderSignature(benchScheduledWork),
+      onOpenChatInfo: options.chips ? {} : nil,
+      prBadge: options.chips ? benchPrBadge : nil,
+      onOpenPrDetails: options.chips ? {} : nil
+    )
+    // `-adeBenchCompactComposer`: the CTO's composer configuration.
+    view.compactComposer = options.compactComposer
+    // The real thread header, so the bench measures the transcript under the
+    // same top chrome the app draws.
+    return view.workSessionNavigationChrome(
+      mode: .pushedDetail,
+      title: "Scroll bench",
+      subtitle: workChatHeaderSubtitle(machineName: "MacBook Pro")
+    ) {
+      Menu {
+        Button("Chat Info") {}
+        Button("Proof") {}
+      } label: {
+        WorkChatGlassCircleLabel(systemName: "ellipsis", glyphSize: 17)
+      }
+      .buttonStyle(.plain)
+    }
+  }
+
+  private var benchScheduledWork: [WorkScheduledWorkSnapshot] {
+    guard options.chips else { return [] }
+    let now = ISO8601DateFormatter().string(from: Date())
+    return (0..<3).map { index in
+      WorkScheduledWorkSnapshot(
+        id: "bench-bg-\(index)", kind: "background_task", status: "running", origin: nil,
+        title: "Background task \(index + 1)", summary: nil, prompt: "npm test", reason: nil,
+        cron: nil, nextRunAt: nil, lastRunAt: nil, firedAt: nil, late: nil, recurring: nil,
+        durable: nil, cancellable: true, sourceToolUseId: nil, sourceTaskId: nil, turnId: nil,
+        error: nil, createdAt: now, updatedAt: now
+      )
+    }
+  }
+
+  private var benchPrBadge: WorkChatPrBadgeModel {
+    WorkChatPrBadgeModel(
+      label: "#1300",
+      title: "Measure every turn for the ADE router",
+      state: "open",
+      checksStatus: "passing",
+      checksReason: nil,
+      reviewStatus: nil,
+      updatedAt: ISO8601DateFormatter().string(from: Date()),
+      stack: nil
     )
   }
 
@@ -398,20 +459,58 @@ struct WorkChatScrollBenchScreen: View {
       return
     }
     let started = ProcessInfo.processInfo.systemUptime
-    var envelopes = WorkChatScrollBenchLoader.load(path: path, limit: options.limit)
-    guard !envelopes.isEmpty else {
+    var events = WorkChatScrollBenchLoader.load(path: path, limit: options.limit)
+    guard !events.isEmpty else {
       WorkChatScrollTrace.note("bench loaded 0 envelopes")
       return
     }
-    if options.streamCount > 0, envelopes.count > options.streamCount {
-      held = Array(envelopes.suffix(options.streamCount))
-      envelopes = Array(envelopes.dropLast(options.streamCount))
+    if options.streamCount > 0, events.count > options.streamCount {
+      held = Array(events.suffix(options.streamCount))
+      events = Array(events.dropLast(options.streamCount))
     }
-    loaded = envelopes
-    transcript = makeWorkChatTranscript(from: envelopes)
+    sessionId = events.first?.envelope.sessionId ?? sessionId
+    let key = self.key
+    ChatThreadSignposts.beginOpen(sessionId: key.sessionId)
+    let model = registry.attach(key)
+    thread = model
+    if options.proofTurns > 0 {
+      let proof = benchProofArtifacts(events: events, turns: options.proofTurns)
+      benchArtifacts = proof.artifacts
+      artifactContent = proof.content
+      let artifacts = proof.artifacts
+      model.updateOverlays { $0.artifacts = artifacts }
+    }
+    if let open = options.openLastTurn,
+       let turnId = events.last(where: {
+         if case .done = $0.envelope.event { return true }
+         return false
+       }).flatMap({ event -> String? in
+         guard case .done(let turnId, _, _, _, _, _, _) = event.envelope.event else { return nil }
+         return turnId
+       }) {
+      var ids: Set<String> = ["turn-fold:\(turnId)"]
+      switch open {
+      case "tools": ids.insert(workTurnWorkExpansionId(.tools, turnKey: turnId))
+      case "files": ids.insert(workTurnWorkExpansionId(.files, turnKey: turnId))
+      case "proof": ids.insert(workTurnProofExpansionId(turnId: turnId))
+      default: break
+      }
+      cardExpansion = WorkCardExpansionState(expandedIds: ids)
+      model.updateOverlays { $0.expandedTurnIds = [turnId] }
+    }
+    registry.routeSnapshot(
+      ChatThreadSnapshotInput(
+        sessionId: key.sessionId,
+        events: events,
+        hasOlderHistory: false,
+        turnActive: !held.isEmpty,
+        hostSupportsChatLogV2: true
+      ),
+      key: key
+    )
     let elapsed = ProcessInfo.processInfo.systemUptime - started
     WorkChatScrollTrace.note(
-      "bench loaded envelopes=\(envelopes.count) rows=\(transcript.count) held=\(held.count) loadMs=\(Int(elapsed * 1000))"
+      "bench loaded envelopes=\(events.count) held=\(held.count) loadMs=\(Int(elapsed * 1000))"
     )
     guard !held.isEmpty else { return }
     startStreaming()
@@ -420,21 +519,73 @@ struct WorkChatScrollBenchScreen: View {
   @MainActor
   private func startStreaming() {
     let interval = max(16, options.streamIntervalMs)
+    let key = self.key
     Task { @MainActor in
       // A short head start so the opening pin and hydration have settled before
       // the first appended event lands.
       try? await Task.sleep(for: .milliseconds(1500))
       WorkChatScrollTrace.note("bench stream start pending=\(held.count) intervalMs=\(interval)")
+      var deltaSamples: [Double] = []
       while !held.isEmpty {
         let next = held.removeFirst()
-        loaded.append(next)
-        transcript = makeWorkChatTranscript(from: loaded)
-        WorkChatScrollTrace.note("bench stream append rows=\(transcript.count)")
+        registry.routeLive(next, key: key)
         try? await Task.sleep(for: .milliseconds(interval))
+        if let sample = ChatThreadSignposts.lastDeltaOnScreenMs {
+          deltaSamples.append(sample)
+        }
       }
-      WorkChatScrollTrace.note("bench stream done")
+      let sorted = deltaSamples.sorted()
+      let p50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2]
+      let p95 = sorted.isEmpty ? 0 : sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
+      WorkChatScrollTrace.note(
+        "bench stream done firstPaintMs=\(Int((ChatThreadSignposts.lastOpenFirstPaintMs ?? -1).rounded())) deltaOnScreenP50Ms=\(Int(p50.rounded())) deltaOnScreenP95Ms=\(Int(p95.rounded()))"
+      )
     }
   }
+}
+
+/// `-adeBenchProof N`: a screenshot artifact two seconds before each of the
+/// last N `done` rows, with a generated image as its loaded preview.
+@MainActor
+private func benchProofArtifacts(
+  events: [ChatThreadLiveEvent],
+  turns: Int
+) -> (artifacts: [ComputerUseArtifactSummary], content: [String: WorkLoadedArtifactContent]) {
+  let doneTimes: [Date] = events.compactMap { event in
+    guard case .done = event.envelope.event else { return nil }
+    return workParsedDate(event.envelope.timestamp)
+  }
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  var artifacts: [ComputerUseArtifactSummary] = []
+  var content: [String: WorkLoadedArtifactContent] = [:]
+  let colors: [UIColor] = [.systemTeal, .systemIndigo, .systemOrange, .systemPink]
+  for (index, doneAt) in doneTimes.suffix(turns).enumerated() {
+    for shot in 0..<2 {
+      let id = "bench-proof-\(index)-\(shot)"
+      artifacts.append(ComputerUseArtifactSummary(
+        id: id,
+        artifactKind: "screenshot",
+        backendStyle: "local",
+        backendName: "bench",
+        title: "Bench proof \(index + 1).\(shot + 1)",
+        uri: "bench://\(id)",
+        storageKind: "file",
+        mimeType: "image/png",
+        createdAt: formatter.string(from: doneAt.addingTimeInterval(Double(shot) - 3)),
+        ownerKind: "chat_session",
+        ownerId: "bench",
+        relation: "attached"
+      ))
+      let size = CGSize(width: 320, height: 200)
+      let image = UIGraphicsImageRenderer(size: size).image { context in
+        colors[(index + shot) % colors.count].setFill()
+        context.fill(CGRect(origin: .zero, size: size))
+      }
+      content[id] = .image(image)
+    }
+  }
+  return (artifacts, content)
 }
 
 /// Session-row fixture. Duplicated rather than shared with `WorkPreviewData`

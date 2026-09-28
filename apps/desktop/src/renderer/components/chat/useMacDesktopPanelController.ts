@@ -8,6 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
 } from "react";
+import { confirmDialog } from "../ui/dialog/confirm";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { macDesktopPaneCaption } from "../../../shared/types/macDesktop";
 import type {
@@ -215,7 +216,7 @@ export function useMacDesktopPanelController({
    * The decoder's home, which is a node and not a place in the tree.
    *
    * Entering full screen moves the picture from the pane into an overlay, and
-   * every React way of doing that — a second `H264VideoCanvas`, the same
+   * every React way of doing that — a second `H264StreamView`, the same
    * element rendered under a different parent, a portal whose container
    * changes — unmounts the canvas and restarts the decode: the stream drops,
    * reconnects, and the status pill flashes "Starting" on every toggle. So the
@@ -295,6 +296,7 @@ export function useMacDesktopPanelController({
    * for Reset while a display may still exist.
    */
   const [confirmStop, setConfirmStop] = useState(false);
+  const [restartingCapture, setRestartingCapture] = useState(false);
   /** The video has been connecting for longer than a connect ever takes. */
   const [connectSlow, setConnectSlow] = useState(false);
   /** The stopped-video card's Details fold. */
@@ -940,6 +942,33 @@ export function useMacDesktopPanelController({
     setCheckingPermissions(false);
   }, [display, errorText, refreshStatus, setStatus, setStatusError]);
 
+  /**
+   * "Restart capture", after a yes/no question: a new driver process and a new
+   * screen for this lane. For a driver whose streams stopped sending
+   * frames while its screenshots still worked (2026-09-28); Reconnect only
+   * restarted the stream inside the same stuck process. The old process takes
+   * its screens with it, so the lane's open apps stay open on the main screen.
+   */
+  const restartCapture = useCallback(async () => {
+    const confirmed = await confirmDialog({
+      title: "Restart the capture?",
+      message: "Apps open here stay open and move to your main screen.",
+      confirmLabel: "Restart",
+    });
+    if (!confirmed) return;
+    setRestartingCapture(true);
+    setStatusError(null);
+    try {
+      await macDesktopApi().recheckPermissions({ restartDriver: true }, pinRef.current);
+      await refreshStatus().catch(() => undefined);
+      await start();
+    } catch (error) {
+      setStatusError(errorText(error) ?? "Could not restart the capture. Try again.");
+    } finally {
+      setRestartingCapture(false);
+    }
+  }, [errorText, refreshStatus, setStatusError, start]);
+
   /** Reads the status again after a failed read, and nothing more. */
   const readAgain = useCallback(async () => {
     setStatusError(null);
@@ -967,6 +996,7 @@ export function useMacDesktopPanelController({
     viewRect, selectedWindowId, setSelectedWindowId, lastObservation, surfaceNode, videoHost, canvasSlot,
     attachCanvasSlot, attachSurface, errorText, display, lease, windows, supported, iHaveControl, parkedWindows,
     claimAppIcons, missingPermissions, permissionCheck, setPermissionCheck, confirmStop, setConfirmStop,
+    restartingCapture, restartCapture,
     connectSlow, setConnectSlow, videoDetailsOpen, setVideoDetailsOpen, laneHostIsLocal, laneNames, live, connecting,
     cursorPoint, contentBox, lastFrame, handoverFrame, returnControl, takeControl, realInput, recording,
     toggleRecording, saveScreenshot, openReceipt, nowTick, recordingRunning, present, refreshClaimable, claimWindow,

@@ -579,34 +579,72 @@ enum WorkActiveSendMode: String, Equatable {
 /// during turn" — but no cancel-and-resend, so it stops there. Cursor has all
 /// three too since `@cursor/sdk` 1.0.31 added `Run.steer()`, but its interrupt
 /// keeps its own meaning — it cancels the run and resends on the same agent
-/// thread — so its button still says "continue". OpenCode's v2 session prompt
-/// admits `delivery: "steer"` into the live agent loop, so it also has "send
-/// during turn" and no interrupt. Everything else is queue-only,
+/// thread — so its button still says "continue". OpenCode 2.0 admits
+/// `delivery: "steer"` into the live agent loop, so it also has "send during
+/// turn" and no interrupt. Everything else is queue-only,
 /// which leaves nothing to pick between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
   let agentLabel: String
   let interruptContinues: Bool
+  /// Hand mirror of desktop `activeTurnInlineCarriesAttachments`: false when the
+  /// provider's "send during turn" channel takes text only. Cursor's
+  /// `Run.steer(text)` does, so a Cursor message with attachments can only wait
+  /// for the turn or interrupt it.
+  var inlineCarriesAttachments: Bool = true
 
   var defaultMode: WorkActiveSendMode { modes.first ?? .queue }
+
+  /// Why a message with these attachments cannot be sent during the turn, or
+  /// nil when it can. `attachmentTypes` are the attachments' kinds ("image",
+  /// "file", ...), used only to word the reason.
+  func inlineAttachmentBlockReason(attachmentTypes: [String]) -> String? {
+    guard !inlineCarriesAttachments, !attachmentTypes.isEmpty else { return nil }
+    let imagesOnly = attachmentTypes.allSatisfy { $0.hasPrefix("image") }
+    return "\(imagesOnly ? "Images" : "Attachments") can't join a running \(agentLabel) turn."
+  }
+
+  /// Drops `.inline` for a message whose attachments the inline channel cannot
+  /// carry, so the default falls to "Send after turn" with interrupt still on
+  /// offer. The desktop composer applies the same rule to its draft.
+  func withholdingInline(forAttachmentTypes attachmentTypes: [String]) -> WorkActiveSendCapability {
+    guard modes.contains(.inline), inlineAttachmentBlockReason(attachmentTypes: attachmentTypes) != nil else {
+      return self
+    }
+    return WorkActiveSendCapability(
+      modes: modes.filter { $0 != .inline },
+      agentLabel: agentLabel,
+      interruptContinues: interruptContinues,
+      inlineCarriesAttachments: inlineCarriesAttachments
+    )
+  }
 
   /// The atomic active-turn dispatch modes — everything except plain staging.
   /// These are the ones `chat.dispatchSteer` accepts, so they are also the set
   /// the staged-message strip can offer as buttons.
   var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
 
-  /// Drops `.inline` for a Cursor run that executes in cloud.
-  ///
-  /// `Run.steer()` is a local-run API: a cloud run implements it and refuses
-  /// every call, so offering "Send during turn" there names an action the host
-  /// will not perform. The desktop pane withholds the same handler for the same
-  /// reason; this is the mobile half of that rule.
-  func withholdingInlineIfNeeded(runsInCloud: Bool, provider: String) -> WorkActiveSendCapability {
-    guard runsInCloud, providerFamilyKey(provider) == "cursor", modes.contains(.inline) else { return self }
+  /// The provider's modes, minus `.inline` where this session or host cannot
+  /// take it:
+  /// - A Cursor run in cloud: `Run.steer()` is a local-run API, and a cloud
+  ///   run refuses every call. The desktop pane withholds the same handler.
+  /// - OpenCode on a host without the `openCodeInboxSteer` feature: an older
+  ///   host only queues, and an inline send would fail.
+  static func forSession(
+    provider: String,
+    runsInCloud: Bool,
+    hostSupportsOpenCodeSteer: Bool
+  ) -> WorkActiveSendCapability {
+    let capability = forProvider(provider)
+    let family = providerFamilyKey(provider)
+    let withholdInline = (runsInCloud && family == "cursor")
+      || (!hostSupportsOpenCodeSteer && family == "opencode")
+    guard withholdInline, capability.modes.contains(.inline) else { return capability }
     return WorkActiveSendCapability(
-      modes: modes.filter { $0 != .inline },
-      agentLabel: agentLabel,
-      interruptContinues: interruptContinues
+      modes: capability.modes.filter { $0 != .inline },
+      agentLabel: capability.agentLabel,
+      interruptContinues: capability.interruptContinues,
+      inlineCarriesAttachments: capability.inlineCarriesAttachments
     )
   }
 
@@ -625,13 +663,19 @@ struct WorkActiveSendCapability: Equatable {
       // resends on the same thread, which Claude's does not.
       //
       // This arm is provider-keyed, matching desktop's table. The cloud
-      // carve-out is a SESSION fact, so it lives in
-      // `withholdingInlineIfNeeded` and is applied by the caller that knows the
-      // session.
-      return WorkActiveSendCapability(modes: [.inline, .queue, .interrupt], agentLabel: "Cursor", interruptContinues: true)
+      // carve-out is a SESSION fact, so it lives in `forSession` and is
+      // applied by the caller that knows the session.
+      return WorkActiveSendCapability(
+        modes: [.inline, .queue, .interrupt],
+        agentLabel: "Cursor",
+        interruptContinues: true,
+        inlineCarriesAttachments: false
+      )
     case "opencode":
-      // OpenCode's v2 session prompt admits `delivery: "steer"` into the live
-      // agent loop. No interrupt: like Codex there is no cancel-and-resend.
+      // Matches desktop's `ACTIVE_TURN_DISPATCH_MODES`: OpenCode 2.0 admits a
+      // mid-turn message to its session inbox, delivered at the next step
+      // boundary ("send during turn") or after the current reply (queue). No
+      // interrupt: like Codex there is no cancel-and-resend.
       return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
@@ -661,12 +705,19 @@ struct WorkQueuedSteerDisposition: Equatable {
 /// a provider gains or loses inline steering.
 func workQueuedSteerDisposition(
   capability: WorkActiveSendCapability,
-  turnActive: Bool
+  turnActive: Bool,
+  inlineBlockedReason: String? = nil
 ) -> WorkQueuedSteerDisposition {
   guard turnActive else {
     return WorkQueuedSteerDisposition(
       shortText: "after turn",
       detailText: "It sends as soon as \(capability.agentLabel) is ready."
+    )
+  }
+  if let inlineBlockedReason {
+    return WorkQueuedSteerDisposition(
+      shortText: "sends when turn ends",
+      detailText: "\(inlineBlockedReason) It sends when this turn ends."
     )
   }
   if capability.modes.contains(.inline) {
@@ -1062,7 +1113,10 @@ struct WorkAdeCardModel: Identifiable, Hashable {
   }
 }
 
-enum WorkTimelinePayload: Equatable {
+/// `indirect`: each payload lives in one heap box, so copying an entry (the
+/// timeline sort, dedupe, collapse passes and presentation all copy every
+/// entry) is one retain instead of one per field of the model inside.
+indirect enum WorkTimelinePayload: Equatable {
   case message(WorkChatMessage)
   case toolCard(WorkToolCardModel)
   case commandCard(WorkCommandCardModel)
@@ -1091,16 +1145,14 @@ enum WorkTimelinePayload: Equatable {
   /// Generic host/agent-emitted `ade_card`. One row per `cardId`, merged in
   /// place as the card progresses.
   case adeCard(WorkAdeCardModel)
-  case usageSummary(WorkUsageSummary)
   case artifact(ComputerUseArtifactSummary)
-  /// Centered time + model pill rendered between turns, matching the desktop
-  /// transcript's turn separators.
-  case turnSeparator(WorkTurnSeparator)
-  /// Centered end-of-turn completion row rendered after a terminal `done`
-  /// event. Completed turns say "Ran for"; interrupted/failed turns say
-  /// "Elapsed" so wall time is never presented as continuous agent work.
+  /// The turn-end line after a terminal `done` event (desktop
+  /// `DoneTurnDivider`): `ran 4m 30s · 2:15 AM · ↑in/↓out/~cache · tools ›
+  /// files ›` on one line. The turn's usage rides on it; there is no separate
+  /// usage row and no divider before the next user message.
   case turnEndMarker(WorkTurnEndMarker)
-  /// Completed turn history folded to a single mobile-sized disclosure row.
+  /// A finished turn's intermediate work folded into one
+  /// `Worked for 4m 12s · 18 tools · 3 files` caption (desktop `TurnFoldRow`).
   case turnFold(WorkTurnFoldModel)
   /// One background shell job, anchored at its first lifecycle update.
   case backgroundJob(WorkBackgroundJobModel)
@@ -1168,14 +1220,8 @@ extension WorkTimelinePayload: Hashable {
     case .adeCard(let model):
       hasher.combine(9)
       hasher.combine(model)
-    case .usageSummary(let model):
-      hasher.combine(10)
-      hasher.combine(model)
     case .artifact(let model):
       hasher.combine(11)
-      hasher.combine(model)
-    case .turnSeparator(let model):
-      hasher.combine(12)
       hasher.combine(model)
     case .turnEndMarker(let model):
       hasher.combine(13)
@@ -1326,17 +1372,13 @@ struct WorkChangedFilesGroupModel: Identifiable, Hashable {
   var count: Int { files.count }
 }
 
-struct WorkTurnSeparator: Hashable {
-  let time: String
-  let provider: String
-  let modelLabel: String
-  let modelId: String?
-}
-
 struct WorkTurnEndMarker: Hashable {
   let turnId: String
   let time: String
-  let workedDurationLabel: String
+  /// Desktop `formatTurnDuration` of the turn's measured run: from its user
+  /// message, else its `status: started`. Nil when the turn has neither, so
+  /// the line and the fold omit it rather than measure from an arbitrary row.
+  let workedDurationLabel: String?
   let status: String
   let terminalReasonLabel: String?
   let provider: String
@@ -1352,9 +1394,16 @@ struct WorkTurnEndMarker: Hashable {
   /// Later completion updates never change this snapshot, so a fold cannot
   /// hide work that was still running at the turn boundary.
   var liveEntryIds: Set<String> = []
-  /// Usage for a usage-limit turn, folded in from the standalone USAGE row so it
-  /// moves behind the footer's details toggle instead of shouting beside it.
+  /// The turn's token usage from its `done`. Drawn on the turn-end line; a
+  /// usage-limit turn moves it behind the footer's details toggle instead.
   var usage: WorkUsageSummary? = nil
+  /// Proof artifacts captured while the turn ran: the `N proof` chip and the
+  /// filmstrip it opens (desktop `DoneTurnDivider` + `ChatProofFilmstrip`).
+  var proofArtifacts: [ComputerUseArtifactSummary] = []
+  var proofCount: Int { proofArtifacts.count }
+  /// The turn folded: its tool and file counts moved up to the fold row, so
+  /// the line keeps only time, usage, proof and sources. Set by presentation.
+  var workSummaryInFold: Bool = false
 }
 
 struct WorkBackgroundJobModel: Identifiable, Hashable {
@@ -1386,9 +1435,48 @@ struct WorkBackgroundJobRunModel: Identifiable, Hashable {
 struct WorkTurnFoldModel: Identifiable, Hashable {
   let id: String
   let turnId: String
-  let label: String
+  /// The turn-end marker's key: the per-turn tool and file lists are filed
+  /// under it (it differs from `turnId` only for a `done` with no turn id).
+  var turnEndTurnId: String? = nil
   let isExpanded: Bool
+  /// `completed`, `interrupted` or `failed` (desktop `TurnEndStatus`).
   let status: String
+  let durationLabel: String?
+  var toolCount: Int = 0
+  var fileCount: Int = 0
+  var subagentCount: Int = 0
+  var jobCount: Int = 0
+  var failedJobCount: Int = 0
+  var sourceCount: Int = 0
+
+  /// `Worked for 4m 12s`, or `Stopped after …` for an interrupted turn
+  /// (desktop `formatTurnFoldHead`).
+  var head: String {
+    if status == "interrupted" { return durationLabel.map { "Stopped after \($0)" } ?? "Stopped" }
+    return durationLabel.map { "Worked for \($0)" } ?? "Worked"
+  }
+
+  /// `5 jobs`, or `5 jobs (1 failed)` (desktop `formatTurnFoldJobCount`).
+  var jobLabel: String {
+    let base = workPluralCount(jobCount, "job")
+    return failedJobCount > 0 ? "\(base) (\(failedJobCount) failed)" : base
+  }
+
+  /// Desktop `formatTurnFoldLabel`: zero counts are omitted.
+  var label: String {
+    var parts = [head]
+    if toolCount > 0 { parts.append(workPluralCount(toolCount, "tool")) }
+    if fileCount > 0 { parts.append(workPluralCount(fileCount, "file")) }
+    if subagentCount > 0 { parts.append(workPluralCount(subagentCount, "subagent")) }
+    if jobCount > 0 { parts.append(jobLabel) }
+    if sourceCount > 0 { parts.append(workPluralCount(sourceCount, "source")) }
+    return parts.joined(separator: " · ")
+  }
+}
+
+/// `1 tool`, `3 tools` (desktop `pluralCount`).
+func workPluralCount(_ count: Int, _ noun: String) -> String {
+  "\(count) \(noun)\(count == 1 ? "" : "s")"
 }
 
 func workLatestTurnEndTurnId(in timeline: [WorkTimelineEntry]) -> String? {
@@ -1482,8 +1570,12 @@ struct WorkSubagentTimelineRow: Identifiable, Hashable {
   let commandLabel: String?
   let exitLabel: String?
 
+  /// One id for the running card and the result that replaces it (desktop
+  /// keeps the card's row key), so the card's row and height stay put.
   var id: String {
-    "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+    kind == .backgroundCommand
+      ? "subagent-\(kind.rawValue)-\(snapshot.agentId ?? snapshot.taskId)"
+      : "subagent-\(snapshot.agentId ?? snapshot.taskId)"
   }
 }
 
@@ -1492,19 +1584,7 @@ struct WorkSubagentTimelineGrid: Identifiable, Hashable {
   let rows: [WorkSubagentTimelineRow]
 }
 
-enum WorkSubagentTimelineItem: Identifiable, Hashable {
-  case row(WorkSubagentTimelineRow)
-  case grid(WorkSubagentTimelineGrid)
-
-  var id: String {
-    switch self {
-    case .row(let row): return row.id
-    case .grid(let grid): return grid.id
-    }
-  }
-}
-
-/// Folded run of 2+ same-cause, same-source subagent result rows (desktop
+/// Folded run of more than three same-cause, same-source subagent result rows (desktop
 /// parity: `SubagentStoppedGroupEvent`). Carries the original result rows so
 /// the card can list each agent's title, last activity, and outcome.
 struct WorkSubagentStoppedGroupModel: Identifiable, Hashable {
@@ -1795,6 +1875,11 @@ struct WorkEventCardModel: Identifiable, Hashable {
   let technicalDetail: String?
   let nextAction: String?
   let taskList: WorkChatTaskListSnapshot?
+  /// `kind == "reasoning"`: measured thinking time in whole seconds, the
+  /// desktop `Thought for 12s`. Nil when unknown (one chunk, a sub-second
+  /// span, or a merged activity phase), which draws plain `Thought`. Stamped
+  /// after the cards are built (`workStampReasoningDurations`).
+  var thoughtSeconds: Int? = nil
 
   init(
     id: String,

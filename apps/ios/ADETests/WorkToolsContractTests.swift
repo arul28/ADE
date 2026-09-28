@@ -200,24 +200,6 @@ final class WorkToolsContractTests: XCTestCase {
       workToolsBrowserUnavailableMessage("desktop_not_attached"))
   }
 
-  func testToolNamesCoverEveryDesktopToolIdAndPassUnknownOnesThrough() {
-    // Mirrors WORK_TOOL_IDS in apps/desktop/src/shared/types/workTools.ts.
-    XCTAssertEqual(workToolsDisplayName("terminal"), "Terminal")
-    XCTAssertEqual(workToolsDisplayName("git"), "Git")
-    XCTAssertEqual(workToolsDisplayName("files"), "Files")
-    XCTAssertEqual(workToolsDisplayName("ios"), "Apple")
-    XCTAssertEqual(workToolsAccessibilityHint("ios"), "Apple simulators and previews")
-    XCTAssertNil(workToolsAccessibilityHint("git"))
-    XCTAssertEqual(workToolsDisplayName("app-control"), "App Control")
-    XCTAssertEqual(workToolsDisplayName("browser"), "Browser")
-    XCTAssertEqual(workToolsDisplayName("pr"), "PR")
-    // A tool this build has no name for still reads as *something*: dropping it
-    // would tell the user no tool is open when one is.
-    XCTAssertEqual(workToolsDisplayName("holodeck"), "holodeck")
-    XCTAssertNil(workToolsDisplayName(nil))
-    XCTAssertNil(workToolsDisplayName(""))
-  }
-
   func testMalformedFramePayloadsProduceNoImageRatherThanACrash() {
     XCTAssertNil(WorkToolsSheet.decodeDataUrl("https://example.com/shot.png"))
     XCTAssertNil(WorkToolsSheet.decodeDataUrl("data:image/png;base64"))
@@ -460,7 +442,7 @@ final class WorkToolsContractTests: XCTestCase {
     let chip = WorkToolChip(kind: .simulator(name: "iPhone 16 Pro", family: "iphone"))
     XCTAssertEqual(chip.displayLabel, "16 Pro")
     XCTAssertEqual(chip.label, "iPhone 16 Pro")
-    XCTAssertEqual(WorkToolChip(kind: .appControl(appName: "iPhone Mirroring")).displayLabel, "iPhone Mirroring")
+    XCTAssertEqual(WorkToolChip(kind: .appControl(appName: "iPhone Mirroring")).displayLabel, "App")
   }
 
   private static func macDesktop(
@@ -683,6 +665,23 @@ final class WorkToolsContractTests: XCTestCase {
     // At 2x the picture can move half a frame each way and no more.
     let far = zoomed.panned(by: CGSize(width: 5_000, height: -5_000), in: Self.zoomFrame)
     XCTAssertEqual(far.offset, CGSize(width: 200, height: -125))
+  }
+
+  func testLandscapeViewportClampsPanAndSettlePullsARubberBandBack() {
+    let picture = CGSize(width: 400, height: 250)
+    let viewport = CGSize(width: 800, height: 200)
+    // Wider than the zoomed picture: that axis stays centered.
+    XCTAssertEqual(
+      MacDesktopZoom.clampOffset(CGSize(width: 40, height: 80), scale: 1, in: picture, viewport: viewport),
+      CGSize(width: 0, height: 25))
+    let pastWidth = MacDesktopZoom.rubberBand(80, limit: 0)
+    let pastHeight = MacDesktopZoom.rubberBand(80, limit: 25)
+    XCTAssertGreaterThan(pastWidth, 0)
+    XCTAssertLessThan(pastWidth, 80)
+    XCTAssertGreaterThan(pastHeight, 25)
+    XCTAssertLessThan(pastHeight, 80)
+    let stretched = MacDesktopZoom(scale: 1, offset: CGSize(width: pastWidth, height: pastHeight))
+    XCTAssertEqual(stretched.settled(in: picture, viewport: viewport).offset, CGSize(width: 0, height: 25))
   }
 
   func testDoubleTapTogglesBetweenOneAndTwoAndAHalfAtTheTap() {
@@ -961,7 +960,6 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertEqual(macDesktop.lastObservation?.truncatedReason, "stalled")
     XCTAssertEqual(macDesktop.lastObservation?.stalledApps, ["Safari"])
     XCTAssertEqual(macDesktopLeaseLine(macDesktop.lease), "Agent driving · Fix the header")
-    XCTAssertEqual(workToolsDisplayName("mac-desktop"), "macOS")
   }
 
   func testLaneStateWithoutMacDesktopHidesTheToolRatherThanFailingToDecode() throws {

@@ -9197,3 +9197,39 @@ describe("draft and auto-merge mutations", () => {
     expect(queries[1]).toContain("markPullRequestReadyForReview");
   });
 });
+
+describe("prService.listSnapshots", () => {
+  function snapshotCalls(db: ReturnType<typeof makeMockDb>) {
+    return db.all.mock.calls
+      .map((call: unknown[]) => ({ sql: String(call[0]), params: call[1] as unknown[] }))
+      .filter((call: { sql: string }) => call.sql.includes("from pull_request_snapshots"));
+  }
+
+  it("narrows to the requested prIds in SQL instead of decoding every snapshot", () => {
+    const db = makeMockDb();
+    db.all.mockImplementation(((sql: string) => String(sql).includes("from pull_request_snapshots")
+      ? [{ pr_id: "pr-1", detail_json: null, status_json: null, checks_json: "[]", reviews_json: null, comments_json: null, files_json: null, commits_json: null, updated_at: "t" }]
+      : []) as never);
+    const { service } = buildService({ db });
+
+    const snapshots = service.listSnapshots({ prIds: ["pr-1", "pr-2", "pr-1"] });
+
+    expect(snapshots.map((snapshot) => snapshot.prId)).toEqual(["pr-1"]);
+    const [call] = snapshotCalls(db);
+    expect(call.sql).toContain("where s.pr_id in (?, ?)");
+    expect(call.params).toEqual(["proj-1", "pr-1", "pr-2"]);
+  });
+
+  it("returns nothing for an empty prIds list without querying, and everything with no filter", () => {
+    const db = makeMockDb();
+    const { service } = buildService({ db });
+
+    expect(service.listSnapshots({ prIds: [] })).toEqual([]);
+    expect(snapshotCalls(db)).toHaveLength(0);
+
+    service.listSnapshots();
+    const [call] = snapshotCalls(db);
+    expect(call.sql).not.toContain("where s.pr_id");
+    expect(call.params).toEqual(["proj-1"]);
+  });
+});

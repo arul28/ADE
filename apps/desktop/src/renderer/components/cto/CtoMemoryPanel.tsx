@@ -4,6 +4,7 @@ import { CalendarBlank, NotePencil } from "@phosphor-icons/react";
 import type { CtoMemorySnapshot } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { CopyButton, CtoCard, TextBlock, ctoButtonStyle } from "./ctoSettingsUi";
+import { useCtoHomeScope } from "./useCtoHome";
 
 /**
  * The CTO's memory, laid out as the things it actually is.
@@ -283,6 +284,8 @@ function ThreadList({ rows }: { rows: CtoDirectedThreadRow[] }) {
 }
 
 export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {}) {
+  // Memory lives on the CTO's home machine, never on whichever machine the tab is bound to.
+  const { pin: ctoPin } = useCtoHomeScope();
   const [snapshot, setSnapshot] = useState<CtoMemorySnapshot | null>(null);
   const [draft, setDraft] = useState("");
   const [loading, setLoading] = useState(true);
@@ -298,7 +301,7 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
       return;
     }
     try {
-      const next = await bridge.getMemory();
+      const next = await bridge.getMemory(ctoPin);
       setSnapshot(next);
       setDraft(next.memory);
     } catch (err) {
@@ -306,7 +309,7 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [ctoPin]);
 
   useEffect(() => {
     void load();
@@ -320,7 +323,7 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
     setSaving(true);
     setError(null);
     try {
-      const next = await bridge.updateMemory({ memory: draft });
+      const next = await bridge.updateMemory({ memory: draft }, ctoPin);
       setSnapshot(next);
       setDraft(next.memory);
       setSavedAt(Date.now());
@@ -329,7 +332,7 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
     } finally {
       setSaving(false);
     }
-  }, [draft]);
+  }, [ctoPin, draft]);
 
   const savedRecently = useMemo(() => savedAt != null && Date.now() - savedAt < 4000, [savedAt]);
   const updated = relativeTime(snapshot?.updatedAt ?? null);

@@ -380,13 +380,20 @@ Planning. For tracked CLIs, an explicit ADE request such as `ade chat ask`
 sets waiting-input; structured provider input is handled by the provider
 adapter, with its own provenance.
 
-Agent activity detail is a separate typed report (`planning`, `implementing`,
-`testing`, `reviewing`, `debugging`, or `monitoring`), set through
-`ade chat activity` only when session guidance confirms that provider can
-invoke the runtime-resolved ADE CLI against this runtime's exact RPC socket; an
-executable path alone is not enough, and embedded runtimes omit the guidance.
+Activity detail is a separate typed value (`planning`, `exploring`,
+`implementing`, `testing`, `debugging`, `reviewing`, `shipping`, or
+`monitoring`) with a source. For ADE chats the host **detects** it from the
+turn's own tool calls (`source: "detected"`, see
+`apps/desktop/src/main/services/chat/sessionActivityDetector.ts`); an agent can
+also report one through `ade chat activity` (`source: "agent"`) when session
+guidance confirms that provider can invoke the runtime-resolved ADE CLI against
+this runtime's exact RPC socket; an executable path alone is not enough, and
+embedded runtimes omit the guidance. Tracked CLI terminals have no normalized
+tool stream, so their detail comes from agent reports only.
 It refines a running card's single status label, never changes the parent
-lifecycle phase, and clears when a new user turn is accepted.
+lifecycle phase, and clears when a new user turn is accepted. See
+[Activity detection](#activity-detection) for how detection and agent reports
+combine.
 Tracked CLI guidance is enabled for Codex and OpenCode outside Plan
 and external `config-toml`, write-capable non-AGI Droid, Pi full-auto, and
 Cursor launches with an initial prompt. It calls the host-resolved
@@ -1067,3 +1074,37 @@ PTY exit         →  sessionService.end
   [runtime-isolation.md](./runtime-isolation.md)
 - Session deltas and end-of-session summaries:
   `apps/desktop/src/main/services/sessions/sessionDeltaService.ts`
+
+## Activity detection
+
+`sessionActivityDetector.ts` reads every normalized chat event (`tool_call`,
+`command`, `file_change`, `subagent_started`) from every chat provider —
+Claude, Codex, OpenCode, Cursor, Droid, Pi, and the ACP providers (which also
+carry the protocol's `toolKind`) — and keeps one detected activity per chat:
+
+- Reads and searches never move a turn out of a real activity; only a long
+  unbroken run of reads returns it to **Exploring**. The first evidence of a
+  turn sets the state directly.
+- Test runners, review/test/implementation subagents, and watch loops are
+  strong signals (one call switches). Edits, typechecks, one-off CI status
+  reads, and git commit/push/PR commands are weak (two within five minutes), so
+  a single push does not flash **Shipping**.
+- An edit within two minutes of a test run is a fix-and-rerun loop and stays
+  **Testing**. Tool calls inside a subagent (`parentItemId`) are ignored.
+- **Debugging** is never detected; tool calls cannot tell it from testing.
+
+The chat service writes the detected value only when it changes, through
+`sessionService.setDetectedSessionActivity`. Precedence lives in
+`nextDetectedActivityReport` (`shared/sessionActivity.ts`): detection is the
+primary source; an agent report from the current turn stands while it still
+covers what the detector sees (debugging covers testing and implementing,
+planning covers exploring) and is replaced when the evidence moves somewhere it
+does not. A detected value may carry across continuation turns (a subagent
+finishing, a background wake); the detector and the row both reset when the
+user engages (a message, a steer, an answer).
+
+`updatedAt` on the stored activity is when the session **entered** it, and the
+row's elapsed counts from there (`sessionElapsedAnchor`), so "Testing 3m" means
+three minutes of tests. The turn's total stays on the chat's own "Working…"
+timer. An agent re-reporting the activity already shown keeps its entry time.
+

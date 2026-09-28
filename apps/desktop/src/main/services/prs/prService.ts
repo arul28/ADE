@@ -2825,7 +2825,20 @@ export function createPrService({
     }
   };
 
-  const listSnapshotRows = (args: { prId?: string } = {}): PrSnapshotHydration[] => {
+  const listSnapshotRows = (args: { prId?: string; prIds?: readonly string[] } = {}): PrSnapshotHydration[] => {
+    // `prIds` narrows in SQL so a bounded caller never decodes every stored
+    // snapshot (merged PRs' files/checks/comments run to many megabytes).
+    const prIds = args.prId ? null : args.prIds ? [...new Set(args.prIds)] : null;
+    if (prIds && prIds.length === 0) return [];
+    let filterSql = "";
+    let filterParams: string[] = [];
+    if (args.prId) {
+      filterSql = "where s.pr_id = ?";
+      filterParams = [args.prId];
+    } else if (prIds) {
+      filterSql = `where s.pr_id in (${prIds.map(() => "?").join(", ")})`;
+      filterParams = prIds;
+    }
     const rows = db.all<{
       pr_id: string;
       detail_json: string | null;
@@ -2841,10 +2854,10 @@ export function createPrService({
         select s.pr_id, s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.commits_json, s.updated_at
           from pull_request_snapshots s
           join pull_requests p on p.id = s.pr_id and p.project_id = ?
-         ${args.prId ? "where s.pr_id = ?" : ""}
+         ${filterSql}
          order by p.updated_at desc
       `,
-      args.prId ? [projectId, args.prId] : [projectId],
+      [projectId, ...filterParams],
     );
 
     return rows.map((row) => ({
@@ -12358,7 +12371,7 @@ export function createPrService({
       return { refreshedCount: rows.length };
     },
 
-    listSnapshots(args: { prId?: string } = {}): PrSnapshotHydration[] {
+    listSnapshots(args: { prId?: string; prIds?: readonly string[] } = {}): PrSnapshotHydration[] {
       return listSnapshotRows(args);
     },
 

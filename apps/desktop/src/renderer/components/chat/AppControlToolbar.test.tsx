@@ -22,8 +22,6 @@ function renderToolbar(appLabel: string) {
       onConnect={vi.fn()}
       connecting={false}
       onHelpWireCdp={null}
-      drivers={null}
-      activeDriver="cdp"
       statusWord="no app"
       statusTone="idle"
       statusDetail="Pick an app to drive"

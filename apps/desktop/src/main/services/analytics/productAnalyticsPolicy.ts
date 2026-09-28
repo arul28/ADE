@@ -173,6 +173,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // created, an agent drove it, or a recording was filed as proof. Three
   // coarse outcomes and nothing about the lane, the chat, or the screen.
   "mac_desktop",
+  // The same three coarse outcomes for the lane's App Control session: one
+  // started, an agent drove it, or a recording was filed as proof.
+  "app_control",
   // One coarse fact per CTO voice call, at the call's end. Whether calls are
   // had at all, and whether they work, is the only question the feature has —
   // and a call that dies on a rejected key looks identical to a short one in

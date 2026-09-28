@@ -95,6 +95,8 @@ type PinnedRuntimeEventPumpOptions = {
   /** Initial value, and the value restored when an epoch change rewinds. */
   suppressReplay: boolean;
   dispatch: (event: RemoteRuntimeBufferedEvent) => void;
+  /** The stream may have dropped events: a gap, an epoch change, or the first good poll after a failure. */
+  onResync?: () => void;
 };
 
 type PinnedRuntimeEventsDeps = {
@@ -209,6 +211,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
     label,
     suppressReplay,
     dispatch,
+    onResync,
   }: PinnedRuntimeEventPumpOptions): (() => void) => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -228,6 +231,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
         } satisfies RemoteRuntimeStreamEventsRequest;
         const batch = await invokePinnedRuntimeStreamEvents(pin, request);
         if (cancelled) return;
+        const recoveredFromFailure = consecutiveFailures > 0;
         consecutiveFailures = 0;
         const batchEpoch = normalizePinnedRuntimeEventEpoch(batch.eventEpoch);
         const epochChanged = batchEpoch
@@ -254,6 +258,7 @@ export function createPinnedRuntimeEvents(deps: PinnedRuntimeEventsDeps) {
           for (const event of batch.events ?? []) dispatch(event);
           delay = pinnedRuntimeBatchDelayMs(batch);
         }
+        if (epochChanged || batch.gap === true || recoveredFromFailure) onResync?.();
       } catch (error) {
         if (!cancelled) {
           console.warn(`ADE pinned ${label} event polling failed`, error);

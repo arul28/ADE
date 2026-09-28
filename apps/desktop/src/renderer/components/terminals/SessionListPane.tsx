@@ -34,6 +34,8 @@ import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { useLaneAppleDevices, type LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
 import { useLaneMacDesktops } from "./useLaneMacDesktops";
+import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
+import { LANE_APP_CONTROL_LABEL, laneBrowserLabel, useLaneWorkToolUse } from "./useLaneWorkToolUse";
 import { SessionCard } from "./SessionCard";
 import { ToolLogo } from "./ToolLogos";
 import { LaneNamingLabel } from "./LaneNamingLabel";
@@ -1109,6 +1111,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   const laneAppleDevices = useLaneAppleDevices({ refreshKey: lanesProp });
   // One status read plus display events for the whole list, not per row.
   const laneMacDesktops = useLaneMacDesktops();
+  // The same for App Control apps and agent-owned browser tabs: one read and
+  // one subscription each for the whole list.
+  const laneToolUse = useLaneWorkToolUse();
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
   const keybindings = useAppStore((state) => state.keybindings);
   const commandPaletteBinding = useMemo(
@@ -2162,6 +2167,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     laneMacDesktop?: boolean;
     /** The headerless lane lives on a cloud; its card shows the mark. */
     laneCloud?: "devin" | "cursor" | null;
+    /** The headerless lane has a live App Control app; its card shows the mark. */
+    laneAppControl?: boolean;
+    /** Browser tabs an agent of the headerless lane owns; its card shows the mark. */
+    laneBrowserTabs?: number;
     /** Board cards only: the column states the status, so the card must not. */
     suppressStatusLabel?: boolean;
     nestedSubagent?: boolean;
@@ -2258,6 +2267,8 @@ export const SessionListPane = React.memo(function SessionListPane({
         laneMacDesktop={options?.laneMacDesktop ?? false}
         // A card that names its lane also says the lane lives on a cloud.
         laneCloud={options?.laneCloud ?? (options?.showLaneIdentity ? laneCloudProvider(sessionLane) : null)}
+        laneAppControl={options?.laneAppControl ?? false}
+        laneBrowserTabs={options?.laneBrowserTabs ?? 0}
         suppressMachineChip={options?.suppressMachineChip}
         suppressStatusLabel={options?.suppressStatusLabel}
         nestedSubagent={options?.nestedSubagent}
@@ -2349,6 +2360,8 @@ export const SessionListPane = React.memo(function SessionListPane({
                   machineMarker: null,
                   laneAppleDevice: null,
                   laneMacDesktop: false,
+                  laneAppControl: false,
+                  laneBrowserTabs: 0,
                 })}
               </div>
             ))}
@@ -2486,6 +2499,8 @@ export const SessionListPane = React.memo(function SessionListPane({
       machineMarker: markersByLaneId.get(markerKey) ?? null,
       laneAppleDevice: !foreignRow && lane ? laneAppleDevices.get(lane.id) ?? null : null,
       laneMacDesktop: !foreignRow && lane ? laneMacDesktops.has(lane.id) : false,
+      laneAppControl: !foreignRow && lane ? laneToolUse.appControl.has(lane.id) : false,
+      laneBrowserTabs: !foreignRow && lane ? laneToolUse.browserTabs.get(lane.id) ?? 0 : 0,
       laneActions,
     });
   };
@@ -2994,6 +3009,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     const inQuietShelf = laneShelfFor(lane.id) !== null && !sharedBranchInboxKeepIds.has(lane.id);
     const laneAppleDevice = laneAppleDevices.get(lane.id) ?? null;
     const laneMacDesktop = laneMacDesktops.has(lane.id);
+    const laneAppControl = laneToolUse.appControl.has(lane.id);
+    const laneBrowserTabs = laneToolUse.browserTabs.get(lane.id) ?? 0;
     return (
       <StickyGroupHeader
         key={lane.id}
@@ -3011,10 +3028,16 @@ export const SessionListPane = React.memo(function SessionListPane({
         machineMarker={laneCloudProvider(lane)
           ? <LaneCloudMarker provider={laneCloudProvider(lane)!} />
           : machineMarker ? <LaneMachineMarker marker={machineMarker} /> : null}
-        appleDevice={laneAppleDevice || laneMacDesktop ? (
+        appleDevice={laneAppleDevice || laneMacDesktop || laneAppControl || laneBrowserTabs > 0 ? (
           <>
             {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
             {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+            {laneAppControl ? (
+              <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
+            ) : null}
+            {laneBrowserTabs > 0 ? (
+              <LaneWorkToolMarker tool="browser" laneId={lane.id} label={laneBrowserLabel(laneBrowserTabs)} />
+            ) : null}
           </>
         ) : null}
         busyLabel={deleteProgress ? getLaneDeleteStatusLabel(deleteProgress) : null}
@@ -3066,6 +3089,8 @@ export const SessionListPane = React.memo(function SessionListPane({
               laneAppleDevice,
               laneMacDesktop,
               laneCloud: laneCloudProvider(lane),
+              laneAppControl,
+              laneBrowserTabs,
               laneActions: {
                 laneId: lane.id,
                 laneName: lane.name,

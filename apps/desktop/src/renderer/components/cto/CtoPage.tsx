@@ -6,15 +6,21 @@ import type {
   ChatSurfacePresentation,
   CtoIdentity,
   CtoSessionLogEntry,
+  CtoSnapshot,
   CtoStartFreshSessionResult,
   CtoThreadHealth,
 } from "../../../shared/types";
 import { AgentChatPane } from "../chat/AgentChatPane";
-import { useAppStore } from "../../state/appStore";
+import type { ComposerMachineChipAction } from "../chat/AgentChatComposer";
+import { useChatMachineLanes } from "../chat/ChatRuntimeScope";
+import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
+import { pinKey } from "../../state/projectMachines";
+import { CtoHomeChooser } from "./CtoHomeChooser";
+import { CtoHomeProvider, useCtoHome, type CtoHomeScope } from "./useCtoHome";
 import { cn } from "../ui/cn";
 import { CtoTalkButton } from "./CtoTalkButton";
 import { CtoTalkNoticeLine, type CtoTalkNotice } from "./CtoTalkNoticeLine";
-import { CtoSettingsPage } from "./CtoSettingsPage";
+import { CtoSettingsPage, type CtoIdentityPatch } from "./CtoSettingsPage";
 import { ctoModelSupportsLiveRedirect, resolveModelSelection, useCtoModelOptions } from "./useCtoModelOptions";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { resolveCtoPrimaryLaneId } from "./ctoSessionViewState";
@@ -26,14 +32,43 @@ const CTO_ACCENT = "#22D3EE";
 const CTO_ACCENT_RGB = "34, 211, 238";
 const MAX_WAKING_RETRIES = 4;
 
-// The CTO is a single project-level thread. There is only ever one session; the
-// module-level cache keeps it warm across tab switches so re-entry is instant.
-let ctoPrimarySession: AgentChatSession | null = null;
+// The CTO is a single project-level thread on its home machine. The cache keeps
+// it warm across tab switches so re-entry is instant. Keyed by project tab AND
+// home machine: a session read from one machine must never be shown (or written
+// to) as another machine's CTO after the home moves or the tab changes.
+const ctoPrimarySessions = new Map<string, AgentChatSession>();
+
+/**
+ * Reads the home machine's cross-machine capability off its CTO snapshot
+ * (`capabilities.crossMachine`, set by the brain).
+ *
+ * The field is new, so an older home machine's snapshot lacks it entirely.
+ * Absent is read as "no": that build cannot reach other machines.
+ */
+function readCrossMachineCapability(snapshot: Pick<CtoSnapshot, "capabilities"> | null | undefined): boolean {
+  return snapshot?.capabilities?.crossMachine === true;
+}
 
 export function CtoPage({ active = true }: { active?: boolean } = {}) {
-  const lanes = useAppStore((s) => s.lanes);
+  const ctoHome = useCtoHome(active);
+  const homeReady = ctoHome.status === "ready";
+  /** Every CTO call carries this. Null = the tab's binding is the home. */
+  const ctoPin = ctoHome.pin;
+  const scopeKey = useAppStore(selectActiveProjectStateKey);
+  const sessionCacheKey = `${scopeKey ?? ""}|${pinKey(ctoPin)}`;
+  // The home machine's lanes, not the tab's: the CTO's primary lane is there.
+  const lanes = useChatMachineLanes(ctoPin);
+  const [chooserOpen, setChooserOpen] = useState(false);
+  /**
+   * Whether the home machine's ADE can reach the account's other machines.
+   * Null until its snapshot answers; false for a build that predates it.
+   */
+  const [homeCrossMachine, setHomeCrossMachine] = useState<boolean | null>(null);
+  /** The CTO the page is showing now; a read answered for another is dropped. */
+  const lastCacheKeyRef = useRef(sessionCacheKey);
+  const isCurrentCto = (key: string) => lastCacheKeyRef.current === key;
 
-  const [session, setSession] = useState<AgentChatSession | null>(() => ctoPrimarySession);
+  const [session, setSession] = useState<AgentChatSession | null>(() => ctoPrimarySessions.get(sessionCacheKey) ?? null);
   const [error, setError] = useState<string | null>(null);
   // Bumped by "Try again" on the failure pane; re-runs the wake effect from a
   // clean retry budget instead of leaving the user stranded on the error.
@@ -57,7 +92,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const historyLoadedRef = useRef(false);
   const wakingRetriesRef = useRef(0);
 
-  const { availableModelIds, loadingModels, openProviderSettings } = useCtoModelOptions();
+  const { availableModelIds, loadingModels, openProviderSettings } = useCtoModelOptions(ctoPin);
 
   const primaryLaneId = useMemo(() => resolveCtoPrimaryLaneId(lanes), [lanes]);
 
@@ -82,26 +117,34 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   /* ── Data loading ── */
 
   const loadSummary = useCallback(async () => {
-    if (!window.ade?.cto) return;
+    if (!window.ade?.cto || !homeReady) return;
+    const key = sessionCacheKey;
     try {
-      const snapshot = await window.ade.cto.getState({ recentLimit: 0 });
-      setCtoIdentity(snapshot.identity);
+      const snapshot = await window.ade.cto.getState({ recentLimit: 0 }, ctoPin);
+      if (isCurrentCto(key)) {
+        setCtoIdentity(snapshot.identity);
+        setHomeCrossMachine(readCrossMachineCapability(snapshot));
+      }
     } catch {
       // Non-fatal: keep the waking state and let the session/lane effects retry.
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref
+  }, [ctoPin, homeReady, sessionCacheKey]);
 
   const loadHistory = useCallback(async () => {
-    if (!window.ade?.cto) return;
+    if (!window.ade?.cto || !homeReady) return;
+    const key = sessionCacheKey;
     try {
-      const snapshot = await window.ade.cto.getState({ recentLimit: 20 });
+      const snapshot = await window.ade.cto.getState({ recentLimit: 20 }, ctoPin);
+      if (!isCurrentCto(key)) return;
       setCtoIdentity(snapshot.identity);
       setSessionLogs(snapshot.recentSessions);
       historyLoadedRef.current = true;
     } catch {
       // non-fatal
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref
+  }, [ctoPin, homeReady, sessionCacheKey]);
 
   /**
    * Ask whether this thread is running out of room.
@@ -111,13 +154,31 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * an offer, not an alarm, so it does not need to be true to the second.
    */
   const loadThreadHealth = useCallback(async () => {
-    if (!window.ade?.cto?.getThreadHealth) return;
+    if (!window.ade?.cto?.getThreadHealth || !homeReady) return;
+    const key = sessionCacheKey;
     try {
-      setThreadHealth(await window.ade.cto.getThreadHealth());
+      const health = await window.ade.cto.getThreadHealth(ctoPin);
+      if (isCurrentCto(key)) setThreadHealth(health);
     } catch {
       // Non-fatal: no banner is better than an error about a banner.
     }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isCurrentCto reads a ref
+  }, [ctoPin, homeReady, sessionCacheKey]);
+
+  // A different home (or tab) is a different CTO. Drop everything read from
+  // the previous one before anything reads from the new one.
+  useEffect(() => {
+    if (lastCacheKeyRef.current === sessionCacheKey) return;
+    lastCacheKeyRef.current = sessionCacheKey;
+    setSession(ctoPrimarySessions.get(sessionCacheKey) ?? null);
+    setCtoIdentity(null);
+    setSessionLogs([]);
+    setThreadHealth(null);
+    setHomeCrossMachine(null);
+    setError(null);
+    historyLoadedRef.current = false;
+    wakingRetriesRef.current = 0;
+  }, [sessionCacheKey]);
 
   useEffect(() => {
     if (!active) return;
@@ -137,20 +198,21 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   // Ensure the persistent session. Re-runs when the primary lane hydrates (D6
   // race) so a slow lanes store shows the waking state, never an error card.
   useEffect(() => {
-    if (!active || !window.ade?.cto) return;
+    if (!active || !window.ade?.cto || !homeReady) return;
     if (!identityLoaded || needsModelPick || !primaryLaneId) return;
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    if (ctoPrimarySession) setSession(ctoPrimarySession);
+    const cached = ctoPrimarySessions.get(sessionCacheKey);
+    if (cached) setSession(cached);
     setError(null);
 
     const attempt = () => {
-      void window.ade.cto!.ensureSession()
+      void window.ade.cto!.ensureSession({}, ctoPin)
         .then((next) => {
           if (cancelled) return;
-          ctoPrimarySession = next;
+          ctoPrimarySessions.set(sessionCacheKey, next);
           wakingRetriesRef.current = 0;
           setSession(next);
         })
@@ -170,17 +232,17 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, identityLoaded, needsModelPick, primaryLaneId, wakeAttempt]);
+  }, [active, ctoPin, homeReady, identityLoaded, needsModelPick, primaryLaneId, sessionCacheKey, wakeAttempt]);
 
   /* ── Callbacks ── */
 
   const refreshSession = useCallback(async () => {
-    if (!window.ade?.cto || !primaryLaneId) return null;
-    const next = await window.ade.cto.ensureSession();
-    ctoPrimarySession = next;
+    if (!window.ade?.cto || !primaryLaneId || !homeReady) return null;
+    const next = await window.ade.cto.ensureSession({}, ctoPin);
+    ctoPrimarySessions.set(sessionCacheKey, next);
     setSession(next);
     return next;
-  }, [primaryLaneId]);
+  }, [ctoPin, homeReady, primaryLaneId, sessionCacheKey]);
 
   /**
    * Settings owns model selection for the CTO.
@@ -196,7 +258,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * durable record holding what the user picked rather than what they replaced.
    */
   const handleModelChange = useCallback(async (modelId: string, reasoningEffort: string | null) => {
-    if (!window.ade?.cto || switchingModel) return;
+    if (!window.ade?.cto || switchingModel || !homeReady) return;
     const selection = resolveModelSelection(modelId, reasoningEffort);
     if (!selection) return;
     // Fast mode is a property of the model, not of the picker: carrying a true
@@ -215,7 +277,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             reasoningEffort: selection.reasoningEffort,
           },
         },
-      });
+      }, ctoPin);
       if (session) {
         const modelUpdate = selection.modelId === session.modelId
           ? { reasoningEffort: selection.reasoningEffort }
@@ -225,20 +287,20 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           modelId: selection.modelId,
           ...modelUpdate,
           fastMode: nextFastMode,
-        });
-        ctoPrimarySession = updated;
+        }, ctoPin);
+        ctoPrimarySessions.set(sessionCacheKey, updated);
         setSession(updated);
       } else {
         await refreshSession();
       }
-      const snap = await window.ade.cto.getState({ recentLimit: 0 });
+      const snap = await window.ade.cto.getState({ recentLimit: 0 }, ctoPin);
       setCtoIdentity(snap.identity);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't switch the model.");
     } finally {
       setSwitchingModel(false);
     }
-  }, [currentFastMode, refreshSession, session, switchingModel]);
+  }, [ctoPin, currentFastMode, homeReady, refreshSession, session, sessionCacheKey, switchingModel]);
 
   /**
    * Save the name and the standing instructions.
@@ -247,24 +309,19 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * rather than patched — a merge here would drift from whatever the service
    * normalized on the way in.
    */
-  const handleIdentityChange = useCallback(async (patch: {
-    name?: string;
-    systemPromptExtension?: string;
-    voiceName?: string;
-    voiceBackchannels?: boolean;
-  }) => {
-    if (!window.ade?.cto) return;
+  const handleIdentityChange = useCallback(async (patch: CtoIdentityPatch) => {
+    if (!window.ade?.cto || !homeReady) return;
     setError(null);
     try {
-      const snapshot = await window.ade.cto.updateIdentity({ patch });
+      const snapshot = await window.ade.cto.updateIdentity({ patch }, ctoPin);
       setCtoIdentity(snapshot.identity);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't save the CTO's identity.");
     }
-  }, []);
+  }, [ctoPin, homeReady]);
 
   const handleFastModeChange = useCallback(async (enabled: boolean) => {
-    if (!window.ade?.cto || switchingModel) return;
+    if (!window.ade?.cto || switchingModel || !homeReady) return;
     setSwitchingModel(true);
     setError(null);
     try {
@@ -273,15 +330,15 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       const updated = await window.ade.agentChat.updateSession({
         sessionId: targetSession.id,
         fastMode: enabled,
-      });
-      ctoPrimarySession = updated;
+      }, ctoPin);
+      ctoPrimarySessions.set(sessionCacheKey, updated);
       setSession(updated);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't update Fast mode.");
     } finally {
       setSwitchingModel(false);
     }
-  }, [refreshSession, session, switchingModel]);
+  }, [ctoPin, homeReady, refreshSession, session, sessionCacheKey, switchingModel]);
 
   /**
    * Retire the thread and open a fresh one.
@@ -293,10 +350,11 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
   const handleStartFreshSession = useCallback(async (): Promise<CtoStartFreshSessionResult> => {
     const startFresh = window.ade?.cto?.startFreshSession;
     if (!startFresh) throw new Error("The CTO isn't available in this window.");
+    if (!homeReady) throw new Error("The CTO's machine isn't reachable right now.");
     setRotating(true);
     try {
-      const result = await startFresh();
-      ctoPrimarySession = null;
+      const result = await startFresh(ctoPin);
+      ctoPrimarySessions.delete(sessionCacheKey);
       setSession(null);
       setRotationDismissedFor(null);
       historyLoadedRef.current = false;
@@ -309,7 +367,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
     } finally {
       setRotating(false);
     }
-  }, [loadSummary, loadThreadHealth]);
+  }, [ctoPin, homeReady, loadSummary, loadThreadHealth, sessionCacheKey]);
 
   const lockedSessionSummary = useMemo<AgentChatSessionSummary | null>(() => {
     if (!session) return null;
@@ -361,11 +419,39 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
    * own. It is advice with a button, dismissible per thread, and it stays out
    * of the way while settings is the thing on screen.
    */
-  const showRotationPrompt = Boolean(threadHealth?.rotationAdvised)
+  const showRotationPrompt = homeReady
+    && Boolean(threadHealth?.rotationAdvised)
     && !settingsOpen
     && rotationDismissedFor !== (threadHealth?.sessionId ?? "none");
 
+  const showChooser = ctoHome.status === "choose" || chooserOpen;
+  const otherMachineCount = ctoHome.machines.filter((machine) => !machine.isThisMachine).length;
+  const homeLabel = ctoHome.homeName ?? "this machine";
+  const machineChipAction = useMemo<ComposerMachineChipAction>(() => ({
+    tooltip: `Runs on ${homeLabel}. Click to change.`,
+    offline: ctoHome.status === "offline",
+    // A home machine on an ADE build without the cross-machine tools answers
+    // "I can't reach other machines". Only worth saying when there are others.
+    // This computer runs the build that is showing this page, so the hint is
+    // only ever about another home machine.
+    note: homeCrossMachine === false && otherMachineCount > 0 && ctoHome.home?.isThisMachine !== true
+      ? `Update ADE on ${homeLabel} to let the CTO reach your other machines.`
+      : null,
+    onClick: () => {
+      setSettingsOpen(false);
+      setChooserOpen(true);
+    },
+  }), [ctoHome.home?.isThisMachine, ctoHome.status, homeCrossMachine, homeLabel, otherMachineCount]);
+  const homeScope = useMemo<CtoHomeScope>(
+    () => ({ pin: ctoPin, machineName: ctoHome.homeName, ready: homeReady }),
+    [ctoHome.homeName, ctoPin, homeReady],
+  );
+  // Voice runs through this computer's main process and cannot be routed, so
+  // it is offered only when the CTO lives on the tab's own machine.
+  const voiceAvailable = homeReady && ctoPin == null;
+
   return (
+    <CtoHomeProvider scope={homeScope}>
     <div className={cn(shellBodyCls, "relative flex-col")}>
       {/* Header */}
       <div className="flex shrink-0 flex-col">
@@ -379,10 +465,12 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             <span className="truncate text-[13px] font-semibold text-fg">{ctoDisplayName}</span>
           </div>
 
+
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            <CtoTalkButton onNotice={setTalkNotice} />
+            {voiceAvailable ? <CtoTalkButton onNotice={setTalkNotice} /> : null}
             <button
               type="button"
+              disabled={!homeReady}
               onClick={() => setSettingsOpen(true)}
               aria-label="CTO settings"
               className={cn(
@@ -406,7 +494,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         />
       ) : null}
 
-      {settingsOpen ? (
+      {settingsOpen && homeReady && !showChooser ? (
         <CtoSettingsPage
           active={active}
           identity={ctoIdentity}
@@ -422,14 +510,35 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
           onOpenProviderSettings={openProviderSettings}
           onStartFreshSession={handleStartFreshSession}
           onIdentityChange={(patch) => void handleIdentityChange(patch)}
+          crossMachineAvailable={homeCrossMachine === true}
           onClose={() => setSettingsOpen(false)}
         />
       ) : null}
 
       {/* Thread / waking */}
-      <div className={cn("min-h-0 flex-1 overflow-hidden", settingsOpen && "hidden")}>
+      <div className={cn("min-h-0 flex-1 overflow-hidden", settingsOpen && homeReady && !showChooser && "hidden")}>
         {bridgeMissing ? (
           <WakingState title="The CTO isn't available" subtitle="Reopen ADE to reconnect." />
+        ) : showChooser ? (
+          <CtoHomeChooser
+            machines={ctoHome.machines}
+            suggested={ctoHome.suggested}
+            current={chooserOpen ? ctoHome.home : null}
+            currentName={chooserOpen ? ctoHome.homeName : null}
+            onChoose={async (machine) => {
+              await ctoHome.choose(machine);
+              setChooserOpen(false);
+            }}
+            onCancel={chooserOpen ? () => setChooserOpen(false) : undefined}
+          />
+        ) : ctoHome.status === "loading" ? (
+          <WakingState title="Opening the CTO" pulsing />
+        ) : ctoHome.status === "offline" ? (
+          <WakingState
+            title={`The CTO runs on ${ctoHome.homeName ?? "another machine"}`}
+            subtitle={`${ctoHome.offlineReason ?? "It can't be reached right now."} Its memory, team and thread are safe there, and the CTO picks up where it left off once it's back.`}
+            action={{ label: "Run it somewhere else", onClick: () => setChooserOpen(true) }}
+          />
         ) : needsModelPick ? (
           <ModelPickCard
             availableModelIds={availableModelIds}
@@ -442,6 +551,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
         ) : sessionReady && lockedSessionSummary && primaryLaneId ? (
           <AgentChatPane
             laneId={primaryLaneId}
+            // The CTO's thread lives on its home machine; send, history and the
+            // drawer must stay there rather than follow the tab's binding.
+            runtimePin={ctoPin}
             lockSessionId={session?.id ?? null}
             lockSessionProvider={lockedSessionSummary.provider ?? null}
             initialSessionSummary={lockedSessionSummary}
@@ -451,6 +563,9 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
             hideWorkspaceChrome
             hideSurfaceHeader
             presentation={presentation}
+            // The chip that says where this chat runs is where the CTO's home
+            // machine is changed; the header does not repeat it.
+            machineChipAction={machineChipAction}
           />
         ) : error ? (
           <WakingState
@@ -475,6 +590,7 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
       </div>
 
     </div>
+    </CtoHomeProvider>
   );
 }
 

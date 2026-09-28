@@ -30,6 +30,7 @@ import {
   parseGrokCredits,
   parseKimiIdentity,
   parseKimiUsage,
+  parseOpenCodeConsoleGoStatus,
   parseOpenCodeGoUsage,
   stringField,
 } from "./providerQuotaParsers";
@@ -43,9 +44,21 @@ const COPILOT_USAGE_URL = "https://api.github.com/copilot_internal/user";
 const COPILOT_USER_URL = "https://api.github.com/user";
 const GROK_BILLING_URL = "https://cli-chat-proxy.grok.com/v1/billing?format=credits";
 const OPENCODE_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+const OPENCODE_CONSOLE_GO_STATUS_URL = "https://opencode.ai/console/api/go/status";
 const FACTORY_SESSIONS_URL = "https://api.factory.ai/api/v0/sessions";
 
 type QuotaFetch = (input: string, init?: RequestInit) => Promise<Response>;
+
+/**
+ * The OpenCode CLI's own console login, kept in `opencode.db`: the session
+ * token that reads the Go subscription meters, the workspace it is scoped to,
+ * and the account email for display.
+ */
+export type OpenCodeConsoleAccount = {
+  accessToken: string;
+  orgId: string | null;
+  email: string | null;
+};
 
 export type ExtraQuotaIo = {
   nowMs?: number;
@@ -57,6 +70,7 @@ export type ExtraQuotaIo = {
   readCursorSession?: (dbPath: string) => Promise<{ token: string | null; unreadable: boolean }>;
   readGhToken?: (force: boolean) => Promise<string | null>;
   readFactoryApiKey?: () => string | null;
+  readOpenCodeConsoleAccount?: (dbPath: string, nowMs: number) => Promise<OpenCodeConsoleAccount | null>;
 };
 
 type ResolvedIo = {
@@ -69,6 +83,7 @@ type ResolvedIo = {
   readCursorSession: (dbPath: string) => Promise<{ token: string | null; unreadable: boolean }>;
   readGhToken: (force: boolean) => Promise<string | null>;
   readFactoryApiKey: () => string | null;
+  readOpenCodeConsoleAccount: (dbPath: string, nowMs: number) => Promise<OpenCodeConsoleAccount | null>;
 };
 
 function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
@@ -82,6 +97,7 @@ function resolveIo(io: ExtraQuotaIo = {}): ResolvedIo {
     readCursorSession: io.readCursorSession ?? readCursorSessionToken,
     readGhToken: io.readGhToken ?? readCachedGhAuthToken,
     readFactoryApiKey: io.readFactoryApiKey ?? readStoredFactoryApiKey,
+    readOpenCodeConsoleAccount: io.readOpenCodeConsoleAccount ?? readOpenCodeConsoleAccountFromDisk,
   };
 }
 
@@ -177,6 +193,12 @@ export function openCodeAuthPaths(io: Pick<ResolvedIo, "homeDir" | "platform" | 
     .map((dir) => path.join(dir, "auth.json"));
 }
 
+/** OpenCode's `opencode.db` candidates, the store its console account lives in. */
+export function openCodeConsoleDbPaths(io: Pick<ResolvedIo, "homeDir" | "platform" | "env">): string[] {
+  return openCodeDataDirs({ env: io.env, homeDir: io.homeDir, platform: io.platform })
+    .map((dir) => path.join(dir, "opencode.db"));
+}
+
 function sqliteText(value: unknown): string | null {
   if (typeof value === "string") {
     const text = value.replace(/\0/g, "").trim();
@@ -252,6 +274,65 @@ export async function readCursorSessionToken(dbPath: string): Promise<{ token: s
     return { token: null, unreadable: true };
   } finally {
     db?.close();
+  }
+}
+
+/**
+ * The OpenCode CLI's console account, read from the `account` table of its
+ * `opencode.db`.
+ *
+ * `auth.json` holds provider credentials (an Anthropic or OpenAI OAuth login),
+ * never the OpenCode subscription itself. The Go plan is the console session:
+ * `account.access_token` + `account_state.active_org_id` are what OpenCode sends
+ * to `opencode.ai/console/api/go/status`. A token past its own `token_expiry` is
+ * skipped rather than refreshed — ADE does not own the login, and OpenCode will
+ * refresh it on its next run. Only the three fields the request and display need
+ * are read; the token is never logged. An `opencode.db` that is missing,
+ * locked, or shaped differently reads as no account (never an error).
+ */
+export async function readOpenCodeConsoleAccountFromDisk(
+  dbPath: string,
+  nowMs: number,
+): Promise<OpenCodeConsoleAccount | null> {
+  try {
+    await access(dbPath);
+  } catch {
+    return null;
+  }
+  let db: DatabaseSync | null = null;
+  try {
+    db = openReadOnlyDatabase(dbPath);
+    // A running OpenCode may hold the write lock; answer at once rather than wait.
+    db.exec("PRAGMA busy_timeout = 0");
+    // Same rule `readOpenCodePlanEmail` uses: the active account first, else the
+    // most recently updated one, so a multi-account install reads the login
+    // OpenCode is actually on.
+    const account = db.prepare(`
+      SELECT a.access_token AS accessToken, a.token_expiry AS tokenExpiry, a.email AS email
+        FROM account a
+        LEFT JOIN account_state s ON s.active_account_id = a.id
+       ORDER BY (s.active_account_id IS NOT NULL) DESC, a.time_updated DESC
+       LIMIT 1
+    `).get() as { accessToken?: unknown; tokenExpiry?: unknown; email?: unknown } | undefined;
+    const accessToken = sqliteText(account?.accessToken ?? null);
+    if (!accessToken) return null;
+    const expiry = finiteNumberOrNull(account?.tokenExpiry);
+    if (expiry != null && expiry <= nowMs + 60_000) return null;
+    const state = db.prepare("SELECT active_org_id AS orgId FROM account_state LIMIT 1")
+      .get() as { orgId?: unknown } | undefined;
+    return {
+      accessToken,
+      orgId: sqliteText(state?.orgId ?? null),
+      email: sqliteText(account?.email ?? null),
+    };
+  } catch {
+    return null;
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // Closing a read-only handle cannot lose anything.
+    }
   }
 }
 
@@ -573,13 +654,35 @@ export async function pollOpenCodeQuota(
       if (key) break;
     }
   }
-  if (!key) return notSignedIn();
-  const response = await fetchJson(resolved.fetchImpl, OPENCODE_USAGE_URL, {
-    Authorization: `Bearer ${key}`,
-    Accept: "application/json",
-  });
-  if (!response.ok) return httpFailure("opencode", response);
-  return freshResult("opencode", parseOpenCodeGoUsage(response.body, resolved.nowMs), {}, "usage response had no windows");
+  if (key) {
+    const response = await fetchJson(resolved.fetchImpl, OPENCODE_USAGE_URL, {
+      Authorization: `Bearer ${key}`,
+      Accept: "application/json",
+    });
+    if (!response.ok) return httpFailure("opencode", response);
+    return freshResult("opencode", parseOpenCodeGoUsage(response.body, resolved.nowMs), {}, "usage response had no windows");
+  }
+  // No API key. The Go plan rides on the OpenCode CLI's own console login, so
+  // read that account out of `opencode.db` and use the console meters.
+  for (const dbPath of openCodeConsoleDbPaths(resolved)) {
+    const account = await resolved.readOpenCodeConsoleAccount(dbPath, resolved.nowMs);
+    if (!account) continue;
+    const response = await fetchJson(resolved.fetchImpl, OPENCODE_CONSOLE_GO_STATUS_URL, {
+      Authorization: `Bearer ${account.accessToken}`,
+      Accept: "application/json",
+      ...(account.orgId ? { "x-org-id": account.orgId } : {}),
+    });
+    if (!response.ok) return httpFailure("opencode", response);
+    const windows = parseOpenCodeConsoleGoStatus(response.body, resolved.nowMs, account.email);
+    // A console account without a Go plan answers `access: null`: a signed-in
+    // machine that simply has no subscription, so no row rather than an error.
+    // A 200 that is malformed instead — no `access` key at all — is a bad
+    // response, not a sign-out, so it falls through to `freshResult` and the
+    // coordinator keeps the last unexpired windows instead of clearing them.
+    if (windows.length === 0 && asRecord(response.body)?.access === null) return notSignedIn();
+    return freshResult("opencode", windows, { email: account.email }, "usage response had no windows");
+  }
+  return notSignedIn();
 }
 
 /** Returns one completed Droid session's provider-recorded Factory credits. */

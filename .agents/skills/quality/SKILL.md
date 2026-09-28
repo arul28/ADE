@@ -39,6 +39,11 @@ Both tracks run **in parallel**. Reviewers **return findings** (severity +
 `file:line` + evidence + proposed fix); they do **not** apply fixes — the
 synthesis step owns all edits so dedupe and severity-gating happen in one place.
 
+- **Subagent limits.** Follow the **Subagents** rules in `AGENTS.md`. A track
+  agent is a leaf: it reviews its track itself and does not start parallel
+  reviewers or other subagents. Put that sentence in each track's brief. When
+  the user has asked to limit agents, run both tracks yourself, one after the
+  other, and the delta re-reviews in step 7 are always yours.
 - **Any runtime** — spawn one agent per track; the lead runs synthesis.
 - **Claude Code with agent teams** (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`,
   already set in `.claude/settings.json`) — realize the tracks as a team, one

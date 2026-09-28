@@ -11,6 +11,7 @@ import {
   type ChatSources,
 } from "../../../shared/chatSources";
 import { useSeenOnScreen, useSourceFavicon } from "./useSourceFavicon";
+import { SectionHeader } from "./ChatSubagentsPanel";
 
 const GROUP_ORDER: ReadonlyArray<{ group: ChatSourceGroup; label: string }> = [
   { group: "cited", label: "Cited" },
@@ -101,14 +102,6 @@ function SourceRow({ source }: { source: ChatSource }) {
           <span className="min-w-0 truncate font-sans text-[12px] font-medium text-fg/82">{source.title}</span>
           {inline && subtitle ? (
             <span className="max-w-[45%] shrink-0 truncate font-sans text-[10.5px] text-muted-fg/45">{subtitle}</span>
-          ) : null}
-          {source.cited ? (
-            <span
-              className="shrink-0 rounded-[3px] border border-cyan-300/20 px-1 font-sans text-[9px] font-semibold uppercase leading-[14px] tracking-[0.06em] text-cyan-200/65"
-              data-testid="chat-source-cited"
-            >
-              cited
-            </span>
           ) : null}
         </span>
         {!inline && subtitle ? (
@@ -204,6 +197,7 @@ export function ChatSourcesPanel({
   // Expanded groups, per view: the whole chat and each turn keep their own.
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const viewKey = turnSources ? `turn:${turnId}` : "all";
+  const [collapsed, setCollapsed] = useState(false);
 
   // Opened from a turn's chip: bring the section into view inside the drawer.
   useEffect(() => {
@@ -220,22 +214,29 @@ export function ChatSourcesPanel({
   }
 
   return (
-    <section ref={rootRef} className="px-4 py-3" data-testid="chat-sources-panel">
-      <div className="flex items-center gap-2">
-        <span className="font-sans text-[12px] font-semibold text-fg/80">Sources</span>
-        <span className="font-mono text-[10px] tabular-nums text-fg/35">{list.length}</span>
-        {turnSources ? (
+    <section ref={rootRef} className="pb-3" data-testid="chat-sources-panel">
+      <SectionHeader
+        label="Sources"
+        hint={String(list.length)}
+        tone="sources"
+        emphasized
+        sticky
+        collapsible
+        collapsed={collapsed}
+        onToggle={() => setCollapsed((current) => !current)}
+        action={turnSources ? (
           <button
             type="button"
             onClick={onShowAll}
-            className="ml-auto rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-white/[0.04] hover:text-fg/75"
+            className="rounded px-1.5 py-0.5 font-sans text-[10.5px] text-fg/45 transition-colors hover:bg-white/[0.04] hover:text-fg/75"
             data-testid="chat-sources-show-all"
           >
             This turn · Show all
           </button>
-        ) : null}
-      </div>
-      <div className="mt-2 space-y-3">
+        ) : undefined}
+      />
+      {collapsed ? null : (
+      <div className="mt-1 space-y-3 px-4">
         {GROUP_ORDER.map(({ group, label }) => {
           const items = grouped.get(group);
           if (!items?.length) return null;
@@ -257,6 +258,7 @@ export function ChatSourcesPanel({
           );
         })}
       </div>
+      )}
     </section>
   );
 }

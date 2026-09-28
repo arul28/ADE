@@ -1,8 +1,10 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import type { ConflictFileType } from "../../../shared/types";
+import { GIT_UNTRUSTED_FOLDER_CODE } from "../../../shared/codedError";
 import { terminateProcessTree } from "../shared/processExecution";
 import { pathKey } from "../shared/pathCompare";
 import {
@@ -15,6 +17,16 @@ import {
   isRefAffectingGitCommand,
   type GitRepoCacheClass,
 } from "./gitRepoCache";
+import {
+  gitOwnershipMessage,
+  gitOwnershipReason,
+  gitSafeDirectorySpec,
+  gitSafeDirectorySpecsEqual,
+  parseGitOwnershipError,
+  type GitOwnershipProblem,
+} from "../../../../../ade-cli/src/services/projects/gitOwnership";
+
+export { gitOwnershipReason, gitSafeDirectorySpec, parseGitOwnershipError, type GitOwnershipProblem };
 
 // Electron apps launched from Finder/Dock can have a stripped PATH that misses
 // where the user actually installed git (e.g. /opt/homebrew/bin on Apple
@@ -126,6 +138,8 @@ export type GitRunOptions = {
   onStderrLine?: (line: string) => void;
   /** Aborting kills the git process tree; the result reports exit code 130. */
   signal?: AbortSignal;
+  /** Written to git's stdin, which is then closed (e.g. `check-ignore --stdin`). */
+  stdin?: string;
 };
 
 export type GitRunResult = {
@@ -264,12 +278,17 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     const child = spawn(executable, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...(opts.env ?? {}) },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
     if (typeof child.pid === "number" && child.pid > 0) {
       activeGitPids.add(child.pid);
     }
+    // Closed at once: git sees EOF on stdin exactly as it did with "ignore",
+    // unless the caller has input for it (`check-ignore --stdin`). EPIPE when
+    // git exits before reading it all is reported by the exit code instead.
+    child.stdin.on("error", () => {});
+    child.stdin.end(opts.stdin ?? "");
 
     let settled = false;
     let stdout = "";
@@ -575,14 +594,81 @@ export async function runGitOrThrow(args: string[], opts: GitRunOptions): Promis
   const res = await runGit(args, opts);
   if (res.exitCode !== 0) {
     const raw = res.stderr.trim() || res.stdout.trim() || `git ${args.join(" ")} failed`;
+    const ownership = describeGitOwnershipProblem(raw);
+    if (ownership) throw new GitUntrustedFolderError(ownership);
     throw new Error(formatGitExecutionError(raw));
   }
   return res.stdout;
 }
 
 export function formatGitExecutionError(raw: string): string {
+  const ownership = describeGitOwnershipProblem(raw);
+  if (ownership) return gitOwnershipMessage(ownership);
   if (!/not agreed to the Xcode license agreements/i.test(raw)) return raw;
   return "ADE needs Git to open and manage this project. macOS blocked Apple's Git because the Xcode license has not been accepted. This is a Git requirement, not an ADE iOS Simulator or code-signing requirement. In Terminal, run `sudo xcodebuild -license`, or install Git separately (for example with Homebrew) and restart ADE.";
+}
+
+/**
+ * Git refused a repository whose folder belongs to another account. Carries
+ * the folder so the one flow allowed to fix it — the user opening that folder —
+ * can ask them and call {@link trustGitSafeDirectory}. Everything else only
+ * shows the message.
+ */
+export class GitUntrustedFolderError extends Error {
+  readonly code = GIT_UNTRUSTED_FOLDER_CODE;
+  readonly problem: GitOwnershipProblem;
+  constructor(problem: GitOwnershipProblem) {
+    super(gitOwnershipMessage(problem));
+    this.name = "GitUntrustedFolderError";
+    this.problem = problem;
+  }
+}
+
+export function gitUntrustedFolderProblem(error: unknown): GitOwnershipProblem | null {
+  if (error instanceof GitUntrustedFolderError) return error.problem;
+  return null;
+}
+
+/**
+ * {@link parseGitOwnershipError}, plus the owner POSIX git leaves out when it
+ * is cheap to know: a folder owned by root (made with sudo) says so. Only a
+ * stat — no user-database or PowerShell lookup on this path.
+ */
+export function describeGitOwnershipProblem(raw: string): GitOwnershipProblem | null {
+  const problem = parseGitOwnershipError(raw);
+  if (!problem || problem.owner || process.platform === "win32") return problem;
+  try {
+    if (fs.statSync(problem.path).uid === 0) return { ...problem, owner: "root" };
+  } catch {
+    // The folder is gone or unreadable; git's path is still the answer.
+  }
+  return problem;
+}
+
+/**
+ * Add one folder to the user's global `safe.directory` list — only ever called
+ * after the user said yes to trusting that folder. Idempotent: an entry that
+ * already names it (case-insensitively for Windows paths) is left alone rather
+ * than duplicated. Runs from the home directory, never inside the refused repo.
+ */
+export async function trustGitSafeDirectory(repoPath: string): Promise<{ spec: string; added: boolean }> {
+  const spec = gitSafeDirectorySpec(repoPath);
+  if (!spec || spec === "*") throw new Error("ADE only trusts a specific folder.");
+  const opts: GitRunOptions = { cwd: os.homedir(), timeoutMs: 10_000 };
+  const listed = await runGit(["config", "--global", "--get-all", "safe.directory"], opts);
+  // Exit 1 means the key is not set at all, which is fine.
+  if (listed.exitCode !== 0 && listed.exitCode !== 1) {
+    throw new Error(`ADE could not read your Git settings: ${listed.stderr.trim() || `exit ${listed.exitCode}`}`);
+  }
+  const existing = listed.stdout.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean);
+  if (existing.some((entry) => gitSafeDirectorySpecsEqual(entry, spec))) {
+    return { spec, added: false };
+  }
+  const added = await runGit(["config", "--global", "--add", "safe.directory", spec], opts);
+  if (added.exitCode !== 0) {
+    throw new Error(`ADE could not update your Git settings: ${added.stderr.trim() || `exit ${added.exitCode}`}`);
+  }
+  return { spec, added: true };
 }
 
 /**

@@ -26,3 +26,18 @@ npm --prefix apps/desktop run build:capture-helper:win  # Windows, cl.exe or min
 Unlike the notch, these ship through a **top-level** `build.extraResources`
 entry filtered to the two names, so one entry covers both platforms and the
 package only ever contains the helper its own build produced.
+
+## Demo engine
+
+`ade-media` (macOS only, `native/ADEMedia`) analyzes a raw recording and
+renders its demo plan into the filed MP4 (see
+`src/shared/demoVideo/demoContract.ts`). It ships through the same top-level
+`resources/native` entry as the capture and simulator helpers:
+
+```bash
+npm --prefix apps/desktop run build:ade-media   # resources/native/ade-media
+npm --prefix apps/desktop run test:ade-media
+```
+
+Off macOS the chromium engine renders demos instead, so there is no Windows
+build.

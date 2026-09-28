@@ -709,6 +709,43 @@ describe("ProjectScopeRegistry", () => {
   });
 });
 
+describe("ProjectScopeRegistry stream release", () => {
+  it("releases viewers on every booted project when a sync socket closes", async () => {
+    createAdeRuntimeMock.mockReset();
+    const { registry, first, second } = createRegistry();
+    const releases: Array<ReturnType<typeof vi.fn>> = [];
+    let releaseSocket: ((connectionId: string) => void) | undefined;
+    createAdeRuntimeMock.mockImplementation(async (args: {
+      projectRoot: string;
+      syncRuntime?: { remoteCommandExecutor?: { releaseStreamConnection?: (connectionId: string) => void } };
+    }) => {
+      releaseSocket = args.syncRuntime?.remoteCommandExecutor?.releaseStreamConnection;
+      const releaseStreamConnection = vi.fn();
+      releases.push(releaseStreamConnection);
+      return {
+        dispose: vi.fn(),
+        syncService: { releaseStreamConnection },
+        projectRoot: args.projectRoot,
+      };
+    });
+    const scopeRegistry = new ProjectScopeRegistry(registry, {
+      syncRuntime: { enabled: true },
+    });
+
+    await scopeRegistry.get(first.projectId);
+    await scopeRegistry.get(second.projectId);
+    expect(releaseSocket).toBeTypeOf("function");
+    releaseSocket!("conn-9");
+    await vi.waitFor(() => {
+      expect(releases).toHaveLength(2);
+      expect(releases[0]).toHaveBeenCalledWith("conn-9");
+      expect(releases[1]).toHaveBeenCalledWith("conn-9");
+    });
+
+    await scopeRegistry.disposeAll();
+  });
+});
+
 describe("ProjectScopeRegistry.adoptRequestedSyncHost", () => {
   beforeEach(() => {
     createAdeRuntimeMock.mockReset();

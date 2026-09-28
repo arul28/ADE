@@ -4,20 +4,26 @@
  *
  * Images ride the `ade-artifact:` scheme, which the renderer CSP allows:
  *
- *   ade-artifact://project/<path>                          this computer
+ *   ade-artifact://project/<path>?root=<project root>      this computer
  *
  * Videos come from main's loopback media server instead. Electron's
  * `protocol.handle` cannot answer the second Range read a `<video>` makes when
  * the index sits at the end of the file, so a long recording never loads
  * there. The server's base is `http://127.0.0.1:<port>/<token>`:
  *
- *   <base>/project/<path>                                  this computer
+ *   <base>/project/<path>?root=<project root>              this computer
  *   <base>/remote/<targetId>/<projectId>/<path>            a paired computer
  *
  * `<path>` is always project-relative, one encoded segment at a time. It can
  * never hold `..` or `.`. That rule is only a first gate: the machine that
  * holds the bytes still resolves the path inside its own `.ade/artifacts` and
  * refuses anything that lands outside it.
+ *
+ * `root` names the project the proof belongs to (the chat's project, not the
+ * focused window's). Main serves it only when that root is a project open on
+ * this computer, and jails the path inside that project's `.ade/artifacts`.
+ * A URL without `root` (an older stored uri) resolves against the focused
+ * project, as before.
  */
 
 import { foldsCase, pathFlavorOf } from "./pathCase";
@@ -115,27 +121,55 @@ function encodePath(relativePath: string): string {
   return relativePath.split("/").map(encodeURIComponent).join("/");
 }
 
-/** The streaming URL for a proof on this computer, or null when it has none. */
-export function localArtifactStreamUrl(uri: string, projectRoot: string | null | undefined): string | null {
-  const relative = projectRelativeArtifactPath(uri, projectRoot);
-  return relative ? `ade-artifact://project/${encodePath(relative)}` : null;
+/** `?root=<root>` naming the proof's project, or nothing when there is no root. */
+function rootQuery(projectRoot: string | null | undefined): string {
+  const root = projectRoot?.trim();
+  return root ? `?root=${encodeURIComponent(root)}` : "";
 }
 
 /**
- * The `<img>` source for a stored proof image on this computer: an
- * `ade-artifact://` uri as is, a project-relative path as its stream URL.
- * With no project root, an absolute path or a web URL answers null.
+ * The project root a served URL names in its `root` query, or null. Takes the
+ * query string with or without its `?`.
  */
-export function artifactImageSrc(uri: string | null | undefined): string | null {
+export function artifactUrlProjectRoot(search: string | null | undefined): string | null {
+  const query = (search ?? "").replace(/^\?/, "");
+  if (!query) return null;
+  try {
+    const root = new URLSearchParams(query).get("root")?.trim();
+    return root || null;
+  } catch {
+    return null;
+  }
+}
+
+/** The streaming URL for a proof on this computer, or null when it has none. */
+export function localArtifactStreamUrl(uri: string, projectRoot: string | null | undefined): string | null {
+  const relative = projectRelativeArtifactPath(uri, projectRoot);
+  return relative ? `ade-artifact://project/${encodePath(relative)}${rootQuery(projectRoot)}` : null;
+}
+
+/**
+ * The `<img>` source for a stored proof image on this computer. With the
+ * proof's project root, any uri inside that project becomes a stream URL that
+ * names the project. Without one, an `ade-artifact://` uri stays as is and a
+ * project-relative path resolves against the focused project. A web URL, and
+ * an absolute path outside the root, answer null (or the `ade-artifact://`
+ * uri unchanged).
+ */
+export function artifactImageSrc(
+  uri: string | null | undefined,
+  projectRoot?: string | null,
+): string | null {
   const text = uri?.trim();
   if (!text) return null;
-  if (/^ade-artifact:\/\//i.test(text)) return text;
-  return localArtifactStreamUrl(text, null);
+  const stream = localArtifactStreamUrl(text, projectRoot ?? null);
+  if (stream) return stream;
+  return /^ade-artifact:\/\//i.test(text) ? text : null;
 }
 
 /** Where a media server path points, after the token. */
 export type ArtifactMediaTarget =
-  | { kind: "project"; relativePath: string }
+  | { kind: "project"; relativePath: string; projectRoot: string | null }
   | { kind: "remote"; targetId: string; projectId: string; relativePath: string };
 
 function withMediaBase(base: string, tail: string): string {
@@ -149,7 +183,9 @@ export function localArtifactMediaUrl(
   projectRoot: string | null | undefined,
 ): string | null {
   const relative = projectRelativeArtifactPath(uri, projectRoot);
-  return relative && base.trim() ? withMediaBase(base, `project/${encodePath(relative)}`) : null;
+  return relative && base.trim()
+    ? withMediaBase(base, `project/${encodePath(relative)}${rootQuery(projectRoot)}`)
+    : null;
 }
 
 /** The media server URL for a video on a paired computer, or null when it has none. */
@@ -186,12 +222,15 @@ function strictRelativePath(parts: string[]): string | null {
  * a different target instead of a refusal.
  */
 export function parseArtifactMediaPath(pathAfterToken: string): ArtifactMediaTarget | null {
-  const rest = (pathAfterToken.split(/[?#]/, 1)[0] ?? "").replace(/^\/+/, "");
+  const withoutHash = pathAfterToken.split("#", 1)[0] ?? "";
+  const queryAt = withoutHash.indexOf("?");
+  const rest = (queryAt < 0 ? withoutHash : withoutHash.slice(0, queryAt)).replace(/^\/+/, "");
   const parts = rest.split("/");
   const kind = parts.shift();
   if (kind === "project") {
     const relativePath = strictRelativePath(parts);
-    return relativePath ? { kind: "project", relativePath } : null;
+    const projectRoot = queryAt < 0 ? null : artifactUrlProjectRoot(withoutHash.slice(queryAt));
+    return relativePath ? { kind: "project", relativePath, projectRoot } : null;
   }
   if (kind !== "remote" || parts.length < 3) return null;
   let targetId: string;

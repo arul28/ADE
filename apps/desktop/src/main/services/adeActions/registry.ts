@@ -29,9 +29,14 @@ import {
 import type { CtoVoiceAction } from "../../../shared/types/ctoVoice";
 import {
   deleteMachineApiKey,
+  getApiCredentialSummary,
   getMachineApiKeyStatus,
+  listApiCredentials,
+  removeApiCredential,
+  storeApiCredential,
   storeMachineApiKey,
 } from "../ai/apiKeyStore";
+import type { ApiCredentialStoreArgs } from "../../../shared/types/apiCredentials";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
@@ -75,6 +80,8 @@ import type {
   PromptStashDeleteArgs,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
+import { isAcpChatProvider } from "../../../shared/types/chat";
+import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
 import { stripHostOnlyChatMetadata } from "../../../shared/chatAutoResume";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import type { LinearIngressStatus } from "../automations/linearIngressService";
@@ -220,6 +227,7 @@ export {
   isAllowedAdeAction,
   isAutomationAllowedAdeAction,
   isCtoOnlyAdeAction,
+  isSecretBearingAdeAction,
   isUserOnlyAdeAction,
   listAllowedAdeActionNames,
   scopeAccountStatusForRole,
@@ -2079,6 +2087,24 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       clearOpenCodeProviderKey(buildOpenCodeAuthDeps(), {
         providerId: requireNonEmptyString(args?.providerId, "providerId"),
       }),
+    // Diagnostics and the updater report on the CLIs installed on the machine
+    // this runtime runs on. Exposed as actions so Settings can show (and
+    // update) another machine's install through that machine's own runtime,
+    // rather than reading This computer's answer and labelling it theirs.
+    acpProviderDiagnostics: (args?: { provider?: string; runDoctor?: boolean }) => {
+      const provider = args?.provider;
+      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
+      return collectAcpProviderDiagnostics({
+        provider,
+        cwd: runtime.projectRoot,
+        ...(args?.runDoctor === true ? { runDoctor: true } : {}),
+      });
+    },
+    acpProviderUpdate: (args?: { provider?: string }) => {
+      const provider = args?.provider;
+      if (!isAcpChatProvider(provider)) throw new Error("provider must be one of qwen, kimi, grok, copilot, devin.");
+      return runAcpProviderUpdate({ provider, cwd: runtime.projectRoot });
+    },
     piLoginProviders: () => listPiLoginProviders(),
     piLoginStart: async (args?: { providerId?: string; method?: "oauth" | "api_key" }) => {
       const providerId = requireNonEmptyString(args?.providerId, "providerId");
@@ -2147,8 +2173,10 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       return { lastFetchedAt: getModelsDevLastFetchedAt() };
     },
     getOpenCodeRuntimeDiagnostics: async () => {
-      const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
-      return getOpenCodeRuntimeSnapshot();
+      const { getOpenCodeRuntimeDiagnostics } = await import("../opencode/openCodeServer");
+      const { servers } = getOpenCodeRuntimeDiagnostics();
+      const sharedCount = servers.filter((server) => server.shared).length;
+      return { sharedCount, dedicatedCount: servers.length - sharedCount, entries: servers };
     },
     isOpenCodeInstalled: async () => {
       const { resolveOpenCodeBinary } = await import("../opencode/openCodeBinaryManager");
@@ -2165,6 +2193,35 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     deleteApiKey: (args?: { provider?: string }) =>
       aiIntegrationService.deleteApiKey(requireNonEmptyString(args?.provider, "provider")),
     listApiKeys: () => aiIntegrationService.listApiKeys(),
+    // The multi-key credential store, as the desktop's `apiCredentials` IPC
+    // exposes it, so Settings can list and edit another machine's keys through
+    // that machine's own runtime. Summaries only; a key value never comes back.
+    listApiCredentials: (args?: { provider?: string }) =>
+      listApiCredentials(typeof args?.provider === "string" && args.provider ? args.provider : undefined),
+    getApiCredential: (args?: { provider?: string; credentialId?: string }) =>
+      getApiCredentialSummary(
+        requireNonEmptyString(args?.provider, "provider"),
+        typeof args?.credentialId === "string" && args.credentialId ? args.credentialId : undefined,
+      ),
+    storeApiCredential: (args?: Partial<ApiCredentialStoreArgs>) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      const credentialId = storeApiCredential({
+        ...(args as ApiCredentialStoreArgs),
+        provider,
+        label: typeof args?.label === "string" ? args.label : "",
+        key: requireNonEmptyString(args?.key, "key"),
+      });
+      invalidateReadiness(provider);
+      return getApiCredentialSummary(provider, credentialId);
+    },
+    removeApiCredential: (args?: { provider?: string; credentialId?: string }) => {
+      const provider = requireNonEmptyString(args?.provider, "provider");
+      removeApiCredential(
+        provider,
+        typeof args?.credentialId === "string" && args.credentialId ? args.credentialId : undefined,
+      );
+      invalidateReadiness(provider);
+    },
     /*
      * Machine-scoped keys, on the runtime.
      *

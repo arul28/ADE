@@ -34,6 +34,9 @@ import {
   sortRebaseHistoryOperations,
 } from "./rebaseWorkflowModel";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
+import { useWorkflowMachines, type WorkflowMachines } from "../state/workflowMachines";
+import { machineBlockedReason, pinArg } from "../../../state/laneMachineRouting";
+import { MachineChip } from "../../shared/MachineChip";
 
 const CATEGORY_THEMES = {
   integration: { color: "#8B5CF6", bg: "rgba(139, 92, 246, 0.08)", border: "rgba(139, 92, 246, 0.20)", bgSubtle: "rgba(139, 92, 246, 0.04)" },
@@ -92,6 +95,8 @@ type WorkflowsTabProps = {
   onSelectPr: (prId: string | null) => void;
   onOpenGitHubTab: (prId: string) => void;
   integrationRefreshNonce?: number;
+  /** Other machines are read only while the tab shows. */
+  active?: boolean;
 };
 
 function outcomeColor(outcome: string): string {
@@ -189,9 +194,12 @@ function IntegrationWorkflowsTab({
   busy,
   onRefresh,
   onOpenGitHubTab,
+  workflowMachines,
 }: {
   workflows: IntegrationProposal[];
   lanes: LaneSummary[];
+  /** Routes each workflow's calls to the machine it was read from. */
+  workflowMachines?: WorkflowMachines;
   prs: PrWithConflicts[];
   view: WorkflowView;
   busy: boolean;
@@ -201,6 +209,14 @@ function IntegrationWorkflowsTab({
   const listHost = usePrsListHost();
   const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane])), [lanes]);
   const prById = React.useMemo(() => new Map(prs.map((pr) => [pr.id, pr] as const)), [prs]);
+  /**
+   * A workflow's lane ids are its own machine's; they are named from that
+   * machine's lanes, never from a same-id lane elsewhere.
+   */
+  const laneNameFor = React.useCallback((proposalId: string, laneId: string): string => {
+    if (!workflowMachines) return laneById.get(laneId)?.name ?? laneId;
+    return workflowMachines.lanesForProposal(proposalId).find((lane) => lane.id === laneId)?.name ?? laneId;
+  }, [laneById, workflowMachines]);
 
   const [selectedWorkflowId, setSelectedWorkflowId] = React.useState<string | null>(null);
   const [archiveIntegrationLane, setArchiveIntegrationLane] = React.useState(true);
@@ -229,7 +245,21 @@ function IntegrationWorkflowsTab({
     setActionError(null);
   }, [selectedWorkflow?.proposalId]);
 
-  const linkedPr = selectedWorkflow?.linkedPrId ? prById.get(selectedWorkflow.linkedPrId) ?? null : null;
+  const selectedMachine = workflowMachines?.machineForProposal(selectedWorkflow?.proposalId) ?? null;
+  // `prs` are the tab machine's rows; another machine's PR id is never looked up in them.
+  const linkedPr = selectedWorkflow?.linkedPrId && !selectedMachine?.pin
+    ? prById.get(selectedWorkflow.linkedPrId) ?? null
+    : null;
+  // Refuse, never fall back to the tab's machine, when the owner is unreachable.
+  const guardSelected = React.useCallback((): boolean => {
+    const blocked = machineBlockedReason(selectedMachine);
+    if (blocked) setActionError(blocked);
+    return !blocked;
+  }, [selectedMachine]);
+  const afterMachineAction = React.useCallback(async () => {
+    if (selectedMachine?.pin) workflowMachines?.refreshMachine(selectedMachine.machineId);
+    await onRefresh();
+  }, [onRefresh, selectedMachine, workflowMachines]);
 
   const toggleSourceLane = React.useCallback((laneId: string) => {
     setArchiveSourceLaneIds((current) => (
@@ -240,36 +270,39 @@ function IntegrationWorkflowsTab({
   }, []);
 
   const handleDismissCleanup = React.useCallback(async () => {
-    if (!selectedWorkflow) return;
+    if (!selectedWorkflow || !guardSelected()) return;
     setActionBusy(true);
     setActionError(null);
     try {
-      await window.ade.prs.dismissIntegrationCleanup({ proposalId: selectedWorkflow.proposalId });
-      await onRefresh();
+      await window.ade.prs.dismissIntegrationCleanup(
+        { proposalId: workflowMachines?.realProposalId(selectedWorkflow.proposalId) ?? selectedWorkflow.proposalId },
+        ...pinArg(selectedMachine?.pin),
+      );
+      await afterMachineAction();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setActionBusy(false);
     }
-  }, [onRefresh, selectedWorkflow]);
+  }, [afterMachineAction, guardSelected, selectedMachine, selectedWorkflow, workflowMachines]);
 
   const handleCleanup = React.useCallback(async () => {
-    if (!selectedWorkflow) return;
+    if (!selectedWorkflow || !guardSelected()) return;
     setActionBusy(true);
     setActionError(null);
     try {
       await window.ade.prs.cleanupIntegrationWorkflow({
-        proposalId: selectedWorkflow.proposalId,
+        proposalId: workflowMachines?.realProposalId(selectedWorkflow.proposalId) ?? selectedWorkflow.proposalId,
         archiveIntegrationLane,
         archiveSourceLaneIds,
-      });
-      await onRefresh();
+      }, ...pinArg(selectedMachine?.pin));
+      await afterMachineAction();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
     } finally {
       setActionBusy(false);
     }
-  }, [archiveIntegrationLane, archiveSourceLaneIds, onRefresh, selectedWorkflow]);
+  }, [afterMachineAction, archiveIntegrationLane, archiveSourceLaneIds, guardSelected, selectedMachine, selectedWorkflow, workflowMachines]);
 
   if (!workflows.length && listHost !== undefined) {
     return (
@@ -335,7 +368,7 @@ function IntegrationWorkflowsTab({
               <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {workflow.title || workflow.integrationLaneName || `Integration ${workflow.proposalId.slice(0, 8)}`}
+                    {workflow.title || workflow.integrationLaneName || `Integration ${(workflowMachines?.realProposalId(workflow.proposalId) ?? workflow.proposalId).slice(0, 8)}`}
                   </div>
                   <span style={inlineBadge(workflow.status === "proposed" ? COLORS.info : theme.color, { background: `color-mix(in srgb, ${workflow.status === "proposed" ? COLORS.info : theme.color} 9%, transparent)`, fontWeight: 600, flexShrink: 0 })}>{workflow.status}</span>
                 </div>
@@ -344,9 +377,13 @@ function IntegrationWorkflowsTab({
                     {workflow.overallOutcome}
                   </span>
                   {cleanupBadge ? <span style={cleanupBadge}>{workflow.cleanupState}</span> : null}
+                  {(() => {
+                    const chip = workflowMachines?.machineForProposal(workflow.proposalId)?.chip;
+                    return chip ? <MachineChip machine={chip} subject="This workflow" /> : null;
+                  })()}
                 </div>
                 <div style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                  {workflow.sourceLaneIds.map((laneId) => laneById.get(laneId)?.name ?? laneId).join(" + ")}
+                  {workflow.sourceLaneIds.map((laneId) => laneNameFor(workflow.proposalId, laneId)).join(" + ")}
                 </div>
               </div>
             </button>
@@ -424,7 +461,7 @@ function IntegrationWorkflowsTab({
               <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
                 {selectedWorkflow.sourceLaneIds.map((laneId) => (
                   <span key={laneId} style={inlineBadge(theme.color, { background: theme.bg, fontWeight: 600 })}>
-                    {laneById.get(laneId)?.name ?? laneId}
+                    {laneNameFor(selectedWorkflow.proposalId, laneId)}
                   </span>
                 ))}
               </div>
@@ -500,7 +537,7 @@ function IntegrationWorkflowsTab({
                       {selectedWorkflow.sourceLaneIds.map((laneId) => (
                         <label key={laneId} style={{ display: "flex", alignItems: "center", gap: 10, fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary, cursor: "pointer", padding: "4px 0" }}>
                           <input type="checkbox" checked={archiveSourceLaneIds.includes(laneId)} onChange={() => toggleSourceLane(laneId)} style={{ accentColor: theme.color }} />
-                          Archive {laneById.get(laneId)?.name ?? laneId}
+                          Archive {laneNameFor(selectedWorkflow.proposalId, laneId)}
                         </label>
                       ))}
                     </div>
@@ -566,6 +603,7 @@ export function WorkflowsTab({
   onSelectPr,
   onOpenGitHubTab,
   integrationRefreshNonce = 0,
+  active = true,
 }: WorkflowsTabProps) {
   const {
     prs,
@@ -674,30 +712,55 @@ export function WorkflowsTab({
     });
   }, [cacheKey, integrationWorkflows, view]);
 
+  // Every machine's rebase needs, statuses and integration workflows, each
+  // routed to the machine it was read from.
+  const workflowMachines = useWorkflowMachines({
+    active,
+    boundLanes: lanes,
+    boundRebaseNeeds: rebaseNeeds,
+    boundAutoRebaseStatuses: autoRebaseStatuses,
+  });
+  const allLanes = workflowMachines.lanes;
+  const allRebaseNeeds = React.useMemo(
+    () => (workflowMachines.foreignRebaseNeeds.length ? [...rebaseNeeds, ...workflowMachines.foreignRebaseNeeds] : rebaseNeeds),
+    [rebaseNeeds, workflowMachines.foreignRebaseNeeds],
+  );
+  const allAutoRebaseStatuses = React.useMemo(
+    () => (workflowMachines.foreignAutoRebaseStatuses.length
+      ? [...autoRebaseStatuses, ...workflowMachines.foreignAutoRebaseStatuses]
+      : autoRebaseStatuses),
+    [autoRebaseStatuses, workflowMachines.foreignAutoRebaseStatuses],
+  );
+  const allIntegrationWorkflows = React.useMemo(
+    () => (workflowMachines.foreignWorkflows.length ? [...integrationWorkflows, ...workflowMachines.foreignWorkflows] : integrationWorkflows),
+    [integrationWorkflows, workflowMachines.foreignWorkflows],
+  );
+
   const refreshWorkflows = React.useCallback(async () => {
+    workflowMachines.refreshForeign();
     await Promise.all([
       onRefreshAll().catch(() => {}),
       loadWorkflows(),
       loadRebaseHistory(),
     ]);
-  }, [loadRebaseHistory, loadWorkflows, onRefreshAll]);
+  }, [loadRebaseHistory, loadWorkflows, onRefreshAll, workflowMachines]);
 
   const integrationByView = React.useMemo(() => ({
-    active: integrationWorkflows.filter((workflow) => workflow.workflowDisplayState === "active"),
-    history: integrationWorkflows.filter((workflow) => workflow.workflowDisplayState === "history"),
-  }), [integrationWorkflows]);
+    active: allIntegrationWorkflows.filter((workflow) => workflow.workflowDisplayState === "active"),
+    history: allIntegrationWorkflows.filter((workflow) => workflow.workflowDisplayState === "history"),
+  }), [allIntegrationWorkflows]);
   const rebaseByView = React.useMemo(() => ({
-    active: getActiveRebaseNeeds(rebaseNeeds),
+    active: getActiveRebaseNeeds(allRebaseNeeds),
     history: rebaseHistoryOperations,
-  }), [rebaseHistoryOperations, rebaseNeeds]);
+  }), [rebaseHistoryOperations, allRebaseNeeds]);
   const rebaseAttentionByView = React.useMemo(() => ({
     active: filterRebaseAttentionStatuses({
-      autoRebaseStatuses,
+      autoRebaseStatuses: allAutoRebaseStatuses,
       visibleRebaseNeeds: rebaseByView.active,
       view: "active",
     }),
     history: [] as typeof autoRebaseStatuses,
-  }), [autoRebaseStatuses, rebaseByView.active]);
+  }), [allAutoRebaseStatuses, rebaseByView.active]);
 
   React.useEffect(() => {
     if (activeCategory !== "rebase" || !selectedRebaseItemId) return;
@@ -846,7 +909,8 @@ export function WorkflowsTab({
           view === "active" ? (
             <IntegrationTab
               prs={prs}
-              lanes={lanes}
+              lanes={allLanes}
+              workflowMachines={workflowMachines}
               mergeContextByPrId={mergeContextByPrId}
               mergeMethod={mergeMethod}
               selectedPrId={selectedPrId}
@@ -857,7 +921,8 @@ export function WorkflowsTab({
           ) : (
             <IntegrationWorkflowsTab
               workflows={integrationByView.history}
-              lanes={lanes}
+              lanes={allLanes}
+              workflowMachines={workflowMachines}
               prs={prs}
               view={view}
               busy={loading}
@@ -872,7 +937,10 @@ export function WorkflowsTab({
             <RebaseTab
               rebaseNeeds={rebaseByView.active}
               attentionStatuses={rebaseAttentionByView.active}
-              lanes={lanes}
+              lanes={allLanes}
+              machineForLane={workflowMachines.machineForLane}
+              onMachineActionDone={workflowMachines.refreshMachine}
+              realLaneId={workflowMachines.realLaneId}
               selectedItemId={selectedRebaseItemId}
               onSelectItem={setSelectedRebaseItemId}
               resolverModel={resolverModel}

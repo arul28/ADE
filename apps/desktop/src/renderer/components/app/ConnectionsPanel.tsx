@@ -24,6 +24,7 @@ import {
   useSyncConnections,
   type RevokeConfirm,
 } from "../settings/SyncDevicesSection";
+import { settingsRouteFor } from "../settings/settingsManifest";
 import { confirmDialog } from "../ui/dialog";
 import {
   accountAvatarImage,
@@ -312,6 +313,13 @@ export function ConnectionsPanel({
     });
   }, [location.hash, location.pathname, location.search, navigate, onClose]);
 
+  // Settings > Account > Your computers: the list of this account's computers,
+  // with Reconnect and Repair for this one.
+  const goToYourComputers = useCallback(() => {
+    onClose();
+    navigate(settingsRouteFor("account.computers"));
+  }, [navigate, onClose]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 96px)" }}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
@@ -320,6 +328,7 @@ export function ConnectionsPanel({
         <ThisMacCard
           sync={sync}
           sessionState={accountSessionState(accountStatus)}
+          onOpenYourComputers={goToYourComputers}
           statusSlot={(
             <ThisComputerStatus
               accountSignedIn={accountStatus.signedIn}

@@ -4,6 +4,7 @@ import {
   CircleNotch,
   X,
   CaretDown, CaretRight,
+  TreeStructure,
 } from "@phosphor-icons/react";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
@@ -12,6 +13,7 @@ import type {
   FilePatch,
   PrSnapshotHydration,
   PrGithubCoords,
+  OpenProjectBinding,
   AgentChatSessionSummary,
   PrCheckLogExcerpt,
   PrRerunChecksTarget,
@@ -22,7 +24,7 @@ import { parsePrsRouteState, type PrDetailRouteTab } from "../prsRouteState";
 import { PrDetailTimelineRails as TimelineRailsOverview, type PrDetailTimelineRailsRef, type PrStateAction } from "./PrDetailTimelineRails";
 import { PrDetailHeader, type PrHeaderChecksNote, type UnmappedAffordance } from "./PrDetailHeader";
 import {
-  handPromptToChat,
+  usePrChatHandoff,
   linkedPrChats,
   newestWorkChat,
   prFailingCheckNames,
@@ -36,6 +38,8 @@ import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergea
 import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
+import { DiffFileTree, type DiffFileTreeEntry } from "../../shared/DiffFileTree";
+import { readPersistedFlag, writePersistedFlag } from "../../shared/persistedFlag";
 import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
@@ -44,8 +48,9 @@ import {
 } from "../shared/prUnifiedChecks";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import { navigateToAppTarget } from "../../../lib/openExternal";
-import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
 import { isWebClientMode } from "../../../lib/webClientMode";
+import { PrRuntimePinProvider } from "../state/prMachines";
+import { pinArg, type MachineChipModel } from "../../../state/laneMachineRouting";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -375,6 +380,27 @@ type PrDetailPaneProps = {
    * PR is unmapped. Provided by GitHubTab so this pane stays presentational.
    */
   unmappedAffordance?: UnmappedAffordance | null;
+  /**
+   * Set when this PR's lane (and its PR row) lives on another machine. Every
+   * call the pane and its menus make goes to that machine with this pin, and
+   * the lane opens there. Null/absent = the tab's machine, unpinned.
+   */
+  runtime?: PrDetailRuntime | null;
+  /** The lane's machine chip; null on a one-machine project. */
+  laneMachineChip?: MachineChipModel | null;
+  /**
+   * Merge is refused with this reason. Set when the lane's owner machine is
+   * offline: a merge from here would skip that machine's lane bookkeeping.
+   * GitHub-only actions (comment, labels, reviewers, review) stay available.
+   */
+  mergeBlockedReason?: string | null;
+};
+
+export type PrDetailRuntime = {
+  pin: OpenProjectBinding;
+  machineName: string;
+  /** Opens the lane on its own machine. */
+  onOpenLane: () => void;
 };
 
 export type { UnmappedAffordance };
@@ -400,7 +426,17 @@ export function PrDetailPane({
   unmapped = false,
   provisional = false,
   unmappedAffordance = null,
+  runtime = null,
+  laneMachineChip = null,
+  mergeBlockedReason = null,
 }: PrDetailPaneProps) {
+  // The machine every call below targets: `[]` is the tab machine's unpinned
+  // call; `[pin]` sends it to the lane's owner.
+  const runtimePin = runtime?.pin ?? null;
+  const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
+  // Chat hand-offs keep the lane's machine: a foreign chat is focused with its
+  // binding and a new chat starts as a draft on the owner machine.
+  const chatHandoff = usePrChatHandoff(runtimePin);
   const {
     detailReviewThreads: ctxReviewThreads,
     detailDeployments,
@@ -630,25 +666,13 @@ export function PrDetailPane({
     const prompt = buildCiFixPrompt(pr, excerpt, fallbackJobName);
     try {
       const session = newestWorkChat(
-        await window.ade.agentChat.list({ laneId: pr.laneId, includeArchived: false }),
+        await window.ade.agentChat.list({ laneId: pr.laneId, includeArchived: false }, ...onPin),
       );
-      if (session) {
-        queueAgentChatDraftHandoff({ sessionId: session.sessionId }, prompt);
-        navigateToAppTarget({
-          kind: "work",
-          laneId: pr.laneId,
-          sessionId: session.sessionId,
-        });
-        return;
-      }
-
-      const draftTargetId = `work:draft:${pr.laneId}:chat`;
-      queueAgentChatDraftHandoff({ draftTargetId }, prompt);
-      navigateToAppTarget({ kind: "work", laneId: pr.laneId });
+      chatHandoff({ laneId: pr.laneId, sessionId: session?.sessionId ?? null, prompt });
     } catch (error) {
       setActionError(formatError(error));
     }
-  }, [pr]);
+  }, [chatHandoff, onPin, pr]);
 
   const applyDetailPaneWarmCache = React.useCallback((cached: PrDetailPaneWarmCache) => {
     if (cached.detail) {
@@ -717,37 +741,37 @@ export function PrDetailPane({
   const fetchDetail = React.useCallback((): Promise<PrDetail> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getDetailByGithub(coordsRef.current)
-      : window.ade.prs.getDetail(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getDetail(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchFiles = React.useCallback((): Promise<PrFile[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getFilesByGithub(coordsRef.current)
-      : window.ade.prs.getFiles(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getFiles(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchCommits = React.useCallback((): Promise<PrCommit[]> => {
     if (isUnmapped && coordsRef.current) return window.ade.prs.getCommitsByGithub(coordsRef.current);
-    return typeof window.ade.prs.getCommits === "function" ? window.ade.prs.getCommits(pr.id) : Promise.resolve([]);
-  }, [isUnmapped, pr.id]);
+    return typeof window.ade.prs.getCommits === "function" ? window.ade.prs.getCommits(pr.id, ...onPin) : Promise.resolve([]);
+  }, [isUnmapped, onPin, pr.id]);
   const fetchActionRuns = React.useCallback((): Promise<PrActionRun[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getActionRunsByGithub(coordsRef.current)
-      : window.ade.prs.getActionRuns(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getActionRuns(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchActivity = React.useCallback((): Promise<PrActivityEvent[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getActivityByGithub(coordsRef.current)
-      : window.ade.prs.getActivity(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getActivity(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchReviewThreadsApi = React.useCallback((): Promise<PrReviewThread[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getReviewThreadsByGithub(coordsRef.current)
-      : window.ade.prs.getReviewThreads(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getReviewThreads(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
   const fetchChecks = React.useCallback((): Promise<PrCheck[]> =>
     isUnmapped && coordsRef.current
       ? window.ade.prs.getChecksByGithub(coordsRef.current)
-      : window.ade.prs.getChecks(pr.id),
-  [isUnmapped, pr.id]);
+      : window.ade.prs.getChecks(pr.id, ...onPin),
+  [isUnmapped, onPin, pr.id]);
 
   const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean; showLoading?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
@@ -756,7 +780,7 @@ export function PrDetailPane({
       if (options.hydrateSnapshot && !options.forceLive) {
         const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
         const cachedSnapshot = contextSnapshot ?? (typeof window.ade.prs.listSnapshots === "function"
-          ? (await window.ade.prs.listSnapshots({ prId: pr.id }).catch(() => []))[0]
+          ? (await window.ade.prs.listSnapshots({ prId: pr.id }, ...onPin).catch(() => []))[0]
           : null);
         if (requestId !== detailLoadSeqRef.current) return;
         if (cachedSnapshot) {
@@ -810,7 +834,30 @@ export function PrDetailPane({
               }
             }))
             .catch(() => null)
-        : Promise.resolve(null);
+        : runtimePin
+          // Another machine's PR has no PrsContext live data here: its owner
+          // answers status, checks, reviews and comments directly.
+          ? Promise.allSettled([
+              window.ade.prs.getStatus(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                if (value) {
+                  setSnapshotStatus(value);
+                  updateDetailPaneWarmCache({ status: value });
+                }
+              })),
+              window.ade.prs.getChecks(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                setSnapshotChecks(value);
+                updateDetailPaneWarmCache({ checks: value });
+              })),
+              window.ade.prs.getReviews(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                setSnapshotReviews(value);
+                updateDetailPaneWarmCache({ reviews: value });
+              })),
+              window.ade.prs.getComments(pr.id, runtimePin).then(applyIfCurrent((value) => {
+                setSnapshotComments(value);
+                updateDetailPaneWarmCache({ comments: value });
+              })),
+            ])
+          : Promise.resolve(null);
       await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise, statusPromise]);
     } catch {
       // silently fail - basic data still available from context
@@ -820,7 +867,7 @@ export function PrDetailPane({
         setDetailLoading(false);
       }
     }
-  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, pr.id, updateDetailPaneWarmCache]);
+  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, onPin, pr.id, runtimePin, updateDetailPaneWarmCache]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -1055,7 +1102,7 @@ export function PrDetailPane({
         const coords = coordsRef.current;
         return readByCoords && coords ? readByCoords(coords) : null;
       }
-      return readById ? readById(pr.id) : null;
+      return readById ? readById(pr.id, ...onPin) : null;
     };
     let cancelled = false;
     // Stands down with the governor like every other automatic loop, by
@@ -1102,7 +1149,7 @@ export function PrDetailPane({
     };
   }, [
     mergeabilityComputing, isUnmapped, githubPollGeneration, githubPollPeriodFor,
-    isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, pr.id,
+    isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess, onPin, pr.id,
     updateDetailPaneWarmCache,
   ]);
 
@@ -1135,6 +1182,10 @@ export function PrDetailPane({
     },
   ) => {
     setActionResult(null);
+    if (mergeBlockedReason) {
+      setActionError(mergeBlockedReason);
+      return Promise.resolve();
+    }
     return runAction(async () => {
       // No mapping check: `land` resolves a synthetic `gh:` id as readily as a
       // row id, because merging is a GitHub API call. A lane only decides
@@ -1146,7 +1197,7 @@ export function PrDetailPane({
         commitTitle: options?.commitTitle,
         commitBody: options?.commitBody,
         expectedHeadSha: options?.expectedHeadSha,
-      });
+      }, ...onPin);
       setActionResult(res);
       // GitHub has accepted the merge. Move the row to Merged now rather than
       // leaving it in Open until the snapshot refetch agrees.
@@ -1173,15 +1224,19 @@ export function PrDetailPane({
           prId: pr.id,
           strategy,
           expectedHeadSha: status?.headSha ?? undefined,
-        });
+        }, ...onPin);
         // Conflicts come back as `{ success: false, hasConflicts: true, error }`,
         // so check hasConflicts FIRST — otherwise the generic failure branch
         // shadows the conflict UX (resolve-in-Rebase message + onOpenRebaseTab).
         if (result.hasConflicts) {
           setUpdateBranchNotice({
             tone: "error",
-            text: "Update hit conflicts — resolve in the Rebase tab / launch resolver.",
+            text: runtime
+              ? `Update hit conflicts on ${runtime.machineName} — resolve in the Rebase tab / launch resolver.`
+              : "Update hit conflicts — resolve in the Rebase tab / launch resolver.",
           });
+          // The Rebase view lists every machine's lanes and routes this one to
+          // its owner, so a foreign lane jumps there too.
           if (pr.laneId && onOpenRebaseTab) onOpenRebaseTab(pr.laneId);
         } else if (!result.success || result.error) {
           setUpdateBranchNotice({ tone: "error", text: result.error ?? "Update branch failed." });
@@ -1196,7 +1251,7 @@ export function PrDetailPane({
         setUpdateBranchBusy(false);
       }
     },
-    [onOpenRebaseTab, pr.id, pr.laneId, refreshAll, status?.headSha],
+    [onOpenRebaseTab, onPin, pr.id, pr.laneId, refreshAll, runtime, status?.headSha],
   );
 
   const handleDeleteBranch = () => runAction(async () => {
@@ -1204,14 +1259,14 @@ export function PrDetailPane({
       prId: pr.id,
       deleteLocalBranch: true,
       deleteRemoteBranch: true,
-    });
+    }, ...onPin);
     await onRefresh();
   });
 
   const handleAddComment = async () => {
     if (!commentDraft.trim()) return;
     return runAction(async () => {
-      await window.ade.prs.addComment({ prId: pr.id, body: commentDraft });
+      await window.ade.prs.addComment({ prId: pr.id, body: commentDraft }, ...onPin);
       setCommentDraft("");
       activityFetchKeyRef.current = null;
       setActivity([]);
@@ -1229,11 +1284,11 @@ export function PrDetailPane({
   const handleUpdateTitle = React.useCallback(() => {
     if (!titleDraft.trim()) return;
     void runAction(async () => {
-      await window.ade.prs.updateTitle({ prId: pr.id, title: titleDraft });
+      await window.ade.prs.updateTitle({ prId: pr.id, title: titleDraft }, ...onPin);
       setEditingTitle(false);
       await onRefresh();
     });
-  }, [onRefresh, pr.id, runAction, titleDraft]);
+  }, [onPin, onRefresh, pr.id, runAction, titleDraft]);
 
   const handleStartTitleEdit = React.useCallback(() => {
     setTitleDraft(pr.title);
@@ -1243,7 +1298,7 @@ export function PrDetailPane({
   const handleCancelTitleEdit = React.useCallback(() => setEditingTitle(false), []);
 
   const handleSetLabels = (labels: string[]) => runAction(async () => {
-    await window.ade.prs.setLabels({ prId: pr.id, labels });
+    await window.ade.prs.setLabels({ prId: pr.id, labels }, ...onPin);
     await loadDetail({ forceLive: true });
   });
 
@@ -1252,20 +1307,20 @@ export function PrDetailPane({
       prId: pr.id,
       reviewers: request.reviewers,
       teamReviewers: request.teamReviewers,
-    });
+    }, ...onPin);
     await onRefresh();
     await loadDetail({ forceLive: true });
   });
 
   const handleSubmitReview = (event: PrReviewEvent, body: string) => runAction(async () => {
-    await window.ade.prs.submitReview({ prId: pr.id, event, body: body || undefined });
+    await window.ade.prs.submitReview({ prId: pr.id, event, body: body || undefined }, ...onPin);
     // Clear the draft only now: a rejected review keeps the text to retry.
     setCommentDraft("");
     await onRefresh();
   });
 
   const handleReopenPr = () => runAction(async () => {
-    await window.ade.prs.reopen({ prId: pr.id });
+    await window.ade.prs.reopen({ prId: pr.id }, ...onPin);
     // Drop the optimistic "closed" this same pane may have recorded, or the row
     // and this pane both keep painting the PR as closed until it expires.
     clearPrTerminalLocally(pr);
@@ -1273,7 +1328,7 @@ export function PrDetailPane({
   });
 
   const handleRerunChecks = (target?: PrRerunChecksTarget) => runAction(async () => {
-    await window.ade.prs.rerunChecks({ prId: pr.id, ...target });
+    await window.ade.prs.rerunChecks({ prId: pr.id, ...target }, ...onPin);
     await onRefresh();
     await loadDetail({ forceLive: true });
   });
@@ -1292,21 +1347,25 @@ export function PrDetailPane({
     if (!pr.laneId) return undefined;
     let cancelled = false;
     void window.ade.agentChat
-      .list({ laneId: pr.laneId, includeArchived: false })
+      .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
       .then((sessions) => { if (!cancelled) setLaneChats(sessions); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [pr.laneId, pr.id]);
+  }, [onPin, pr.laneId, pr.id]);
   const linkedChats = React.useMemo(() => linkedPrChats(pr, laneChats), [laneChats, pr]);
   const handleOpenChat = React.useCallback((session: AgentChatSessionSummary) => {
-    navigateToAppTarget({ kind: "work", laneId: session.laneId, sessionId: session.sessionId });
-  }, []);
+    chatHandoff({ laneId: session.laneId, sessionId: session.sessionId });
+  }, [chatHandoff]);
   const handleOpenLane = React.useCallback(() => {
     // Opening the lane from a PR goes to the Lanes tab, where the lane reads as
     // a lane (branch, stack, git actions). The Work tab is for its chats, which
     // is a different destination and a different intent.
+    if (runtime) {
+      runtime.onOpenLane();
+      return;
+    }
     if (pr.laneId) navigateToAppTarget({ kind: "lane", laneId: pr.laneId });
-  }, [pr.laneId]);
+  }, [pr.laneId, runtime]);
 
   const checksBuckets = React.useMemo(() => summarizePipelineStates(headerChecks), [headerChecks]);
   const checksNote = React.useMemo<PrHeaderChecksNote>(() => {
@@ -1334,24 +1393,24 @@ export function PrDetailPane({
   const handPrPrompt = React.useCallback((prompt: string) => {
     if (!pr.laneId) return;
     // Same rule as the ⋯ menu: the newest linked chat, else a new lane chat.
-    handPromptToChat({ laneId: pr.laneId, sessionId: linkedChats[0]?.sessionId ?? null, prompt });
-  }, [linkedChats, pr.laneId]);
+    chatHandoff({ laneId: pr.laneId, sessionId: linkedChats[0]?.sessionId ?? null, prompt });
+  }, [chatHandoff, linkedChats, pr.laneId]);
 
   const handlePrStateAction = React.useCallback(async (action: PrStateAction) => {
     try {
-      if (action === "ready_for_review") await window.ade.prs.setDraft({ prId: pr.id, draft: false });
+      if (action === "ready_for_review") await window.ade.prs.setDraft({ prId: pr.id, draft: false }, ...onPin);
       else {
         await window.ade.prs.setAutoMerge({
           prId: pr.id,
           enabled: action === "enable_auto_merge",
           method: readLastMergeMethod(mergeMethod),
-        });
+        }, ...onPin);
       }
       await refreshAll();
     } catch (error) {
       setActionError(formatError(error));
     }
-  }, [mergeMethod, pr.id, refreshAll]);
+  }, [mergeMethod, onPin, pr.id, refreshAll]);
 
   const [readyBusy, setReadyBusy] = React.useState(false);
   const handleReadyForReview = React.useCallback(() => {
@@ -1392,6 +1451,9 @@ export function PrDetailPane({
   }), [githubPollGeneration, isGithubPollStoodDown, noteGithubReadFailure, noteGithubReadSuccess]);
 
   return (
+    // Menus, the resolver, lane management and reactions below read the pin
+    // from here, so the whole pane targets one machine.
+    <PrRuntimePinProvider value={runtimePin}>
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.prSurface }}>
       {/* ===== HEADER ===== */}
       <PrDetailHeader
@@ -1403,6 +1465,7 @@ export function PrDetailPane({
         checksNote={checksNote}
         author={detail?.author ?? null}
         lane={laneForPr}
+        laneMachineChip={laneMachineChip}
         linkedChats={linkedChats}
         onOpenChat={handleOpenChat}
         onOpenLane={pr.laneId ? handleOpenLane : null}
@@ -1474,6 +1537,7 @@ export function PrDetailPane({
             onRerunChecks={handleRerunChecks}
             mergeMethod={mergeMethod}
             onMerge={handleMerge}
+            mergeBlockedReason={mergeBlockedReason}
             onUpdateBranch={handleUpdateBranch}
             updateBranchBusy={updateBranchBusy}
             updateBranchNotice={updateBranchNotice}
@@ -1497,7 +1561,12 @@ export function PrDetailPane({
           lane={laneForPr}
         />
         {activeTab === "files" && (
-          <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
+          <FilesTab
+            files={files}
+            expandedFile={expandedFile}
+            setExpandedFile={setExpandedFile}
+            persistKey="pr-code-tab"
+          />
         )}
         {activeTab === "checks" && (
           <div data-tour="prs.checksPanel" style={{ display: "contents" }}>
@@ -1516,6 +1585,7 @@ export function PrDetailPane({
         )}
       </div>
     </div>
+    </PrRuntimePinProvider>
   );
 }
 
@@ -1523,9 +1593,72 @@ export function PrDetailPane({
 // FILES TAB
 // ================================================================
 
-function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; expandedFile: string | null; setExpandedFile: (f: string | null) => void }) {
+const FILE_TREE_STORAGE_PREFIX = "ade:diff:fileTree:";
+
+function readPersistedFileTree(key: string | undefined): boolean {
+  return readPersistedFlag(FILE_TREE_STORAGE_PREFIX, key);
+}
+
+function writePersistedFileTree(key: string | undefined, value: boolean): void {
+  writePersistedFlag(FILE_TREE_STORAGE_PREFIX, key, value);
+}
+
+function FilesTab({
+  files,
+  expandedFile,
+  setExpandedFile,
+  persistKey,
+}: {
+  files: PrFile[];
+  expandedFile: string | null;
+  setExpandedFile: (f: string | null) => void;
+  /** Stable per-view id so the tree toggle is remembered across mounts. */
+  persistKey?: string;
+}) {
   const totalAdd = files.reduce((s, f) => s + f.additions, 0);
   const totalDel = files.reduce((s, f) => s + f.deletions, 0);
+  const [showTree, setShowTree] = React.useState(() => readPersistedFileTree(persistKey));
+  const rowRefs = React.useRef(new Map<string, HTMLDivElement | null>());
+  const pendingScrollRef = React.useRef<string | null>(null);
+
+  const toggleTree = React.useCallback(() => {
+    setShowTree((value) => {
+      const next = !value;
+      writePersistedFileTree(persistKey, next);
+      return next;
+    });
+  }, [persistKey]);
+
+  const treeEntries = React.useMemo<DiffFileTreeEntry[]>(
+    () => files.map((file) => ({
+      path: file.filename,
+      status: file.status,
+      previousPath: file.previousFilename,
+      additions: file.additions,
+      deletions: file.deletions,
+    })),
+    [files],
+  );
+
+  // Tree click = expand that file's diff, then scroll it into view. The scroll
+  // is deferred to the effect so it runs after the expanded row has mounted;
+  // re-clicking an already-open file still scrolls it back.
+  const handleTreeSelect = React.useCallback((path: string) => {
+    if (expandedFile === path) {
+      rowRefs.current.get(path)?.scrollIntoView({ block: "start", behavior: "smooth" });
+      return;
+    }
+    pendingScrollRef.current = path;
+    setExpandedFile(path);
+  }, [expandedFile, setExpandedFile]);
+
+  React.useEffect(() => {
+    const path = pendingScrollRef.current;
+    if (!path) return;
+    pendingScrollRef.current = null;
+    rowRefs.current.get(path)?.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [expandedFile]);
+
   const toPatchStatus = (status: PrFile["status"]): FilePatch["status"] => {
     if (status === "removed") return "deleted";
     if (status === "copied") return "added";
@@ -1552,17 +1685,57 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
           <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.success, background: "color-mix(in srgb, var(--color-success) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>+{totalAdd}</span>
           <span style={{ fontFamily: MONO_FONT, fontSize: 12, fontWeight: 600, color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 12%, transparent)", padding: "2px 8px", borderRadius: 6 }}>-{totalDel}</span>
         </div>
+        {files.length > 0 ? (
+          <button
+            type="button"
+            onClick={toggleTree}
+            aria-pressed={showTree}
+            aria-label="Show changed files as a tree"
+            title="Show changed files as a tree"
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              height: 26, padding: "0 10px", borderRadius: 6,
+              border: `1px solid ${COLORS.border}`,
+              background: showTree ? `color-mix(in srgb, ${COLORS.accent} 12%, transparent)` : "transparent",
+              color: showTree ? COLORS.accent : COLORS.textSecondary,
+              fontFamily: SANS_FONT, fontSize: 11, fontWeight: 600, cursor: "pointer",
+            }}
+          >
+            <TreeStructure size={12} weight="bold" />
+            Tree
+          </button>
+        ) : null}
       </div>
       {files.length === 0 ? (
         <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textDim }}>No files changed</div>
       ) : (
-        <div style={{ ...cardStyle(), padding: 0, overflow: "hidden" }}>
-          {files.map((file, idx) => {
-            const isExpanded = expandedFile === file.filename;
-            const statusCol = fileStatusColor(file.status);
-            const filePatch = toPatch(file);
-            return (
-              <div key={file.filename}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+          {showTree ? (
+            <div
+              style={{
+                position: "sticky", top: 0, width: 260, flexShrink: 0,
+                maxHeight: "min(70vh, 640px)", display: "flex", flexDirection: "column",
+                ...cardStyle({ padding: 0, overflow: "hidden" }),
+              }}
+            >
+              <DiffFileTree
+                files={treeEntries}
+                selectedPath={expandedFile}
+                onSelectFile={handleTreeSelect}
+                className="h-full"
+              />
+            </div>
+          ) : null}
+          <div style={cardStyle({ padding: 0, overflow: "hidden", flex: 1, minWidth: 0 })}>
+            {files.map((file, idx) => {
+              const isExpanded = expandedFile === file.filename;
+              const statusCol = fileStatusColor(file.status);
+              const filePatch = toPatch(file);
+              return (
+                <div
+                  key={file.filename}
+                  ref={(node) => { rowRefs.current.set(file.filename, node); }}
+                >
                 <button
                   type="button"
                   onClick={() => setExpandedFile(isExpanded ? null : file.filename)}
@@ -1594,7 +1767,7 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                 </button>
                 {isExpanded && filePatch ? (
                   <div style={{ borderBottom: `1px solid ${COLORS.border}`, height: 500 }}>
-                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" />
+                    <AdeDiffViewer patch={filePatch} editable={false} className="h-full rounded-none border-0" persistKey="pr-code-tab" />
                   </div>
                 ) : isExpanded ? (
                   <div
@@ -1611,8 +1784,9 @@ function FilesTab({ files, expandedFile, setExpandedFile }: { files: PrFile[]; e
                   </div>
                 ) : null}
               </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

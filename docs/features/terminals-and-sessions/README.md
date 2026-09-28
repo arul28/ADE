@@ -293,7 +293,9 @@ and in tests.
   thread store (falling back to the `sessions/` rollout tree only when that
   database is unusable), Cursor artifacts under `~/.cursor/chats` and
   `~/.cursor/projects`, Droid sessions under `<factoryConfigHome>/sessions`,
-  OpenCode through `opencode session list`, Pi sessions in the shared Pi
+  OpenCode by reading the user's own OpenCode SQLite store directly and
+  read-only (v1 `session`/`message`/`part` or v2 `session_v2`/`session_message`;
+  ADE never starts a 2.0 server on that store), Pi sessions in the shared Pi
   store, and the ACP stores of Qwen, Kimi, Grok, and Copilot
   (`discoverQwen/Kimi/Grok/Copilot.ts` over `discoverAcpShared.ts`). The
   provider roots come from `services/shared/providerConfigHomes.ts` so
@@ -386,7 +388,10 @@ Shared types and IPC:
   Parent phases use the same host lifecycle rules for every provider. Provider
   adapters contribute **Needs you** only from structured input/permission
   requests; tracked PTY CLIs also get explicit `ade chat ask`. PTY text is never
-  parsed into a status. Agent-reported activity requires both the
+  parsed into a status. For every chat provider in the table, ADE **detects**
+  the activity detail from the turn's normalized tool calls (see
+  [Activity detection](./pty-and-sessions.md#activity-detection)); an agent
+  report only corrects or refines it. Agent-reported activity requires both the
   runtime-resolved ADE CLI executable and this runtime's RPC socket, and is
   disabled for embedded runtimes. Each provider path is advertised only when
   its command/tool and permission route is verified. Native Plan and
@@ -474,10 +479,12 @@ Shared types and IPC:
   map its dependency-free glyph ids to platform symbols. `sessionStatusShoutsLabel`
   is the nested-compact filter: the status word is painted only for Needs you
   or a red Failed tone.
-- `apps/desktop/src/shared/types/sessions.ts` — the fixed six-value activity
-  vocabulary. `apps/desktop/src/shared/sessionActivity.ts` imports it and
-  normalizes one host-timestamped agent report at the boundary.
-  The report refines a card's single status slot without moving its parent phase;
+- `apps/desktop/src/shared/types/sessions.ts` — the fixed eight-value activity
+  vocabulary and its two sources (`detected`, `agent`).
+  `apps/desktop/src/shared/sessionActivity.ts` imports it, normalizes one
+  host-timestamped activity at the boundary, and owns the precedence between a
+  detected activity and an agent report (`nextDetectedActivityReport`).
+  The activity refines a card's single status slot without moving its parent phase;
   `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
   rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
@@ -1672,20 +1679,26 @@ Renderer surfaces:
   it waits for Cursor's interactive prompt and submits the ADE guidance
   plus user text through PTY input instead of argv. Droid materializes a
   temp `--settings` JSON keyed off the active
-   permission mode, and OpenCode passes its inline permission policy
-   through the `OPENCODE_CONFIG_CONTENT` env var and always launches the
-   root TUI (`opencode [-m model] [--agent plan] [--prompt …]`) — tracked
-   launches have no `run --interactive` branch and no reasoning/fast
-   variant flag (the root command silently drops unknown args), so
-   variants remain a chat-runtime feature. ADE session guidance is
+   permission mode, and OpenCode's launch carries only a session selector
+   and a `--prompt`; permission mode, model, and effort ride as JSON in
+   `ADE_OPENCODE_LAUNCH` (`ADE_OPENCODE_LAUNCH_ENV`), because the 2.0 TUI
+   takes no `--agent`/`--model` flags and its config comes from the server
+   it attaches to. `attachOpenCodeTerminal`
+   (`services/opencode/openCodeTerminal.ts`) reads that intent, creates or
+   resumes the session on ADE's shared server with the matching ADE agent
+   and model, and rewrites the launch to
+   `opencode --server <lease url> --session <id>` — see
+   [OpenCode CLI: attach to ADE's server](#opencode-cli-attach-to-ades-server).
+   Tracked launches have no reasoning/fast variant flag, so variants remain
+   a chat-runtime feature. ADE session guidance is
   injected on every launch with skill roots resolved from the active
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
   through `--append-system-prompt`; Codex and Droid receive
   a leading prompt from `buildAdeCliInlineGuidance(...)`; Cursor receives
   that prompt only when there is an initial user message. **OpenCode does
   not**: it receives the same slim ADE base prompt the OpenCode chat
-  runtime sends, through OpenCode's own additive system channel. See
-  [OpenCode CLI instructions](#opencode-cli-ade-instructions). Launch env also
+  runtime sends, as an instruction entry on the session ADE attaches it to. See
+  [OpenCode CLI: attach to ADE's server](#opencode-cli-attach-to-ades-server). Launch env also
   carries `ADE_AGENT_SKILLS_DIRS` when skill roots are known, including
   lane/user `.claude`, `.agents`, `.ade`, `.codex` skill dirs plus
   bundled ADE resources.
@@ -2660,62 +2673,48 @@ terminal even though no agent runtime spawned it. The headless ADE
 runtime and agent chat runtime both layer the same identity envs
 (plus `ADE_WORKSPACE_ROOT`) on top through `buildAgentRuntimeEnv`.
 
-## OpenCode CLI ADE instructions
+## OpenCode CLI: attach to ADE's server
 
-A tracked OpenCode CLI gets the same slim ADE base prompt the OpenCode chat
-runtime sends — the one `buildCodingAgentSystemPrompt({ runtime: "opencode" })`
-builds — but not through the same transport, because a CLI launch has no
-per-request system channel.
+A tracked OpenCode TUI launch does not run standalone. By default the 2.0 TUI
+connects to OpenCode's own shared background service on the user's default
+data home (and migrates their v1 store in place); ADE instead points it at its
+own managed server, the same one chat sessions use.
 
-- **Not `--prompt`.** OpenCode submits that value as a real user message and
-  renders it in the TUI. Prepending ADE's instructions to the user's text
-  therefore displayed them verbatim on every launch (the reported "OpenCode
-  echoes ADE's system prompt") and delivered them as user content rather than as
-  system instructions. `--prompt` now carries the user's own text and nothing
-  else.
-- **Not `agent.<name>.prompt`.** OpenCode's request builder reads
-  `agent.prompt ? [agent.prompt] : SystemPrompt.provider(model)` — an agent
-  prompt *replaces* the provider base prompt, which would delete OpenCode's own
-  tool instructions.
-- **`instructions` in `OPENCODE_CONFIG_CONTENT`.** This is the additive channel:
-  entries land in the same assembled system block as `AGENTS.md`, after the base
-  prompt, and never appear in the transcript. Config layers union this key rather
-  than overwrite it, so ADE's entry is appended to the user's own instruction
-  files instead of replacing them (verified against opencode 1.18.31).
+`attachOpenCodeTerminal` (`openCodeTerminal.ts`) intercepts a plain `opencode`
+launch (a direct spawn or a startup command whose command line is `opencode`
+with no shell operators — anything more, such as a pipe or `&&`, is refused,
+because only a plain invocation can be redirected) and:
 
-`openCodeAdeInstructions.ts` writes the file to `.ade/cache/opencode-instructions/`
-keyed by lane worktree. Two other placements are wrong: the lane worktree is the
-user's repository, so an ADE-authored prompt would show up in their `git status`;
-and the system temp directory is world-writable on Linux, where a deliberately
-stable, publicly derivable path can be pre-created as a symlink and turn the
-launch into a write through it.
+1. Acquires a lease on ADE's shared OpenCode server
+   (`acquireOpenCodeServer`).
+2. Resolves the session: an explicit `--session <id>` re-attaches (falling back
+   to a fresh session if that id lived only in the user's own store, which
+   ADE's server never opens), `--continue` picks the newest session for the
+   working directory, and otherwise a new session is created with the ADE
+   agent for the permission mode and the resolved model.
+3. Writes ADE's instructions onto the session as an instruction entry
+   (`buildOpenCodeAdeInstructions`, built from the same
+   `buildCodingAgentSystemPrompt({ runtime: "opencode" })` the chat runtime
+   uses) and sets `session.environment` from the terminal's own environment,
+   because the agent's shell commands run in the server process now, not in
+   the TUI.
+4. Rewrites the launch to `opencode --server <lease url> --session <id>`,
+   with `OPENCODE_SERVER_PASSWORD` in the PTY environment — verified on
+   2.0.18: without the password the TUI refuses the server instead of
+   falling back. The TUI takes no `--agent` or `--model` flag, since ADE's
+   agents and rules live on the server; those and any other ADE-owned or
+   2.0-rejected flags (`--agent`, `--model`/`-m`, `--variant`, `--mini`,
+   `--replay*`, a stray `--server`/`--standalone`) are stripped from a
+   persisted 1.x-era resume command, which would otherwise make the 2.0 TUI
+   exit on launch.
 
-The file is keyed by lane **and permission mode**: two tracked terminals can run
-on one lane under different modes at once, and OpenCode re-reads its instruction
-files every turn, so a single per-lane path let the second launch hand its mode
-to the first mid-conversation. `config-toml` is its own key rather than folded
-into edit — it means "use my own OpenCode configuration", ADE deliberately sends
-no permission block for it, and the instructions say so instead of asserting a
-tier ADE never set.
-
-`ptyService.create` is the single place the file is written, which is what makes
-a resumed session carry the same contract as a fresh one; a resume reads its
-permission mode from the session's own resume metadata, so a plan-mode session is
-not told it is in edit mode while the CLI runs `--agent plan`. The path is added
-to **both** the launch `env` and the inline `OPENCODE_CONFIG_CONTENT=…` assignment
-on the startup command — a shell assignment on the command line overrides the
-process environment, so patching only `env` would drop the instructions on every
-launch that goes through the typed-command fallback instead of a direct spawn.
-
-The merge happens immediately before spawn, not when the launch args are first
-materialized, because `startupCommand` is still being rewritten in between:
-resume-target backfill replaces it wholesale with the session's persisted
-`resumeCommand`, which carries its own assignment and no instructions. For the
-same reason the existing config is read from that command line first and the
-environment second — the persisted command holds its `permission` policy there
-while the launch environment has no such key, so rebuilding from `env` alone
-erased the policy. A missing file is skipped by OpenCode, so a write failure
-degrades to "no ADE prompt" rather than a failed launch.
+The server URL and password change on every server start, so neither is ever
+persisted — the stored startup command stays a plain
+`opencode --session <id>`, and the current lease's `--server`/password pair is
+applied fresh on every relaunch. `config-toml` is its own permission mode
+rather than folded into `edit`: it means "use your own OpenCode configuration",
+so ADE sets no agent and no permission policy for it, and the instructions say
+so explicitly rather than asserting a tier ADE never set.
 
 ## Gotchas
 

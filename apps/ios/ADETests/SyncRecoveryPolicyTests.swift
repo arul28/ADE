@@ -2110,3 +2110,53 @@ private final class DeferredRecoveryWork {
     pending?.resume()
   }
 }
+
+final class SyncReconnectFlapTrackerTests: XCTestCase {
+  func testSameCloseRightAfterConnectBacksOffExponentially() {
+    var tracker = SyncReconnectFlapTracker()
+    let signature = "4001:Required sync response backpressured"
+    XCTAssertNil(tracker.recordClose(signature: signature, connectionAgeSeconds: 2, now: 0))
+    XCTAssertNil(tracker.recordClose(signature: signature, connectionAgeSeconds: 2, now: 5))
+    XCTAssertEqual(tracker.recordClose(signature: signature, connectionAgeSeconds: 2, now: 10), 15)
+    XCTAssertEqual(tracker.recordClose(signature: signature, connectionAgeSeconds: 2, now: 30), 30)
+    XCTAssertEqual(tracker.recordClose(signature: signature, connectionAgeSeconds: 2, now: 70), 60)
+    for index in 0..<10 {
+      _ = tracker.recordClose(signature: signature, connectionAgeSeconds: 2, now: 80 + Double(index))
+    }
+    XCTAssertEqual(tracker.recordClose(signature: signature, connectionAgeSeconds: 2, now: 95), SyncReconnectFlapTracker.maxBackoffSeconds)
+  }
+
+  func testDifferentReasonsOldClosesAndHealthyConnectionsDoNotTrip() {
+    var tracker = SyncReconnectFlapTracker()
+    XCTAssertNil(tracker.recordClose(signature: "4001:a", connectionAgeSeconds: 1, now: 0))
+    XCTAssertNil(tracker.recordClose(signature: "1006:", connectionAgeSeconds: 1, now: 1))
+    XCTAssertNil(tracker.recordClose(signature: "4001:b", connectionAgeSeconds: 1, now: 2))
+    // Outside the window.
+    XCTAssertNil(tracker.recordClose(signature: "4001:a", connectionAgeSeconds: 1, now: 200))
+    XCTAssertNil(tracker.recordClose(signature: "4001:a", connectionAgeSeconds: 1, now: 201))
+    // A connection that held resets everything.
+    XCTAssertNil(tracker.recordClose(signature: "4001:a", connectionAgeSeconds: 600, now: 202))
+    XCTAssertNil(tracker.recordClose(signature: "4001:a", connectionAgeSeconds: 1, now: 203))
+    XCTAssertEqual(tracker.consecutiveTrips, 0)
+    // Never finished hello: ignored.
+    XCTAssertNil(tracker.recordClose(signature: "4001:a", connectionAgeSeconds: nil, now: 204))
+  }
+
+  @MainActor
+  func testFlappingConnectionSurfacesAShortErrorAndBacksOff() {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: directory)
+    defer { database.close() }
+    let service = SyncService(database: database)
+    let reason = "Required sync response backpressured"
+    XCTAssertNil(service.noteLiveConnectionClosedForTesting(closeCode: 4001, reason: reason, connectionAgeSeconds: 3, now: 1_000))
+    XCTAssertNil(service.noteLiveConnectionClosedForTesting(closeCode: 4001, reason: reason, connectionAgeSeconds: 3, now: 1_005))
+    let delay = service.noteLiveConnectionClosedForTesting(closeCode: 4001, reason: reason, connectionAgeSeconds: 3, now: 1_010)
+    XCTAssertEqual(delay, 15_000_000_000)
+    let message = service.lastError ?? ""
+    XCTAssertTrue(message.contains("keeps closing the connection"))
+    XCTAssertTrue(message.contains(reason))
+    XCTAssertTrue(message.contains("15 s"))
+  }
+}

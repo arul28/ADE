@@ -9,7 +9,7 @@ import {
   type LaneInspectorTab,
 } from "../../state/appStore";
 import { isTypingTarget } from "../../lib/typingTarget";
-import { COLORS, LABEL_STYLE, outlineButton, primaryButton } from "./laneDesignTokens";
+import { COLORS, primaryButton } from "./laneDesignTokens";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import {
@@ -25,6 +25,7 @@ import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialog
 import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection, type ManageLaneTab } from "./ManageLaneDialog";
 import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
+import { Dialog } from "../ui/dialog";
 import {
   buildLaneActionClearedSearch,
   laneHasAncestor,
@@ -64,6 +65,15 @@ import {
   type LaneStateGroupId,
 } from "./sidebar/laneSidebarModel";
 import { LaneSplitBody } from "./detail/LaneSplitBody";
+import { LaneMachineFilterChips } from "./LaneMachineFilterChips";
+import {
+  foreignLaneKey,
+  machineBlockedReason,
+  pinArg,
+  type MachineLane,
+} from "../../state/laneMachineRouting";
+import { useLanesPageMachines } from "./useLanesPageMachines";
+import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import {
@@ -128,6 +138,8 @@ const LANE_RUNTIME_DATA_REFRESH_DEBOUNCE_MS = 5_000;
 const EMPTY_LANE_IDS: string[] = [];
 const EMPTY_LANE_ID_SET: ReadonlySet<string> = new Set();
 const EMPTY_GROUP_IDS: string[] = [];
+const EMPTY_LANES: LaneSummary[] = [];
+const EMPTY_PRS: PrSummary[] = [];
 
 function mergePrSummariesById(current: PrSummary[], refreshed: PrSummary[]): PrSummary[] {
   if (refreshed.length === 0) return current;
@@ -202,8 +214,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const location = useLocation();
   const navigate = useNavigate();
   const hasProjectSidebar = useHasProjectSidebar();
-  const selectLane = useAppStore((s) => s.selectLane);
-  const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+  const storeSelectLane = useAppStore((s) => s.selectLane);
+  const storeSelectedLaneId = useAppStore((s) => s.selectedLaneId);
   const focusSession = useAppStore((s) => s.focusSession);
   const lanes = useAppStore((s) => s.lanes);
   const lanesLoading = useAppStore((s) => s.lanesLoading);
@@ -214,6 +226,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       action: p.get("action"),
       laneIdsRaw: p.get("laneIds"),
       laneId: p.get("laneId"),
+      /** Owning machine of `laneId` when it is not the tab's (see foreign deep link below). */
+      machineId: p.get("machineId"),
       sessionId: p.get("sessionId"),
       inspectorTab: p.get("inspectorTab"),
       commitSha: p.get("commitSha"),
@@ -227,6 +241,47 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
   const activeProjectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
+
+  /* ---- Lanes on every machine ---- */
+
+  const dedupedLanes = useMemo(() => {
+    // The lanes store can momentarily hold a duplicate lane id (an optimistic
+    // create racing the refreshed list), which would produce duplicate React
+    // keys. Dedupe by id first.
+    const seen = new Set<string>();
+    return lanes.filter((lane) => {
+      if (seen.has(lane.id)) return false;
+      seen.add(lane.id);
+      return true;
+    });
+  }, [lanes]);
+  const {
+    allMachineLanes,
+    foreignLanes,
+    foreignRowByKey,
+    foreignRowByKeyRef,
+    activeMachineId,
+    resolveLaneTarget,
+    multiMachine,
+    selectedLaneId,
+    selectLane,
+    clearForeignSelection,
+    effectiveMachineFilter,
+    setMachineFilter,
+    allViewLanes,
+    visibleLanes,
+    machineFilterChips,
+    machineChipByLaneId,
+    disabledReasonByLaneId,
+    foreignLaneIdSet,
+  } = useLanesPageMachines({
+    active,
+    projectStateKey: activeProjectStateKey,
+    localLanes: dedupedLanes,
+    storeSelectedLaneId,
+    storeSelectLane,
+  });
+
   const getActiveProjectRoot = useCallback(() => {
     return selectActiveProjectRoot(appStore.getState());
   }, [appStore]);
@@ -308,6 +363,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const setDeleteProgressByLaneId = useAppStore((s) => s.setLaneDeleteProgressByLaneId);
   const laneDeleteWarningMessagesRef = useRef<Map<string, string>>(new Map());
   const [managedLaneIds, setManagedLaneIds] = useState<string[]>([]);
+  // Manage dialog for ONE lane on another machine (row key). Separate from the
+  // local dialog: every write it makes is pinned to that lane's machine.
+  const [foreignManageKey, setForeignManageKey] = useState<string | null>(null);
+  const openForeignManageRef = useRef<(row: MachineLane) => void>(() => {});
   const lanePrTagsRequestRef = useRef(0);
   const laneGithubPrTagsRequestRef = useRef(0);
   const laneVisiblePrRefreshRequestedAtRef = useRef<Map<string, number>>(new Map());
@@ -378,17 +437,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
     [laneSnapshots],
   );
-  const dedupedLanes = useMemo(() => {
-    // The lanes store can momentarily hold a duplicate lane id (an optimistic
-    // create racing the refreshed list), which would produce duplicate React
-    // keys. Dedupe by id first.
-    const seen = new Set<string>();
-    return lanes.filter((lane) => {
-      if (seen.has(lane.id)) return false;
-      seen.add(lane.id);
-      return true;
-    });
-  }, [lanes]);
+  const visibleLaneKeySet = useMemo(() => new Set(visibleLanes.map((lane) => lane.id)), [visibleLanes]);
   const sortedLanesRef = useRef(dedupedLanes);
   useEffect(() => {
     sortedLanesRef.current = dedupedLanes;
@@ -400,7 +449,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       .join("\0"),
     [dedupedLanes],
   );
-  const lanesById = useMemo(() => new Map(dedupedLanes.map((lane) => [lane.id, lane])), [dedupedLanes]);
+  const lanesById = useMemo(() => new Map(allViewLanes.map((lane) => [lane.id, lane])), [allViewLanes]);
   const deletingLaneIds = useMemo(() => {
     const ids = new Set<string>();
     for (const progress of Object.values(deleteProgressByLaneId)) {
@@ -409,10 +458,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return ids;
   }, [deleteProgressByLaneId]);
 
-  const allRows = useMemo(() => buildLaneSidebarRows(dedupedLanes), [dedupedLanes]);
+  const allRows = useMemo(() => buildLaneSidebarRows(allViewLanes), [allViewLanes]);
   const sortedSelectableLaneIds = useMemo(
-    () => allRows.map((row) => row.lane.id).filter((laneId) => !deletingLaneIds.has(laneId)),
-    [allRows, deletingLaneIds],
+    () => allRows
+      .map((row) => row.lane.id)
+      .filter((laneId) => !deletingLaneIds.has(laneId) && visibleLaneKeySet.has(laneId)),
+    [allRows, deletingLaneIds, visibleLaneKeySet],
   );
   // Content-stable key: changes only when the id set changes.
   const availableLaneIdsKey = useMemo(
@@ -429,8 +480,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       const tags = selectLaneTabPrTags(lane, lanePrTags, laneGithubPrTags);
       if (tags.length > 0) map.set(lane.id, tags);
     }
+    // Another machine's lanes match only that machine's own PR rows: the tab's
+    // PR list and GitHub snapshot link PRs to the tab machine's lane ids. Its
+    // PR ids are rows in that machine's database, so the tags drop them and
+    // open by GitHub number instead.
+    for (const row of foreignRowByKey.values()) {
+      const tags = selectLaneTabPrTags(row.lane, allMachineLanes.prsByMachineId.get(row.machineId) ?? EMPTY_PRS, []);
+      if (tags.length > 0) map.set(row.key, tags.map((tag) => ({ ...tag, linkedPrId: null })));
+    }
     return map;
-  }, [dedupedLanes, lanePrTags, laneGithubPrTags]);
+  }, [allMachineLanes.prsByMachineId, dedupedLanes, foreignRowByKey, lanePrTags, laneGithubPrTags]);
 
   const laneRuntimeById = useMemo(() => {
     const summaryByLane = new Map<string, LaneListSnapshot["runtime"]>();
@@ -441,13 +500,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [laneSnapshots]);
 
   const filteredLanes = useMemo(() => {
-    if (!laneFilter.trim()) return dedupedLanes;
-    return dedupedLanes.filter((lane) => laneMatchesFilter(lane, laneFilter));
-  }, [dedupedLanes, laneFilter]);
+    if (!laneFilter.trim()) return visibleLanes;
+    return visibleLanes.filter((lane) => laneMatchesFilter(lane, laneFilter));
+  }, [visibleLanes, laneFilter]);
   const filteredLaneIds = useMemo(() => filteredLanes.map((lane) => lane.id), [filteredLanes]);
+  // Agents are read from the tab's machine, so only its own lanes ask.
+  const localFilteredLaneIds = useMemo(
+    () => (foreignRowByKey.size === 0 ? filteredLaneIds : filteredLaneIds.filter((id) => !foreignRowByKey.has(id))),
+    [filteredLaneIds, foreignRowByKey],
+  );
   // Rows are on screen, so their agents are too. The page unmounts off-tab,
   // and `active` gates the roster while it is hidden.
-  const agentsByLaneId = useLaneAgents(active ? filteredLaneIds : EMPTY_LANE_IDS);
+  const agentsByLaneId = useLaneAgents(active ? localFilteredLaneIds : EMPTY_LANE_IDS);
 
   // State group per lane, from data the list already holds (git status,
   // snapshots, PR tags, agents). Pure and cheap; no extra requests.
@@ -487,7 +551,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // The lane in the main area: the store selection when it is usable,
   // otherwise the first lane in the list.
   const detailLaneId = useMemo(() => {
-    const filterActive = laneFilter.trim().length > 0;
+    const filterActive = laneFilter.trim().length > 0 || effectiveMachineFilter !== "all";
     const selectedKept = Boolean(
       selectedLaneId
       && lanesById.has(selectedLaneId)
@@ -497,9 +561,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (selectedKept) return selectedLaneId;
     if (filterActive) return selectableFilteredLaneIds[0] ?? null;
     return selectableFilteredLaneIds[0] ?? sortedSelectableLaneIds[0] ?? null;
-  }, [selectedLaneId, lanesById, deletingLaneIds, filteredLanes, laneFilter, selectableFilteredLaneIds, sortedSelectableLaneIds]);
+  }, [selectedLaneId, lanesById, deletingLaneIds, effectiveMachineFilter, filteredLanes, laneFilter, selectableFilteredLaneIds, sortedSelectableLaneIds]);
   const detailLane = detailLaneId ? lanesById.get(detailLaneId) ?? null : null;
-  const detailLaneIds = useMemo(() => (detailLaneId ? [detailLaneId] : EMPTY_LANE_IDS), [detailLaneId]);
+  const detailForeignRow = detailLaneId ? foreignRowByKey.get(detailLaneId) ?? null : null;
+  // Presence and PR refreshes talk to the tab's machine; a foreign detail lane
+  // has no id there, so it contributes nothing to them.
+  const detailLaneIds = useMemo(
+    () => (detailLaneId && !detailForeignRow ? [detailLaneId] : EMPTY_LANE_IDS),
+    [detailForeignRow, detailLaneId],
+  );
 
   // When the selection moves to a lane inside a collapsed State group (a deep
   // link, a click in the overview's stack), open that group so the row shows.
@@ -548,7 +618,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     };
   }, []);
 
-  const managedLane = selectedLaneId ? lanesById.get(selectedLaneId) ?? null : null;
+  const managedLane = selectedLaneId && !foreignRowByKey.has(selectedLaneId) ? lanesById.get(selectedLaneId) ?? null : null;
   const managedLanes = useMemo(
     () => managedLaneIds.map((id) => lanesById.get(id)).filter((l): l is LaneSummary => l != null && l.laneType !== "primary"),
     [managedLaneIds, lanesById],
@@ -978,7 +1048,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const startChatInLane = useStartChatInLane({
     projectStateKey: activeProjectStateKey,
     setWorkViewState,
-    selectLane,
+    selectLane: storeSelectLane,
     navigate,
     boundMachineId: machineIdForBinding(projectBinding),
   });
@@ -1056,8 +1126,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, [deletingLaneIds, detailLaneId, lanesById, selectDetailLane, selectableFilteredLaneIds]);
 
   const handleRowContextMenu = useCallback((laneId: string, event: React.MouseEvent) => {
+    const foreignRow = foreignRowByKey.get(laneId);
+    // Nothing on an unreachable machine can be acted on.
+    if (foreignRow && machineBlockedReason(foreignRow)) return;
     setLaneContextMenu({ laneId, x: event.clientX, y: event.clientY });
-  }, []);
+  }, [foreignRowByKey]);
 
   // The overview's "…" button opens the same menu, just under the button.
   const openLaneMenuAt = useCallback((laneId: string, anchor: DOMRect) => {
@@ -1158,9 +1231,25 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
     await runLaneAction(async () => {
+      // A mixed selection is split per machine: each lane goes to its own
+      // machine's pin; nothing foreign is ever sent unpinned.
+      const errors: string[] = [];
+      const touchedMachineIds = new Set<string>();
       for (const lane of actionable) {
-        await window.ade.lanes.archive({ laneId: lane.id });
+        const target = resolveLaneTarget(lane.id);
+        if (!target.ok) {
+          errors.push(`${lane.name}: ${target.reason}`);
+          continue;
+        }
+        try {
+          await window.ade.lanes.archive({ laneId: target.laneId }, ...pinArg(target.pin));
+          if (target.machineId && target.pin) touchedMachineIds.add(target.machineId);
+        } catch (err) {
+          errors.push(`${lane.name}: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
+      for (const machineId of touchedMachineIds) requestCrossMachineLanesForMachine(machineId);
+      if (errors.length > 0) throw new Error(errors.join("\n"));
     }, actionable.length > 1 ? `Archiving ${actionable.length} lanes...` : "Archiving lane...", "archive");
   };
 
@@ -1262,6 +1351,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
     for (const lane of actionable) {
+      // Keyed by row key; `args.laneId` is filled with the lane's real id on
+      // its own machine at run time (see the runner below).
       const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
       args.deleteBranch = deleteSelection.localBranch;
       if (deleteSelection.remoteBranch) {
@@ -1321,7 +1412,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           async (lane) => {
             const args = deleteArgsByLaneId.get(lane.id);
             if (!args) return;
-            await window.ade.lanes.delete(args);
+            const target = resolveLaneTarget(lane.id);
+            if (!target.ok) throw new Error(target.reason);
+            await window.ade.lanes.delete({ ...args, laneId: target.laneId }, ...pinArg(target.pin));
+            if (target.pin && target.machineId) requestCrossMachineLanesForMachine(target.machineId);
           },
         );
         results.forEach((result) => {
@@ -1343,18 +1437,29 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   };
 
   const openBatchManage = useCallback((laneIds: string[], initialTab: ManageLaneTab | null = null) => {
+    // A mixed selection is fine: archive/delete split it per machine and pin
+    // each lane to its own. Unreachable machines' lanes are left out.
     const manageable = laneIds.filter((id) => {
+      const foreignRow = foreignRowByKey.get(id);
+      if (foreignRow && machineBlockedReason(foreignRow)) return false;
       const lane = lanesById.get(id);
       return lane && lane.laneType !== "primary" && !deletingLaneIds.has(id);
     });
     if (manageable.length === 0) return;
+    // One foreign lane alone gets the pinned single-lane dialog (its delete
+    // risk, restack and appearance read from its machine).
+    const loneForeign = manageable.length === 1 ? foreignRowByKey.get(manageable[0]!) : undefined;
+    if (loneForeign) {
+      openForeignManageRef.current(loneForeign);
+      return;
+    }
     setManageInitialTab(initialTab);
     setManagedLaneIds(manageable);
     setLaneActionError(null);
     setDeleteForce(true);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
-  }, [lanesById, deletingLaneIds]);
+  }, [foreignRowByKey, lanesById, deletingLaneIds]);
 
   const requestRebaseScope = useCallback((laneId: string) => {
     const laneName = lanesById.get(laneId)?.name ?? laneId;
@@ -1377,24 +1482,39 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
   }, []);
 
-  const runRebaseFlow = useCallback(async (laneId: string, mode: "local_only" | "local_and_remote") => {
+  /**
+   * `laneKey` is a row key. A lane on another machine rebases on that machine:
+   * the run and its push are pinned there, the run's lane ids are that
+   * machine's, and the PRs tab's rebase view (the tab's machine only) is not
+   * opened for it.
+   */
+  const runRebaseFlow = useCallback(async (laneKey: string, mode: "local_only" | "local_and_remote") => {
     setRebaseSuggestionError(null);
+    const target = resolveLaneTarget(laneKey);
+    if (!target.ok) {
+      setRebaseSuggestionError(target.reason);
+      return;
+    }
+    const pinned = target.pin != null;
+    const nameOnMachine = (laneId: string) => (pinned && target.machineId
+      ? foreignRowByKeyRef.current.get(foreignLaneKey(target.machineId, laneId))?.lane.name
+      : lanesById.get(laneId)?.name) ?? laneId;
     try {
-      const scope = await requestRebaseScope(laneId);
+      const scope = await requestRebaseScope(laneKey);
       if (!scope) return;
 
       const start = await window.ade.lanes.rebaseStart({
-        laneId,
+        laneId: target.laneId,
         scope,
         pushMode: mode === "local_and_remote" ? "review_then_push" : "none",
         actor: "user"
-      });
+      }, ...pinArg(target.pin));
 
       if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
-        const failedLane = start.run.failedLaneId ? lanesById.get(start.run.failedLaneId)?.name ?? start.run.failedLaneId : null;
+        const failedLane = start.run.failedLaneId ? nameOnMachine(start.run.failedLaneId) : null;
         const detail = start.run.error ?? "Rebase failed.";
         setRebaseSuggestionError(`Rebase needs attention${failedLane ? ` for ${failedLane}` : ""}. ${detail}`);
-        navigate("/prs?tab=workflows&workflow=rebase");
+        if (!pinned) navigate("/prs?tab=workflows&workflow=rebase");
         return;
       }
 
@@ -1402,28 +1522,32 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         const laneIds = await requestPushSelection(start.run);
         if (laneIds == null) return;
         if (laneIds.length > 0) {
-          await window.ade.lanes.rebasePush({ runId: start.runId, laneIds });
+          await window.ade.lanes.rebasePush({ runId: start.runId, laneIds }, ...pinArg(target.pin));
         }
       }
 
       try {
-        await refreshLanes();
+        if (pinned && target.machineId) requestCrossMachineLanesForMachine(target.machineId);
+        else await refreshLanes();
       } catch (refreshErr) {
         console.error("Lane refresh failed:", refreshErr);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setRebaseSuggestionError(message);
-      navigate("/prs?tab=workflows&workflow=rebase");
+      if (!pinned) navigate("/prs?tab=workflows&workflow=rebase");
     }
-  }, [lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope]);
+  }, [foreignRowByKeyRef, lanesById, navigate, refreshLanes, requestPushSelection, requestRebaseScope, resolveLaneTarget]);
 
   // Group header bulk actions. Archive and delete go through the same batch
   // manage dialog as Cmd-click (it lists the lanes and confirms); rebase has
   // its own confirm step. Primary is never in a group, and is filtered again.
   const handleGroupBulkAction = useCallback((action: LaneGroupBulkAction, laneIds: string[]) => {
     if (action === "rebase") {
+      // Each lane rebases on its own machine (see `rebaseLaneForBulk`).
       const targets = laneIds.filter((id) => {
+        const foreignRow = foreignRowByKey.get(id);
+        if (foreignRow && machineBlockedReason(foreignRow)) return false;
         const lane = lanesById.get(id);
         return lane && lane.laneType !== "primary" && !deletingLaneIds.has(id);
       });
@@ -1431,17 +1555,23 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       return;
     }
     openBatchManage(laneIds, action);
-  }, [deletingLaneIds, lanesById, openBatchManage]);
+  }, [deletingLaneIds, foreignRowByKey, lanesById, openBatchManage]);
 
   // One lane of "Rebase all": the rebase the Git pane's "Rebase now" runs,
   // scoped to this lane only and without a push.
-  const rebaseLaneForBulk = useCallback(async (laneId: string): Promise<string | null> => {
-    const start = await window.ade.lanes.rebaseStart({ laneId, scope: "lane_only", pushMode: "none", actor: "user" });
+  const rebaseLaneForBulk = useCallback(async (laneKey: string): Promise<string | null> => {
+    const target = resolveLaneTarget(laneKey);
+    if (!target.ok) return target.reason;
+    const start = await window.ade.lanes.rebaseStart(
+      { laneId: target.laneId, scope: "lane_only", pushMode: "none", actor: "user" },
+      ...pinArg(target.pin),
+    );
+    if (target.pin && target.machineId) requestCrossMachineLanesForMachine(target.machineId);
     if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
       return start.run.error ?? "Rebase failed.";
     }
     return null;
-  }, []);
+  }, [resolveLaneTarget]);
 
   const bulkRebaseTargets = useMemo((): LaneBulkRebaseTarget[] => {
     if (!bulkRebaseLaneIds) return [];
@@ -1667,6 +1797,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     consumedLaneIdsDeepLinkSignatureRef.current = null;
     const laneId = urlLaneDeeplinks.laneId;
     if (!laneId) return;
+    // A link that names another machine is resolved by the effect below; the
+    // bare id must not select a same-id lane on this tab's machine.
+    if (urlLaneDeeplinks.machineId && urlLaneDeeplinks.machineId !== activeMachineId) return;
     if (deletingLaneIds.has(laneId)) return;
     selectLane(laneId);
     if (urlLaneDeeplinks.inspectorTab) {
@@ -1674,9 +1807,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [
     active,
+    activeMachineId,
     urlLaneDeeplinks.action,
     urlLaneDeeplinks.laneIdsRaw,
     urlLaneDeeplinks.laneId,
+    urlLaneDeeplinks.machineId,
     urlLaneDeeplinks.inspectorTab,
     deletingLaneIds,
     selectLane,
@@ -1742,6 +1877,48 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     urlLaneDeeplinks.laneIdsRaw,
   ]);
 
+  // ?laneId=X&machineId=M selects lane X on machine M. Without machineId, a
+  // lane id this tab's machine does not have resolves to the one other machine
+  // that reports it (never guessed when two do). Waits for the union to list
+  // the lane, then applies once per navigation.
+  const consumedForeignDeepLinkRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!active) return;
+    if (urlLaneDeeplinks.action || urlLaneDeeplinks.laneIdsRaw) return;
+    const laneId = urlLaneDeeplinks.laneId?.trim();
+    if (!laneId) return;
+    const machineId = urlLaneDeeplinks.machineId?.trim() || null;
+    const signature = `${location.key}|${laneId}|${machineId ?? ""}`;
+    if (consumedForeignDeepLinkRef.current === signature) return;
+    let key: string | null = null;
+    if (machineId && machineId !== activeMachineId) {
+      const candidate = foreignLaneKey(machineId, laneId);
+      if (foreignRowByKey.has(candidate)) key = candidate;
+    } else if (!machineId && !dedupedLanes.some((lane) => lane.id === laneId)) {
+      const matches = [...foreignRowByKey.values()].filter((row) => row.lane.id === laneId);
+      if (matches.length === 1) key = matches[0]!.key;
+    }
+    if (!key) return;
+    consumedForeignDeepLinkRef.current = signature;
+    if (effectiveMachineFilter !== "all" && effectiveMachineFilter !== foreignRowByKey.get(key)?.machineId) {
+      setMachineFilter("all");
+    }
+    selectLane(key);
+  }, [
+    active,
+    activeMachineId,
+    dedupedLanes,
+    effectiveMachineFilter,
+    foreignRowByKey,
+    location.key,
+    selectLane,
+    setMachineFilter,
+    urlLaneDeeplinks.action,
+    urlLaneDeeplinks.laneId,
+    urlLaneDeeplinks.laneIdsRaw,
+    urlLaneDeeplinks.machineId,
+  ]);
+
   useEffect(() => {
     if (!urlLaneDeeplinks.sessionId) return;
     focusSession(urlLaneDeeplinks.sessionId);
@@ -1797,15 +1974,15 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, []);
 
   // Index real lanes by the Linear issue they carry so a placeholder row can
-  // resolve into its real lane the moment that lane materializes.
+  // resolve into its real lane the moment that lane materializes, on any machine.
   const laneIdByLinearIssueId = useMemo(() => {
     const map = new Map<string, string>();
-    for (const lane of dedupedLanes) {
+    for (const lane of allViewLanes) {
       const issueId = lane.linearIssue?.id;
       if (issueId && !map.has(issueId)) map.set(issueId, lane.id);
     }
     return map;
-  }, [dedupedLanes]);
+  }, [allViewLanes]);
 
   const pendingCreatingIssues = useMemo(
     () => creatingIssues.filter((placeholder) => !laneIdByLinearIssueId.has(placeholder.issueId)),
@@ -1830,12 +2007,20 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   // After the lane record exists and the list is refreshed, select the new
   // lane (the host keeps streaming env-setup progress in the dialog).
-  const handleLaneCreated = useCallback((lane: LaneSummary) => {
-    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}`);
+  const handleLaneCreated = useCallback((lane: LaneSummary, machine?: { machineId: string; pin: unknown }) => {
+    // A lane created on another machine is selected through its machine, so
+    // the bare id cannot pick a same-id lane on this tab's machine.
+    const machineParam = machine?.pin ? `&machineId=${encodeURIComponent(machine.machineId)}` : "";
+    navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}${machineParam}`);
   }, [navigate]);
 
   const openManageDialog = useCallback((laneId: string) => {
     if (deletingLaneIds.has(laneId)) return;
+    const foreignRow = foreignRowByKeyRef.current.get(laneId);
+    if (foreignRow) {
+      openForeignManageRef.current(foreignRow);
+      return;
+    }
     selectLane(laneId);
     setManageInitialTab(null);
     setManagedLaneIds([laneId]);
@@ -1843,7 +2028,100 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setDeleteForce(true);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
-  }, [deletingLaneIds, selectLane]);
+  }, [deletingLaneIds, foreignRowByKeyRef, selectLane]);
+
+  /* ---- Lanes on other machines: manage, archive, delete ---- */
+
+  const foreignManageRow = foreignManageKey ? foreignRowByKey.get(foreignManageKey) ?? null : null;
+  const foreignManageSessionCount = useMemo(() => {
+    if (!foreignManageRow) return undefined;
+    const sessions = allMachineLanes.sessionsByMachineId.get(foreignManageRow.machineId) ?? [];
+    return sessions.filter((session) => session.laneId === foreignManageRow.lane.id && session.status === "running").length;
+  }, [allMachineLanes.sessionsByMachineId, foreignManageRow]);
+  // The lane left its machine's list (deleted elsewhere, machine gone): close.
+  useEffect(() => {
+    if (foreignManageKey && !foreignManageRow && !laneActionBusy) setForeignManageKey(null);
+  }, [foreignManageKey, foreignManageRow, laneActionBusy]);
+
+  const openForeignManage = useCallback((row: MachineLane) => {
+    if (machineBlockedReason(row) || row.lane.laneType === "primary") return;
+    setLaneActionError(null);
+    setDeleteForce(true);
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+    setForeignManageKey(row.key);
+  }, []);
+  openForeignManageRef.current = openForeignManage;
+
+  /**
+   * Run one archive/delete against a lane on another machine. The target is
+   * re-resolved from its row key at click time, so the pin is always the one
+   * of the machine that reports this lane right now — never the tab's.
+   */
+  const runForeignLaneAction = useCallback(async (
+    kind: "delete" | "archive",
+    status: string,
+    fn: (row: MachineLane & { pin: NonNullable<MachineLane["pin"]> }) => Promise<void>,
+  ) => {
+    const key = foreignManageKey;
+    const row = key ? foreignRowByKeyRef.current.get(key) ?? null : null;
+    if (!row || row.lane.laneType === "primary") return;
+    const reason = machineBlockedReason(row);
+    if (reason || !row.pin) {
+      setLaneActionError(reason ?? `${row.machineName} is unavailable`);
+      return;
+    }
+    const target = { ...row, pin: row.pin };
+    setLaneActionBusy(true);
+    setLaneActionKind(kind);
+    setLaneActionStatus(status);
+    setLaneActionError(null);
+    try {
+      await fn(target);
+      clearForeignSelection(row.key);
+      setForeignManageKey(null);
+      setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+    } catch (err) {
+      setLaneActionError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLaneActionBusy(false);
+      setLaneActionStatus(null);
+      setLaneActionKind(null);
+      // That machine has no change feed here; ask the shared union to re-read it.
+      requestCrossMachineLanesForMachine(row.machineId);
+    }
+  }, [clearForeignSelection, foreignManageKey, foreignRowByKeyRef]);
+
+  const archiveForeignLane = useCallback(() => runForeignLaneAction(
+    "archive",
+    "Archiving lane...",
+    (row) => window.ade.lanes.archive({ laneId: row.lane.id }, row.pin),
+  ), [runForeignLaneAction]);
+
+  const deleteForeignLane = useCallback(() => runForeignLaneAction(
+    "delete",
+    "Deleting lane...",
+    async (row) => {
+      const args: DeleteLaneArgs = {
+        laneId: row.lane.id,
+        force: deleteForce,
+        deleteBranch: deleteSelection.localBranch,
+      };
+      if (deleteSelection.remoteBranch) {
+        args.deleteRemoteBranch = true;
+        args.remoteName = "origin";
+      }
+      await window.ade.lanes.delete(args, row.pin);
+    },
+  ), [deleteForce, deleteSelection, runForeignLaneAction]);
+
+  const contextMenuForeignRow = laneContextMenu ? foreignRowByKey.get(laneContextMenu.laneId) ?? null : null;
+  const contextMenuForeignLanesById = useMemo(
+    () => new Map(
+      (contextMenuForeignRow ? foreignLanes.realLanesByMachineId.get(contextMenuForeignRow.machineId) ?? EMPTY_LANES : EMPTY_LANES)
+        .map((lane) => [lane.id, lane] as const),
+    ),
+    [contextMenuForeignRow, foreignLanes.realLanesByMachineId],
+  );
 
   const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
     const name = typeof props?.name === "string" ? props.name.trim() : "";
@@ -1878,7 +2156,33 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const refreshLaneAppearance = useCallback(() => refreshLanes({ includeStatus: false }).catch(() => {}), [refreshLanes]);
   const clearMultiSelection = useCallback(() => setMultiSelectedLaneIds(EMPTY_LANE_ID_SET), []);
   const closeContextMenu = useCallback(() => setLaneContextMenu(null), []);
+  // Row keys across machines; batch manage splits them per machine.
   const multiSelectedList = useMemo(() => [...multiSelectedLaneIds], [multiSelectedLaneIds]);
+
+  /* ---- Machine chips ---- */
+
+  const machineFilterToolbar = multiMachine ? (
+    <LaneMachineFilterChips
+      machines={[...machineFilterChips.values()]}
+      value={effectiveMachineFilter}
+      onChange={setMachineFilter}
+    />
+  ) : null;
+
+  // The foreign detail lane's neighbours (stack, parent) are that machine's
+  // lanes, which the dashboard names by their real ids.
+  const foreignDetailMaps = useMemo(() => {
+    if (!detailForeignRow) return null;
+    const colorIndexByRealId = new Map<string, number>();
+    const prTagsByRealId = new Map<string, LaneTabPrTag[]>();
+    for (const lane of foreignLanes.realLanesByMachineId.get(detailForeignRow.machineId) ?? EMPTY_LANES) {
+      const key = foreignLaneKey(detailForeignRow.machineId, lane.id);
+      colorIndexByRealId.set(lane.id, colorIndexByLaneId.get(key) ?? 0);
+      const tags = lanePrTagsByLaneId.get(key);
+      if (tags) prTagsByRealId.set(lane.id, tags);
+    }
+    return { colorIndexByRealId, prTagsByRealId };
+  }, [colorIndexByLaneId, detailForeignRow, foreignLanes.realLanesByMachineId, lanePrTagsByLaneId]);
 
   /* ---- Render ---- */
 
@@ -1898,7 +2202,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       canCreateLane={canCreateLane}
       onCreateLane={() => openCreateDialog()}
       loading={lanesLoading}
-      totalLaneCount={dedupedLanes.length}
+      totalLaneCount={visibleLanes.length}
       laneRuntimeById={laneRuntimeById}
       laneSnapshotByLaneId={laneSnapshotByLaneId}
       agentsByLaneId={agentsByLaneId}
@@ -1915,6 +2219,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       onOpenPr={handleOpenPr}
       onOpenAgent={handleOpenAgent}
       onClearMultiSelection={clearMultiSelection}
+      machineChipByLaneId={machineChipByLaneId}
+      disabledReasonByLaneId={disabledReasonByLaneId}
+      foreignLaneIds={foreignLaneIdSet}
+      toolbar={machineFilterToolbar}
     />
   );
 
@@ -1956,6 +2264,73 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 </button>
               </div>
             ) : null}
+            {detailForeignRow ? (
+              machineBlockedReason(detailForeignRow) ? (
+                <div
+                  className="flex flex-1 flex-col items-center justify-center gap-2 px-6 text-center"
+                  data-testid="lane-detail-machine-unavailable"
+                >
+                  <div className="text-[13px] font-medium" style={{ color: COLORS.textPrimary }}>{detailForeignRow.lane.name}</div>
+                  <div className="text-[12px]" style={{ color: COLORS.textMuted }}>
+                    {machineBlockedReason(detailForeignRow)}. Its lane is shown as last reported and cannot be acted on.
+                  </div>
+                </div>
+              ) : (
+                <LaneSplitBody
+                  left={(
+                    <LaneDashboard
+                      key={`lanes-dashboard:${detailLaneId}`}
+                      laneId={detailForeignRow.lane.id}
+                      colorIndex={detailColorIndex}
+                      active={active}
+                      colorIndexByLaneId={foreignDetailMaps?.colorIndexByRealId ?? colorIndexByLaneId}
+                      prTagsByLaneId={foreignDetailMaps?.prTagsByRealId ?? lanePrTagsByLaneId}
+                      onSelectLane={(realLaneId) => selectDetailLane(foreignLaneKey(detailForeignRow.machineId, realLaneId))}
+                      onOpenPrTag={handleOpenPr}
+                      onOpenLaneMenu={(_realLaneId, anchor) => openLaneMenuAt(detailLaneId, anchor)}
+                      // Rebase suggestions and runs are the tab machine's only.
+                      showRebaseSuggestions={false}
+                      rebaseError={rebaseSuggestionError}
+                      onOpenRebase={() => {}}
+                      onDismissRebaseSuggestion={() => {}}
+                      onDismissAutoRebase={() => {}}
+                      onStartChat={(realLaneId) => startChatInLane(realLaneId, { machineId: detailForeignRow.machineId })}
+                      onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
+                      machine={detailForeignRow.pin ? {
+                        pin: detailForeignRow.pin,
+                        machineName: detailForeignRow.machineName,
+                        lanes: foreignLanes.realLanesByMachineId.get(detailForeignRow.machineId) ?? EMPTY_LANES,
+                        prs: allMachineLanes.prsByMachineId.get(detailForeignRow.machineId) ?? EMPTY_PRS,
+                      } : null}
+                    />
+                  )}
+                  right={(
+                    <div className="flex h-full min-h-0 flex-col" data-tour="lanes.gitActionsPane">
+                      <LaneGitActionsPane
+                        // Keyed by row key: the same lane id on two machines is two panes.
+                        key={`lanes-git:${detailLaneId}`}
+                        laneId={detailForeignRow.lane.id}
+                        runtimePin={detailForeignRow.pin}
+                        active={active}
+                        autoRebaseEnabled={false}
+                        onOpenSettings={openAutoRebaseSettings}
+                        // Pinned to the lane's machine via its row key; the
+                        // pane's own id argument is that machine's lane id.
+                        onRebaseNowLocal={() => runRebaseFlow(detailLaneId, "local_only")}
+                        onRebaseAndPush={() => runRebaseFlow(detailLaneId, "local_and_remote")}
+                        selectedPath={laneDetail.selectedFilePath}
+                        selectedMode={laneDetail.selectedFileMode}
+                        selectedCommit={laneDetail.selectedCommit ?? null}
+                        selectedCommitSha={laneDetail.selectedCommit?.sha ?? null}
+                        onSelectFile={(path, mode) => handleSelectFile(detailLaneId, path, mode)}
+                        onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
+                        onClearDiffSelection={() => handleClearLanePaneDetailSelection(detailLaneId)}
+                      />
+                    </div>
+                  )}
+                />
+              )
+            ) : (
             <LaneSplitBody
               left={(
                 <LaneDashboard
@@ -2003,17 +2378,18 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 </div>
               )}
             />
+            )}
           </>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3">
             <div className="text-[13px]" style={{ color: COLORS.textMuted }}>
-              {lanesLoading && dedupedLanes.length === 0
+              {lanesLoading && visibleLanes.length === 0
                 ? "Loading lanes…"
-                : dedupedLanes.length === 0
+                : visibleLanes.length === 0
                   ? "No lanes yet."
                   : "No lane matches the filter."}
             </div>
-            {!lanesLoading || dedupedLanes.length > 0 ? (
+            {!lanesLoading || visibleLanes.length > 0 ? (
               <button
                 type="button"
                 data-tour={hasProjectSidebar ? undefined : "lanes.newLane"}
@@ -2028,7 +2404,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         )}
       </main>
 
-      {laneContextMenu ? (
+      {laneContextMenu && !contextMenuForeignRow ? (
         <LaneSidebarContextMenu
           menu={laneContextMenu}
           lanesById={lanesById}
@@ -2039,6 +2415,22 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           selectLane={selectDetailLane}
           onAppearanceChanged={refreshLaneAppearance}
           onStartChatInLane={startChatInLane}
+        />
+      ) : null}
+      {laneContextMenu && contextMenuForeignRow?.pin ? (
+        // Same menu, addressed to the lane's own machine: real lane ids, that
+        // machine's lane list, and its pin on every write.
+        <LaneSidebarContextMenu
+          menu={{ laneId: contextMenuForeignRow.lane.id, x: laneContextMenu.x, y: laneContextMenu.y }}
+          lanesById={contextMenuForeignLanesById}
+          selectedLaneIds={EMPTY_LANE_IDS}
+          onClose={closeContextMenu}
+          onManage={() => openForeignManage(contextMenuForeignRow)}
+          onBatchManage={() => {}}
+          selectLane={(realLaneId) => selectDetailLane(foreignLaneKey(contextMenuForeignRow.machineId, realLaneId))}
+          onAppearanceChanged={() => requestCrossMachineLanesForMachine(contextMenuForeignRow.machineId)}
+          onStartChatInLane={(realLaneId) => startChatInLane(realLaneId, { machineId: contextMenuForeignRow.machineId })}
+          runtimePin={contextMenuForeignRow.pin}
         />
       ) : null}
 
@@ -2064,6 +2456,30 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         initialTab={manageInitialTab}
       />
 
+      {foreignManageRow?.pin ? (
+        <ManageLaneDialog
+          open
+          onOpenChange={(open) => { if (!open && !laneActionBusy) setForeignManageKey(null); }}
+          managedLane={foreignManageRow.lane}
+          managedLanes={[foreignManageRow.lane]}
+          allLanes={foreignLanes.realLanesByMachineId.get(foreignManageRow.machineId) ?? EMPTY_LANES}
+          deleteSelection={deleteSelection}
+          setDeleteSelection={setDeleteSelection}
+          deleteForce={deleteForce}
+          setDeleteForce={setDeleteForce}
+          chatSessionCount={foreignManageSessionCount}
+          laneActionBusy={laneActionBusy}
+          laneActionStatus={laneActionStatus}
+          laneActionError={laneActionError}
+          laneActionKind={laneActionKind}
+          onArchive={() => { void archiveForeignLane(); }}
+          onDelete={() => { void deleteForeignLane(); }}
+          onAppearanceChanged={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
+          onStackReorganized={() => requestCrossMachineLanesForMachine(foreignManageRow.machineId)}
+          runtimePin={foreignManageRow.pin}
+        />
+      ) : null}
+
       <LaneSidebarBulkRebaseDialog
         open={bulkRebaseLaneIds != null}
         targets={bulkRebaseTargets}
@@ -2084,107 +2500,104 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       />
 
       {rebaseScopePrompt ? (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(520px, 100%)", background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 20 }}>
-            <div style={{ ...LABEL_STYLE, color: COLORS.accent }}>REBASE SCOPE</div>
-            <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
-              Choose how to rebase <strong>{rebaseScopePrompt.laneName}</strong>.
-            </div>
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-              <button
-                type="button"
-                style={outlineButton({ height: 34, padding: "0 10px", fontSize: 11 })}
-                onClick={() => {
-                  rebaseScopePrompt.resolve("lane_only");
-                  setRebaseScopePrompt(null);
-                }}
-              >
-                CURRENT LANE ONLY
-              </button>
-              <button
-                type="button"
-                style={primaryButton({ height: 34, padding: "0 10px", fontSize: 11 })}
-                onClick={() => {
-                  rebaseScopePrompt.resolve("lane_and_descendants");
-                  setRebaseScopePrompt(null);
-                }}
-              >
-                LANE + CHILDREN
-              </button>
-            </div>
-            <div className="flex justify-end" style={{ marginTop: 12 }}>
-              <button
-                type="button"
-                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 10 })}
-                onClick={() => {
-                  rebaseScopePrompt.resolve(null);
-                  setRebaseScopePrompt(null);
-                }}
-              >
-                CANCEL
-              </button>
-            </div>
-          </div>
-        </div>
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            rebaseScopePrompt.resolve(null);
+            setRebaseScopePrompt(null);
+          }}
+          title="Rebase scope"
+          description={`Choose how to rebase ${rebaseScopePrompt.laneName}.`}
+          size="sm"
+          actions={[
+            {
+              label: "Cancel",
+              variant: "secondary",
+              onClick: () => {
+                rebaseScopePrompt.resolve(null);
+                setRebaseScopePrompt(null);
+              },
+            },
+            {
+              label: "Current lane only",
+              variant: "secondary",
+              onClick: () => {
+                rebaseScopePrompt.resolve("lane_only");
+                setRebaseScopePrompt(null);
+              },
+            },
+            {
+              label: "Lane + children",
+              variant: "solid",
+              autoFocus: true,
+              onClick: () => {
+                rebaseScopePrompt.resolve("lane_and_descendants");
+                setRebaseScopePrompt(null);
+              },
+            },
+          ]}
+        />
       ) : null}
 
       {rebasePushReview ? (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center p-4" style={{ background: "rgba(0,0,0,0.55)" }}>
-          <div style={{ width: "min(620px, 100%)", background: COLORS.cardBgSolid, backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 16, padding: 20 }}>
-            <div style={{ ...LABEL_STYLE, color: COLORS.accent }}>REVIEW THEN PUSH</div>
-            <div style={{ marginTop: 10, fontSize: 13, color: COLORS.textPrimary }}>
-              Select rebased lanes to push to remote.
-            </div>
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8, maxHeight: 240, overflowY: "auto" }}>
-              {rebasePushReview.lanes.map((lane) => (
-                <label
-                  key={lane.laneId}
-                  className="flex items-center gap-2"
-                  style={{ fontSize: 12, color: COLORS.textSecondary, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 10px" }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={lane.selected}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setRebasePushReview((prev) => {
-                        if (!prev) return prev;
-                        return {
-                          ...prev,
-                          lanes: prev.lanes.map((entry) => entry.laneId === lane.laneId ? { ...entry, selected: checked } : entry)
-                        };
-                      });
-                    }}
-                  />
-                  <span className="truncate">{lane.laneName}</span>
-                </label>
-              ))}
-            </div>
-            <div className="flex items-center justify-end gap-2" style={{ marginTop: 12 }}>
-              <button
-                type="button"
-                style={outlineButton({ height: 30, padding: "0 10px", fontSize: 10 })}
-                onClick={() => {
-                  rebasePushReview.resolve(null);
-                  setRebasePushReview(null);
-                }}
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (open) return;
+            rebasePushReview.resolve(null);
+            setRebasePushReview(null);
+          }}
+          title="Review then push"
+          description="Select rebased lanes to push to remote."
+          size="md"
+          actions={[
+            {
+              label: "Cancel",
+              variant: "secondary",
+              onClick: () => {
+                rebasePushReview.resolve(null);
+                setRebasePushReview(null);
+              },
+            },
+            {
+              label: "Push selected",
+              variant: "solid",
+              autoFocus: true,
+              onClick: () => {
+                const laneIds = rebasePushReview.lanes.filter((lane) => lane.selected).map((lane) => lane.laneId);
+                rebasePushReview.resolve(laneIds);
+                setRebasePushReview(null);
+              },
+            },
+          ]}
+        >
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 240, overflowY: "auto" }}>
+            {rebasePushReview.lanes.map((lane) => (
+              <label
+                key={lane.laneId}
+                className="flex items-center gap-2"
+                style={{ fontSize: 12, color: COLORS.textSecondary, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 10px" }}
               >
-                CANCEL
-              </button>
-              <button
-                type="button"
-                style={primaryButton({ height: 30, padding: "0 10px", fontSize: 10 })}
-                onClick={() => {
-                  const laneIds = rebasePushReview.lanes.filter((lane) => lane.selected).map((lane) => lane.laneId);
-                  rebasePushReview.resolve(laneIds);
-                  setRebasePushReview(null);
-                }}
-              >
-                PUSH SELECTED
-              </button>
-            </div>
+                <input
+                  type="checkbox"
+                  checked={lane.selected}
+                  onChange={(event) => {
+                    const checked = event.target.checked;
+                    setRebasePushReview((prev) => {
+                      if (!prev) return prev;
+                      return {
+                        ...prev,
+                        lanes: prev.lanes.map((entry) => entry.laneId === lane.laneId ? { ...entry, selected: checked } : entry)
+                      };
+                    });
+                  }}
+                />
+                <span className="truncate">{lane.laneName}</span>
+              </label>
+            ))}
           </div>
-        </div>
+        </Dialog>
       ) : null}
     </div>
   );

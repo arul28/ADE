@@ -4,21 +4,33 @@ import path from "node:path";
 import type { AgentChatSessionSummary } from "../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { ProjectLaunchContext } from "./types";
+import { gitOwnershipMessage, parseGitOwnershipError } from "../services/projects/gitOwnership";
 
 function normalizeRoot(value: string): string {
   return path.resolve(value);
 }
+
+let reportedUntrustedGitFolder = false;
 
 function findGitRoot(cwd: string): string | null {
   try {
     const stdout = execFileSync("git", ["rev-parse", "--show-toplevel"], {
       cwd,
       encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     const root = stdout.trim();
     return root ? path.resolve(root) : null;
-  } catch {
+  } catch (error) {
+    // Git refuses folders that belong to another account; say why once
+    // (before the TUI takes the screen) instead of silently losing the root.
+    const stderr = String((error as { stderr?: unknown } | null)?.stderr ?? "");
+    const ownership = parseGitOwnershipError(stderr);
+    if (ownership && !reportedUntrustedGitFolder) {
+      reportedUntrustedGitFolder = true;
+      process.stderr.write(`ade: ${gitOwnershipMessage(ownership)}\n`);
+    }
     return null;
   }
 }

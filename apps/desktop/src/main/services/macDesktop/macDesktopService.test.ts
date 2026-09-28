@@ -22,6 +22,7 @@ import {
 import { createMacDesktopService } from "./macDesktopService";
 import { MAC_DESKTOP_STREAM_STALE_MS } from "./macDesktopStreaming";
 import { readProofProvenance } from "../../../shared/proofProvenance";
+import type { DemoEngine } from "../../../shared/demoVideo/demoContract";
 
 const logger = {
   debug: () => {},
@@ -65,7 +66,20 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
     async request(op: string, payload: Record<string, unknown> = {}) {
       calls.push({ op, payload });
       const override = overrides[op];
-      if (override) return override(payload);
+      if (override) {
+        const result = override(payload);
+        if (op === MAC_DESKTOP_DRIVER_OPS.stopRecording && result && typeof result === "object") {
+          const started = calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording).at(-1);
+          const rawPath = started?.payload.filePath;
+          if (typeof rawPath === "string") {
+            fs.mkdirSync(path.dirname(rawPath), { recursive: true });
+            const values = result as Record<string, unknown>;
+            fs.writeFileSync(rawPath, String(values.wallDurationMs ?? values.durationMs ?? 1_200));
+            return { ...(result as Record<string, unknown>), filePath: rawPath };
+          }
+        }
+        return result;
+      }
       switch (op) {
         case MAC_DESKTOP_DRIVER_OPS.health:
           return { version: "1.0.0", permissions: { screenRecording: "granted", accessibility: "granted" }, displayMode: "virtual" };
@@ -87,6 +101,16 @@ function createFakeDriver(overrides: Record<string, (payload: Record<string, unk
           return { destroyed: true, releasedWindows: 0 };
         case MAC_DESKTOP_DRIVER_OPS.reconcileDisplays:
           return { destroyed: [] };
+        case MAC_DESKTOP_DRIVER_OPS.startRecording:
+          if (typeof payload.filePath === "string") {
+            fs.mkdirSync(path.dirname(payload.filePath), { recursive: true });
+            fs.writeFileSync(payload.filePath, "1200");
+          }
+          return {};
+        case MAC_DESKTOP_DRIVER_OPS.stopRecording: {
+          const started = calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording).at(-1);
+          return { filePath: started?.payload.filePath, durationMs: 1_200 };
+        }
         default:
           return {};
       }
@@ -119,6 +143,18 @@ function makeService(options: {
 } = {}) {
   const events: MacDesktopEventPayload[] = [];
   const driver = options.driver ?? createFakeDriver();
+  const demoEngine: DemoEngine = {
+    id: "chromium",
+    canRead: (filePath) => filePath.endsWith(".mp4"),
+    async analyze(filePath) {
+      const durationSeconds = Number(fs.readFileSync(filePath, "utf8")) / 1000;
+      return { version: 1, width: 640, height: 480, durationSeconds, frames: [{ t: 0, changed: 1 }] };
+    },
+    async render({ input, output, plan }) {
+      fs.copyFileSync(input, output);
+      return { bytes: fs.statSync(output).size, durationSeconds: plan.durationSeconds, frames: 1 };
+    },
+  };
   const service = createMacDesktopService({
     projectRoot: options.projectRoot ?? fs.mkdtempSync(path.join(os.tmpdir(), "mac-desktop-test-")),
     logger,
@@ -126,6 +162,7 @@ function makeService(options: {
     ...(options.now ? { now: options.now } : {}),
     ...(options.ingestArtifacts ? { ingestArtifacts: options.ingestArtifacts } : {}),
     ...(options.captureAnalytics ? { captureAnalytics: options.captureAnalytics } : {}),
+    demoEngines: { engines: () => [demoEngine] },
     onEvent: (event) => events.push(event),
     createDriverClient: () => driver as unknown as MacDesktopDriverClient,
   });
@@ -729,6 +766,33 @@ describe("macDesktopService real input and the lease", () => {
 
     expect(result.resolved).toMatchObject({ handle: "obs-before:e:3", title: "New Document" });
     expect(result.observation?.id).toContain("after");
+    // The same pair of trees answers whether the click changed anything.
+    expect(result.ok && "effect" in result ? result.effect : null)
+      .toEqual({
+        status: "observed",
+        reason: '1 element appeared (AXTextArea); 1 element went away (AXButton "New Document")',
+      });
+    service.dispose();
+  });
+
+  it("answers unconfirmed when the tree after an action matches the one it resolved against", async () => {
+    const driver = createFakeDriver({
+      [MAC_DESKTOP_DRIVER_OPS.observe]: () => ({
+        id: `o-${Math.random()}`,
+        elements: [{ index: 1, handle: "obs-o:e:1", role: "AXButton", title: "Save", pid: 42 }],
+      }),
+      [MAC_DESKTOP_DRIVER_OPS.input]: () => ({ ok: true, resolvedIndex: 1 }),
+    });
+    const { service } = makeService({ driver });
+    await service.start({ laneId: "lane-1" });
+
+    // No earlier observation: nothing to compare with, and it says so.
+    const first = await service.click({ laneId: "lane-1", text: "Save", chatSessionId: "chat-1" });
+    expect("effect" in first ? first.effect.status : null).toBe("not_checked");
+
+    const second = await service.click({ laneId: "lane-1", text: "Save", chatSessionId: "chat-1" });
+    expect("effect" in second ? second.effect : null)
+      .toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
     service.dispose();
   });
 
@@ -896,7 +960,8 @@ describe("macDesktopService recordings", () => {
       chatSessionId: "chat-1",
       turnId: "turn-2",
     });
-    expect(lapse).toMatchObject({ laneId: "lane-1", turnId: "turn-1", filePath: "/tmp/clip.mp4" });
+    expect(lapse).toMatchObject({ laneId: "lane-1", turnId: "turn-1", durationMs: 1_200 });
+    expect(lapse?.filePath).toMatch(/mac-desktop-turn-turn-1-[a-f0-9-]+\.mp4$/);
     expect(events.some((event) => event.type === "time-lapse")).toBe(true);
     service.dispose();
   });
@@ -967,7 +1032,8 @@ describe("macDesktopService recordings", () => {
     await service.start({ laneId: "lane-1" });
     await service.startRecording({ laneId: "lane-1", caption: "the fix" });
     const stopped = await service.stopRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
-    expect(stopped).toMatchObject({ running: false, filePath: "/tmp/clip.mp4", durationMs: 1_200, lastError: null });
+    expect(stopped).toMatchObject({ running: false, durationMs: 1_200, lastError: null });
+    expect(stopped.filePath).toMatch(/mac-desktop-recording-lane-1-[a-f0-9-]+\.mp4$/);
 
     // A second stop is a clean "not running" with no path to report.
     await expect(service.stopRecording({ laneId: "lane-1" }))
@@ -1028,16 +1094,17 @@ describe("macDesktopService proof from the pane", () => {
 
     expect(stopped).toMatchObject({
       running: false,
-      filePath: clip,
-      durationMs: 12_000,
+      durationMs: 1_250,
+      wallDurationMs: 12_000,
       proofArtifactId: "artifact-1-0",
-      bytes: 3_072,
+      bytes: 5,
     });
+    expect(stopped.filePath).not.toBe(clip);
     expect(broker.requests).toHaveLength(1);
     expect(broker.requests[0]!.inputs[0]).toMatchObject({
       kind: "video_recording",
       title: "Mac Desktop recording · docs-fix",
-      path: clip,
+      path: stopped.filePath,
     });
     // The status read afterwards agrees with what the stop returned.
     expect((await service.getStatus({ laneId: "lane-1" })).recording?.proofArtifactId).toBe("artifact-1-0");
@@ -1112,7 +1179,7 @@ describe("macDesktopService proof provenance and recording rules", () => {
     service: ReturnType<typeof makeService>["service"],
   ): Promise<MacDesktopRecordingStatus> => new Promise((resolve) => {
     const unsubscribe = service.subscribe((event) => {
-      if (event.type !== "recording-changed" || event.status.running) return;
+      if (event.type !== "recording-changed" || event.status.running || event.status.makingDemo) return;
       unsubscribe();
       resolve(event.status);
     });
@@ -1173,29 +1240,32 @@ describe("macDesktopService proof provenance and recording rules", () => {
     service.dispose();
   });
 
-  it("stops a chat's recording at ten minutes, files it, and says so", async () => {
+  it("stops a chat's recording at five minutes, files it, and says why", async () => {
     vi.useFakeTimers();
     const driver = createFakeDriver({
-      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 600_000 }),
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 300_000 }),
     });
     const broker = createFakeBroker();
     const { service, events } = makeService({ driver, ingestArtifacts: broker.ingest });
     await service.start({ laneId: "lane-1" });
     const started = await service.startRecording({ laneId: "lane-1", caption: "the flow", chatSessionId: "chat-1" });
-    expect(started.maxDurationMs).toBe(600_000);
+    expect(started.maxDurationMs).toBe(300_000);
 
-    const capStop = nextRecordingStop(service);
-    await vi.advanceTimersByTimeAsync(599_000);
+    const chatCapStop = nextRecordingStop(service);
+    for (let i = 0; i < 2; i += 1) {
+      await vi.advanceTimersByTimeAsync(110_000);
+      await service.click({ laneId: "lane-1", text: "Continue", chatSessionId: "chat-1" });
+    }
+    await vi.advanceTimersByTimeAsync(79_000);
     expect(driver.calls.some((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toBe(false);
 
     await vi.advanceTimersByTimeAsync(1_000);
-    await capStop;
+    await chatCapStop;
     expect(driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.stopRecording)).toHaveLength(1);
     const stopped = events.filter((event) =>
       event.type === "recording-changed" && event.status.running === false);
-    expect(stopped).toHaveLength(1);
-    expect(stopped[0]).toMatchObject({ status: { stopReason: "cap", proofArtifactId: "artifact-1-0" } });
-    expect(broker.requests[0]!.inputs[0]!.description).toContain("Stopped at its 10:00 cap.");
+    expect(stopped.at(-1)).toMatchObject({ status: { stopReason: "cap", proofArtifactId: "artifact-1-0" } });
+    expect(broker.requests[0]!.inputs[0]!.description).toContain("Stopped at its 5:00 limit.");
     expect(chatOwners(broker.requests[0]!)).toEqual(["chat-1"]);
     // A stop after the cap is a clean "not running", not a second file. The
     // recorder publishes "stopped" a moment before it lets go of its own stop,
@@ -1210,27 +1280,31 @@ describe("macDesktopService proof provenance and recording rules", () => {
   it("files a chat's uncaptioned recording itself when the cap stops it, as the Apple device does", async () => {
     vi.useFakeTimers();
     const driver = createFakeDriver({
-      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 600_000 }),
+      [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 300_000 }),
     });
     const broker = createFakeBroker();
     const { service, events } = makeService({ driver, ingestArtifacts: broker.ingest });
     await service.start({ laneId: "lane-1" });
     await service.startRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
     const capStop = nextRecordingStop(service);
-    await vi.advanceTimersByTimeAsync(600_000);
+    for (let i = 0; i < 2; i += 1) {
+      await vi.advanceTimersByTimeAsync(110_000);
+      await service.click({ laneId: "lane-1", text: "Continue", chatSessionId: "chat-1" });
+    }
+    await vi.advanceTimersByTimeAsync(80_000);
     await capStop;
 
     expect(broker.requests).toHaveLength(1);
     expect(broker.requests[0]!.inputs[0]).toMatchObject({
       kind: "video_recording",
-      title: "Mac Desktop recording · 10:00",
-      description: "Screen recording of the lane's Mac Desktop. Stopped at its 10:00 cap.",
+      metadata: { stopReason: "cap", wallDurationMs: 300_000 },
     });
+    expect(broker.requests[0]!.inputs[0]!.description).toContain("Stopped at its 5:00 limit.");
     expect(broker.requests[0]!.provenance).toMatchObject({ source: "ade-recorder" });
     expect(chatOwners(broker.requests[0]!)).toEqual(["chat-1"]);
     const stopped = events.filter((event) =>
       event.type === "recording-changed" && event.status.running === false);
-    expect(stopped[0]).toMatchObject({ status: { proofArtifactId: "artifact-1-0", stopReason: "cap" } });
+    expect(stopped.at(-1)).toMatchObject({ status: { proofArtifactId: "artifact-1-0", stopReason: "cap" } });
 
     // A normal stop keeps the caption rule: no caption, no proof.
     await service.startRecording({ laneId: "lane-1", chatSessionId: "chat-1" });
@@ -1239,7 +1313,7 @@ describe("macDesktopService proof provenance and recording rules", () => {
     service.dispose();
   });
 
-  it("gives a recording no chat started no cap, and honours --max-seconds either way", async () => {
+  it("caps a recording with no chat owner and honours --max-seconds", async () => {
     vi.useFakeTimers();
     const driver = createFakeDriver({
       [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({ filePath: "/tmp/clip.mp4", durationMs: 30_000 }),
@@ -1247,16 +1321,22 @@ describe("macDesktopService proof provenance and recording rules", () => {
     const { service } = makeService({ driver });
     await service.start({ laneId: "lane-1" });
     const unowned = await service.startRecording({ laneId: "lane-1", caption: "mine" });
-    expect(unowned.maxDurationMs).toBeNull();
-    await vi.advanceTimersByTimeAsync(3_600_000);
-    expect((await service.getStatus({ laneId: "lane-1" })).recording?.running).toBe(true);
-    await service.stopRecording({ laneId: "lane-1" });
+    expect(unowned.maxDurationMs).toBe(300_000);
+    const capStop = nextRecordingStop(service);
+    for (let i = 0; i < 2; i += 1) {
+      await vi.advanceTimersByTimeAsync(110_000);
+      await service.click({ laneId: "lane-1", text: "Continue", controllerId: "ade-window:user" });
+    }
+    const defaultCapStop = capStop;
+    await vi.advanceTimersByTimeAsync(80_000);
+    await defaultCapStop;
+    expect((await service.getStatus({ laneId: "lane-1" })).recording?.running).toBe(false);
 
     const capped = await service.startRecording({ laneId: "lane-1", caption: "short", maxSeconds: 30 });
     expect(capped.maxDurationMs).toBe(30_000);
-    const capStop = nextRecordingStop(service);
+    const shortCapStop = nextRecordingStop(service);
     await vi.advanceTimersByTimeAsync(30_000);
-    await capStop;
+    await shortCapStop;
     expect((await service.getStatus({ laneId: "lane-1" })).recording).toMatchObject({
       running: false,
       stopReason: "cap",
@@ -1264,7 +1344,7 @@ describe("macDesktopService proof provenance and recording rules", () => {
     service.dispose();
   });
 
-  it("asks the driver to keep still time only for --keep-idle", async () => {
+  it("keeps the helper capture raw for either demo mode", async () => {
     const driver = createFakeDriver();
     const { service } = makeService({ driver });
     await service.start({ laneId: "lane-1" });
@@ -1272,12 +1352,12 @@ describe("macDesktopService proof provenance and recording rules", () => {
     await service.stopRecording({ laneId: "lane-1" });
     await service.startRecording({ laneId: "lane-1", keepIdle: true });
     const starts = driver.calls.filter((call) => call.op === MAC_DESKTOP_DRIVER_OPS.startRecording);
-    expect(starts[0]!.payload).not.toHaveProperty("keepIdle");
-    expect(starts[1]!.payload).toMatchObject({ keepIdle: true });
+    expect((await service.getStatus({ laneId: "lane-1" })).recording?.plain).toBe(true);
+    expect(starts.every((start) => start.payload.keepIdle === true)).toBe(true);
     service.dispose();
   });
 
-  it("carries the driver's idle cut into the proof the way the Apple recorder does", async () => {
+  it("uses the analysis duration for the demo while keeping the raw wall span", async () => {
     const driver = createFakeDriver({
       [MAC_DESKTOP_DRIVER_OPS.stopRecording]: () => ({
         filePath: "/tmp/clip.mp4",
@@ -1292,14 +1372,11 @@ describe("macDesktopService proof provenance and recording rules", () => {
     await service.startRecording({ laneId: "lane-1", caption: "the flow", chatSessionId: "chat-1" });
     const stopped = await service.stopRecording({ laneId: "lane-1" });
 
-    expect(stopped).toMatchObject({ durationMs: 70_000, wallDurationMs: 182_000, idleCutMs: 112_000 });
+    expect(stopped).toMatchObject({ wallDurationMs: 182_000 });
+    expect(stopped.durationMs).toBeLessThan(stopped.wallDurationMs!);
     const input = broker.requests[0]!.inputs[0]!;
-    // `idleCutMs` in the input's metadata is what the drawer and the phone
-    // read into "Recorded by ADE · … · idle cut 1:52".
-    expect(readProofProvenance(input.metadata).idleCutMs).toBe(112_000);
-    expect(input.description).toBe(
-      "the flow Still stretches were shortened: 1:52 cut from 3:02 of real time.",
-    );
+    expect(input.metadata).toMatchObject({ demo: { sourceSeconds: 182 } });
+    expect(readProofProvenance(input.metadata).idleCutMs).toBeGreaterThan(0);
     service.dispose();
   });
 
@@ -1310,8 +1387,10 @@ describe("macDesktopService proof provenance and recording rules", () => {
     const { service } = makeService({ driver });
     await service.start({ laneId: "lane-1" });
     await service.startRecording({ laneId: "lane-1" });
-    expect(await service.stopRecording({ laneId: "lane-1" }))
-      .toMatchObject({ durationMs: 9_000, wallDurationMs: 9_000, idleCutMs: 0 });
+    const stopped = await service.stopRecording({ laneId: "lane-1" });
+    expect(stopped.wallDurationMs).toBe(9_000);
+    expect(stopped.durationMs).toBeLessThan(stopped.wallDurationMs!);
+    expect(stopped.idleCutMs).toBeGreaterThan(0);
     service.dispose();
   });
 });

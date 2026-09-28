@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretRight, GitBranch, Rocket, WarningCircle } from "@phosphor-icons/react";
-import type { LaneLinearIssue, LaneSummary } from "../../../shared/types";
+import type { LaneLinearIssue, LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import { LaneMachineSelector } from "../lanes/LaneMachineSelector";
+import { useLaneMachineChoice } from "../lanes/useLaneMachineChoice";
 import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
   getAppDefaultModelDescriptor,
@@ -154,11 +156,18 @@ export type BatchLaunchSubmit = {
   config: BatchLaunchIssueConfig;
 };
 
+/** The machine a whole batch goes to: every lane create and launch is pinned there. */
+export type BatchLaunchMachine = {
+  machineId: string;
+  /** Null for the tab's machine (the unpinned path). */
+  pin: OpenProjectBinding | null;
+};
+
 export function BatchLaunchModal({
   open,
   projectRoot,
   issues,
-  lanes,
+  lanes: boundLanes,
   laneOnly = false,
   onOpenChange,
   onLaunch,
@@ -177,9 +186,21 @@ export function BatchLaunchModal({
   /** When true, only create lanes (no agent kickoff) — hides the model pickers. */
   laneOnly?: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Fires once, synchronously closing the modal; the orchestrator runs after. */
-  onLaunch: (entries: BatchLaunchSubmit[]) => void;
+  /**
+   * Fires once, synchronously closing the modal; the orchestrator runs after.
+   * `machine` is the one machine the whole batch was sent to (always asked).
+   */
+  onLaunch: (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => void;
 }) {
+  // Always asks where the batch goes; one choice for every lane in it.
+  const machineChoice = useLaneMachineChoice(open);
+  const { selectedMachineId, targetPin, selectedTarget } = machineChoice;
+  // "Existing lane" targets and conflicts are read from the chosen machine's
+  // own lanes: a lane id from the tab's machine means nothing over there.
+  const lanes = useMemo<LaneSummary[]>(
+    () => (targetPin ? selectedTarget?.lanes ?? [] : boundLanes),
+    [boundLanes, selectedTarget, targetPin],
+  );
   const { recents } = useModelRecents();
   const defaultModelId = useMemo(
     () =>
@@ -386,9 +407,9 @@ export function BatchLaunchModal({
         },
       });
     }
-    if (!entries.length) return;
-    onLaunch(entries);
-  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig]);
+    if (!entries.length || !selectedMachineId) return;
+    onLaunch(entries, { machineId: selectedMachineId, pin: targetPin });
+  }, [issues, perIssue, onLaunch, laneOnly, multiIssue, defaultConfig, selectedMachineId, targetPin]);
 
   if (!issues.length) return null;
 
@@ -643,11 +664,30 @@ export function BatchLaunchModal({
         </p>
       ) : null}
 
+      {machineChoice.machines.length > 1 ? (
+        <div className="mt-3">
+          <LaneMachineSelector
+            machines={machineChoice.machines}
+            selectedMachineId={selectedMachineId}
+            onSelectMachine={(machineId) => {
+              if (machineChoice.machineTargets.has(machineId)) machineChoice.setPickedMachineId(machineId);
+            }}
+          />
+        </div>
+      ) : null}
+
       <div className="mt-4 flex items-center justify-end gap-2 border-t border-white/[0.06] pt-4">
+        {!selectedMachineId ? (
+          <span className="mr-auto text-[11px] text-muted-fg/70" data-testid="batch-launch-machine-hint">
+            {machineChoice.machines.length > 1
+              ? "Choose the machine these lanes will live on."
+              : "No connected machine has this repository open."}
+          </span>
+        ) : null}
         <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
           Cancel
         </Button>
-        <Button type="button" variant="primary" disabled={launchCount === 0} onClick={handleLaunch}>
+        <Button type="button" variant="primary" disabled={launchCount === 0 || !selectedMachineId} onClick={handleLaunch}>
           <Rocket size={13} weight="fill" />
           {laneOnly ? "Create" : "Launch"} {launchCount} {launchCount === 1 ? "lane" : "lanes"}
         </Button>

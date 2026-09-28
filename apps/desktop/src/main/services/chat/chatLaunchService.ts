@@ -31,6 +31,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
 } from "../../../shared/laneNameFallback";
 import { requireNormalizedUuid } from "../../../shared/uuid";
+import { formatLaneBaseAge } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import type { LaneCreateRuntimeOptions } from "../lanes/laneService";
@@ -101,8 +102,28 @@ type AgentChatServiceLike = {
 export type ChatLaunchBaseResolution = {
   /** The ref to branch from, or null for the lane service's default base. */
   baseRef: string | null;
-  /** Remote fetch outcome: "ok", "failed" (last-known ref used), or "skipped" (local base). */
-  fetch: "ok" | "failed" | "skipped";
+  /**
+   * Remote fetch outcome: "ok"; "timeout" (still running when the launch
+   * stopped waiting) or "failed" (git reported an error) — both branch from
+   * the last-known ref; or "skipped" (local base).
+   */
+  fetch: "ok" | "timeout" | "failed" | "skipped";
+  /** git's error for a failed fetch. */
+  fetchError?: string | null;
+  /** When the base was last fetched (epoch ms), reported when the fetch did not succeed. */
+  lastFetchedAtMs?: number | null;
+  /** The base's tip commit time (epoch ms), reported when the fetch did not succeed. */
+  baseCommittedAtMs?: number | null;
+  /** Commits on the local base branch the chosen base lacks (a lower bound on how far behind it is). */
+  behindLocal?: number | null;
+  /** The base still looks stale after the fetch attempt. */
+  stale?: boolean;
+};
+
+/** Progress the base resolution reports while the fetch stage runs. */
+export type ChatLaunchBaseProgress = {
+  /** The base looks stale, so the launch waits for the whole fetch instead of a few seconds. */
+  onWaitingForStaleFetch?: (info: { remoteRef: string; lastFetchedAtMs: number | null }) => void;
 };
 
 export type ChatLaunchServiceDeps = {
@@ -113,7 +134,7 @@ export type ChatLaunchServiceDeps = {
   /** True when the project creates lanes from the local base (no fetch stage). */
   usesLocalLaneBase: () => boolean;
   /** Fetch the remote and pick the base ref, the same way every base-less lane create does. */
-  resolveBase: () => Promise<ChatLaunchBaseResolution>;
+  resolveBase: (progress?: ChatLaunchBaseProgress) => Promise<ChatLaunchBaseResolution>;
   /** Resolve a ref to its commit sha in the project checkout (for the stage detail). */
   resolveCommit: (ref: string) => Promise<string | null>;
   planEnvironment: (templateId?: string | null) => ChatLaunchEnvironmentPlan;
@@ -179,6 +200,68 @@ function laneConfigSkipsFetch(config: ChatLaunchLaneConfig | null | undefined): 
 }
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());
+
+/** First line of a git error, trimmed for a stage row. */
+function shortFetchError(error: string | null | undefined): string | null {
+  const line = error?.split(/\r?\n/).map((part) => part.trim()).find(Boolean) ?? "";
+  if (!line) return null;
+  const cleaned = line.replace(/^(fatal|error):\s*/i, "");
+  return cleaned.length > 120 ? `${cleaned.slice(0, 119)}…` : cleaned;
+}
+
+/** "47 days ago", or "just now" under a minute (never "just now ago"). */
+function laneBaseAgo(ms: number): string {
+  const age = formatLaneBaseAge(ms);
+  return age === "just now" ? age : `${age} ago`;
+}
+
+/** "Fetching latest main (last fetched 47 days ago)" — shown while a stale base waits for the fetch. */
+export function describeStaleFetchWait(remoteRef: string, lastFetchedAtMs: number | null, nowMs: number): string {
+  const branch = remoteRef.replace(/^[^/]+\//, "") || remoteRef;
+  const last = lastFetchedAtMs == null ? "never fetched before" : `last fetched ${laneBaseAgo(nowMs - lastFetchedAtMs)}`;
+  return `Fetching latest ${branch} (${last})`;
+}
+
+/**
+ * The fetch stage's row when the lane branches from what was fetched last:
+ * why (timed out / failed) and which commit, plus — when the base looks stale
+ * — a warning with its age and how far behind, so a months-old base is never
+ * silent. `warning` rides in the stage's `error`, which the card shows as a
+ * callout under the row.
+ */
+export function describeUnfetchedBase(args: {
+  resolution: ChatLaunchBaseResolution;
+  baseRef: string;
+  at: string;
+  nowMs: number;
+}): { detail: string; warning: string | null } {
+  const { resolution, baseRef, at, nowMs } = args;
+  const fetchedAgo = resolution.lastFetchedAtMs != null
+    ? ` (fetched ${laneBaseAgo(nowMs - resolution.lastFetchedAtMs)})`
+    : "";
+  let detail: string;
+  if (resolution.fetch === "timeout") {
+    detail = `Fetch timed out; using last-fetched ${baseRef}${at}${fetchedAgo}`;
+  } else if (resolution.fetch === "failed") {
+    const reason = shortFetchError(resolution.fetchError);
+    detail = `Fetch failed${reason ? ` (${reason})` : ""}; using last-fetched ${baseRef}${at}${fetchedAgo}`;
+  } else {
+    detail = `${baseRef}${at}`;
+  }
+  if (!resolution.stale) return { detail, warning: null };
+  const age: string[] = [];
+  if (resolution.baseCommittedAtMs != null) {
+    const commitAge = formatLaneBaseAge(nowMs - resolution.baseCommittedAtMs);
+    age.push(commitAge === "just now" ? "its latest commit is from just now" : `its latest commit is ${commitAge} old`);
+  }
+  age.push(resolution.lastFetchedAtMs != null
+    ? `it was last fetched ${laneBaseAgo(nowMs - resolution.lastFetchedAtMs)}`
+    : "it was never fetched");
+  if (resolution.behindLocal != null && resolution.behindLocal > 0) {
+    age.push(`it is at least ${resolution.behindLocal} commit${resolution.behindLocal === 1 ? "" : "s"} behind your local ${baseRef.replace(/^[^/]+\//, "")}`);
+  }
+  return { detail, warning: `${baseRef} may be out of date: ${age.join(", ")}. This lane may be missing recent changes.` };
+}
 
 export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   const { logger } = deps;
@@ -371,7 +454,15 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (!stage) return null;
     setStage(record, "fetch", "running");
     publish(record, { persist: false });
-    const resolution = await deps.resolveBase();
+    const resolution = await deps.resolveBase({
+      onWaitingForStaleFetch: ({ remoteRef, lastFetchedAtMs }) => {
+        if (disposed || record.snapshot.phase === "cancelled") return;
+        const current = stageOf(record, "fetch");
+        if (!current || current.status !== "running") return;
+        current.detail = describeStaleFetchWait(remoteRef, lastFetchedAtMs, now().getTime());
+        publish(record, { persist: false });
+      },
+    });
     assertActive(record);
     const sha = resolution.baseRef ? await deps.resolveCommit(resolution.baseRef).catch(() => null) : null;
     // A base that does not resolve (a configured upstream whose remote ref is
@@ -381,8 +472,9 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const at = sha ? ` at ${sha.slice(0, 7)}` : "";
     if (!baseRef) {
       setStage(record, "fetch", "skipped", { detail: "No remote base; using the local base" });
-    } else if (resolution.fetch === "failed") {
-      setStage(record, "fetch", "warning", { detail: `Fetch failed; using last-known ${baseRef}${at}` });
+    } else if (resolution.fetch === "failed" || resolution.fetch === "timeout" || resolution.stale) {
+      const { detail, warning } = describeUnfetchedBase({ resolution, baseRef, at, nowMs: now().getTime() });
+      setStage(record, "fetch", "warning", { detail, error: warning });
     } else {
       setStage(record, "fetch", "done", { detail: `${baseRef}${at}` });
     }

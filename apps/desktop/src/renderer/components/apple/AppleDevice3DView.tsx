@@ -6,9 +6,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, 
 import type { CanvasTexture, MeshBasicMaterial, PerspectiveCamera, Scene, Vector3 } from "three";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { cn } from "../ui/cn";
-import { appleDeviceModel, type AppleDeviceModelId, type AppleDeviceModelSource } from "./appleDeviceModels";
+import { appleDeviceModel, type AppleDeviceModelSource } from "./appleDeviceModels";
 import { createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbit";
 import { loadAppleDeviceModelInstance } from "./appleDeviceModelLoader";
+import { appleDuoHingeAfterPinch } from "./appleDuo";
+import { createProceduralDuoBody } from "./appleDuoScene";
 import {
   appleDeviceInputSize,
   createImportedBody,
@@ -18,13 +20,34 @@ import {
   orientedPointSize,
   orientedToPortrait,
   portraitToOriented,
-  writeScreenUvs,
+  type AppleDeviceBodyModelId,
   type DeviceBody,
   type GltfLoaderCtor,
   type ThreeNS,
 } from "./appleDeviceScene";
 
 export type AppleDeviceFamily = "iphone" | "ipad";
+
+/**
+ * The foldable controls for the procedural Duo body.
+ *
+ * The caller capability-gates this: it passes a `duo` prop ONLY for a device
+ * that reports fold/dual-screen support, so a non-foldable device takes the
+ * unchanged GLB path and does no Duo work at all. When absent, the viewer never
+ * builds or touches the articulated body.
+ */
+export type AppleDeviceDuoProps = {
+  enabled: boolean;
+  /** Interior hinge angle in degrees: 0 folded shut, 180 flat. */
+  angle: number;
+  /** Keep the lower half flat and hinge only the upper half (laptop posture). */
+  lowerFlat: boolean;
+  /** A pinch on the glass adjusts the hinge (only while enabled). */
+  onHingeChange?: ((angle: number) => void) | undefined;
+};
+
+/** The model id a procedural Duo body reports. */
+const DUO_MODEL_KEY = "duo-procedural" as const;
 
 /** Why the 3D presenter cannot show this device, in a sentence the strip can print. */
 export type AppleDevice3DFailure =
@@ -57,6 +80,12 @@ export type AppleDevice3DViewProps = {
   devicePointSize: { width: number; height: number } | null;
   interactive: boolean;
   /**
+   * The foldable body controls. Present ONLY for a device the caller has proven
+   * folds; absent everywhere else, so the imported GLB path is byte-for-byte
+   * unchanged and does no extra per-frame work.
+   */
+  duo?: AppleDeviceDuoProps | undefined;
+  /**
    * Bumped by "Reset view". Handled IN PLACE — the round-3 stage remounted the
    * whole view for this, and a remount means a new `WebGLRenderer` and a new
    * GPU context every time. Browsers cap live contexts (Chromium at 16) and
@@ -70,7 +99,7 @@ export type AppleDevice3DViewProps = {
   /** A key pressed while the 3D surface holds focus. True = forwarded. */
   onDeviceKey?: ((event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean) | undefined;
   /** The real body is on screen. */
-  onReady?: ((info: { modelId: AppleDeviceModelId }) => void) | undefined;
+  onReady?: ((info: { modelId: AppleDeviceBodyModelId }) => void) | undefined;
   /**
    * There will be no 3D device (§A1). The pane falls back to the flat view and
    * says this once; the view NEVER substitutes a procedural slab.
@@ -138,7 +167,7 @@ function reducedMotionPreferred(): boolean {
 type ViewerHooks = {
   /** The body moved: anything projected onto it has to be re-measured. */
   onPose: () => void;
-  onReady: (info: { modelId: AppleDeviceModelId }) => void;
+  onReady: (info: { modelId: AppleDeviceBodyModelId }) => void;
   onUnavailable: (reason: AppleDevice3DFailure) => void;
 };
 
@@ -376,10 +405,14 @@ function createViewer(
 
   const paintDisplay = () => {
     if (!body) return;
-    const material = body.display.material as MeshBasicMaterial;
-    material.map = texture;
-    material.color.set(texture ? 0xffffff : 0x111111);
-    material.needsUpdate = true;
+    // A single-body device has one panel; the Duo has two halves sharing one
+    // texture. Both go through the same loop.
+    for (const panel of body.panels) {
+      const material = panel.material as MeshBasicMaterial;
+      material.map = texture;
+      material.color.set(texture ? 0xffffff : 0x111111);
+      material.needsUpdate = true;
+    }
     /*
      * Ask for the upload here, not only on the next decoded frame.
      *
@@ -390,7 +423,7 @@ function createViewer(
      * black screen, which came back the moment you touched it.
      */
     if (texture) texture.needsUpdate = true;
-    writeScreenUvs(THREE, body.display.geometry, body.screenWidth, body.screenHeight, layout);
+    body.rewriteUvs(THREE, layout);
   };
 
   const installBody = (next: DeviceBody) => {
@@ -435,6 +468,26 @@ function createViewer(
     })();
   };
 
+  /**
+   * Build the procedural foldable body, sized from the streamed inner display.
+   *
+   * Synchronous, unlike the GLB load: there is no asset to fetch. It is only
+   * reached when the caller has already proven the device folds, so the import
+   * path and the single-display body are untouched for every other device.
+   */
+  const installDuoBody = (props: AppleDevice3DViewProps) => {
+    const duo = props.duo;
+    const next = createProceduralDuoBody(THREE, {
+      innerAspect: layout.aspect,
+      texture,
+      layout,
+      ...(duo ? { pose: { angle: duo.angle, lowerFlat: duo.lowerFlat } } : {}),
+    });
+    installBody(next);
+    paintDisplay();
+    hooks.onReady({ modelId: next.modelId });
+  };
+
   const screenPoint = (nx: number, ny: number, captured: boolean): ScreenHit | null => {
     if (!viewport.width || !viewport.height || !body) return null;
     applyPose();
@@ -447,6 +500,14 @@ function createViewer(
       props.orientation,
       appleDeviceInputSize(props.devicePointSize, props.screenPixelSize),
     );
+    if (body.duo) {
+      // The foldable body is two panels, so the hit is resolved across both and
+      // answered in the continuous inner-display space either way.
+      const hit = body.duo.pickInner(raycaster);
+      if (!hit) return null;
+      const oriented = portraitToOriented(hit.u, hit.vFromBottom, props.orientation);
+      return { x: oriented.x * points.width, y: oriented.y * points.height };
+    }
     if (!captured) {
       const hit = raycaster.intersectObject(body.display, false)[0];
       if (!hit) return null;
@@ -485,7 +546,21 @@ function createViewer(
     }
     if (body) {
       body.orientation.rotation.z = layout.rotation;
-      writeScreenUvs(THREE, body.display.geometry, body.screenWidth, body.screenHeight, layout);
+      body.rewriteUvs(THREE, layout);
+    }
+
+    const duo = props.duo;
+    if (duo?.enabled) {
+      // Capability-gated by the caller: only a device that folds reaches here.
+      if (currentModelKey !== DUO_MODEL_KEY) {
+        currentModelKey = DUO_MODEL_KEY;
+        installDuoBody(props);
+      } else if (body?.duo) {
+        body.duo.setHinge(duo.angle, duo.lowerFlat);
+        applyPose();
+        invalidate();
+      }
+      return;
     }
 
     const source = appleDeviceModel(props.family, {
@@ -611,6 +686,17 @@ function createViewer(
         point.y / points.height,
         props.orientation,
       );
+      if (body.duo) {
+        const world = body.duo.innerToWorld(u, vFromBottom);
+        if (!world) return null;
+        camera.updateMatrixWorld(true);
+        projected.copy(world).project(camera);
+        if (!Number.isFinite(projected.x) || !Number.isFinite(projected.y)) return null;
+        return {
+          x: ((projected.x + 1) / 2) * viewport.width,
+          y: ((1 - projected.y) / 2) * viewport.height,
+        };
+      }
       body.display.geometry.computeBoundingBox();
       const z = body.display.position.z + (body.display.geometry.boundingBox?.max.z ?? 0);
       projected.set(
@@ -765,7 +851,17 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
         consume(event);
         const scale = scaleOf(event as GestureEventLike);
         if (gestureScale === null || scale === null) return;
-        next.zoomBy(Math.log(scale / gestureScale));
+        const duo = propsRef.current.duo;
+        if (duo?.enabled && duo.onHingeChange) {
+          // Pinch is the hinge, not the camera, once the device folds.
+          duo.onHingeChange(appleDuoHingeAfterPinch({
+            angle: duo.angle,
+            fromScale: gestureScale,
+            toScale: scale,
+          }));
+        } else {
+          next.zoomBy(Math.log(scale / gestureScale));
+        }
         gestureScale = scale;
       };
       const end = (event: Event) => {
@@ -844,6 +940,9 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     props.devicePointSize?.width,
     props.devicePointSize?.height,
     props.interactive,
+    props.duo?.enabled,
+    props.duo?.angle,
+    props.duo?.lowerFlat,
   ]);
 
   const localPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {

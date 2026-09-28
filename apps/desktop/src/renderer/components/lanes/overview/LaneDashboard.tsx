@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { GitBranch, Warning } from "@phosphor-icons/react";
-import type { GitCommitSummary } from "../../../../shared/types";
+import type { GitCommitSummary, LaneSummary, OpenProjectBinding, PrSummary } from "../../../../shared/types";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { revealLaneWorktree } from "../../../lib/revealLaneWorktree";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
@@ -54,6 +54,21 @@ const OVERVIEW_MAX_WIDTH = 828;
 export const RECENT_ACTIVITY_COUNT = 8;
 const EMPTY_AGENTS: LaneAgent[] = [];
 const EMPTY_SECTION_IDS: string[] = [];
+
+/**
+ * Set when the lane lives on a machine other than the one the project tab is
+ * bound to. Every read the dashboard makes then goes to `pin`, and the lane
+ * list it resolves parents/children against is that machine's own — never the
+ * tab's, where a lane with the same id may be a different lane.
+ */
+export type LaneDashboardMachine = {
+  pin: OpenProjectBinding;
+  machineName: string;
+  /** That machine's lanes, as reported by the cross-machine union. */
+  lanes: LaneSummary[];
+  /** That machine's mapped PR rows. */
+  prs: PrSummary[];
+};
 
 function openPrPath(pr: Pick<LaneHistoryPr, "linkedPrId" | "number" | "repoOwner" | "repoName">): string | null {
   return lanePrTagRoutePath({
@@ -143,6 +158,7 @@ export function LaneDashboard({
   onSelectLane,
   onOpenPrTag,
   onOpenLaneMenu,
+  machine = null,
 }: {
   laneId: string;
   colorIndex: number;
@@ -164,13 +180,19 @@ export function LaneDashboard({
   onOpenPrTag: (pr: LaneTabPrTag) => void;
   /** Opens the lane's context menu under the given button. */
   onOpenLaneMenu: (laneId: string, anchor: DOMRect) => void;
+  /** The lane's machine, when it is not the tab's. See {@link LaneDashboardMachine}. */
+  machine?: LaneDashboardMachine | null;
 }) {
   const navigate = useNavigate();
-  const lanes = useAppStore((s) => s.lanes);
+  const boundLanes = useAppStore((s) => s.lanes);
+  const lanes = machine?.lanes ?? boundLanes;
+  const pin = machine?.pin ?? null;
   const selectLane = useAppStore((s) => s.selectLane);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lane = useMemo(() => lanes.find((row) => row.id === laneId) ?? null, [laneId, lanes]);
-  const snapshot = useAppStore((s) => s.laneSnapshots.find((row) => row.lane.id === laneId) ?? null);
+  // Snapshots (runtime, rebase suggestions) are the tab machine's only.
+  const boundSnapshot = useAppStore((s) => s.laneSnapshots.find((row) => row.lane.id === laneId) ?? null);
+  const snapshot = machine ? null : boundSnapshot;
   const primaryLane = useMemo(() => lanes.find((row) => row.laneType === "primary") ?? null, [lanes]);
   const parentLane = useMemo(
     () => (lane?.parentLaneId ? lanes.find((row) => row.id === lane.parentLaneId) ?? null : null),
@@ -200,7 +222,13 @@ export function LaneDashboard({
   }), [collapsedSectionIds, projectKey, setWorkViewState]);
 
   // Chats started, ended or changed state when this moves; the rows re-read then.
-  const agentsKey = agents.map((agent) => `${agent.sessionId}:${agent.activity}:${agent.name}:${agent.lastHint ?? ""}`).sort().join(",");
+  // Another machine's hints change on every cross-machine refresh while a chat
+  // works, and each change would cost two remote reads, so a pinned lane keys on
+  // state alone.
+  const agentsKey = agents
+    .map((agent) => `${agent.sessionId}:${agent.activity}:${agent.name}${pin ? "" : `:${agent.lastHint ?? ""}`}`)
+    .sort()
+    .join(",");
 
   const [filter, setFilter] = useState<LaneHistoryFilter>("all");
   const [expanded, setExpanded] = useState(false);
@@ -214,17 +242,17 @@ export function LaneDashboard({
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [laneId]);
 
-  const prs = useLaneOverviewPrs(lane);
+  const prs = useLaneOverviewPrs(lane, machine?.prs ?? null);
   const { current: currentPr, earlier: earlierPrs } = useMemo(() => {
     const prominent = splitLanePrs(prs.current).current;
     if (!prominent) return { current: null, earlier: prs.all };
     return { current: prominent, earlier: prs.all.filter((pr) => pr.key !== prominent.key) };
   }, [prs]);
   const livePr = isLivePr(currentPr) ? currentPr : null;
-  const { detail: prDetail } = useLanePrDetail(livePr, active);
-  const upstream = useLaneUpstream(lane, active);
-  const { commits, trailerProviderBySha, loaded: commitsLoaded } = useLaneCommits(lane, commitLimit);
-  const laneSessions = useLaneSessions(lane ? laneId : null, agentsKey);
+  const { detail: prDetail } = useLanePrDetail(livePr, active, pin);
+  const upstream = useLaneUpstream(lane, active, pin);
+  const { commits, trailerProviderBySha, loaded: commitsLoaded } = useLaneCommits(lane, commitLimit, pin);
+  const laneSessions = useLaneSessions(lane ? laneId : null, agentsKey, pin);
   const historySessions = useMemo(
     () => laneHistorySessionsFrom(laneId, laneSessions.chats, laneSessions.terminals),
     [laneId, laneSessions.chats, laneSessions.terminals],
@@ -240,7 +268,7 @@ export function LaneDashboard({
     lane?.status?.lastCommitAt ?? lane?.lastCommitAt ?? "",
     lane?.branchRef ?? "",
   ].join("|");
-  const operations = useLaneOperations(lane ? laneId : null, operationsKey);
+  const operations = useLaneOperations(lane ? laneId : null, operationsKey, pin);
 
   const history = useMemo(() => {
     if (!lane) return [];
@@ -280,14 +308,20 @@ export function LaneDashboard({
   const openChat = useCallback((sessionId: string) => {
     // The Work tab stays mounted, so its listener focuses the chat; the
     // navigate switches the visible tab.
-    window.dispatchEvent(new CustomEvent("ade:work:select-session", { detail: { sessionId, laneId } }));
+    // `binding` names another machine's lane, so Work can reach a chat that
+    // is not in its roster instead of falling back to the tab's machine.
+    window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+      detail: { sessionId, laneId, ...(pin ? { binding: pin } : {}) },
+    }));
     navigate(`/work?${new URLSearchParams({ sessionId, laneId }).toString()}`);
-  }, [laneId, navigate]);
+  }, [laneId, navigate, pin]);
 
   const openPr = useCallback((pr: Pick<LaneHistoryPr, "linkedPrId" | "number" | "repoOwner" | "repoName">) => {
-    const path = openPrPath(pr);
+    // Another machine's linked PR id is a row in THAT machine's database; the
+    // PRs tab resolves ids against the tab's machine, so open it by number.
+    const path = openPrPath(pin ? { ...pr, linkedPrId: null } : pr);
     if (path) navigate(path);
-  }, [navigate]);
+  }, [navigate, pin]);
 
   const openEntry = useCallback((entry: LaneHistoryEntry) => {
     const target = entry.target;
@@ -301,10 +335,16 @@ export function LaneDashboard({
   }, [commits, onSelectCommit, openChat, openPr]);
 
   const openFiles = useCallback((openFilePath?: string) => {
+    if (pin) {
+      // Files pins itself to the lane's machine from the request. Selecting the
+      // bare id here would select the tab machine's lane with that id.
+      navigate("/files", { state: { laneId, filesPin: pin, ...(openFilePath ? { openFilePath } : {}) } });
+      return;
+    }
     // The Files tab follows the selected lane, so select it first.
     selectLane(laneId);
     navigate("/files", openFilePath ? { state: { openFilePath, laneId } } : undefined);
-  }, [laneId, navigate, selectLane]);
+  }, [laneId, navigate, pin, selectLane]);
 
   if (!lane) {
     return <div className="h-full" data-testid="lane-dashboard" />;
@@ -324,7 +364,9 @@ export function LaneDashboard({
     : notice?.source === "auto-rebase"
       ? () => onDismissAutoRebase(laneId)
       : null;
-  const canReveal = !isWebClientMode() && !isRemoteProject && Boolean(lane.worktreePath) && Boolean(window.ade?.lanes?.revealWorktree);
+  // Reveal resolves the lane on the tab's machine, so it is never offered for
+  // a lane on another machine.
+  const canReveal = !machine && !isWebClientMode() && !isRemoteProject && Boolean(lane.worktreePath) && Boolean(window.ade?.lanes?.revealWorktree);
   const accent = getLaneAccent(lane, colorIndex);
 
   return (
@@ -343,6 +385,7 @@ export function LaneDashboard({
             createdBy={createdBy}
             active={active}
             canReveal={canReveal}
+            revealUnavailableReason={machine ? `On ${machine.machineName}` : null}
             onStartChat={onStartChat ? () => onStartChat(laneId) : null}
             onOpenFiles={() => openFiles()}
             onReveal={() => { void revealLaneWorktree(lane.id); }}

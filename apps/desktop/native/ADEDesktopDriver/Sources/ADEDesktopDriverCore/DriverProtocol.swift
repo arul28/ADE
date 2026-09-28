@@ -230,6 +230,7 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `window.park` | `laneId,windowId` | `MacDesktopWindow` |
 /// | `window.unpark` | `windowId,laneId?` | `{window: MacDesktopWindow?, releasedWindowIds, handedOverPid}` — refused when `laneId` is given and another lane holds the window |
 /// | `app.launch` | `laneId,target,args?` | `MacDesktopOpenResult` |
+/// | `app.quit` | `laneId,app?` | `{quit: [{pid,appName,bundleId,released}]}` — only apps the lane opened, released ones included |
 /// | `present` | `laneId,destination` | `{moved}` |
 /// | `observe` | `laneId,windowId?,limit?,map?,screenshotPath?,mapPath?,caption?` | `MacDesktopObservation` |
 /// | `input` | `laneId,command,mode,payload,lease?` | `{resolvedIndex}` |
@@ -240,7 +241,7 @@ public struct DriverError: Codable, Equatable, Sendable, Error {
 /// | `stream.setRate` | `laneId,fps` | `{fps}` |
 /// | `stream.setCursorVisible` | `laneId,visible` | `{visible}` |
 /// | `stream.stop` | `laneId` | `{stopped}` |
-/// | `record.start` | `laneId,fps?,filePath,keepIdle?` | `{startedAt}` |
+/// | `record.start` | `laneId,fps?,filePath,keepIdle?,windowId?` | `{startedAt}` — with `windowId`, records that one window and needs no lane display; `laneId` is then only the key. Emits `recording-interrupted {laneId,windowId,error}` when the window's stream ends |
 /// | `record.stop` | `laneId` | `{filePath,durationMs,wallDurationMs,idleCutMs}` |
 public enum DriverOp: String, CaseIterable, Sendable {
     case health = "ping"
@@ -253,6 +254,7 @@ public enum DriverOp: String, CaseIterable, Sendable {
     case parkWindow = "window.park"
     case unparkWindow = "window.unpark"
     case launch = "app.launch"
+    case quitApp = "app.quit"
     case present
     case observe
     case input

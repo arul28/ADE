@@ -8,6 +8,7 @@ import {
 import { openEditorExternalUrl } from "../shared/externalLinks";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import { editorProcessEnv } from "./editorProcessEnv";
+import { resolveDetectedEditorCommand } from "./editorDetection";
 
 async function launchDetached(
   command: string,
@@ -110,7 +111,13 @@ export async function openLocalWorkspaceInEditor(args: {
   if (process.platform === "darwin" && editor.macAppName) {
     attempts.push({ command: "open", args: ["-a", editor.macAppName, args.targetPath] });
   }
-  const invocation = resolveCliSpawnInvocation(editor.command, [args.targetPath], env);
+  // On Windows an editor detected off PATH (install dir, uninstall registry,
+  // Toolbox) was recorded as an absolute executable; use it instead of the
+  // bare shim name that `where.exe` could not find.
+  const command = process.platform === "win32"
+    ? resolveDetectedEditorCommand(args.target) ?? editor.command
+    : editor.command;
+  const invocation = resolveCliSpawnInvocation(command, [args.targetPath], env);
   attempts.push({
     command: invocation.command,
     args: invocation.args,

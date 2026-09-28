@@ -59,6 +59,26 @@ When you create or adopt a GitHub PR, include both the GitHub URL
 another path, mint it as described in the **ade-deeplinks** skill, which is also
 where the HTTPS-vs-`ade://` guidance lives.
 
+## Post proof to the PR
+
+When the change is visible, put the proof that shows it on the PR. Pick the
+items yourself, usually the ones your answer already cites:
+
+```bash
+ade proof publish --pr <number or URL> <artifact-id> <artifact-id> --heading "Proof" --note "<one line>" --text
+```
+
+- One command posts one comment. Each picture and video goes up as a GitHub
+  attachment under its caption; ADE hosts nothing and pushes no proof branch.
+- Each posted item gets a `github_pr` link, and the proof drawer shows a
+  "PR #N" chip on it.
+- It needs `gh` 2.99.0 or later. An older `gh` is refused with the upgrade
+  command. A number needs a repository with a GitHub remote; otherwise pass the
+  PR's URL.
+- GitHub limits: 10 MB for a picture; 10 MB for a video on GitHub Free,
+  100 MB on paid plans. A larger item is skipped and the output says why.
+- Post only what shows the change. Do not post every capture.
+
 ## Use actions for niche surfaces
 
 ```bash

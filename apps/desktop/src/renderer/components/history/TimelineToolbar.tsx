@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import * as Popover from "@radix-ui/react-popover";
 import {
@@ -16,6 +16,17 @@ import {
 } from "@phosphor-icons/react";
 import type { ExportHistoryResult, GitConflictState } from "../../../shared/types";
 import { useAppStore } from "../../state/appStore";
+import {
+  foreignLaneKey,
+  machineBlockedReason,
+  shouldShowMachineChips,
+  useAllMachineLanes,
+} from "../../state/laneMachineRouting";
+import {
+  MachineLaneSelect,
+  laneOptionLabel,
+  type MachineLaneSelectGroup,
+} from "../lanes/MachineLaneSelect";
 import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
@@ -94,7 +105,8 @@ export function TimelineToolbar({
   const surface = useTimelineStore((s) => s.surface);
   const setSurface = useTimelineStore((s) => s.setSurface);
   const focusLaneId = useTimelineStore((s) => s.focusLaneId);
-  const setFocusLaneId = useTimelineStore((s) => s.setFocusLaneId);
+  const focusLaneMachineId = useTimelineStore((s) => s.focusLaneMachineId);
+  const setFocusLane = useTimelineStore((s) => s.setFocusLane);
   const viewMode = useTimelineStore((s) => s.viewMode);
   const setViewMode = useTimelineStore((s) => s.setViewMode);
   const filters = useTimelineStore((s) => s.filters);
@@ -181,7 +193,8 @@ export function TimelineToolbar({
       const result = await exportFn({
         format: "json",
         limit: chosenLimit,
-        ...(focusLaneId ? { laneId: focusLaneId } : {}),
+        // Export reads this machine's history; a lane on another machine is not in it.
+        ...(focusLaneId && !focusLaneMachineId ? { laneId: focusLaneId } : {}),
         ...(filters.statuses.length === 1 ? { status: filters.statuses[0] } : {}),
       });
       if (!isHistoryExportResult(result)) {
@@ -198,12 +211,63 @@ export function TimelineToolbar({
       );
       window.setTimeout(() => setExportNotice(null), 5000);
     }
-  }, [focusLaneId, filters.statuses]);
+  }, [focusLaneId, focusLaneMachineId, filters.statuses]);
 
   /* ── Render ────────────────────────────────────────────────── */
   const showActivityControls = surface === "activity";
-  const focusLane = lanes.find((lane) => lane.id === focusLaneId) ?? null;
+  // A lane on another machine is named by machine + id; its git actions are
+  // not offered here (they would reach this machine's runtime).
+  const focusLane = focusLaneMachineId
+    ? null
+    : lanes.find((lane) => lane.id === focusLaneId) ?? null;
   const focusLaneHasWorktree = Boolean(focusLane?.worktreePath?.trim());
+
+  // Same lane dropdown as Files: every lane, under a heading per machine once
+  // the project spans more than one. Option values are lane row keys — the
+  // bare id on the tab's machine, `machineId:laneId` elsewhere.
+  const allMachineLanes = useAllMachineLanes(surface === "commits");
+  const multiMachine = shouldShowMachineChips(allMachineLanes.machines.length);
+  const laneGroups = useMemo<MachineLaneSelectGroup[]>(() => {
+    if (!multiMachine) {
+      return [{
+        key: "current",
+        machineName: "",
+        online: true,
+        disabledReason: null,
+        options: lanes.map((lane) => ({ value: lane.id, label: laneOptionLabel(lane) })),
+      }];
+    }
+    return allMachineLanes.machines
+      .map((machine) => ({
+        key: machine.machineId,
+        machineName: machine.machineName,
+        online: machine.online,
+        disabledReason: machine.isActiveBinding ? null : machineBlockedReason(machine),
+        options: allMachineLanes.lanes
+          .filter((row) => row.machineId === machine.machineId)
+          .map((row) => ({
+            value: row.key,
+            label: laneOptionLabel(row.lane),
+            title: `${laneOptionLabel(row.lane)} · ${machine.machineName}`,
+          })),
+      }))
+      .filter((group) => group.options.length > 0);
+  }, [allMachineLanes, lanes, multiMachine]);
+  const laneSelectValue = focusLaneId
+    ? focusLaneMachineId ? foreignLaneKey(focusLaneMachineId, focusLaneId) : focusLaneId
+    : "";
+  const pickLane = useCallback((value: string) => {
+    if (!value) {
+      setFocusLane(null, null);
+      return;
+    }
+    const row = allMachineLanes.lanesByKey.get(value);
+    if (row && !row.isActiveBinding) {
+      setFocusLane(row.lane.id, row.machineId);
+      return;
+    }
+    setFocusLane(row?.lane.id ?? value, null);
+  }, [allMachineLanes.lanesByKey, setFocusLane]);
 
   return (
     <div className="flex shrink-0 flex-col">
@@ -230,25 +294,19 @@ export function TimelineToolbar({
         </div>
         {surface === "commits" ? (
           <>
-            <select
-              value={focusLaneId ?? ""}
-              onChange={(e) => setFocusLaneId(e.target.value || null)}
-              aria-label="Lane"
-              className="h-6 max-w-[260px] flex-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 font-mono text-[11px] text-fg outline-none focus:border-accent/40"
-            >
-              <option value="">Select lane…</option>
-              {lanes.map((lane) => (
-                <option key={lane.id} value={lane.id}>
-                  {lane.name}
-                </option>
-              ))}
-            </select>
-            <LaneGitActionsMenu
+            <MachineLaneSelect
+              value={laneSelectValue}
+              groups={laneGroups}
+              onChange={pickLane}
+              placeholder="Select lane…"
+              className="max-w-[320px]"
+            />
+            {focusLaneMachineId ? null : <LaneGitActionsMenu
               laneId={focusLaneId}
               laneName={focusLane?.name ?? null}
               laneHasWorktree={focusLaneHasWorktree}
               onComplete={onCommitGitActionComplete}
-            />
+            />}
           </>
         ) : null}
       </div>
@@ -477,6 +535,9 @@ export function TimelineToolbar({
               )}
             >
               {lane.name}
+              {lane.machineName ? (
+                <span className="ml-1 text-muted-fg/40">· {lane.machineName}</span>
+              ) : null}
             </Chip>
           );
         })}

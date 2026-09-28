@@ -22,6 +22,9 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 
 import type { Logger } from "../logging/logger";
+
+/** Helper lines that mean ScreenCaptureKit stopped answering this process. */
+const CAPTURE_STALL_PATTERN = /ScreenCaptureKit did not answer|SCStreamErrorDomain Code=-3805/;
 import {
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
   type MacDesktopDriverHealth,
@@ -49,6 +52,7 @@ export const MAC_DESKTOP_DRIVER_OPS = {
   parkWindow: "window.park",
   unparkWindow: "window.unpark",
   launch: "app.launch",
+  quitApp: "app.quit",
   present: "present",
   observe: "observe",
   input: "input",
@@ -326,6 +330,38 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
    * window server ended. Everything it writes there is a lane id, an app name,
    * a window id or a framework error; nothing a user typed.
    */
+  /**
+   * One stack sample of a driver whose screen capture stopped answering.
+   *
+   * A live run lost ScreenCaptureKit for good once (error -3805, then every
+   * capture timed out for minutes) and the cause could not be reproduced
+   * afterwards. A two-second `sample` taken the first time it happens shows
+   * where the helper was stuck. Read-only, macOS only, once per process.
+   * A live stream that never sends a frame is the same kind of stall: once
+   * the driver's screenshots still worked while every stream stayed empty
+   * (2026-09-28).
+   */
+  let sampledPid: number | null = null;
+  const sampleStalledDriver = (reason = "capture_error"): void => {
+    const pid = child?.pid ?? null;
+    if (!pid || pid === sampledPid || process.platform !== "darwin") return;
+    sampledPid = pid;
+    const sampler = spawn("/usr/bin/sample", [String(pid), "2", "-mayDie"], { stdio: ["ignore", "pipe", "ignore"] });
+    let out = "";
+    sampler.stdout.setEncoding("utf8");
+    sampler.stdout.on("data", (chunk: string) => {
+      if (out.length < 200_000) out += chunk;
+    });
+    sampler.once("error", () => {});
+    sampler.once("close", () => {
+      // The header and the first thread (the main thread): that stack says
+      // what the helper waits on.
+      const parts = out.split(/\n(?=\s*\d+ Thread_)/);
+      const mainThread = parts.slice(0, 2).join("\n").slice(0, 8_000);
+      deps.logger.warn("mac_desktop.driver_capture_stall_sample", { pid, reason, sample: mainThread });
+    });
+  };
+
   const consumeStderr = (chunk: string): void => {
     stderrBuffer += chunk;
     let newlineIndex = stderrBuffer.indexOf("\n");
@@ -334,6 +370,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       stderrBuffer = stderrBuffer.slice(newlineIndex + 1);
       if (line.length) {
         deps.logger.info("mac_desktop.driver_stderr", { message: line.slice(0, MAX_STDERR_LINE_CHARS) });
+        if (CAPTURE_STALL_PATTERN.test(line)) sampleStalledDriver();
       }
       newlineIndex = stderrBuffer.indexOf("\n");
     }
@@ -566,6 +603,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   };
 
   return {
+    /** Takes the one stack sample of this driver process (see `sampleStalledDriver`). */
+    sampleCaptureStall(reason: string): void {
+      sampleStalledDriver(reason);
+    },
+
     /** Starts the helper if it is not already up. Idempotent. */
     async ensureStarted(): Promise<void> {
       await start();
@@ -646,6 +688,50 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     },
 
     request,
+
+    /**
+     * App Control: the user windows one process owns, on any display.
+     * Minimized windows are included and say so.
+     */
+    async listWindowsForPid(pid: number): Promise<Array<Record<string, unknown>>> {
+      const reply = await request<{ windows?: unknown }>(MAC_DESKTOP_DRIVER_OPS.listWindows, { pid });
+      return Array.isArray(reply?.windows)
+        ? reply.windows.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === "object")
+        : [];
+    },
+
+    /**
+     * App Control: records one window instead of a lane display. `key` names
+     * the recording to the helper (it takes the `laneId` slot) and must not
+     * collide with a Mac Desktop lane id.
+     */
+    async startWindowRecording(args: {
+      key: string;
+      windowId: number;
+      fps: number;
+      filePath: string;
+      keepIdle: boolean;
+    }): Promise<Record<string, unknown>> {
+      return await request<Record<string, unknown>>(MAC_DESKTOP_DRIVER_OPS.startRecording, {
+        laneId: args.key,
+        windowId: args.windowId,
+        fps: args.fps,
+        filePath: args.filePath,
+        keepIdle: args.keepIdle,
+      });
+    },
+
+    /** Stops the recording `key` names and returns the finished file's lengths. */
+    async stopRecordingByKey(key: string, options: { timeoutMs?: number } = {}): Promise<Record<string, unknown>> {
+      return await request<Record<string, unknown>>(MAC_DESKTOP_DRIVER_OPS.stopRecording, { laneId: key }, options);
+    },
+
+    /** The helper's Screen Recording and Accessibility grants, from `ping`. */
+    async readPermissions(): Promise<Record<string, unknown> | null> {
+      const reply = await request<{ permissions?: unknown }>(MAC_DESKTOP_DRIVER_OPS.health, {});
+      const permissions = reply?.permissions;
+      return permissions && typeof permissions === "object" ? permissions as Record<string, unknown> : null;
+    },
 
     onEvent(listener: (event: MacDesktopDriverEvent) => void): () => void {
       listeners.add(listener);

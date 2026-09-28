@@ -20,23 +20,48 @@ import type { ModelId } from "./core";
 import type { LaneLinearIssue } from "./lanes";
 import type { SessionBackgroundWork } from "../sessionCanonicalState";
 
-/** Fixed agent-reported activity labels. These never change the parent phase. */
+/**
+ * Fixed activity labels for a live turn. ADE detects them from the turn's tool
+ * calls (`source: "detected"`); an agent can also report one through
+ * `ade chat activity` (`source: "agent"`). They never change the parent phase.
+ */
 export const SESSION_ACTIVITY_VALUES = [
   "planning",
+  "exploring",
   "implementing",
   "testing",
-  "reviewing",
   "debugging",
+  "reviewing",
+  "shipping",
   "monitoring",
 ] as const;
 
-export type SessionActivityValue = (typeof SESSION_ACTIVITY_VALUES)[number];
+/**
+ * Activities only ADE sets, never an agent: `recording` shows while a
+ * recording the chat owns is running, in place of the detected activity, and
+ * the detected one comes back when it stops. `ade chat activity` does not
+ * accept these.
+ */
+export const SESSION_SYSTEM_ACTIVITY_VALUES = ["recording"] as const;
 
-/** One atomically persisted agent report for the session-card substatus. */
+export type SessionActivityValue =
+  | (typeof SESSION_ACTIVITY_VALUES)[number]
+  | (typeof SESSION_SYSTEM_ACTIVITY_VALUES)[number];
+
+/** Who set the session-card substatus: the agent itself, or ADE's tool-call detector. */
+export type SessionActivitySource = "agent" | "detected";
+
+/**
+ * One atomically persisted activity for the session-card substatus.
+ * `updatedAt` is when the session ENTERED this activity, not when it was last
+ * confirmed, so the row's elapsed reads "Testing 3m" for three minutes of tests.
+ */
 export type SessionActivityReport = {
   value: SessionActivityValue;
-  source: "agent";
+  source: SessionActivitySource;
   updatedAt: string;
+  /** When this value was reported in the current turn; `updatedAt` remains the entry-time anchor. */
+  reportedAt?: string;
 };
 
 /**

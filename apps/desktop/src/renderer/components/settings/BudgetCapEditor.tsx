@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, recessedStyle } from "../lanes/laneDesignTokens";
 import { SettingsCard, SettingsNumber, SettingsSelect, SettingsTextField } from "./primitives";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 /**
  * The spend cap editor. Mounted in settings and in the top-bar usage popup, so
@@ -355,29 +356,32 @@ export function BudgetCapEditor({
  * editor itself stays caller-agnostic so nothing else that mounts it changes.
  */
 export function BudgetCapSettings() {
+  // The cap lives in the machine's `.ade/local.yaml` and is enforced by that
+  // machine's runtime, so it is read and written there.
+  const { pin } = useSettingsMachineScope();
   const [config, setConfig] = useState<BudgetCapConfig | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void window.ade.usage.getBudgetConfig()
+    void window.ade.usage.getBudgetConfig(pin)
       .then((next) => { if (!cancelled) setConfig(next); })
       .catch(() => { if (!cancelled) setSaveError("ADE could not load the spend cap."); });
     return () => { cancelled = true; };
-  }, []);
+  }, [pin]);
 
   const onSave = useCallback(async (next: BudgetCapConfig) => {
     setSaving(true);
     setSaveError(null);
     try {
-      setConfig(await window.ade.usage.saveBudgetConfig(next));
+      setConfig(await window.ade.usage.saveBudgetConfig(next, pin));
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "ADE could not save the spend cap.");
     } finally {
       setSaving(false);
     }
-  }, []);
+  }, [pin]);
 
   return <BudgetCapEditor config={config} saving={saving} saveError={saveError} onSave={onSave} />;
 }

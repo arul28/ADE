@@ -253,6 +253,13 @@ Mechanics:
   01:00–04:00 and 06:00–10:00); models.dev lists the off-peak price. Chinese
   public holidays are not modelled. OpenCode entries carry OpenCode's own cost
   figure, which uses the off-peak price, so the peak rule does not reach them.
+- Claude Code's fast mode bills at 2× the model's standard rate (Opus 5.5,
+  Opus 5, Opus 4.8). The transcript scan reads the flag from `usage.speed`, and
+  the multiplier is `FAST_MODE_PRICE_MULTIPLIER` — models.dev carries no fast
+  rate, so it is a constant, the same number t3code reads from LiteLLM's
+  `provider_specific_entry.fast`. It composes with a long-context tier rather
+  than replacing it. `USAGE_SNAPSHOT_CACHE_VERSION` is bumped when the rule
+  changes so cached snapshots re-price once.
 - lookup tries the provider-prefixed name, then the canonical name, then an
   alias, then the longest key the canonical name extends — so a dated model id
   resolves to its family without a per-release table edit.
@@ -292,11 +299,18 @@ Two rules shape the account scope:
   nothing else. Raw transcript records never leave the machine that scanned
   them, never enter the sync layer, and are never held in memory by the merge.
   A heavy year of use is a few thousand small rows.
-- **Historical only.** Cost, tokens, and code history merge; the live quota
-  windows do not. Provider rate limits are tied to the provider account rather
-  than the machine, so every machine already reports the same window, and
-  merging them would either double a shared limit or imply a per-machine
-  difference that does not exist.
+- **History merges; live quota pools.** Cost, tokens, and code history merge as
+  durable rows. Live quota windows also travel, but only as an in-memory side
+  channel on the same `usage.getUsageRollup` response — never stored. Provider
+  rate limits are tied to the provider account rather than the machine, so the
+  same login on two machines reports the same window; the pooled view counts
+  each account once (the freshest machine's reading per account + window label)
+  instead of double-counting a shared limit. `poolLiveQuota` in
+  `shared/usageLiveQuota.ts` is the one pooling rule, and the Usage page's
+  "All machines" scope renders it with an environment filter. The windows are
+  deliberately absent from the CRR-replicated `usage_machine_rollups`: they
+  change every poll, and storing them would churn the CRR clock and reopen the
+  self-feeding refresh loop the store's no-op detection prevents.
 
 GitHub metrics are excluded from the merge for the same reason in a different
 direction: they are repo-scoped, so three machines with the same clone each
@@ -484,7 +498,7 @@ is no second account and no "continue on another account".
 | Cursor | `cursorAuth/accessToken` in the local Cursor `state.vscdb` (macOS `~/Library/Application Support/Cursor/User/globalStorage`, Linux `$XDG_CONFIG_HOME/Cursor/...` or `~/.config/Cursor/...`, Windows `%APPDATA%\Cursor\...`). A token whose JWT expiry is inside 60 seconds is skipped. ADE does not refresh it. | `GET https://cursor.com/api/usage-summary`. The `WorkosCursorSessionToken` cookie is `userId::accessToken`, with the user id taken from the JWT `sub` after the last `\|`. A bare access token is rejected as signed out. No browser-cookie import, and not the team Admin API. | Plan percent for the billing cycle, labeled monthly. |
 | Copilot | `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `GITHUB_TOKEN`, else `oauth_token` in `github-copilot/hosts.json`. If those are empty and a Copilot config or `gh` hosts file exists, `gh auth token` runs at most once every 15 minutes (immediately on a user refresh). | `GET https://api.github.com/copilot_internal/user`. Premium interactions remaining becomes used percent. ADE reads account email from `GET https://api.github.com/user` with the same token. If that call fails, ADE keeps the last email it read with the same token; a different token gets no remembered email. | Monthly premium quota, including the top-level `quota_reset_date`/`quota_reset_date_utc` when present. |
 | Grok | Non-expired bearer in `~/.grok/auth.json` (`GROK_HOME` overrides the directory), else `GROK_OAUTH_TOKEN`. Management keys (`xai-…`) and cookie-shaped values are ignored. | `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`. No grok.com cookie import. | `creditUsagePercent` for the current period, labeled weekly or monthly from the period length. |
-| OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. | `GET https://opencode.ai/zen/go/v1/usage`. | Rolling 5-hour, weekly, and monthly percents as the API reports them. A value of 1 is 1%, not 100%. |
+| OpenCode | `OPENCODE_API_KEY`, else an OpenCode or Zen key in the local OpenCode `auth.json`. Other providers' keys in that file are not sent. When neither exists, the Go plan's own console login is read from `opencode.db` (`account.access_token` plus `account_state.active_org_id`; skipped when past `token_expiry`). ADE refreshes neither credential. | `GET https://opencode.ai/zen/go/v1/usage` for an API key. For the console login, `GET https://opencode.ai/console/api/go/status` with the `x-org-id` header (the header the console requires). | Rolling 5-hour, weekly, and monthly percents. The API-key path reads the reported percents (a value of 1 is 1%, not 100%); the console path computes `100 × usedMicroCents / limitMicroCents` from the string meters and uses the subscription's `access.endsAt` for the month reset, which carries none of its own. An account without a Go plan answers `access: null` and shows no OpenCode row. Both paths are fixture-verified; the console path is live-verified against a Go account on the development machine. |
 | Kimi | Non-expired `access_token` in the token file Kimi Code itself reads (`$KIMI_CODE_HOME`, `~/.kimi-code` by default). `shared/kimiCodeLogin.ts` finds it the way Kimi does. First it reads `[providers."managed:kimi-code"]` in `config.toml`, which holds the API base (`base_url`) and the credential slot (`oauth.key`). The mainland-China default slot is `credentials/kimi-code.json`. Any other host and base, including `kimi login --region global`, has its own `credentials/kimi-code-env-<hash>.json`. `KIMI_CODE_BASE_URL` and `KIMI_CODE_OAUTH_HOST`/`KIMI_OAUTH_HOST` override that entry, as they do for Kimi. With no entry, ADE reads `kimi-code.json`, and the `region` marker picks the mainland-China or global base. A login kept in the OS keyring is not read. ADE never refreshes the token. | `GET {base}/usages`, plus `GET {base}/me` with the same bearer token for email and nickname. The top-level `usage` block (`used`, `limit`, `resetTime`) is the weekly quota. Each `limits[]` row reads `used`, `limit`, and `resetTime` from its `detail`, and its length from `window.duration` times `window.timeUnit` (`TIME_UNIT_MINUTE`, `_HOUR`, `_DAY`, or `_WEEK`). Counts may arrive as numeric strings, and an omitted `used` is 0. If `/me` fails, ADE keeps the last email it read with the same token, so the account id does not fall back to `kimi:local`. A different token gets no remembered email, because it may belong to a different account. Kimi rotates its token when it refreshes, so a refresh that lands on a failed `/me` shows `kimi:local` for that one poll. | The weekly quota plus each limit, typed by length: 8 hours or less is the 5-hour window, 10 days or less is weekly, longer is monthly. The first window of each type is kept. The response shape matches Kimi Code's own client (`packages/oauth/src/managed-usage.ts`). ADE's parsing is fixture-verified. Kimi has not been live-verified on the development machine. |
 
 Gemini, Droid, Pi, and Qwen have no remaining-quota source, so ADE adds no
@@ -832,12 +846,55 @@ for each provider, mainly Claude and Codex. The wire contract is in
   falls back to `status.accountEmail`, then to "This machine".
 - The iOS quota rows are readings, not controls: the old tap-to-focus gesture
   on a pace bar is gone. Tapping a row opens the account detail sheet.
-- Codex DOES report banked reset credits, and ADE parses them:
+- Codex and Claude both report banked reset credits, and ADE parses them:
   `parseCodexResetCredits` counts only credits whose status is still
-  `available` and reports the soonest expiry, which lands on
-  `UsageAccount.resetCredits`. That is what gates the Codex row's **Use reset**
-  action, so a Codex account with no banked credit shows no action at all.
+  `available` and reports the soonest expiry; `parseClaudeResetCredits` (Claude
+  Code's `cedar_ember` program) counts the grants the server marks usable and
+  unexpired and pins the one it names as next. Both land on
+  `UsageAccount.resetCredits`, which is what gates the row's **Use reset**
+  action, so an account with no banked credit shows no action at all.
   `parseCodexRateLimitSnapshot` remains windows-and-spend-control only; the
-  credits ride their own key in the same payload. Claude grants no such credit
-  — its `extra_usage` is paid overage in dollars, which the extra usage card
-  already shows.
+  Codex credits ride their own key in the same payload. Claude's read is the
+  OAuth usage endpoint with `cedar_ember=1&skip_spend=1`, sent with the OAuth
+  token from ADE's Claude credential cache when it is warm (so a token the
+  quota poll just refreshed is used, not the possibly-stale file) and the
+  credentials file otherwise. On macOS that token lives in the Keychain, so ADE
+  does not offer the control there rather than turn a Keychain read into an
+  unattended HTTP call; the read stays off and sends nothing. A failed read is
+  not a confirmed zero: the last known credits are kept, and only a successful
+  response can replace them. Spending a Claude credit is
+  `POST /api/organizations/{org}/reset_rate_limits` with
+  `{ program, grant_id, request_id }`, one claim at a time with the pending
+  claim — its grant id and request id together — held until Claude answers, so
+  a retry after a timeout repeats the exact request instead of spending a
+  second credit on whatever grant a later probe selected; `cooldown`, `429`,
+  and a signed-out answer count as answers. Claude's `extra_usage` is paid
+  overage in dollars, which the extra usage card already shows.
+- Every Codex app-server read (`runCodexAppServerJsonRpc`: the quota fallback,
+  the reset-credit probe, and spending a credit) holds stdin open until every
+  requested response id has arrived, then closes it; only the timeout kills the
+  tree early. The app-server aborts an in-flight request the moment it sees
+  stdin EOF, and `account/rateLimits/read` is a network round-trip, so closing
+  stdin right after the write returned only the `initialize` reply and dropped
+  the credit payload — which ADE then cached as `availableCount: 0` and never
+  offered **Use reset**. Notifications interleaved between replies carry no
+  numeric id and are ignored.
+
+Claude's "Couldn't refresh Claude — showing last reading" is the generic
+stale-state line `buildProviderWindows` emits when a *fresh* Claude poll returns
+no windows while unexpired last-good windows exist: a transient usage-endpoint
+5xx/timeout/429 or an unrecognized response. It is not the credential path — a
+background poll that cannot read a login returns `preserve_previous` (silent,
+windows carried, no such message), and a rejected token produces the
+"reconnect" state instead. The next successful poll clears it and resets
+`providerFailureCount`, and `Retry-After`/exponential backoff bounds the retry
+storm, so it self-heals.
+
+## Compact header visibility
+
+The top-bar usage control shows all tracked providers by default. In the expanded
+Limits panel, each provider has an eye control to include or hide that provider
+from the compact header; provider rows remain available in the expanded panel.
+The AI providers settings page has a **Show usage in header** switch. Hiding the
+last provider hides the header control and turns that switch off. Turning it back
+on restores all providers to the header.

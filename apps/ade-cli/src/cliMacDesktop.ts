@@ -12,6 +12,7 @@
  * error-hint table are local, so they can be built at module scope.
  */
 import { formatProofDuration, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
+import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
 import {
   MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE_CODE,
   MAC_DESKTOP_DISPLAY_UNAVAILABLE_CODE,
@@ -39,8 +40,10 @@ import {
   firstArray,
   firstRecord,
   firstStandalonePositional,
+  formatActionAnswerLines,
   isRecord,
   listActionsStep,
+  proofCallerRootArgs,
   readFlag,
   readNumberOption,
   readProofOwnerBase,
@@ -48,6 +51,7 @@ import {
   readValue,
   renderKeyValues,
   renderTable,
+  requireTypedText,
   requireValue,
   standalonePositionals,
   takeArgsAfterTerminator,
@@ -249,15 +253,15 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
 
   // Every subcommand is lane-scoped: a display belongs to a lane, not to a
   // chat, so `--lane` (or `ADE_LANE_ID`) is the one argument they all share.
+  // With neither, the lane comes from where this shell stands: every call
+  // carries `callerRoot`, and the runtime binds a call with no chat identity
+  // made from inside a lane worktree to that lane (an OpenCode agent's shell
+  // has no ADE_LANE_ID). Anywhere else the runtime refuses and asks for --lane.
   const claimArgs = readToolClaimArgs(args);
-  const requireLane = (): JsonObject => {
-    if (!claimArgs.laneId) {
-      throw new CliUsageError(
-        `mac-desktop ${sub} requires --lane <lane-id> or ADE_LANE_ID.`,
-      );
-    }
-    return { ...claimArgs };
-  };
+  const callerRootArgs = proofCallerRootArgs();
+  const laneClaim = (): JsonObject => ({ ...claimArgs });
+  const macDesktopStep = (key: string, method: string, payload: JsonObject) =>
+    actionStep(key, "mac_desktop", method, payload, callerRootArgs);
   // Read ONCE and memoized: `readNumberOption` splices the flag out of argv,
   // so the second call in `windowId() == null ? {} : { windowId: windowId() }`
   // would answer null and drop the window the caller named.
@@ -294,7 +298,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     label,
     ...(formatter ? { formatter } : {}),
     steps: [
-      actionStep("result", "mac_desktop", method, collectGenericObjectArgs(args, payload)),
+      macDesktopStep("result", method, collectGenericObjectArgs(args, payload)),
     ],
   });
 
@@ -308,11 +312,11 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
   }
   if (sub === "start" || sub === "create")
     return desktopAction("mac-desktop start", "start", {
-      ...requireLane(),
+      ...laneClaim(),
       resolution: readValue(args, ["--resolution", "--size"]),
     }, "mac-desktop-status");
   if (sub === "stop" || sub === "destroy" || sub === "release-display")
-    return desktopAction("mac-desktop stop", "stop", requireLane(), "mac-desktop-stop");
+    return desktopAction("mac-desktop stop", "stop", laneClaim(), "mac-desktop-stop");
   if (sub === "windows" || sub === "list" || sub === "ls")
     return desktopAction("mac-desktop windows", "listWindows", { ...claimArgs }, "mac-desktop-windows");
   if (sub === "claim") {
@@ -324,30 +328,43 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       );
     }
     return desktopAction("mac-desktop claim", "claimWindow", {
-      ...requireLane(),
+      ...laneClaim(),
       windowId: positional,
     });
   }
   if (sub === "release")
     return desktopAction("mac-desktop release", "releaseWindow", {
-      ...requireLane(),
+      ...laneClaim(),
       ...(windowId() == null ? {} : { windowId: windowId() }),
     });
+  if (sub === "quit") {
+    // Only apps the lane opened, including ones it released to the user.
+    // Nothing named quits them all.
+    const app = readValue(args, ["--app"]) ?? positionals(args)[0] ?? null;
+    return desktopAction("mac-desktop quit", "quitApp", {
+      ...laneClaim(),
+      ...(app ? { app } : {}),
+    });
+  }
   if (sub === "open" || sub === "launch") {
     const target = requireValue(
       readValue(args, ["--target", "--app"]) ?? positionals(args)[0] ?? null,
       "app, path, or URL",
     );
-    // Everything after `--` is the launched app's argv, not ours.
+    // Everything after `--` is the launched app's argv, not ours, except an
+    // output flag at the very end: `open TextEdit -- <file> --text` meant the
+    // CLI's --text, and TextEdit got it as a second file.
+    const appArgs = [...tail];
+    while (appArgs.length && (appArgs[appArgs.length - 1] === "--text" || appArgs[appArgs.length - 1] === "--json")) appArgs.pop();
     return desktopAction("mac-desktop open", "open", {
-      ...requireLane(),
+      ...laneClaim(),
       target,
-      ...(tail.length ? { args: [...tail] } : {}),
+      ...(appArgs.length ? { args: appArgs } : {}),
     });
   }
   if (sub === "observe" || sub === "snapshot") {
     const observeArgs = {
-      ...requireLane(),
+      ...laneClaim(),
       ...(windowId() == null ? {} : { windowId: windowId() }),
       ...(readFlag(args, ["--map", "--element-map", "--ui-map"]) ? { map: true } : {}),
       limit: readNumberOption(args, ["--limit"]),
@@ -384,7 +401,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       );
     }
     return desktopAction("mac-desktop click", "click", {
-      ...requireLane(),
+      ...laneClaim(),
       ...target,
       ...(windowId() == null ? {} : { windowId: windowId() }),
       ...realMode(),
@@ -393,13 +410,13 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     }, "mac-desktop-action");
   }
   if (sub === "type" || sub === "type-text") {
-    const text = requireValue(
+    const text = requireTypedText(
       readValue(args, ["--value", "--input-text"]) ?? positionals(args)[0] ?? null,
       "text",
     );
     const target = macDesktopTargetFromToken(readValue(args, ["--target", "--handle"]));
     return desktopAction("mac-desktop type", "type", {
-      ...requireLane(),
+      ...laneClaim(),
       text,
       ...(readFlag(args, ["--clear", "--replace"]) ? { clear: true } : {}),
       // Return after the words, as `apple type --submit` does.
@@ -414,7 +431,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       "key",
     );
     return desktopAction("mac-desktop press", "press", {
-      ...requireLane(),
+      ...laneClaim(),
       key,
       ...modifiers(),
       ...realMode(),
@@ -432,7 +449,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       );
     }
     return desktopAction("mac-desktop scroll", "scroll", {
-      ...requireLane(),
+      ...laneClaim(),
       direction,
       amount: readNumberOption(args, ["--amount", "--lines"]),
       ...macDesktopTargetFromToken(rest[1] ?? null),
@@ -449,7 +466,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       );
     }
     return desktopAction("mac-desktop drag", "drag", {
-      ...requireLane(),
+      ...laneClaim(),
       from,
       to,
       durationMs: readNumberOption(args, ["--duration-ms", "--duration"]),
@@ -465,7 +482,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       );
     }
     return desktopAction("mac-desktop wait", "wait", {
-      ...requireLane(),
+      ...laneClaim(),
       ...(text ? { text } : {}),
       ...(gone ? { gone } : {}),
       ...(windowTitle ? { windowTitle } : {}),
@@ -474,24 +491,25 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
   }
   if (sub === "screenshot" || sub === "capture")
     return desktopAction("mac-desktop screenshot", "screenshot", {
-      ...requireLane(),
+      ...laneClaim(),
       ...(windowId() == null ? {} : { windowId: windowId() }),
       out: readValue(args, ["--out", "--out-path", "--output"]),
     });
   if (sub === "record" || sub === "recording") {
     const mode = (positionals(args)[0] ?? "start").toLowerCase();
     if (mode === "start") {
-      // Same flags and default as `ade apple record-start`.
-      const keepIdle = readFlag(args, ["--keep-idle"]);
+      // Same flags and default as `ade apple record-start`. `--keep-idle` is
+      // the old name of `--plain`.
+      const plain = readFlag(args, ["--plain", "--keep-idle"]);
       const maxSeconds = readNumberOption(args, ["--max-seconds"]);
       if (maxSeconds != null && maxSeconds <= 0) {
         throw new CliUsageError("mac-desktop record start --max-seconds must be greater than 0.");
       }
       return desktopAction("mac-desktop record start", "startRecording", {
-        ...requireLane(),
+        ...laneClaim(),
         caption: readValue(args, ["--caption", "--description", "--desc"]),
         fps: readNumberOption(args, ["--fps"]),
-        ...(keepIdle ? { keepIdle: true } : {}),
+        ...(plain ? { plain: true } : {}),
         ...(maxSeconds == null ? {} : { maxSeconds }),
       }, "mac-desktop-recording");
     }
@@ -499,15 +517,23 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       return desktopAction(
         "mac-desktop record stop",
         "stopRecording",
-        requireLane(),
+        laneClaim(),
         "mac-desktop-recording",
       );
-    throw new CliUsageError(`Unknown mac-desktop record command: ${mode}. Use start or stop.`);
+    // The lane's recording, as `app-control record status` reports its own.
+    if (mode === "status")
+      return desktopAction(
+        "mac-desktop record status",
+        "getStatus",
+        laneClaim(),
+        "mac-desktop-recording",
+      );
+    throw new CliUsageError(`Unknown mac-desktop record command: ${mode}. Use start, stop or status.`);
   }
   if (sub === "stream" || sub === "live" || sub === "stream-status")
-    return desktopAction("mac-desktop stream status", "getStreamStatus", requireLane());
+    return desktopAction("mac-desktop stream status", "getStreamStatus", laneClaim());
   if (sub === "lease" || sub === "request-lease" || sub === "input-lease") {
-    const laneArgs = requireLane();
+    const laneArgs = laneClaim();
     if (!claimArgs.chatSessionId) {
       throw new CliUsageError(
         "mac-desktop lease requires --chat-session <id> or ADE_CHAT_SESSION_ID: the approval is remembered per chat.",
@@ -525,7 +551,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     // resolution on a lane that already has a display re-sizes it rather than
     // racing a second one into existence.
     if (!resolution)
-      return desktopAction("mac-desktop display", "getStatus", { ...requireLane() }, "mac-desktop-status");
+      return desktopAction("mac-desktop display", "getStatus", { ...laneClaim() }, "mac-desktop-status");
     // Derived from the shared table: a preset added there and forgotten here
     // was a resolution the service supports and the CLI refuses.
     const presets = Object.keys(MAC_DESKTOP_RESOLUTION_PRESETS);
@@ -535,7 +561,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       );
     }
     return desktopAction("mac-desktop display", "start", {
-      ...requireLane(),
+      ...laneClaim(),
       resolution,
     }, "mac-desktop-status");
   }
@@ -547,7 +573,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       );
     }
     return desktopAction("mac-desktop present", "present", {
-      ...requireLane(),
+      ...laneClaim(),
       destination,
     });
   }
@@ -564,7 +590,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     }
     const title = readValue(args, ["--title", "--name"]) ?? caption;
     const ownerBase = readProofOwnerBase(args);
-    const laneArgs = requireLane();
+    const laneArgs = laneClaim();
     const captureArgs = collectGenericObjectArgs(args, {
       ...laneArgs,
       ...(windowId() == null ? {} : { windowId: windowId() }),
@@ -575,11 +601,11 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       label: "mac-desktop proof",
       formatter: "mac-desktop-proof",
       steps: [
-        actionStep("screenshot", "mac_desktop", "screenshot", captureArgs),
+        macDesktopStep("screenshot", "screenshot", captureArgs),
         // Re-observe AFTER the capture so the state that is returned is the
         // state that was filed. The agent checks that state against its claim
         // before the record stands.
-        actionStep("observation", "mac_desktop", "observe", {
+        macDesktopStep("observation", "observe", {
           ...laneArgs,
           ...(windowId() == null ? {} : { windowId: windowId() }),
         }),
@@ -876,31 +902,40 @@ export function formatMacDesktopWindows(value: unknown): string {
       window.onDisplayId,
     ]),
     "(no windows)",
+    { fullColumns: ["id", "lane"] },
   );
 }
 
 /**
- * The "resolved" cell: the element line, or one of the three no-element sentences.
+ * The `hit` / `effect` lines, in the one format every computer-use surface
+ * prints.
  *
  * A key press has no target element and no point either — saying it "acted on
  * a point" described a click that never happened. Only a click or a drag can
  * land on a point. A wait result carries waitedMs and no action: a timed-out
- * wait was printed as a key "sent to the focused window".
+ * wait was printed as a key "sent to the focused window". A silent action
+ * took no observation, so it had nothing to compare.
  */
-function macDesktopResolvedLine(result: JsonObject, resolved: JsonObject | null): string {
-  if (resolved) return macDesktopElementLine(resolved);
-  if (result.action === "click" || result.action === "drag") {
-    return "(no element; acted on a point)";
-  }
-  if (result.action === "wait" || typeof result.waitedMs === "number") {
-    return "(no element matched)";
-  }
-  return "(no element; sent to the focused window)";
+function macDesktopAnswerLines(result: JsonObject, resolved: JsonObject | null): string[] {
+  const isWait = result.action === "wait" || typeof result.waitedMs === "number";
+  const pointAction = result.action === "click" || result.action === "drag";
+  return formatActionAnswerLines(result, {
+    action: isWait ? "wait" : asString(result.action),
+    resolved,
+    noElement: isWait
+      ? "no element matched"
+      : pointAction
+        ? "no element; acted on a point"
+        : "no element; sent to the focused window",
+    fallbackEffect: isWait
+      ? { status: "not_checked", reason: "a wait checks a condition; it does not act" }
+      : { status: "not_checked", reason: "no observation was taken after the action" },
+  });
 }
 
 /**
- * An acting command's answer: what it resolved, then what the screen looks
- * like now.
+ * An acting command's answer: what it hit and whether the screen changed,
+ * then what the screen looks like now.
  *
  * The observation is printed in full rather than summarized to one line,
  * because the whole point of the contract is that a caller never has to
@@ -911,16 +946,16 @@ export function formatMacDesktopAction(value: unknown): string {
   const result = isRecord(value) ? value : {};
   const resolved = firstRecord(result, ["resolved", "matched"]);
   const observation = firstRecord(result, ["observation"]);
-  const header = renderKeyValues("ADE Mac Desktop action", [
-    ["ok", result.ok ?? true],
-    ["action", result.action],
-    ["mode", result.mode],
-    [
-      "resolved",
-      macDesktopResolvedLine(result, resolved),
-    ],
-    ["waited", typeof result.waitedMs === "number" ? `${result.waitedMs}ms` : null],
-  ]);
+  const header = [
+    ...macDesktopAnswerLines(result, resolved),
+    "",
+    renderKeyValues("ADE Mac Desktop action", [
+      ["ok", result.ok ?? true],
+      ["action", result.action],
+      ["mode", result.mode],
+      ["waited", typeof result.waitedMs === "number" ? `${result.waitedMs}ms` : null],
+    ]),
+  ].join("\n");
   if (!observation) return header;
   return [header, "", ...macDesktopObservationSections(observation)].join("\n");
 }
@@ -945,7 +980,10 @@ export function macDesktopRecordingDurationMs(record: JsonObject): number | null
 /** `record start` / `record stop`: is it running, where is the file, how long. */
 export function formatMacDesktopRecording(value: unknown): string {
   const record = isRecord(value) ? value : {};
-  const status = firstRecord(record, ["recording", "status"]) ?? record;
+  // `record status` reads the display's status, whose `recording` is null when
+  // the lane has never recorded: that is "not running", not a blank record.
+  const status = firstRecord(record, ["recording", "status"])
+    ?? ("recording" in record && record.recording == null ? { laneId: record.laneId, running: false } : record);
   const durationMs = macDesktopRecordingDurationMs(status);
   const finite = (value: unknown): number | null =>
     typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -976,6 +1014,9 @@ export function formatMacDesktopRecording(value: unknown): string {
           ? "yes — a captioned recording goes to the proof drawer"
           : "no — add --caption to file it as proof",
     ],
+    ["cite", typeof status.proofArtifactId === "string" && status.proofArtifactId
+      ? proofCitationMarkdown(status.proofArtifactId, asString(status.caption))
+      : null],
   ]);
 }
 
@@ -1006,6 +1047,8 @@ export function formatMacDesktopProofFiled(value: unknown): string {
       ["caption", artifact.description ?? artifact.title],
       ["path", artifact.uri ?? artifact.path],
       ["owners", ownersFor(artifact.id)],
+      // Pasted into the answer, this shows the proof next to the claim.
+      ["cite", typeof artifact.id === "string" ? proofCitationMarkdown(artifact.id, asString(artifact.description) ?? asString(artifact.title)) : null],
     ]),
   );
   const confirmation = asString(record.confirmation);

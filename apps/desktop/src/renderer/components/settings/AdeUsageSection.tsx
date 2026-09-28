@@ -32,6 +32,7 @@ import {
   selectTopSeries,
 } from "../usage/UsageDailyChart";
 import { UsageSegmented } from "../usage/UsageSegmented";
+import { UsagePooledLimits } from "../usage/UsagePooledLimits";
 import {
   USAGE_BUTTON_CLASS,
   USAGE_CARD_CLASS,
@@ -985,6 +986,13 @@ export function AdeUsageSection() {
 
       {error ? (
         <div className={cn(USAGE_CARD_CLASS, USAGE_TEXT.detail, "px-6 py-4 text-muted-fg")}>{error}</div>
+      ) : null}
+
+      {/* Pooled live limits belong to the account scope only: "This machine"
+          and "This project" are single-environment views, and the top-bar
+          popover already carries this machine's live limits everywhere. */}
+      {scope === "account" && stats?.liveQuota ? (
+        <UsagePooledLimits environments={stats.liveQuota.environments} />
       ) : null}
 
       {isEmpty ? (

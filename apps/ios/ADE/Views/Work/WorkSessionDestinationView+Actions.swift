@@ -66,6 +66,9 @@ extension WorkSessionDestinationView {
     )
     let echoId = echo.id
     localEchoMessages.append(echo)
+    // Before the first await: the echo rides this turn's overlays, so the
+    // bubble is in the frame that follows the tap.
+    syncThreadOverlays()
     sending = true
 
     let attachmentRefs: [AgentChatFileRef]
@@ -974,6 +977,12 @@ extension WorkSessionDestinationView {
   func openFileReference(_ path: String) async {
     guard !personalChat else {
       errorMessage = "Files are not attached to projectless chats."
+      return
+    }
+    guard !isRemoteMachineChat else {
+      // The Files tab shows the focused machine only.
+      let machine = syncService.chatMachineName(sessionId: sessionId) ?? "that machine"
+      errorMessage = "Open \(machine)'s projects from the Hub to browse its files."
       return
     }
     guard let session else { return }

@@ -124,12 +124,15 @@ export function useNativeToolFeedHandlers(handlers: NativeToolFeedHandlers): voi
 export function NativeToolFeedsProvider({
   active,
   runtimePin,
+  laneId = null,
   children,
 }: {
   /** The Work route is on screen. Every feed is torn down when it is not. */
   active: boolean;
   /** Machine the active Work session runs on, or null for this tab's own. */
   runtimePin: OpenProjectBinding | null;
+  /** The lane the tools pane shows. App Control's session is this lane's. */
+  laneId?: string | null;
   children: ReactNode;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
@@ -204,6 +207,7 @@ export function NativeToolFeedsProvider({
     browserViewRoot,
     runtimePin,
     offline,
+    laneId,
     onBrowserStatusSettled,
     onBrowserEvent,
     onAppControlEvent,

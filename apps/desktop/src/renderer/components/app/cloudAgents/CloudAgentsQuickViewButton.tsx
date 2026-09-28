@@ -83,10 +83,13 @@ export function CloudAgentsQuickViewButton({
   provider,
   variant = "icon",
   onMenuActivate,
+  showTrigger = true,
 }: {
   provider: CloudAgentProvider;
   variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
+  /** False hides the button (and its panel) while staying mounted. */
+  showTrigger?: boolean;
 }) {
   const brand = CLOUD_PROVIDER_BRANDS[provider];
   const project = useAppStore((s) => s.project);
@@ -229,7 +232,13 @@ export function CloudAgentsQuickViewButton({
     };
   }, [open]);
 
-  if (!visible) return null;
+  // Leaving the project surface closes the fleet modal rather than parking it
+  // to reappear on return.
+  useEffect(() => {
+    if (!showTrigger) setOpen(false);
+  }, [showTrigger]);
+
+  if (!visible || !showTrigger) return null;
 
   const handleToggle = () => {
     setOpen((current) => !current);

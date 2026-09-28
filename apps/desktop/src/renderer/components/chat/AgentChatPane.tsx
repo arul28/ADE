@@ -127,13 +127,14 @@ import {
   type ProviderFamily,
 } from "../../../shared/modelRegistry";
 import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching";
-import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
+import { CURSOR_AVAILABLE_MODE_IDS, foldLegacyCursorFastConfigValue } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import {
   AgentChatComposer,
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   type ComposerDraftEditIntent,
+  type ComposerMachineChipAction,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import type { ComposerPrSuggestion } from "./ChatCommandMenu";
@@ -174,7 +175,7 @@ import type { MosaicRenderContext } from "./chatMarkdownBlock";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
 import { useSessionLifecycleSnapshot } from "../work/SessionLifecycleChips";
-import { useForeignSessionLaneId } from "../../state/crossMachineLanes";
+import { useForeignSessionLaneId, useLanesForPin } from "../../state/crossMachineLanes";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
   chatEventDedupKey,
@@ -364,6 +365,10 @@ import {
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
 import {
+  COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
+  setComposerDraftPresence,
+} from "../../state/composerDraftPresenceStore";
+import {
   captureComposerHandoff,
   CHAT_SHELL_HEADER_SELECTOR,
   findDraftComposerHandoffElement,
@@ -464,7 +469,6 @@ const DEVIN_CLOUD_MACHINE_ID = "__ade_devin_cloud__";
 const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
-const COMPOSER_DRAFT_STORAGE_KEY_PREFIX = "ade.chat.composerDraft.v1";
 const WORK_START_DRAFT_COMPANION_STATE_KEY = "draft:work-start";
 const WORK_START_DRAFT_LAUNCH_SCOPE_ID = "work-start";
 const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
@@ -761,6 +765,14 @@ function coalesceSubagentEventEnvelopes(envelopes: AgentChatEventEnvelope[]): Ag
         event: merged,
         timestamp: envelope.timestamp,
         sequence: envelope.sequence ?? previous.sequence,
+        // The merged row now carries the right envelope's time, so its
+        // synthetic flag must follow that time rather than the left stub's.
+        provenance: previous.provenance
+          ? {
+            ...previous.provenance,
+            timestampSynthetic: envelope.provenance?.timestampSynthetic === true,
+          }
+          : envelope.provenance,
       };
     } else {
       output.push(envelope);
@@ -801,13 +813,30 @@ function buildSubagentEventHistory(args: {
     : false;
 
   let sequence = 0;
-  const timestampFor = (index: number): string =>
+  // Deterministic ordering placeholder for rows whose provider published no
+  // time. It is never displayed: `timestampSynthetic` tells the message list to
+  // hide the clock, because this epoch rendered as "7:00 PM Dec 31" in negative
+  // UTC offsets and ranked as a real time everywhere else.
+  const syntheticTimestampFor = (index: number): string =>
     new Date(Date.UTC(2026, 0, 1, 0, 0, 0, Math.min(index, 999))).toISOString();
+  const envelopeTimeFor = (
+    message: AgentChatSubagentTranscriptMessage | null,
+    index: number,
+  ): { timestamp: string; synthetic: boolean } => {
+    const raw = typeof message?.timestamp === "string" ? message.timestamp : null;
+    const parsed = raw ? Date.parse(raw) : NaN;
+    return Number.isFinite(parsed)
+      ? { timestamp: new Date(parsed).toISOString(), synthetic: false }
+      : { timestamp: syntheticTimestampFor(index), synthetic: true };
+  };
+  const provenanceTime = (time: { synthetic: boolean }): { timestampSynthetic?: boolean } =>
+    time.synthetic ? { timestampSynthetic: true } : {};
   const envelopes: AgentChatEventEnvelope[] = [];
   if (prompt && !hasPromptMessage) {
+    const time = envelopeTimeFor(null, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence: sequence++,
       event: {
         type: "user_message",
@@ -821,6 +850,7 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: "user",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }
@@ -834,9 +864,10 @@ function buildSubagentEventHistory(args: {
       ?? entry.message.uuid
       ?? subagentMergeKey(entry.event)
       ?? `subagent:${args.subagentId}:${sequence}`;
+    const time = envelopeTimeFor(entry.message, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence: sequence++,
       event: entry.event,
       provenance: {
@@ -844,14 +875,16 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: entry.message.type === "user" ? "user" : "agent",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }
 
   if (envelopes.length === 0 && args.loading) {
+    const time = envelopeTimeFor(null, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence: sequence++,
       event: {
         type: "activity",
@@ -862,13 +895,15 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: "agent",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }
   if (envelopes.length === 0 && args.unsupported) {
+    const time = envelopeTimeFor(null, sequence);
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
-      timestamp: timestampFor(sequence),
+      timestamp: time.timestamp,
       sequence,
       event: {
         type: "error",
@@ -878,6 +913,7 @@ function buildSubagentEventHistory(args: {
         threadId: args.subagentId,
         role: "agent",
         targetKind: "codex_subagent",
+        ...provenanceTime(time),
       },
     });
   }
@@ -2693,6 +2729,25 @@ function nativeControlsFromLaunchSource(
   };
 }
 
+/**
+ * Native controls plus Fast, with a Cursor Fast toggle that older builds saved
+ * as a model option folded into Fast. Fast is Cursor's speed tier now, shown
+ * as the model picker's Fast chip, so a saved launch keeps its choice.
+ */
+function launchFastModeAndControls(
+  fastMode: boolean,
+  controlsSource: Partial<LaunchConfigSessionSource>,
+  defaults: NativeControlState,
+): { fastMode: boolean; controls: NativeControlState } {
+  const controls = nativeControlsFromLaunchSource(controlsSource, defaults);
+  const folded = foldLegacyCursorFastConfigValue(fastMode, controls.cursorConfigValues);
+  if (!folded.folded) return { fastMode, controls };
+  return {
+    fastMode: folded.fastMode === true,
+    controls: { ...controls, cursorConfigValues: folded.configValues ?? {} },
+  };
+}
+
 function buildLastLaunchConfig(
   source: Partial<LaunchConfigSessionSource>,
   defaults: NativeControlState,
@@ -2700,14 +2755,15 @@ function buildLastLaunchConfig(
 ): LastLaunchConfig | null {
   const modelId = source.modelId ?? resolveRegistryModelId(source.model);
   if (!modelId) return null;
+  const { fastMode, controls } = launchFastModeAndControls(source.fastMode === true, source, defaults);
   return {
     version: 1,
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
-    fastMode: source.fastMode === true,
+    fastMode,
     cursorCloudServiceTier: source.cursorCloudServiceTier ?? null,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
-    controls: nativeControlsFromLaunchSource(source, defaults),
+    controls,
     updatedAt,
   };
 }
@@ -2719,7 +2775,8 @@ function normalizeStoredLaunchConfig(
   if (!isRecord(value)) return null;
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   if (!modelId) return null;
-  const controls = nativeControlsFromLaunchSource(
+  const { fastMode, controls } = launchFastModeAndControls(
+    readStoredFastMode(value),
     isRecord(value.controls) ? value.controls : {},
     defaults,
   );
@@ -2729,7 +2786,7 @@ function normalizeStoredLaunchConfig(
     reasoningEffort: typeof value.reasoningEffort === "string" && value.reasoningEffort.trim().length
       ? value.reasoningEffort.trim()
       : null,
-    fastMode: readStoredFastMode(value),
+    fastMode,
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
@@ -2968,19 +3025,21 @@ function normalizeStoredComposerDraft(
   const modelId = typeof value.modelId === "string" ? value.modelId.trim() : "";
   const attachments = normalizeComposerFileAttachments(value.attachments);
   const updatedAt = nonEmptyString(value.updatedAt) ?? new Date(0).toISOString();
+  const { fastMode, controls } = launchFastModeAndControls(
+    readStoredFastMode(value),
+    isRecord(value.controls) ? value.controls : {},
+    defaults,
+  );
   return {
     version: 1,
     text: typeof value.text === "string" ? value.text : "",
     mentionLabels: normalizeComposerMentionLabels(value.mentionLabels),
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
-    fastMode: readStoredFastMode(value),
+    fastMode,
     cursorCloudServiceTier: readStoredCursorCloudServiceTier(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
-    controls: nativeControlsFromLaunchSource(
-      isRecord(value.controls) ? value.controls : {},
-      defaults,
-    ),
+    controls,
     attachments,
     attachmentDraftIds: normalizeStoredDraftAttachmentIds(value.attachmentDraftIds, attachments, updatedAt),
     submittedDraftTextEdit: normalizeSubmittedDraftTextEdit(value.submittedDraftTextEdit),
@@ -3422,6 +3481,7 @@ export function AgentChatPane({
   hideModelControls = false,
   hideWorkspaceChrome = false,
   hideSurfaceHeader = false,
+  machineChipAction = null,
   hideLaneToolDrawers = false,
   forceNewSession = false,
   forceDraftMode = false,
@@ -3488,6 +3548,8 @@ export function AgentChatPane({
   hideWorkspaceChrome?: boolean;
   /** Suppress the WorkSurfaceHeader row entirely (the host surface renders its own header, e.g. the CTO page). */
   hideSurfaceHeader?: boolean;
+  /** Host-owned action for the composer's machine chip (the CTO's home machine). */
+  machineChipAction?: ComposerMachineChipAction | null;
   /** Work owns these lane-scoped drawers; proof remains chat-scoped here. */
   hideLaneToolDrawers?: boolean;
   forceNewSession?: boolean;
@@ -4582,7 +4644,7 @@ export function AgentChatPane({
     // which left the toggle permanently hidden — and hiding the toggle is what
     // kept the panel from ever opening to un-skip it.
     let cancelled = false;
-    void api.getStatus(chatRuntimePin)
+    void api.getStatus({ laneId: laneId ?? null }, chatRuntimePin)
       .then((status) => {
         if (cancelled) return;
         setAppControlAvailable(Boolean(status.supported));
@@ -4594,7 +4656,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [chatRuntimePin, laneToolsVisible]);
+  }, [chatRuntimePin, laneId, laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -4696,6 +4758,19 @@ export function AgentChatPane({
     draftsPerSessionRef.current.set(companionStateKey, value);
     if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
   }, [clearPromptSuggestionForSession, companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
+
+  // Publish this session's draft presence for the sidebar's row indicator.
+  // Runs on every keystroke; the store no-ops when the boolean is unchanged,
+  // so a long session list never re-renders for typing.
+  const hasComposerDraftContent = draft.trim().length > 0
+    || attachments.length > 0
+    || contextAttachments.length > 0
+    || iosElementContextItems.length > 0
+    || appControlContextItems.length > 0
+    || builtInBrowserContextItems.length > 0;
+  useEffect(() => {
+    setComposerDraftPresence(selectedSessionId, hasComposerDraftContent);
+  }, [selectedSessionId, hasComposerDraftContent]);
   const updateComposerMentionLabel = useCallback((token: string, title: string) => {
     const label = title.trim();
     if (!label) return;
@@ -6060,9 +6135,6 @@ export function AgentChatPane({
       onOpenCodePermissionModeChange: (mode) => patchParallelSlot(idx, { opencodePermissionMode: mode }),
       onDroidPermissionModeChange: (mode) => patchParallelSlot(idx, { droidPermissionMode: mode }),
       onCursorModeChange: (modeId) => patchParallelSlot(idx, { cursorModeId: modeId }),
-      onCursorConfigChange: (configId, value) => patchParallelSlot(idx, {
-        cursorConfigValues: userSetCursorConfigValues({ ...row.cursorConfigValues, [configId]: value }),
-      }),
     };
   }, [parallelConfiguringIndex, parallelModelSlots, parallelSlotCursorSnapshot, patchParallelSlot]);
 
@@ -6340,11 +6412,22 @@ export function AgentChatPane({
   // "Lane not found". Its branch is cut from the primary lane of the same repo, so cloud
   // readiness reads the primary lane's remote instead. The launch itself creates the
   // lane and pushes that branch before the agent starts.
+  //
+  // The lane and the pin must describe the same machine. The pin comes from
+  // `chatScopeLaneId`, and lookups use that machine's own lane list (empty,
+  // never the tab's, while a pinned machine's lanes are still loading); a lane
+  // that machine doesn't know is not read at all, rather than being sent to the
+  // tab's machine, where it can only fail as "Lane not found".
+  const chatMachineLanes = useLanesForPin(chatRuntimePin);
   const cloudReadinessLaneId = useMemo(() => {
-    if (!isAutoCreateLaneOptionId(draftLaunchTargetId)) return laneId;
-    const primary = lanes.find((lane) => lane.laneType === "primary") ?? null;
-    return primary?.id ?? laneId;
-  }, [draftLaunchTargetId, laneId, lanes]);
+    const sourceLanes = chatMachineLanes ?? lanes;
+    if (isAutoCreateLaneOptionId(draftLaunchTargetId)) {
+      const primary = sourceLanes.find((lane) => lane.laneType === "primary") ?? null;
+      if (primary) return primary.id;
+    }
+    if (!chatScopeLaneId) return null;
+    return sourceLanes.some((lane) => lane.id === chatScopeLaneId) ? chatScopeLaneId : null;
+  }, [chatMachineLanes, chatScopeLaneId, draftLaunchTargetId, lanes]);
   const {
     remoteUrl: laneGitRemote,
     branch: laneGitBranch,
@@ -7890,13 +7973,20 @@ export function AgentChatPane({
     // The full composer bucket effect above owns draft/context hydration for
     // session and lane switches; this effect resets transient chat UI only.
   }, [selectedSessionId, laneId]);
-  const { proofDrawerRef: registerProofDrawer, appleDrawerRef } = useChatPaneShowRequests({
+  const openAppControlDrawer = useCallback(() => {
+    setAppControlAvailable(true);
+    setChatActionsOpen(false);
+    setIosSimulatorOpen(false);
+    setAppControlOpen(true);
+  }, []);
+  const { proofDrawerRef: registerProofDrawer, appleDrawerRef, appControlDrawerRef } = useChatPaneShowRequests({
     chatSessionId: selectedSessionId,
     visible: isTileVisible,
     laneToolDrawersHidden: hideLaneToolDrawers,
     laneId: laneId ?? null,
     openProofDrawer: openProofDrawerForShow,
     openAppleDrawer: openIosSimulatorDrawer,
+    openAppControlDrawer,
   });
   const proofSectionRef = useRef<HTMLDivElement | null>(null);
   const proofDrawerRef = useCallback((element: HTMLDivElement | null) => {
@@ -13860,12 +13950,10 @@ export function AgentChatPane({
     />
   );
   const proofTabContent = (
-    <div ref={proofDrawerRef} className="px-4 py-3">
-      {computerUseSnapshot && proofArtifactCount === 0 ? (
-        <p className="font-sans text-[12px] text-fg/50">This chat has no proof yet.</p>
-      ) : null}
+    <div ref={proofDrawerRef}>
       <ChatComputerUsePanel
         snapshot={computerUseSnapshot}
+        events={selectedEventsForDisplay}
         onRefresh={() => refreshComputerUseSnapshot(selectedSessionId, { force: true })}
         allowLocalArtifactProtocol={!isRemoteChat}
       />
@@ -14235,7 +14323,7 @@ export function AgentChatPane({
           Close
         </button>
       </div>
-      <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
+      <div ref={appControlDrawerRef} className="min-h-0 flex-1 overflow-auto px-4 py-3">
         {auxiliaryToolDisabledReason ? (
           <Banner
             model={{ id: "auxiliary-tool-disabled", tone: "warning", title: auxiliaryToolDisabledReason }}
@@ -14243,7 +14331,9 @@ export function AgentChatPane({
           />
         ) : (
           <ChatAppControlPanel
-            key={activeComposerRuntimeBinding?.key ?? "bound"}
+            // Keyed by lane too: a late reply for the old lane must never land
+            // in the new lane's pane.
+            key={`${activeComposerRuntimeBinding?.key ?? "bound"}:${laneId ?? ""}`}
             sessionId={selectedSessionId}
             laneId={laneId}
             projectRoot={iosSimulatorProjectRoot}
@@ -14802,6 +14892,7 @@ export function AgentChatPane({
             onPromptHistoryNavigate={handlePromptHistoryNavigate}
             attachments={attachments}
             composerMachineBinding={composerMachineBinding}
+            machineChipAction={machineChipAction}
             cursorRuntime={composerCloudRuntime}
             modelRuntimePin={activeComposerRuntimeBinding}
             attachmentPersistenceUnavailableReason={draftAttachmentUnavailableReason}
@@ -14862,14 +14953,6 @@ export function AgentChatPane({
             onOpenCodePermissionModeChange={(value) => { void updateNativeControls({ opencodePermissionMode: value }); }}
             onDroidPermissionModeChange={(value) => { void updateNativeControls({ droidPermissionMode: value }); }}
             onCursorModeChange={(value) => { void updateNativeControls({ cursorModeId: value }); }}
-            onCursorConfigChange={(configId, value) => {
-              void updateNativeControls({
-                cursorConfigValues: userSetCursorConfigValues({
-                  ...nativeControlsRef.current.cursorConfigValues,
-                  [configId]: value,
-                }),
-              });
-            }}
             onComputerUsePolicyChange={handleComputerUsePolicyChange}
             onRemoveIosElementContext={removeIosElementContext}
             onRemoveAppControlContext={removeAppControlContext}

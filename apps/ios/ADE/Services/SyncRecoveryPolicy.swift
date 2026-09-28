@@ -396,3 +396,56 @@ func syncForegroundResumeAction(
   guard let backgroundGapSeconds else { return .refreshOnly }
   return backgroundGapSeconds >= suspendedGapSeconds ? .replaceSession : .probeSession
 }
+
+/// Detects a connection that keeps closing right after it connects for the
+/// same reason (for example the host refusing one reply and closing 4001), and
+/// turns that into an exponential backoff. Without it, the post-hello stability
+/// reset re-armed the fast 1.5 s retry every cycle and the phone hammered the
+/// host forever.
+struct SyncReconnectFlapTracker {
+  /// A connection that dies within this many seconds of hello counts as a flap.
+  static let shortLivedConnectionSeconds: TimeInterval = 30
+  static let windowSeconds: TimeInterval = 120
+  static let threshold = 3
+  static let baseBackoffSeconds: TimeInterval = 15
+  static let maxBackoffSeconds: TimeInterval = 300
+
+  private var closes: [(at: TimeInterval, signature: String)] = []
+  private(set) var consecutiveTrips = 0
+
+  /// Records one close of a live connection. Returns the backoff to use
+  /// instead of the normal reconnect delay when the connection is flapping.
+  mutating func recordClose(
+    signature: String,
+    connectionAgeSeconds: TimeInterval?,
+    now: TimeInterval
+  ) -> TimeInterval? {
+    // Never finished hello: not this failure mode, and no proof of health.
+    guard let connectionAgeSeconds else { return nil }
+    guard connectionAgeSeconds <= Self.shortLivedConnectionSeconds else {
+      // The connection held; whatever was wrong before is over.
+      reset()
+      return nil
+    }
+    closes.removeAll { now - $0.at > Self.windowSeconds }
+    closes.append((at: now, signature: signature))
+    let sameReasonCount = closes.filter { $0.signature == signature }.count
+    guard sameReasonCount >= Self.threshold else { return nil }
+    consecutiveTrips += 1
+    let exponent = Double(min(consecutiveTrips - 1, 10))
+    return min(Self.maxBackoffSeconds, Self.baseBackoffSeconds * pow(2, exponent))
+  }
+
+  mutating func reset() {
+    closes.removeAll()
+    consecutiveTrips = 0
+  }
+}
+
+/// Short connection-banner copy for a flapping connection.
+func syncReconnectFlapMessage(machineName: String, closeReason: String?, retryInSeconds: TimeInterval) -> String {
+  let seconds = Int(retryInSeconds.rounded())
+  let trimmedReason = closeReason?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let reasonSuffix = trimmedReason.isEmpty ? "" : " (\(trimmedReason))"
+  return "\(machineName) keeps closing the connection right after connecting\(reasonSuffix). Retrying in \(seconds) s."
+}

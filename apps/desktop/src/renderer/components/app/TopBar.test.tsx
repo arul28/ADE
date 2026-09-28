@@ -15,7 +15,6 @@ import {
   resetActivityStoreForTests,
 } from "../../state/activityStore";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
-import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import {
@@ -25,13 +24,6 @@ import {
 
 const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
-
-// The machine menu appends a lane count ("This computer 3 lanes"), so the
-// accessible name has to be matched as a substring. Built from
-// THIS_MACHINE_NAME rather than a literal: this label was macOS-only copy
-// ("This Mac") until ADE shipped on Windows, and re-pinning the string here is
-// exactly what made the rename break these tests. The helper owns the name.
-const THIS_MACHINE_NAME_PATTERN = new RegExp(THIS_MACHINE_NAME);
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
@@ -878,7 +870,8 @@ describe("TopBar", () => {
     await waitFor(() => {
       expect(screen.queryByTitle("/Users/arul/ADE")).toBeTruthy();
     });
-    expect(screen.getByText("MacBook Pro (97)")).toBeTruthy();
+    // The machine is named on the tab's status icon, not as its own text node.
+    expect(screen.getByLabelText("Machine: MacBook Pro (97)")).toBeTruthy();
 
     // Each tab reaches its own checkout directly — no machine menu detour.
     fireEvent.click(screen.getByTitle("/Users/arul/ADE"));
@@ -886,135 +879,6 @@ describe("TopBar", () => {
     expect(useAppStore.getState().switchProjectToPath).toHaveBeenCalledWith(
       "/Users/arul/ADE",
     );
-  });
-
-  it("rebinds the current tab when the machine is switched, instead of opening a second one", async () => {
-    // Both switch paths only ADD the destination to the open-tab lists, and two
-    // OPEN checkouts of one origin are deliberately kept as separate tabs — so
-    // leaving the outgoing checkout open turned a machine switch into a new tab
-    // at the end of the strip. Nothing here is platform-specific.
-    const remoteBinding = {
-      kind: "remote" as const,
-      key: "remote:studio:project-1",
-      targetId: "studio",
-      runtimeName: "Mac Studio",
-      projectId: "project-1",
-      rootPath: "/srv/ade/ADE",
-      displayName: "ADE",
-    };
-    (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
-      {
-        rootPath: "/Users/arul/ADE",
-        displayName: "ADE",
-        exists: true,
-        lastOpenedAt: "2026-04-22T00:00:00.000Z",
-        kind: "local",
-        laneCount: 3,
-        gitOriginUrl: "git@github.com:arul28/ADE.git",
-      },
-    ]);
-    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue(
-      makeRemoteConnectionSnapshot("studio", "Mac Studio", {
-        projects: [
-          {
-            projectId: "project-1",
-            rootPath: "/srv/ade/ADE",
-            displayName: "ADE",
-            addedAt: 0,
-            lastOpenedAt: 0,
-            gitOriginUrl: "https://github.com/arul28/ADE",
-          },
-        ],
-      }),
-    );
-    // Stands in for the real action, which binds the tab and records the tab entry.
-    const switchRemoteProject = vi.fn(async () => {
-      act(() => {
-        useAppStore.setState({
-          project: { rootPath: remoteBinding.rootPath, displayName: "ADE", baseRef: "main" },
-          projectBinding: remoteBinding,
-          openRemoteProjectTabs: [remoteBinding],
-        } as any);
-      });
-      return remoteBinding;
-    });
-    useAppStore.setState({
-      project: { rootPath: "/Users/arul/ADE", displayName: "ADE", baseRef: "main" },
-      projectBinding: {
-        kind: "local",
-        key: "local:/Users/arul/ADE",
-        rootPath: "/Users/arul/ADE",
-        displayName: "ADE",
-      },
-      openRemoteProjectTabs: [],
-      openProjectTabRoots: ["/Users/arul/ADE"],
-      projectHydrated: true,
-      showWelcome: false,
-      switchRemoteProject,
-    } as any);
-
-    render(<TopBar />);
-    await screen.findByTitle("/Users/arul/ADE");
-
-    const caret = screen.getByLabelText("Machines for ADE");
-    fireEvent.mouseDown(caret);
-    fireEvent.click(caret);
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Mac Studio/ }));
-
-    await waitFor(() => {
-      expect(switchRemoteProject).toHaveBeenCalledWith("studio", "project-1");
-      // The checkout we switched AWAY from stops being an open tab: the group
-      // stays one tab whose machine changed.
-      expect(useAppStore.getState().openProjectTabRoots).not.toContain("/Users/arul/ADE");
-    });
-    await waitFor(() => {
-      expect(screen.queryByTitle("/Users/arul/ADE")).toBeNull();
-    });
-    expect(screen.getByTitle("Mac Studio: /srv/ade/ADE (Connected)")).toBeTruthy();
-  });
-
-  it("offers to add a machine from a repo tab that only has one", async () => {
-    render(<TopBar />);
-
-    const tab = await screen.findByTitle("/Users/arul/ADE");
-    // A single-machine group spends no tab width naming the machine.
-    expect(tab.textContent).not.toContain(THIS_MACHINE_NAME);
-
-    const caret = screen.getByLabelText("Machines for ADE");
-    fireEvent.mouseDown(caret);
-    fireEvent.click(caret);
-    expect(screen.getByRole("menuitemradio", { name: THIS_MACHINE_NAME_PATTERN })).toBeTruthy();
-    const connectItem = screen.getByRole("menuitem", { name: /Connect another machine/ });
-    expect(connectItem).toBeTruthy();
-    fireEvent.keyDown(window, { key: "ArrowUp" });
-    expect(document.activeElement).toBe(connectItem);
-
-    fireEvent.mouseDown(caret);
-    fireEvent.click(caret);
-    expect(screen.queryByRole("menuitemradio", { name: THIS_MACHINE_NAME_PATTERN })).toBeNull();
-  });
-
-  it("routes \"Connect another machine\" to the hosted connections chip in web mode", async () => {
-    // The hosted client has no header Connections panel, so the menu item used
-    // to do nothing at all.
-    (globalThis.window as unknown as { __adeWebClient?: boolean }).__adeWebClient = true;
-    const opened = vi.fn();
-    window.addEventListener("ade-web:open-connections", opened);
-    try {
-      render(<TopBar />);
-      await screen.findByTitle("/Users/arul/ADE");
-      const caret = screen.getByLabelText("Machines for ADE");
-      fireEvent.mouseDown(caret);
-      fireEvent.click(caret);
-      fireEvent.click(screen.getByRole("menuitem", { name: /Connect another machine/ }));
-
-      expect(opened).toHaveBeenCalledOnce();
-      expect((opened.mock.calls[0][0] as CustomEvent<{ tab: string }>).detail.tab)
-        .toBe("machines");
-    } finally {
-      window.removeEventListener("ade-web:open-connections", opened);
-      delete (globalThis.window as unknown as { __adeWebClient?: boolean }).__adeWebClient;
-    }
   });
 
   it("renders a remote project tab with the connections control without immediate polling", async () => {
@@ -2227,6 +2091,10 @@ describe("TopBar", () => {
     globalThis.window.ade.cto = {
       getLinearConnectionStatus,
     } as any;
+
+    // The button only shows on a loaded project surface (the previous test
+    // leaves the welcome page up).
+    useAppStore.setState({ projectHydrated: true, showWelcome: false } as any);
 
     render(<TopBar />);
 

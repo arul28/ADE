@@ -1,3 +1,4 @@
+import { workToolDefinition } from "../terminals/workTools";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppleDeviceStage } from "./AppleDeviceStage";
 import { useAppleDeviceStream } from "./useAppleDeviceStream";
@@ -17,7 +18,10 @@ import {
   FloatingPlayerShell,
   useCanvasPictureInPicture,
   useFloatingPlayerFrame,
+  useFloatingPlayerCapture,
 } from "../shared/FloatingPlayer";
+import { showToast } from "../app/toast/toastStore";
+import { useAppleRecordings } from "./appleRecording";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { describeAppleError, isAppleDeviceOffError } from "./appleErrors";
 
@@ -29,6 +33,11 @@ import { describeAppleError, isAppleDeviceOffError } from "./appleErrors";
  * for can be silent: an 8px dot is its entire chrome until you touch it, and
  * the picture underneath stays live and interactive the whole time.
  */
+const FLOATING_ICON = (() => {
+  const definition = workToolDefinition("ios");
+  return definition ? { Icon: definition.icon, color: definition.color } : null;
+})();
+
 export function AppleDeviceMiniPlayer({
   onOpenInPane,
   surface,
@@ -144,13 +153,28 @@ function AppleMiniPlayerFrameView({
     if (streaming) releaseAppleMiniPlayerHandoverHold();
   }, [streaming]);
 
+  // The lane gave the device up (detached, deleted, taken over): there is
+  // nothing left to show, so the player closes instead of holding a last frame
+  // of a simulator that may no longer exist.
+  useEffect(() => {
+    const unsubscribe = window.ade?.iosSimulator?.onEvent?.((event) => {
+      if (event.type !== "apple.device.state" || event.phase !== "released") return;
+      if (event.udid !== target.deviceUdid) return;
+      closeAppleMiniPlayer(target.deviceUdid);
+    }, pinRef.current);
+    return () => unsubscribe?.();
+  }, [target.deviceUdid, target.runtimePin, pinRef]);
+
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {
     if (stream.frameVersion > 0) setPoster(null);
   }, [stream.frameVersion]);
 
   const source = appleMiniPlayerSourceSize(screen);
-  const { hostRef, frame, startDrag, startResize } = useFloatingPlayerFrame({ source });
+  const { hostRef, frame, startDrag, startResize } = useFloatingPlayerFrame({
+    source,
+    slot: { id: `apple:${target.deviceUdid}`, shown: streaming && !pipActive },
+  });
 
   // The stream failed for good: an error, or the hook's own reconnects ran
   // out. A stop it is still recovering from keeps PiP; ending it there closed
@@ -210,6 +234,46 @@ function AppleMiniPlayerFrameView({
       .finally(() => setStarting(false));
   }, [reconnect, target.chatSessionId, target.deviceUdid, target.laneId]);
 
+  /*
+    The device's recording, with the pane's own pill and Stop. The same list
+    read and `apple.recording.state` subscription the pane uses, only while the
+    player streams, so an agent's recording is never running behind a player
+    that has no way to end it. Stopped with the player's chat, which is the
+    chat the service files the recording under.
+  */
+  const recordings = useAppleRecordings({
+    laneId: target.laneId,
+    chatSessionId: target.chatSessionId,
+    // Feature-detected: a surface without the recording namespace (an older
+    // runtime, a stubbed client) must lose the pill, not the player.
+    enabled: streaming && Boolean(target.laneId) && typeof window.ade?.iosSimulator?.recordList === "function",
+    runtimePinRef: pinRef,
+    onError: noop,
+  });
+  const activeRecording = recordings.active;
+  const refreshRecordings = recordings.refresh;
+  const stopRecording = useCallback(async () => {
+    const laneId = target.laneId;
+    const api = window.ade?.iosSimulator;
+    if (!laneId || !api?.recordStop) return;
+    await api.recordStop(
+      { laneId, chatSessionId: target.chatSessionId, keep: true, discard: false },
+      pinRef.current,
+    ).catch((cause: unknown) => {
+      showToast({
+        tone: "error",
+        title: "Recording did not stop",
+        message: describeAppleError(cause).sentence,
+      });
+    });
+    refreshRecordings();
+  }, [refreshRecordings, target.chatSessionId, target.laneId]);
+  const capture = useFloatingPlayerCapture({
+    startedAt: activeRecording?.startedAt ?? null,
+    makingDemo: false,
+    stop: activeRecording ? stopRecording : null,
+  });
+
   const pipSupported = isWorkLivePictureInPictureSupported();
   /*
    * Picture-in-picture needs a canvas that has actually drawn something.
@@ -232,11 +296,13 @@ function AppleMiniPlayerFrameView({
       hostRef={hostRef}
       frame={frame}
       hidden={!streaming}
+      icon={FLOATING_ICON}
       concealed={pipActive}
       attrPrefix="apple-mini"
       playerId={target.deviceUdid}
       ariaLabel={`${target.deviceName}, floating`}
-      recording={recording}
+      recording={recording || Boolean(activeRecording)}
+      capture={capture}
       onStartDrag={startDrag}
       onStartResize={startResize}
       onOpenInPane={() => {

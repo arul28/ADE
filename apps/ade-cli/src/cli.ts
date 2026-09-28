@@ -67,6 +67,8 @@ import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
 import { abbreviatePathTail } from "../../desktop/src/shared/pathDisplay";
 import { isUuid } from "../../desktop/src/shared/uuid";
+import { proofCitationMarkdown } from "../../desktop/src/shared/proofCitation";
+import { publishProofToPullRequest, type ProofPublishResult } from "./proofPublish";
 import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import { effectiveCursorModeId } from "../../desktop/src/shared/cursorModes";
 import { stripParentClaudeSessionEnv } from "../../desktop/src/shared/parentAgentEnv";
@@ -81,6 +83,8 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
+import { withTimeout } from "../../desktop/src/main/services/ai/utils";
 import type { SyncHostStartupLoopDeps } from "./services/sync/syncHostStartupLoop";
 import type { ProjectSecretStorage } from "../../desktop/src/shared/types/projectSecrets";
 import type { SyncHostReadinessSnapshot } from "../../desktop/src/shared/types/syncHostRecovery";
@@ -115,7 +119,7 @@ import {
   type ChatTurnStatusPhase,
   type ChatTurnStatusSnapshot,
 } from "../../desktop/src/shared/chatTurnStatus";
-import type { TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
+import type { SessionActivitySource, TerminalSessionSummary } from "../../desktop/src/shared/types/sessions";
 import { SESSION_ACTIVITY_VALUES } from "../../desktop/src/shared/types/sessions";
 import {
   isSessionActivityValue,
@@ -155,6 +159,7 @@ import {
   IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
   IOS_SIMULATOR_PRIVACY_SERVICES,
   IOS_SIMULATOR_TARGET_ROOT_MISMATCH_CODE,
+  IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
 } from "../../desktop/src/shared/types/iosSimulator";
 import {
   ADE_USAGE_RANGE_PRESETS,
@@ -187,6 +192,11 @@ import {
   credentialStorageKey,
 } from "../../desktop/src/main/services/ai/apiKeyStore";
 import { DEFAULT_BUILT_IN_BROWSER_HANDOFF_TIMEOUT_MS } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
+import {
+  BUILT_IN_BROWSER_APPROVAL_PENDING_CODE,
+  BUILT_IN_BROWSER_APPROVAL_WAIT_MS,
+  parseBuiltInBrowserApprovalPending,
+} from "../../desktop/src/shared/types/builtInBrowser";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
@@ -209,6 +219,7 @@ import {
   normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
+import { gitOwnershipMessage, parseGitOwnershipError } from "./services/projects/gitOwnership";
 import { createHeadlessGitHubService } from "./headlessLinearServices";
 import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import { createBrainHomeRegistry, describeOtherBrains } from "./services/runtime/brainHomeRegistry";
@@ -379,7 +390,7 @@ import { type CliGlobalValueFlag, isCliGlobalValueFlag, looksLikeSocketPathOverr
 import { ADE_BANNER } from "./help/banner";
 import { IOS_SIMULATOR_HELP_ALIASES, IOS_SIMULATOR_SUBCOMMAND_HELP } from "./help/appleHelp";
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
-import { hasDrawerOwner } from "../../desktop/src/shared/proofProvenance";
+import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
 export type JsonObject = Record<string, unknown>;
 
@@ -424,6 +435,9 @@ type ParsedCli = {
 
 const DEFAULT_EPHEMERAL_RUNTIME_IDLE_EXIT_MS = 5 * 60 * 1000;
 const MIN_RUNTIME_IDLE_EXIT_MS = 5_000;
+// How long "Reconnect this computer" waits for a sync-host start it kicked
+// off before answering with why nothing hosts sync.
+const REPAIR_SYNC_HOST_START_TIMEOUT_MS = 20_000;
 
 type InvocationStep = {
   key: string;
@@ -474,6 +488,7 @@ export type FormatterId =
   | "tests-runs"
   | "proof-list"
   | "proof-filed"
+  | "proof-published"
   | "ios-sim-status"
   | "ios-sim-devices"
   | "ios-sim-apps"
@@ -494,6 +509,11 @@ export type FormatterId =
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
+  | "app-control-action"
+  | "app-control-recording"
+  | "apple-action"
+  | "apple-point-action"
+  | "browser-action"
   | "browser-status"
   | "browser-dev-servers"
   | "browser-sessions"
@@ -547,6 +567,12 @@ export type CliPlan =
       summary?: "status" | "doctor" | "auth";
       formatter?: FormatterId;
       preferHeadless?: boolean;
+      /**
+       * The feature name when this plan needs state that lives in the running
+       * brain. Such a plan never falls back to an in-process headless runtime;
+       * it fails with one line that says how to reach the brain.
+       */
+      needsLiveRuntime?: string;
       machineOnly?: boolean;
       machineAutoStart?: boolean;
       /**
@@ -975,11 +1001,12 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
-    $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
+    $ ade app-control launch | observe | click | record
+                                                    Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-                                                    Show a surface of this chat to the user
+        | app-control | floating-app-control         Show a surface of this chat to the user
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade storage snapshot | compress               Inspect ADE disk usage and compress old history
     $ ade providers accounts list | add | remove | rename | default
@@ -1899,7 +1926,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
-    $ ade chat activity testing                      Report a fixed activity label for this turn; use clear to remove it
+    $ ade chat activity debugging                    Name what this turn is doing when ADE's own detection (from tool calls) cannot tell; use clear to remove it
                                                     Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
@@ -2171,20 +2198,25 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Proof commands capture or ingest reviewer-visible evidence for ADE work.
   Prefer screenshots/images, screen recordings, and browser captures/traces.
   Console logs are supporting diagnostics, not a replacement for visual proof.
-  Local screenshot/video fallback is macOS-only and runs headless by default
-  unless --socket is explicitly requested. Attached runtime mode has the best
-  parity for shared proof state.
+
+  capture and record use your lane's Mac Desktop display. They never touch
+  your real screen by default: with no lane display they are refused. Pass
+  --real-screen to capture the whole real screen (macOS only; runs headless
+  unless --socket is passed).
 
     $ ade proof status --text                       Show proof backend capabilities
     $ ade proof list --text                         List captured artifacts
-    $ ade proof capture --caption "Done"            Capture a screenshot artifact
+    $ ade proof capture --caption "Done"            Capture the lane's Mac Desktop display
+    $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
+    $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
+    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
     $ ade proof prune                               Preview broken proof records (does not delete)
     $ ade proof prune --broken                      Delete every broken proof record
-    $ ade proof record --seconds 20                 Capture a short video proof
+    $ ade proof record --seconds 20                 Record the lane's Mac Desktop display
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
     $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
 
@@ -2295,14 +2327,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple stream-stop                      Stop the live view
 
   Per-lane devices:
-    $ ade apple device-create --text             Clone the project's last-used simulator
-    $ ade apple device-attach --simulator <id>   Bind an existing simulator to this lane
-    $ ade apple start [--udid <id>|--create <id>] Attach or clone, boot, wait, and stream
+    $ ade apple device-create --text             Make a new, empty device for this lane
+    $ ade apple device-create --runtime "iOS 26.3" --device-type "iPad Air 11-inch (M4)" --text
+    $ ade apple device-attach --simulator <id>   Bind an installed simulator the user named
+    $ ade apple start [--udid <id>|--runtime <r>] Attach or create, boot, wait, and stream
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
     $ ade apple device-list --installed --text   Installed simulators for a picker
     $ ade apple device-list --text               The one device this lane owns
     $ ade apple device-detach --text             Give up the lane's device; the simulator stays installed
-    $ ade apple device-delete --text             Delete a clone (attached devices refuse)
+    $ ade apple device-delete --text             Delete the lane's ADE device (attached devices refuse)
+    $ ade apple device-cleanup --text            Delete leftover ADE devices, release ended lanes
+    $ ade apple test --scheme ADE --text         xcodebuild test on the lane's device, cache in the lane
 
   Recording:
     $ ade apple record-start --text              Start a manual recording
@@ -2389,6 +2424,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop windows --text                   List windows
     $ ade mac-desktop claim --window <id> --text       Move an existing window here
     $ ade mac-desktop release --window <id> --text     Give it to you (a lane app goes whole)
+    $ ade mac-desktop quit [<app>] --text              Quit apps the lane opened, released ones too (only when asked)
 
   Observe, then act by handle:
     $ ade mac-desktop observe --text                   Screenshot + numbered elements
@@ -2415,17 +2451,21 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop screenshot --out shot.png --text Capture without filing proof
     $ ade mac-desktop record start --caption "<what>"  Record; a caption files it
     $ ade mac-desktop record stop --text
+    $ ade mac-desktop record status --text             Is it recording, since when, how long
     $ ade mac-desktop proof --caption "<what>" --text  Capture, re-observe, file proof
 
   Recording flags (record start):
-    --keep-idle            Keep still stretches at real length.
-    --max-seconds <n>      Stop after n seconds of real time (default 600).
+    --plain                File it as recorded: no cuts, zoom, pointer or captions.
+    --max-seconds <n>      Stop after n seconds of real time (at most and default 300).
 
-  Still time is cut: a still screen longer than 2 s keeps 0.75 s in the video.
-  record stop reports durationMs (video), wallDurationMs (real time) and
-  idleCutMs. A recording a chat owns stops itself after 10 minutes of real
-  time (stopReason "cap") and is filed as proof under the chat that started
-  it, with or without a caption.
+  A recording becomes a demo when it stops: still stretches are cut, waits
+  play faster, the camera zooms to each action, a pointer and click rings are
+  drawn, and step captions (ade proof step "<text>") show. Every video ends
+  under 10 MB. record stop reports durationMs (video), wallDurationMs (real
+  time) and idleCutMs. A recording stops itself after 5 minutes (stopReason
+  "cap"), after 2 minutes with no action ("idle") or when the disk is almost
+  full ("disk"); a chat's recording that stops that way is filed as proof
+  under the chat that started it, with or without a caption.
 
   "mac-desktop proof" refuses without --caption: a proof record nobody can judge is
   not proof. It re-observes AFTER the capture, so check the state it returns
@@ -2436,51 +2476,39 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   "app-control": `${ADE_BANNER}
   App Control
 
-  App Control is ADE's bridge for developer-owned app sessions. The first
-  supported kind is Electron: ADE can launch or connect to an Electron renderer
-  that exposes a Chrome DevTools Protocol port, then capture screenshots, DOM
-  elements, selected UI context, and basic input in the same style as the iOS
-  simulator drawer. App Control is intentionally a bridge: Playwright,
-  agent-browser, Computer Use, and other tools may also attach to the same app;
-  ADE keeps the launch/session state and turns snapshots into chat context.
+  App Control drives a desktop app you are building. Today that means an
+  Electron app: ADE launches it (or attaches to one that is running) through a
+  Chrome DevTools Protocol (CDP) port. Then you observe it, act on it, record
+  it, and file proof from it. Playwright, agent-browser and Computer Use can
+  attach to the same app; ADE keeps the session and turns captures into chat
+  context. Aliases: \`ade app\` and \`ade electron\`.
 
-  Launching runs the command in the attached terminal instead of a hidden child
-  process. ADE sets ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS in
-  the environment and auto-forwards debug flags for common npm/pnpm/yarn/bun
-  script launches and direct electron commands. Custom launchers should forward
-  ADE_APP_CONTROL_DEBUG_FLAGS or ADE_APP_CONTROL_CDP_PORT. You can also put
-  {ADE_APP_CONTROL_DEBUG_FLAGS} in the command string for explicit substitution.
+  Each lane has its own session. --lane defaults to ADE_LANE_ID and --chat-session
+  to ADE_CHAT_SESSION_ID. With neither, a call made from inside a lane worktree
+  is bound to that lane; anywhere else it is refused. "launch" or "connect" on
+  a lane that already has a live session refuses; --force replaces it, and only
+  in the same lane.
 
-  Pass \`--cwd\` to launch from a project subdirectory. Relative paths resolve
-  against the lane root.
+  Launch runs the command in a visible terminal. ADE sets
+  ADE_APP_CONTROL_CDP_PORT and ADE_APP_CONTROL_DEBUG_FLAGS and forwards the
+  debug flags for npm/pnpm/yarn/bun scripts and direct electron commands. A
+  custom launcher must forward ADE_APP_CONTROL_DEBUG_FLAGS (or read
+  ADE_APP_CONTROL_CDP_PORT), or put {ADE_APP_CONTROL_DEBUG_FLAGS} in the
+  command. --cwd resolves a relative path from the directory you run ade in.
 
-  Discovery and lifecycle:
-    $ ade app-control status --text                Show active session and provider readiness
-    $ ade app-control claim --lane <lane-id>       Attribute the active renderer to a lane
+  Session:
+    $ ade app-control status --text                This lane's session and provider readiness
     $ ade app-control launch --command "npm run dev" --text
-    $ ade app-control launch pnpm dev --text       Launch via the visible attached terminal
+    $ ade app-control launch pnpm dev --text       The words after launch are the command
     $ ade app-control launch --command "pnpm dev" --cwd apps/desktop --text
     $ ade app-control launch --command "/path/script.sh {ADE_APP_CONTROL_DEBUG_FLAGS}"
-    $ ade app-control connect --cdp-port 9222      Attach to an already-running app
-    $ ade app-control targets --text               List debuggable CDP targets
-    $ ade app-control attach-target --target <id>  Attach to one renderer target
-    $ ade app-control logs --text                  Read the active App Control launch terminal
-    $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
-    $ ade app-control focus --text                 Raise the controlled app window on demand
-    $ ade app-control minimize --text              Minimize the controlled app window
-    $ ade app-control stop --text                  Signal the App Control terminal session
-    $ ade app-control actions --text               List every callable app_control action
-    $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
-    $ ade terminal read --pty <pty-id> --text      Read by PTY id
-    $ ade terminal write --chat-session <owner-session-id> --data "y\\n" Answer a prompt
+    $ ade app-control connect --cdp-port 9222      Attach to an app that is already running
+    $ ade app-control claim --lane <lane-id>       Attribute the session to a lane
+    $ ade app-control stop --text                  Quit the app ADE launched; detach an attached one
+    $ ade app-control show --text                  Show the app to the user in the tools pane
+    $ ade app-control show --floating --text       ...or as the floating card over the chat
 
-  Capture and context:
-    $ ade app-control screenshot --text            Capture the active renderer screenshot
-    $ ade app-control snapshot --text              Screenshot + DOM element refs
-    $ ade app-control inspect --x 120 --y 420      Hit-test a point without committing context
-    $ ade app-control select --x 120 --y 420       Return/select app context (owned sessions auto-attach)
-
-  Observe and act (agent loop, same shape as "ade browser"):
+  Observe, then act (the same loop as "ade browser"):
     $ ade app-control observe --map --text         Screenshot + numbered element map + handles
     $ ade app-control observe --no-dom --text      Screenshot only, no element list
     $ ade app-control click --handle obs-...:e:7   Click a handle from the last observation
@@ -2495,16 +2523,51 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade app-control wait --text-match "Saved" --timeout-ms 8000
     $ ade app-control wait --load-state network-idle
     $ ade app-control trace --limit 20 --text      Recent actions for this session
-    $ ade app-control proof --caption "Settings saved"  Observe and register a proof artifact
 
-  Windows and drivers:
-    $ ade app-control windows --text               Debuggable windows for the active session
+  Every acting command answers with a new observation: read its hit and
+  effect before the next step. --no-observe skips it; --fast skips the settle
+  delay. --session <id> guards a command against a session that has changed.
+
+  Capture and proof:
+    $ ade app-control screenshot --text            Capture without filing proof
+    $ ade app-control snapshot --text              Screenshot + DOM element refs
+    $ ade app-control inspect --x 120 --y 420      Hit-test a point, add nothing to the chat
+    $ ade app-control select --x 120 --y 420       Add that element to the chat as context
+    $ ade app-control proof --caption "<what>" --text  Capture the app and file the still as proof
+    $ ade app-control record start --caption "<what>" --text
+    $ ade app-control record status --text
+    $ ade app-control record stop --text           Finish the video and file it as proof
+
+  Recording flags (record start):
+    --caption <text>       What the video shows. A captioned video is filed as proof.
+    --plain                File it as recorded: no cuts, zoom, pointer or captions.
+    --max-seconds <n>      Stop after n seconds of real time (at most and default 300).
+
+  A recording captures the app's own window, not the whole screen. It becomes
+  a demo when it stops (cuts, speed-ups, zoom, pointer, step captions, under
+  10 MB) unless --plain. record stop reports durationMs (video),
+  wallDurationMs (real time) and idleCutMs. A captioned video is filed as
+  proof under the lane, the chat that started it and the lane's PR. A
+  recording stops itself after 5 minutes (stopReason "cap"), after 2 minutes
+  with no action ("idle"), when the disk is almost full ("disk"), when the app closes
+  (stopReason "app-closed") or when the chat that started it ends (stopReason
+  "chat-ended"), and is filed the same way.
+
+  Terminal:
+    $ ade app-control logs --text                  Read the launch terminal
+    $ ade app-control terminal write --data "y\\n" Answer a prompt in that terminal
+    $ ade app-control terminal signal --signal SIGINT
+    $ ade terminal read --terminal <session-id> --text Read a specific attached terminal
+
+  Windows, targets and drivers:
+    $ ade app-control windows --text               Debuggable windows for this session
     $ ade app-control switch-window --target <id>  Drive a different window
+    $ ade app-control targets --text               List debuggable CDP targets
+    $ ade app-control attach-target --target <id>  Attach to one renderer target
+    $ ade app-control focus --text                 Raise the app window
+    $ ade app-control minimize --text              Minimize the app window
     $ ade app-control drivers --text               Driver availability (cdp, computer_use)
-
-  Every act command answers with a post-action observation. Add --no-observe to
-  skip it, or --fast to skip the settle delay. --session <id> guards a command
-  against a session that is no longer active.
+    $ ade app-control actions --text               List every callable app_control action
 `,
   browser: `${ADE_BANNER}
   ADE browser
@@ -2520,10 +2583,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   tab switching are passive view operations; use
   "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
   ADE-launched agents should list tabs first and use only a tab/session owned
-  by their current chat. Plain "browser open <url>" reuses that owned tab for
-  ADE-launched agents and creates one only when none exists, without revealing
-  the Browser panel unless --panel is passed. Use --new-tab only when the task
-  truly needs another tab; --active-tab and --tab stay explicit. The runtime
+  by their current chat. Plain "browser open <url>" navigates that chat's tab
+  (the one it used last) and creates one only when none exists, without
+  revealing the Browser panel unless --panel is passed. It prints
+  "opened: <tab-id> <url>" or "navigated: <tab-id> <url>" first. Use --new-tab
+  only when the task truly needs another tab; --active-tab and --tab stay
+  explicit. By default every agent may use the ADE browser without asking. If
+  the user set "Agents can use the ADE browser" to lanes or chats they approve,
+  the first browser command from a new lane or chat asks them once: the command
+  waits up to 2 minutes, printing "waiting for the user to allow this chat to
+  use the ADE browser" once, and a Block fails with "approval_blocked: the user
+  blocked this chat from using the ADE browser". One answer covers every site.
+  The runtime
   accepts browser commands only from ADE-launched chat/terminal sessions with
   a browser capability, validates lane/chat identity, and rejects agent force
   takeovers. Profile diagnostics and remembered-permission administration stay
@@ -2531,7 +2602,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
-    $ ade --socket browser authorize --tab <id>    Request human access to an authenticated origin
+    $ ade --socket browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
@@ -2642,7 +2713,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                          with a dash: "browser open -- --weird-url",
                          "browser key -- --", "browser fill --selector x -- --literal".
     --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
-    --new-tab           Always open navigation in a new tab.
+    --new-tab           Open in a new tab instead of this chat's tab.
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
     --background         Create a new tab without activating it.
     --panel, --show-panel
@@ -2689,6 +2760,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                          Option to pick for browser select-option.
     --file <path>        Repeatable file path for browser upload.
     --fps <30|60>        Frame rate for browser record start.
+    --plain              Browser record start/stop: file the video as recorded (no cuts,
+                         zoom, pointer or captions). Otherwise it becomes a demo at stop.
     --include-ended, --all
                          Include ended browser sessions in browser sessions output.
     --timeout-ms <n>     Wait timeout for browser wait/fill/click readiness.
@@ -2718,6 +2791,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ui show mac-desktop      The lane's Mac Desktop, in the tools pane
     $ ade ui show floating-mac-desktop
                                    The floating Mac Desktop card over the chat
+    $ ade ui show app-control      The lane's App Control app, in the tools pane
+    $ ade ui show floating-app-control
+                                   The floating App Control card over the chat
 
   Results:
     shown       The surface is on screen now.
@@ -2737,7 +2813,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
   is "ui show floating-apple". "ade mac-desktop show [--floating]" is the same
-  for the Mac Desktop.
+  for the Mac Desktop, and "ade app-control show [--floating]" for App Control.
 `,
   "work-tools": `${ADE_BANNER}
   ADE work tools
@@ -4065,6 +4141,33 @@ export function requireValue(value: string | null, label: string): string {
   throw new CliUsageError(`${label} is required.`);
 }
 
+/**
+ * Text an agent types into an app, exactly as given. `requireValue` trims,
+ * which is right for ids and wrong here: `type " - done"` must keep its space.
+ */
+/**
+ * A relative `--cwd` means "from where this shell stands", as it does for any
+ * shell command. The runtime used to resolve it against the project root, so
+ * an agent in a lane worktree that passed `--cwd counter-app` got the project
+ * root's (missing) folder. Resolved here only when the folder exists on this
+ * machine; otherwise it is passed through for the runtime to resolve, which
+ * keeps a remote runtime's own relative paths working.
+ */
+export function resolveShellRelativeCwd(cwd: string | null): string | null {
+  if (!cwd || path.isAbsolute(cwd)) return cwd;
+  const resolved = path.resolve(process.cwd(), cwd);
+  try {
+    return fs.statSync(resolved).isDirectory() ? resolved : cwd;
+  } catch {
+    return cwd;
+  }
+}
+
+export function requireTypedText(value: string | null, label: string): string {
+  if (value && value.trim().length > 0) return value;
+  throw new CliUsageError(`${label} is required.`);
+}
+
 function normalizeChatMessageKind(value: string | null): "auto" | "queue" | "wake" | "interrupt-replace" {
   const normalized = (value ?? "auto").trim().toLowerCase();
   if (normalized === "auto") return "auto";
@@ -4551,8 +4654,10 @@ export function actionStep(
   domain: string,
   action: string,
   args: JsonObject = {},
+  /** Tool-level fields beside `args`, e.g. `callerRoot`; never passed to the service. */
+  toolExtras: JsonObject = {},
 ): InvocationStep {
-  return actionCallStep(key, "run_ade_action", { domain, action, args });
+  return actionCallStep(key, "run_ade_action", { ...toolExtras, domain, action, args });
 }
 
 function accountActionStep(
@@ -9410,6 +9515,8 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "getAvailableModels",
+          // No provider filter returns the complete inventory; `--provider`
+          // narrows it.
           collectGenericObjectArgs(args, provider ? { provider } : {}),
         ),
       ],
@@ -10282,8 +10389,9 @@ function proofCallerRoot(): { path: string | null; source: string } {
   return { path: process.cwd(), source: "cwd" };
 }
 
-/** `callerRoot` + its provenance, as the ingest tool wants them. */
-function proofCallerRootArgs(): JsonObject {
+/** `callerRoot` + its provenance, as the ingest tool wants them. `ade
+ * mac-desktop` sends the same pair on its `run_ade_action` calls. */
+export function proofCallerRootArgs(): JsonObject {
   const callerRoot = proofCallerRoot();
   return {
     ...(callerRoot.path ? { callerRoot: callerRoot.path } : {}),
@@ -10309,7 +10417,7 @@ function proofVerifyStep(): InvocationStep {
   };
 }
 
-function buildProofPlan(args: string[]): CliPlan {
+function buildProofPlan(args: string[], explicitProjectRoot: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "status";
   const proofOwnerBase = () => readProofOwnerBase(args);
   const inferAttachedProofKind = (filePath: string): string => {
@@ -10393,6 +10501,115 @@ function buildProofPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "step") {
+    // `ade proof step "<text>"`: a step caption for the lane's running
+    // recordings. The demo shows it from now until the next step, and ADE's
+    // player lists it as a chapter.
+    // Flags first: they take their values out of `args`, and every word
+    // left is the step's text.
+    const owner = proofOwnerBase();
+    const flagText = readValue(args, ["--text", "--caption"]);
+    const text = flagText ?? args.filter((value) => !value.startsWith("-")).join(" ").trim();
+    if (!text) throw new CliUsageError('ade proof step needs the step\'s text: ade proof step "Open the settings page"');
+    return {
+      kind: "execute",
+      label: "proof step",
+      steps: [
+        actionCallStep("result", "note_demo_step", {
+          ...owner,
+          ...proofCallerRootArgs(),
+          text,
+        }),
+      ],
+    };
+  }
+
+  if (sub === "publish") {
+    // `ade proof publish --pr <number|url> <artifact-id>...`: the agent picks
+    // the items. They go up as one PR comment through `gh --attach`, then
+    // each gets a github_pr owner link so the drawer shows the PR.
+    const pr = readValue(args, ["--pr", "--pull-request"]);
+    const heading = readValue(args, ["--heading", "--title"]);
+    const note = readValue(args, ["--note", "--body"]);
+    // `firstPositional` and `readValue` removed "publish" and the flags with
+    // their values, so every argument left is an artifact id.
+    const ids = args
+      .filter((value) => !value.startsWith("-"))
+      .flatMap((value) => value.split(","))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    if (!pr) throw new CliUsageError("proof publish needs --pr <number or URL>.");
+    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or `ade proof list --text`.");
+    return {
+      kind: "execute",
+      label: "proof publish",
+      formatter: "proof-published",
+      steps: [
+        {
+          key: "list",
+          method: "ade/actions/call",
+          params: { name: "list_computer_use_artifacts", arguments: { artifactIds: ids, limit: 200 } },
+          unwrapToolResult: true,
+        },
+        {
+          key: "result",
+          method: "ade/actions/call",
+          unwrapToolResult: true,
+          // The comment is already on the PR when this runs. A failed link must
+          // not hide that; the summary reports it as a warning instead.
+          optional: true,
+          params: (values) => {
+            const listed = firstArray(unwrapActionEnvelope(values.list) as JsonObject, ["artifacts"]);
+            const byId = new Map(listed.map((artifact) => [asString(artifact.id) ?? "", artifact]));
+            const missing = ids.filter((id) => !byId.has(id));
+            if (missing.length) {
+              throw new CliToolError(
+                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or \`ade proof list --text\`.`,
+                { missing },
+              );
+            }
+            // The same precedence the connection uses: --project-root, then
+            // ADE_PROJECT_ROOT, then the checkout the shell stands in.
+            const roots = findProjectRoots(process.cwd());
+            const projectRoot = explicitProjectRoot ?? (process.env.ADE_PROJECT_ROOT?.trim() || roots.projectRoot);
+            let published: ProofPublishResult;
+            try {
+              published = publishProofToPullRequest({
+                pr,
+                projectRoot,
+                heading,
+                note,
+                cwd: explicitProjectRoot ?? roots.workspaceRoot,
+                artifacts: ids.map((id) => {
+                  const artifact = byId.get(id)!;
+                  return {
+                    id,
+                    kind: asString(artifact.kind) ?? "",
+                    title: asString(artifact.title) ?? "",
+                    description: asString(artifact.description),
+                    uri: asString(artifact.uri) ?? "",
+                    mimeType: asString(artifact.mimeType),
+                  };
+                }),
+              });
+            } catch (error) {
+              throw new CliToolError(`proof publish failed — ${error instanceof Error ? error.message : String(error)}`, {});
+            }
+            values.publish = published as unknown as JsonObject;
+            return {
+              name: "link_computer_use_artifacts_to_pr",
+              arguments: {
+                artifactIds: published.posted.map((entry) => entry.id),
+                prUrl: published.prUrl,
+                ...(published.commentUrl ? { commentUrl: published.commentUrl } : {}),
+              },
+            };
+          },
+        },
+      ],
+    };
+  }
+
   if (sub === "attach") {
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
@@ -10500,6 +10717,7 @@ function buildProofPlan(args: string[]): CliPlan {
   if (sub === "screenshot" || sub === "capture") {
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
+    const realScreen = readFlag(args, ["--real-screen"]);
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
     return {
       kind: "execute",
@@ -10521,17 +10739,23 @@ function buildProofPlan(args: string[]): CliPlan {
             // and record did not, so every capture from an OpenCode agent was
             // filed with no owner at all.
             ...proofCallerRootArgs(),
+            // The lane's Mac Desktop display is the default target; the
+            // user's real screen only on request.
+            ...(realScreen ? { realScreen: true } : {}),
             name: readValue(args, ["--name", "--title"]) ?? caption,
           }),
         ),
         ...(verify ? [proofVerifyStep()] : []),
       ],
-      preferHeadless: true,
+      // A lane display lives in the running brain, so only the real-screen
+      // path may drop to an in-process runtime by default.
+      ...(realScreen ? { preferHeadless: true } : {}),
     };
   }
   if (sub === "record") {
     const verify = !readFlag(args, ["--no-verify"]);
     readFlag(args, ["--verify"]);
+    const realScreen = readFlag(args, ["--real-screen"]);
     return {
       kind: "execute",
       label: "computer-use record",
@@ -10547,6 +10771,7 @@ function buildProofPlan(args: string[]): CliPlan {
             // does not.
             proof: true,
             ...proofCallerRootArgs(),
+            ...(realScreen ? { realScreen: true } : {}),
             name:
               readValue(args, ["--name", "--title"]) ??
               readValue(args, ["--caption", "--description", "--desc"]),
@@ -10558,7 +10783,7 @@ function buildProofPlan(args: string[]): CliPlan {
         ),
         ...(verify ? [proofVerifyStep()] : []),
       ],
-      preferHeadless: true,
+      ...(realScreen ? { preferHeadless: true } : {}),
     };
   }
   if (sub === "launch")
@@ -10886,6 +11111,13 @@ function buildIosSimulatorPlan(
    * than the plain shape, such as a formatter, a timeout floor, or a second
    * step.
    */
+  /**
+   * One `ios_simulator` action step. `callerRoot` rides beside the args, as
+   * for `ade mac-desktop`, so a shell with no chat identity is placed in the
+   * lane whose worktree it stands in (`scopeUnboundAppleAdeActionArgs`).
+   */
+  const iosStep = (key: string, method: string, payload: JsonObject): InvocationStep =>
+    actionStep(key, "ios_simulator", method, payload, proofCallerRootArgs());
   const iosAction = (
     label: string,
     method: string,
@@ -10894,7 +11126,7 @@ function buildIosSimulatorPlan(
     kind: "execute" as const,
     label,
     steps: [
-      actionStep("result", "ios_simulator", method, collectGenericObjectArgs(args, payload)),
+      iosStep("result", method, collectGenericObjectArgs(args, payload)),
     ],
   });
   if (sub === "actions")
@@ -10977,12 +11209,7 @@ function buildIosSimulatorPlan(
           }
         : {}),
       steps: [
-        actionStep(
-          "result",
-          "ios_simulator",
-          "launch",
-          collectGenericObjectArgs(args, launchArgs),
-        ),
+        iosStep("result", "launch", collectGenericObjectArgs(args, launchArgs)),
       ],
     };
   }
@@ -10995,6 +11222,8 @@ function buildIosSimulatorPlan(
   }
   if (sub === "proof" || sub === "promote") {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const title =
       readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
     const ownerBase = readProofOwnerBase(args);
@@ -11006,8 +11235,10 @@ function buildIosSimulatorPlan(
     return {
       kind: "execute",
       label: "iOS simulator proof",
+      formatter: "proof-filed",
+      proofFiling: { command: "apple proof", verify },
       steps: [
-        actionStep("screenshot", "ios_simulator", "screenshot", screenshotArgs),
+        iosStep("screenshot", "screenshot", screenshotArgs),
         {
           key: "result",
           method: "ade/actions/call",
@@ -11045,6 +11276,7 @@ function buildIosSimulatorPlan(
             };
           },
         },
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }
@@ -11270,11 +11502,11 @@ function buildIosSimulatorPlan(
       args.filter((arg) => arg !== "--text").join(" ");
     return iosAction("iOS simulator type", "typeText", {
       deviceUdid,
-      // After `requireValue`, which trims: the Return must survive it. With
+      // After the empty check, so the Return survives it. With
       // `--submit` and no text this presses Return alone.
       text: submit
-        ? `${typed.trim() ? requireValue(typed, "text") : ""}\n`
-        : requireValue(typed, "text"),
+        ? `${typed.trim() ? requireTypedText(typed, "text") : ""}\n`
+        : requireTypedText(typed, "text"),
     });
   }
   if (sub === "key") {
@@ -11661,7 +11893,7 @@ function buildIosSimulatorPlan(
     // Read the query first: it claims `--text <value>`, so the fill value has
     // to be read after it or the two flags fight over the same token.
     const target = elementTargetArgs();
-    const text = requireValue(
+    const text = requireTypedText(
       readValue(args, ["--value", "--input-text"]) ?? firstPositional(args),
       "text",
     );
@@ -11704,40 +11936,109 @@ function buildIosSimulatorPlan(
     const from =
       readValue(args, ["--from", "--simulator"]) ?? readIosSimulatorDevice(args);
     const name = readValue(args, ["--name"]);
+    const runtime = readValue(args, ["--runtime"]);
+    const deviceType = readValue(args, ["--device-type", "--model", "--type"]);
     return iosAction("Apple device create", "deviceCreate", {
       ...(laneId ? { laneId } : {}),
       ...(from ? { from } : {}),
+      ...(runtime ? { runtime } : {}),
+      ...(deviceType ? { deviceType } : {}),
       ...(name ? { name } : {}),
     });
   }
   if (sub === "device-attach") {
-    const simulator = requireValue(
-      readValue(args, ["--simulator", "--device", "--udid"]) ??
-        firstPositional(args),
-      "--simulator",
-    );
+    const simulator =
+      readValue(args, ["--simulator", "--device", "--udid"]) ?? firstPositional(args);
+    if (!simulator) {
+      throw new CliUsageError("device-attach requires --simulator <udid|name>.");
+    }
     return iosAction("Apple device attach", "deviceAttach", {
-      simulator,
       ...(laneId ? { laneId } : {}),
+      simulator,
     });
   }
+  if (sub === "device-cleanup" || sub === "cleanup") {
+    const powerOffIdle = readFlag(args, ["--power-off-idle", "--power-off"]);
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.deviceCleanup");
+    return {
+      kind: "execute",
+      label: "Apple device cleanup",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      steps: [
+        iosStep("result", "deviceCleanup", collectGenericObjectArgs(args, {
+          ...(laneId ? { laneId } : {}),
+          ...(powerOffIdle ? { powerOffIdle: true } : {}),
+        })),
+      ],
+    };
+  }
+  if (sub === "test" || sub === "tests") {
+    // Each value is read ONCE: `readValue` consumes the flag from `args`.
+    const readList = (names: string[]): string[] =>
+      readRepeatedValues(args, names).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+    const targetId = readValue(args, ["--target"]);
+    const scheme = readValue(args, ["--scheme"]);
+    const projectPath = readValue(args, ["--project", "--xcodeproj", "--workspace"]);
+    const testPlan = readValue(args, ["--test-plan"]);
+    const onlyTesting = readList(["--only", "--only-testing"]);
+    const skipTesting = readList(["--skip", "--skip-testing"]);
+    const buildOnly = readFlag(args, ["--build-only", "--build-for-testing"]);
+    const timeoutMs = readNumberOption(args, ["--timeout-ms"]);
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.runTests");
+    return {
+      kind: "execute",
+      label: "Apple tests",
+      ...(minTimeoutMs != null ? { minTimeoutMs } : {}),
+      progressNotice: "apple test: building and running tests on the lane's device… the summary prints when xcodebuild finishes.",
+      steps: [
+        iosStep("result", "runTests", collectGenericObjectArgs(args, {
+          ...(laneId ? { laneId } : {}),
+          ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
+          ...rootArgs(),
+          ...(targetId ? { targetId } : {}),
+          ...(scheme ? { scheme } : {}),
+          ...(projectPath ? { projectPath } : {}),
+          ...(testPlan ? { testPlan } : {}),
+          ...(onlyTesting.length ? { onlyTesting } : {}),
+          ...(skipTesting.length ? { skipTesting } : {}),
+          ...(buildOnly ? { buildOnly: true } : {}),
+          ...(timeoutMs == null ? {} : { timeoutMs }),
+        })),
+      ],
+    };
+  }
   if (sub === "start") {
-    // `--create` first: `firstPositional` would otherwise eat its value.
+    // The value flags first: `firstPositional` would otherwise eat their values.
     const sourceUdid = readValue(args, ["--create", "--from"]);
+    const runtime = readValue(args, ["--runtime"]);
+    const deviceType = readValue(args, ["--device-type", "--model", "--type"]);
     const udid = readValue(args, ["--udid", "--simulator", "--device"]) ?? firstPositional(args);
-    if (udid && sourceUdid) {
-      throw new CliUsageError("apple start takes --udid (attach) or --create <sourceUdid> (clone), not both.");
+    const creating = Boolean(sourceUdid || runtime || deviceType);
+    if (udid && creating) {
+      throw new CliUsageError("apple start takes --udid (attach) or --runtime/--device-type/--create (a new device), not both.");
     }
     return iosAction("Apple device start", "deviceStart", {
       ...(laneId ? { laneId } : {}),
       ...(udid ? { udid } : {}),
-      ...(sourceUdid ? { create: { sourceUdid } } : {}),
+      ...(creating
+        ? {
+          create: {
+            ...(sourceUdid ? { sourceUdid } : {}),
+            ...(runtime ? { runtime } : {}),
+            ...(deviceType ? { deviceType } : {}),
+          },
+        }
+        : {}),
     });
   }
   if (sub === "device-list") {
     const installed = readFlag(args, ["--installed"]);
+    const runtimes = readFlag(args, ["--runtimes"]);
+    const disk = readFlag(args, ["--disk", "--storage"]);
     return iosAction("Apple device list", "deviceList", {
       ...(installed ? { installed: true } : {}),
+      ...(runtimes ? { runtimes: true } : {}),
+      ...(disk ? { disk: true } : {}),
       ...(laneId ? { laneId } : {}),
     });
   }
@@ -11782,7 +12083,11 @@ function buildIosSimulatorPlan(
       }
     }
     const label = readValue(args, ["--label"]);
-    const keepIdle = readFlag(args, ["--keep-idle"]);
+    const plain = readFlag(args, ["--plain", "--keep-idle"]);
+    const zoom = readFlag(args, ["--zoom"]);
+    if (plain && zoom) {
+      throw new CliUsageError("record-start takes --plain or --zoom, not both: a plain recording has no zoom.");
+    }
     const maxSeconds = readNumberOption(args, ["--max-seconds"]);
     if (maxSeconds != null && maxSeconds <= 0) {
       throw new CliUsageError("record-start --max-seconds must be greater than 0.");
@@ -11799,7 +12104,8 @@ function buildIosSimulatorPlan(
         : {}),
       ...(overlays == null ? {} : { overlays }),
       ...(label ? { label } : {}),
-      ...(keepIdle ? { keepIdle: true } : {}),
+      ...(plain ? { plain: true } : {}),
+      ...(zoom ? { zoom: true } : {}),
       ...(maxSeconds == null ? {} : { maxSeconds }),
     });
   }
@@ -11903,9 +12209,105 @@ function readTrailingCommand(args: string[]): string | null {
   return command.length ? command : null;
 }
 
+const APP_CONTROL_SESSION_IS_CHAT_SUBCOMMANDS = new Set([
+  "launch",
+  "open",
+  "start",
+  "connect",
+  "attach",
+  "claim",
+]);
+
+/** Lane + chat for an App Control call, without touching --session. */
+function readAppControlLaneScope(args: string[]): ToolClaimArgs {
+  const laneId = asString(
+    readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
+  );
+  const chatSessionId = asString(
+    readValue(args, ["--chat-session", "--chat-session-id"]) ??
+      process.env.ADE_CHAT_SESSION_ID,
+  );
+  return {
+    ...(laneId ? { laneId } : {}),
+    ...(chatSessionId ? { chatSessionId } : {}),
+  };
+}
+
+/** `ade app-control record start|stop|status` — same flags as `mac-desktop record`. */
+function buildAppControlRecordPlan(
+  args: string[],
+  step: (key: string, method: string, payload?: JsonObject) => InvocationStep,
+): CliPlan {
+  // Flags first: a positional read before them would take a flag's value.
+  const caption = readValue(args, ["--caption", "--description", "--desc"]);
+  const plain = readFlag(args, ["--plain", "--keep-idle"]);
+  const maxSeconds = readNumberOption(args, ["--max-seconds"]);
+  const hasStartFlags = Boolean(caption) || plain || maxSeconds != null;
+  const mode = (firstPositional(args) ?? (hasStartFlags ? "start" : "status")).toLowerCase();
+  const plan = (label: string, method: string, payload: JsonObject = {}): CliPlan => ({
+    kind: "execute",
+    label,
+    formatter: "app-control-recording",
+    steps: [step("result", method, collectGenericObjectArgs(args, payload))],
+  });
+  if (mode === "start" || mode === "begin") {
+    if (maxSeconds != null && maxSeconds <= 0) {
+      throw new CliUsageError("app-control record start --max-seconds must be greater than 0.");
+    }
+    return plan("app-control record start", "startRecording", {
+      ...(caption ? { caption } : {}),
+      ...(plain ? { plain: true } : {}),
+      ...(maxSeconds == null ? {} : { maxSeconds }),
+    });
+  }
+  if (hasStartFlags) {
+    throw new CliUsageError(
+      "--caption, --plain and --max-seconds belong to 'app-control record start'.",
+    );
+  }
+  if (mode === "stop" || mode === "end" || mode === "finish") {
+    return plan("app-control record stop", "stopRecording");
+  }
+  if (mode === "status" || mode === "state") {
+    return plan("app-control record status", "getRecordingStatus");
+  }
+  throw new CliUsageError(
+    `Unknown app-control record command: ${mode}. Use start, stop, or status.`,
+  );
+}
+
+/** App Control subcommands that answer without a live session. */
+const APP_CONTROL_SESSIONLESS_SUBCOMMANDS = new Set(["help", "actions", "drivers", "list-drivers"]);
+
+/**
+ * App Control sessions live in the brain: the app runs in the brain's
+ * terminal and the session outlives one CLI call. A headless CLI would launch
+ * the app in its own throwaway runtime (pid 0) and lose the session on exit,
+ * so every call that needs a session must reach the running brain.
+ */
 function buildAppControlPlan(args: string[]): CliPlan {
+  const sub = args.find((value) => value !== "--" && !value.startsWith("-")) ?? "status";
+  const plan = buildAppControlSubcommandPlan(args);
+  if (plan.kind !== "execute" || APP_CONTROL_SESSIONLESS_SUBCOMMANDS.has(sub)) return plan;
+  return { ...plan, needsLiveRuntime: "App Control" };
+}
+
+function buildAppControlSubcommandPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") return { kind: "help", text: buildAppControlHelp(args) };
+  // App Control keeps one session per lane, so every call names its lane
+  // (--lane, else ADE_LANE_ID) and its chat (the owner of what it launches).
+  // `launch`, `connect` and `claim` have always read --session as the chat;
+  // everywhere else --session is the App Control session guard, so it must not
+  // be consumed here. Every call also carries `callerRoot`: an ade process with
+  // no chat identity that runs inside a lane worktree is bound to that lane.
+  const sessionIsChat = APP_CONTROL_SESSION_IS_CHAT_SUBCOMMANDS.has(sub);
+  const scope: ToolClaimArgs = sessionIsChat
+    ? readToolClaimArgs(args)
+    : readAppControlLaneScope(args);
+  const callerRootArgs = proofCallerRootArgs();
+  const appControlStep = (key: string, method: string, payload: JsonObject = {}) =>
+    actionStep(key, "app_control", method, { ...scope, ...payload }, callerRootArgs);
   const numericPositionals = () =>
     args.filter((value) => /^\d+(\.\d+)?$/.test(value));
   const readCoordinate = (flag: string, index: number): number => {
@@ -11921,15 +12323,21 @@ function buildAppControlPlan(args: string[]): CliPlan {
       label: "App Control actions",
       steps: [listActionsStep("actions", "app_control")],
     };
+  if (sub === "record" || sub === "recording") {
+    return buildAppControlRecordPlan(args, appControlStep);
+  }
+  if (sub === "show" || sub === "reveal") {
+    // Same verb as `ade ui show app-control`, spelled where an agent driving
+    // the app looks for it. `--floating` asks for the floating card instead.
+    const floating = readFlag(args, ["--floating", "--float"]);
+    return workToolShowPlan(scope, floating ? "floating-app-control" : "app-control");
+  }
   if (sub === "status")
     return {
       kind: "execute",
       label: "App Control status",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "getStatus",
+        appControlStep("result", "getStatus",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -11939,10 +12347,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "terminal read",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "readTerminal",
+        appControlStep("result", "readTerminal",
           collectGenericObjectArgs(args, {
             maxBytes: readIntOption(args, ["--max-bytes"], undefined),
             since: readIntOption(args, ["--since"], undefined),
@@ -11952,16 +12357,15 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "claim") {
-    const claimArgs = readRequiredToolClaimArgs(args, "App Control");
+    if (!scope.laneId) {
+      throw new CliUsageError("App Control claim requires --lane <lane-id> or ADE_LANE_ID.");
+    }
     return {
       kind: "execute",
       label: "App Control claim",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "claim",
-          collectGenericObjectArgs(args, claimArgs),
+        appControlStep("result", "claim",
+          collectGenericObjectArgs(args, { ...scope }),
         ),
       ],
     };
@@ -11973,10 +12377,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
         kind: "execute",
         label: "terminal read",
         steps: [
-          actionStep(
-            "result",
-            "app_control",
-            "readTerminal",
+          appControlStep("result", "readTerminal",
             collectGenericObjectArgs(args, {
               maxBytes: readIntOption(args, ["--max-bytes"], undefined),
               since: readIntOption(args, ["--since"], undefined),
@@ -11993,10 +12394,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
         kind: "execute",
         label: "terminal write",
         steps: [
-          actionStep(
-            "result",
-            "app_control",
-            "writeTerminal",
+          appControlStep("result", "writeTerminal",
             collectGenericObjectArgs(args, { data }),
           ),
         ],
@@ -12007,10 +12405,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
         kind: "execute",
         label: "terminal signal",
         steps: [
-          actionStep(
-            "result",
-            "app_control",
-            "signalTerminal",
+          appControlStep("result", "signalTerminal",
             collectGenericObjectArgs(args, {
               signal:
                 readValue(args, ["--signal"]) ??
@@ -12025,13 +12420,13 @@ function buildAppControlPlan(args: string[]): CliPlan {
     );
   }
   if (sub === "launch" || sub === "open" || sub === "start") {
-    const claimArgs = readToolClaimArgs(args);
+    const claimArgs = scope;
     const trailingCommand = readTrailingCommand(args);
     const command = readValue(args, ["--command", "--cmd"]) ?? trailingCommand;
     const appKind = readValue(args, ["--kind", "--app-kind"]) ?? "electron";
     const projectRoot = readValue(args, ["--project-root", "--root"]);
     const laneId = claimArgs.laneId;
-    const cwd = readValue(args, ["--cwd", "--working-directory"]);
+    const cwd = resolveShellRelativeCwd(readValue(args, ["--cwd", "--working-directory"]));
     const debugPort = readNumberOption(args, ["--debug-port", "--port"]);
     const cdpPort = readNumberOption(args, ["--cdp-port"]);
     const label = readValue(args, ["--label", "--name"]);
@@ -12051,10 +12446,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control launch",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "launch",
+        appControlStep("result", "launch",
           collectGenericObjectArgs(args, {
             appKind,
             projectRoot,
@@ -12072,15 +12464,12 @@ function buildAppControlPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "connect" || sub === "attach") {
-    const claimArgs = readToolClaimArgs(args);
+    const claimArgs = scope;
     return {
       kind: "execute",
       label: "App Control connect",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "connect",
+        appControlStep("result", "connect",
           collectGenericObjectArgs(args, {
             appKind: readValue(args, ["--kind", "--app-kind"]) ?? "electron",
             projectRoot: readValue(args, ["--project-root", "--root"]),
@@ -12101,10 +12490,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control targets",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "listTargets",
+        appControlStep("result", "listTargets",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12135,10 +12521,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control stop",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "stop",
+        appControlStep("result", "stop",
           collectGenericObjectArgs(args, {
             force: readFlag(args, ["--force", "-f"]) ? true : undefined,
           }),
@@ -12151,10 +12534,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control focus window",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "focusWindow",
+        appControlStep("result", "focusWindow",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12165,10 +12545,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control minimize window",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "minimizeWindow",
+        appControlStep("result", "minimizeWindow",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12179,10 +12556,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control screenshot",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "screenshot",
+        appControlStep("result", "screenshot",
           collectGenericObjectArgs(args),
         ),
       ],
@@ -12193,10 +12567,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control snapshot",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "getSnapshot",
+        appControlStep("result", "getSnapshot",
           collectGenericObjectArgs(args, {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             coordinateSpace: readValue(args, ["--coordinate-space", "--coords"]),
@@ -12210,10 +12581,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control inspect point",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "inspectPoint",
+        appControlStep("result", "inspectPoint",
           collectGenericObjectArgs(args, {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             x: readCoordinate("--x", 0),
@@ -12234,10 +12602,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control select",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "selectPoint",
+        appControlStep("result", "selectPoint",
           collectGenericObjectArgs(args, {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             x: readCoordinate("--x", 0),
@@ -12264,10 +12629,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control click",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentClick",
+        appControlStep("result", "agentClick",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12292,10 +12654,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control hover",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentHover",
+        appControlStep("result", "agentHover",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12325,10 +12684,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control fill",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentFill",
+        appControlStep("result", "agentFill",
           collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs, value }),
         ),
       ],
@@ -12351,10 +12707,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control clear",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentClear",
+        appControlStep("result", "agentClear",
           collectGenericObjectArgs(args, { ...actionArgs, ...targetArgs }),
         ),
       ],
@@ -12376,10 +12729,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control wait",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentWait",
+        appControlStep("result", "agentWait",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12397,10 +12747,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control observe",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "observe",
+        appControlStep("result", "observe",
           collectGenericObjectArgs(args, readAppControlObservationArgs(args)),
         ),
       ],
@@ -12411,10 +12758,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control trace",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "getTrace",
+        appControlStep("result", "getTrace",
           collectGenericObjectArgs(args, readAppControlTraceArgs(args)),
         ),
       ],
@@ -12425,10 +12769,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control windows",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "windows",
+        appControlStep("result", "windows",
           collectGenericObjectArgs(args, readAppControlSessionArgs(args)),
         ),
       ],
@@ -12444,10 +12785,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control switch window",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "switchWindow",
+        appControlStep("result", "switchWindow",
           collectGenericObjectArgs(args, { ...sessionArgs, targetId }),
         ),
       ],
@@ -12458,65 +12796,30 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control drivers",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "listDrivers",
+        appControlStep("result", "listDrivers",
           collectGenericObjectArgs(args),
         ),
       ],
     };
   }
   if (sub === "proof" || sub === "promote") {
+    // One service action captures the lane's app and files the still, the
+    // way the pane's Proof button does: same capture, same owners (lane,
+    // chat, the lane's PR), same `ade-capture` provenance. With no caption
+    // the service names it "App Control screenshot · <app>".
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
-    const title =
-      readValue(args, ["--title", "--name"]) ?? caption ?? "ADE App Control proof";
-    const ownerBase = readProofOwnerBase(args);
-    const observeArgs = collectGenericObjectArgs(args, {
-      ...readAppControlObservationArgs(args),
-      includeDom: false,
-    });
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     return {
       kind: "execute",
       label: "App Control proof",
+      formatter: "proof-filed",
+      proofFiling: { command: "app-control proof", verify },
       steps: [
-        actionStep("observation", "app_control", "observe", observeArgs),
-        {
-          key: "result",
-          method: "ade/actions/call",
-          unwrapToolResult: true,
-          params: (values) => {
-            // ade/actions/call answers with an {domain, action, result}
-            // envelope; the observation record lives under result.
-            const observation = unwrapActionEnvelope(values.observation);
-            const filePath = isRecord(observation)
-              ? asString(observation.filePath)
-              : null;
-            if (!filePath) {
-              throw new CliUsageError(
-                "App Control proof could not find an observation file path.",
-              );
-            }
-            return {
-              name: "ingest_computer_use_artifacts",
-              arguments: {
-                backendStyle: "manual",
-                backendName: "ade-app-control",
-                toolName: "app-control proof",
-                callerRoot: process.cwd(),
-                ...ownerBase,
-                inputs: [
-                  {
-                    kind: "screenshot",
-                    title,
-                    ...(caption ? { description: caption } : {}),
-                    path: filePath,
-                  },
-                ],
-              },
-            };
-          },
-        },
+        appControlStep("result", "captureProof",
+          collectGenericObjectArgs(args, caption ? { caption } : {}),
+        ),
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }
@@ -12531,10 +12834,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control scroll",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentScroll",
+        appControlStep("result", "agentScroll",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             x: readCoordinate("--x", 0),
@@ -12556,10 +12856,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control press",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentPress",
+        appControlStep("result", "agentPress",
           collectGenericObjectArgs(args, {
             ...actionArgs,
             ...targetArgs,
@@ -12575,13 +12872,10 @@ function buildAppControlPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "App Control type",
       steps: [
-        actionStep(
-          "result",
-          "app_control",
-          "agentType",
+        appControlStep("result", "agentType",
           collectGenericObjectArgs(args, {
             ...actionArgs,
-            text: requireValue(
+            text: requireTypedText(
               readValue(args, ["--value", "--message", "--input-text"]) ??
                 readCommandTextValue(args, ["--text"]) ??
                 args.filter((arg) => arg !== "--text").join(" "),
@@ -12596,7 +12890,7 @@ function buildAppControlPlan(args: string[]): CliPlan {
     kind: "execute",
     label: `app-control ${sub}`,
     steps: [
-      actionStep("result", "app_control", sub, collectGenericObjectArgs(args)),
+      appControlStep("result", sub, collectGenericObjectArgs(args)),
     ],
   };
 }
@@ -12736,6 +13030,11 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
   "floating-mac-desktop": "floating-mac-desktop",
   "floating-mac": "floating-mac-desktop",
   "floating-desktop": "floating-mac-desktop",
+  "app-control": "app-control",
+  app: "app-control",
+  electron: "app-control",
+  "floating-app-control": "floating-app-control",
+  "floating-app": "floating-app-control",
 };
 
 /**
@@ -13806,6 +14105,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     if (mode === "start" || mode === "begin") {
       const fps = readNumberOption(args, ["--fps", "--frame-rate"]);
       const caption = readValue(args, ["--caption", "--description", "--desc"]);
+      const plain = readFlag(args, ["--plain"]);
       return {
         kind: "execute",
         label: "browser record start",
@@ -13818,6 +14118,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
               ...readBrowserOwnedTabTargetArgs(args),
               ...(fps == null ? {} : { fps }),
               ...(caption ? { caption } : {}),
+              ...(plain ? { plain: true } : {}),
             }),
           ),
         ],
@@ -13825,7 +14126,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     }
     if (mode === "stop" || mode === "end" || mode === "finish") {
       const ownerBase = readProofOwnerBase(args);
-      const title = readValue(args, ["--title", "--name"]) ?? "ADE browser recording";
+      const titleFlag = readValue(args, ["--title", "--name"]);
+      const plain = readFlag(args, ["--plain"]);
       return {
         kind: "execute",
         label: "browser record stop",
@@ -13834,7 +14136,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             "result",
             "built_in_browser",
             "stopRecording",
-            collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
+            collectGenericObjectArgs(args, {
+              ...readBrowserOwnedTabTargetArgs(args),
+              ...(plain ? { plain: true } : {}),
+            }),
           ),
           {
             key: "proof",
@@ -13847,6 +14152,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
               const recording = unwrapActionEnvelope(values.result);
               const caption = isRecord(recording) ? asString(recording.caption) : null;
               const filePath = isRecord(recording) ? asString(recording.path) : null;
+              // How the demo was made; the proof keeps it at `metadata.demo`.
+              const demo = isRecord(recording) && isRecord(recording.demo) ? recording.demo : null;
               const shouldIngest = Boolean(caption && filePath);
               return {
                 name: "ingest_computer_use_artifacts",
@@ -13860,9 +14167,12 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
                     ? [
                         {
                           kind: "video_recording",
-                          title,
+                          // The caption given at `record start` names the
+                          // video in the drawer, as every other recorder does.
+                          title: titleFlag ?? caption ?? "ADE browser recording",
                           description: caption,
                           path: filePath,
+                          ...(demo ? { metadata: { demo } } : {}),
                         },
                       ]
                     : [],
@@ -13890,6 +14200,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     };
   if (isBrowserSubcommand(sub, "proof")) {
     const caption = readValue(args, ["--caption", "--description", "--desc"]);
+    const verify = !readFlag(args, ["--no-verify"]);
+    readFlag(args, ["--verify"]);
     const title = readValue(args, ["--title", "--name"]) ?? caption ?? "ADE browser proof";
     const ownerBase = readProofOwnerBase(args);
     const includeHar = readFlag(args, ["--har", "--with-har"]);
@@ -13900,10 +14212,15 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       ...harTargetArgs,
       ...readBrowserObservationOnlyArgs(args),
       includeDom: false,
+      // Proof without pixels is not proof: fail with the capture's own reason
+      // instead of the observation's DOM-only fallback.
+      requireScreenshot: true,
     });
     return {
       kind: "execute",
       label: "browser proof",
+      formatter: "proof-filed",
+      proofFiling: { command: "browser proof", verify },
       steps: [
         actionStep("observation", "built_in_browser", "observe", observeArgs),
         // The HAR rides the same proof: a screenshot says what the page looked
@@ -13966,6 +14283,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             };
           },
         },
+        ...(verify ? [proofVerifyStep()] : []),
       ],
     };
   }
@@ -16458,7 +16776,7 @@ function buildCliPlan(
     primary === "computer" ||
     primary === "artifact"
   ) {
-    return buildProofPlan(args);
+    return buildProofPlan(args, options.projectRoot ?? null);
   }
   if (
     primary === "apple"
@@ -16611,10 +16929,16 @@ function findProjectRoots(startDir: string): {
   const git = spawnSync("git", ["rev-parse", "--show-toplevel"], {
     cwd: startDir,
     encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
+    stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
   });
   const gitRoot = git.status === 0 ? git.stdout.trim() : "";
+  if (git.status !== 0) {
+    // Git refuses folders that belong to another account; say so instead of
+    // silently treating the cwd as the project. Trusting is the user's call.
+    const ownership = parseGitOwnershipError(String(git.stderr ?? ""));
+    if (ownership) process.stderr.write(`ade: ${gitOwnershipMessage(ownership)}\n`);
+  }
   const fallback = gitRoot ? path.resolve(gitRoot) : path.resolve(startDir);
   return { projectRoot: fallback, workspaceRoot: fallback };
 }
@@ -18706,21 +19030,38 @@ async function resolveDesktopSocketProjectId(
   }
 }
 
+/** The one line a live-session command prints instead of going headless. */
+export function liveRuntimeRequiredMessage(feature: string, socketPath: string | null): string {
+  const where = socketPath ? `no brain answered at ${socketPath}` : "--headless runs without one";
+  return `${feature} needs the running ADE brain; ${where}. `
+    + "Use the `ade` on PATH in an ADE terminal or agent shell (it names its brain), "
+    + "or pass --socket <endpoint> from that brain's `ade brain status`.";
+}
+
 async function createConnection(
   options: GlobalOptions,
-  args: { autoRegisterProject?: boolean; machineRuntimeOnly?: boolean } = {},
+  args: {
+    autoRegisterProject?: boolean;
+    machineRuntimeOnly?: boolean;
+    /** Feature name of a plan that must not fall back to headless mode. */
+    needsLiveRuntime?: string;
+  } = {},
 ): Promise<CliConnection> {
   const roots = resolveRoots(options);
   const { resolveAdeLayout } =
     await import("../../desktop/src/shared/adeLayout");
   const layout = resolveAdeLayout(roots.projectRoot);
   const socketPathOverride = options.socketPath?.trim() || null;
-  const legacySocketPath =
+  const explicitEndpoint =
     socketPathOverride ||
     process.env.ADE_RPC_URL?.trim() ||
     process.env.ADE_RPC_SOCKET_PATH?.trim() ||
-    layout.socketPath;
+    null;
+  const legacySocketPath = explicitEndpoint || layout.socketPath;
   const autoRegisterProject = args.autoRegisterProject ?? true;
+  if (args.needsLiveRuntime && options.headless) {
+    throw new CliToolError(liveRuntimeRequiredMessage(args.needsLiveRuntime, null), undefined);
+  }
 
   if (!options.headless) {
     let socketClient: SocketJsonRpcClient | null = null;
@@ -18763,9 +19104,11 @@ async function createConnection(
         socketClient?.close();
       } catch {}
       if (args.machineRuntimeOnly) throw error;
+      // Bare `--socket` means this channel's brain. The per-project pipe is
+      // tried only when a caller named an endpoint.
       if (
         options.requireSocket &&
-        !shouldAttemptDesktopSocketConnection(legacySocketPath)
+        (!explicitEndpoint || !shouldAttemptDesktopSocketConnection(legacySocketPath))
       ) {
         throw error;
       }
@@ -18812,6 +19155,11 @@ async function createConnection(
 
   if (options.requireSocket) {
     throw new Error(`ADE endpoint is not available at ${legacySocketPath}.`);
+  }
+  if (args.needsLiveRuntime) {
+    const machineSocketPath = explicitEndpoint
+      ?? await resolveMachineRuntimeSocketPath(null).catch(() => null);
+    throw new CliToolError(liveRuntimeRequiredMessage(args.needsLiveRuntime, machineSocketPath), undefined);
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -21223,6 +21571,17 @@ async function runServe(
     logger: headlessProjectLogger,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // The sync-host startup loop's latest failure sentence, cleared once the host
+  // is up. "Reconnect this computer" answers with it instead of a bare
+  // "not publishing yet" when there is no publisher because nothing hosts sync.
+  let latestSyncHostStartFailure: string | null = null;
+  // Starts the account publisher when this brain holds the sync-host lease and
+  // none is running. Assigned with the publisher wiring below (sync-enabled
+  // brains only). Returns true when it started one.
+  let ensureAccountMachinePublisher: ((reason: string) => boolean) | null = null;
+  // `startSyncHost`, reachable from "Reconnect this computer" (declared further
+  // down, inside the serve block).
+  let startSyncHostForRepair: (() => Promise<unknown>) | null = null;
   // Turns the "Reconnect this computer" button into something the machine can
   // press for itself when the directory refuses it. Built below, next to the
   // publisher it watches.
@@ -21383,11 +21742,55 @@ async function runServe(
         filePath: pushRelayFilePath,
         logger: headlessProjectLogger,
       });
+    let unavailable: { state: "sync_host_not_running"; reason: string } | null = null;
+    if (!accountMachinePublisher && syncEnabled && input?.onlyIfRevoked !== true) {
+      // The publisher only exists while this brain hosts phone sync. A lease
+      // that is held without one (a swallowed start failure) is fixed in place;
+      // a brain that is not hosting tries to start the sync host once, bounded,
+      // and otherwise says why instead of "not publishing yet".
+      ensureAccountMachinePublisher?.("reconnect_requested");
+      if (!accountMachinePublisher) {
+        const { holdsSyncHostSingleton: holdsLease } = await import("./services/sync/syncHostSingleton");
+        let startError: string | null = null;
+        if (!holdsLease() && startSyncHostForRepair) {
+          headlessProjectLogger.info("account.machine_repair_starting_sync_host", {});
+          try {
+            await withTimeout(
+              startSyncHostForRepair(),
+              REPAIR_SYNC_HOST_START_TIMEOUT_MS,
+              `Starting phone sync took longer than ${REPAIR_SYNC_HOST_START_TIMEOUT_MS / 1000} seconds.`,
+            );
+          } catch (error) {
+            startError = error instanceof Error ? error.message : String(error);
+          }
+          ensureAccountMachinePublisher?.("reconnect_started_sync_host");
+        }
+        if (!accountMachinePublisher) {
+          const owner = readCompetingSyncHostOwner?.() ?? null;
+          const why = owner
+            ? `${owner.appName ?? "Another ADE app"} (pid ${owner.pid}) is hosting sync on this computer, so this ADE can't put it on your account.`
+            : `No ADE on this computer is hosting sync right now, so it can't be put on your account.${
+              (startError ?? latestSyncHostStartFailure) ? ` ${startError ?? latestSyncHostStartFailure}` : ""
+            }`;
+          unavailable = {
+            state: "sync_host_not_running",
+            reason: `${why} Repair restarts ADE's background service on this computer.`,
+          };
+          headlessProjectLogger.warn("account.machine_repair_sync_host_not_running", {
+            ownerApp: owner?.appName ?? null,
+            ownerPid: owner?.pid ?? null,
+            startError,
+            latestSyncHostStartFailure,
+          });
+        }
+      }
+    }
     return await runMachinePairingRepair({
       directory: accountMachinePublisher,
       push,
       pushStore,
       onlyIfRevoked: input?.onlyIfRevoked === true,
+      unavailable,
       logger: headlessProjectLogger,
     });
   };
@@ -21402,6 +21805,50 @@ async function runServe(
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
       getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
       personalChatScope,
+      // The same roster, transcript resolver and project routing a project
+      // sync host gets below, so a phone's roster socket that lands here while
+      // no project host is attached sees the same roster and chats. Every
+      // closure runs only after `activityRosterProvider` and `scopeRegistry`
+      // are assigned (the handler serves nothing before the listener starts).
+      rosterProvider: {
+        buildSnapshot: () => activityRosterProvider.buildSnapshot(),
+      },
+      foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
+      projectCommandRouter: {
+        resolveProjectId: ({ projectId, projectRootPath }) => {
+          const records = projectRegistry.list();
+          const byId = projectId?.trim()
+            ? records.find((record) => record.projectId === projectId.trim())
+            : undefined;
+          const byRoot = projectRootPath?.trim()
+            ? records.find((record) => pathsEqual(record.rootPath, path.resolve(projectRootPath.trim())))
+            : undefined;
+          // Both selectors given: the project the id names must live at that
+          // root, or the command would run in a project the caller did not mean.
+          if (byId && projectRootPath?.trim() && !pathsEqual(byId.rootPath, path.resolve(projectRootPath.trim()))) {
+            return null;
+          }
+          return (byId ?? byRoot)?.projectId ?? null;
+        },
+        // The static table every project runtime registers: available with
+        // no project booted, and never boots one just to answer a hello.
+        listDescriptors: async () => {
+          const { listProjectRemoteCommandDescriptors } = await import("./services/sync/syncRemoteCommandService");
+          return listProjectRemoteCommandDescriptors();
+        },
+        getDescriptor: async (projectId, action) => {
+          const scope = await scopeRegistry.get(projectId);
+          return scope.runtime.syncService?.getRemoteCommandDescriptor(action) ?? null;
+        },
+        execute: async (payload, context) => {
+          const scope = await scopeRegistry.get(payload.projectId);
+          const syncService = scope.runtime.syncService;
+          if (!syncService) {
+            throw new Error(`Phone sync is not available for project ${payload.projectId}.`);
+          }
+          return await syncService.executeRemoteCommand(payload, context);
+        },
+      },
       captureRecoveryAnalytics: ({ outcome, surface }) => {
         brainProductAnalytics?.capture({
           event: "ade_feature_used",
@@ -21595,7 +22042,16 @@ async function runServe(
   // no scope nothing ever dialled it and the target user for this path — a
   // headless box or a fresh machine with no desktop app — was LAN-only. Built
   // lazily, on the same event that takes the projectless lease.
-  const ensureProjectlessRelayTunnel = async (): Promise<void> => {
+  // Single-flight: the startup loop and a repair can both reach this, and two
+  // concurrent calls would each build a tunnel before either set the gate.
+  let projectlessRelayTunnelInFlight: Promise<void> | null = null;
+  const ensureProjectlessRelayTunnel = (): Promise<void> => {
+    projectlessRelayTunnelInFlight ??= createProjectlessRelayTunnel().finally(() => {
+      projectlessRelayTunnelInFlight = null;
+    });
+    return projectlessRelayTunnelInFlight;
+  };
+  const createProjectlessRelayTunnel = async (): Promise<void> => {
     const listener = sharedSyncListener;
     if (!listener || brainRelayTunnelGate) return;
     try {
@@ -21628,7 +22084,17 @@ async function runServe(
       });
     }
   };
-  const startSyncHost = async () => {
+  // One in-flight start, shared by the startup loop, phone/web "Fix
+  // connection" and "Reconnect this computer": a repair that lands mid-attempt
+  // joins it instead of racing a second start against the same lease.
+  let startSyncHostInFlight: ReturnType<typeof startSyncHostOnce> | null = null;
+  const startSyncHost = (): ReturnType<typeof startSyncHostOnce> => {
+    startSyncHostInFlight ??= startSyncHostOnce().finally(() => {
+      startSyncHostInFlight = null;
+    });
+    return startSyncHostInFlight;
+  };
+  const startSyncHostOnce = async () => {
     let activeScope: Awaited<
       ReturnType<InstanceType<typeof ProjectScopeRegistry>["resolveActiveSyncHost"]>
     >;
@@ -21676,12 +22142,39 @@ async function runServe(
       brainRelayTunnelGate = null;
       brainSyncTunnelClient = null;
     }
+    if (activeScope) {
+      // Activating a scope is not the same as hosting. Its sync service makes
+      // its own host/viewer call from the project database: when that
+      // database names another device as brain and that device was seen in
+      // the last few minutes, the scope becomes a VIEWER, never takes the
+      // lease, and never listens. Returning success then would end the
+      // startup loop with nothing hosting sync until a restart (a brain that
+      // restarts right after the previous host was killed hits this). So
+      // re-run the decision, and fail loudly while that cluster record still
+      // says viewer: the loop logs it and retries until the other brain
+      // counts as gone. A viewer the user chose (a saved connection to
+      // another host) is intended, never goes stale, and returns as-is.
+      const scopeSync = activeScope.runtime.syncService;
+      if (scopeSync && !scopeSync.getHostService()) {
+        await scopeSync.reevaluateHostRole();
+        if (!scopeSync.getHostService()) {
+          const status = await scopeSync
+            .getStatus({ includeTransferReadiness: false })
+            .catch(() => null);
+          if (status?.role === "viewer" && status.viewerReason === "cluster_record") {
+            const { describeScopeNotHostingSync } = await import("./services/sync/syncHostStartupLoop");
+            throw new Error(describeScopeNotHostingSync(activeScope.record.displayName || activeScope.record.rootPath, status));
+          }
+        }
+      }
+    }
     // A ProjectScope is a complete runtime (DB, search, chat, automation,
     // polling, PTY, and sync services), not a lightweight metadata cache.
     // Keep non-host projects lazy; the sync-host handoff keeps the old host
     // authoritative while a newly selected project boots on demand.
     return activeScope ?? null;
   };
+  startSyncHostForRepair = startSyncHost;
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
@@ -21725,6 +22218,14 @@ async function runServe(
       await disposeAllCursorSdkConnections();
     } catch {
       // Best effort: the workers also exit on their own once the IPC channel closes.
+    }
+    try {
+      // The shared OpenCode server outlives its last chat by an idle timer that
+      // dies with this process, so stop it here or it runs on as an orphan.
+      const { shutdownOpenCodeServers } = await import("../../desktop/src/main/services/opencode/openCodeServer");
+      shutdownOpenCodeServers({}, headlessProjectLogger);
+    } catch {
+      // Best effort: the next start's orphan recovery stops a server left behind.
     }
     try {
       const {
@@ -21847,7 +22348,18 @@ async function runServe(
         // brain failure there is lived only as untimestamped free text in
         // `launchd.err.log` — never in `brain.jsonl`, so no report section and
         // no telemetry ever saw it.
-        logEvent: (event, meta) => headlessProjectLogger.warn(event, meta),
+        logEvent: (event, meta) => {
+          if (event === "sync.host_start_failed") {
+            latestSyncHostStartFailure = typeof meta.message === "string" ? meta.message : null;
+          } else if (event === "sync.host_started" || event === "sync.host_start_recovered") {
+            latestSyncHostStartFailure = null;
+          }
+          // Failures stay warnings; progress facts (started, recovered, a
+          // stale-owner takeover) are info, so they reach brain.jsonl without
+          // tripping anything that counts warnings.
+          if (event.endsWith("_failed")) headlessProjectLogger.warn(event, meta);
+          else headlessProjectLogger.info(event, meta);
+        },
         // The machine-scoped last-failure record: the same file the recovery
         // screen, `ade doctor`, and the diagnostic report already read.
         recordStorageFault: (fault, detail) => {
@@ -21880,11 +22392,29 @@ async function runServe(
             .catch(() => undefined);
         },
       };
+      // The sync host is up: the account publisher must be too. The lease
+      // notification is what normally starts it, but that notification fires
+      // mid-switch (before the scope is published), its first publish can skip
+      // silently, and a subscriber failure there is swallowed. So reconcile
+      // explicitly and publish now rather than on the next 30-second beat.
+      const reconcileAccountPublisher = (reason: string): void => {
+        if (done) return;
+        if (ensureAccountMachinePublisher?.(reason)) return;
+        if (accountMachinePublisher) {
+          void accountMachinePublisher.requestPublishAfterCurrentAttempt();
+          return;
+        }
+        headlessProjectLogger.warn("account_publisher.not_running_after_sync_host_start", {
+          reason,
+          holdsSyncHostLease: holdsSyncHostLease(),
+        });
+      };
       await runSyncHostStartupLoop(syncHostStartupLoopDeps);
       // A recorded sync-host failure is cleared only once the sync host is
       // really up; clearing it on the bind would reset the crash-loop counter
       // on every restart of a brain that keeps dying right here.
       if (!done) clearLastFailure({ kind: "machine" });
+      reconcileAccountPublisher("sync_host_started");
       // The loop is done, but the lease is not forever: another brain can take
       // it and then exit. Re-host when a loss outlives the switch grace, so
       // this brain does not sit as a viewer until someone restarts it.
@@ -21899,6 +22429,7 @@ async function runServe(
           rehost: async () => {
             await runSyncHostStartupLoop({ ...syncHostStartupLoopDeps, retryFirstConflict: true });
             if (!done) clearLastFailure({ kind: "machine" });
+            reconcileAccountPublisher("sync_host_rehosted");
           },
         });
       }
@@ -22049,6 +22580,11 @@ async function runServe(
       competingSyncHostOwnerCache.at = at;
       return owner;
     };
+    const activeSyncHostScopeWithoutBooting = async () => {
+      const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
+      if (!activeProjectId) return null;
+      return await scopeRegistry.getIfBooted(activeProjectId)?.catch(() => null) ?? null;
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -22063,7 +22599,13 @@ async function runServe(
         isSyncEnabled: () => syncEnabled,
         logger: headlessProjectLogger,
         getSnapshot: async () => {
-          const activeScope = await scopeRegistry.resolveActiveSyncHost();
+          // Read the host that is ALREADY active; never start one.
+          // `resolveActiveSyncHost()` would boot and switch to the most recent
+          // project when no host is published yet -- and the first publish
+          // runs from inside the lease notification, while the startup loop's
+          // own switch is still in flight, so a status read would supersede
+          // the switch it is reporting on.
+          const activeScope = await activeSyncHostScopeWithoutBooting();
           const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,
           }) ?? null;
@@ -22079,7 +22621,7 @@ async function runServe(
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
         getInventorySummary: async () => {
-          const activeScope = await scopeRegistry.resolveActiveSyncHost();
+          const activeScope = await activeSyncHostScopeWithoutBooting();
           return await readMachineInventorySummary({
             providerInstanceStore: getMachineProviderInstanceStore(),
             accountSettingsStore: activeScope?.runtime.accountSettingsStore ?? null,
@@ -22123,6 +22665,26 @@ async function runServe(
         },
       });
       accountMachinePublisher.start();
+      headlessProjectLogger.info("account_publisher.started", {});
+    };
+    // The lease notification runs subscribers inside a catch that swallows
+    // everything ("a subscriber must never break lease bookkeeping"), so a
+    // publisher that failed to build left no trace and the machine silently
+    // never published. Every start goes through here and says what happened.
+    ensureAccountMachinePublisher = (reason: string): boolean => {
+      if (accountMachinePublisher || !holdsSyncHostSingleton()) return false;
+      try {
+        startAccountMachinePublisher();
+        headlessProjectLogger.info("account_publisher.start_requested", { reason });
+        return accountMachinePublisher != null;
+      } catch (error) {
+        accountMachinePublisher = null;
+        headlessProjectLogger.error("account_publisher.start_failed", {
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
     };
     // A project switch deactivates the previous sync host before activating the
     // target, so authority momentarily reads false inside one brain. Without the
@@ -22138,7 +22700,7 @@ async function runServe(
     const unsubscribeAccountPublisherAuthority = onSyncHostSingletonAuthorityChanged((held) => {
       if (held) {
         cancelAccountPublisherRelease();
-        startAccountMachinePublisher();
+        ensureAccountMachinePublisher?.("sync_host_lease_acquired");
         return;
       }
       if (!accountMachinePublisher || accountPublisherReleaseTimer) return;
@@ -22160,7 +22722,7 @@ async function runServe(
       unsubscribeAccountPublisherAuthority();
     };
     if (holdsSyncHostSingleton()) {
-      startAccountMachinePublisher();
+      ensureAccountMachinePublisher("sync_host_lease_held_at_boot");
     } else {
       headlessProjectLogger.info("account_publisher.start_skipped", {
         reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",
@@ -23909,8 +24471,21 @@ export function renderTable(
   headers: string[],
   rows: unknown[][],
   emptyMessage: string,
+  options: {
+    /**
+     * Headers whose cells are never shortened: ids and handles an agent copies
+     * into its next command. A truncated `tab-6db46434-…` is not a shorter id,
+     * it is a wrong one ("Browser tab not found").
+     */
+    fullColumns?: readonly string[];
+  } = {},
 ): string {
   if (rows.length === 0) return emptyMessage;
+  const fullColumns = new Set(options.fullColumns ?? []);
+  const cellWidth = (index: number): number =>
+    fullColumns.has(headers[index] ?? "")
+      ? Number.POSITIVE_INFINITY
+      : index === headers.length - 1 ? 64 : 28;
   // Column widths and padding are measured in terminal cells so a wide
   // (CJK/emoji) value cannot shift the columns to its right.
   const widths = headers.map((header, index) =>
@@ -23918,7 +24493,7 @@ export function renderTable(
       terminalDisplayWidth(header),
       ...rows.map(
         (row) =>
-          terminalDisplayWidth(cell(row[index], index === headers.length - 1 ? 64 : 28)),
+          terminalDisplayWidth(cell(row[index], cellWidth(index))),
       ),
     ),
   );
@@ -23926,7 +24501,7 @@ export function renderTable(
     row
       .map((entry, index) =>
         padDisplayEnd(
-          cell(entry, index === headers.length - 1 ? 64 : 28),
+          cell(entry, cellWidth(index)),
           widths[index] ?? 0,
         ),
       )
@@ -24377,6 +24952,7 @@ function formatExternalSessions(value: unknown): string {
       session.title ?? session.preview,
     ]),
     "ADE external sessions\n(no sessions)",
+    { fullColumns: ["id"] },
   );
 }
 
@@ -24539,6 +25115,7 @@ function formatChatList(value: unknown): string {
         session.title,
       ]),
       "ADE chats\n(no sessions)",
+      { fullColumns: ["session"] },
     );
   }
   // A tracked CLI child reads its terminal status (and exit code) in place of
@@ -24558,6 +25135,7 @@ function formatChatList(value: unknown): string {
       ];
     }),
     "ADE chats\n(no sessions)",
+    { fullColumns: ["session", "parent"] },
   );
 }
 
@@ -24593,6 +25171,7 @@ const CHAT_MODEL_FAMILY_PROVIDERS: Record<string, string> = {
   google: "gemini",
   cursor: "cursor",
   factory: "droid",
+  opencode: "opencode",
   qwen: "qwen",
   moonshot: "kimi",
   xai: "grok",
@@ -24602,12 +25181,29 @@ const CHAT_MODEL_FAMILY_PROVIDERS: Record<string, string> = {
 function chatModelProvider(model: JsonObject): string | null {
   const declared = asString(model.provider) ?? asString(model.providerKey);
   if (declared) return declared;
-  const family = asString(model.family);
-  if (family && CHAT_MODEL_FAMILY_PROVIDERS[family]) return CHAT_MODEL_FAMILY_PROVIDERS[family];
+  // The model-id prefix is checked before the family: a routed id such as
+  // `opencode/anthropic/…` names the provider that serves it in its first
+  // segment, while the family (`anthropic`) only names the model's lineage. A
+  // plain `anthropic/…` id resolves the same either way. When neither is a
+  // known key the raw fallback prefers the family, because a slashless id makes
+  // the "prefix" the entire id rather than a provider label.
   const modelId = asString(model.modelId) ?? asString(model.id);
   const prefix = modelId?.split("/")[0]?.trim();
   if (prefix && CHAT_MODEL_FAMILY_PROVIDERS[prefix]) return CHAT_MODEL_FAMILY_PROVIDERS[prefix];
+  const family = asString(model.family);
+  if (family && CHAT_MODEL_FAMILY_PROVIDERS[family]) return CHAT_MODEL_FAMILY_PROVIDERS[family];
   return family ?? prefix ?? null;
+}
+
+/**
+ * The rows behind the `ade chat models` table and JSON output.
+ *
+ * Both outputs read this one projection so `--text` and `--json` can never
+ * disagree about which models are listed or which provider each belongs to.
+ */
+function chatModelRows(value: unknown): JsonObject[] {
+  const models = firstArray(value, ["models", "availableModels"]);
+  return models.map((model) => ({ ...model, provider: chatModelProvider(model) }));
 }
 
 /**
@@ -24618,18 +25214,17 @@ function chatModelProvider(model: JsonObject): string | null {
  * is deliberately absent until provider accounts land; it goes beside PROVIDER.
  */
 function formatChatModels(value: unknown): string {
-  const models = Array.isArray(value)
-    ? value.filter(isRecord)
-    : firstArray(value, ["models", "availableModels"]);
+  const models = chatModelRows(value);
   return renderTable(
     ["PROVIDER", "MODEL ID", "LABEL", "FAMILY"],
     models.map((model) => [
-      chatModelProvider(model),
+      model.provider,
       asString(model.modelId) ?? asString(model.id),
       model.displayName,
       asString(model.family),
     ]),
     "ADE chat models\n(no models)",
+    { fullColumns: ["MODEL ID"] },
   );
 }
 
@@ -24715,6 +25310,11 @@ function boardMoveColumns(record: JsonObject): string | undefined {
   return from ? `${label(from)} -> ${label(to)}` : label(to);
 }
 
+const ACTIVITY_SOURCE_LABEL: Record<SessionActivitySource, string> = {
+  agent: "reported by the agent",
+  detected: "detected",
+};
+
 /**
  * What `ade session show` says a session is DOING, as opposed to which columns
  * it has. `runtime state` alone reads `idle` for a chat that is holding a warm
@@ -24742,7 +25342,13 @@ function sessionStatusLine(record: JsonObject, now: number, snoozed: boolean): s
   const presentation = sessionStatusDisplay(input, { snoozed });
   if (!presentation) return undefined;
   const elapsed = sessionElapsedLabel(summary, presentation, canonical.phase, canonical.liveness, now);
-  return elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+  const label = elapsed ? `${presentation.label} ${elapsed}` : presentation.label;
+  // An agent reading its own row should know whether ADE saw the activity or
+  // the agent said it.
+  const source = presentation.activitySource
+    ? ACTIVITY_SOURCE_LABEL[presentation.activitySource]
+    : null;
+  return source ? `${label} (${source})` : label;
 }
 
 /**
@@ -24903,6 +25509,33 @@ function formatProofList(value: unknown): string {
  * an agent that reads only the tail of the output still sees whether a record
  * landed and which lane/chat it landed in.
  */
+/**
+ * The markdown an agent pastes into its answer to show this artifact there.
+ * The caption is the one the agent filed (`description`), else the title.
+ */
+function proofArtifactCitation(artifact: JsonObject): string | null {
+  const id = asString(artifact.id);
+  // Only a picture or a video can show in an answer; a trace cannot.
+  const kind = asString(artifact.kind);
+  if (!id || (kind !== "screenshot" && kind !== "video_recording")) return null;
+  return proofCitationMarkdown(id, asString(artifact.description) ?? asString(artifact.title));
+}
+
+function formatProofPublished(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const posted = firstArray(record, ["posted"]);
+  const skipped = firstArray(record, ["skipped"]);
+  const warnings = Array.isArray(record.warnings) ? record.warnings.filter((entry): entry is string => typeof entry === "string") : [];
+  return [
+    `Posted ${posted.length} proof item${posted.length === 1 ? "" : "s"} to ${asString(record.prUrl) ?? "the PR"}`,
+    ...(asString(record.commentUrl) ? [`comment: ${asString(record.commentUrl)}`] : []),
+    ...posted.map((entry) => `  posted  ${asString(entry.id)}  ${asString(entry.caption)}`),
+    ...skipped.map((entry) => `  skipped ${asString(entry.id)}  ${asString(entry.reason)}`),
+    ...warnings.map((warning) => `warning: ${warning}`),
+    `linked: ${typeof record.linked === "number" ? record.linked : 0} item(s) now show this PR in the proof drawer`,
+  ].join("\n");
+}
+
 function formatProofFiled(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const artifacts = firstArray(record, ["artifacts"]);
@@ -24918,11 +25551,17 @@ function formatProofFiled(value: unknown): string {
         artifact.uri,
       ]),
       "(no artifact rows returned)",
+      { fullColumns: ["artifact"] },
     ),
     record.verified === true
       ? "verified: re-read through ade proof list"
       : "verified: skipped (--no-verify)",
     ...warnings.map((warning) => `warning: ${warning}`),
+    ...(asString(record.capturedFrom) ? [`captured from: ${asString(record.capturedFrom)}`] : []),
+    ...artifacts.flatMap((artifact) => {
+      const citation = asString(artifact.citation);
+      return citation ? [`cite: ${citation}`] : [];
+    }),
     "",
     confirmation,
   ].join("\n");
@@ -24995,6 +25634,7 @@ function formatIosSimDevices(value: unknown): string {
       device.state,
     ]),
     "ADE iOS simulators\n(no installed simulators)",
+    { fullColumns: ["udid"] },
   );
 }
 
@@ -25011,6 +25651,7 @@ function formatIosSimApps(value: unknown): string {
       target.bundleId ?? target.detail,
     ]),
     "ADE iOS launchable apps\n(no apps)",
+    { fullColumns: ["target"] },
   );
 }
 
@@ -25160,6 +25801,7 @@ function formatIosSimSnapshot(value: unknown): string {
                 : "",
             ]),
           "",
+          { fullColumns: ["id"] },
         )
       : "",
   ]
@@ -25317,6 +25959,56 @@ function formatAppControlStatus(value: unknown): string {
   ].join("\n");
 }
 
+/**
+ * `app-control record start|stop|status`: the same lines as
+ * `mac-desktop record`, plus which engine captured the window.
+ */
+function formatAppControlRecording(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  const status = firstRecord(record, ["recording", "status"]) ?? record;
+  const finite = (entry: unknown): number | null =>
+    typeof entry === "number" && Number.isFinite(entry) ? entry : null;
+  const durationMs = macDesktopRecordingDurationMs(status);
+  const wallDurationMs = finite(status.wallDurationMs);
+  const idleCut = proofIdleCutLabel(finite(status.idleCutMs));
+  const maxDurationMs = finite(status.maxDurationMs);
+  const proofArtifactId = asString(status.proofArtifactId);
+  const finished = status.running !== true && Boolean(status.filePath);
+  const permissions = firstRecord(status, ["permissions"]);
+  return renderKeyValues("ADE App Control recording", [
+    ["lane", status.laneId],
+    ["running", status.running],
+    ["engine", status.engine],
+    ["started", status.startedAt],
+    ["file", status.filePath],
+    // A failed stop still flips `running` to false; say so, or the file looks
+    // like a finished recording.
+    ["error", status.lastError],
+    ["duration", durationMs == null ? null : `${(durationMs / 1000).toFixed(1)}s`],
+    ["real time", idleCut && wallDurationMs != null ? `${formatProofDuration(wallDurationMs)} · ${idleCut}` : null],
+    ["stopped", status.stopReason === "cap" && maxDurationMs != null
+      ? `at its ${formatProofDuration(maxDurationMs)} cap`
+      : status.stopReason === "app-closed"
+        ? "the app closed"
+        : status.stopReason === "chat-ended"
+          ? "the chat that started it ended"
+          : null],
+    ["caption", status.caption],
+    ["screen recording", permissions?.screenRecording],
+    [
+      "proof",
+      proofArtifactId
+        ? `filed (${proofArtifactId}) — it is in the proof drawer`
+        : !finished || status.lastError
+          ? null
+          : status.caption
+            ? "not filed"
+            : "not filed — start with --caption to file it as proof",
+    ],
+    ["cite", proofArtifactId ? proofCitationMarkdown(proofArtifactId, asString(status.caption)) : null],
+  ]);
+}
+
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
   // This machine has no desktop attached, so there is no browser here to
@@ -25355,9 +26047,24 @@ function formatBrowserStatus(value: unknown): string {
     }
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);
+    // The caller's own tab says so in words; anyone else's shows full ids,
+    // never a truncated one that looks copyable and is not.
+    if (chat && chat === callerChatSessionId) return "this chat";
     return [lane, chat].filter(Boolean).join(" / ");
   };
+  const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  // `open` / `new-tab` name the tab they drove in one line, so the agent does
+  // not have to pick it out of the table (an agent's tab is not the active
+  // one: agent opens do not take the human's focus).
+  const targetTabId = asString(status.targetTabId);
+  const targetTab = targetTabId ? tabs.find((tab) => asString(tab.id) === targetTabId) ?? null : null;
+  const targetLine = targetTabId
+    ? `${status.targetTabCreated === true ? "opened" : "navigated"}: ${targetTabId}${
+      asString(targetTab?.url) ? ` ${asString(targetTab?.url)}` : ""
+    }`
+    : null;
   return [
+    ...(targetLine ? [targetLine, ""] : []),
     renderKeyValues("ADE browser", [
       ["visible", status.visible],
       ["attached", status.attached],
@@ -25384,6 +26091,7 @@ function formatBrowserStatus(value: unknown): string {
         tab.url,
       ]),
       "Browser tabs\n(no browser tabs)",
+      { fullColumns: ["tab", "owner"] },
     ),
   ].join("\n");
 }
@@ -25410,6 +26118,7 @@ function formatBrowserDevServers(value: unknown): string {
       ];
     }),
     "ADE dev servers\n(no dev servers detected in ADE terminals for this chat)",
+    { fullColumns: ["lane", "terminal"] },
   );
 }
 
@@ -25485,6 +26194,7 @@ function formatWorkToolsState(value: unknown): string {
         tab.url,
       ]),
       "Browser tabs\n(no browser tabs)",
+      { fullColumns: ["tab", "owner chat"] },
     ),
   ].join("\n");
 }
@@ -25523,10 +26233,163 @@ function formatBrowserSessions(value: unknown): string {
         entry.updatedAt,
       ]),
       "Browser sessions\n(no browser sessions)",
+      { fullColumns: ["session", "tab", "owner", "last observation", "last trace"] },
     ),
   ].join("\n");
 }
 
+
+/* ── One action answer ─────────────────────────────────────────────────── */
+
+/** Actions that land on a point when they have no element. */
+const POINT_ACTIONS = new Set(["click", "tap", "hover", "drag", "swipe", "scroll"]);
+
+/** `button "Save" (obs-…:e:12)`: role, name, and the handle the agent can reuse. */
+function actionElementLabel(element: JsonObject): string {
+  const role = asString(element.role) ?? asString(element.tagName) ?? asString(element.elementType) ?? "element";
+  const name = asString(element.title)
+    ?? asString(element.label)
+    ?? asString(element.text)
+    ?? asString(element.value)
+    ?? asString(element.placeholder)
+    ?? asString(element.identifier);
+  const ref = asString(element.handle) ?? asString(element.ref) ?? asString(element.selector);
+  const shortName = name && name.length > 60 ? `${name.slice(0, 59)}…` : name;
+  return `${role}${shortName ? ` ${JSON.stringify(shortName)}` : ""}${ref ? ` (${ref})` : ""}`;
+}
+
+/**
+ * The two lines every acting command prints first, on every computer-use
+ * surface: which element it hit, and whether anything visibly changed.
+ *
+ * `hit` names the resolved element, or says there was none and where the
+ * input went instead. `effect` restates the result's `effect` field; an
+ * `unconfirmed` one tells the agent to look before it goes on, because the
+ * input was sent and nothing ADE can see changed.
+ */
+export function formatActionAnswerLines(
+  result: JsonObject,
+  options: {
+    action?: string | null;
+    resolved?: JsonObject | null;
+    /** Overrides the no-element sentence, e.g. "no element matched" for a wait. */
+    noElement?: string;
+    /** Used when the result carries no `effect` (a surface that never compares). */
+    fallbackEffect?: { status: string; reason: string };
+  } = {},
+): string[] {
+  const resolved = options.resolved !== undefined ? options.resolved : firstRecord(result, ["resolved"]);
+  const action = (options.action ?? asString(result.action) ?? "").toLowerCase();
+  const noElement = options.noElement
+    ?? (action === "wait"
+      ? "no element; a wait does not act"
+      : POINT_ACTIONS.has(action)
+        ? "no element; acted on a point"
+        : "no element; sent to whatever had focus");
+  const hit = `hit: ${resolved ? actionElementLabel(resolved) : noElement}`;
+  const effect = isRecord(result.effect) ? result.effect : options.fallbackEffect ?? null;
+  const status = asString(effect?.status);
+  const reason = asString(effect?.reason) ?? "";
+  let effectLine: string;
+  if (status === "observed") effectLine = `effect: observed — ${reason || "the screen changed"}`;
+  else if (status === "unconfirmed") {
+    effectLine = `effect: unconfirmed — ${reason || "nothing on screen changed"}; observe again before you continue`;
+  } else if (status === "waiting_for_approval") {
+    effectLine = `effect: waiting — ${reason || "a navigation is waiting for the user's approval in ADE"}; observe again after they answer`;
+  } else if (status === "not_checked") effectLine = `effect: not checked — ${reason || "this action did not compare"}`;
+  else effectLine = "effect: not checked — this ADE did not report an effect";
+  return [hit, effectLine];
+}
+
+/** The rows of a DOM element list, shared by the browser and App Control. */
+function domElementTable(elements: JsonObject[]): string {
+  const rows = elements.slice(0, 12).map((element) => {
+    const center = firstRecord(element, ["center"]);
+    const x = typeof center?.x === "number" ? Math.round(center.x) : "";
+    const y = typeof center?.y === "number" ? Math.round(center.y) : "";
+    return [
+      element.index,
+      element.handle,
+      element.role ?? element.tagName,
+      element.label ?? element.text ?? element.value,
+      x === "" || y === "" ? "" : `${x},${y}`,
+      element.selector,
+    ];
+  });
+  return renderTable(
+    ["#", "handle", "role/tag", "label", "center", "selector"],
+    rows,
+    "(no DOM elements)",
+    { fullColumns: ["handle"] },
+  );
+}
+
+/** A browser acting command: the answer lines, then the post-action observation. */
+function formatBrowserAction(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const trace = firstRecord(result, ["trace"]);
+  return [
+    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    "",
+    formatBrowserObservation(value),
+  ].join("\n");
+}
+
+/** An App Control acting command: the answer lines, then what the app shows now. */
+function formatAppControlAction(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const trace = firstRecord(result, ["trace"]);
+  const observation = firstRecord(result, ["observation"]);
+  const dom = observation ? firstRecord(observation, ["dom"]) : null;
+  const elements = firstArray(dom ?? {}, ["elements"]);
+  const header = renderKeyValues("ADE App Control action", [
+    ["ok", result.ok ?? true],
+    ["action", trace?.action],
+    ["url", observation?.url],
+    ["title", observation?.title],
+    ["image", observation?.filePath ?? observation?.relativePath],
+    ["trace", trace?.id],
+    [
+      "dom elements",
+      dom ? `${elements.length}/${dom.elementCount ?? elements.length}` : null,
+    ],
+  ]);
+  const sections = [
+    ...formatActionAnswerLines(result, { action: asString(trace?.action) }),
+    "",
+    header,
+  ];
+  if (elements.length) sections.push("", domElementTable(elements));
+  return sections.join("\n");
+}
+
+/**
+ * An Apple device acting command. An element action carries its match and its
+ * own `effect`; a coordinate tap, drag or keystroke answers `{ ok: true }`, so
+ * it gets the same not-compared sentence the element actions use.
+ */
+function formatAppleAction(value: unknown, action: string): string {
+  const result = isRecord(value) ? value : {};
+  const match = firstRecord(result, ["match"]);
+  const element = match ? firstRecord(match, ["element"]) : null;
+  const resolved = element ? { ...element, ref: match?.ref ?? null } : null;
+  const lines = formatActionAnswerLines(result, {
+    action: asString(result.action) ?? action,
+    resolved,
+    ...(result.ok === false && !resolved ? { noElement: "no element matched; nothing was sent" } : {}),
+    fallbackEffect: { status: "not_checked", reason: IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON },
+  });
+  return [
+    ...lines,
+    "",
+    renderKeyValues("ADE Apple device action", [
+      ["ok", result.ok ?? true],
+      ["action", asString(result.action) ?? action],
+      ["matches", typeof result.matchCount === "number" && result.matchCount > 1 ? result.matchCount : null],
+      ["message", result.message],
+    ]),
+  ].join("\n");
+}
 
 function formatBrowserObservation(value: unknown): string {
   const result = isRecord(value) ? value : {};
@@ -25548,6 +26411,7 @@ function formatBrowserObservation(value: unknown): string {
     ["url", observation.url ?? status?.url],
     ["title", observation.title ?? status?.title],
     ["image", observation.filePath ?? observation.relativePath],
+    ["screenshot unavailable", observation.screenshotUnavailable],
     ["element map", elementMap?.filePath ?? elementMap?.relativePath],
     [
       "size",
@@ -25578,30 +26442,8 @@ function formatBrowserObservation(value: unknown): string {
     ],
     ["scratch deleted", cleanup?.deletedCount],
   ]);
-  const rows = elements.slice(0, 12).map((element) => {
-    const center = firstRecord(element, ["center"]);
-    const x = typeof center?.x === "number" ? Math.round(center.x) : "";
-    const y = typeof center?.y === "number" ? Math.round(center.y) : "";
-    return [
-      element.index,
-      element.handle,
-      element.role ?? element.tagName,
-      element.label ?? element.text ?? element.value,
-      x === "" || y === "" ? "" : `${x},${y}`,
-      element.selector,
-    ];
-  });
   const sections = [header];
-  if (elements.length) {
-    sections.push(
-      "",
-      renderTable(
-        ["#", "handle", "role/tag", "label", "center", "selector"],
-        rows,
-        "(no DOM elements)",
-      ),
-    );
-  }
+  if (elements.length) sections.push("", domElementTable(elements));
   if (consoleDiagnostics.length) {
     sections.push(
       "",
@@ -25715,6 +26557,7 @@ function formatAppControlSnapshot(value: unknown): string {
               element.selector,
             ]),
           "",
+          { fullColumns: ["ref"] },
         )
       : "",
   ]
@@ -25749,6 +26592,7 @@ function formatHistoryList(value: unknown): string {
       operation.postHeadSha,
     ]),
     "ADE operation history\n(no operations found)",
+    { fullColumns: ["id"] },
   );
 }
 
@@ -25803,6 +26647,7 @@ function formatTerminalList(value: unknown): string {
       terminal.title,
     ]),
     "ADE attached terminals\n(no terminals found)",
+    { fullColumns: ["terminal", "pty", "chat"] },
   );
 }
 
@@ -25970,6 +26815,7 @@ function formatProviderAccounts(value: unknown): string {
       instance.configHome,
     ]),
     "ADE provider accounts\n(no provider accounts found)",
+    { fullColumns: ["id"] },
   );
 }
 
@@ -25992,6 +26838,7 @@ function formatProjectsList(value: unknown): string {
         : "",
     ]),
     "ADE projects\n(no projects registered)",
+    { fullColumns: ["project"] },
   );
 }
 
@@ -26047,7 +26894,7 @@ function formatLinearQuickView(value: unknown): string {
     ),
     "",
     "Issues",
-    renderTable(["id", "title", "state", "area"], issueRows, "(no issues)"),
+    renderTable(["id", "title", "state", "area"], issueRows, "(no issues)", { fullColumns: ["id"] }),
   ].join("\n");
 }
 
@@ -26558,6 +27405,8 @@ function formatTextOutput(
       return formatProofList(value);
     case "proof-filed":
       return formatProofFiled(value);
+    case "proof-published":
+      return formatProofPublished(value);
     case "ios-sim-status":
       return formatIosSimStatus(value);
     case "ios-sim-devices":
@@ -26588,6 +27437,14 @@ function formatTextOutput(
       return formatMacDesktopObservation(value, { windowCapture: true });
     case "mac-desktop-action":
       return formatMacDesktopAction(value);
+    case "app-control-action":
+      return formatAppControlAction(value);
+    case "browser-action":
+      return formatBrowserAction(value);
+    case "apple-action":
+      return formatAppleAction(value, "type");
+    case "apple-point-action":
+      return formatAppleAction(value, "tap");
     case "mac-desktop-recording":
       return formatMacDesktopRecording(value);
     case "mac-desktop-proof":
@@ -26598,6 +27455,8 @@ function formatTextOutput(
       return formatAppControlSnapshot(value);
     case "app-control-selection":
       return formatAppControlSelection(value);
+    case "app-control-recording":
+      return formatAppControlRecording(value);
     case "browser-status":
       return formatBrowserStatus(value);
     case "browser-dev-servers":
@@ -26711,6 +27570,20 @@ function inferFormatter(
   if (label === "test runs") return "tests-runs";
   if (label === "proof list") return "proof-list";
   if (label === "apple device rotate") return "ios-sim-rotate";
+  if (
+    label === "ios simulator tap" ||
+    label === "ios simulator drag" ||
+    label === "ios simulator swipe" ||
+    label === "apple device scroll"
+  )
+    return "apple-point-action";
+  if (
+    label === "ios simulator type" ||
+    label.startsWith("ios simulator key ") ||
+    label === "ios simulator tap element" ||
+    label === "ios simulator fill element"
+  )
+    return "apple-action";
   if (label === "ios simulator status") return "ios-sim-status";
   if (label === "ios simulator devices") return "ios-sim-devices";
   if (label === "ios simulator launchable apps") return "ios-sim-apps";
@@ -26754,6 +27627,17 @@ function inferFormatter(
   if (label === "app control select" || label === "app control inspect point")
     return "app-control-selection";
   if (
+    label === "app control click" ||
+    label === "app control hover" ||
+    label === "app control fill" ||
+    label === "app control clear" ||
+    label === "app control type" ||
+    label === "app control press" ||
+    label === "app control scroll" ||
+    label === "app control wait"
+  )
+    return "app-control-action";
+  if (
     label === "browser status" ||
     label === "browser claim" ||
     label === "browser panel" ||
@@ -26771,8 +27655,8 @@ function inferFormatter(
     label === "browser sessions"
   )
     return "browser-sessions";
+  if (label === "browser observe") return "browser-observation";
   if (
-    label === "browser observe" ||
     label === "browser click" ||
     label === "browser type" ||
     label === "browser key" ||
@@ -26785,7 +27669,7 @@ function inferFormatter(
     label === "browser select option" ||
     label === "browser upload"
   )
-    return "browser-observation";
+    return "browser-action";
   if (label === "browser trace") return "browser-trace";
   if (label === "shell start") return "pty-create";
   if (label === "terminal list" || label === "terminal active")
@@ -26940,6 +27824,17 @@ function summarizeProofFiling(
   // The broker's own notes, e.g. a video recorded before this request. The
   // agent has to repeat these to the user, so they travel with the result.
   const warnings = readProofWarnings(record);
+  // `proof capture` / `proof record` name the lane display they used, so the
+  // caller can see it was the lane's screen and not the user's.
+  const source = isRecord(record.capturedFrom) ? record.capturedFrom : null;
+  const capturedFrom = source
+    ? [
+        `Mac Desktop display ${asString(source.displayName) ?? "of lane " + (asString(source.laneId) ?? "?")}`,
+        typeof source.width === "number" && typeof source.height === "number"
+          ? `(${source.width}x${source.height})`
+          : null,
+      ].filter(Boolean).join(" ")
+    : null;
   const owner = [
     `lane ${laneId ? shortProofOwnerId(laneId) : "none"}`,
     `chat ${chatSessionId ? shortProofOwnerId(chatSessionId) : "none"}`,
@@ -26956,8 +27851,10 @@ function summarizeProofFiling(
       kind: artifact.kind,
       title: artifact.title,
       uri: artifact.uri,
+      citation: proofArtifactCitation(artifact),
     })),
     ...(warnings.length ? { warnings } : {}),
+    ...(capturedFrom ? { capturedFrom } : {}),
     confirmation:
       `Attached ${artifacts.length} artifact${artifacts.length === 1 ? "" : "s"} `
       + `to ${owner} (${title})`,
@@ -27023,6 +27920,49 @@ function summarizeExecution(args: {
     return summarizeProofFiling(plan.proofFiling, values);
   }
 
+  if (plan.label === "Apple device record stop" && unwrapActionEnvelope(values.result) == null) {
+    // No recording ran on the lane. A bare `null` read as a failure.
+    return { recording: "not running — this lane has no recording to stop" };
+  }
+
+  if (plan.label === "browser record stop") {
+    // The recording, plus the proof it was filed as: the id and a ready
+    // citation, the same lines every other recorder prints. Without them an
+    // agent cited the file's name, which no proof has.
+    const recording = unwrapActionEnvelope(values.result);
+    const filed = firstArray(unwrapActionEnvelope(values.proof) as JsonObject, ["artifacts"])[0] ?? null;
+    const proofId = filed ? asString(filed.id) : null;
+    const caption = isRecord(recording) ? asString(recording.caption) : null;
+    return {
+      ...(isRecord(recording) ? recording : {}),
+      proof: proofId
+        ? `filed (${proofId}) — it is in the proof drawer`
+        : caption
+          ? "not filed"
+          : "not filed — start with --caption to file it as proof",
+      ...(proofId ? { proofArtifactId: proofId, cite: proofCitationMarkdown(proofId, caption) } : {}),
+    };
+  }
+
+  if (plan.label === "proof publish") {
+    // No `publish` value means nothing reached the PR: the ids, gh or the
+    // upload failed. That is a failed command, never a warning.
+    if (!isRecord(values.publish)) {
+      const cause = isRecord(values.result) ? asString(values.result.error) : null;
+      throw new CliToolError(cause ?? "proof publish failed — nothing was posted", {});
+    }
+    const published = values.publish;
+    const linkFailure = isRecord(values.result) && values.result.ok === false
+      ? asString(values.result.error) ?? "the runtime refused the link"
+      : null;
+    const linked = linkFailure ? [] : firstArray(unwrapActionEnvelope(values.result) as JsonObject, ["artifacts"]);
+    const warnings = [
+      ...(Array.isArray(published.warnings) ? published.warnings : []),
+      ...(linkFailure ? [`posted, but ADE could not record the PR on the items: ${linkFailure}`] : []),
+    ];
+    return { ok: true, ...published, warnings, linked: linked.length };
+  }
+
   if (plan.label === "PR create") {
     return summarizePrCreateResult(values.result ?? values);
   }
@@ -27053,6 +27993,13 @@ function summarizeExecution(args: {
       ...(values.attach !== undefined ? { attach: unwrapActionEnvelope(values.attach) } : {}),
       ...(values.result !== undefined ? { kickoff: unwrapActionEnvelope(values.result) } : {}),
     };
+  }
+
+  if (plan.label === "chat models" || plan.label === "personal chat models") {
+    // `--text` and `--json` both read these provider-annotated rows, so the
+    // JSON contract carries the provider beside the raw model fields instead of
+    // leaving a caller to guess it from the family.
+    return chatModelRows(unwrapActionEnvelope(values.result));
   }
 
   if (plan.label === "chat list" && values.cli !== undefined) {
@@ -27784,14 +28731,21 @@ async function executePlan(
     connection = await createConnection(connectionOptions, {
       autoRegisterProject: shouldAutoRegisterProjectForPlan(plan),
       machineRuntimeOnly: plan.machineAutoStart === true,
+      ...(plan.needsLiveRuntime ? { needsLiveRuntime: plan.needsLiveRuntime } : {}),
     });
   } catch (error) {
+    if (error instanceof CliToolError) throw error;
     const roots = resolveRoots(options);
     let socketPath = path.join(roots.projectRoot, ".ade", "ade.sock");
     try {
-      const { resolveAdeLayout } =
-        await import("../../desktop/src/shared/adeLayout");
-      socketPath = resolveAdeLayout(roots.projectRoot).socketPath;
+      if (connectionOptions.requireSocket && !options.socketPath?.trim()) {
+        // Bare --socket asked for this channel's brain; name its endpoint.
+        socketPath = await resolveMachineRuntimeSocketPath(null);
+      } else {
+        const { resolveAdeLayout } =
+          await import("../../desktop/src/shared/adeLayout");
+        socketPath = resolveAdeLayout(roots.projectRoot).socketPath;
+      }
     } catch {
       // Keep the conventional Unix fallback if shared layout loading fails.
     }
@@ -27813,7 +28767,7 @@ async function executePlan(
         nextAction: plan.machineOnly
           ? "Start the machine-owned ADE brain with `ade brain start`, then retry the personal chat command."
           : options.requireSocket
-            ? "Start the ADE runtime for this project or remove --socket to allow headless mode."
+            ? "Open the ADE app for this channel, or run the `ade` on PATH in an ADE terminal or agent shell. `--socket <endpoint>` picks another brain."
           : sourceRuntimeInterop
             ? "Run `npm --prefix apps/ade-cli run build` and retry, or use `npm --prefix apps/ade-cli run cli:dev -- ...`."
             : "Verify --project-root points at an ADE project and run ade doctor --json.",
@@ -27835,8 +28789,10 @@ async function executePlan(
               },
             }
           : resolvedParams;
-        const raw = await connection.request(step.method, params);
-        values[step.key] = step.unwrapToolResult ? unwrapToolResult(raw) : raw;
+        values[step.key] = await waitThroughBrowserApproval(async () => {
+          const raw = await connection.request(step.method, params);
+          return step.unwrapToolResult ? unwrapToolResult(raw) : raw;
+        });
       } catch (error) {
         if (!step.optional) {
           const createdSessionId = (
@@ -27899,6 +28855,56 @@ async function executePlan(
     });
   } finally {
     await connection.close();
+  }
+}
+
+/**
+ * Run one plan step, waiting for a human who has not yet answered "may this
+ * chat use the ADE browser?".
+ *
+ * The desktop answers a call that needs approval within its own budget
+ * (`approval_pending`) instead of holding it past the daemon bridge's liveness
+ * timeout, and keeps the prompt open. Running the same call again joins that
+ * prompt, so this re-runs it until the human answers or
+ * {@link BUILT_IN_BROWSER_APPROVAL_WAIT_MS} passes, telling the caller once on
+ * stderr what it is waiting for. A Block comes back as its own error and is
+ * never retried.
+ */
+async function waitThroughBrowserApproval<T>(
+  run: () => Promise<T>,
+  deps: {
+    now?: () => number;
+    notify?: (line: string) => void;
+    pause?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<T> {
+  const now = deps.now ?? Date.now;
+  const notify = deps.notify ?? ((line: string) => process.stderr.write(`${line}\n`));
+  const pause = deps.pause ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let deadline: number | null = null;
+  for (;;) {
+    const startedAt = now();
+    try {
+      return await run();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const pending = parseBuiltInBrowserApprovalPending(message);
+      if (!pending) throw error;
+      const minutes = Math.round(BUILT_IN_BROWSER_APPROVAL_WAIT_MS / 60_000);
+      if (deadline == null) {
+        deadline = startedAt + BUILT_IN_BROWSER_APPROVAL_WAIT_MS;
+        notify(`ade: waiting for the user to ${pending.waitingFor} (up to ${minutes} min)…`);
+      }
+      if (now() >= deadline) {
+        throw new CliToolError(
+          `${BUILT_IN_BROWSER_APPROVAL_PENDING_CODE}: the user has not answered the prompt to ${pending.waitingFor} after ${minutes} minutes. The prompt is still open in ADE; run the command again once they answer, or ask them to.`,
+          { code: BUILT_IN_BROWSER_APPROVAL_PENDING_CODE, waitingFor: pending.waitingFor },
+        );
+      }
+      // The desktop normally holds each call for its whole budget; an older
+      // or short-circuiting one must not turn this into a hot loop.
+      if (now() - startedAt < 1_000) await pause(1_000);
+    }
   }
 }
 

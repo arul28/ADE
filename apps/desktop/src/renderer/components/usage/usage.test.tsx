@@ -9,6 +9,7 @@ import type {
   AiProviderConnections,
   AiSettingsStatus,
   AdeUsageDailyPoint,
+  AdeUsageLiveEnvironment,
   AdeUsageStats,
   BudgetCapConfig,
   UsageSnapshot,
@@ -22,6 +23,7 @@ import {
 import { computeHeatmapLayout, fillMissingDays, weekAlignment } from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageLimitsBand } from "./UsageLimitsBand";
+import { UsagePooledLimits } from "./UsagePooledLimits";
 import { USAGE_HEADROOM_COLOR, usageHeadroomColor, usageHeadroomTone } from "./usageDesign";
 import { useAppStore } from "../../state/appStore";
 import { useUsageSnapshot } from "./useUsageSnapshot";
@@ -35,6 +37,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+import { setUsageHeaderVisible } from "./usageHeaderPreferences";
 
 type UsageComponentTestBridge = {
   app: Pick<Window["ade"]["app"], "openExternal" | "onProjectBindingChanged">;
@@ -1210,6 +1213,7 @@ describe("usage components", () => {
 
   describe("HeaderUsageControl", () => {
     beforeEach(() => {
+      setUsageHeaderVisible(true);
       useAppStore.setState({ theme: "dark" });
       vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeEmptySnapshot());
       vi.mocked(window.ade.usage.refresh).mockResolvedValue(makeHeaderUsageSnapshot());
@@ -1249,6 +1253,27 @@ describe("usage components", () => {
       expect(screen.queryByText("wk")).toBeNull();
       expect(screen.queryByText("9%")).toBeNull();
       expect(window.ade.usage.refresh).not.toHaveBeenCalled();
+    });
+
+    it("hides a provider from the compact header while keeping it in the expanded limits panel", async () => {
+      const snapshot = makeQuotaPanelSnapshot();
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.usage.refresh).mockResolvedValue(snapshot);
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(makeAiStatus({
+        claude: makeProviderConnection("claude", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
+        codex: makeProviderConnection("codex", { runtimeDetected: true, authAvailable: true, usageAvailable: true }),
+      }));
+
+      render(<HeaderUsageControl />);
+      await waitFor(() => expect(document.querySelector('[data-usage-provider="claude"]')).not.toBeNull());
+      fireEvent.click(screen.getByRole("button", { name: /Usage ·/ }));
+
+      fireEvent.click(await screen.findByRole("button", { name: "Hide Claude in usage bar" }));
+
+      await waitFor(() => expect(document.querySelector('[data-usage-provider="claude"]')).toBeNull());
+      expect(document.querySelector('[data-usage-provider="codex"]')).not.toBeNull();
+      expect(document.querySelector('[data-provider-limits="claude"]')).not.toBeNull();
+      expect(screen.getByRole("button", { name: "Show Claude in usage bar" })).toBeTruthy();
     });
 
     it("defers the cached usage and provider reads until opened", async () => {
@@ -2623,5 +2648,53 @@ describe("activity heatmap intensity", () => {
     expect(trimLeadingInactiveDays(empty)).toEqual(empty);
     expect(trimLeadingInactiveDays(active)).toBe(active);
     expect(trimLeadingInactiveDays(github).map((point) => point.date)).toEqual(["2026-01-02"]);
+  });
+});
+
+describe("UsagePooledLimits", () => {
+  const env = (
+    machineKey: string,
+    label: string,
+    accountId: string,
+    email: string,
+  ): AdeUsageLiveEnvironment => ({
+    machineKey,
+    label,
+    platform: "darwin",
+    isLocal: false,
+    state: "live",
+    windows: [{
+      provider: "claude",
+      windowType: "weekly",
+      accountId,
+      percentUsed: 40,
+      resetsAt: new Date(Date.now() + 3_600_000).toISOString(),
+      resetsInMs: 3_600_000,
+    }],
+    accounts: [{ id: accountId, provider: "claude", email, machines: [{ label }] }],
+  });
+
+  it("pools the selected environments and recomputes for the filter", () => {
+    render(
+      <UsagePooledLimits
+        environments={[
+          env("mac", "Mac", "claude:a@example.com", "a@example.com"),
+          env("nuc", "Nuc", "claude:b@example.com", "b@example.com"),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText(/Pooled across 2 computers/)).toBeTruthy();
+    expect(screen.getByText("a@example.com")).toBeTruthy();
+    expect(screen.getByText("b@example.com")).toBeTruthy();
+
+    // Deselecting Mac leaves only Nuc's account.
+    fireEvent.click(screen.getByRole("button", { name: "Mac" }));
+    expect(screen.queryByText("a@example.com")).toBeNull();
+    expect(screen.getByText("b@example.com")).toBeTruthy();
+
+    // Deselecting the last environment is the empty selection.
+    fireEvent.click(screen.getByRole("button", { name: "Nuc" }));
+    expect(screen.getByText(/No computers selected/)).toBeTruthy();
   });
 });

@@ -2,6 +2,19 @@
 // Agent chat types
 // ---------------------------------------------------------------------------
 
+/** ACP's `ToolKind` (agentclientprotocol.com, tool calls). */
+export type AcpToolKind =
+  | "read"
+  | "edit"
+  | "delete"
+  | "move"
+  | "search"
+  | "execute"
+  | "think"
+  | "fetch"
+  | "switch_mode"
+  | "other";
+
 import type { ModelManifest } from "../modelManifest";
 import type { OpenCodeFastRoutes } from "../modelRegistry";
 import type { AdeCardPayload } from "../adeCard";
@@ -1151,6 +1164,12 @@ export type AgentChatEvent =
       type: "tool_call";
       tool: string;
       args: unknown;
+      /**
+       * The provider's own category for this tool, when its protocol has one
+       * (ACP `ToolKind`). Lets activity detection read tools whose names are
+       * free text.
+       */
+      toolKind?: AcpToolKind;
       mcp?: AgentChatMcpToolSource;
       itemId: string;
       logicalItemId?: string;
@@ -1527,6 +1546,12 @@ export type AgentChatEvent =
       workflowProgress?: AgentChatWorkflowProgress;
       spawnDepth?: number;
       resourceLinks?: AgentChatResourceLink[];
+      /**
+       * Why this subagent is parked, when it is waiting on something the user
+       * must resolve (an OpenCode permission card). A progress event without it
+       * clears a previously reported blocked state.
+       */
+      blockedReason?: string | null;
       turnId?: string;
     }
   | {
@@ -1988,6 +2013,12 @@ export type AgentChatEvent =
       claudeTag?: string | null;
       /** Signals that persisted envelope history changed and open views must refetch. */
       historyInvalidated?: boolean;
+      /**
+       * The chat's new `historyGeneration`, sent alongside `historyInvalidated`
+       * when an in-place rewrite bumped it. A client holding a cache for an
+       * older generation must drop it.
+       */
+      historyGeneration?: number;
       // Permission/interaction mode fields — emitted when a client (e.g. iOS)
       // changes the mode via updateSession so other renderers patch their
       // composer state without waiting for a turn-lifecycle event. All optional
@@ -2142,6 +2173,13 @@ export type AgentChatEventEnvelope = {
   timestamp: string;
   event: AgentChatEvent;
   sequence?: number;
+  /**
+   * Set only on a folded replay row (a run of adjacent streaming deltas
+   * collapsed into one envelope by the snapshot fold): the `sequence` of the
+   * first delta in the run. `sequence` carries the last one, so the row covers
+   * `[sequenceStart, sequence]`. Absent means the row covers `sequence` alone.
+   */
+  sequenceStart?: number;
   provenance?: {
     messageId?: string;
     providerMessageId?: string;
@@ -2175,6 +2213,13 @@ export type AgentChatEventEnvelope = {
      * client may set it.
      */
     voiceCallId?: string | null;
+    /**
+     * True when `timestamp` is a deterministic ordering placeholder rather than
+     * a provider or local wall-clock time. Set by the subagent transcript
+     * builder when the provider handed back no real time for the row. Clients
+     * still ORDER by `timestamp`; they must not display it.
+     */
+    timestampSynthetic?: boolean;
   };
 };
 
@@ -2216,6 +2261,12 @@ export type AgentChatEventHistorySnapshot = {
    * transcript was not truncated at the file level (nothing older on disk).
    */
   tailStartOffset?: number | null;
+  /**
+   * Unresolved `approval_request` envelopes older than the window, reported
+   * separately instead of re-admitted into `events`. Only set when the caller
+   * asked for `separatePinnedEvents`.
+   */
+  pinnedEvents?: AgentChatEventEnvelope[];
 };
 
 export type AgentChatEventHistoryPage = {
@@ -2244,6 +2295,24 @@ export type AgentChatEventHistoryPage = {
    * clients must not clear or tombstone the chat on it.
    */
   unavailable?: boolean;
+  /**
+   * The chat's `historyGeneration` when this page was read. A page whose
+   * generation differs from the client's cached one belongs to a rewritten
+   * history. Omitted by hosts that predate it and for scopes that do not track
+   * one (personal and cross-project quick looks).
+   */
+  historyGeneration?: number;
+};
+
+/**
+ * Freshness of a chat's persisted event log. `historyGeneration` starts at 1
+ * and increases whenever the persisted history is rewritten in place, so
+ * sequences from an older generation cannot be trusted. `maxSequence` is the
+ * chat's durable envelope `sequence` high-water.
+ */
+export type AgentChatLogState = {
+  historyGeneration: number;
+  maxSequence: number;
 };
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
@@ -2880,6 +2949,14 @@ export type AgentChatSubagentSnapshot = {
   parentToolUseId?: string | null;
   description: string;
   status: "running" | "completed" | "failed" | "stopped";
+  /**
+   * Set while the child is parked on a pending user answer (an OpenCode
+   * permission or question card). The status stays "running" — the child is
+   * still an active member of the tree — but clients can present it as
+   * "blocked" from this field; the session-level `awaitingInput` state is the
+   * authority for `ade chat status`.
+   */
+  blockedReason?: string | null;
   turnId?: string;
   startTimestamp?: string;
   endTimestamp?: string;
@@ -3060,6 +3137,13 @@ export type AgentChatClaudeSessionMessage = {
   parentAgentId?: string | null;
   message: unknown;
   text?: string | null;
+  /**
+   * The provider's real time for this message, ISO-8601, when the runtime
+   * exposes one (OpenCode `info.time.created`, Codex turn/item time). Absent
+   * when the provider does not publish a per-message time — the subagent
+   * transcript then suppresses the clock instead of rendering a placeholder.
+   */
+  timestamp?: string | null;
   subagentMetadata?: AgentChatSubagentMetadata | null;
 };
 
@@ -4058,9 +4142,11 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * three since `@cursor/sdk` 1.0.31 added `Run.steer()`, which injects a message
  * into the live local run; its interrupt still means something different from
  * Claude's — it cancels the run and resends on the same agent thread — which is
- * why `activeTurnInterruptContinues` keeps saying so. OpenCode takes the v2
- * session prompt's `delivery: "steer"` input into the live agent loop, so it
- * has "inline" and no interrupt mode. Everything else is queue-only.
+ * why `activeTurnInterruptContinues` keeps saying so. OpenCode 2.0 admits a
+ * mid-turn message to its session inbox: "inline" is `delivery: "steer"`,
+ * delivered at the next step boundary, and "queue" is delivered after the
+ * current reply, both inside the running execution. It has no
+ * interrupt-and-resend. Everything else is queue-only.
  *
  * Cursor's inline mode is effectively local-only. A cloud run implements
  * `Run.steer` but refuses every call, so a cloud turn degrades to a follow-up
@@ -4126,6 +4212,38 @@ export function supportsActiveTurnDispatchMode(
   mode: AgentChatDispatchSteerMode,
 ): boolean {
   return activeTurnDispatchModes(provider).includes(mode);
+}
+
+/**
+ * True when `provider`'s "inline" channel can carry attachments (files, images,
+ * and context items such as browser or simulator captures).
+ *
+ * Cursor's `Run.steer(text)` takes text only, so a Cursor message with any
+ * attachment can never join the running turn: it is staged for after the turn,
+ * or sent through interrupt-and-continue, which starts a real turn that carries
+ * the attachments. Surfaces offering "inline" read this so they never offer a
+ * steer that is certain to be refused. iOS mirrors it by hand beside the table.
+ */
+export function activeTurnInlineCarriesAttachments(provider: AgentChatProvider | null | undefined): boolean {
+  return provider !== "cursor";
+}
+
+/**
+ * Why a message cannot be sent during the turn because of what it carries, or
+ * null when it can. Cursor's live-run steer takes text only
+ * (`activeTurnInlineCarriesAttachments`), so a message with images or other
+ * attachments waits for the turn or interrupts it; offering "Send during turn"
+ * would only queue it with a notice every time it was pressed.
+ */
+export function activeTurnInlineAttachmentBlock(
+  provider: AgentChatProvider | null | undefined,
+  message: { attachments: readonly AgentChatFileRef[]; contextAttachmentCount: number },
+): string | null {
+  if (activeTurnInlineCarriesAttachments(provider)) return null;
+  if (!message.attachments.length && message.contextAttachmentCount === 0) return null;
+  const imagesOnly = message.contextAttachmentCount === 0
+    && message.attachments.every((attachment) => attachment.type !== "file");
+  return `${imagesOnly ? "Images" : "Attachments"} can't join a running ${providerDisplayLabel(provider, "agent")} turn.`;
 }
 
 /**

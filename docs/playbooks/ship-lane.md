@@ -133,6 +133,12 @@ Pick the richest available and **use it fully**:
 2. **Parallel subagents** (e.g., Claude Code `Agent` tool, other CLIs with parallel task spawning): fall back here if teams aren't available. Spawn discrete subagents for poll, ci-fix, review-fix within a single iteration. Same context-keeping rules apply.
 3. **Serial** (any CLI): absolute last resort. Run phases in order, in-process. Compact aggressively.
 
+**Subagent limits:** follow the **Subagents** rules in `AGENTS.md`. Every
+poll, fix, rebase and conflict agent is a leaf: it does not start subagents,
+and its brief says so. Start a helper only when the work is real and batch
+fixes into one agent per iteration; a small fix is the lead's own work. When
+the user has asked to limit agents, run the loop serially (option 3).
+
 **Rule:** the lead reads poll-agent summaries, not raw API output. Fix agents receive minimum scope (failing test paths + error snippets, or comment bodies + file anchors) and return patches or direct edits. The lead commits and pushes; fix agents do not.
 
 **Waiting rule:** agents never stay alive just to wait. A poll-agent performs one bounded poll and exits. Fix agents perform one bounded fix task and exit. The lead schedules a wake-up or records a blocked/done state, then exits the active turn.
@@ -527,6 +533,13 @@ A push cancels and restarts an in-flight Greptile review. So, after a harvest:
 binding. It skips PR creation and skips revalidation when the binding matches
 HEAD, the remote head, and the PR head. Held commits are fix work for Phase 2,
 so the first ship push carries them together with any new fixes.
+
+### Visual proof on the PR
+
+When the lane changes something a person can see, the PR carries the proof
+before it merges: `ade proof publish --pr <n> <artifact-id>...` with the items
+the final answer cites (see the **ade-pr-workflows** skill). Post it once, near
+the end; a later push does not need a new post unless the UI changed again.
 
 ---
 

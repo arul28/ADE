@@ -1042,7 +1042,6 @@ struct WorkChatAttachmentTray: View {
   var alignment: HorizontalAlignment = .trailing
   var style: WorkChatAttachmentTrayStyle = .standalone
 
-  @EnvironmentObject private var syncService: SyncService
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
 
@@ -1088,7 +1087,9 @@ private struct WorkChatAttachmentChip: View {
   let attachment: AgentChatFileRef
   var size: CGFloat = 72
 
-  @EnvironmentObject private var syncService: SyncService
+  /// Not `@EnvironmentObject`: user bubbles render this chip inside transcript
+  /// cells (see `WorkSyncServiceReference`).
+  @Environment(\.workSyncService) private var syncReference
   @Environment(\.workChatLaneId) private var laneId
   @Environment(\.workChatRequestedCwd) private var requestedCwd
   @Environment(\.workChatIsPersonal) private var isPersonalChat
@@ -1234,6 +1235,10 @@ private struct WorkChatAttachmentChip: View {
       }
     }
 
+    guard let syncService = syncReference.service else {
+      loadFailed = true
+      return
+    }
     if isPersonalChat {
       guard syncService.canInvokeRemoteAction("personalChats.getImageDataUrl") else {
         loadFailed = true

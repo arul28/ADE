@@ -515,25 +515,24 @@ export type RuntimeDiagnosticsStatus = {
   fallbackLanes: string[];
 };
 
-export type OpenCodeRuntimeLeaseKind = "shared" | "dedicated";
-export type OpenCodeRuntimeOwnerKind = "inventory" | "oneshot" | "chat" | "coordinator";
-
+/** One running ADE-owned OpenCode server. */
 export type OpenCodeRuntimeEntry = {
-  id: string;
+  /** Server profile key: a shared one (per set of project settings, or personal chats) or a per-config one. */
   key: string;
-  leaseKind: OpenCodeRuntimeLeaseKind;
-  ownerKind: OpenCodeRuntimeOwnerKind;
-  ownerId: string | null;
-  configFingerprint: string;
   url: string;
-  busy: boolean;
+  pid: number | null;
+  isolated: boolean;
+  /** A long-lived server many chats share, rather than one chat's own profile. */
+  shared: boolean;
   refCount: number;
+  listenerCount: number;
   startedAt: number;
   lastUsedAt: number;
 };
 
 export type OpenCodeRuntimeSnapshot = {
   sharedCount: number;
+  /** Servers of per-config profiles (own MCP servers, a preset, an isolated surface). */
   dedicatedCount: number;
   entries: OpenCodeRuntimeEntry[];
 };
@@ -1141,7 +1140,41 @@ export type AcpProviderDiagnostics = {
   lastProbe: { state: "ready" | "auth-failed" | "runtime-failed"; message: string | null } | null;
   /** Present only when the vendor ships a `doctor` command and it was run. */
   doctor: { command: string; exitCode: number | null; output: string } | null;
+  /**
+   * Present for providers with a monitor (currently Grok). `null` means the
+   * update state was not checked; absent means the provider has no monitor.
+   */
+  update?: AcpProviderUpdateInfo | null;
   checkedAt: string;
+};
+
+/**
+ * How current an ACP provider CLI is, and whether ADE may update it.
+ *
+ * The version is read from the vendor's own npm `latest` tag. ADE only offers a
+ * one-click update when it could resolve the binary to a known installer, so an
+ * unresolvable install stays manual with a note instead of a button that runs
+ * the wrong thing.
+ */
+export type AcpProviderUpdateInfo = {
+  /** npm `latest` version, or null when the registry read failed or was skipped. */
+  latestVersion: string | null;
+  /** True only when both versions are known and `latest` is newer. */
+  updateAvailable: boolean;
+  /** Which installer owns the binary, or null when ADE cannot tell. */
+  installer: "native" | "npm" | null;
+  /** True when ADE may run `<resolved binary> update` for this install. */
+  canUpdate: boolean;
+  /** Why the button is absent or what to run by hand. */
+  note: string | null;
+};
+
+/** Outcome of a one-click provider update. */
+export type AcpProviderUpdateResult = {
+  ok: boolean;
+  message: string;
+  /** The version re-read after the update, when it succeeded. */
+  version: string | null;
 };
 
 /**
@@ -1615,7 +1648,10 @@ export type PiLoginProvider = {
 export type OpenCodeProviderSummary = {
   id: string;
   name: string;
+  /** OpenCode can use the provider now (free models count). */
   connected: boolean;
+  /** OpenCode holds a login or key for it; `connected` alone may be free models. */
+  signedIn?: boolean;
   modelCount: number;
   availableModelCount?: number;
   /** Environment variable names OpenCode associates with credentials. */

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import type { NewLaneBaseSource, RebaseSuggestionDisplay } from "../../../shared/types";
 import {
@@ -32,6 +33,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function LaneBehaviorSection() {
   const navigate = useNavigate();
+  // `.ade/local.yaml` on the machine the page shows: each machine's checkout
+  // keeps its own lane behaviour.
+  const { pin } = useSettingsMachineScope();
   const [autoRebase, setAutoRebase] = useState(false);
   const [rebaseSuggestions, setRebaseSuggestions] = useState<RebaseSuggestionDisplay>(DEFAULT_REBASE_SUGGESTIONS);
   const [minBehind, setMinBehind] = useState(DEFAULT_REBASE_SUGGESTION_MIN_BEHIND);
@@ -45,7 +49,7 @@ export function LaneBehaviorSection() {
   }, []);
 
   const refresh = useCallback(async () => {
-    const snapshot = await window.ade.projectConfig.get();
+    const snapshot = await window.ade.projectConfig.get(pin);
     if (!mounted.current) return;
     const localAutoRebase = typeof snapshot.local.git?.autoRebaseOnHeadChange === "boolean"
       ? snapshot.local.git.autoRebaseOnHeadChange
@@ -57,7 +61,7 @@ export function LaneBehaviorSection() {
     setRebaseSuggestions(snapshot.effective.git?.rebaseSuggestions ?? DEFAULT_REBASE_SUGGESTIONS);
     setMinBehind(snapshot.effective.git?.rebaseSuggestionMinBehind ?? DEFAULT_REBASE_SUGGESTION_MIN_BEHIND);
     setNewLaneBaseSource(effectiveNewLaneBaseSource(snapshot));
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     void refresh().catch(() => {});
@@ -74,7 +78,7 @@ export function LaneBehaviorSection() {
     minBehind?: number;
   }) => {
     try {
-      const snapshot = await window.ade.projectConfig.get();
+      const snapshot = await window.ade.projectConfig.get(pin);
       const currentGit = isRecord(snapshot.local.git) ? snapshot.local.git : {};
       const nextAutoRebase = next.autoRebase ?? autoRebase;
       const nextSource = next.baseSource ?? newLaneBaseSource;
@@ -129,7 +133,7 @@ export function LaneBehaviorSection() {
       await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: { ...snapshot.local, git: nextGit },
-      });
+      }, pin);
       if (!mounted.current) return;
       flash();
       await refresh();
@@ -140,7 +144,7 @@ export function LaneBehaviorSection() {
       // optimistic value the user just clicked.
       await refresh().catch(() => {});
     }
-  }, [autoRebase, newLaneBaseSource, rebaseSuggestions, minBehind, flash, fail, refresh]);
+  }, [autoRebase, newLaneBaseSource, rebaseSuggestions, minBehind, flash, fail, pin, refresh]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 28 }}>

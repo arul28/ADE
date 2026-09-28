@@ -1,4 +1,6 @@
 import React from "react";
+import { usePrRuntimePin } from "../state/prMachines";
+import { pinArg } from "../../../state/laneMachineRouting";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import {
@@ -35,7 +37,7 @@ import { confirmDialog } from "../../ui/dialog";
 import {
   buildPrChatPrompt,
   chatLabel,
-  handPromptToChat,
+  usePrChatHandoff,
   linkedPrChats,
   type PrChatActionKind,
   type PrChatFinding,
@@ -121,16 +123,21 @@ export function usePrActionsMenu(context: PrActionsContext) {
     laneChats: providedChats,
   } = context;
   const [fetchedChats, setFetchedChats] = React.useState<AgentChatSessionSummary[] | null>(null);
+  // Every call below reaches the machine that owns the PR's lane.
+  const runtimePin = usePrRuntimePin();
+  const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
+  // Chat hand-offs keep the lane's machine (a draft or focus on the owner).
+  const handOff = usePrChatHandoff();
   const laneChats = providedChats ?? fetchedChats;
   const [busy, setBusy] = React.useState<string | null>(null);
 
   const ensureChats = React.useCallback(() => {
     if (!pr.laneId || laneChats !== null) return;
     void window.ade.agentChat
-      .list({ laneId: pr.laneId, includeArchived: false })
+      .list({ laneId: pr.laneId, includeArchived: false }, ...onPin)
       .then(setFetchedChats)
       .catch(() => setFetchedChats([]));
-  }, [laneChats, pr.laneId]);
+  }, [laneChats, onPin, pr.laneId]);
 
   // A different PR (or lane) invalidates the cached chat list.
   React.useEffect(() => {
@@ -179,14 +186,14 @@ export function usePrActionsMenu(context: PrActionsContext) {
                 label: chatLabel(session),
                 icon: <ChatTeardropText size={13} />,
                 tone: TONE.chat,
-                onSelect: () => handPromptToChat({ laneId, sessionId: session.sessionId, prompt: prompt() }),
+                onSelect: () => handOff({ laneId, sessionId: session.sessionId, prompt: prompt() }),
               })),
               {
                 id: `${id}:new`,
                 label: "New chat in lane",
                 icon: <Sparkle size={13} />,
                 tone: TONE.chat,
-                onSelect: () => handPromptToChat({ laneId, sessionId: null, prompt: prompt() }),
+                onSelect: () => handOff({ laneId, sessionId: null, prompt: prompt() }),
               },
             ],
           };
@@ -195,7 +202,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
         return {
           id, label, icon, tone,
           description: description ?? (target ? `In ${chatLabel(target)}` : "Starts a chat in this lane"),
-          onSelect: () => handPromptToChat({ laneId, sessionId: target?.sessionId ?? null, prompt: prompt() }),
+          onSelect: () => handOff({ laneId, sessionId: target?.sessionId ?? null, prompt: prompt() }),
         };
       };
       const items: PrMenuItem[] = [
@@ -238,13 +245,13 @@ export function usePrActionsMenu(context: PrActionsContext) {
       stateItems.push({
         id: "draft", label: "Convert to draft", icon: <FileDashed size={14} />, tone: TONE.draft,
         disabled: busy === "draft",
-        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: true })),
+        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: true }, ...onPin)),
       });
     } else if (pr.state === "draft") {
       stateItems.push({
         id: "ready", label: "Ready for review", icon: <GitPullRequest size={14} />, tone: TONE.positive,
         disabled: busy === "draft",
-        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: false })),
+        onSelect: () => void run("draft", () => window.ade.prs.setDraft({ prId: pr.id, draft: false }, ...onPin)),
       });
     }
     if (pr.state === "open") {
@@ -252,14 +259,14 @@ export function usePrActionsMenu(context: PrActionsContext) {
         stateItems.push({
           id: "auto-merge-off", label: "Turn off auto-merge", icon: <GitMerge size={14} />, tone: TONE.merge,
           disabled: busy === "auto-merge",
-          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: false })),
+          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: false }, ...onPin)),
         });
       } else if (status?.autoMergeAllowed !== false) {
         stateItems.push({
           id: "auto-merge-on", label: "Enable auto-merge", icon: <GitMerge size={14} weight="duotone" />, tone: TONE.merge,
           description: "GitHub merges it when every requirement passes",
           disabled: busy === "auto-merge",
-          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: true, method: readLastMergeMethod(mergeMethod ?? "squash") })),
+          onSelect: () => void run("auto-merge", () => window.ade.prs.setAutoMerge({ prId: pr.id, enabled: true, method: readLastMergeMethod(mergeMethod ?? "squash") }, ...onPin)),
         });
       } else if (status?.canBypass) {
         // Only an admin can change the setting, so only an admin is told where it is.
@@ -312,7 +319,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
             }).then((ok) => {
               if (ok) {
                 void run("close", async () => {
-                  await window.ade.prs.close({ prId: pr.id });
+                  await window.ade.prs.close({ prId: pr.id }, ...onPin);
                   prs?.markPrTerminalLocally(pr, "closed");
                 });
               }
@@ -327,14 +334,14 @@ export function usePrActionsMenu(context: PrActionsContext) {
           id: "reopen", label: "Reopen pull request", icon: <ArrowCounterClockwise size={14} />, tone: TONE.positive,
           disabled: busy === "reopen",
           onSelect: () => void run("reopen", async () => {
-            await window.ade.prs.reopen({ prId: pr.id });
+            await window.ade.prs.reopen({ prId: pr.id }, ...onPin);
             prs?.clearPrTerminalLocally(pr);
           }),
         }],
       });
     }
     return out;
-  }, [busy, failingChecks, findings, laneChats, mergeMethod, onManageLane, onRefresh, pr, prs, refreshing, run, status]);
+  }, [busy, failingChecks, findings, handOff, laneChats, mergeMethod, onManageLane, onPin, onRefresh, pr, prs, refreshing, run, status]);
 
   return { sections, ensureChats, busy };
 }

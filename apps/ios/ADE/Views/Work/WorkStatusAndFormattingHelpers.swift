@@ -1625,10 +1625,47 @@ func toolDisplayName(_ tool: String) -> String {
   return trimmed
 }
 
+/// Strips the inline Markdown punctuation a collapsed preview would otherwise
+/// show as literal (`**bold**`, `_italic_`, `` `code` ``, `[label](url)`,
+/// `~~gone~~`, leading list/heading markers). Mirrors desktop
+/// `stripInlineMarkdown` in chatTranscriptRows.ts and is deliberately
+/// conservative: paired markers only, `_`/`*` only at word boundaries, so
+/// `snake_case` and shell globs survive.
+func workStripInlineMarkdown(_ value: String) -> String {
+  let hasInlineMarker = value.contains { "*_`[]~#>+-".contains($0) }
+  let hasOrderedMarker = value.range(of: #"(?m)^[ \t]{0,3}\d+[.)]\s"#, options: .regularExpression) != nil
+  guard hasInlineMarker || hasOrderedMarker else { return value }
+  var result = value
+  result = result.replacingOccurrences(of: #"!?\[([^\]]*)\]\([^)]*\)"#, with: "$1", options: .regularExpression)
+  result = result.replacingOccurrences(of: #"`+([^`]+)`+"#, with: "$1", options: .regularExpression)
+  result = result.replacingOccurrences(of: #"\*\*([^*]+)\*\*"#, with: "$1", options: .regularExpression)
+  result = result.replacingOccurrences(of: #"__([^_]+)__"#, with: "$1", options: .regularExpression)
+  result = result.replacingOccurrences(of: #"~~([^~]+)~~"#, with: "$1", options: .regularExpression)
+  result = result.replacingOccurrences(
+    of: #"(^|[^\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?=[^\w*]|$)"#,
+    with: "$1$2",
+    options: .regularExpression
+  )
+  result = result.replacingOccurrences(
+    of: #"(^|[^\w_])_([^_\s](?:[^_\n]*[^_\s])?)_(?=[^\w_]|$)"#,
+    with: "$1$2",
+    options: .regularExpression
+  )
+  result = result
+    .components(separatedBy: "\n")
+    .map { line in
+      line
+        .replacingOccurrences(of: #"^\s{0,3}(?:#{1,6}\s+|>\s+)"#, with: "", options: .regularExpression)
+        .replacingOccurrences(of: #"^\s{0,3}(?:[-+*]|\d+[.)])\s+"#, with: "", options: .regularExpression)
+    }
+    .joined(separator: "\n")
+  return result
+}
+
 /// Collapses whitespace and truncates long inline tool/command previews.
 /// Mirrors desktop `summarizeInlineText` in chatTranscriptRows.ts.
 func workSummarizeInlineText(_ value: String, maxChars: Int = 120) -> String {
-  let collapsed = value
+  let collapsed = workStripInlineMarkdown(value)
     .replacingOccurrences(of: "\n", with: " ")
     .trimmingCharacters(in: .whitespacesAndNewlines)
     .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)

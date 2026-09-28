@@ -195,11 +195,13 @@ function createFakeCodexChild({
   const stdinEmitter = new EventEmitter() as any;
   const written: string[] = [];
 
-  stdinEmitter.write = vi.fn((chunk: string) => {
-    written.push(chunk);
-    return true;
-  });
-  stdinEmitter.end = vi.fn(() => {
+  // A real app-server answers while stdin is still open; it does not wait for
+  // EOF. Model that so a test fails if the code closes stdin before every reply
+  // has been read.
+  let responded = false;
+  const respond = () => {
+    if (responded) return;
+    responded = true;
     queueMicrotask(() => {
       if (stdinError) {
         stdinEmitter.emit("error", stdinError);
@@ -209,6 +211,15 @@ function createFakeCodexChild({
       if (stderr) stderrEmitter.emit("data", Buffer.from(stderr));
       child.emit("close", closeCode);
     });
+  };
+
+  stdinEmitter.write = vi.fn((chunk: string) => {
+    written.push(chunk);
+    respond();
+    return true;
+  });
+  stdinEmitter.end = vi.fn(() => {
+    respond();
   });
 
   child.stdout = stdoutEmitter;
@@ -1725,6 +1736,67 @@ describe("pollCodexViaCliRpc", () => {
     expect(fake.stdinEmitter.write).toHaveBeenCalledTimes(1);
     expect(fake.written[0]).toMatch(/\n$/);
     expect(fake.written[0]).not.toMatch(/\n\n$/);
+    expect(result.errors).toEqual([]);
+    expect(result.windows).toHaveLength(2);
+    expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
+  });
+
+  it("keeps app-server stdin open until a delayed rate-limit reply arrives", async () => {
+    const child = new EventEmitter() as any;
+    const stdoutEmitter = new EventEmitter();
+    const stderrEmitter = new EventEmitter();
+    const stdinEmitter = new EventEmitter() as any;
+    let replyDelivered = false;
+    let stdinEndedBeforeReply = false;
+    let replyTimer: ReturnType<typeof setTimeout> | null = null;
+
+    stdinEmitter.write = vi.fn(() => true);
+    stdinEmitter.end = vi.fn(() => {
+      if (!replyDelivered) {
+        // A real app-server aborts the in-flight request and exits on EOF.
+        stdinEndedBeforeReply = true;
+        if (replyTimer) clearTimeout(replyTimer);
+        child.emit("close", 0);
+      }
+    });
+    child.stdout = stdoutEmitter;
+    child.stderr = stderrEmitter;
+    child.stdin = stdinEmitter;
+    child.kill = vi.fn();
+
+    mockState.resolveCodexExecutable.mockReturnValue({ path: "codex", source: "path" });
+    mockState.spawn.mockReturnValue(child);
+
+    const logger = createLogger();
+    const pending = pollCodexViaCliRpc(logger as any);
+
+    // `initialize` (id 0) answers at once; the rate-limit read (id 1) is a
+    // network round-trip that lands a tick later.
+    stdoutEmitter.emit(
+      "data",
+      Buffer.from(`${JSON.stringify({ jsonrpc: "2.0", id: 0, result: {} })}\n`),
+    );
+    replyTimer = setTimeout(() => {
+      replyDelivered = true;
+      stdoutEmitter.emit(
+        "data",
+        Buffer.from(`${JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          result: {
+            rateLimits: {
+              primary: { usedPercent: 17, resetsAt: 1773446952 },
+              secondary: { usedPercent: 64, resetsAt: 1773853354 },
+            },
+          },
+        })}\n`),
+      );
+      child.emit("close", 0);
+    }, 20);
+
+    const result = await pending;
+
+    expect(stdinEndedBeforeReply).toBe(false);
     expect(result.errors).toEqual([]);
     expect(result.windows).toHaveLength(2);
     expect(result.windows.find((window) => window.windowType === "five_hour")?.percentUsed).toBe(17);
@@ -3732,6 +3804,38 @@ describe("scanClaudeLogs (via aggregateCosts)", () => {
       } else {
         process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
       }
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("marks a Claude fast-mode request and prices it at the fast multiple", async () => {
+    const tmpDir = makeTmpDir();
+    const projectDir = path.join(tmpDir, "projects", "-repo");
+    fs.mkdirSync(projectDir, { recursive: true });
+    try {
+      const line = (speed?: string) => JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-05-29T12:00:00.000Z",
+        cwd: "/repo",
+        message: {
+          id: speed ? "msg-fast" : "msg-std",
+          model: "claude-opus-4-6",
+          usage: { input_tokens: 1_000_000, output_tokens: 0, ...(speed ? { speed } : {}) },
+        },
+      });
+      fs.writeFileSync(path.join(projectDir, "standard.jsonl"), `${line()}\n`);
+      fs.writeFileSync(path.join(projectDir, "fast.jsonl"), `${line("fast")}\n`);
+
+      const entries = await scanClaudeLogs([projectDir]);
+      const byId = new Map(entries.map((entry) => [entry.messageId, entry]));
+      expect(byId.get("msg-fast")?.fast).toBe(true);
+      expect(byId.get("msg-std")?.fast).toBeUndefined();
+
+      // Fast mode is a 2× multiple on the model's standard rate.
+      const standardCost = aggregateCosts([byId.get("msg-std")!], "claude").last30dCostUsd;
+      const fastCost = aggregateCosts([byId.get("msg-fast")!], "claude").last30dCostUsd;
+      expect(fastCost).toBeCloseTo(standardCost * 2, 1);
+    } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
@@ -7024,12 +7128,178 @@ describe("per-account quota attribution", () => {
     await expect(service.consumeResetCredit(undefined as never)).resolves.toEqual({
       ok: false,
       status: "failure",
-      message: "Name the Codex account whose reset credit to spend.",
+      message: "Name the account whose reset credit to spend.",
     });
     await expect(service.consumeResetCredit({ accountId: "  " })).resolves.toMatchObject({
       ok: false,
       status: "failure",
     });
+  });
+
+  it("reads Claude banked resets from the account's own home and spends one", async () => {
+    // Claude's reset read is gated off on macOS (the token lives in the
+    // Keychain), so the non-macOS HTTP path is exercised by presenting the
+    // platform the feature is offered on.
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      writeJson(path.join(workHome, ".claude.json"), {
+        oauthAccount: { emailAddress: "work@example.com", organizationUuid: "org-1" },
+      });
+      const calls: Array<{ url: string; method: string }> = [];
+      const analyticsEvents: ProductAnalyticsCapture[] = [];
+      vi.stubGlobal("fetch", vi.fn(async (url: string, init?: { method?: string }) => {
+        calls.push({ url: String(url), method: init?.method ?? "GET" });
+        if (String(url).includes("/api/oauth/usage")) {
+          return {
+            ok: true,
+            status: 200,
+            text: async () => JSON.stringify({
+              cedar_ember: {
+                eligible: true,
+                next_grant_id: "grant_a",
+                grants: [{
+                  id: "grant_a",
+                  resets_left: 2,
+                  usable_now: true,
+                  ends_at: "2099-03-14T02:00:00Z",
+                }],
+              },
+            }),
+          };
+        }
+        return { ok: true, status: 200, text: async () => JSON.stringify({ result: "reset" }) };
+      }));
+
+      const service = createUsageTrackingService({
+        logger,
+        dependencies: {
+          captureInternalAnalytics: (input) => analyticsEvents.push(input),
+          pollClaudeUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+          listProviderInstances: (provider) => provider === "claude"
+            ? [{ id: "work", label: "Work", configHome: workHome, isDefault: true }]
+            : [],
+          scanClaudeLogs: vi.fn(async () => []),
+          scanCodexLogs: vi.fn(async () => []),
+          scanCursorLogs: vi.fn(async () => []),
+          scanCursorAgentLogs: vi.fn(async () => []),
+          scanOpenClawLogs: vi.fn(async () => []),
+          scanOpenCodeLogs: vi.fn(async () => []),
+          scanDroidLogs: vi.fn(async () => []),
+          scanCopilotLogs: vi.fn(async () => []),
+          scanGeminiLogs: vi.fn(async () => []),
+        },
+      });
+
+      const snapshot = await service.poll({ reason: "user" });
+      const account = (snapshot.accounts ?? []).find((entry) => entry.id === "claude:work");
+      expect(account?.resetCredits).toEqual({
+        availableCount: 2,
+        nextExpiresAt: "2099-03-14T02:00:00.000Z",
+      });
+
+      await expect(service.consumeResetCredit({ accountId: "claude:work" }))
+        .resolves.toEqual({ ok: true, status: "reset" });
+      expect(calls.find((call) => call.method === "POST")?.url)
+        .toBe("https://api.anthropic.com/api/organizations/org-1/reset_rate_limits");
+      // The event must name the provider whose credit was spent, not Codex.
+      const outcome = analyticsEvents
+        .filter((event) => event.properties?.action === "reset_credit_consumed")
+        .at(-1);
+      expect(outcome?.properties).toMatchObject({ outcome: "completed", provider: "claude" });
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("keeps a banked Claude credit when a later read fails", async () => {
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      let failing = false;
+      vi.stubGlobal("fetch", vi.fn(async () => (failing
+        ? { ok: false, status: 500, text: async () => "{}" }
+        : {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            cedar_ember: {
+              eligible: true,
+              next_grant_id: "grant_a",
+              grants: [{ id: "grant_a", resets_left: 1, usable_now: true }],
+            },
+          }),
+        })));
+
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      expect(_testing.readCachedClaudeResetCredits(workHome)?.availableCount).toBe(1);
+
+      // A 500 is not a confirmed zero balance: the live control must survive it.
+      failing = true;
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      expect(_testing.readCachedClaudeResetCredits(workHome)?.availableCount).toBe(1);
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("repeats an unconfirmed Claude claim instead of switching grants", async () => {
+    const originalPlatform = process.platform;
+    setPlatform("linux");
+    try {
+      writeClaudeCredentials(workHome, "work-token");
+      writeJson(path.join(workHome, ".claude.json"), {
+        oauthAccount: { emailAddress: "work@example.com", organizationUuid: "org-1" },
+      });
+      const bodies: Array<{ grant_id: string; request_id: string }> = [];
+      let nextGrant = "grant_a";
+      let claimStatus = 500;
+      vi.stubGlobal("fetch", vi.fn(async (_url: string, init?: { method?: string; body?: string }) => {
+        if (init?.method === "POST") {
+          bodies.push(JSON.parse(String(init.body)));
+          return {
+            ok: claimStatus === 200,
+            status: claimStatus,
+            text: async () => JSON.stringify(claimStatus === 200 ? { result: "reset" } : {}),
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({
+            cedar_ember: {
+              eligible: true,
+              next_grant_id: nextGrant,
+              grants: [{ id: nextGrant, resets_left: 1, usable_now: true }],
+            },
+          }),
+        };
+      }));
+
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      await expect(_testing.spendClaudeResetCredit({ logger: logger as never, configHome: workHome }))
+        .resolves.toMatchObject({ status: "failure" });
+
+      // A later probe selects a different grant; the retry must still repeat the
+      // original claim, not spend the new grant under a fresh request id.
+      nextGrant = "grant_b";
+      await _testing.probeClaudeResetCredits({ logger: logger as never, configHome: workHome, force: true });
+      claimStatus = 200;
+      await expect(_testing.spendClaudeResetCredit({ logger: logger as never, configHome: workHome }))
+        .resolves.toEqual({ ok: true, status: "reset" });
+
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1]).toEqual(bodies[0]);
+      expect(bodies[1]?.grant_id).toBe("grant_a");
+    } finally {
+      setPlatform(originalPlatform);
+      vi.unstubAllGlobals();
+    }
   });
 
   it("records one analytics outcome per reset-credit verdict", async () => {

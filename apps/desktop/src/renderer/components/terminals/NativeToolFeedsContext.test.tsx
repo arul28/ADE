@@ -82,7 +82,7 @@ describe("NativeToolFeedsProvider", () => {
   it("opens one subscription set for two consumers", async () => {
     const seen = new Map<string, unknown[]>();
     render(
-      <NativeToolFeedsProvider active runtimePin={null}>
+      <NativeToolFeedsProvider active runtimePin={null} laneId="lane-1">
         <Consumer name="pane" seen={seen} />
         <Consumer name="card" seen={seen} />
       </NativeToolFeedsProvider>,

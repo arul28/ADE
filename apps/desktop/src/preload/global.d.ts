@@ -9,6 +9,8 @@ import type {
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
   AppleDeviceDetachArgs,
+  AppleDeviceCleanupArgs,
+  AppleDeviceCleanupResult,
   AppleDeviceDeleteInstalledArgs,
   AppleDeviceListArgs,
   AppleDeviceListResult,
@@ -338,6 +340,7 @@ import type {
   BudgetCapProvider,
   BudgetCapConfig,
   AcpProviderDiagnostics,
+  AcpProviderUpdateResult,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -801,16 +804,27 @@ import type {
   IosSimulatorTapElementArgs,
   IosSimulatorUninstallAppArgs,
   IosSimulatorWaitForElementArgs,
+  AppControlAttachToTargetArgs,
   AppControlClickArgs,
   AppControlConnectArgs,
+  AppControlDispatchKeyArgs,
   AppControlDriversResult,
   AppControlEventPayload,
   AppControlInspectPointArgs,
   AppControlInspectResult,
+  AppControlLaneArgs,
   AppControlLaunchArgs,
   AppControlObservation,
   AppControlObservationArgs,
+  AppControlCaptureProofArgs,
+  AppControlCaptureProofResult,
+  AppControlRecordStartArgs,
+  AppControlRecordStopArgs,
+  AppControlRecordingStatus,
+  AppControlRecordingStatusArgs,
+  AppControlScreencastFrame,
   AppControlScreenshot,
+  AppControlScrollArgs,
   AppControlSelectResult,
   AppControlSession,
   AppControlSessionTargetArgs,
@@ -834,6 +848,10 @@ import type {
   BuiltInBrowserOpenPanelArgs,
   BuiltInBrowserOriginAccessResult,
   BuiltInBrowserPermissionsResult,
+  BuiltInBrowserAgentAccessAnswer,
+  BuiltInBrowserAgentAccessMode,
+  BuiltInBrowserAgentAccessRevokeArgs,
+  BuiltInBrowserAgentAccessSnapshot,
   BuiltInBrowserProfileDiagnostics,
   BuiltInBrowserProjectScopeArgs,
   BuiltInBrowserRequestOriginAccessArgs,
@@ -1086,17 +1104,18 @@ declare global {
       };
       storage: {
         getPressure: () => Promise<DiskPressureSnapshot>;
-        getSnapshot: (args?: { forceRefresh?: boolean }) => Promise<StorageSnapshot>;
-        compressNow: () => Promise<StorageCompressionResult>;
-        runMaintenanceNow: () => Promise<MaintenanceRunReport>;
-        cleanupPreview: (targets: StorageCleanupTarget[]) => Promise<StorageCleanupPreview>;
+        getSnapshot: (args?: { forceRefresh?: boolean }, pin?: OpenProjectBinding | null) => Promise<StorageSnapshot>;
+        compressNow: (pin?: OpenProjectBinding | null) => Promise<StorageCompressionResult>;
+        runMaintenanceNow: (pin?: OpenProjectBinding | null) => Promise<MaintenanceRunReport>;
+        cleanupPreview: (targets: StorageCleanupTarget[], pin?: OpenProjectBinding | null) => Promise<StorageCleanupPreview>;
         cleanup: (
           targets: StorageCleanupTarget[],
           opts: { preview: StorageCleanupPreview },
+          pin?: OpenProjectBinding | null,
         ) => Promise<StorageCleanupResult>;
       };
       project: {
-        openRepo: (args?: { rootPath?: string }) => Promise<ProjectInfo | null>;
+        openRepo: (args?: { rootPath?: string; trustGitOwnership?: boolean }) => Promise<ProjectInfo | null>;
         chooseDirectory: (args?: {
           title?: string;
           defaultPath?: string;
@@ -1137,9 +1156,9 @@ declare global {
         ) => Promise<CreateProjectResult>;
         clone: (input: CloneProjectInput) => Promise<CloneProjectResult>;
         getDefaultParentDir: () => Promise<string>;
-        getSnapshot: () => Promise<AdeProjectSnapshot>;
-        initializeOrRepair: () => Promise<AdeCleanupResult>;
-        runIntegrityCheck: () => Promise<AdeCleanupResult>;
+        getSnapshot: (pin?: OpenProjectBinding | null) => Promise<AdeProjectSnapshot>;
+        initializeOrRepair: (pin?: OpenProjectBinding | null) => Promise<AdeCleanupResult>;
+        runIntegrityCheck: (pin?: OpenProjectBinding | null) => Promise<AdeCleanupResult>;
         onMissing: (cb: (data: { rootPath: string }) => void) => () => void;
         onStateEvent: (cb: (event: AdeProjectEvent) => void) => () => void;
       };
@@ -1311,9 +1330,9 @@ declare global {
         getToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         ensureToolsCache: () => Promise<AgentToolsCacheSnapshot>;
         onToolsCacheEvent: (cb: (snapshot: AgentToolsCacheSnapshot) => void) => () => void;
-        storeApiKey: (provider: string, key: string) => Promise<void>;
-        deleteApiKey: (provider: string) => Promise<void>;
-        listApiKeys: () => Promise<string[]>;
+        storeApiKey: (provider: string, key: string, pin?: OpenProjectBinding | null) => Promise<void>;
+        deleteApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<void>;
+        listApiKeys: (pin?: OpenProjectBinding | null) => Promise<string[]>;
         /**
          * Machine-scoped keys: stored in this machine's ADE home, not the open
          * project, so a key pasted once is still there in the next repo. Each
@@ -1322,11 +1341,11 @@ declare global {
          * Optional: shipped after this group did, so an older preload will not
          * have it and callers must guard before reaching for it.
          */
-        getMachineApiKeyStatus?: (provider: string) => Promise<MachineApiKeyStatus>;
-        storeMachineApiKey?: (provider: string, key: string) => Promise<MachineApiKeyStatus>;
-        deleteMachineApiKey?: (provider: string) => Promise<MachineApiKeyStatus>;
-        verifyApiKey: (provider: string) => Promise<AiApiKeyVerificationResult>;
-        updateConfig: (config: Partial<AiConfig>) => Promise<void>;
+        getMachineApiKeyStatus?: (provider: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
+        storeMachineApiKey?: (provider: string, key: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
+        deleteMachineApiKey?: (provider: string, pin?: OpenProjectBinding | null) => Promise<MachineApiKeyStatus>;
+        verifyApiKey: (provider: string, pin?: OpenProjectBinding | null) => Promise<AiApiKeyVerificationResult>;
+        updateConfig: (config: Partial<AiConfig>, pin?: OpenProjectBinding | null) => Promise<void>;
         /**
          * Optional: shipped after this group did, so an older preload will not
          * have it and callers must guard before reaching for it.
@@ -1334,40 +1353,47 @@ declare global {
         acpProviderDiagnostics?: (args: {
           provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
           runDoctor?: boolean;
-        }) => Promise<AcpProviderDiagnostics>;
-        opencodeAuthMethods: () => Promise<{ methods: OpenCodeProviderAuthMethods }>;
+        }, pin?: OpenProjectBinding | null) => Promise<AcpProviderDiagnostics>;
+        /**
+         * Runs the provider's one-click updater on this machine. Optional: an
+         * older host that predates it leaves this undefined.
+         */
+        acpProviderUpdate?: (args: {
+          provider: "qwen" | "kimi" | "grok" | "copilot" | "devin";
+        }, pin?: OpenProjectBinding | null) => Promise<AcpProviderUpdateResult>;
+        opencodeAuthMethods: (pin?: OpenProjectBinding | null) => Promise<{ methods: OpenCodeProviderAuthMethods }>;
         opencodeOAuthStart: (args: {
           providerId: string;
           methodIndex: number;
           inputs?: Record<string, string>;
-        }) => Promise<OpenCodeOAuthStartResult>;
-        opencodeOAuthCancel: (args: { providerId: string }) => Promise<void>;
+        }, pin?: OpenProjectBinding | null) => Promise<OpenCodeOAuthStartResult>;
+        opencodeOAuthCancel: (args: { providerId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
         setOpencodeProviderKey: (args: {
           providerId: string;
           key: string;
-        }) => Promise<{ ok: boolean; error?: string }>;
+        }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
         clearOpencodeProviderKey: (args: {
           providerId: string;
-        }) => Promise<{ ok: boolean; error?: string }>;
-        refreshModelsDev: () => Promise<{ lastFetchedAt: number | null }>;
-        onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void) => () => void;
-        piLoginProviders: () => Promise<PiLoginProvider[]>;
+        }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
+        refreshModelsDev: (pin?: OpenProjectBinding | null) => Promise<{ lastFetchedAt: number | null }>;
+        onOpencodeOAuthStatus: (cb: (event: OpenCodeOAuthStatusEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        piLoginProviders: (pin?: OpenProjectBinding | null) => Promise<PiLoginProvider[]>;
         piLoginStart: (args: {
           providerId: string;
           method?: PiLoginMethod;
-        }) => Promise<{ ok: boolean; error?: string }>;
+        }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
         piLoginSubmit: (args: {
           providerId: string;
           requestId: string;
           value: string;
-        }) => Promise<{ ok: boolean; error?: string }>;
-        piLoginCancel: (args: { providerId: string }) => Promise<void>;
-        onPiAuthStatus: (cb: (event: PiAuthStatusEvent) => void) => () => void;
-        cursorAuthStatus: () => Promise<CursorSdkAuthStatus>;
-        cursorAuthLogin: () => Promise<CursorSdkLoginResult>;
-        cursorAuthLogout: () => Promise<{ ok: boolean; error?: string }>;
-        cursorAuthCancel: () => Promise<void>;
-        onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void) => () => void;
+        }, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
+        piLoginCancel: (args: { providerId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
+        onPiAuthStatus: (cb: (event: PiAuthStatusEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        cursorAuthStatus: (pin?: OpenProjectBinding | null) => Promise<CursorSdkAuthStatus>;
+        cursorAuthLogin: (pin?: OpenProjectBinding | null) => Promise<CursorSdkLoginResult>;
+        cursorAuthLogout: (pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error?: string }>;
+        cursorAuthCancel: (pin?: OpenProjectBinding | null) => Promise<void>;
+        onCursorAuthStatus: (cb: (event: CursorSdkAuthEvent) => void, pin?: OpenProjectBinding | null) => () => void;
         cursorCloudListRepositories: () => Promise<CursorCloudRepository[]>;
         cursorCloudListAgents: (args?: {
           includeArchived?: boolean;
@@ -1527,24 +1553,37 @@ declare global {
       };
       automations: {
         list: (pin?: OpenProjectBinding | null) => Promise<AutomationRuleSummary[]>;
-        toggle: (args: {
-          id: string;
-          enabled: boolean;
-        }) => Promise<AutomationRuleSummary[]>;
+        toggle: (
+          args: {
+            id: string;
+            enabled: boolean;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationRuleSummary[]>;
         deleteRule: (
           args: AutomationDeleteRuleRequest,
           pin?: OpenProjectBinding | null,
         ) => Promise<AutomationRuleSummary[]>;
         triggerManually: (
           args: AutomationManualTriggerRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationRun>;
-        getHistory: (args: {
-          id: string;
-          limit?: number;
-        }) => Promise<AutomationRun[]>;
-        listRuns: (args?: AutomationRunListArgs) => Promise<AutomationRun[]>;
-        getRunDetail: (runId: string) => Promise<AutomationRunDetail | null>;
-        getIngressStatus: () => Promise<AutomationIngressStatus>;
+        getHistory: (
+          args: {
+            id: string;
+            limit?: number;
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationRun[]>;
+        listRuns: (
+          args?: AutomationRunListArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationRun[]>;
+        getRunDetail: (
+          runId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AutomationRunDetail | null>;
+        getIngressStatus: (pin?: OpenProjectBinding | null) => Promise<AutomationIngressStatus>;
         refreshWebhookGatewayStatus: () => Promise<AutomationWebhookGatewayStatus>;
         setWebhookGatewayPublicUrl: (args: {
           publicUrl?: string | null;
@@ -1557,6 +1596,7 @@ declare global {
         ) => Promise<AutomationParseNaturalLanguageResult>;
         validateDraft: (
           req: AutomationValidateDraftRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationValidateDraftResult>;
         saveDraft: (
           req: AutomationSaveDraftRequest,
@@ -1564,14 +1604,15 @@ declare global {
         ) => Promise<AutomationSaveDraftResult>;
         simulate: (
           req: AutomationSimulateRequest,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AutomationSimulateResult>;
         listScheduledCleanups: () => Promise<AutomationScheduledCleanup[]>;
         cancelScheduledCleanup: (id: string) => Promise<boolean>;
         linearIngress: {
-          getStatus: () => Promise<AutomationLinearIngressStatus>;
-          setup: () => Promise<AutomationLinearIngressStatus>;
-          teardown: () => Promise<AutomationLinearIngressStatus>;
-          pollNow: () => Promise<AutomationLinearIngressStatus>;
+          getStatus: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
+          setup: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
+          teardown: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
+          pollNow: (pin?: OpenProjectBinding | null) => Promise<AutomationLinearIngressStatus>;
         };
         onEvent: (cb: (ev: AutomationsEventPayload) => void) => () => void;
       };
@@ -1713,8 +1754,8 @@ declare global {
           totalCostUsd: number;
           weekKey: string;
         }>;
-        getBudgetConfig: () => Promise<BudgetCapConfig>;
-        saveBudgetConfig: (config: BudgetCapConfig) => Promise<BudgetCapConfig>;
+        getBudgetConfig: (pin?: OpenProjectBinding | null) => Promise<BudgetCapConfig>;
+        saveBudgetConfig: (config: BudgetCapConfig, pin?: OpenProjectBinding | null) => Promise<BudgetCapConfig>;
         onUpdate: (cb: (snapshot: UsageSnapshot) => void) => () => void;
       };
       lanes: {
@@ -1759,7 +1800,7 @@ declare global {
           args: ArchiveAndReclaimLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<ArchiveAndReclaimLaneResult>;
-        unarchive: (args: ArchiveLaneArgs) => Promise<RestoreLaneResult>;
+        unarchive: (args: ArchiveLaneArgs, pin?: OpenProjectBinding | null) => Promise<RestoreLaneResult>;
         delete: (args: DeleteLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         revealWorktree: (args: { laneId: string }) => Promise<void>;
         revealLeftoverWorktree: (args: { laneId: string }) => Promise<void>;
@@ -1806,46 +1847,48 @@ declare global {
         listGitHubIssuesForSession: (args: { chatSessionId: string }) => Promise<SessionGitHubIssueLink[]>;
         listGitHubIssuesForLaneSessions: (args: { laneId: string }) => Promise<SessionGitHubIssueLink[]>;
         unlinkLinearIssues: (args: { laneId: string; issueId?: string }) => Promise<boolean>;
-        rebaseStart: (args: RebaseStartArgs) => Promise<RebaseStartResult>;
-        rebasePush: (args: RebasePushArgs) => Promise<RebaseRun>;
-        rebaseRollback: (args: RebaseRollbackArgs) => Promise<RebaseRun>;
-        rebaseAbort: (args: RebaseAbortArgs) => Promise<RebaseRun>;
+        rebaseStart: (args: RebaseStartArgs, pin?: OpenProjectBinding | null) => Promise<RebaseStartResult>;
+        rebasePush: (args: RebasePushArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
+        rebaseRollback: (args: RebaseRollbackArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
+        rebaseAbort: (args: RebaseAbortArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
         rebaseSubscribe: (
           cb: (ev: RebaseRunEventPayload) => void,
+          pin?: OpenProjectBinding | null,
         ) => () => void;
         listRebaseSuggestions: () => Promise<RebaseSuggestion[]>;
-        dismissRebaseSuggestion: (args: { laneId: string }) => Promise<void>;
+        dismissRebaseSuggestion: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
         deferRebaseSuggestion: (args: {
           laneId: string;
           minutes: number;
-        }) => Promise<void>;
+        }, pin?: OpenProjectBinding | null) => Promise<void>;
         onRebaseSuggestionsEvent: (
           cb: (ev: RebaseSuggestionsEventPayload) => void,
         ) => () => void;
-        listAutoRebaseStatuses: () => Promise<AutoRebaseLaneStatus[]>;
-        dismissAutoRebaseStatus: (args: { laneId: string }) => Promise<void>;
+        listAutoRebaseStatuses: (pin?: OpenProjectBinding | null) => Promise<AutoRebaseLaneStatus[]>;
+        dismissAutoRebaseStatus: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
         onAutoRebaseEvent: (
           cb: (ev: AutoRebaseEventPayload) => void,
         ) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;
-        initEnv: (args: InitLaneEnvArgs) => Promise<LaneEnvInitProgress>;
+        initEnv: (args: InitLaneEnvArgs, pin?: OpenProjectBinding | null) => Promise<LaneEnvInitProgress>;
         getEnvStatus: (
           args: GetLaneEnvStatusArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<LaneEnvInitProgress | null>;
         getOverlay: (args: GetLaneOverlayArgs) => Promise<LaneOverlayOverrides>;
         onEnvEvent: (cb: (ev: LaneEnvInitEvent) => void) => () => void;
-        listTemplates: () => Promise<LaneTemplate[]>;
+        listTemplates: (pin?: OpenProjectBinding | null) => Promise<LaneTemplate[]>;
         getTemplate: (
           args: GetLaneTemplateArgs,
         ) => Promise<LaneTemplate | null>;
-        getDefaultTemplate: () => Promise<string | null>;
-        setDefaultTemplate: (args: SetDefaultLaneTemplateArgs) => Promise<void>;
+        getDefaultTemplate: (pin?: OpenProjectBinding | null) => Promise<string | null>;
+        setDefaultTemplate: (args: SetDefaultLaneTemplateArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         applyTemplate: (
           args: ApplyLaneTemplateArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<LaneEnvInitProgress>;
-        saveTemplate: (args: SaveLaneTemplateArgs) => Promise<void>;
-        deleteTemplate: (args: DeleteLaneTemplateArgs) => Promise<void>;
+        saveTemplate: (args: SaveLaneTemplateArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        deleteTemplate: (args: DeleteLaneTemplateArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         portGetLease: (args: GetPortLeaseArgs) => Promise<PortLease | null>;
         portListLeases: () => Promise<PortLease[]>;
         portAcquire: (args: AcquirePortLeaseArgs) => Promise<PortLease>;
@@ -1959,9 +2002,10 @@ declare global {
           sessionId: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<boolean>;
-        getLifecycleSettings: () => Promise<SessionLifecycleSettings>;
+        getLifecycleSettings: (pin?: OpenProjectBinding | null) => Promise<SessionLifecycleSettings>;
         updateLifecycleSettings: (
           settings: SessionLifecycleSettings,
+          pin?: OpenProjectBinding | null,
         ) => Promise<SessionLifecycleSettings>;
         readTranscriptTail: (
           args: ReadTranscriptTailArgs,
@@ -1984,18 +2028,24 @@ declare global {
         startNow: (args: ChatLaunchIdArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
         queueMessage: (args: ChatLaunchQueueMessageArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot>;
         completeClient: (args: ChatLaunchCompleteClientArgs, pin?: OpenProjectBinding | null) => Promise<ChatLaunchSnapshot | null>;
-        onEvent: (cb: (event: ChatLaunchEvent) => void, pin?: OpenProjectBinding | null) => () => void;
+        /** `onResync`: the event stream may have dropped events (gap, runtime restart, reconnect); re-read `list`. */
+        onEvent: (
+          cb: (event: ChatLaunchEvent) => void,
+          pin?: OpenProjectBinding | null,
+          onResync?: () => void,
+        ) => () => void;
       };
       agentChat: {
-        list: (args?: AgentChatListArgs) => Promise<AgentChatSessionSummary[]>;
+        list: (args?: AgentChatListArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSessionSummary[]>;
         getSummary: (
           args: AgentChatGetSummaryArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSessionSummary | null>;
         create: (args: AgentChatCreateArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSession>;
-        launch: (args: AgentChatLaunchArgs) => Promise<AgentChatSession>;
+        launch: (args: AgentChatLaunchArgs, pin?: OpenProjectBinding | null) => Promise<AgentChatSession>;
         launchCli: (
           args: AgentChatLaunchCliArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatLaunchCliResult>;
         suggestLaneName: (
           args: AgentChatSuggestLaneNameArgs,
@@ -2164,6 +2214,7 @@ declare global {
         ) => Promise<AgentChatClaudePlugin[]>;
         listCodexPlugins: (
           args?: AgentChatCodexPluginsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatCodexPlugin[]>;
         reloadClaudePlugins: (
           args: AgentChatReloadClaudePluginsArgs,
@@ -2386,6 +2437,8 @@ declare global {
         ) => Promise<string | null>;
         /** `http://127.0.0.1:<port>/<token>` for proof videos, or null when main has none. */
         mediaBaseUrl: () => Promise<string | null>;
+        /** Desktop only; absent in the web client. */
+        saveMediaAs?: (args: { url: string; fileName?: string }) => Promise<{ saved: boolean; path?: string }>;
         onEvent: (
           cb: (ev: ComputerUseEventPayload) => void,
           pin?: OpenProjectBinding | null,
@@ -2527,6 +2580,11 @@ declare global {
           args: AppleDeviceDeleteInstalledArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
+        /** Delete leftover ADE devices and release ended lanes' devices, now. */
+        deviceCleanup: (
+          args?: AppleDeviceCleanupArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppleDeviceCleanupResult>;
         frame: (
           args?: AppleFrameArgs,
           pin?: OpenProjectBinding | null,
@@ -2853,7 +2911,14 @@ declare global {
         ) => () => void;
       };
       appControl: {
+        /**
+         * App Control keeps one session per lane. Every call names its lane
+         * (`laneId`, or a `chatSessionId`/`sessionId` that resolves to one);
+         * a call that names none is refused. `getStatus` with no lane answers
+         * `activeSession: null` and lists every lane's session in `sessions`.
+         */
         getStatus: (
+          args?: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlStatus>;
         launch: (
@@ -2868,21 +2933,25 @@ declare global {
           args: AppControlConnectArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
+        /** Quits an app ADE launched (whole process tree); detaches an attached one. */
         stop: (
-          args?: AppControlStopArgs,
+          args: AppControlStopArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true; previousSession: AppControlSession | null }>;
         focusWindow: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         minimizeWindow: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         screenshot: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlScreenshot>;
         getSnapshot: (
-          args?: AppControlSnapshotArgs,
+          args: AppControlSnapshotArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSnapshot>;
         inspectPoint: (
@@ -2902,20 +2971,55 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         scroll: (
-          args: { x: number; y: number; deltaX: number; deltaY: number; scale?: number | null; coordinateSpace?: "screenshot" | "viewport" | null },
+          args: AppControlScrollArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         dispatchKey: (
-          args: { type: "keyDown" | "keyUp" | "rawKeyDown" | "char"; key?: string | null; code?: string | null; text?: string | null; modifiers?: number | null },
+          args: AppControlDispatchKeyArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
         listTargets: (
+          args: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlTarget[]>;
         attachToTarget: (
-          args: { targetId: string },
+          args: AppControlAttachToTargetArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlSession>;
+        /**
+         * Records the lane's app: its window on macOS (needs Screen
+         * Recording), the CDP screencast on Windows and Linux. Same rules as
+         * Mac Desktop's recording: ten-minute cap for a chat's recording, idle
+         * cut unless `keepIdle`, a caption files it as proof.
+         */
+        startRecording: (
+          args: AppControlRecordStartArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlRecordingStatus>;
+        stopRecording: (
+          args: AppControlRecordStopArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlRecordingStatus>;
+        getRecordingStatus: (
+          args: AppControlRecordingStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlRecordingStatus>;
+        /**
+         * The lane's current picture for a viewer that just mounted. The
+         * screencast sends frames only when the page paints, so a still app
+         * would leave a new viewer blank: this answers with the newest frame,
+         * or one fresh capture (also published as a `frame` event). Null with
+         * no connected session.
+         */
+        getLatestFrame?: (
+          args: AppControlRecordingStatusArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlScreencastFrame | null>;
+        /** One still of the lane's app, filed as proof (Mac Desktop's Save screenshot). */
+        captureProof: (
+          args: AppControlCaptureProofArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<AppControlCaptureProofResult>;
         /**
          * Agent action model, read side only. `agentClick`/`agentFill`/… are
          * deliberately absent: the panel reports what an agent did, it does not
@@ -2925,19 +3029,20 @@ declare global {
          * channel to fall back to.
          */
         listDrivers: (
+          args?: AppControlLaneArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlDriversResult>;
         /** Writes an observation record and prunes older ones — never poll it. */
         observe: (
-          args?: AppControlObservationArgs,
+          args: AppControlObservationArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlObservation>;
         getTrace: (
-          args?: AppControlTraceArgs,
+          args: AppControlTraceArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlTraceResult>;
         windows: (
-          args?: AppControlSessionTargetArgs,
+          args: AppControlSessionTargetArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AppControlWindowsResult>;
         /** Re-attaches CDP and clears the trace, like `attachToTarget`. */
@@ -2949,6 +3054,14 @@ declare global {
           cb: (ev: AppControlEventPayload) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
+        /**
+         * Web client only: a view that shows live frames holds this while it
+         * is on screen. Frames stream over the relay only while one is held;
+         * status-only `onEvent` listeners do not keep them flowing. Returns
+         * the release. The desktop gets frames from the local screencast and
+         * has no such member.
+         */
+        holdFrames?: () => () => void;
       };
       builtInBrowser: {
         getStatus: (
@@ -2968,6 +3081,20 @@ declare global {
         ) => Promise<BuiltInBrowserOriginAccessResult>;
         getProfileDiagnostics: () => Promise<BuiltInBrowserProfileDiagnostics>;
         listPermissions: () => Promise<BuiltInBrowserPermissionsResult>;
+        /**
+         * "Agents can use the ADE browser": the setting, the saved lane and
+         * chat grants, and the open prompts. Machine-local and human-only.
+         */
+        agentAccess: {
+          get: () => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          setMode: (mode: BuiltInBrowserAgentAccessMode) => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          answer: (
+            promptId: string,
+            answer: BuiltInBrowserAgentAccessAnswer,
+          ) => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          revoke: (args: BuiltInBrowserAgentAccessRevokeArgs) => Promise<BuiltInBrowserAgentAccessSnapshot>;
+          onChange: (cb: (snapshot: BuiltInBrowserAgentAccessSnapshot) => void) => () => void;
+        };
         clearPermissions: (
           args?: BuiltInBrowserClearPermissionsArgs,
         ) => Promise<BuiltInBrowserClearPermissionsResult>;
@@ -3199,10 +3326,10 @@ declare global {
        * summary `list` does.
        */
       apiCredentials: {
-        list: (args?: ApiCredentialListArgs) => Promise<ApiCredentialSummary[]>;
-        get: (args: ApiCredentialGetArgs) => Promise<ApiCredentialSummary | null>;
-        store: (args: ApiCredentialStoreArgs) => Promise<ApiCredentialSummary | null>;
-        remove: (args: ApiCredentialRemoveArgs) => Promise<void>;
+        list: (args?: ApiCredentialListArgs, pin?: OpenProjectBinding | null) => Promise<ApiCredentialSummary[]>;
+        get: (args: ApiCredentialGetArgs, pin?: OpenProjectBinding | null) => Promise<ApiCredentialSummary | null>;
+        store: (args: ApiCredentialStoreArgs, pin?: OpenProjectBinding | null) => Promise<ApiCredentialSummary | null>;
+        remove: (args: ApiCredentialRemoveArgs, pin?: OpenProjectBinding | null) => Promise<void>;
       };
       proxy?: {
         status: () => Promise<SubscriptionProxyStatus>;
@@ -3733,9 +3860,11 @@ declare global {
         linkToLane: (args: LinkPrToLaneArgs) => Promise<PrSummary>;
         preflightCreateLaneFromPrBranch: (
           args: CreateLaneFromPrBranchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CreateLaneFromPrBranchPreflightResult>;
         createLaneFromPrBranch: (
           args: CreateLaneFromPrBranchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CreateLaneFromPrBranchResult>;
         /**
          * `pin` routes the read to the machine that owns the lane. A PR row
@@ -3777,14 +3906,14 @@ declare global {
           prId: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<PrReview[]>;
-        getReviewThreads: (prId: string) => Promise<PrReviewThread[]>;
+        getReviewThreads: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrReviewThread[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
-        delete: (args: DeletePrArgs) => Promise<DeletePrResult>;
+        delete: (args: DeletePrArgs, pin?: OpenProjectBinding | null) => Promise<DeletePrResult>;
         draftDescription: (
           args: DraftPrDescriptionArgs,
         ) => Promise<{ title: string; body: string }>;
-        land: (args: LandPrArgs) => Promise<LandResult>;
-        updateBranch: (args: UpdateBranchArgs) => Promise<UpdateBranchResult>;
+        land: (args: LandPrArgs, pin?: OpenProjectBinding | null) => Promise<LandResult>;
+        updateBranch: (args: UpdateBranchArgs, pin?: OpenProjectBinding | null) => Promise<UpdateBranchResult>;
         retargetBase: (args: {
           prId: string;
           baseBranch: string;
@@ -3795,41 +3924,50 @@ declare global {
         ) => Promise<CreateIntegrationPrResult>;
         simulateIntegration: (
           args: SimulateIntegrationArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IntegrationProposal>;
         commitIntegration: (
           args: CommitIntegrationArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CreateIntegrationPrResult>;
-        listProposals(): Promise<IntegrationProposal[]>;
-        updateProposal(args: UpdateIntegrationProposalArgs): Promise<void>;
+        listProposals(pin?: OpenProjectBinding | null): Promise<IntegrationProposal[]>;
+        updateProposal(args: UpdateIntegrationProposalArgs, pin?: OpenProjectBinding | null): Promise<void>;
         deleteProposal(
           args: DeleteIntegrationProposalArgs,
+          pin?: OpenProjectBinding | null,
         ): Promise<DeleteIntegrationProposalResult>;
         createIntegrationLaneForProposal(
           args: CreateIntegrationLaneForProposalArgs,
+          pin?: OpenProjectBinding | null,
         ): Promise<CreateIntegrationLaneForProposalResult>;
         startIntegrationResolution(
           args: StartIntegrationResolutionArgs,
         ): Promise<StartIntegrationResolutionResult>;
         recheckIntegrationStep(
           args: RecheckIntegrationStepArgs,
+          pin?: OpenProjectBinding | null,
         ): Promise<RecheckIntegrationStepResult>;
         getIntegrationResolutionState(
           proposalId: string,
+          pin?: OpenProjectBinding | null,
         ): Promise<IntegrationResolutionState | null>;
         aiResolutionStart(
           args: PrAiResolutionStartArgs,
+          pin?: OpenProjectBinding | null,
         ): Promise<PrAiResolutionStartResult>;
         aiResolutionGetSession(
           args: PrAiResolutionGetSessionArgs,
+          pin?: OpenProjectBinding | null,
         ): Promise<PrAiResolutionGetSessionResult>;
         aiResolutionInput(args: PrAiResolutionInputArgs): Promise<void>;
         aiResolutionStop(args: PrAiResolutionStopArgs): Promise<void>;
         onAiResolutionEvent: (
           cb: (ev: PrAiResolutionEventPayload) => void,
+          pin?: OpenProjectBinding | null,
         ) => () => void;
         getHealth: (prId: string) => Promise<PrHealth>;
         getConflictAnalysis: (prId: string) => Promise<PrConflictAnalysis | null>;
-        getMergeContext: (prId: string) => Promise<PrMergeContext>;
+        getMergeContext: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrMergeContext>;
         getMergeContexts: (
           prIds: string[],
         ) => Promise<Record<string, PrMergeContext>>;
@@ -3838,7 +3976,9 @@ declare global {
         }) => Promise<PrWithConflicts[]>;
         listSnapshots: (args?: {
           prId?: string;
-        }) => Promise<PrSnapshotHydration[]>;
+          /** Only these PRs; an empty list returns none. */
+          prIds?: string[];
+        }, pin?: OpenProjectBinding | null) => Promise<PrSnapshotHydration[]>;
         getGitHubSnapshot: (args?: {
           force?: boolean;
           includeExternalClosed?: boolean;
@@ -3861,17 +4001,18 @@ declare global {
         ) => Promise<GitHubPrStack | null>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IntegrationProposal[]>;
         onEvent: (
           cb: (ev: PrEventPayload) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
-        getDetail: (prId: string) => Promise<PrDetail>;
+        getDetail: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDetail>;
         getDetailBundle: (prId: string) => Promise<PrDetailBundle>;
-        getFiles: (prId: string) => Promise<PrFile[]>;
-        getCommits: (prId: string) => Promise<PrCommit[]>;
-        getActionRuns: (prId: string) => Promise<PrActionRun[]>;
-        getActivity: (prId: string) => Promise<PrActivityEvent[]>;
+        getFiles: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrFile[]>;
+        getCommits: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrCommit[]>;
+        getActionRuns: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrActionRun[]>;
+        getActivity: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrActivityEvent[]>;
         getWorkflowGraph: (
           args: GetPrWorkflowGraphArgs,
         ) => Promise<PrWorkflowGraph>;
@@ -3892,35 +4033,38 @@ declare global {
         getReviewThreadsByGithub: (
           coords: PrGithubCoords,
         ) => Promise<PrReviewThread[]>;
-        addComment: (args: AddPrCommentArgs) => Promise<PrComment>;
+        addComment: (args: AddPrCommentArgs, pin?: OpenProjectBinding | null) => Promise<PrComment>;
         updateComment: (args: UpdatePrCommentArgs) => Promise<PrComment>;
         replyToReviewThread: (
           args: ReplyToPrReviewThreadArgs,
         ) => Promise<PrReviewThreadComment>;
         resolveReviewThread: (args: ResolvePrReviewThreadArgs) => Promise<void>;
-        updateTitle: (args: UpdatePrTitleArgs) => Promise<void>;
-        updateBody: (args: UpdatePrBodyArgs) => Promise<void>;
-        setLabels: (args: SetPrLabelsArgs) => Promise<void>;
-        requestReviewers: (args: RequestPrReviewersArgs) => Promise<void>;
+        updateTitle: (args: UpdatePrTitleArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        updateBody: (args: UpdatePrBodyArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        setLabels: (args: SetPrLabelsArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        requestReviewers: (args: RequestPrReviewersArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         submitReview: (
           args: SubmitPrReviewArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<SubmitPrReviewResult>;
-        close: (args: ClosePrArgs) => Promise<void>;
-        reopen: (args: ReopenPrArgs) => Promise<void>;
-        setDraft: (args: SetPrDraftArgs) => Promise<void>;
-        setAutoMerge: (args: SetPrAutoMergeArgs) => Promise<void>;
-        rerunChecks: (args: RerunPrChecksArgs) => Promise<void>;
+        close: (args: ClosePrArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        reopen: (args: ReopenPrArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        setDraft: (args: SetPrDraftArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        setAutoMerge: (args: SetPrAutoMergeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        rerunChecks: (args: RerunPrChecksArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         aiReviewSummary: (
           args: AiReviewSummaryArgs,
         ) => Promise<AiReviewSummary>;
         dismissIntegrationCleanup: (
           args: DismissIntegrationCleanupArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<IntegrationProposal>;
         cleanupIntegrationWorkflow: (
           args: CleanupIntegrationWorkflowArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CleanupIntegrationWorkflowResult>;
-        getDeployments: (prId: string) => Promise<PrDeployment[]>;
-        getAiSummary: (prId: string) => Promise<PrAiSummary | null>;
+        getDeployments: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDeployment[]>;
+        getAiSummary: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrAiSummary | null>;
         regenerateAiSummary: (prId: string) => Promise<PrAiSummary>;
         postReviewComment: (
           args: PostPrReviewCommentArgs,
@@ -3928,25 +4072,28 @@ declare global {
         setReviewThreadResolved: (
           args: SetPrReviewThreadResolvedArgs,
         ) => Promise<SetPrReviewThreadResolvedResult>;
-        reactToComment: (args: ReactToPrCommentArgs) => Promise<void>;
+        reactToComment: (args: ReactToPrCommentArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         cleanupBranch: (
           args: CleanupPrBranchArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CleanupPrBranchResult>;
       };
       rebase: {
-        scanNeeds: () => Promise<RebaseNeed[]>;
-        getNeed: (laneId: string) => Promise<RebaseNeed | null>;
-        dismiss: (laneId: string) => Promise<void>;
-        defer: (laneId: string, until: string) => Promise<void>;
-        execute: (args: RebaseLaneArgs) => Promise<RebaseResult>;
-        onEvent: (cb: (ev: RebaseEventPayload) => void) => () => void;
+        scanNeeds: (pin?: OpenProjectBinding | null) => Promise<RebaseNeed[]>;
+        getNeed: (laneId: string, pin?: OpenProjectBinding | null) => Promise<RebaseNeed | null>;
+        dismiss: (laneId: string, pin?: OpenProjectBinding | null) => Promise<void>;
+        defer: (laneId: string, until: string, pin?: OpenProjectBinding | null) => Promise<void>;
+        execute: (args: RebaseLaneArgs, pin?: OpenProjectBinding | null) => Promise<RebaseResult>;
+        onEvent: (cb: (ev: RebaseEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       history: {
         listOperations: (
           args?: ListOperationsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<OperationRecord[]>;
         exportOperations: (
           args: ExportHistoryArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ExportHistoryResult>;
       };
       layout: {
@@ -3985,7 +4132,7 @@ declare global {
         ) => Promise<{ ok: boolean }>;
       };
       tests: {
-        listSuites: () => Promise<TestSuiteDefinition[]>;
+        listSuites: (pin?: OpenProjectBinding | null) => Promise<TestSuiteDefinition[]>;
         run: (args: RunTestSuiteArgs) => Promise<TestRunSummary>;
         stop: (args: StopTestRunArgs) => Promise<void>;
         listRuns: (args?: ListTestRunsArgs) => Promise<TestRunSummary[]>;
@@ -3999,6 +4146,7 @@ declare global {
         ) => Promise<ProjectConfigValidationResult>;
         save: (
           candidate: ProjectConfigCandidate,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ProjectConfigSnapshot>;
         diffAgainstDisk: () => Promise<ProjectConfigDiff>;
       };
@@ -4013,31 +4161,34 @@ declare global {
         onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
       };
       cto?: {
-        getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;
+        // CTO calls take the CTO home machine's pin; null = the tab's binding.
+        getState: (args?: CtoGetStateArgs, pin?: OpenProjectBinding | null) => Promise<CtoSnapshot>;
         ensureSession: (
           args?: CtoEnsureSessionArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatSession>;
-        startFreshSession: () => Promise<CtoStartFreshSessionResult>;
-        getThreadHealth: () => Promise<CtoThreadHealth>;
+        startFreshSession: (pin?: OpenProjectBinding | null) => Promise<CtoStartFreshSessionResult>;
+        getThreadHealth: (pin?: OpenProjectBinding | null) => Promise<CtoThreadHealth>;
         listSessionLogs: (
           args?: CtoListSessionLogsArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<CtoSessionLogEntry[]>;
-        updateIdentity: (args: CtoUpdateIdentityArgs) => Promise<CtoSnapshot>;
-        getMemory: () => Promise<CtoMemorySnapshot>;
-        updateMemory: (args: CtoUpdateMemoryArgs) => Promise<CtoMemorySnapshot>;
-        searchMemory: (args: CtoSearchMemoryArgs) => Promise<CtoSearchMemoryResult>;
+        updateIdentity: (args: CtoUpdateIdentityArgs, pin?: OpenProjectBinding | null) => Promise<CtoSnapshot>;
+        getMemory: (pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
+        updateMemory: (args: CtoUpdateMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoMemorySnapshot>;
+        searchMemory: (args: CtoSearchMemoryArgs, pin?: OpenProjectBinding | null) => Promise<CtoSearchMemoryResult>;
         getLinearConnectionStatus: () => Promise<LinearConnectionStatus>;
         setLinearToken: (
           args: CtoSetLinearTokenArgs,
         ) => Promise<LinearConnectionStatus>;
         clearLinearToken: () => Promise<LinearConnectionStatus>;
-        getOnboardingState: () => Promise<CtoOnboardingState>;
+        getOnboardingState: (pin?: OpenProjectBinding | null) => Promise<CtoOnboardingState>;
         completeOnboardingStep: (args: {
           stepId: string;
-        }) => Promise<CtoOnboardingState>;
+        }, pin?: OpenProjectBinding | null) => Promise<CtoOnboardingState>;
         previewSystemPrompt: (args?: {
           identityOverride?: Record<string, unknown>;
-        }) => Promise<CtoSystemPromptPreview>;
+        }, pin?: OpenProjectBinding | null) => Promise<CtoSystemPromptPreview>;
         getLinearProjects: () => Promise<CtoLinearProject[]>;
         getLinearQuickView: () => Promise<CtoLinearQuickView>;
         getLinearIssuePickerData: () => Promise<CtoGetLinearIssuePickerDataResult>;
@@ -4055,8 +4206,8 @@ declare global {
         getLinearOAuthSession: (
           args: CtoGetLinearOAuthSessionArgs,
         ) => Promise<CtoGetLinearOAuthSessionResult>;
-        runProjectScan: () => Promise<CtoRunProjectScanResult>;
-        getAttention: () => Promise<CtoAttentionState>;
+        runProjectScan: (pin?: OpenProjectBinding | null) => Promise<CtoRunProjectScanResult>;
+        getAttention: (pin?: OpenProjectBinding | null) => Promise<CtoAttentionState>;
       };
       keepAwakeGet: () => Promise<KeepAwakeSnapshot>;
       keepAwakeSetLevel: (level: KeepAwakeLevel) => Promise<KeepAwakeSnapshot>;

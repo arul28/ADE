@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle } from "@phosphor-icons/react";
+import { bundledReleaseNotes } from "../../../shared/bundledReleaseNotes";
+import { parseReleaseNotesMdx, type ReleaseNotesDocument } from "../../../shared/releaseNotesMdx";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { AutoUpdateErrorDialog, isAutoUpdateDiskSpaceError } from "./AutoUpdateErrorDialog";
@@ -23,6 +25,11 @@ function progressLabel(progressPercent: number | null): string | null {
 function activeRuntimeVersionSkew(value: RuntimeVersionSkew | null | undefined): RuntimeVersionSkew | null {
   if (!value || value.state === "none") return null;
   return value;
+}
+
+function releaseNotesForVersion(version: string | null): ReleaseNotesDocument | null {
+  if (!version || bundledReleaseNotes.version !== version || !bundledReleaseNotes.markdown) return null;
+  return parseReleaseNotesMdx(bundledReleaseNotes.markdown);
 }
 
 export function AutoUpdateControl() {
@@ -161,6 +168,7 @@ export function AutoUpdateControl() {
   const releaseNotesUrl = snapshot.recentlyInstalled?.releaseNotesUrl ?? null;
   const githubReleaseUrl = snapshot.recentlyInstalled?.githubReleaseUrl ?? null;
   const installedVersion = snapshot.recentlyInstalled?.version ?? null;
+  const installedReleaseNotes = releaseNotesForVersion(installedVersion);
   const runtimeRequiresDesktopUpdate = runtimeSkew?.state === "runtime_newer";
   const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator && !showUpdateError;
 
@@ -293,7 +301,7 @@ export function AutoUpdateControl() {
         title={installedVersion ? `Updated to v${installedVersion}` : "ADE updated"}
         tone="success"
         icon={<CheckCircle size={16} weight="fill" />}
-        size="sm"
+        size={installedReleaseNotes ? "md" : "sm"}
         actions={[
           ...(releaseNotesUrl
             ? [
@@ -314,7 +322,25 @@ export function AutoUpdateControl() {
               ]
             : []),
         ]}
-      />
+      >
+        {installedReleaseNotes ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {installedReleaseNotes.summary ? (
+              <p style={{ margin: 0 }}>{installedReleaseNotes.summary}</p>
+            ) : null}
+            {installedReleaseNotes.sections.map((section) => (
+              <div key={section.title}>
+                <div style={{ fontWeight: 600, marginBottom: 4 }}>{section.title}</div>
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {section.items.map((item) => (
+                    <li key={item} style={{ marginBottom: 2 }}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </Dialog>
     </>
   );
 }

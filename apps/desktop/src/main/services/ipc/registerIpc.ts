@@ -85,7 +85,7 @@ import { isProviderInstanceProvider } from "../../../shared/types/providerInstan
 import { detectCliAuthStatuses } from "../ai/authDetector";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
-import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
+import { collectAcpProviderDiagnostics, runAcpProviderUpdate } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
 import { pathsEqual } from "../shared/pathCompare";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -208,6 +208,8 @@ import type {
   AppControlInspectPointArgs,
   AppControlLaunchArgs,
   AppControlSnapshotArgs,
+  AppControlCaptureProofArgs,
+  AppControlRecordStartArgs,
   AppControlStopArgs,
   AppControlTypeTextArgs,
   BuiltInBrowserBoundsArgs,
@@ -613,6 +615,7 @@ import type {
   AiFeatureKey,
   AiProviderConnections,
   AcpProviderDiagnostics,
+  AcpProviderUpdateResult,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -1814,7 +1817,10 @@ export function registerIpc({
   injectedProjectRecoveryService?: ProjectRecoveryService | null;
   createWindow?: (args?: { projectRoot?: string | null }) => Promise<{ windowId: number | null; project: ProjectInfo | null }>;
   closeWindow?: (windowId: number | null) => Promise<{ closed: boolean }>;
-  switchProjectFromDialog: (selectedPath: string) => Promise<ProjectInfo>;
+  switchProjectFromDialog: (
+    selectedPath: string,
+    options?: { trustGitOwnership?: boolean; webContentsId?: number | null },
+  ) => Promise<ProjectInfo>;
   /**
    * Roots main has tried to open. Read-only here: main.ts is the single
    * writer (it records a root only after resolving it to a real repository),
@@ -2819,6 +2825,7 @@ export function registerIpc({
     parseBuiltInBrowserStartPreviewStreamArgs,
     parseBuiltInBrowserStopPreviewStreamArgs,
     parseBuiltInBrowserStartRecordingArgs,
+    parseBuiltInBrowserStopRecordingArgs,
   } = createBuiltInBrowserIpcArgParsers({
     onInvalid: (channel, reason) =>
       getCtx().logger.warn("ipc.built_in_browser.invalid_args", { channel, reason }),
@@ -2835,6 +2842,24 @@ export function registerIpc({
     }
     if (!isRecord(value)) invalidAppControlArg(channel, "payload must be an object");
     return value as Record<string, unknown>;
+  };
+
+  /**
+   * The lane an App Control call acts on: the pane's own lane, or its chat's
+   * lane. App Control keeps a session per lane and refuses a call that names
+   * none. A session id is not accepted: it would name a lane through another
+   * lane's session, and a pane only ever acts on its own lane.
+   */
+  const parseAppControlLaneRef = (
+    record: Record<string, unknown>,
+    channel: string,
+  ): { laneId?: string | null; chatSessionId?: string | null } => {
+    const ref: { laneId?: string | null; chatSessionId?: string | null } = {};
+    const laneId = optionalAppControlString(record, "laneId", channel, 512);
+    if (laneId !== undefined) ref.laneId = laneId;
+    const chatSessionId = optionalAppControlString(record, "chatSessionId", channel, 128);
+    if (chatSessionId !== undefined) ref.chatSessionId = chatSessionId;
+    return ref;
   };
 
   const optionalAppControlString = (
@@ -2989,7 +3014,7 @@ export function registerIpc({
 
   const parseAppControlStopArgs = (value: unknown, channel: string): AppControlStopArgs => {
     const record = appControlRecord(value, channel);
-    const args: AppControlStopArgs = {};
+    const args: AppControlStopArgs = { ...parseAppControlLaneRef(record, channel) };
     const force = optionalAppControlBoolean(record, "force", channel);
     if (force !== undefined) args.force = force;
     return args;
@@ -2997,7 +3022,7 @@ export function registerIpc({
 
   const parseAppControlSnapshotArgs = (value: unknown, channel: string): AppControlSnapshotArgs => {
     const record = appControlRecord(value, channel);
-    const args: AppControlSnapshotArgs = {};
+    const args: AppControlSnapshotArgs = { ...parseAppControlLaneRef(record, channel) };
     const projectRoot = optionalAppControlString(record, "projectRoot", channel, 4096);
     if (projectRoot !== undefined) args.projectRoot = projectRoot;
     const x = optionalAppControlNumber(record, "x", channel, { min: 0, max: 100_000 });
@@ -3014,7 +3039,7 @@ export function registerIpc({
     const x = optionalAppControlNumber(record, "x", channel, { min: 0, max: 100_000 });
     const y = optionalAppControlNumber(record, "y", channel, { min: 0, max: 100_000 });
     if (x == null || y == null) invalidAppControlArg(channel, "x and y are required");
-    const args: AppControlInspectPointArgs = { x: x as number, y: y as number };
+    const args: AppControlInspectPointArgs = { ...parseAppControlLaneRef(record, channel), x: x as number, y: y as number };
     const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
     if (scale !== undefined) args.scale = scale;
     const coordinateSpace = optionalAppControlCoordinateSpace(record, channel);
@@ -3034,6 +3059,7 @@ export function registerIpc({
     const scale = optionalAppControlNumber(record, "scale", channel, { min: 0.01, max: 100 });
     const coordinateSpace = optionalAppControlCoordinateSpace(record, channel);
     return {
+      ...parseAppControlLaneRef(record, channel),
       x: x as number,
       y: y as number,
       ...(scale !== undefined ? { scale } : {}),
@@ -3045,7 +3071,32 @@ export function registerIpc({
     const record = appControlRecord(value, channel, true);
     const text = optionalAppControlString(record, "text", channel, 10_000, { trim: false });
     if (text == null) invalidAppControlArg(channel, "text is required");
-    return { text: text as string };
+    return { ...parseAppControlLaneRef(record, channel), text: text as string };
+  };
+
+  const parseAppControlLaneOnlyArgs = (value: unknown, channel: string) =>
+    parseAppControlLaneRef(appControlRecord(value, channel), channel);
+
+  const parseAppControlRecordStartArgs = (value: unknown, channel: string): AppControlRecordStartArgs => {
+    const record = appControlRecord(value, channel);
+    const args: AppControlRecordStartArgs = { ...parseAppControlLaneRef(record, channel) };
+    const caption = optionalAppControlString(record, "caption", channel, 500);
+    if (caption !== undefined) args.caption = caption;
+    const keepIdle = optionalAppControlBoolean(record, "keepIdle", channel);
+    if (keepIdle !== undefined) args.keepIdle = keepIdle;
+    const maxSeconds = optionalAppControlNumber(record, "maxSeconds", channel, { min: 1, max: 4 * 60 * 60 });
+    if (maxSeconds !== undefined) args.maxSeconds = maxSeconds;
+    const fps = optionalAppControlNumber(record, "fps", channel, { integer: true, min: 1, max: 60 });
+    if (fps !== undefined) args.fps = fps;
+    return args;
+  };
+
+  const parseAppControlCaptureProofArgs = (value: unknown, channel: string): AppControlCaptureProofArgs => {
+    const record = appControlRecord(value, channel);
+    const args: AppControlCaptureProofArgs = { ...parseAppControlLaneRef(record, channel) };
+    const caption = optionalAppControlString(record, "caption", channel, 500);
+    if (caption !== undefined) args.caption = caption;
+    return args;
   };
 
   const terminalRecord = (value: unknown): Record<string, unknown> => (isRecord(value) ? value as Record<string, unknown> : {});
@@ -4204,7 +4255,10 @@ export function registerIpc({
     };
   });
 
-  ipcMain.handle(IPC.projectOpenRepo, async (event, args: { rootPath?: string } = {}): Promise<ProjectInfo | null> => {
+  ipcMain.handle(IPC.projectOpenRepo, async (
+    event,
+    args: { rootPath?: string; trustGitOwnership?: boolean } = {},
+  ): Promise<ProjectInfo | null> => {
     // The chosen root is only known in the main process (the OS dialog picks
     // it), so a coded open failure must carry it back to the renderer for the
     // recovery screen — otherwise a disk-full/db-repair failure from the Open
@@ -4214,7 +4268,13 @@ export function registerIpc({
       const requestedRoot = args.rootPath?.trim();
       if (requestedRoot) {
         chosenRoot = requestedRoot;
-        return await switchProjectFromDialog(requestedRoot);
+        // `trustGitOwnership` is the user's "Trust" answer to the
+        // git_untrusted_folder prompt for this same folder. Main honours it
+        // only when it asked this renderer about this folder.
+        return await switchProjectFromDialog(requestedRoot, {
+          trustGitOwnership: args.trustGitOwnership === true,
+          webContentsId: event.sender.id,
+        });
       }
       const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
       const options: Electron.OpenDialogOptions = {
@@ -4227,7 +4287,7 @@ export function registerIpc({
       }
       const selected = result.filePaths[0]!;
       chosenRoot = selected;
-      return await switchProjectFromDialog(selected);
+      return await switchProjectFromDialog(selected, { webContentsId: event.sender.id });
     } catch (error) {
       return surfaceCodedError(error, chosenRoot ? { rootPath: chosenRoot } : undefined);
     }
@@ -4654,13 +4714,13 @@ export function registerIpc({
     return listRecentProjectSummaries({ force: true });
   });
 
-  ipcMain.handle(IPC.projectSwitchToPath, async (_event, arg: { rootPath: string }): Promise<ProjectInfo> => {
+  ipcMain.handle(IPC.projectSwitchToPath, async (event, arg: { rootPath: string }): Promise<ProjectInfo> => {
     try {
       const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
       if (!rootPath) return getCtx().project;
       const ctx = getCtx();
       if (ctx.hasUserSelectedProject && rootPath === ctx.project.rootPath) return ctx.project;
-      return await switchProjectFromDialog(rootPath);
+      return await switchProjectFromDialog(rootPath, { webContentsId: event.sender.id });
     } catch (error) {
       return surfaceCodedError(error);
     }
@@ -5046,8 +5106,10 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.aiGetOpenCodeRuntimeDiagnostics, async (): Promise<OpenCodeRuntimeSnapshot> => {
-    const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
-    return getOpenCodeRuntimeSnapshot();
+    const { getOpenCodeRuntimeDiagnostics } = await import("../opencode/openCodeServer");
+    const { servers } = getOpenCodeRuntimeDiagnostics();
+    const sharedCount = servers.filter((server) => server.shared).length;
+    return { sharedCount, dedicatedCount: servers.length - sharedCount, entries: servers };
   });
 
   // Cheap binary-only check (no probe, no server boot). Used by the renderer
@@ -5245,6 +5307,22 @@ export function registerIpc({
         // and a lane worktree would key a second, emptier cache entry.
         cwd: ctx.project.rootPath,
         ...(arg.runDoctor === true ? { runDoctor: true } : {}),
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.aiAcpProviderUpdate,
+    async (
+      _event,
+      arg: { provider: AcpChatProvider },
+    ): Promise<AcpProviderUpdateResult> => {
+      const ctx = getCtx();
+      // Same reasoning as diagnostics: this updates the CLI on the machine the
+      // main process runs on, never a remote host's.
+      return await runAcpProviderUpdate({
+        provider: arg.provider,
+        cwd: ctx.project.rootPath,
       });
     },
   );
@@ -9407,6 +9485,7 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorDeviceDelete, async (_event, arg = {}) => ensureIosSimulator().deviceDelete(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDetach, async (_event, arg = {}) => ensureIosSimulator().deviceDetach(arg));
   ipcMain.handle(IPC.iosSimulatorDeviceDeleteInstalled, async (_event, arg) => ensureIosSimulator().deviceDeleteInstalled(arg));
+  ipcMain.handle(IPC.iosSimulatorDeviceCleanup, async (_event, arg = {}) => ensureIosSimulator().deviceCleanup(arg));
   ipcMain.handle(IPC.iosSimulatorFrame, async (_event, arg = {}) => ensureIosSimulator().frame(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStart, async (_event, arg = {}) => ensureIosSimulator().recordStart(arg));
   ipcMain.handle(IPC.iosSimulatorRecordStop, async (_event, arg = {}) => ensureIosSimulator().recordStop(arg));
@@ -9552,9 +9631,12 @@ export function registerIpc({
     return { armed: macDesktopEscapeHotkey.isArmed() };
   });
 
-  ipcMain.handle(IPC.appControlGetStatus, async (event) => {
+  ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });
-    return ensureAppControl().getStatus();
+    const status = await ensureAppControl().getStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetStatus));
+    // A pane shows its own lane's session only; it never gets another lane's
+    // session to fall back to.
+    return { ...status, sessions: status.activeSession ? [status.activeSession] : [] };
   });
 
   ipcMain.handle(IPC.appControlLaunch, async (event, arg) => {
@@ -9577,19 +9659,19 @@ export function registerIpc({
     return ensureAppControl().stop(parseAppControlStopArgs(arg, IPC.appControlStop));
   });
 
-  ipcMain.handle(IPC.appControlFocusWindow, async (event) => {
+  ipcMain.handle(IPC.appControlFocusWindow, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlFocusWindow, { windowMs: 10_000, max: 20 });
-    return ensureAppControl().focusWindow();
+    return ensureAppControl().focusWindow(parseAppControlLaneOnlyArgs(arg, IPC.appControlFocusWindow));
   });
 
-  ipcMain.handle(IPC.appControlMinimizeWindow, async (event) => {
+  ipcMain.handle(IPC.appControlMinimizeWindow, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlMinimizeWindow, { windowMs: 10_000, max: 20 });
-    return ensureAppControl().minimizeWindow();
+    return ensureAppControl().minimizeWindow(parseAppControlLaneOnlyArgs(arg, IPC.appControlMinimizeWindow));
   });
 
-  ipcMain.handle(IPC.appControlScreenshot, async (event) => {
+  ipcMain.handle(IPC.appControlScreenshot, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlScreenshot, { windowMs: 10_000, max: 30 });
-    return ensureAppControl().screenshot();
+    return ensureAppControl().screenshot(parseAppControlLaneOnlyArgs(arg, IPC.appControlScreenshot));
   });
 
   ipcMain.handle(IPC.appControlGetSnapshot, async (event, arg) => {
@@ -9629,6 +9711,7 @@ export function registerIpc({
       return raw;
     };
     return ensureAppControl().scroll({
+      ...parseAppControlLaneRef(record, IPC.appControlScroll),
       x: finiteNumberOr("x", 0) as number,
       y: finiteNumberOr("y", 0) as number,
       deltaX: finiteNumberOr("deltaX", 0) as number,
@@ -9638,9 +9721,9 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.appControlListTargets, async (event) => {
+  ipcMain.handle(IPC.appControlListTargets, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlListTargets, { windowMs: 10_000, max: 60 });
-    return ensureAppControl().listTargets();
+    return ensureAppControl().listTargets(parseAppControlLaneOnlyArgs(arg, IPC.appControlListTargets));
   });
 
   ipcMain.handle(IPC.appControlAttachToTarget, async (event, arg) => {
@@ -9649,7 +9732,10 @@ export function registerIpc({
     if (typeof rawTargetId !== "string" || rawTargetId.length === 0) {
       throw new Error("appControlAttachToTarget: 'targetId' must be a non-empty string");
     }
-    return ensureAppControl().attachToTarget(rawTargetId);
+    return ensureAppControl().attachToTarget({
+      ...parseAppControlLaneRef(arg as Record<string, unknown>, IPC.appControlAttachToTarget),
+      targetId: rawTargetId,
+    });
   });
 
   ipcMain.handle(IPC.appControlDispatchKey, async (event, arg) => {
@@ -9664,6 +9750,7 @@ export function registerIpc({
     }
     const type = rawType;
     return ensureAppControl().dispatchKey({
+      ...parseAppControlLaneRef(record, IPC.appControlDispatchKey),
       type,
       key: stringField("key"),
       code: stringField("code"),
@@ -9676,6 +9763,32 @@ export function registerIpc({
       windowsVirtualKeyCode: numberField("windowsVirtualKeyCode"),
       nativeVirtualKeyCode: numberField("nativeVirtualKeyCode"),
     });
+  });
+
+  ipcMain.handle(IPC.appControlStartRecording, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlStartRecording, { windowMs: 60_000, max: 10 });
+    return ensureAppControl().startRecording(parseAppControlRecordStartArgs(arg, IPC.appControlStartRecording));
+  });
+
+  ipcMain.handle(IPC.appControlStopRecording, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlStopRecording, { windowMs: 60_000, max: 10 });
+    return ensureAppControl().stopRecording(parseAppControlLaneOnlyArgs(arg, IPC.appControlStopRecording));
+  });
+
+  ipcMain.handle(IPC.appControlCaptureProof, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlCaptureProof, { windowMs: 60_000, max: 30 });
+    return ensureAppControl().captureProof(parseAppControlCaptureProofArgs(arg, IPC.appControlCaptureProof));
+  });
+
+  ipcMain.handle(IPC.appControlGetRecordingStatus, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlGetRecordingStatus, { windowMs: 10_000, max: 60 });
+    return ensureAppControl().getRecordingStatus(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetRecordingStatus));
+  });
+
+  // A new viewer's first picture: the newest frame, or one fresh capture.
+  ipcMain.handle(IPC.appControlGetLatestFrame, async (event, arg) => {
+    guardAppControlIpc(event, IPC.appControlGetLatestFrame, { windowMs: 10_000, max: 60 });
+    return ensureAppControl().getLatestFrame(parseAppControlLaneOnlyArgs(arg, IPC.appControlGetLatestFrame));
   });
 
   ipcMain.handle(IPC.builtInBrowserGetStatus, async (event, arg) => {
@@ -9719,6 +9832,51 @@ export function registerIpc({
     return ensureBuiltInBrowser().clearPermissions(
       parseBuiltInBrowserClearPermissionsArgs(arg, IPC.builtInBrowserClearPermissions),
     );
+  });
+
+  // "Agents can use the ADE browser". Trusted-renderer only, and never on the
+  // desktop bridge: an agent must not be able to answer its own prompt.
+  ipcMain.handle(IPC.builtInBrowserAgentAccessGet, async (event) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessGet, { windowMs: 10_000, max: 60 });
+    return ensureBuiltInBrowser().getAgentAccess();
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessSetMode, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessSetMode, { windowMs: 10_000, max: 20 });
+    const mode = isRecord(arg) ? arg.mode : arg;
+    if (mode !== "all" && mode !== "lanes" && mode !== "chats") {
+      throw new Error(`${IPC.builtInBrowserAgentAccessSetMode}: mode must be all, lanes or chats.`);
+    }
+    return ensureBuiltInBrowser().setAgentAccessMode(mode);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessAnswer, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessAnswer, { windowMs: 10_000, max: 30 });
+    const promptId = isRecord(arg) && typeof arg.promptId === "string" ? arg.promptId.trim() : "";
+    const answer = isRecord(arg) ? arg.answer : null;
+    if (!promptId || (answer !== "all" && answer !== "lane" && answer !== "chat" && answer !== "block")) {
+      throw new Error(`${IPC.builtInBrowserAgentAccessAnswer}: expected { promptId, answer: all | lane | chat | block }.`);
+    }
+    return ensureBuiltInBrowser().answerAgentAccessPrompt(promptId, answer);
+  });
+
+  ipcMain.handle(IPC.builtInBrowserAgentAccessRevoke, async (event, arg) => {
+    guardBuiltInBrowserIpc(event, IPC.builtInBrowserAgentAccessRevoke, { windowMs: 10_000, max: 30 });
+    const kind = isRecord(arg) ? arg.kind : null;
+    const text = (value: unknown): string | null =>
+      typeof value === "string" && value.trim() ? value.trim() : null;
+    if (kind === "all") return ensureBuiltInBrowser().revokeAgentAccess({ kind: "all" });
+    if (kind === "lane" && isRecord(arg) && text(arg.laneId)) {
+      return ensureBuiltInBrowser().revokeAgentAccess({
+        kind: "lane",
+        laneId: text(arg.laneId)!,
+        projectRoot: text(arg.projectRoot),
+      });
+    }
+    if (kind === "chat" && isRecord(arg) && text(arg.chatSessionId)) {
+      return ensureBuiltInBrowser().revokeAgentAccess({ kind: "chat", chatSessionId: text(arg.chatSessionId)! });
+    }
+    throw new Error(`${IPC.builtInBrowserAgentAccessRevoke}: expected { kind: all } or a lane or chat to remove.`);
   });
 
   // ── Login import (human-only) ──────────────────────────────────────────────
@@ -10007,7 +10165,7 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserStopRecording, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserStopRecording, { windowMs: 60_000, max: 20 });
     return ensureBuiltInBrowser().stopRecording(
-      parseBuiltInBrowserTabTargetArgs(arg, IPC.builtInBrowserStopRecording),
+      parseBuiltInBrowserStopRecordingArgs(arg, IPC.builtInBrowserStopRecording),
       win,
     );
   });
@@ -11625,9 +11783,15 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string }) => {
+  ipcMain.handle(IPC.prsListSnapshots, async (_event, arg?: { prId?: string; prIds?: unknown }) => {
     const ctx = ensurePrReadContext();
-    return ctx.prService.listSnapshots({ prId: typeof arg?.prId === "string" ? arg.prId : undefined });
+    const prIds = Array.isArray(arg?.prIds)
+      ? arg.prIds.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
+      : undefined;
+    return ctx.prService.listSnapshots({
+      prId: typeof arg?.prId === "string" ? arg.prId : undefined,
+      ...(prIds ? { prIds } : {}),
+    });
   });
 
   ipcMain.handle(IPC.prsGetGitHubSnapshot, async (_event, arg?: { force?: boolean; includeExternalClosed?: boolean; historyPageLimit?: number; automaticRefresh?: boolean }): Promise<GitHubPrSnapshot> => {

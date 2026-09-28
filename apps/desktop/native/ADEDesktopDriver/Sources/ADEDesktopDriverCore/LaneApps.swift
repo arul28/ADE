@@ -311,6 +311,9 @@ public final class LaunchedAppRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var byPid: [Int32: App] = [:]
+    /// Instances a lane launched and then gave to the user with `release`.
+    /// `stop` never quits them; `app.quit` may, because the user asked.
+    private var releasedByPid: [Int32: App] = [:]
 
     public init() {}
 
@@ -382,6 +385,22 @@ public final class LaunchedAppRegistry: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         byPid.removeValue(forKey: pid)
+        releasedByPid.removeValue(forKey: pid)
+    }
+
+    /// A release gave the instance to the user: it is no longer the lane's,
+    /// so `stop` does not quit it, but the lane still knows it opened it.
+    public func markReleased(pid: Int32) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let app = byPid.removeValue(forKey: pid) { releasedByPid[pid] = app }
+    }
+
+    /// The instances this lane launched and then released to the user.
+    public func releasedApps(forLane laneId: String) -> [App] {
+        lock.lock()
+        defer { lock.unlock() }
+        return releasedByPid.values.filter { $0.laneId == laneId }.sorted { $0.pid < $1.pid }
     }
 
     /// Forgets every app of a lane, and returns them.

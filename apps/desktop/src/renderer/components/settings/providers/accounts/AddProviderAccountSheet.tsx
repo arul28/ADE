@@ -28,6 +28,8 @@ import type {
 import { AccentSwatchRow } from "./AccentSwatchRow";
 import { accountIdentityLine } from "./accountPresentation";
 import { providerActionMessage } from "../providerErrorMessage";
+import { pinnedProviderInstances } from "./useProviderInstances";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 
 /** How long `✓ <email>` stays up before the sheet closes itself. */
 const SUCCESS_HOLD_MS = 1_500;
@@ -52,6 +54,9 @@ export function AddProviderAccountSheet({
   defaultAccent,
   onClose,
 }: AddProviderAccountSheetProps) {
+  // The account, its login shell and its config home all live on the machine
+  // the Settings page is showing.
+  const { pin } = useSettingsMachineScope();
   const resuming = Boolean(existingInstance);
   const [phase, setPhase] = useState<Phase>(resuming ? "terminal" : "form");
   const [label, setLabel] = useState("");
@@ -80,16 +85,16 @@ export function AddProviderAccountSheet({
     const open = terminalRef.current;
     terminalRef.current = null;
     setTerminal(null);
-    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId });
-  }, []);
+    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, pin);
+  }, [pin]);
 
   // Always dispose: a login shell left running behind a closed sheet is a leak
   // nobody can see.
   useEffect(() => () => {
     const open = terminalRef.current;
     terminalRef.current = null;
-    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId });
-  }, []);
+    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, pin);
+  }, [pin]);
 
   const close = useCallback(() => {
     if (closedRef.current) return;
@@ -100,7 +105,7 @@ export function AddProviderAccountSheet({
   /** Start the provider's own login in a PTY bound to this account's config home. */
   const runLogin = useCallback(async (login: ProviderInstanceLoginCommand) => {
     if (!window.ade?.pty?.create) throw new Error("Terminals are not available in this window.");
-    const lanes = await window.ade.lanes.list({ includeArchived: false, includeStatus: false });
+    const lanes = await window.ade.lanes.list({ includeArchived: false, includeStatus: false }, pin);
     const laneId = lanes.find((lane) => lane.laneType === "primary")?.id ?? lanes[0]?.id ?? null;
     if (!laneId) throw new Error("No lane is available to run the sign-in in.");
     const created = await window.ade.pty.create({
@@ -115,18 +120,18 @@ export function AddProviderAccountSheet({
       command: login.command,
       args: login.args,
       env: login.env,
-    });
+    }, pin);
     if (!aliveRef.current) {
-      void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+      void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId }, pin);
       return;
     }
     terminalRef.current = { ptyId: created.ptyId, sessionId: created.sessionId };
     setTerminal({ ptyId: created.ptyId, sessionId: created.sessionId });
-  }, [providerLabel]);
+  }, [pin, providerLabel]);
 
   /** One refresh, then re-read this instance. Never a polling loop. */
   const checkSignedIn = useCallback(async (): Promise<boolean> => {
-    const api = window.ade?.providerInstances;
+    const api = pinnedProviderInstances(pin);
     const id = instanceIdRef.current;
     if (!api || !id) return false;
     const list = await api.refresh({ provider });
@@ -137,11 +142,11 @@ export function AddProviderAccountSheet({
       setPhase("success");
     }
     return true;
-  }, [provider]);
+  }, [pin, provider]);
 
   // ── Create the account, then start its sign-in ──
   const startCreate = useCallback(async () => {
-    const api = window.ade?.providerInstances;
+    const api = pinnedProviderInstances(pin);
     if (!api) {
       setError("Provider accounts are not available in this window.");
       return;
@@ -166,11 +171,11 @@ export function AddProviderAccountSheet({
     } finally {
       if (aliveRef.current) setBusy(false);
     }
-  }, [accent, label, provider, runLogin]);
+  }, [accent, label, pin, provider, runLogin]);
 
   // ── Reopening sign-in for an account that already exists ──
   const startResume = useCallback(async () => {
-    const api = window.ade?.providerInstances;
+    const api = pinnedProviderInstances(pin);
     const id = instanceIdRef.current;
     if (!api || !id) {
       setError("Provider accounts are not available in this window.");
@@ -186,7 +191,7 @@ export function AddProviderAccountSheet({
       setError(providerActionMessage(err, "That sign-in could not be started."));
       setPhase("failed");
     }
-  }, [runLogin]);
+  }, [pin, runLogin]);
 
   const startedRef = useRef(false);
   useEffect(() => {
@@ -209,9 +214,9 @@ export function AddProviderAccountSheet({
         .catch(() => {
           if (aliveRef.current) setPhase("failed");
         });
-    });
+    }, pin);
     return unsubscribe;
-  }, [checkSignedIn, terminal]);
+  }, [checkSignedIn, pin, terminal]);
 
   // ── Success beat, then close ──
   useEffect(() => {
@@ -351,6 +356,7 @@ export function AddProviderAccountSheet({
                 key={terminal.sessionId}
                 ptyId={terminal.ptyId}
                 sessionId={terminal.sessionId}
+                runtimePin={pin}
                 isActive
                 className="h-full w-full"
               />

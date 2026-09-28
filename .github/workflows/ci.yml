@@ -526,7 +526,7 @@ jobs:
           archive_listing="$RUNNER_TEMP/ade-${{ matrix.target }}-native-files.txt"
           tar -tzf "$archive" > "$archive_listing"
           grep -q '^\./node_modules/' "$archive_listing"
-          if grep -Eq '^\./node_modules/opencode-(darwin|linux|windows)-' "$archive_listing"; then
+          if grep -Eq '^\./node_modules/@opencode/cli-(darwin|linux|windows)-' "$archive_listing"; then
             echo "Unexpected duplicate OpenCode platform package in native runtime archive"
             exit 1
           fi

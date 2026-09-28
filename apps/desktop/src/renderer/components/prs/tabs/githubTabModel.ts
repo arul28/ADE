@@ -7,6 +7,7 @@ import type {
 import { syntheticGithubPrId } from "../../../../shared/types/prs";
 import { isTerminalPrState } from "../../../lib/prState";
 import type { OptimisticTerminalState } from "../state/PrsContext";
+import type { GitHubTabSort } from "./prBlockedSort";
 import {
   prRouteCoordinatesKey,
   prRouteCoordinatesMatch,
@@ -30,6 +31,8 @@ export type GitHubTabWarmCache = {
   projectRoot: string;
   snapshot: GitHubPrSnapshot | null;
   filter: GitHubFilter;
+  /** Row sort; absent in caches written before the Blocked-on-me sort landed. */
+  sort?: GitHubTabSort;
   selectedItemId: string | null;
   selectedItemIdsByFilter?: GitHubFilterSelectionMap;
   searchQuery: string;

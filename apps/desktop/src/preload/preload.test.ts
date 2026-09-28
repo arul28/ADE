@@ -4443,7 +4443,7 @@ describe("preload Apple device input routing", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.ptyResumeSession, input);
   });
 
-  it("routes App Control attachToTarget through the remote runtime with positional args", async () => {
+  it("routes App Control attachToTarget through the remote runtime as a lane args object", async () => {
     const binding = {
       kind: "remote",
       key: "remote:target-1:project-1",
@@ -4493,7 +4493,10 @@ describe("preload Apple device input routing", () => {
     await import("./preload");
 
     const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.appControl.attachToTarget({ targetId: "target-2" })).resolves.toEqual(result);
+    await expect(bridge.appControl.attachToTarget({
+      targetId: "target-2",
+      laneId: "lane-1",
+    })).resolves.toEqual(result);
 
     expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
       id: "target-1",
@@ -4501,7 +4504,7 @@ describe("preload Apple device input routing", () => {
       request: {
         domain: "app_control",
         action: "attachToTarget",
-        argsList: ["target-2"],
+        args: { targetId: "target-2", laneId: "lane-1" },
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.appControlAttachToTarget, expect.anything());

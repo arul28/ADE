@@ -6,6 +6,8 @@
  * `ade` daemon) can import it.
  */
 
+import type { ComputerUseActionEffect } from "./types/agentObservation";
+
 /** Every observation id starts with this prefix, which handles encode. */
 export const AGENT_OBSERVATION_ID_PREFIX = "obs-";
 
@@ -267,6 +269,42 @@ function(inputArg) {
     if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
     return node.matches(interactiveSelector) ? node : node.closest(interactiveSelector) || node;
   };
+  // The deepest focused element, through open shadow roots and same-origin
+  // frames, as a short key. The action-effect check only asks whether focus
+  // moved, so this names the element; it does not describe it.
+  const focusKeyNow = () => {
+    let node = document.activeElement;
+    for (let depth = 0; node && depth < 8; depth += 1) {
+      if (node.shadowRoot && node.shadowRoot.activeElement) {
+        node = node.shadowRoot.activeElement;
+        continue;
+      }
+      const tag = node.tagName ? node.tagName.toLowerCase() : "";
+      if (tag === "iframe" || tag === "frame") {
+        let inner = null;
+        try {
+          inner = node.contentDocument ? node.contentDocument.activeElement : null;
+        } catch {
+          inner = null;
+        }
+        if (inner && inner !== node.contentDocument.body) {
+          node = inner;
+          continue;
+        }
+      }
+      break;
+    }
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return null;
+    const doc = node.ownerDocument || document;
+    if (node === doc.body || node === doc.documentElement) return null;
+    return [
+      node.tagName.toLowerCase(),
+      node.getAttribute("role") || "",
+      node.getAttribute("name") || "",
+      normalizeText(node.getAttribute("aria-label")).slice(0, 80),
+      selectorFor(node)
+    ].join("|");
+  };
   const contexts = [];
   const collectContexts = (root, doc, win, offsetX, offsetY, framePath, shadowPath, depth) => {
     if (!root || typeof root.querySelectorAll !== "function" || depth > 4) return;
@@ -333,6 +371,19 @@ function(inputArg) {
     .slice(0, maxElements)
     .map((entry, index) => describe(entry.node, index + 1, entry.ctx))
     .filter(Boolean);
+  // The page's visible text, hashed. The element list holds only interactive
+  // elements, so a click that changes a heading or a status line ("Count: 1")
+  // would otherwise read as no effect. Capped so a huge page stays cheap.
+  const textKeyNow = () => {
+    const body = document.body;
+    const text = body ? String(body.innerText || "").replace(/\s+/g, " ").trim().slice(0, 20000) : "";
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return (hash >>> 0).toString(16) + ":" + text.length;
+  };
   const snapshot = {
     url: location.href,
     title: document.title,
@@ -340,7 +391,9 @@ function(inputArg) {
     viewport: { x: 0, y: 0, width: window.innerWidth, height: window.innerHeight },
     scroll: { x: window.scrollX, y: window.scrollY },
     elementCount: stable.length,
-    elements
+    elements,
+    focusKey: focusKeyNow(),
+    textKey: textKeyNow()
   };
 
   const findBySelector = (selector) => {
@@ -391,7 +444,23 @@ function(inputArg) {
       }
     }
     const exact = candidates.find((entry) => searchableText(entry.node) === needle);
-    return exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
+    const interactive = exact || candidates.find((entry) => searchableText(entry.node).includes(needle)) || null;
+    if (interactive) return interactive;
+    // No control carries the text: it may be a heading or a status line
+    // ("Count: 3"), which a wait or an assert must still find. Take the
+    // smallest visible element whose own text contains it.
+    let best = null;
+    for (const ctx of contexts) {
+      if (!contextMatches(ctx)) continue;
+      const walker = ctx.root.querySelectorAll("body *");
+      for (const node of Array.from(walker)) {
+        if (!(node instanceof Element) || !isDisplayed(node, ctx)) continue;
+        const text = lowerText(node.innerText || node.textContent || "");
+        if (!text.includes(needle)) continue;
+        if (!best || text.length < best.length) best = { entry: { node, ctx }, length: text.length };
+      }
+    }
+    return best ? best.entry : null;
   };
   const targetFromLocate = () => {
     if (!locate) return null;
@@ -410,8 +479,10 @@ function(inputArg) {
   if (rawTarget && rawTarget.error) return { snapshot, target: null, error: rawTarget.error };
   let target = rawTarget && rawTarget.node && rawTarget.node.nodeType === Node.ELEMENT_NODE ? rawTarget.node : null;
   const targetContext = rawTarget && rawTarget.ctx ? rawTarget.ctx : contexts[0];
+  let scrolledIntoView = false;
   if (target && typeof target.scrollIntoView === "function" && !intersectsViewport(target, targetContext)) {
     target.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+    scrolledIntoView = true;
   }
   if (target && !isDisplayed(target, targetContext)) target = null;
   if (target && shouldFocus) {
@@ -443,6 +514,11 @@ function(inputArg) {
     readyState: document.readyState,
     snapshot,
     target: describedTarget,
+    // What the locate itself did before any input was sent: it may have
+    // focused the target and scrolled it into view. The action-effect check
+    // reads these so neither counts as the action's effect.
+    focusKeyAfterLocate: locate ? focusKeyNow() : undefined,
+    scrolledIntoView,
     error: locate && !describedTarget ? "No matching element was found." : null
   };
 }
@@ -532,3 +608,212 @@ function(inputArg) {
   return { ok: true, count };
 }
 `;
+
+/* ── Action effect ─────────────────────────────────────────────────────── */
+
+/**
+ * One side of an action, reduced to what "did anything change" needs.
+ *
+ * Built from state a surface already holds — a DOM snapshot, an accessibility
+ * observation, a frame hash — so taking one costs a string join, never a
+ * screenshot. A field left `undefined` means "this surface cannot see it", and
+ * the comparison skips it instead of calling a missing value a change.
+ */
+export type AgentEffectFingerprint = {
+  url?: string | null;
+  title?: string | null;
+  /** The window list as one string, e.g. "12:Notes — Draft|14:Safari". */
+  windows?: string | null;
+  focus?: string | null;
+  scroll?: string | null;
+  /** A hash of the page's visible text (DOM surfaces). */
+  text?: string | null;
+  /** Elements found before any cap trimmed the list. */
+  elementCount?: number | null;
+  /** One key per listed element, in walk order. */
+  elements?: AgentEffectElementKey[] | null;
+  /** True when `elements` is only the start of a longer list. */
+  truncated?: boolean;
+  /** Pixel-only surfaces: a hash of the frame bytes. */
+  frameHash?: string | null;
+};
+
+/**
+ * What an element says (`content`) and where it sits (`layout`), each hashed,
+ * plus a short readable `name` (role and label) that the effect reason quotes.
+ */
+export type AgentEffectElementKey = { content: string; layout: string; name?: string };
+
+/** Frames compare on a 4-point grid: sub-pixel layout jitter is not a change. */
+const EFFECT_FRAME_GRID = 4;
+
+/**
+ * Roles whose value moves on its own (a spinner, a progress bar, a clock).
+ * Their value is left out of the key so a busy indicator does not read as the
+ * action's effect.
+ */
+const VOLATILE_VALUE_ROLES = new Set([
+  "progressbar",
+  "meter",
+  "timer",
+  "marquee",
+  "axprogressindicator",
+  "axbusyindicator",
+  "axlevelindicator",
+]);
+
+/** FNV-1a, 32-bit, as hex. Deterministic and dependency-free; not a security hash. */
+export function hashEffectString(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+const effectText = (value: string | null | undefined): string =>
+  typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 300) : "";
+
+const onEffectGrid = (value: number): number =>
+  Number.isFinite(value) ? Math.round(value / EFFECT_FRAME_GRID) * EFFECT_FRAME_GRID : 0;
+
+/** The stable key for one element: role, label, value, text, and a rounded frame. */
+export function agentEffectElementKey(element: {
+  role?: string | null;
+  label?: string | null;
+  value?: string | null;
+  text?: string | null;
+  disabled?: boolean | null;
+  frame?: { x: number; y: number; width: number; height: number } | null;
+}): AgentEffectElementKey {
+  const role = effectText(element.role);
+  const value = VOLATILE_VALUE_ROLES.has(role.toLowerCase()) ? "" : effectText(element.value);
+  const frame = element.frame;
+  const label = effectText(element.label) || effectText(element.text).slice(0, 40);
+  return {
+    name: label ? `${role} "${label.slice(0, 40)}"` : role,
+    content: hashEffectString(
+      [role, effectText(element.label), value, effectText(element.text), element.disabled === true ? "d" : ""].join("\u0000"),
+    ),
+    layout: frame
+      ? hashEffectString([frame.x, frame.y, frame.width, frame.height].map(onEffectGrid).join(","))
+      : "",
+  };
+}
+
+/**
+ * Which elements differ between two lists, as a multiset: a list that only
+ * reordered is unchanged, and one that swapped an element counts it once.
+ * When either list was capped, only the shared prefix is compared; the totals
+ * are compared separately through `elementCount`.
+ */
+function diffEffectElements(
+  before: AgentEffectFingerprint,
+  after: AgentEffectFingerprint,
+  ignoreLayout: boolean,
+): { added: AgentEffectElementKey[]; removed: AgentEffectElementKey[] } {
+  if (!before.elements || !after.elements) return { added: [], removed: [] };
+  const capped = before.truncated === true || after.truncated === true;
+  const length = Math.min(before.elements.length, after.elements.length);
+  const left = capped ? before.elements.slice(0, length) : before.elements;
+  const right = capped ? after.elements.slice(0, length) : after.elements;
+  const keyOf = (entry: AgentEffectElementKey): string =>
+    ignoreLayout ? entry.content : `${entry.content}@${entry.layout}`;
+  const remaining = new Map<string, AgentEffectElementKey[]>();
+  for (const entry of left) {
+    const key = keyOf(entry);
+    remaining.set(key, [...(remaining.get(key) ?? []), entry]);
+  }
+  const added: AgentEffectElementKey[] = [];
+  for (const entry of right) {
+    const key = keyOf(entry);
+    const pool = remaining.get(key);
+    if (pool && pool.length > 0) pool.pop();
+    else added.push(entry);
+  }
+  const removed = [...remaining.values()].flat();
+  return { added, removed };
+}
+
+/** Up to three quoted names, then "and N more". */
+function nameSome(names: string[]): string {
+  const unique = [...new Set(names.filter(Boolean))];
+  const shown = unique.slice(0, 3).join(", ");
+  return unique.length > 3 ? `${shown} and ${unique.length - 3} more` : shown;
+}
+
+/**
+ * One readable sentence for an element diff. An element whose name is on both
+ * sides changed in place (its value, state or position); the rest appeared or
+ * went away. The sentence names them, so an agent can tell a menu that opened
+ * from the text it typed.
+ */
+function describeElementDiff(added: AgentEffectElementKey[], removed: AgentEffectElementKey[]): string {
+  const removedNames = removed.map((entry) => entry.name ?? "");
+  const changed: string[] = [];
+  const appeared: string[] = [];
+  for (const entry of added) {
+    const name = entry.name ?? "";
+    const match = name ? removedNames.indexOf(name) : -1;
+    if (match >= 0) {
+      changed.push(name);
+      removedNames.splice(match, 1);
+    } else {
+      appeared.push(name);
+    }
+  }
+  const gone = removedNames;
+  const parts: string[] = [];
+  const count = (list: string[], one: string, many: string): string =>
+    list.length === 1 ? one : `${list.length} ${many}`;
+  if (changed.length) parts.push(`${count(changed, "1 element", "elements")} changed (${nameSome(changed)})`);
+  if (appeared.length) parts.push(`${count(appeared, "1 element", "elements")} appeared (${nameSome(appeared)})`);
+  if (gone.length) parts.push(`${count(gone, "1 element", "elements")} went away (${nameSome(gone)})`);
+  return parts.join("; ").replace(/ \(\)/g, "");
+}
+
+/**
+ * Compare the state before an action with the state after it.
+ *
+ * Returns the first difference in a fixed order — URL, title, windows, scroll,
+ * elements, element count, focus, frame — as one plain sentence, so the answer
+ * is deterministic for the same pair. `ignoreLayout` drops scroll and frames:
+ * set it when ADE itself scrolled the target into view before acting.
+ */
+export function compareAgentEffectFingerprints(
+  before: AgentEffectFingerprint | null | undefined,
+  after: AgentEffectFingerprint | null | undefined,
+  options: { ignoreLayout?: boolean; missingReason?: string } = {},
+): ComputerUseActionEffect {
+  if (!before || !after) {
+    return {
+      status: "not_checked",
+      reason: options.missingReason ?? "ADE had no earlier state to compare with",
+    };
+  }
+  const ignoreLayout = options.ignoreLayout === true;
+  const differs = (left: unknown, right: unknown): boolean =>
+    left !== undefined && right !== undefined && (left ?? null) !== (right ?? null);
+  const observed = (reason: string): ComputerUseActionEffect => ({ status: "observed", reason });
+  if (differs(before.url, after.url)) return observed("the URL changed");
+  if (differs(before.title, after.title)) return observed("the title changed");
+  if (differs(before.windows, after.windows)) return observed("a window opened, closed or changed title");
+  if (!ignoreLayout && differs(before.scroll, after.scroll)) return observed("the view scrolled");
+  const diff = diffEffectElements(before, after, ignoreLayout);
+  if (diff.added.length > 0 || diff.removed.length > 0) {
+    return observed(describeElementDiff(diff.added, diff.removed));
+  }
+  if (differs(before.elementCount, after.elementCount)) {
+    return observed(`the element count changed from ${before.elementCount ?? 0} to ${after.elementCount ?? 0}`);
+  }
+  if (differs(before.text, after.text)) return observed("the page text changed");
+  if (differs(before.focus, after.focus)) return observed("the focused element changed");
+  if (differs(before.frameHash, after.frameHash)) return observed("the screen image changed");
+  return { status: "unconfirmed", reason: "nothing on screen changed" };
+}
+
+/** The answer for an action that compared nothing, with the reason. */
+export function notCheckedEffect(reason: string): ComputerUseActionEffect {
+  return { status: "not_checked", reason };
+}

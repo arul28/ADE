@@ -22,6 +22,7 @@ import { TerminalView } from "../../terminals/TerminalView";
 import { openExternalUrl } from "../../../lib/openExternal";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice/Banner";
+import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 /**
  * Poll cadence for "are we signed in yet".
@@ -77,6 +78,9 @@ export function ProviderSignInModal({
   onClose,
   onSignedIn,
 }: ProviderSignInModalProps) {
+  // The login runs on the machine the Settings page is showing: its lane, its
+  // shell, its credential store.
+  const { pin } = useSettingsMachineScope();
   const [terminal, setTerminal] = useState<{ ptyId: string; sessionId: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [signedIn, setSignedIn] = useState(false);
@@ -95,7 +99,7 @@ export function ProviderSignInModal({
         const lanes = await window.ade.lanes.list({
           includeArchived: false,
           includeStatus: false,
-        });
+        }, pin);
         const resolvedLaneId = laneId ?? lanes.find((lane) => lane.laneType === "primary")?.id
           ?? lanes[0]?.id
           ?? null;
@@ -110,9 +114,9 @@ export function ProviderSignInModal({
           tracked: false,
           toolType: "shell",
           startupCommand: command,
-        });
+        }, pin);
         if (cancelled) {
-          void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+          void window.ade.pty.dispose({ ptyId: created.ptyId, sessionId: created.sessionId }, pin);
           return;
         }
         terminalRef.current = { ptyId: created.ptyId, sessionId: created.sessionId };
@@ -124,14 +128,14 @@ export function ProviderSignInModal({
     return () => {
       cancelled = true;
     };
-  }, [command, laneId, title]);
+  }, [command, laneId, pin, title]);
 
   // ── Dispose on unmount, always ──
   useEffect(() => () => {
     const open = terminalRef.current;
     terminalRef.current = null;
-    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId });
-  }, []);
+    if (open) void window.ade?.pty?.dispose({ ptyId: open.ptyId, sessionId: open.sessionId }, pin);
+  }, [pin]);
 
   // ── Open the first sign-in URL we see, once ──
   useEffect(() => {
@@ -143,9 +147,9 @@ export function ProviderSignInModal({
       if (!url) return;
       openedUrlRef.current = url;
       openExternalUrl(url);
-    });
+    }, pin);
     return unsubscribe;
-  }, [terminal]);
+  }, [pin, terminal]);
 
   // ── Watch for the auth status flipping green ──
   useEffect(() => {
@@ -220,6 +224,7 @@ export function ProviderSignInModal({
             key={`${providerId}:${terminal.sessionId}`}
             ptyId={terminal.ptyId}
             sessionId={terminal.sessionId}
+            runtimePin={pin}
             isActive
             className="h-full w-full"
           />

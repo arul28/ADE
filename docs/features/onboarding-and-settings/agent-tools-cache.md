@@ -21,9 +21,8 @@ through one shared lookup, `cacheLookup.ts`.
 | Factory Droid | — | No, still bundled | `@factory/droid-sdk` is pure JS (~15 MB) and force-inlined into the ade-cli bundle. There is no platform package to fetch. |
 
 The JS launcher and SDK packages of the fetched three — `@anthropic-ai/claude-agent-sdk`
-(ADE calls `query()` on it in-process), `@openai/codex`, `opencode-ai`,
-`@opencode-ai/sdk` — keep shipping. Only their **native platform siblings** move
-to the cache.
+(ADE calls `query()` on it in-process), `@openai/codex`, `@opencode/client` —
+keep shipping. Only their **native platform siblings** move to the cache.
 
 There is no offline or full-install variant. Internet at install time is an
 accepted requirement, not a degraded mode.
@@ -72,8 +71,8 @@ tarball:   .../@openai/codex/-/codex-0.156.1-darwin-arm64.tgz
 `ToolTargetPin.package` is deliberately documented as the *install directory*
 name, because that is what consumers expect to find in a `node_modules` tree.
 
-**Windows x64 OpenCode maps to `opencode-windows-x64-baseline`, never
-`opencode-windows-x64`.** The non-baseline build requires AVX2 and dies with an
+**Windows x64 OpenCode maps to `@opencode/cli-windows-x64-baseline`, never
+`@opencode/cli-windows-x64`.** The non-baseline build requires AVX2 and dies with an
 illegal instruction on pre-Haswell CPUs and older VMs. The baseline build targets
 the lower instruction set, is the same size, and shows no measurable throughput
 cost for how ADE drives OpenCode (a local HTTP server), so baseline *replaces*
@@ -84,7 +83,7 @@ That substitution is mirrored in about six places and they must move together:
 | File | Form |
 |---|---|
 | `apps/desktop/src/main/services/opencode/openCodeBinaryManager.ts` | `OPENCODE_PLATFORM_PACKAGES.win32.x64` — the only name the resolver looks for |
-| `apps/desktop/package.json` | `"!node_modules/opencode-windows-x64-baseline/**"` in `build.files` — the packaged app ships neither build now, so both names are excluded |
+| `apps/desktop/package.json` | `"!node_modules/@opencode/cli-windows-x64-baseline/**"` in `build.files` — the packaged app ships neither build now, so both names are excluded |
 | `apps/desktop/scripts/after-pack-runtime-fixes.cjs` | the prune list, derived from `RUNTIME_FETCHED_TOOL_PACKAGES` |
 | `apps/ade-cli/scripts/generate-tools-manifest.mjs` | `TOOLS[opencode].packages["win32-x64"]` |
 | `apps/ade-cli/scripts/native-deps-entry-filter.mjs` | `RUNTIME_FETCHED_TOOL_PACKAGES` |
@@ -129,7 +128,7 @@ profile — 650 MB must never roam.
     vendor/aarch64-apple-darwin/bin/codex
     .install-complete
   @anthropic-ai/claude-agent-sdk-darwin-arm64/0.3.280/
-  opencode-darwin-arm64/1.18.31/
+  @opencode/cli-darwin-arm64/2.0.18/
   .staging/
   .locks/
 ```
@@ -447,14 +446,12 @@ Verified spawns from the cache:
 |---|---|---|
 | `codex` | `codex-cli 0.144.5` | accepted — Notarized Developer ID, OpenAI OpCo LLC |
 | `claude` | `2.1.220 (Claude Code)` | accepted — Notarized Developer ID, Anthropic PBC |
-| `opencode` | `1.18.31` | **`invalid signature`** — ad-hoc / linker-signed, **not notarized** |
+| `opencode` | `2.0.18` | Developer ID, Anomaly Innovations, Inc., hardened runtime (`spctl` rejects only the exec assessment of a bare CLI, which is not an app) |
 
-OpenCode runs anyway. Its execution therefore depends entirely on the
-no-quarantine property above, not on notarization — if anything ever caused the
-cache to be written by a quarantine-applying agent, OpenCode is the binary that
-would break first. `probeOpenCodeBinaryQuarantine` in `openCodeBinaryManager.ts`
-exists to distinguish exactly that case (fixable with `xattr -d`) from a genuine
-bad signature.
+OpenCode 1.x was ad-hoc signed and depended on the no-quarantine property above.
+2.0 carries a Developer ID signature. `probeOpenCodeBinaryQuarantine` in
+`openCodeBinaryManager.ts` still tells a quarantined binary (fixable with
+`xattr -d`) apart from a bad signature.
 
 Extraction preserves mode 755, so no chmod pass is needed after unpacking.
 
@@ -469,8 +466,8 @@ whole tree, and it is independent of `target` — no target ships any of them.
 
 The set is exact-name rather than a prefix match on purpose: a prefix test on
 `@anthropic-ai/claude-agent-sdk` would swallow the SDK itself, which ADE calls
-`query()` on in-process and must keep shipping. The same holds for `@openai/codex`,
-`opencode-ai`, and `@opencode-ai/sdk`.
+`query()` on in-process and must keep shipping. The same holds for `@openai/codex`
+and `@opencode/client`.
 
 The packaged desktop app drops the same platform siblings, and imports the same
 `Set` to do it — `apps/desktop/scripts/runtime-fetched-tool-packages.mjs` re-exports

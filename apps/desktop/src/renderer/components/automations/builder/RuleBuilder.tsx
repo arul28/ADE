@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef } from "react";
-import type { ElementType } from "react";
+import type { ElementType, ReactNode } from "react";
 import {
   CheckCircle,
   FloppyDisk,
@@ -10,6 +10,7 @@ import {
   Sliders,
 } from "@phosphor-icons/react";
 import type {
+  OpenProjectBinding,
   AutomationDraftConfirmationRequirement,
   AutomationDraftIssue,
   AutomationIngressStatus,
@@ -128,6 +129,9 @@ export function RuleBuilder({
   onRunNow,
   onIngressChanged,
   cursorCloudConnected = false,
+  runtimePin = null,
+  machineField = null,
+  saveBlockedReason = null,
   saving,
   simulating = false,
   running = false,
@@ -147,6 +151,12 @@ export function RuleBuilder({
   onSimulate?: () => void;
   onRunNow?: () => void;
   onIngressChanged?: () => void;
+  /** The machine the rule runs on; null = the tab's machine. */
+  runtimePin?: OpenProjectBinding | null;
+  /** "Runs on [machine]" row, rendered with the trigger. */
+  machineField?: ReactNode;
+  /** Save stays disabled with this reason (e.g. no machine chosen yet). */
+  saveBlockedReason?: string | null;
   cursorCloudConnected?: boolean;
   saving: boolean;
   simulating?: boolean;
@@ -244,7 +254,13 @@ export function RuleBuilder({
                 Dry run
               </Button>
             ) : null}
-            <Button size="sm" variant="primary" disabled={saving} onClick={onSave}>
+            <Button
+              size="sm"
+              variant="primary"
+              disabled={saving || Boolean(saveBlockedReason)}
+              title={saveBlockedReason ?? undefined}
+              onClick={onSave}
+            >
               <FloppyDisk size={12} weight="regular" className={cn(saving && "animate-spin")} />
               Save
             </Button>
@@ -299,12 +315,14 @@ export function RuleBuilder({
           </Section>
 
           <Section icon={meta.icon} title="Trigger" hint={meta.hint}>
+            {machineField}
             <TriggerCard
               trigger={primaryTrigger}
               ingressStatus={ingressStatus}
               onChange={setTrigger}
               onIngressChanged={onIngressChanged}
               cursorCloudConnected={cursorCloudConnected}
+              runtimePin={runtimePin}
             />
           </Section>
 

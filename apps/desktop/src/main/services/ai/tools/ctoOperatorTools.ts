@@ -1,6 +1,8 @@
 import path from "node:path";
 import { type ExecutableTool as Tool } from "./executableTool";
 import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
+import type { CtoCrossMachineDeps } from "./ctoCrossMachine";
+import { asRemoteChat, asRemoteChats, asRemoteLanes, createCtoCrossMachineToolKit, summarizeLane } from "./ctoCrossMachineTools";
 import { z } from "zod";
 import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
@@ -252,7 +254,24 @@ export interface CtoOperatorToolDeps {
     listSessions: (args?: any) => Promise<any> | any;
     getTrace?: (args?: any) => Promise<any> | any;
   } | null;
+  /**
+   * The account's other machines. Only the brain wires it; absent, a tool that
+   * names another machine answers that other machines are not reachable here,
+   * and a tool that names none runs on this machine's services.
+   */
+  crossMachine?: CtoCrossMachineDeps | null;
 }
+
+/** The optional `machine` argument shared by every tool that can reach another machine. */
+const machineArgSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .describe(
+    "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
+    + "Lane and chat ids belong to one machine: pass the same machine you created or listed them on.",
+  );
 
 /**
  * The closed tag vocabulary, mirrored from `ctoMemoryService`. Facts and
@@ -585,10 +604,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   /**
    * One stamper per pack, so a tool's pack is visible AT its definition site
-   * and `grep -n "linear("` finds every Linear tool. The predecessor was a
-   * mutable `activePack` reassigned between sections: moving a definition
-   * across a section boundary silently re-packed it, which changed both its
-   * deferral and whether `applyCtoToolPackVisibility` kept its description.
+   * and `grep -n "linear("` finds every Linear tool. Moving a definition
+   * between sections cannot re-pack it, which would change both its deferral
+   * and whether `applyCtoToolPackVisibility` keeps its description.
    * `alwaysLoad` stays derived from the pack — a core tool cannot ship
    * un-loaded because someone forgot a flag.
    */
@@ -610,35 +628,62 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const config = inPack("config");
   const devices = inPack("devices");
 
+  const crossMachine = createCtoCrossMachineToolKit({
+    crossMachine: deps.crossMachine,
+    currentSessionId: deps.currentSessionId,
+    laneService: deps.laneService,
+    listChats: deps.listChats,
+    scheduledWorkService: deps.scheduledWorkService,
+    // Defined with the other domain tools below; called only at execute time.
+    confirmDestructive: (args) => confirmDestructive(args),
+  });
+  const { remoteMachine, onMachine, runRemote } = crossMachine;
+
+  tools.listMachines = core(crossMachine.tools.listMachines);
+
   tools.listLanes = core({
-    description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work.",
+    description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work. Pass machine to list another machine's lanes.",
     inputSchema: z.object({
       includeArchived: z.boolean().optional().default(false),
+      machine: machineArgSchema,
     }),
-    execute: async ({ includeArchived }) => {
-      const lanes = await deps.laneService.list({ includeArchived });
-      return {
-        success: true,
-        count: lanes.length,
-        lanes: lanes.map((lane) => ({
-          id: lane.id,
-          name: lane.name,
-          branchRef: lane.branchRef,
-          parentLaneId: lane.parentLaneId,
-          worktreePath: lane.worktreePath,
-          childCount: lane.childCount,
-          status: lane.status,
-        })),
-      };
+    execute: async ({ includeArchived, machine }) => {
+      try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const lanes = asRemoteLanes(await runRemote(target, { domain: "lane", action: "list", args: { includeArchived } }));
+          return { success: true, ...onMachine(target), count: lanes.length, lanes: lanes.map(summarizeLane) };
+        }
+        const lanes = await deps.laneService.list({ includeArchived });
+        return {
+          success: true,
+          count: lanes.length,
+          lanes: lanes.map(summarizeLane),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
     },
   });
 
   tools.inspectLane = core({
-    description: "Inspect one ADE lane by ID to understand its branch, worktree, and git state.",
+    description: "Inspect one ADE lane by ID to understand its branch, worktree, and git state. Pass machine for a lane on another machine.",
     inputSchema: z.object({
       laneId: z.string(),
+      machine: machineArgSchema,
     }),
-    execute: async ({ laneId }) => {
+    execute: async ({ laneId, machine }) => {
+      try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const raw = await runRemote(target, { domain: "lane", action: "list", args: { includeArchived: true } });
+          const lane = asRemoteLanes(raw).find((entry) => entry.id === laneId.trim()) ?? null;
+          if (!lane) return { success: false, error: `Lane not found on ${target.name}: ${laneId}` };
+          return { success: true, ...onMachine(target), lane };
+        }
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
       const lanes = await deps.laneService.list({ includeArchived: true });
       const lane = lanes.find((entry) => entry.id === laneId.trim()) ?? null;
       if (!lane) {
@@ -656,14 +701,30 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.createLane = core({
-    description: "Create a new ADE lane for isolated work.",
+    description: "Create a new ADE lane for isolated work. Pass machine to create it on another machine: the lane, its worktree and everything run in it then live on that machine.",
     inputSchema: z.object({
       name: z.string(),
       description: z.string().optional(),
-      parentLaneId: z.string().optional(),
+      parentLaneId: z.string().optional().describe("A lane on the same machine the new lane is created on."),
+      machine: machineArgSchema,
     }),
-    execute: async ({ name, description, parentLaneId }) => {
+    execute: async ({ name, description, parentLaneId, machine }) => {
       try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const lane = await runRemote(target, {
+            domain: "lane",
+            action: "create",
+            args: {
+              name,
+              ...(description !== undefined ? { description } : {}),
+              ...(parentLaneId !== undefined ? { parentLaneId } : {}),
+            },
+            // Creating a worktree on a large repository takes a while.
+            timeoutMs: 120_000,
+          });
+          return { success: true, ...onMachine(target), lane };
+        }
         const lane = await deps.laneService.create({ name, description, parentLaneId });
         return {
           success: true,
@@ -683,12 +744,33 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "List ADE chat sessions so you can supervise active work and persistent identity threads. Each row carries " +
       "its settle/snooze lifecycle plus `wokeReason` when a snooze broke early, so you can triage what actually " +
-      "needs you versus what is deliberately quiet.",
+      "needs you versus what is deliberately quiet. Pass machine to list another machine's chats (those rows carry no lifecycle).",
     inputSchema: z.object({
       laneId: z.string().optional(),
       includeIdentity: z.boolean().optional().default(true),
+      machine: machineArgSchema,
     }),
-    execute: async ({ laneId, includeIdentity }) => {
+    execute: async ({ laneId, includeIdentity, machine }) => {
+      try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          // Settle/snooze lifecycle is read from the home machine's session
+          // store, so rows from another machine carry the summary alone.
+          const raw = await runRemote(target, {
+            domain: "chat",
+            action: "listSessions",
+            args: {
+              ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
+              includeIdentity,
+              includeAutomation: false,
+            },
+          });
+          const chats = asRemoteChats(raw);
+          return { success: true, ...onMachine(target), count: chats.length, chats };
+        }
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
       const chats = await deps.listChats(laneId?.trim() || undefined, {
         includeIdentity,
         includeAutomation: false,
@@ -713,9 +795,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       "own default, which is the safe choice. It accepts ADE's full permission contract, including auto and " +
       "config-toml; for Droid's finer-grained levels, pass droidPermissionMode. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
-      "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
+      "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead. " +
+      "It is for real work (code changes, long investigations) — NOT for answering questions: to find out what is on a machine " +
+      "(lanes, chats, status, files), call the read tools yourself (listLanes, listChats, getChatStatus, runMachineAction) with machine. " +
+      "Pass machine to start it on another of the account's machines (call listMachines first): the chat runs on the machine that owns its lane. " +
+      "A chat on another machine cannot wake you, so a one-time check-in on your own thread is scheduled for checkBackMinutes later.",
     inputSchema: z.object({
-      laneId: z.string().optional().describe("Existing lane to run in. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane — that is the primary lane."),
+      laneId: z.string().optional().describe("Existing lane to run in, on the machine the chat runs on. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane — that is the primary lane."),
       modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). MUST be set when user specifies a model."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort advertised by the model, including 'max' or Codex 'ultra' when supported."),
       title: z.string().optional().describe("Display title for the chat session."),
@@ -743,14 +829,37 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           + "recorded as quiet notes and never wake you.",
         ),
       openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
+      machine: machineArgSchema,
+      checkBackMinutes: z
+        .number()
+        .int()
+        .min(0)
+        .max(24 * 60)
+        .optional()
+        .describe("Another machine only: minutes until your scheduled check-in on this chat. Default 15; 0 schedules none."),
     }),
-    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi }) => {
+    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, machine, checkBackMinutes }) => {
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
         const descriptor = rawModelId ? resolveModelDescriptor(rawModelId) : null;
         const selectedModelId = descriptor?.id ?? rawModelId ?? deps.defaultModelId ?? null;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
+        const target = await remoteMachine(machine);
+        if (target) {
+          return await crossMachine.spawnRemoteChat(target, {
+            laneId,
+            title,
+            initialPrompt,
+            provider: resolved.provider,
+            model: resolved.model,
+            modelId: selectedModelId,
+            reasoningEffort: reasoningEffort ?? deps.defaultReasoningEffort ?? null,
+            permissionMode,
+            droidPermissionMode,
+            checkBackMinutes,
+          });
+        }
         const executionLaneId = await deps.resolveExecutionLane({
           requestedLaneId: laneId?.trim() || undefined,
           purpose: title?.trim() || "implementation chat",
@@ -861,11 +970,26 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   tools.getChatStatus = core({
     description:
       "Get the current status for an ADE chat session, including its settle/snooze lifecycle " +
-      "and — when it recently came back from a snooze — the reason it woke.",
+      "and — when it recently came back from a snooze — the reason it woke. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId }) => {
+    execute: async ({ sessionId, machine }) => {
+      try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const session = asRemoteChat(await runRemote(target, {
+            domain: "chat",
+            action: "getSessionSummary",
+            args: { sessionId },
+          }));
+          if (!session) return { success: false, error: `Chat not found on ${target.name}: ${sessionId}` };
+          return { success: true, ...onMachine(target), session };
+        }
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
       const session = await deps.getChatStatus(sessionId);
       if (!session) return { success: false, error: `Chat not found: ${sessionId}` };
       return { success: true, session, lifecycle: readSessionLifecycle(deps, sessionId) };
@@ -1001,14 +1125,34 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.getChatTranscript = core({
-    description: "Read recent user and assistant turns for an ADE chat session without focusing the UI.",
+    description: "Read recent user and assistant turns for an ADE chat session without focusing the UI. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string(),
       limit: z.number().int().positive().max(100).optional().default(20),
       maxChars: z.number().int().positive().max(40000).optional().default(8000),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId, limit, maxChars }) => {
+    execute: async ({ sessionId, limit, maxChars, machine }) => {
       try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const raw = await runRemote(target, {
+            domain: "chat",
+            action: "readTranscript",
+            args: { sessionId, limit, maxChars },
+          });
+          const record = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+          const entries = Array.isArray(raw) ? raw : Array.isArray(record?.entries) ? record.entries as unknown[] : [];
+          return {
+            success: true,
+            ...onMachine(target),
+            sessionId,
+            entries,
+            truncated: record?.truncated === true,
+            totalEntries: typeof record?.totalEntries === "number" ? record.totalEntries : entries.length,
+            count: entries.length,
+          };
+        }
         const transcript = await deps.getChatTranscript({ sessionId, limit, maxChars });
         return {
           success: true,
@@ -2643,6 +2787,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       return { success: false, error: `Approval could not be requested: ${getErrorMessage(error)}` };
     }
   };
+
+  // ── Any ADE action, on any machine ─────────────────────────────────────────
+
+  tools.listMachineActions = core(crossMachine.tools.listMachineActions);
+  tools.runMachineAction = core(crossMachine.tools.runMachineAction);
 
   // ── Pack loading ───────────────────────────────────────────────────────────
 

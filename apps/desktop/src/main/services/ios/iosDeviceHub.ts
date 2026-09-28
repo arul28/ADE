@@ -37,7 +37,12 @@ import type {
   IosSimulatorUninstallAppArgs,
   IosSimulatorWaitForElementArgs,
 } from "../../../shared/types/iosSimulator";
-import { IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE, IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE } from "../../../shared/types/iosSimulator";
+import {
+  IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON,
+  IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,
+  IOS_SIMULATOR_OWNED_BY_OTHER_SESSION_CODE,
+} from "../../../shared/types/iosSimulator";
+import { notCheckedEffect } from "../../../shared/agentObservation";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 import { createIosDeviceTools, type IosDeviceToolsRunCommand } from "./iosDeviceTools";
@@ -80,6 +85,16 @@ const DEFAULT_WAIT_TIMEOUT_MS = 5_000;
 const MAX_WAIT_TIMEOUT_MS = 60_000;
 const WAIT_POLL_INTERVAL_MS = 350;
 const PROOF_LOG_ROW_DEFAULT = 50;
+
+/*
+ * The `effect` every element action answers with. None of them compare: a
+ * tap that did compare would need a second accessibility snapshot after it,
+ * which costs more than the tap. So a sent action says what to run instead,
+ * and the others say why there was nothing to compare.
+ */
+const APPLE_ACTION_EFFECT = notCheckedEffect(IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON);
+const NOTHING_SENT_EFFECT = notCheckedEffect("nothing was sent");
+const READ_ONLY_EFFECT = notCheckedEffect("this command reads the screen; it does not act");
 
 export type IosDeviceHubDeps = {
   run: IosDeviceToolsRunCommand;
@@ -760,13 +775,14 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         matchCount: match?.matchCount ?? 0,
         message: match ? describeElement(match.element) : reason,
         waitedMs: null,
+        effect: READ_ONLY_EFFECT,
       };
     },
 
     async tapElement(args: IosSimulatorTapElementArgs): Promise<IosSimulatorElementActionResult> {
       const { match, reason } = await findMatch(args);
       if (!match) {
-        return { ok: false, action: "tap", match: null, matchCount: 0, message: reason, waitedMs: null };
+        return { ok: false, action: "tap", match: null, matchCount: 0, message: reason, waitedMs: null, effect: NOTHING_SENT_EFFECT };
       }
       const point = elementTapPoint(match.element);
       if (!point) {
@@ -777,6 +793,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           matchCount: match.matchCount,
           message: `${describeElement(match.element)} has no usable frame to tap.`,
           waitedMs: null,
+          effect: NOTHING_SENT_EFFECT,
         };
       }
       await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y });
@@ -791,13 +808,14 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         matchCount: match.matchCount,
         message: null,
         waitedMs: null,
+        effect: APPLE_ACTION_EFFECT,
       };
     },
 
     async fillElement(args: IosSimulatorFillElementArgs): Promise<IosSimulatorElementActionResult> {
       const { match, reason } = await findMatch(args);
       if (!match) {
-        return { ok: false, action: "fill", match: null, matchCount: 0, message: reason, waitedMs: null };
+        return { ok: false, action: "fill", match: null, matchCount: 0, message: reason, waitedMs: null, effect: NOTHING_SENT_EFFECT };
       }
       if (args.focusFirst !== false) {
         const point = elementTapPoint(match.element);
@@ -809,6 +827,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
             matchCount: match.matchCount,
             message: `${describeElement(match.element)} has no usable frame to focus.`,
             waitedMs: null,
+            effect: NOTHING_SENT_EFFECT,
           };
         }
         await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y });
@@ -825,6 +844,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         matchCount: match.matchCount,
         message: null,
         waitedMs: null,
+        effect: APPLE_ACTION_EFFECT,
       };
     },
 
@@ -855,6 +875,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
             matchCount: match?.matchCount ?? 0,
             message: null,
             waitedMs,
+            effect: READ_ONLY_EFFECT,
           };
         }
         if (waitedMs >= timeoutMs) {
@@ -867,6 +888,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
               ? `${describeQuery(args.query)} is still on screen after ${timeoutMs}ms.`
               : lastReason ?? `${describeQuery(args.query)} did not appear within ${timeoutMs}ms.`,
             waitedMs,
+            effect: READ_ONLY_EFFECT,
           };
         }
         await new Promise<void>((resolve) => {
@@ -885,6 +907,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         matchCount: match?.matchCount ?? 0,
         message: match ? null : reason,
         waitedMs: null,
+        effect: READ_ONLY_EFFECT,
       };
     },
 

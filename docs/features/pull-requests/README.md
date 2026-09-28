@@ -70,22 +70,18 @@ Every `pr` domain read in preload takes an optional trailing
 `OpenProjectBinding` pin. `callPrReadRuntimeActionOr(pin, action, request,
 local)` routes through `callPinnedOrBoundRuntimeActionOr`, so a pinned read
 resolves on the lane's own machine while an unpinned one resolves on the
-machine the project tab is bound to. `pin: null` is a stated choice rather
-than an absence: the PRs tab is bound-machine-scoped by design, so every
-tab-scoped call site passes `null` explicitly. `prs.onEvent(cb, pin)` obeys
-the same rule — a pinned surface subscribes to the owning machine's
-`prs-updated` / `pr-reconcile` feed, because the bound runtime's feed
-describes a different database and would leave a pinned PR pill permanently
-stale.
+machine the project tab is bound to. The PR tab joins machine-owned PR-to-lane
+mappings from the shared lane union; rebase, integration, and workflow views
+show entries from every machine with machine-scoped ids. The original lane and
+proposal ids are restored at the call boundary, and `prs.onEvent(cb, pin)`
+subscribes to the owner machine's event stream.
 
-Reads are pinned; writes are not. Creating a PR is a write against the lane's
-worktree, and the inline creator derives branch, base, and Linear links from
-the bound machine's lanes, so a pinned `ChatPrPane` renders
-`Switch to <machine> to open one` in place of `ChatPrInlineCreator` instead
-of offering a button that cannot work. Opening a PR is machine-bound in one
-direction: the PRs tab resolves a PR id against the bound machine only, so a
-foreign PR's chip opens GitHub — the one destination that means the same
-thing from either machine. `openLanePr` in
+Lane mutations are pinned to their owner. Creating a lane from a PR always
+requires a machine choice when more than one eligible machine exists. The GitHub
+PR inventory remains repository-wide; lane actions route to the machine that
+owns the mapped lane, and merge is unavailable while that owner is offline.
+Opening a foreign PR can still fall back to GitHub when no local PR workspace
+can resolve it. `openLanePr` in
 `apps/desktop/src/renderer/lib/lanePrBadge.ts` is the single implementation of
 that decision, shared by the sidebar badge, the session card and its hover
 card, the chat Git toolbar, and the chat PR pane, so a fourth caller cannot
@@ -219,7 +215,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `tabs/WorkflowsTab.tsx` | Container for integration and rebase workflows. The Rebase/Merge history view is backed by actual ADE rebase operation records, while active rebase needs include any lane still behind its target regardless of banner hide/snooze state. |
 | `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
 | `tabs/githubTabModel.ts` | Pure list model for the GitHub tab: `githubCoordKey`, `matchesFilter`, `countGitHubItemsByState`, `reconcileLinkedPrState`, `computeTerminalOverlayItems`, and `applyOptimisticTerminalState` — which folds a locally-confirmed merge/close over a snapshot row. That overlay only ever moves a row **into** a terminal bucket, never back out, and expires after `OPTIMISTIC_TERMINAL_TTL_MS` (5 min) so a reopened PR cannot stay pinned to Closed for the session. |
-| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, and resolver flows. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live data. Persists the selected sub-tab (`overview | files | checks`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the selected tab. The old `activity` target remains accepted as an alias for Overview. The failing-log drawer's **Fix in chat** action queues a bounded log excerpt into the lane's most recent Work chat (or a new-chat draft) and then navigates there. Merge, close and reopen are issued for any selected PR — there is no lane precondition and no "this PR isn't mapped" refusal — and each records or clears an optimistic terminal state through `PrsContext` (`markPrTerminalLocally` on a confirmed merge/close, `clearPrTerminalLocally` on reopen) so the list and the pane agree before the refetch lands. The header's **Open as lane** offer is suppressed for terminal PRs: it needs an open PR and a live head branch, so on a merged PR it led nowhere. |
+| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, and resolver flows. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live data. Persists the selected sub-tab (`overview | files | checks`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the selected tab. The old `activity` target remains accepted as an alias for Overview. The failing-log drawer's **Fix in chat** action queues a bounded log excerpt into the lane's most recent Work chat (or a new-chat draft) and then navigates there. Merge, close and reopen are issued for any selected PR — there is no lane precondition and no "this PR isn't mapped" refusal — and each records or clears an optimistic terminal state through `PrsContext` (`markPrTerminalLocally` on a confirmed merge/close, `clearPrTerminalLocally` on reopen) so the list and the pane agree before the refetch lands. The header's **Open as lane** offer is suppressed for terminal PRs: it needs an open PR and a live head branch, so on a merged PR it led nowhere. The Files sub-tab renders each patch through `AdeDiffViewer` with the **Ignore whitespace** toggle persisted under `ade:diff:ignoreWhitespace:pr-code-tab`. A **Tree** toggle in the same toolbar (persisted under `ade:diff:fileTree:pr-code-tab`, default off) opens the shared `DiffFileTree` beside the flat list. The tree groups the changed paths into folders — open by default, each folder independently collapsible, with per-file git status marks (`A`/`M`/`D`/`R`) and folder-only **Expand all** / **Collapse all**. Clicking a file expands its diff and scrolls it into view. Folder state is pruned to the surviving paths when the file list changes, so an agent edit does not reset what the reader opened or closed. |
 | `detail/PrDetailTimelineRails.tsx` | The Overview: one thread column with the push tick rail (`PrPushTickRail`) on its right edge and the floating dock (`PrFloatingDock`) at the bottom right. Both are laid over the thread, so the thread keeps its full width. Builds `PrTimelineEvent[]` (`buildTimelineEvents`), turns it into the triage model (`buildDigestTimelineModel`), and computes the next step with `resolvePrNextStep`. Owns the Merge card actions (chat hand-off, update branch, draft, auto-merge, merge dialog), deep-link scrolling, and the `PrMarkdownEnvContext` that gives the description its file chips and `#123` pills. The draft and auto-merge actions go to the host as the same `PrNextStepAction` names (`PrStateAction`: `ready_for_review`, `enable_auto_merge`, `disable_auto_merge`); there is no second action vocabulary. `buildCommitRailCommits` returns `PrCommitTick[]`, and that type is defined here. The Reviewers card sends a `ReviewerRequest` (from `shared/types/prs.ts`). `PR_OVERVIEW_MIN_PX` (520) is the detail pane floor that `GitHubTabView` uses. The same layout serves the PRs tab and the chat tools panel. |
 | `detail/PrChecksTab.tsx` | CI workspace with Graph / List / Failures views. Graph nodes come from `PrWorkflowGraph`, which resolves by GitHub coordinates and so charts any PR in the repository; a workflow whose YAML will not parse degrades to honest swimlanes, and a *failed* Actions-runs read now surfaces "couldn't reach GitHub" with a retry instead of an empty chart that looks like "this repo has no CI". Matrix legs collapse to pips, running jobs show live elapsed time and step progress, and stale-head runs are called out. The first failing job auto-opens the detail drawer; a passing job opens it too, without a fetch. |
 | `detail/prChecksApi.ts` | The renderer's side of the checks IPC, and the one place the "is a log fetch worth it" decision lives. `isCheckLogFetchWorthwhile` says no for `passed` / `running` / `queued` / `skipped` — the graph node already carries that job's steps, conclusions and timings from the poll the pane runs anyway. `fetchCheckLogForState` returns a `resolution` of `fetched` / `skipped` / `no-api` so a caller never reads "no excerpt" as "the fetch failed", and `force` (a user asking for a green job's log) is the only thing that sets `includeLog` and steps outside the automatic-read budget. |
@@ -491,10 +487,19 @@ DTOs:
 ## GitHub data-loading model
 
 The GitHub tab renders PRs from the active repository, sorted by
-creation date. The scope filter (`all` / `ade` / `external`) is local
-to that repository: `ade` means ADE-managed/linked PRs, while
-`external` means repo PRs that are not currently managed by ADE.
-Cross-repo PRs involving the viewer are not fetched or displayed.
+most-recently-updated (falling back to created) by default. The toolbar's
+**Blocked** toggle switches to a "blocked on me" order: rows whose next step
+needs a person (conflicts, behind, failing checks, requested changes, a needed
+review, a blocking rule) float above rows still waiting on CI. It reuses
+`shared/prNextStep.ts` (`resolvePrNextStep` + `prNextStepBlocker`) rather than
+re-deriving blocker rules, never moves a row across the Open/Merged/Closed
+sections, and leaves relevance order alone while a search is active. The choice
+persists with the tab's other list preferences in the warm cache and, when it
+is `blocked`, in the URL as `sort=blocked` (`prsRouteState`). The scope filter
+(`all` / `ade` / `external`) is local to that repository: `ade` means
+ADE-managed/linked PRs, while `external` means repo PRs that are not currently
+managed by ADE. Cross-repo PRs involving the viewer are not fetched or
+displayed.
 
 Caching layers:
 

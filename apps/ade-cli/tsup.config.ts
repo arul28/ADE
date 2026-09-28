@@ -17,7 +17,7 @@ const tuiNoExternal = [
   "ink-text-input",
   "react",
   "react/jsx-runtime",
-  "@opencode-ai/sdk",
+  /^@opencode\/client(?:\/.*)?$/,
   "@xterm/headless",
   "marked",
   "string-width",
@@ -51,7 +51,7 @@ export default defineConfig([
     outDir: "dist",
     sourcemap: true,
     clean: true,
-    // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
+    // @opencode/client is ESM-only (no "require" export); force-inline it so
     // the CJS runtime bundle does not emit a bare require() that packaged
     // Electron-as-node cannot resolve.
     // string-width: cli.ts reaches it at module scope through
@@ -59,7 +59,7 @@ export default defineConfig([
     // externals through NODE_PATH into apps/desktop's production tree, which
     // does not ship it (v1.2.75 release smoke). verify-built-cli.mjs guards
     // this class.
-    noExternal: ["@factory/droid-sdk", "@opencode-ai/sdk", "yaml", "string-width"],
+    noExternal: ["@factory/droid-sdk", /^@opencode\/client(?:\/.*)?$/, "yaml", "string-width"],
     outExtension: () => ({
       js: ".cjs"
     }),

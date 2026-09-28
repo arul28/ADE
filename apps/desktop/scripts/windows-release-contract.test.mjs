@@ -131,8 +131,8 @@ test("local Windows test builds omit only cross-platform runtime sidecars", () =
   assert.match(winArtifactValidator, /Local test build: skipping the remote runtime sidecar assertion/);
   assert.match(whisperValidator, /Local Windows test build: Whisper CLI is not bundled/);
   assert.match(electronBuilderWrapper, /windowsHide: process\.platform === "win32"/);
-  // `opencode-ai` carries a 107 MB Windows executable in its own bin/ on every
-  // platform. OpenCode is fetched into the machine tools cache now, so that
+  // `@opencode/cli`'s postinstall copies the native binary into its own bin/ on
+  // every platform. OpenCode is fetched into the machine tools cache now, so that
   // payload is pruned on Windows too, not just off-target.
   assert.match(afterPackScript, /Pruned runtime-fetched OpenCode install shim/);
   assert.match(winArtifactValidator, /runtime-fetched OpenCode install shim/);
@@ -799,7 +799,7 @@ test("the Windows package excludes every runtime-fetched agent tool package", ()
     );
   }
   // The JS launcher and SDK still ship: breaking those breaks the product.
-  assert.ok(pkg.build.asarUnpack.includes("node_modules/opencode-ai/**"));
+  assert.ok(pkg.build.asarUnpack.includes("node_modules/@opencode/cli/**"));
   assert.ok(pkg.build.asarUnpack.includes("node_modules/@openai/codex/**"));
   assert.ok(pkg.build.asarUnpack.includes("node_modules/@anthropic-ai/claude-agent-sdk/**"));
 });

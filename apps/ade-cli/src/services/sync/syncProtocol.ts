@@ -137,6 +137,78 @@ export const SYNC_RUNTIME_ONLY_CAPABILITY = "runtimeOnly";
 export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
 export const SYNC_ENVELOPE_CHUNK_REASSEMBLY_TIMEOUT_MS = 30_000;
 
+/**
+ * Error code for a reply that is too large to send over sync. The request that
+ * asked for it fails; the connection stays open. Clients must not retry the
+ * same request in a loop, and must never treat this as a transport failure.
+ */
+export const SYNC_RESULT_TOO_LARGE_ERROR_CODE = "result_too_large";
+
+/**
+ * Largest serialized remote-command result the host will send. Kept well under
+ * the host's 16 MiB required-send budget so the envelope, chunk wrappers, and
+ * whatever else is already queued still fit.
+ */
+export const SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES = 12 * 1024 * 1024;
+
+export type SyncResultTooLargeError = {
+  code: typeof SYNC_RESULT_TOO_LARGE_ERROR_CODE;
+  message: string;
+  bytes: number;
+  limitBytes: number;
+};
+
+function formatSyncMegabytes(bytes: number): string {
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+export function buildSyncResultTooLargeError(args: {
+  /** Command action or envelope type, for the message. */
+  label: string;
+  bytes: number;
+  limitBytes: number;
+}): SyncResultTooLargeError {
+  return {
+    code: SYNC_RESULT_TOO_LARGE_ERROR_CODE,
+    message: `The reply to ${args.label} was ${formatSyncMegabytes(args.bytes)}, over the ${formatSyncMegabytes(args.limitBytes)} sync limit. Ask for less, for example one item at a time.`,
+    bytes: args.bytes,
+    limitBytes: args.limitBytes,
+  };
+}
+
+// Small identity fields a client may use to match a failed reply to its
+// request (commandId for command_result, action for file_response, and so on).
+const OVERSIZED_REPLY_IDENTITY_KEYS = [
+  "commandId",
+  "action",
+  "sessionId",
+  "chatSessionId",
+  "laneId",
+  "ptyId",
+  "terminalId",
+  "projectId",
+] as const;
+
+/**
+ * The small `{ ok: false, error }` reply sent in place of a reply that cannot
+ * be delivered. Keeps the request's identity fields so the client can resolve
+ * the right pending request; every other field of the original is dropped.
+ */
+export function buildSyncOversizedReplyPayload(
+  original: unknown,
+  error: SyncResultTooLargeError,
+): Record<string, unknown> {
+  const identity: Record<string, unknown> = {};
+  if (original && typeof original === "object" && !Array.isArray(original)) {
+    const record = original as Record<string, unknown>;
+    for (const key of OVERSIZED_REPLY_IDENTITY_KEYS) {
+      const value = record[key];
+      if (typeof value === "string" && value.length <= 512) identity[key] = value;
+    }
+  }
+  return { ...identity, ok: false, error };
+}
+
 export function normalizeSyncApplicationCompressionOffer(
   value: unknown,
 ): SyncApplicationCompressionCodec[] | undefined {

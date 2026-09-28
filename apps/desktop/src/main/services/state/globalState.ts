@@ -9,6 +9,11 @@ import type {
   RecentProjectRemoteRef,
   RecentlyInstalledUpdate,
 } from "../../../shared/types";
+import type {
+  BuiltInBrowserAgentAccessMode,
+  BuiltInBrowserAgentChatGrant,
+  BuiltInBrowserAgentLaneGrant,
+} from "../../../shared/types/builtInBrowser";
 import { projectRefStateKey } from "../../../shared/projectIdentity";
 import { sanitizePortableGitRemote } from "../../../shared/crossMachineHandoff";
 
@@ -39,6 +44,11 @@ export function recentProjectKey(
 ): string {
   return projectRefStateKey(proj);
 }
+
+export type UpdateWorkspaceState = {
+  localRoots: string[];
+  activeLocalRoot?: string | null;
+};
 
 export type PendingInstallUpdate = {
   fromVersion: string;
@@ -78,6 +88,16 @@ export type GlobalState = {
   recentProjects?: RecentProject[];
   pendingInstallUpdate?: PendingInstallUpdate;
   recentlyInstalledUpdate?: RecentlyInstalledUpdate;
+  /**
+   * Open local project tabs, written as they change. Read only on the launch
+   * that just finished installing an update.
+   */
+  updateWorkspace?: UpdateWorkspaceState;
+  /**
+   * Set only by the update quit. The next launch reopens `updateWorkspace`
+   * once, then clears this so a later ordinary launch stays on welcome.
+   */
+  restoreUpdateWorkspaceOnLaunch?: boolean;
   failedInstallAttempts?: FailedInstallAttempts;
   autoUpdatePreferences?: AutoUpdatePreferences;
   /** Whether ADE may hold this machine awake while agents run. Default: never. */
@@ -94,6 +114,16 @@ export type GlobalState = {
    * is set, which is what makes the CLI stop emitting it.
    */
   claudeResumeReturnDismissed?: boolean;
+  /**
+   * "Agents can use the ADE browser" and the lanes and chats the user allowed.
+   * Machine-wide because the browser's signed-in profile is one per install.
+   * Absent: every agent may use it (the default).
+   */
+  builtInBrowserAgentAccess?: {
+    mode?: BuiltInBrowserAgentAccessMode;
+    laneGrants?: BuiltInBrowserAgentLaneGrant[];
+    chatGrants?: BuiltInBrowserAgentChatGrant[];
+  };
 };
 
 export function readGlobalState(filePath: string): GlobalState {

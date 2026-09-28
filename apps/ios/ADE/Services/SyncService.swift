@@ -289,11 +289,44 @@ func unwrapSyncCommandResponse(_ raw: Any) throws -> Any {
   if let conflict = error?["conflict"] {
     userInfo["ADEHostConflict"] = conflict
   }
+  if let bytes = error?["bytes"] as? NSNumber {
+    userInfo["ADEResultBytes"] = bytes.intValue
+  }
+  if let limitBytes = error?["limitBytes"] as? NSNumber {
+    userInfo["ADEResultLimitBytes"] = limitBytes.intValue
+  }
   throw NSError(
     domain: "ADE",
     code: 17,
     userInfo: userInfo
   )
+}
+
+/// The host refused to send a reply because it was too large. The request
+/// failed; the connection is fine. Never retry the same request in a loop.
+let syncResultTooLargeErrorCode = "result_too_large"
+
+func isSyncResultTooLargeError(_ error: Error) -> Bool {
+  (error as NSError).userInfo["ADEErrorCode"] as? String == syncResultTooLargeErrorCode
+}
+
+func syncResultTooLargeMessage(for error: Error) -> String {
+  let bytes = (error as NSError).userInfo["ADEResultBytes"] as? Int
+  let size = bytes.map { String(format: " (%.1f MB)", Double($0) / 1_048_576) } ?? ""
+  return "This was too large to send to your phone\(size). Open one item at a time instead."
+}
+
+/// Same rule as the host's `prs.refresh` "active" default: open or draft PRs,
+/// and PRs whose lane is still live. Order follows the list.
+func syncActivePullRequestIds(_ prs: [PrSummary], liveLaneIds: Set<String>) -> [String] {
+  prs.filter { $0.state == "open" || $0.state == "draft" || liveLaneIds.contains($0.laneId) }.map(\.id)
+}
+
+let syncPullRequestRefreshBatchSize = 25
+
+func syncPullRequestRefreshBatches(_ ids: [String], size: Int = syncPullRequestRefreshBatchSize) -> [[String]] {
+  guard size > 0, !ids.isEmpty else { return [] }
+  return stride(from: 0, to: ids.count, by: size).map { Array(ids[$0..<min($0 + size, ids.count)]) }
 }
 
 func isRemoteCommandApplicationError(_ error: Error) -> Bool {
@@ -748,23 +781,12 @@ private let syncTerminalSubscriptionMaxBytes = 240_000
 /// real scrollback instead of a trimmed preview string.
 private let syncTerminalStreamMaxBytes = 512_000
 private let syncTerminalHistoryMaxBytes = 262_144
-private let syncChatSubscriptionMaxBytes = 256 * 1024
-private let syncChatHistoryTailPageProbeOffset = 1_000_000_000
-private let syncChatHistoryTailPageMaxBytes = 600_000
+let syncChatSubscriptionMaxBytes = 256 * 1024
+let syncChatHistoryTailPageMaxBytes = 600_000
 // A bounded tail keeps chat switches instant on constrained routes. Complete
 // reasoning remains reachable through the same byte-cursor paging contract.
 private let syncReducedLoadChatSubscriptionMaxBytes = 256 * 1024
 private let syncTerminalBufferMaxCharacters = 240_000
-private let chatEventHistoryMaxEvents = 1_000
-private let chatEventHistoryMaxSessions = 64
-/// Coalescing window for chat-event UI notifications. The coalescer fires on
-/// the leading edge (first event after a quiet period surfaces immediately)
-/// and then at most once per window during a sustained burst. Was a 420 ms
-/// trailing-only debounce, which stacked with the 100 ms timeline rebuild
-/// debounce into ~640 ms delta-to-screen — streaming read as laggy next to
-/// the desktop's immediate render.
-private let chatEventNotificationCoalesceSeconds: TimeInterval = 0.15
-private let chatEventNotificationCoalesceNanoseconds = UInt64((chatEventNotificationCoalesceSeconds * 1_000_000_000).rounded())
 
 enum SyncBonjourTiming {
   static let searchRetryNanoseconds: UInt64 = 2_000_000_000
@@ -1819,10 +1841,10 @@ enum SyncWireCompressionCodec: String {
   case gzip
   case deflate
 }
-private let syncApplicationCompressionCodecs = [SyncWireCompressionCodec.deflate.rawValue]
-private let syncApplicationCompressionThresholdBytes = 512
+let syncApplicationCompressionCodecs = [SyncWireCompressionCodec.deflate.rawValue]
+let syncApplicationCompressionThresholdBytes = 512
 private let syncEnvelopeChunkReassemblyTimeoutSeconds: TimeInterval = 30
-private let syncDefaultMaxFrameBytes = 720 * 1024
+let syncDefaultMaxFrameBytes = 720 * 1024
 private let syncProtocolVersion = 1
 private let syncProtocolMinSupported = 1
 
@@ -2198,12 +2220,7 @@ func syncDecodeChatEventEnvelope(_ payload: Any) -> AgentChatEventEnvelope? {
   return try? JSONDecoder().decode(AgentChatEventEnvelope.self, from: data)
 }
 
-/// Subscribe-snapshot decode, off-main for the same reason: the payload is a
-/// transcript tail of up to 256 KiB and it arrives as a thread is opening.
-func syncDecodeChatSubscribeSnapshot(_ payload: Any) -> SyncChatSubscribeSnapshotPayload? {
-  guard let data = try? adeJSONData(withJSONObject: payload) else { return nil }
-  return try? JSONDecoder().decode(SyncChatSubscribeSnapshotPayload.self, from: data)
-}
+
 
 private let syncAddressProbeQueue = DispatchQueue(label: "ade.sync.address-probe", qos: .userInitiated)
 
@@ -2853,6 +2870,9 @@ enum SyncUserFacingError {
     }
     if syncCodeIsPairingRejection(nsError.userInfo["ADEErrorCode"] as? String) {
       return "This phone is no longer paired with this machine. Pair again from Settings."
+    }
+    if isSyncResultTooLargeError(error) {
+      return syncResultTooLargeMessage(for: error)
     }
     if let friendly = syncHelloErrorFriendlyMessage(
       code: nsError.userInfo["ADEErrorCode"] as? String,
@@ -3615,31 +3635,6 @@ func syncChatSubscribeHistoryCursor(
   return tailStartOffset
 }
 
-/// Resolve the next stored cursor from a validated history page.
-///
-/// `nil` means preserve the existing cursor because the response is
-/// unavailable, mismatched, or non-progressing. A returned `0` is the
-/// authoritative exhausted sentinel.
-func syncChatHistoryPageCursor(
-  requestedSessionId: String,
-  beforeOffset: Int,
-  page: AgentChatEventHistoryPage
-) -> Int? {
-  guard page.unavailable != true,
-        page.sessionId == requestedSessionId,
-        beforeOffset > 0
-  else { return nil }
-  guard page.sessionFound else { return 0 }
-  guard page.startOffset >= 0,
-        page.startOffset < beforeOffset
-  else { return nil }
-  if page.hasMore {
-    guard page.startOffset > 0 else { return nil }
-    return page.startOffset
-  }
-  return 0
-}
-
 /// Lane ids that must be hydrated before a `work.listSessions` snapshot can be
 /// installed safely. The database deliberately rejects sessions whose lane is
 /// absent, so replacing Work first would silently discard a newly-created
@@ -3913,6 +3908,16 @@ final class MacDesktopStreamDecodeQueue {
   }
 }
 
+/// One slash command as the host's discovery reports it
+/// (`chat.getSlashCommands`). `argumentHint` is the host's cue that the command
+/// accepts input; `source` is `"sdk"` (discovered) or `"local"` (built in).
+struct HostSlashCommand: Codable, Equatable {
+  let name: String
+  let description: String?
+  let argumentHint: String?
+  let source: String?
+}
+
 @MainActor
 final class SyncService: ObservableObject {
   @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
@@ -4048,7 +4053,6 @@ final class SyncService: ObservableObject {
   @Published private(set) var hostCompatibilityMissingActions: [String] = []
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
-  @Published private(set) var chatEventNotificationRevision = 0
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   /// Live-view consumers for pushed `macDesktop.streamRecord` /
@@ -4060,6 +4064,10 @@ final class SyncService: ObservableObject {
   /// Serializes each subscription's record decodes so delivery stays in the
   /// order the socket received them.
   private let macDesktopStreamDecodeQueue = MacDesktopStreamDecodeQueue()
+  /// Live-view consumers for pushed `appControl.streamFrame` /
+  /// `appControl.streamEnded`, keyed by the subscription id the phone minted.
+  private var appControlStreamFrameHandlers: [String: (AppControlStreamFrame) -> Void] = [:]
+  private var appControlStreamEndedHandlers: [String: (AppControlStreamEnded) -> Void] = [:]
   @Published private(set) var pendingOperationCount = 0
   /// Offline new-chat creations awaiting sync. The Work list renders one
   /// "Pending sync" row per entry.
@@ -4244,23 +4252,24 @@ final class SyncService: ObservableObject {
   #if DEBUG
   private var terminalSnapshotRecoveryDelayOverrideForTesting: UInt64?
   #endif
-  private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
-  private var chatHistoryCursorBySession: [String: Int] = [:]
-  private var chatHistoryCursorAdvancedByPageSessionIds = Set<String>()
-  private(set) var chatEventRevisionsBySession: [String: Int] = [:]
+  /// Thread engines (mobile thread engine). Chat frames are routed here and
+  /// nowhere else: chat traffic never touches `@Published` state.
+  private(set) lazy var chatThreadRegistry: ChatThreadRegistry = {
+    let registry = ChatThreadRegistry(store: ChatLogStore.shared)
+    registry.transport = self
+    return registry
+  }()
+  /// Host pages `chat.getChatEventHistoryPage` by durable sequence.
+  private(set) var supportsChatHistoryPageBySequence = false
+  /// Host advertised `chatLogV2`: durable `sinceSequence`/`generation` resume,
+  /// `beforeSequence` history paging, generation tokens, pinned events.
+  private(set) var supportsChatLogV2 = false
   /// Highest host-assigned `seq` applied per chat session. Sent back as
   /// `sinceSeq` on re-subscribe so the host can replay exactly the missed
   /// events instead of a full snapshot, and used to drop duplicate/old
   /// events after a replay. Events without `seq` (older hosts) bypass this
   /// entirely, preserving today's behavior.
   private(set) var chatEventLastSeqBySession: [String: Int] = [:]
-  /// Live "a turn is running right now" hint per chat session. Seeded from
-  /// the chat_subscribe ack's `turnActive` field (authoritative host state at
-  /// subscribe time) and kept current by live `status` / `done` chat events.
-  /// Bridges two gaps the synced session row can't cover: the changeset pump
-  /// lagging behind the chat event stream, and byte-capped snapshot tails
-  /// that dropped the active turn's `status: started` event.
-  private(set) var chatTurnActiveHintBySession: [String: Bool] = [:]
   /// Latest known chat summary keyed by session id. Populated by the Work
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
@@ -4332,7 +4341,24 @@ final class SyncService: ObservableObject {
   private let pathMonitor = NWPathMonitor()
   private let pathMonitorQueue = DispatchQueue(label: "com.ade.sync.network-path")
   private let tailnetDiscovery = SyncTailnetProbe()
-  private var socket: URLSessionWebSocketTask?
+  private var socket: URLSessionWebSocketTask? {
+    didSet {
+      // The machine behind a new socket is unknown until its hello is applied.
+      // Until then the fleet must not send a roster hello anywhere: the host
+      // keeps one socket per phone per machine, and a later roster hello to
+      // the same machine would close this one.
+      guard socket !== oldValue else { return }
+      focusedSocketMachineKey = nil
+      machineFleet?.focusedConnectionChanged()
+    }
+  }
+  /// Storage key of the machine the focused socket is attached to, recorded
+  /// when its hello is applied; nil while no socket or before the hello.
+  private(set) var focusedSocketMachineKey: String?
+  /// Machines the focused connection is dialing right now.
+  private(set) var focusedDialingMachineKeys: Set<String> = []
+  /// The roster connections to every other live machine. Not owned here.
+  weak var machineFleet: MachineFleet?
   #if DEBUG
   private var capturesOutboundEnvelopesForTesting = false
   private var capturedOutboundEnvelopesForTesting: [(type: String, requestId: String?, projectId: String?)] = []
@@ -4428,10 +4454,6 @@ final class SyncService: ObservableObject {
   private var lanePresenceHeartbeatTask: Task<Void, Never>?
   private var openLaneReferenceCounts: [String: Int] = [:]
   private var terminalBufferRevisionTask: Task<Void, Never>?
-  private var chatEventRevisionTask: Task<Void, Never>?
-  /// When the chat-event revision last fired; drives the coalescer's
-  /// leading-edge check in `markChatEventsChanged`.
-  private var lastChatEventRevisionBumpAt = Date.distantPast
   private var databaseObserver: NSObjectProtocol?
   /// Coalesces bursty `adeDatabaseDidChange` notifications so SwiftUI projection
   /// reloads do not fire on every CRDT row during host sync.
@@ -4451,6 +4473,9 @@ final class SyncService: ObservableObject {
   private var pendingRemoteProfileDbVersionBySite: [String: Int] = [:]
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
+  /// Spots a connection that keeps closing right after hello for the same
+  /// reason, which the stability reset above would otherwise retry forever.
+  private var reconnectFlapTracker = SyncReconnectFlapTracker()
   /// Uptime when the app last went to the background, used to classify the
   /// resume. Deliberately monotonic (`systemUptime`), not wall clock: a device
   /// whose clock moves backward during a long suspension would otherwise report
@@ -4508,6 +4533,9 @@ final class SyncService: ObservableObject {
   /// `hello.features.macDesktopControl`: this host accepts a takeover from a
   /// paired controller. Absent keeps the sheet on the picture alone.
   private var advertisesMacDesktopControl = false
+  /// `hello.features.openCodeInboxSteer`: OpenCode chats on this host take a
+  /// mid-turn "send during turn" message. Older hosts only queue for OpenCode.
+  private(set) var supportsOpenCodeInboxSteer = false
   private let chatSnapshotRequestCoalescingInterval: TimeInterval = 5
   private let chatEventUnsubscribeRetentionLimit = 4
   private var recentFullChatSnapshotRequestBySession: [
@@ -4549,6 +4577,15 @@ final class SyncService: ObservableObject {
   /// same-project case, so it adds no work when the feature is unused. Every
   /// chat read/write for a listed session routes to that project.
   private var chatCommandScopeBySession: [String: SyncChatCommandScope] = [:]
+  /// Chats that live on ANOTHER paired machine (opened from the Hub or the
+  /// Work tab's same-repo rows). Every read, write and stream for these goes
+  /// through that machine's `MachineConnection`, never the focused socket.
+  private var remoteMachineChatsBySession: [String: SyncRemoteMachineChat] = [:]
+  /// Remote chats registered by an open chat screen, and by the Work list's
+  /// cross-machine rows. An entry leaves `remoteMachineChatsBySession` only
+  /// when neither owner holds it.
+  private var viewOwnedRemoteChatIds: Set<String> = []
+  private var workListRemoteChats: [String: SyncRemoteMachineChat] = [:]
   private var projectSelectionTask: Task<Void, Never>?
   private var projectSelectionGeneration: UInt64 = 0
   private var healthyConnectionSampleCount = 0
@@ -5234,8 +5271,10 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func refreshProjectCatalog(preferRemoteSelection: Bool = false) {
-    let cachedProjects = database.listMobileProjects().filter { !isProjectHidden($0) }
+  /// `cachedRows`: the project rows, already read off the main actor (the
+  /// post-changeset refresh). Nil reads them here.
+  func refreshProjectCatalog(preferRemoteSelection: Bool = false, cachedRows: [MobileProjectSummary]? = nil) {
+    let cachedProjects = (cachedRows ?? database.listMobileProjects()).filter { !isProjectHidden($0) }
     let remoteCatalog = deduplicatedRemoteProjectCatalog()
     let hasRemoteCatalog = !remoteCatalog.isEmpty
     var mergedById = Dictionary(uniqueKeysWithValues: remoteCatalog.map { ($0.id, $0) })
@@ -6088,7 +6127,7 @@ final class SyncService: ObservableObject {
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
     activeHostProfile = loadProfile()
-    hostName = activeHostProfile?.hostName
+    setHostName(activeHostProfile?.hostName)
     database.setActiveProjectId(activeProjectId)
     hiddenProjectKeys = loadHiddenProjectKeys()
     projects = deduplicateProjectListByRoot(
@@ -6205,6 +6244,8 @@ final class SyncService: ObservableObject {
     // attention action intent bridge. Tests that need an isolated instance may
     // overwrite it after init.
     Self.shared = self
+    // Field scroll diagnostics; a no-op unless launched with `-adeScrollDiagnostics 1`.
+    ScrollDiagnostics.shared.startIfEnabled()
 
     chatLaunchStore.onChange = { [weak self] in
       self?.chatLaunchRevision &+= 1
@@ -6229,7 +6270,6 @@ final class SyncService: ObservableObject {
     remoteCursorProfilePersistTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
     terminalBufferRevisionTask?.cancel()
-    chatEventRevisionTask?.cancel()
     snapshotDebouncerTask?.cancel()
     activeSessionsObservationTask?.cancel()
     discoveryBrowser.stop()
@@ -6272,15 +6312,33 @@ final class SyncService: ObservableObject {
         || touchedTables.contains(where: Self.tableAffectsProofArtifactsProjection)
       let affectsActiveSessions = affectsAll || touchedTables.contains(where: Self.tableAffectsActiveSessionsSnapshot)
 
+      // Read off the main actor. The SQLite connection is serialized, and the
+      // next changeset batch applies on a background thread: a main-actor
+      // read here waited for that whole apply (55-120 ms frames with no view
+      // work in them).
+      let database = self.database
+      let projectIdBeforeRead = activeProjectId
+      let prefetched = await Task.detached(priority: .userInitiated) {
+        (
+          projects: affectsProjectCatalog ? database.listMobileProjects() : nil,
+          sessions: affectsActiveSessions ? database.fetchSessions() : nil
+        )
+      }.value
+      // No cancellation check here: the pending tables were already taken
+      // above, so a newer change arriving during the read must not drop them.
+
       if affectsProjectCatalog {
-        self.refreshProjectCatalog()
+        self.refreshProjectCatalog(cachedRows: prefetched.projects)
       }
       if affectsAnyProjection {
         localStateRevision += 1
         self.bumpProjectionRevisions(for: touchedTables, laneDetailIds: laneDetailIds)
       }
       if affectsActiveSessions {
-        self.refreshActiveSessionsAndSnapshot()
+        // The user can change the project during the read. Rows read for the
+        // previous project are then dropped, and a fresh read is done.
+        let sessions = activeProjectId == projectIdBeforeRead ? prefetched.sessions : nil
+        self.refreshActiveSessionsAndSnapshot(rows: sessions)
       }
     }
   }
@@ -8605,7 +8663,7 @@ final class SyncService: ObservableObject {
 
   private func publishReconnectStarted(profile: HostConnectionProfile) {
     connectionState = .connecting
-    hostName = profile.hostName
+    setHostName(profile.hostName)
     relayAuthorizationRequirement = nil
     lastError = nil
   }
@@ -8923,6 +8981,7 @@ final class SyncService: ObservableObject {
   /// suspended. The cheap error is the safe one.
   func handleBackgroundTransition() {
     backgroundedAtUptime = ProcessInfo.processInfo.systemUptime
+    flushChatThreadLogsForBackground()
   }
 
   func handleForegroundTransition() async {
@@ -9340,7 +9399,7 @@ final class SyncService: ObservableObject {
     relayAuthorizationRequirement = nil
     hostCompatibilityMode = .unknown
     hostCompatibilityMissingActions = []
-    hostName = activeHostProfile?.hostName
+    setHostName(activeHostProfile?.hostName)
     latestRemoteDbVersion = 0
     resetOutboundCursorStateForActiveProject()
     setDomainStatus(SyncDomain.allCases, phase: .disconnected)
@@ -9366,11 +9425,16 @@ final class SyncService: ObservableObject {
       resetChatEventState(clearHistory: true)
       resetTerminalSubscriptionState(clearHistory: true)
       activeHostProfile = nil
-      hostName = nil
+      setHostName(nil)
     }
   }
 
   func forgetHost() {
+    // The machine's cached chat logs go with its pairing (edge case 19).
+    if let machineKey = (activeHostProfile ?? loadProfile()).flatMap({ profileStorageKey($0) }) {
+      chatThreadRegistry.purgeMachine(machineKey)
+      machineFleet?.savedMachinesChanged()
+    }
     // Best-effort: drop this device from the relay and end any Live Activity
     // before we tear down the pairing credentials.
     PushNotificationService.shared.handleUnpair()
@@ -9414,6 +9478,8 @@ final class SyncService: ObservableObject {
     }
 
     keychain.clearToken(hostKey: key)
+    chatThreadRegistry.purgeMachine(key)
+    machineFleet?.savedMachinesChanged()
     if let removedProfile = profiles[key] {
       for legacyKey in legacyProfileStorageKeys(removedProfile) {
         keychain.clearToken(hostKey: legacyKey)
@@ -9494,6 +9560,8 @@ final class SyncService: ObservableObject {
     var remaining = loadSavedProfilesRaw()
     for (key, profile) in owned {
       keychain.clearToken(hostKey: key)
+      chatThreadRegistry.purgeMachine(key)
+      machineFleet?.savedMachinesChanged()
       for legacyKey in legacyProfileStorageKeys(profile) {
         keychain.clearToken(hostKey: legacyKey)
       }
@@ -10137,30 +10205,87 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func refreshPullRequestSnapshots(prId: String? = nil) async throws {
-    let scope = try captureHydrationProjectScope()
+  /// PR hydration that stays small on every brain, including ones that
+  /// ignore `includeSnapshots` and answer an argument-less `prs.refresh` with
+  /// every stored snapshot (17 MB on a real project, which the host refused
+  /// and closed the socket over):
+  ///   1. `prs.list` — the PR list only.
+  ///   2. Active ids computed here: open/draft, or on a lane that is not archived.
+  ///   3. `prs.refresh { prIds, includeSnapshots: "active" }` in batches.
+  /// An empty active set skips step 3: an old brain reads empty `prIds` as "all".
+  private func hydratePullRequestsBounded(scope: SyncHydrationProjectScope) async throws {
+    let listRaw = try await sendCommand(
+      action: "prs.list",
+      args: [:],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      fallbackToActiveProjectScope: false
+    )
     try requireCurrentHydrationProjectScope(scope)
-    let statusAttempt = beginDomainHydrationAttempt([.prs])
-    var args: [String: Any] = [:]
-    if let prId {
-      args["prId"] = prId
-    }
-    do {
+    let prs = try decodeHydrationPayload(listRaw, as: [PrSummary].self, domainLabel: "pull request", decoder: decoder)
+    try requireCurrentHydrationProjectScope(scope)
+    // List only: "none" tells hydration it carries no snapshot information,
+    // so no cached snapshot is cleared here.
+    try database.replacePullRequestHydration(
+      PullRequestRefreshPayload(refreshedCount: prs.count, prs: prs, snapshots: [], snapshotScope: "none"),
+      pruneStale: true,
+      expectedProjectId: scope.projectId
+    )
+    let liveLaneIds = Set(database.fetchLanes(includeArchived: false).map(\.id))
+    let activeIds = syncActivePullRequestIds(prs, liveLaneIds: liveLaneIds)
+    for batch in syncPullRequestRefreshBatches(activeIds) {
       let raw = try await sendCommand(
         action: "prs.refresh",
-        args: args,
+        args: ["prIds": batch, "includeSnapshots": "active"],
         targetProjectId: scope.projectId,
         targetProjectRootPath: scope.rootPath,
         fallbackToActiveProjectScope: false
       )
       try requireCurrentHydrationProjectScope(scope)
-      let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+      var payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
       try requireCurrentHydrationProjectScope(scope)
-      try database.replacePullRequestHydration(
-        payload,
-        pruneStale: prId == nil,
-        expectedProjectId: scope.projectId
-      )
+      // Hydrate exactly what was asked for, whatever the brain sent back.
+      let batchIds = Set(batch)
+      payload.prs = payload.prs.filter { batchIds.contains($0.id) }
+      payload.snapshots = payload.snapshots.filter { batchIds.contains($0.prId) }
+      payload.snapshotScope = "requested"
+      payload.omittedSnapshotPrIds = nil
+      try database.replacePullRequestHydration(payload, pruneStale: false, expectedProjectId: scope.projectId)
+    }
+  }
+
+  func refreshPullRequestSnapshots(prId: String? = nil) async throws {
+    let scope = try captureHydrationProjectScope()
+    try requireCurrentHydrationProjectScope(scope)
+    let statusAttempt = beginDomainHydrationAttempt([.prs])
+    do {
+      if prId == nil, supportsRemoteAction("prs.list") {
+        try await hydratePullRequestsBounded(scope: scope)
+      } else {
+        var args: [String: Any] = [:]
+        if let prId {
+          args["prId"] = prId
+        } else {
+          // Host without `prs.list`: the single call is all there is. New
+          // brains honor the bounded default; very old ones send everything.
+          args["includeSnapshots"] = "active"
+        }
+        let raw = try await sendCommand(
+          action: "prs.refresh",
+          args: args,
+          targetProjectId: scope.projectId,
+          targetProjectRootPath: scope.rootPath,
+          fallbackToActiveProjectScope: false
+        )
+        try requireCurrentHydrationProjectScope(scope)
+        let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
+        try requireCurrentHydrationProjectScope(scope)
+        try database.replacePullRequestHydration(
+          payload,
+          pruneStale: prId == nil,
+          expectedProjectId: scope.projectId
+        )
+      }
       scheduleWorkspaceSnapshotWrite()
       finishDomainHydrationAttempt(statusAttempt, phase: .ready)
     } catch is CancellationError {
@@ -10305,6 +10430,29 @@ final class SyncService: ObservableObject {
     localSessions()
   }
 
+  /// The Work list's three replicated reads, run off the main actor.
+  ///
+  /// `DatabaseService` serializes every call behind one lock, and a changeset
+  /// batch applies under that lock on a detached task. Reading on the main
+  /// actor meant waiting out whatever batch was applying: a 323 ms stall
+  /// while the owner scrolled the Work tab. Only the in-memory session
+  /// overlays (main-actor state) are applied back here.
+  func fetchWorkListProjection() async -> (
+    sessions: [TerminalSessionSummary],
+    lanes: [LaneSummary],
+    pullRequests: [PullRequestListItem]
+  ) {
+    let database = self.database
+    let rows = await Task.detached(priority: .userInitiated) {
+      (
+        sessions: database.fetchSessions(),
+        lanes: database.fetchLanes(includeArchived: false),
+        pullRequests: database.fetchPullRequestListItems()
+      )
+    }.value
+    return (overlayLocalSessions(rows.sessions), rows.lanes, rows.pullRequests)
+  }
+
   func fetchSession(id sessionId: String) async throws -> TerminalSessionSummary? {
     localSession(id: sessionId)
   }
@@ -10322,11 +10470,16 @@ final class SyncService: ObservableObject {
   /// Safe from a render path — the bump is debounced, and the pass it triggers
   /// re-prunes, finds nothing, and stops.
   private func localSessions() -> [TerminalSessionSummary] {
+    overlayLocalSessions(database.fetchSessions())
+  }
+
+  /// `localSessions()` for rows already read from the database.
+  private func overlayLocalSessions(_ rows: [TerminalSessionSummary]) -> [TerminalSessionSummary] {
     // Restored FIRST, and separately from the two pending overlays below: those
     // are local guesses about lifecycle columns, while this is host state the
     // database round-trip dropped. Keeping it ahead of the early return is what
     // makes the chip survive a quiet phone with no overlays in flight.
-    let sessions = applySessionParentIdentityKeys(to: database.fetchSessions())
+    let sessions = applySessionParentIdentityKeys(to: rows)
     guard !pendingSessionOverlaysAreEmpty else { return sessions }
     prunePendingSessionOverlays(against: sessions)
     // Settle first, attention second. The two write disjoint column sets, and
@@ -10437,6 +10590,11 @@ final class SyncService: ObservableObject {
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) async throws -> [ComputerUseArtifactSummary] {
     database.fetchComputerUseArtifacts(ownerKind: ownerKind, ownerId: ownerId)
+  }
+
+  /// A proof record by id from the replicated project database, whatever chat filed it.
+  func fetchComputerUseArtifact(id artifactId: String) -> ComputerUseArtifactSummary? {
+    database.fetchComputerUseArtifact(id: artifactId)
   }
 
   func renameSession(sessionId: String, title: String) async throws {
@@ -11984,6 +12142,29 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Whether the connected host advertises the discovered slash-command
+  /// registry. An older brain omits `chat.getSlashCommands`; iOS then keeps its
+  /// minimal static fallback.
+  var supportsSlashCommandRegistry: Bool {
+    supportsRemoteAction("chat.getSlashCommands")
+  }
+
+  /// The host's discovered slash commands for a provider (and lane worktree,
+  /// when supplied). Newer hosts return the real registry; callers must keep a
+  /// static fallback for an older host or an offline failure.
+  func getSlashCommands(provider: String, laneId: String? = nil) async throws -> [HostSlashCommand] {
+    try requireInvokableRemoteAction("chat.getSlashCommands")
+    var args: [String: Any] = ["provider": provider]
+    if let laneId, !laneId.isEmpty {
+      args["laneId"] = laneId
+    }
+    return try await sendDecodableCommand(
+      action: "chat.getSlashCommands",
+      args: args,
+      as: [HostSlashCommand].self
+    )
+  }
+
   func importExternalSession(
     provider: String,
     sessionId: String,
@@ -12261,6 +12442,12 @@ final class SyncService: ObservableObject {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
     chatCommandScopeBySession.removeValue(forKey: trimmedSessionId)
+    viewOwnedRemoteChatIds.remove(trimmedSessionId)
+    if let listEntry = workListRemoteChats[trimmedSessionId] {
+      remoteMachineChatsBySession[trimmedSessionId] = listEntry
+    } else {
+      remoteMachineChatsBySession.removeValue(forKey: trimmedSessionId)
+    }
   }
 
   func clearPersonalChatScope(sessionId: String) {
@@ -12274,6 +12461,17 @@ final class SyncService: ObservableObject {
   /// The foreign project a chat command for this session must target, or
   /// (nil, nil) for the active project (the common case).
   private func chatCommandScope(for sessionId: String) -> (projectId: String?, rootPath: String?) {
+    // A chat on another machine carries a machine marker in its project id.
+    // `sendCommand` strips it and forwards to that machine; it never reaches
+    // a host (see `syncFleetRoute`).
+    if let remote = remoteMachineChatsBySession[sessionId] {
+      // The chat's machine became the focused one: the focused connection
+      // serves it as a chat of another project.
+      if remote.machineKey == focusedMachineKey {
+        return (remote.projectId, remote.rootPath.isEmpty ? nil : remote.rootPath)
+      }
+      return (syncFleetMarkedProjectId(machineKey: remote.machineKey, projectId: remote.projectId), remote.rootPath)
+    }
     guard case let .foreignProject(projectId, projectRootPath) = chatCommandScopeBySession[sessionId] else {
       return (nil, nil)
     }
@@ -12296,15 +12494,24 @@ final class SyncService: ObservableObject {
   }
 
   func supportsChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
-    supportsRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.supportsAction(projectAction)
+    }
+    return supportsRemoteAction(chatActionName(projectAction, sessionId: sessionId))
   }
 
   func canInvokeChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
-    canInvokeRemoteAction(chatActionName(projectAction, sessionId: sessionId))
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.isLive && connection.supportsAction(projectAction)
+    }
+    return canInvokeRemoteAction(chatActionName(projectAction, sessionId: sessionId))
   }
 
   func isChatRemoteActionQueueable(_ projectAction: String, sessionId: String) -> Bool {
-    isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
+    // Commands for another machine are never queued: a queued command could
+    // replay later to whichever machine is focused then.
+    if isRemoteMachineChat(sessionId: sessionId) { return false }
+    return isRemoteActionQueueable(chatActionName(projectAction, sessionId: sessionId))
   }
 
   /// Presence-gated Cursor Cloud inbound sync. The host polls cursor.com only
@@ -12332,8 +12539,42 @@ final class SyncService: ObservableObject {
     requestSnapshot: Bool = false,
     maxBytes: Int? = nil
   ) async throws -> Bool {
+    subscribeToChatEventsNow(sessionId: sessionId, requestSnapshot: requestSnapshot, maxBytes: maxBytes)
+  }
+
+  /// True while this chat's stream is open on the current connection (not
+  /// merely desired): events are flowing into its thread engine right now.
+  func chatSubscriptionIsLive(sessionId: String) -> Bool {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      return remoteChatConnection(for: trimmedSessionId)?.chatSubscriptionIsLive(trimmedSessionId) == true
+    }
+    return canSendLiveRequests()
+      && supportsChatStreaming
+      && subscribedChatSessionIds.contains(trimmedSessionId)
+      && !chatSubscriptionsNeedingRemoteActivation.contains(trimmedSessionId)
+  }
+
+  /// Synchronous body of `subscribeToChatEvents`, so a chat opening can put its
+  /// `chat_subscribe` on the wire in the same run-loop turn as the engine
+  /// attach.
+  @discardableResult
+  func subscribeToChatEventsNow(
+    sessionId: String,
+    requestSnapshot: Bool = false,
+    maxBytes: Int? = nil
+  ) -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return false }
+    if let remote = routedRemoteMachineChat(trimmedSessionId) {
+      guard let connection = machineFleet?.connection(for: remote.machineKey) else { return false }
+      return connection.subscribeChat(
+        sessionId: trimmedSessionId,
+        projectId: remote.projectId,
+        rootPath: remote.rootPath,
+        requestSnapshot: requestSnapshot
+      )
+    }
     let wasSubscribed = subscribedChatSessionIds.contains(trimmedSessionId)
     retainChatEventSubscription(sessionId: trimmedSessionId)
     let needsRemoteActivation = chatSubscriptionsNeedingRemoteActivation.contains(trimmedSessionId)
@@ -12369,10 +12610,6 @@ final class SyncService: ObservableObject {
         }
         return false
       }
-      // This subscribe establishes a fresh snapshot generation. If a history
-      // page lands before its ack, recording that page re-arms the stale-ack
-      // guard below.
-      chatHistoryCursorAdvancedByPageSessionIds.remove(trimmedSessionId)
       if requestSnapshot {
         recentFullChatSnapshotRequestBySession[trimmedSessionId] = (
           uptime: requestUptime,
@@ -12399,6 +12636,17 @@ final class SyncService: ObservableObject {
   func retainChatEventSubscription(sessionId: String) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    // A chat on another machine never joins the focused socket's
+    // subscriptions: a reconnect would subscribe it on the wrong machine.
+    if let remote = routedRemoteMachineChat(trimmedSessionId) {
+      _ = machineFleet?.connection(for: remote.machineKey)?.subscribeChat(
+        sessionId: trimmedSessionId,
+        projectId: remote.projectId,
+        rootPath: remote.rootPath,
+        requestSnapshot: false
+      )
+      return
+    }
     cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
     if subscribedChatSessionIds.insert(trimmedSessionId).inserted {
       chatSubscriptionsNeedingRemoteActivation.insert(trimmedSessionId)
@@ -12417,6 +12665,9 @@ final class SyncService: ObservableObject {
 
   func isFullChatEventSnapshotPending(sessionId: String) -> Bool {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      return remoteChatConnection(for: trimmedSessionId)?.pendingSnapshotSessionIds.contains(trimmedSessionId) == true
+    }
     guard canSendLiveRequests(),
           let recentRequest = recentFullChatSnapshotRequestBySession[trimmedSessionId]
     else {
@@ -12429,9 +12680,11 @@ final class SyncService: ObservableObject {
   /// chat pane renders an explicit failure with Retry rather than an empty
   /// transcript, so a dropped subscribe can no longer read as "no messages".
   func isFullChatEventSnapshotStalled(sessionId: String) -> Bool {
-    stalledChatSnapshotSessionIds.contains(
-      sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    )
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      return remoteChatConnection(for: trimmedSessionId)?.stalledChatSessionIds.contains(trimmedSessionId) == true
+    }
+    return stalledChatSnapshotSessionIds.contains(trimmedSessionId)
   }
 
   /// Re-request a snapshot after a stall, from the user tapping Retry. Clears
@@ -12440,6 +12693,10 @@ final class SyncService: ObservableObject {
   func retryFullChatEventSnapshot(sessionId: String) async {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    if isRemoteMachineChat(sessionId: trimmedSessionId) {
+      remoteChatConnection(for: trimmedSessionId)?.requestChatSnapshot(sessionId: trimmedSessionId)
+      return
+    }
     chatSnapshotResendAttemptsBySession.removeValue(forKey: trimmedSessionId)
     stalledChatSnapshotSessionIds.remove(trimmedSessionId)
     recentFullChatSnapshotRequestBySession.removeValue(forKey: trimmedSessionId)
@@ -12477,6 +12734,9 @@ final class SyncService: ObservableObject {
       )
       stalledChatSnapshotSessionIds.insert(sessionId)
       localStateRevision += 1
+      if let threadKey = chatThreadKey(for: sessionId) {
+        chatThreadRegistry.markSnapshotStalled(threadKey, message: nil)
+      }
       return
     }
     chatSnapshotResendAttemptsBySession[sessionId] = attempts + 1
@@ -12498,6 +12758,10 @@ final class SyncService: ObservableObject {
   func unsubscribeFromChatEvents(sessionId: String) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
+    if let remote = routedRemoteMachineChat(trimmedSessionId) {
+      machineFleet?.connection(for: remote.machineKey)?.unsubscribeChat(sessionId: trimmedSessionId)
+      return
+    }
     cancelDelayedChatUnsubscribe(sessionId: trimmedSessionId)
     performChatEventUnsubscribe(sessionId: trimmedSessionId)
   }
@@ -12510,6 +12774,12 @@ final class SyncService: ObservableObject {
     delayNanoseconds: UInt64 = 120_000_000_000
   ) {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let remote = routedRemoteMachineChat(trimmedSessionId) {
+      // The engine keeps the thread on disk and resumes from its durable
+      // sequence, so a chat on another machine unsubscribes at once.
+      machineFleet?.connection(for: remote.machineKey)?.unsubscribeChat(sessionId: trimmedSessionId)
+      return
+    }
     guard !trimmedSessionId.isEmpty,
           subscribedChatSessionIds.contains(trimmedSessionId)
     else { return }
@@ -12551,83 +12821,11 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func chatEventHistory(sessionId: String) -> [AgentChatEventEnvelope] {
-    chatEventEnvelopesBySession[sessionId] ?? []
-  }
-
-  func chatOlderHistoryCursor(sessionId: String) -> Int? {
-    guard let cursor = chatHistoryCursorBySession[sessionId], cursor > 0 else { return nil }
-    return cursor
-  }
-
-  /// `nil` means no full subscribe snapshot has established a cursor yet;
-  /// `0` is an authoritative exhausted cursor.
-  func chatOlderHistoryCursorState(sessionId: String) -> Int? {
-    chatHistoryCursorBySession[sessionId]
-  }
-
   func supportsSubscribedChatHistory(sessionId: String) -> Bool {
-    supportsChatHistoryPaging && subscribedChatSessionIds.contains(sessionId)
-  }
-
-  /// Prune a session's cached live-event window with a caller-supplied policy.
-  ///
-  /// The policy decides *which* events survive, not just how many: a plain tail
-  /// cut used to take the tiny `subagent_*` lifecycle envelopes with it, and
-  /// the reopen rebuild only back-fills text, so the thread came back looking
-  /// complete with every subagent card missing. Returns the retained events.
-  @discardableResult
-  func pruneChatEventHistory(
-    sessionId: String,
-    using prune: ([AgentChatEventEnvelope]) -> [AgentChatEventEnvelope]
-  ) -> [AgentChatEventEnvelope] {
-    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmedSessionId.isEmpty,
-          let events = chatEventEnvelopesBySession[trimmedSessionId]
-    else { return [] }
-    let next = prune(events)
-    guard next.count < events.count else { return events }
-    chatEventEnvelopesBySession[trimmedSessionId] = next
-    return next
-  }
-
-  func chatEventRevision(for sessionId: String) -> Int {
-    chatEventRevisionsBySession[sessionId] ?? 0
-  }
-
-  /// True/false when the host has told us whether a turn is currently running
-  /// for this session (subscribe ack or live status/done events); nil when no
-  /// signal has arrived yet (e.g. older hosts without `turnActive`).
-  func chatTurnActiveHint(sessionId: String) -> Bool? {
-    chatTurnActiveHintBySession[sessionId]
-  }
-
-  func updateChatTurnActiveHint(sessionId: String, turnActive: Bool) {
-    guard chatTurnActiveHintBySession[sessionId] != turnActive else { return }
-    chatTurnActiveHintBySession[sessionId] = turnActive
-    // Streaming-state flips drive the stop button and activity indicator —
-    // surface them immediately rather than waiting out the event coalescer.
-    markChatEventsChanged(immediate: true)
-  }
-
-  /// Drop the hint so streaming state falls back to transcript-derived
-  /// signals. Used when a full subscribe ack carries no `turnActive` (older
-  /// host, or no live summary) — keeping a stale `true` would pin the stop
-  /// button and the active-poll loop on a session the host no longer runs.
-  private func clearChatTurnActiveHint(sessionId: String) {
-    guard chatTurnActiveHintBySession.removeValue(forKey: sessionId) != nil else { return }
-    markChatEventsChanged(immediate: true)
-  }
-
-  private func updateChatTurnActiveHintFromEvent(_ envelope: AgentChatEventEnvelope) {
-    switch envelope.event {
-    case .status(let turnStatus, _, _):
-      updateChatTurnActiveHint(sessionId: envelope.sessionId, turnActive: turnStatus == .started)
-    case .done:
-      updateChatTurnActiveHint(sessionId: envelope.sessionId, turnActive: false)
-    default:
-      break
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.supportsChatHistoryPaging && connection.isChatSubscribed(sessionId)
     }
+    return supportsChatHistoryPaging && subscribedChatSessionIds.contains(sessionId)
   }
 
   func chatSubscriptionPayloads() -> [[String: Any]] {
@@ -13891,40 +14089,6 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func fetchChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
-    let scope = chatCommandScope(for: sessionId)
-    return try await sendDecodableCommand(
-      action: chatActionName("chat.getChatEventHistory", sessionId: sessionId),
-      args: ["sessionId": sessionId, "maxEvents": max(1, min(chatEventHistoryMaxEvents, maxEvents))],
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath,
-      as: AgentChatEventHistorySnapshot.self
-    )
-  }
-
-  @discardableResult
-  func hydrateChatEventHistorySnapshot(sessionId: String, maxEvents: Int = chatEventHistoryMaxEvents) async throws -> AgentChatEventHistorySnapshot {
-    let snapshot = try await fetchChatEventHistorySnapshot(sessionId: sessionId, maxEvents: maxEvents)
-    guard snapshot.sessionFound != false else { return snapshot }
-    mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
-    return snapshot
-  }
-
-  @discardableResult
-  func hydrateChatEventHistoryTailPage(sessionId: String) async throws -> AgentChatEventHistoryPage {
-    let page = try await fetchChatEventHistoryPage(
-      sessionId: sessionId,
-      beforeOffset: syncChatHistoryTailPageProbeOffset,
-      maxBytes: syncChatHistoryTailPageMaxBytes
-    )
-    guard page.unavailable != true,
-          page.sessionFound,
-          page.sessionId == sessionId
-    else { return page }
-    mergeChatEventHistory(sessionId: sessionId, events: page.events)
-    return page
-  }
-
   /// Full tool results already fetched on this device. The bounded cache is
   /// shared by the inline card and the turn-activity sheet, and keys include
   /// the transcript sequence so a retried item id cannot reuse an older result.
@@ -14036,103 +14200,6 @@ final class SyncService: ObservableObject {
     return try decode(raw, as: AgentChatToolResultResponse.self)
   }
 
-  func fetchChatEventHistoryPage(
-    sessionId: String,
-    beforeOffset: Int,
-    maxBytes: Int? = nil
-  ) async throws -> AgentChatEventHistoryPage {
-    if supportsChatHistoryPaging,
-       subscribedChatSessionIds.contains(sessionId) {
-      let requestId = makeRequestId()
-      var payload = chatSubscriptionPayload(
-        sessionId: sessionId,
-        maxBytes: nil,
-        includeSinceSeq: false
-      )
-      payload["beforeOffset"] = max(0, beforeOffset)
-      if let maxBytes, maxBytes > 0 {
-        payload["maxBytes"] = max(1_024, min(syncChatHistoryTailPageMaxBytes, maxBytes))
-      }
-      let raw = try await awaitResponse(
-        requestId: requestId,
-        disconnectOnTimeout: false,
-        timeoutMessage: "Timed out loading earlier chat messages.",
-        timeoutNanoseconds: 8_000_000_000
-      ) {
-        self.sendEnvelope(type: "chat_history", requestId: requestId, payload: payload)
-      }
-      let page = try decode(raw, as: AgentChatEventHistoryPage.self).stampingEnvelopeOffsets()
-      recordChatHistoryPageCursor(
-        requestedSessionId: sessionId,
-        beforeOffset: beforeOffset,
-        page: page
-      )
-      return page
-    }
-    var args: [String: Any] = ["sessionId": sessionId, "beforeOffset": beforeOffset]
-    if let maxBytes, maxBytes > 0 {
-      args["maxBytes"] = maxBytes
-    }
-    let scope = chatCommandScope(for: sessionId)
-    let page = try await sendDecodableCommand(
-      action: chatActionName("chat.getChatEventHistoryPage", sessionId: sessionId),
-      args: args,
-      disconnectOnTimeout: false,
-      timeoutNanoseconds: 8_000_000_000,
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath,
-      as: AgentChatEventHistoryPage.self
-    ).stampingEnvelopeOffsets()
-    recordChatHistoryPageCursor(
-      requestedSessionId: sessionId,
-      beforeOffset: beforeOffset,
-      page: page
-    )
-    return page
-  }
-
-  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> AgentChatTranscriptResponse {
-    let scope = chatCommandScope(for: sessionId)
-    if isPersonalChatScope(sessionId: sessionId) {
-      let response = try await sendCommand(
-        action: "personalChats.read",
-        args: ["sessionId": sessionId, "limit": limit],
-        fallbackToActiveProjectScope: false
-      )
-      let entries = try decode(response, as: [AgentChatTranscriptEntry].self)
-      return AgentChatTranscriptResponse(
-        sessionId: sessionId,
-        entries: entries,
-        truncated: false,
-        totalEntries: entries.count
-      )
-    }
-    return try await sendDecodableCommand(
-      action: chatActionName("chat.getTranscript", sessionId: sessionId),
-      args: ["sessionId": sessionId, "limit": limit, "maxChars": maxChars],
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath,
-      as: AgentChatTranscriptResponse.self
-    )
-  }
-
-  func fetchChatTranscript(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> [AgentChatTranscriptEntry] {
-    let response = try await fetchChatTranscriptResponse(sessionId: sessionId, limit: limit, maxChars: maxChars)
-    return response.entries
-  }
-
-  /// One page of a paginated chat transcript walk. `nextCursor` is opaque to
-  /// the client. Current hosts advertise `cursorKind == "byte"` and use a
-  /// stable logical JSONL byte offset; older hosts omit it and use indices.
-  struct AgentChatTranscriptPage: Equatable {
-    var sessionId: String
-    var entries: [AgentChatTranscriptEntry]
-    var truncated: Bool
-    var totalEntries: Int
-    var nextCursor: Int?
-    var cursorKind: String?
-  }
-
   struct AgentChatSubagentSnapshot: Codable, Equatable {
     var taskId: String
     var agentId: String?
@@ -14155,87 +14222,6 @@ final class SyncService: ObservableObject {
     var parentAgentId: String?
     var spawnDepth: Int?
     var resourceLinks: [AgentChatResourceLink]?
-  }
-
-  /// Fetch a transcript page. Without `cursor` this returns the newest
-  /// entries (same data as `fetchChatTranscriptResponse`) plus a cursor for
-  /// walking backwards; with `cursor` it returns the page strictly BEFORE
-  /// that append-stable logical byte offset. Older hosts that used dense
-  /// entry indices or predate pagination identify the mode by omitting
-  /// `cursorKind`; clients retain the legacy merge path for those responses.
-  /// Hosts without pagination simply omit
-  /// `nextCursor`, which surfaces here as `nil` (no more pages).
-  func fetchChatTranscriptPage(
-    sessionId: String,
-    cursor: Int? = nil,
-    limit: Int = 200,
-    maxChars: Int = 600_000
-  ) async throws -> AgentChatTranscriptPage {
-    if isPersonalChatScope(sessionId: sessionId) {
-      // Personal chat scrollback uses the byte-offset event-history API. The
-      // plain `read` action returns one bounded transcript array and has no
-      // stable numeric cursor, so expose it only as the initial fallback page.
-      guard cursor == nil else {
-        return AgentChatTranscriptPage(
-          sessionId: sessionId,
-          entries: [],
-          truncated: false,
-          totalEntries: 0,
-          nextCursor: nil,
-          cursorKind: nil
-        )
-      }
-      let transcript = try await fetchChatTranscriptResponse(
-        sessionId: sessionId,
-        limit: limit,
-        maxChars: maxChars
-      )
-      return AgentChatTranscriptPage(
-        sessionId: transcript.sessionId,
-        entries: transcript.entries,
-        truncated: transcript.truncated,
-        totalEntries: transcript.totalEntries,
-        nextCursor: nil,
-        cursorKind: nil
-      )
-    }
-    var args: [String: Any] = [
-      "sessionId": sessionId,
-      "limit": limit,
-      "maxChars": maxChars,
-      "cursorKind": "byte"
-    ]
-    if let cursor, cursor > 0 {
-      args["cursor"] = String(cursor)
-    }
-    let scope = chatCommandScope(for: sessionId)
-    let response = try await sendCommand(
-      action: chatActionName("chat.getTranscript", sessionId: sessionId),
-      args: args,
-      targetProjectId: scope.projectId,
-      targetProjectRootPath: scope.rootPath
-    )
-    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-      throw QueuedRemoteCommandError(action: "chat.getTranscript")
-    }
-    let transcript = try decode(response, as: AgentChatTranscriptResponse.self)
-    var nextCursor: Int?
-    let responseDictionary = response as? [String: Any]
-    if let rawCursor = responseDictionary?["nextCursor"] {
-      if let text = rawCursor as? String {
-        nextCursor = Int(text)
-      } else if let number = rawCursor as? NSNumber, !(rawCursor is Bool) {
-        nextCursor = number.intValue
-      }
-    }
-    return AgentChatTranscriptPage(
-      sessionId: transcript.sessionId,
-      entries: transcript.entries,
-      truncated: transcript.truncated,
-      totalEntries: transcript.totalEntries,
-      nextCursor: nextCursor,
-      cursorKind: responseDictionary?["cursorKind"] as? String
-    )
   }
 
   func fetchSubagents(sessionId: String) async throws -> [AgentChatSubagentSnapshot] {
@@ -15389,6 +15375,116 @@ final class SyncService: ObservableObject {
     }
   }
 
+  // MARK: - App Control live view
+
+  /// Whether this host can push the lane's App Control frames. There is no
+  /// feature bit: the host registers the command only when it built the frame
+  /// fan-out, so the advertisement alone is the answer.
+  var supportsAppControlStream: Bool {
+    supportsViewerRemoteAction("appControl.streamSubscribe")
+      && supportsViewerRemoteAction("appControl.streamUnsubscribe")
+  }
+
+  /// The lane's App Control session and whether frames are flowing.
+  func appControlStatus(laneId: String) async throws -> AppControlSyncStatus {
+    try requireAppControlStreamAction("appControl.status")
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    return try decode(
+      try await sendCommand(
+        action: "appControl.status",
+        args: ["laneId": trimmed],
+        disconnectOnTimeout: false,
+        timeoutNanoseconds: Self.workToolsRequestTimeoutNanoseconds
+      ),
+      as: AppControlSyncStatus.self
+    )
+  }
+
+  /// Asks the host to push the lane's App Control frames to this viewer. A lane
+  /// with no app is fine: frames start when an app attaches there.
+  func appControlStreamSubscribe(
+    laneId: String,
+    subscriptionId: String,
+    viewerLabel: String? = nil,
+    maxFps: Int? = nil
+  ) async throws -> AppControlStreamSubscribeResult {
+    try requireAppControlStreamAction("appControl.streamSubscribe")
+    let trimmedLane = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    let trimmedSubscription = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedLane.isEmpty, !trimmedSubscription.isEmpty else {
+      throw NSError(
+        domain: "ADE",
+        code: 6,
+        userInfo: [NSLocalizedDescriptionKey: "The live view had no lane to watch."]
+      )
+    }
+    var args: [String: Any] = ["laneId": trimmedLane, "subscriptionId": trimmedSubscription]
+    if let viewerLabel, !viewerLabel.isEmpty { args["viewerLabel"] = viewerLabel }
+    if let maxFps, maxFps > 0 { args["maxFps"] = maxFps }
+    return try decode(
+      try await sendCommand(
+        action: "appControl.streamSubscribe",
+        args: args,
+        disconnectOnTimeout: false,
+        attemptedLiveFailurePolicy: .preserveForManualRetry
+      ),
+      as: AppControlStreamSubscribeResult.self
+    )
+  }
+
+  /// Drops this viewer's subscription. Best-effort: a closed socket already
+  /// released it on the host.
+  func appControlStreamUnsubscribe(subscriptionId: String) async throws {
+    try requireAppControlStreamAction("appControl.streamUnsubscribe")
+    let trimmed = subscriptionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    _ = try await sendCommand(
+      action: "appControl.streamUnsubscribe",
+      args: ["subscriptionId": trimmed],
+      disconnectOnTimeout: false,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// One consumer per subscription id. A second registration replaces the
+  /// first, so a rebuilt view cannot leave a stale closure behind.
+  func registerAppControlStream(
+    subscriptionId: String,
+    onFrame: @escaping (AppControlStreamFrame) -> Void,
+    onEnded: @escaping (AppControlStreamEnded) -> Void
+  ) {
+    appControlStreamFrameHandlers[subscriptionId] = onFrame
+    appControlStreamEndedHandlers[subscriptionId] = onEnded
+  }
+
+  func unregisterAppControlStream(subscriptionId: String) {
+    appControlStreamFrameHandlers.removeValue(forKey: subscriptionId)
+    appControlStreamEndedHandlers.removeValue(forKey: subscriptionId)
+  }
+
+  /// True while a view has this subscription id registered for frames.
+  func isAppControlStreamRegistered(subscriptionId: String) -> Bool {
+    appControlStreamFrameHandlers[subscriptionId] != nil
+  }
+
+  private func resetAppControlStreamHandlers() {
+    appControlStreamFrameHandlers.removeAll()
+    appControlStreamEndedHandlers.removeAll()
+  }
+
+  private func requireAppControlStreamAction(_ action: String) throws {
+    guard supportsViewerRemoteAction(action) else {
+      throw NSError(
+        domain: "ADE",
+        code: 17,
+        userInfo: [
+          NSLocalizedDescriptionKey: "Live App Control isn't available on this machine version.",
+          "ADEErrorCode": "unsupported_action",
+        ]
+      )
+    }
+  }
+
   /// Whether this host lets a paired controller drive the lane's screen.
   ///
   /// All four commands have to be advertised. Take without input is a lease
@@ -15897,7 +15993,7 @@ final class SyncService: ObservableObject {
         activeHostProfile = profile
       }
       if hostName != profile.hostName {
-        hostName = profile.hostName
+        setHostName(profile.hostName)
       }
       hiddenProjectKeys = loadHiddenProjectKeys()
       if activeProjectId != nil {
@@ -15923,7 +16019,7 @@ final class SyncService: ObservableObject {
       // machine-independent Hub and New Chat drafts. Losing a user's typed words
       // on a background reconnect is far worse than a stale draft lingering.
       activeHostProfile = nil
-      hostName = nil
+      setHostName(nil)
       hiddenProjectKeys = loadHiddenProjectKeys()
       activeProjectHostIdentity = nil
       UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
@@ -15933,6 +16029,15 @@ final class SyncService: ObservableObject {
       personalChatsRevision &+= 1
       reloadRosterForActiveHost()
     }
+  }
+
+  /// `hostName` only when it actually changes. `brain_status` re-announces the
+  /// device name on every frame, and each plain assignment fired
+  /// `objectWillChange` — the largest single source of SyncService publishes
+  /// (280 in a 45 s thread session), each re-evaluating every observer.
+  private func setHostName(_ value: String?) {
+    guard hostName != value else { return }
+    hostName = value
   }
 
   private func updateProfile(_ transform: (inout HostConnectionProfile) -> Void) {
@@ -17043,14 +17148,14 @@ final class SyncService: ObservableObject {
     var upgradeCeiling: SyncConnectionRouteKind?
   }
 
-  private func connectUsingProfile(
-    _ profile: HostConnectionProfile,
-    token: String,
-    connectAttemptGeneration: UInt64,
-    preferLiveCandidatesOnly: Bool,
-    publishConnecting: Bool,
-    replacement: SyncConnectionReplacement? = nil
-  ) async throws -> (host: String, port: Int) {
+  /// The ranked endpoint attempts for a profile: live discovery ports, saved
+  /// and live direct routes, relay routes, route memory for this network, and
+  /// last-good stickiness. Pure of connection state, so the focused connect and
+  /// a fleet (roster) dial rank candidates the same way.
+  func endpointAttemptPlan(
+    for profile: HostConnectionProfile,
+    preferLiveCandidatesOnly: Bool
+  ) throws -> [SyncConnectionEndpointAttempt] {
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
@@ -17091,7 +17196,6 @@ final class SyncService: ObservableObject {
     let liveDirectAddressSet = Set(
       matchingDiscovery.flatMap(\.addresses) + matchingDiscovery.compactMap(\.tailscaleAddress)
     )
-    markConnectAttemptStarted(connectAttemptGeneration)
     let racedDirectAttempts = preferLiveCandidatesOnly && livePorts.isEmpty && portCandidates.count > 1
       ? syncStalePortRecoveryEndpointAttempts(addresses: addresses, ports: portCandidates)
       : syncConnectionEndpointAttempts(addresses: addresses, ports: portCandidates)
@@ -17110,7 +17214,7 @@ final class SyncService: ObservableObject {
     // to a different one. Both are reorderings of the vetted set, so neither can
     // reintroduce a candidate that address or relay-authorization policy
     // already rejected.
-    var orderedEndpointAttempts = syncEndpointAttemptsHoisting(
+    let orderedEndpointAttempts = syncEndpointAttemptsHoisting(
       rankedAttempts,
       preferredAddresses: [
         syncRememberedEndpoint(
@@ -17120,6 +17224,35 @@ final class SyncService: ObservableObject {
         profile.lastSuccessfulAddress,
       ].compactMap { $0 }
     )
+    return orderedEndpointAttempts
+  }
+
+  private func connectUsingProfile(
+    _ profile: HostConnectionProfile,
+    token: String,
+    connectAttemptGeneration: UInt64,
+    preferLiveCandidatesOnly: Bool,
+    publishConnecting: Bool,
+    replacement: SyncConnectionReplacement? = nil
+  ) async throws -> (host: String, port: Int) {
+    // Stop any roster connection to this machine BEFORE dialing it: the host
+    // keeps one socket per phone per machine.
+    let dialingMachineKey = profileStorageKey(profile)
+    if let dialingMachineKey {
+      focusedDialingMachineKeys.insert(dialingMachineKey)
+      machineFleet?.focusedWillDial(machineKey: dialingMachineKey)
+    }
+    defer {
+      if let dialingMachineKey {
+        focusedDialingMachineKeys.remove(dialingMachineKey)
+        machineFleet?.focusedConnectionChanged()
+      }
+    }
+    var orderedEndpointAttempts = try endpointAttemptPlan(
+      for: profile,
+      preferLiveCandidatesOnly: preferLiveCandidatesOnly
+    )
+    markConnectAttemptStarted(connectAttemptGeneration)
     if let upgradeCeiling = replacement?.upgradeCeiling {
       orderedEndpointAttempts = orderedEndpointAttempts.filter {
         syncConnectionRouteKind($0.address) < upgradeCeiling
@@ -17218,10 +17351,15 @@ final class SyncService: ObservableObject {
     _ candidates: [SyncConnectionRaceScheduledCandidate],
     profile: HostConnectionProfile,
     pairedSecret: String,
-    connectAttemptGeneration: UInt64
+    connectAttemptGeneration: UInt64,
+    fleetDial: SyncFleetDialContext? = nil
   ) async throws -> AuthenticatedConnectionCandidate {
     guard !candidates.isEmpty else { throw noConnectableAddressError() }
-    raceFailedEndpoints = (connectAttemptGeneration, [])
+    // A fleet (roster) dial never touches the focused connection's endpoint
+    // bookkeeping: that state belongs to the focused machine's profile.
+    if fleetDial == nil {
+      raceFailedEndpoints = (connectAttemptGeneration, [])
+    }
     let connectionAttempt = makeConnectionAttemptMetadata()
     // Captured before the group so the detached budget task reads the attempt's
     // deadline rather than reaching back into the actor for it.
@@ -17238,7 +17376,8 @@ final class SyncService: ObservableObject {
             profile: profile,
             pairedSecret: pairedSecret,
             connectAttemptGeneration: connectAttemptGeneration,
-            connectionAttempt: connectionAttempt
+            connectionAttempt: connectionAttempt,
+            fleetDial: fleetDial
           )
         }
       }
@@ -17298,7 +17437,8 @@ final class SyncService: ObservableObject {
             if pairingFailure != nil {
               lastPairingFailure = marked
             }
-            if syncEndpointFailureIsMeaningful(marked),
+            if fleetDial == nil,
+               syncEndpointFailureIsMeaningful(marked),
                raceFailedEndpoints.generation == connectAttemptGeneration {
               raceFailedEndpoints.addresses.append(endpoint.address)
             }
@@ -17332,7 +17472,8 @@ final class SyncService: ObservableObject {
                 profile: profile,
                 pairedSecret: pairedSecret,
                 connectAttemptGeneration: connectAttemptGeneration,
-                connectionAttempt: connectionAttempt
+                connectionAttempt: connectionAttempt,
+                fleetDial: fleetDial
               )
             }
           }
@@ -17360,7 +17501,8 @@ final class SyncService: ObservableObject {
     profile: HostConnectionProfile,
     pairedSecret: String,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    fleetDial: SyncFleetDialContext? = nil
   ) async -> AuthenticatedConnectionRaceEvent {
     do {
       if candidate.delayNanoseconds > 0 {
@@ -17371,7 +17513,8 @@ final class SyncService: ObservableObject {
         profile: profile,
         pairedSecret: pairedSecret,
         connectAttemptGeneration: connectAttemptGeneration,
-        connectionAttempt: connectionAttempt
+        connectionAttempt: connectionAttempt,
+        fleetDial: fleetDial
       )
       return .authenticated(authenticated)
     } catch {
@@ -17384,9 +17527,10 @@ final class SyncService: ObservableObject {
     profile: HostConnectionProfile,
     pairedSecret: String,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    fleetDial: SyncFleetDialContext? = nil
   ) async throws -> AuthenticatedConnectionCandidate {
-    guard isCurrentConnectAttempt(connectAttemptGeneration) else { throw CancellationError() }
+    guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial) else { throw CancellationError() }
     let endpoint = candidate.endpoint
     let isRelay = syncIsFullWebSocketRoute(endpoint.address)
     let parsed = syncParseRouteEndpoint(endpoint.address)
@@ -17419,10 +17563,11 @@ final class SyncService: ObservableObject {
           profile: profile,
           pairedSecret: pairedSecret,
           connectAttemptGeneration: connectAttemptGeneration,
-          connectionAttempt: connectionAttempt
+          connectionAttempt: connectionAttempt,
+          fleetDial: fleetDial
         )
       } catch SyncRelayReadyNegotiationError.retryLegacySocket {
-        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+        guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
           throw CancellationError()
         }
         guard syncRelayLegacyRedialAllowed(
@@ -17455,7 +17600,8 @@ final class SyncService: ObservableObject {
       profile: profile,
       pairedSecret: pairedSecret,
       connectAttemptGeneration: connectAttemptGeneration,
-      connectionAttempt: connectionAttempt
+      connectionAttempt: connectionAttempt,
+      fleetDial: fleetDial
     )
   }
 
@@ -17467,7 +17613,8 @@ final class SyncService: ObservableObject {
     profile: HostConnectionProfile,
     pairedSecret: String,
     connectAttemptGeneration: UInt64,
-    connectionAttempt: SyncConnectionAttemptMetadata
+    connectionAttempt: SyncConnectionAttemptMetadata,
+    fleetDial: SyncFleetDialContext? = nil
   ) async throws -> AuthenticatedConnectionCandidate {
     let dialKey = isRelay ? syncRelayMachineKey(from: url.absoluteString) : nil
     var dialToken: UUID?
@@ -17495,7 +17642,7 @@ final class SyncService: ObservableObject {
         // every exit from this scope, including the early throws below.
         async let pendingRelaySession = relaySessionForCandidate(required: needsRelaySession)
         try await awaitSocketOpen(candidateTask)
-        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+        guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
           throw CancellationError()
         }
 
@@ -17522,7 +17669,7 @@ final class SyncService: ObservableObject {
         if awaitsRelayReadyV2 {
           try await awaitRelayCandidateReady(mailbox: mailbox)
         }
-        guard isCurrentConnectAttempt(connectAttemptGeneration), !Task.isCancelled else {
+        guard dialAttemptIsCurrent(connectAttemptGeneration, fleetDial), !Task.isCancelled else {
           throw CancellationError()
         }
 
@@ -17564,7 +17711,7 @@ final class SyncService: ObservableObject {
           type: "hello",
           requestId: requestId,
           payload: [
-            "peer": currentPeerMetadata(connectionAttempt: connectionAttempt),
+            "peer": fleetDial?.peerMetadata(connectionAttempt) ?? currentPeerMetadata(connectionAttempt: connectionAttempt),
             "compression": syncApplicationCompressionCodecs,
             "auth": auth,
           ]
@@ -18344,7 +18491,7 @@ final class SyncService: ObservableObject {
 
   private func publishSocketConnecting(to socketHost: String) {
     connectionState = .connecting
-    hostName = activeHostProfile?.hostName
+    setHostName(activeHostProfile?.hostName)
     currentAddress = socketHost
     refreshReducedSyncLoad()
   }
@@ -19244,6 +19391,30 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Runs the live-close path's flap bookkeeping with an explicit connection
+  /// age, and applies the banner copy the way `handleSocketFailure` does.
+  func noteLiveConnectionClosedForTesting(
+    closeCode: Int,
+    reason: String,
+    connectionAgeSeconds: TimeInterval,
+    now: TimeInterval
+  ) -> UInt64? {
+    connectionEstablishedUptime = now - connectionAgeSeconds
+    guard let backoff = noteLiveConnectionClosed(closeCodeRawValue: closeCode, closeReason: reason, now: now) else {
+      return nil
+    }
+    lastError = backoff.message
+    return backoff.delayNanoseconds
+  }
+
+  func setRemoteCommandDescriptorsForTesting(_ descriptors: [SyncRemoteCommandDescriptor]) {
+    remoteCommandDescriptors = descriptors
+  }
+
+  func capturedCommandArgsForTesting(requestId: String) -> [String: Any]? {
+    capturedCommandPayloadsForTesting[requestId]?["args"] as? [String: Any]
+  }
+
   func reconnectAttemptsAreExhaustedForTesting() -> Bool {
     reconnectState.isExhausted
   }
@@ -19382,30 +19553,6 @@ final class SyncService: ObservableObject {
     completesCapturedRefreshRequestsForTesting = false
   }
 
-  func seedChatHistoryCursorForTesting(
-    sessionId: String,
-    cursor: Int,
-    allowForward: Bool = true
-  ) {
-    updateChatHistoryCursor(
-      sessionId: sessionId,
-      cursor: cursor,
-      allowForward: allowForward
-    )
-  }
-
-  func recordChatHistoryPageCursorForTesting(
-    requestedSessionId: String,
-    beforeOffset: Int,
-    page: AgentChatEventHistoryPage
-  ) {
-    recordChatHistoryPageCursor(
-      requestedSessionId: requestedSessionId,
-      beforeOffset: beforeOffset,
-      page: page
-    )
-  }
-
   private func capturedRefreshResponseForTesting(type: String, payload: Any) -> Any? {
     if type == "project_catalog_request" {
       return ["projects": [Any]()] as [String: Any]
@@ -19422,7 +19569,7 @@ final class SyncService: ObservableObject {
         "lanes": [Any](),
         "snapshots": [Any](),
       ] as [String: Any]
-    case "work.listSessions":
+    case "work.listSessions", "prs.list":
       result = [Any]()
     case "prs.refresh":
       result = [
@@ -19503,49 +19650,26 @@ final class SyncService: ObservableObject {
       activeRemoteDbSiteId = nil
     }
 
-    let features = payload["features"] as? [String: Any]
-    func featureEnabled(_ keys: String...) -> Bool {
-      for key in keys {
-        if let feature = features?[key] as? [String: Any],
-           let enabled = feature["enabled"] as? Bool {
-          return enabled
-        }
-        if let value = features?[key] as? Bool {
-          return value
-        }
-      }
-      return false
-    }
+    let negotiation = SyncHelloNegotiation(helloPayload: payload)
+    let features = negotiation.features
+    func featureEnabled(_ keys: String...) -> Bool { negotiation.featureEnabled(keys) }
     supportsChatStreaming = featureEnabled("chatStreaming", "chat_streaming")
     supportsChatHistoryPaging = featureEnabled("chatHistoryPaging", "chat_history_paging")
+    supportsChatLogV2 = featureEnabled("chatLogV2", "chat_log_v2")
     supportsCrossProjectChat = featureEnabled("crossProjectChat", "cross_project_chat")
+    supportsChatHistoryPageBySequence = featureEnabled("chatHistoryPageBySequence", "chat_history_page_by_sequence")
     supportsPersonalChats = false
     supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
     supportsProjectActions = featureEnabled("projectActions", "project_actions")
     advertisesMacDesktopStream = featureEnabled("macDesktopStream", "mac_desktop_stream")
     advertisesMacDesktopControl = featureEnabled("macDesktopControl", "mac_desktop_control")
+    supportsOpenCodeInboxSteer = featureEnabled("openCodeInboxSteer", "open_code_inbox_steer")
     supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     supportsTerminalInputAcknowledgements = featureEnabled("terminalInputAck", "terminal_input_ack")
-    if let chunking = features?["chunkedEnvelopes"] as? [String: Any],
-       chunking["enabled"] as? Bool == true,
-       let frameBytes = (chunking["maxFrameBytes"] as? NSNumber)?.intValue,
-       frameBytes > 1_024 {
-      supportsChunkedEnvelopes = true
-      negotiatedMaxFrameBytes = min(syncDefaultMaxFrameBytes, frameBytes)
-    } else {
-      supportsChunkedEnvelopes = false
-      negotiatedMaxFrameBytes = syncDefaultMaxFrameBytes
-    }
-    if let compression = payload["compression"] as? [String: Any],
-       compression["codec"] as? String == SyncWireCompressionCodec.deflate.rawValue,
-       let threshold = (compression["thresholdBytes"] as? NSNumber)?.intValue,
-       threshold > 0 {
-      negotiatedCompressionCodec = .deflate
-      negotiatedCompressionThresholdBytes = threshold
-    } else {
-      negotiatedCompressionCodec = nil
-      negotiatedCompressionThresholdBytes = syncApplicationCompressionThresholdBytes
-    }
+    supportsChunkedEnvelopes = negotiation.chunkedMaxFrameBytes != nil
+    negotiatedMaxFrameBytes = negotiation.chunkedMaxFrameBytes ?? syncDefaultMaxFrameBytes
+    negotiatedCompressionCodec = negotiation.deflateThresholdBytes != nil ? .deflate : nil
+    negotiatedCompressionThresholdBytes = negotiation.deflateThresholdBytes ?? syncApplicationCompressionThresholdBytes
     if supportsTerminalInputAcknowledgements,
        let terminalInputAck = features?["terminalInputAck"] as? [String: Any] {
       terminalInputAcknowledgementRetryWindowMilliseconds = max(
@@ -19611,7 +19735,7 @@ final class SyncService: ObservableObject {
     // The mobile should only claim a dbVersion it actually received via
     // changeset_batch. Setting it prematurely causes the desktop to skip
     // the full initial sync on reconnect (it thinks we already have the data).
-    hostName = remoteHostName ?? activeHostProfile?.hostName
+    setHostName(remoteHostName ?? activeHostProfile?.hostName)
     // Attachment is a fact at `hello_ok`. Every production call path runs
     // `schedulePostHelloWork` immediately after this, which republishes
     // `.connected` idempotently; publishing here means no path can leave the
@@ -19716,6 +19840,9 @@ final class SyncService: ObservableObject {
       relayAccountOwnerId: activeHostProfile?.relayAccountOwnerId
     )
     saveProfile(profile)
+    focusedSocketMachineKey = profileStorageKey(profile)
+    machineFleet?.focusedConnectionChanged()
+    rebalanceRemoteChatSubscriptions()
     resetOutboundCursorStateForActiveProject()
     if !supportsChangesetAck {
       pendingOutboundChangeset = nil
@@ -19801,6 +19928,14 @@ final class SyncService: ObservableObject {
             // stale frame must not mutate the new connection's state.
             guard self.socket === task else { break }
             if let preprocessed {
+              let handleStart = CACurrentMediaTime()
+              defer {
+                ScrollDiagnostics.shared.noteFrame(
+                  type: preprocessed.type,
+                  bytes: frame?.count ?? text.utf8.count,
+                  handleMs: (CACurrentMediaTime() - handleStart) * 1000
+                )
+              }
               try await self.handleIncoming(preprocessed)
             }
           } catch {
@@ -19849,6 +19984,11 @@ final class SyncService: ObservableObject {
     syncConnectLog.error(
       "incoming message failed type=\(type, privacy: .public) error=\(String(describing: error), privacy: .public)"
     )
+    ScrollDiagnostics.shared.event("sync.incomingFailure", [
+      "type": type,
+      "error": String(String(describing: error).prefix(400)),
+      "bytes": text.utf8.count,
+    ])
     handleSocketFailure(task, error: error)
   }
 
@@ -20045,7 +20185,7 @@ final class SyncService: ObservableObject {
     case "brain_status":
       if let dict = payload as? [String: Any] {
         if let brain = dict["brain"] as? [String: Any] {
-          hostName = brain["deviceName"] as? String
+          setHostName(brain["deviceName"] as? String)
           updateProfile { profile in
             profile.hostName = brain["deviceName"] as? String
             profile.lastHostDeviceId = brain["deviceId"] as? String
@@ -20099,6 +20239,25 @@ final class SyncService: ObservableObject {
       guard let dict = payload as? [String: Any],
             let ended = MacDesktopStreamEnded(dict) else { break }
       macDesktopStreamEndedHandlers[ended.subscriptionId]?(ended)
+    case "appControl.streamFrame":
+      // A JPEG, not a video stream: each frame stands alone. The decode runs
+      // off the main actor and is not awaited, so a large frame never holds up
+      // the socket. Frames can then land out of order; the live session drops
+      // any frame older than the one it shows.
+      guard let dict = payload as? [String: Any],
+            let envelope = AppControlStreamFrameEnvelope(dict),
+            appControlStreamFrameHandlers[envelope.subscriptionId] != nil else { break }
+      Task { [weak self] in
+        let frame = await Task.detached(priority: .userInitiated) {
+          AppControlStreamFrame.decode(envelope)
+        }.value
+        guard let self, self.isCurrentConnectionGeneration(generation), let frame else { return }
+        self.appControlStreamFrameHandlers[frame.subscriptionId]?(frame)
+      }
+    case "appControl.streamEnded":
+      guard let dict = payload as? [String: Any],
+            let ended = AppControlStreamEnded(dict) else { break }
+      appControlStreamEndedHandlers[ended.subscriptionId]?(ended)
     case "heartbeat":
       if let dict = payload as? [String: Any], (dict["kind"] as? String) == "ping" {
         sendEnvelope(type: "heartbeat", requestId: requestId, payload: [
@@ -20123,54 +20282,37 @@ final class SyncService: ObservableObject {
         // lands while the user is watching the thread open.
         guard let snapshotSessionId = dict["sessionId"] as? String,
               subscribedChatSessionIds.contains(snapshotSessionId) else { break }
+        // One off-main decode feeds both the thread engine (which keeps each
+        // row's raw bytes for its disk log) and the legacy ring.
+        let hostSupportsChatLogV2 = supportsChatLogV2
         let snapshotDecodeTask = Task.detached(priority: .userInitiated) {
-          syncDecodeChatSubscribeSnapshot(dict)
+          chatThreadDecodeSnapshot(dict, hostSupportsChatLogV2: hostSupportsChatLogV2)
         }
-        guard let snapshot = await snapshotDecodeTask.value else { break }
+        guard let threadSnapshot = await snapshotDecodeTask.value else { break }
         // Re-check the subscription too: the decode is a suspension point, and
         // a project switch during it would otherwise land this snapshot in a
         // session the user has already left.
         guard isCurrentConnectionGeneration(generation),
               subscribedChatSessionIds.contains(snapshotSessionId) else { break }
-        recentFullChatSnapshotRequestBySession.removeValue(forKey: snapshot.sessionId)
-        clearChatSnapshotWatchdogState(sessionId: snapshot.sessionId)
-        let resumed = (dict["resumed"] as? Bool) == true
-        let previousLastSeq = chatEventLastSeqBySession[snapshot.sessionId]
-        if !resumed {
+        if let threadKey = chatThreadKey(for: snapshotSessionId) {
+          chatThreadRegistry.routeSnapshot(threadSnapshot, key: threadKey)
+        }
+        recentFullChatSnapshotRequestBySession.removeValue(forKey: snapshotSessionId)
+        clearChatSnapshotWatchdogState(sessionId: snapshotSessionId)
+        let resumed = threadSnapshot.resumed
+        let previousLastSeq = chatEventLastSeqBySession[snapshotSessionId]
+        if !resumed || threadSnapshot.resumeKind == "sequence" {
           // Full snapshot: the host did not (or could not) resume from our
           // sinceSeq, so its seq stream may have restarted (host reboot,
-          // replay buffer eviction). Drop the stale watermark and re-track
-          // from the next live event — otherwise we would discard the first
-          // events of the new stream as "old".
-          chatEventLastSeqBySession.removeValue(forKey: snapshot.sessionId)
-          if let cursor = syncChatSubscribeHistoryCursor(
-            hasOlderHistory: snapshot.hasOlderHistory,
-            tailStartOffset: snapshot.tailStartOffset,
-            cursorKind: snapshot.cursorKind
-          ) {
-            updateChatHistoryCursor(
-              sessionId: snapshot.sessionId,
-              cursor: cursor,
-              allowForward: !chatHistoryCursorAdvancedByPageSessionIds.contains(snapshot.sessionId)
-            )
-          }
+          // replay buffer eviction). A durable resume can follow a brain
+          // restart too, where the replayed events arrive as chat_event frames
+          // with fresh `seq` values. Either way a stale watermark would drop
+          // the first events of the new stream as "old".
+          chatEventLastSeqBySession.removeValue(forKey: snapshotSessionId)
         }
-        if resumed {
-          mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
-        } else {
-          replaceChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
-        }
-        if let turnActive = snapshot.turnActive {
-          updateChatTurnActiveHint(sessionId: snapshot.sessionId, turnActive: turnActive)
-        } else if (dict["resumed"] as? Bool) != true {
-          // Full snapshot with no live turn state (older host, or the host
-          // has no summary for this session): a previously latched hint can
-          // never be corrected by this host, so drop it and fall back to
-          // transcript-derived streaming state.
-          clearChatTurnActiveHint(sessionId: snapshot.sessionId)
-        }
+        markSyncActivity()
         syncChatLog.notice(
-          "chat_subscribe_ack session=\(snapshot.sessionId, privacy: .public) resumed=\(resumed, privacy: .public) events=\(snapshot.events.count, privacy: .public) firstSeq=\(snapshot.events.compactMap(\.sequence).first ?? -1, privacy: .public) lastSeq=\(snapshot.events.compactMap(\.sequence).last ?? -1, privacy: .public) previousLastSeq=\(previousLastSeq ?? -1, privacy: .public) currentLastSeq=\(self.chatEventLastSeqBySession[snapshot.sessionId] ?? -1, privacy: .public) turnActive=\(snapshot.turnActive.map(String.init) ?? "nil", privacy: .public) truncated=\(snapshot.truncated, privacy: .public)"
+          "chat_subscribe_ack session=\(snapshotSessionId, privacy: .public) resumed=\(resumed, privacy: .public) resumeKind=\(threadSnapshot.resumeKind ?? "nil", privacy: .public) gap=\(threadSnapshot.gap, privacy: .public) events=\(threadSnapshot.events.count, privacy: .public) firstSeq=\(threadSnapshot.events.compactMap(\.envelope.sequence).first ?? -1, privacy: .public) lastSeq=\(threadSnapshot.events.compactMap(\.envelope.sequence).last ?? -1, privacy: .public) previousLastSeq=\(previousLastSeq ?? -1, privacy: .public) turnActive=\(threadSnapshot.turnActive.map(String.init) ?? "nil", privacy: .public) truncated=\(threadSnapshot.truncated, privacy: .public)"
         )
       }
     case "chat_event":
@@ -20201,9 +20343,10 @@ final class SyncService: ObservableObject {
         // frame's handleIncoming before reading the next, so two chat events
         // can never be in flight at once.
         let decodeTask = Task.detached(priority: .userInitiated) {
-          syncDecodeChatEventEnvelope(dict)
+          chatThreadDecodeLiveEvent(dict)
         }
-        guard let envelope = await decodeTask.value else { break }
+        guard let liveEvent = await decodeTask.value else { break }
+        let envelope = liveEvent.envelope
         // The decode is a suspension point: a teardown + reconnect can complete
         // while it runs, and a stale frame must not mutate the new connection.
         // Same re-check as the snapshot path: the subscription can be dropped
@@ -20217,7 +20360,10 @@ final class SyncService: ObservableObject {
         if let seq {
           chatEventLastSeqBySession[sessionId] = seq
         }
-        recordChatEventEnvelope(envelope)
+        if let threadKey = chatThreadKey(for: sessionId) {
+          chatThreadRegistry.routeLive(liveEvent, key: threadKey)
+        }
+        markSyncActivity()
         // A `session_meta_updated` event carries a client-side mode change
         // (permission / interaction / codex-sandbox / cursor mode, …). Patch the
         // cached summary so the open composer's mode pill updates live without a
@@ -20230,7 +20376,7 @@ final class SyncService: ObservableObject {
         // the Work row leaves "Needs you" with the answer instead of behind it.
         applyChatAttentionResolutionIfNeeded(envelope: envelope, rawPayload: dict)
         syncChatLog.debug(
-          "chat_event_applied session=\(envelope.sessionId, privacy: .public) seq=\(envelope.sequence ?? -1, privacy: .public) type=\(envelope.event.typeName, privacy: .public) history=\(self.chatEventEnvelopesBySession[envelope.sessionId]?.count ?? 0, privacy: .public) revision=\(self.chatEventRevisionsBySession[envelope.sessionId] ?? 0, privacy: .public)"
+          "chat_event_applied session=\(envelope.sessionId, privacy: .public) seq=\(envelope.sequence ?? -1, privacy: .public) type=\(envelope.event.typeName, privacy: .public)"
         )
       }
     case "terminal_data":
@@ -20744,6 +20890,12 @@ final class SyncService: ObservableObject {
     completedWhileOpening: Bool = false,
     closeCodeRawValue: Int? = nil
   ) {
+    ScrollDiagnostics.shared.event("sync.socketFailure", [
+      "error": String(String(describing: error).prefix(400)),
+      "closeCode": closeCodeRawValue ?? -1,
+      "whileOpening": completedWhileOpening,
+      "closeReason": task.closeReason.flatMap { String(data: $0, encoding: .utf8) } ?? "",
+    ])
     let action = syncSocketCompletionAction(
       isCurrentSocket: shouldHandleSocketSendCompletionError(currentSocket: socket, callbackSocket: task),
       completedWhileOpening: completedWhileOpening,
@@ -20754,10 +20906,19 @@ final class SyncService: ObservableObject {
     case .ignore, .failOpening:
       return
     case .recoverTransport(let closeCodeRawValue):
+      let closeReason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+      let flapBackoff = noteLiveConnectionClosed(
+        closeCodeRawValue: closeCodeRawValue ?? task.closeCode.rawValue,
+        closeReason: closeReason
+      )
       beginAutomaticTransportRecovery(
         error,
-        reconnectDelayNanoseconds: reconnectDelay(forCloseCodeRawValue: closeCodeRawValue)
+        reconnectDelayNanoseconds: flapBackoff?.delayNanoseconds
+          ?? reconnectDelay(forCloseCodeRawValue: closeCodeRawValue)
       )
+      if let flapBackoff {
+        lastError = flapBackoff.message
+      }
     case .failHandshake:
       // The WebSocket opened but died during hello. Fail the hello request so
       // the existing route walker can try its next ranked candidate; scheduling
@@ -20766,7 +20927,43 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// Feeds one close of a live connection to the flap tracker. Must run before
+  /// teardown, which clears the connection's age. Returns the backoff and the
+  /// banner copy when the same close keeps happening right after connect.
+  private func noteLiveConnectionClosed(
+    closeCodeRawValue: Int?,
+    closeReason: String?,
+    now: TimeInterval = ProcessInfo.processInfo.systemUptime
+  ) -> (delayNanoseconds: UInt64, message: String)? {
+    let connectionAgeSeconds = connectionEstablishedUptime.map { max(0, now - $0) }
+    let signature = "\(closeCodeRawValue ?? -1):\(closeReason ?? "")"
+    guard let backoffSeconds = reconnectFlapTracker.recordClose(
+      signature: signature,
+      connectionAgeSeconds: connectionAgeSeconds,
+      now: now
+    ) else { return nil }
+    let machineName = syncTrimmedNonEmptyName(hostName)
+      ?? syncTrimmedNonEmptyName(activeHostProfile?.hostName)
+      ?? "This machine"
+    syncConnectLog.error(
+      "connection flapping signature=\(signature, privacy: .public) backoffSeconds=\(backoffSeconds, privacy: .public)"
+    )
+    return (
+      delayNanoseconds: UInt64(backoffSeconds * 1_000_000_000),
+      message: syncReconnectFlapMessage(
+        machineName: machineName,
+        closeReason: closeReason,
+        retryInSeconds: backoffSeconds
+      )
+    )
+  }
+
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
+    ScrollDiagnostics.shared.event("sync.teardown", [
+      "reason": reason ?? "",
+      "hadSocket": socket != nil,
+      "caller": Thread.callStackSymbols.dropFirst(1).prefix(3).joined(separator: " | ").prefix(500).description,
+    ])
     let retiringConnectionGeneration = connectionGeneration
     // The connection age gates roam upgrades; it must not outlive its socket.
     connectionEstablishedUptime = nil
@@ -20802,6 +20999,7 @@ final class SyncService: ObservableObject {
     // view re-registers against the new connection instead of receiving
     // nothing.
     resetMacDesktopStreamHandlers()
+    resetAppControlStreamHandlers()
     if let socket {
       resolveRelayTransportReady(
         taskIdentifier: socket.taskIdentifier,
@@ -21154,7 +21352,9 @@ final class SyncService: ObservableObject {
     } else if let data = try? encoder.encode(operations) {
       UserDefaults.standard.set(data, forKey: pendingOperationsKey)
     }
-    pendingOperationCount = operations.count
+    if pendingOperationCount != operations.count {
+      pendingOperationCount = operations.count
+    }
   }
 
   // MARK: - Offline chat-creation snapshots
@@ -21460,10 +21660,21 @@ final class SyncService: ObservableObject {
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
-    targetProjectId: String? = nil,
+    targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true
   ) async throws -> Any {
+    let targetProjectId: String?
+    switch try await routeOrStripFleetTarget(
+      action: action,
+      args: args,
+      targetProjectId: rawTargetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      timeoutNanoseconds: timeoutNanoseconds
+    ) {
+    case .routed(let result): return result
+    case .focused(let projectId): targetProjectId = projectId
+    }
     let runtimeScoped = commandIsRuntimeScoped(action)
     if !runtimeScoped && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
@@ -21473,6 +21684,7 @@ final class SyncService: ObservableObject {
     }
     let requestId = commandId ?? makeRequestId()
     let effectiveTimeoutNanoseconds = timeoutNanoseconds ?? SyncRequestTimeout.commandTimeoutNanoseconds(for: action)
+    ScrollDiagnostics.shared.event("sync.command", ["id": requestId, "action": action])
     // `targetProjectId` lets a command create-in-place in a NON-active project
     // (mobile hub composer): the host routes the command to that project's scope
     // via the command-payload projectId without switching the phone's active
@@ -21507,11 +21719,22 @@ final class SyncService: ObservableObject {
     disconnectOnTimeout: Bool = true,
     timeoutMessage: String = SyncRequestTimeout.message,
     timeoutNanoseconds: UInt64? = nil,
-    targetProjectId: String? = nil,
+    targetProjectId rawTargetProjectId: String? = nil,
     targetProjectRootPath: String? = nil,
     fallbackToActiveProjectScope: Bool = true,
     attemptedLiveFailurePolicy: SyncAttemptedLiveFailurePolicy = .enqueueSafely
   ) async throws -> Any {
+    let targetProjectId: String?
+    switch try await routeOrStripFleetTarget(
+      action: action,
+      args: args,
+      targetProjectId: rawTargetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      timeoutNanoseconds: timeoutNanoseconds
+    ) {
+    case .routed(let result): return result
+    case .focused(let projectId): targetProjectId = projectId
+    }
     if !commandIsRuntimeScoped(action) && !fallbackToActiveProjectScope && syncNormalizedCommandScopeValue(targetProjectId) == nil {
       throw NSError(domain: "ADE", code: 26, userInfo: [NSLocalizedDescriptionKey: "This action needs the lane's project scope. Refresh lanes and try again."])
     }
@@ -21623,8 +21846,17 @@ final class SyncService: ObservableObject {
       "sessionId": sessionId,
       "maxBytes": maxBytes,
     ]
-    if includeSinceSeq, let lastSeq = chatEventLastSeqBySession[sessionId] {
-      payload["sinceSeq"] = lastSeq
+    // `chatLogV2` hosts resume from the durable envelope sequence the thread
+    // engine holds (survives a brain restart); `sinceSeq` stays for the
+    // legacy ring and older hosts.
+    let resumeFields = chatThreadSubscribeResumeFields(
+      hostSupportsChatLogV2: supportsChatLogV2,
+      includeResume: includeSinceSeq,
+      resumePoint: chatThreadKey(for: sessionId).flatMap { chatThreadRegistry.resumePoint(for: $0) },
+      legacySinceSeq: chatEventLastSeqBySession[sessionId]
+    )
+    for (field, value) in resumeFields {
+      payload[field] = value
     }
     // Cross-project "quick look": ride the foreign target inside the payload so
     // the host serves that project's transcript while the envelope stays
@@ -21681,316 +21913,6 @@ final class SyncService: ObservableObject {
     }
   }
 
-  func recordChatEventEnvelope(_ envelope: AgentChatEventEnvelope) {
-    let sessionId = envelope.sessionId
-    if let last = chatEventEnvelopesBySession[sessionId]?.last {
-      if canAppendChatEvent(envelope, after: last) {
-        // Hot streaming path: append + cap in place via the Dictionary `_modify`
-        // accessor so the up-to-chatEventHistoryMaxEvents array isn't copied on
-        // every chat_event. Semantics match trimChatEventHistory (keep the last
-        // chatEventHistoryMaxEvents, drop the overflow from the front).
-        chatEventEnvelopesBySession[sessionId, default: []].append(envelope)
-        let overflow = (chatEventEnvelopesBySession[sessionId]?.count ?? 0) - chatEventHistoryMaxEvents
-        if overflow > 0 {
-          chatEventEnvelopesBySession[sessionId, default: []].removeFirst(overflow)
-        }
-      } else {
-        let events = chatEventEnvelopesBySession[sessionId] ?? []
-        guard !chatEventHistoryContainsDuplicate(envelope, in: events) else { return }
-        chatEventEnvelopesBySession[sessionId] = insertChatEventEnvelope(envelope, into: events)
-      }
-    } else {
-      chatEventEnvelopesBySession[sessionId, default: []].append(envelope)
-    }
-    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
-    chatEventRevisionsBySession[sessionId, default: 0] += 1
-    markSyncActivity()
-    updateChatTurnActiveHintFromEvent(envelope)
-    markChatEventsChanged()
-  }
-
-  func replaceChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
-    let next = deduplicatedChatEventHistory(events)
-    guard chatEventEnvelopesBySession[sessionId] != next else { return }
-    chatEventEnvelopesBySession[sessionId] = next
-    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
-    chatEventRevisionsBySession[sessionId, default: 0] += 1
-    markSyncActivity()
-    markChatEventsChanged(immediate: true)
-  }
-
-  func mergeChatEventHistory(sessionId: String, events: [AgentChatEventEnvelope]) {
-    let current = chatEventEnvelopesBySession[sessionId] ?? []
-    let next = deduplicatedChatEventHistory(current + events)
-    guard current != next else { return }
-    chatEventEnvelopesBySession[sessionId] = next
-    pruneChatEventHistoryCacheIfNeeded(preserving: [sessionId])
-    chatEventRevisionsBySession[sessionId, default: 0] += 1
-    markSyncActivity()
-    markChatEventsChanged(immediate: true)
-  }
-
-  private func updateChatHistoryCursor(
-    sessionId: String,
-    cursor: Int,
-    allowForward: Bool = false
-  ) {
-    let normalizedCursor = max(0, cursor)
-    if let existingCursor = chatHistoryCursorBySession[sessionId],
-       normalizedCursor > existingCursor,
-       !allowForward {
-      return
-    }
-    guard chatHistoryCursorBySession[sessionId] != normalizedCursor else { return }
-    chatHistoryCursorBySession[sessionId] = normalizedCursor
-    // The destination's live observation task owns both transcript events and
-    // the page cursor. Publish cursor-only subscribe acks even when the event
-    // tail was identical to the cached window.
-    chatEventRevisionsBySession[sessionId, default: 0] += 1
-    markChatEventsChanged(immediate: true)
-  }
-
-  private func recordChatHistoryPageCursor(
-    requestedSessionId: String,
-    beforeOffset: Int,
-    page: AgentChatEventHistoryPage
-  ) {
-    guard let cursor = syncChatHistoryPageCursor(
-      requestedSessionId: requestedSessionId,
-      beforeOffset: beforeOffset,
-      page: page
-    ) else { return }
-    // Only the page for the cursor we still own may advance it. A duplicate or
-    // delayed response must not overwrite a newer page or full snapshot.
-    if let currentCursor = chatHistoryCursorBySession[requestedSessionId],
-       currentCursor != beforeOffset {
-      return
-    }
-    chatHistoryCursorAdvancedByPageSessionIds.insert(requestedSessionId)
-    updateChatHistoryCursor(sessionId: requestedSessionId, cursor: cursor)
-  }
-
-  private func deduplicatedChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
-    var seen = Set<String>()
-    var unique: [AgentChatEventEnvelope] = []
-    unique.reserveCapacity(events.count)
-    for event in events {
-      let key = chatEventHistoryDedupeKey(event)
-      guard seen.insert(key).inserted else { continue }
-      unique.append(event)
-    }
-    let sorted = unique
-      .map { ChatEventSortRecord(event: $0, timestampKey: chatEventTimestampSortKey($0.timestamp)) }
-      .sorted { lhs, rhs in
-        compareChatEventSortRecords(lhs, rhs) == .orderedAscending
-      }
-      .map(\.event)
-    return trimChatEventHistory(sorted)
-  }
-
-  private func chatEventHistoryContainsDuplicate(
-    _ envelope: AgentChatEventEnvelope,
-    in events: [AgentChatEventEnvelope]
-  ) -> Bool {
-    if events.contains(where: { $0.id == envelope.id }) {
-      return true
-    }
-    guard let key = chatEventContentDedupeKey(envelope) else {
-      return false
-    }
-    return events.contains { chatEventContentDedupeKey($0) == key }
-  }
-
-  private func insertChatEventEnvelope(
-    _ envelope: AgentChatEventEnvelope,
-    into events: [AgentChatEventEnvelope]
-  ) -> [AgentChatEventEnvelope] {
-    var next = events
-    let index = chatEventInsertionIndex(for: envelope, in: next)
-    next.insert(envelope, at: index)
-    return trimChatEventHistory(next)
-  }
-
-  private func chatEventInsertionIndex(
-    for envelope: AgentChatEventEnvelope,
-    in events: [AgentChatEventEnvelope]
-  ) -> Int {
-    var low = events.startIndex
-    var high = events.endIndex
-    while low < high {
-      let mid = low + (high - low) / 2
-      if compareChatEvents(events[mid], envelope) == .orderedDescending {
-        high = mid
-      } else {
-        low = mid + 1
-      }
-    }
-    return low
-  }
-
-  private func chatEventHistoryDedupeKey(_ envelope: AgentChatEventEnvelope) -> String {
-    if let contentKey = chatEventContentDedupeKey(envelope) {
-      return contentKey
-    }
-    return envelope.id
-  }
-
-  private func chatEventContentDedupeKey(_ envelope: AgentChatEventEnvelope) -> String? {
-    switch envelope.event {
-    case .text(let text, let messageId, let turnId, let itemId, let phase):
-      let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard normalizedText.count >= 24 else { return nil }
-      let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      let normalizedMessageId = messageId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      let stableMessageId = normalizedItemId.isEmpty ? normalizedMessageId : normalizedItemId
-      guard !normalizedTurnId.isEmpty || !stableMessageId.isEmpty else { return nil }
-      return [
-        envelope.sessionId,
-        "text",
-        normalizedTurnId,
-        stableMessageId,
-        phase?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-        normalizedText
-      ].joined(separator: "|")
-    case .userMessage(let text, _, let turnId, let steerId, let deliveryState, let processed):
-      let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      let normalizedSteerId = steerId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-      guard !normalizedTurnId.isEmpty || !normalizedSteerId.isEmpty else { return nil }
-      return [
-        envelope.sessionId,
-        "user_message",
-        normalizedTurnId,
-        normalizedSteerId,
-        deliveryState ?? "",
-        processed.map { $0 ? "1" : "0" } ?? "",
-        text.trimmingCharacters(in: .whitespacesAndNewlines)
-      ].joined(separator: "|")
-    // Blocking gates carry a host-assigned `itemId` that is unique for the life
-    // of the session, so key them on that rather than falling through to the
-    // sequence-derived envelope id. A dropped gate is not a cosmetic loss — it
-    // is a question card the user never sees and can never answer — so it must
-    // not depend on sequence numbers being unique, which they are not across a
-    // host restart.
-    case .approvalRequest(let itemId, _, _, _, _, _):
-      let normalizedItemId = itemId.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !normalizedItemId.isEmpty else { return nil }
-      return [envelope.sessionId, "approval_request", normalizedItemId].joined(separator: "|")
-    case .structuredQuestion(_, _, let itemId, _):
-      let normalizedItemId = itemId.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !normalizedItemId.isEmpty else { return nil }
-      return [envelope.sessionId, "structured_question", normalizedItemId].joined(separator: "|")
-    case .pendingInputResolved(let itemId, let resolution, _):
-      let normalizedItemId = itemId.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !normalizedItemId.isEmpty else { return nil }
-      return [envelope.sessionId, "pending_input_resolved", normalizedItemId, resolution].joined(separator: "|")
-    default:
-      return nil
-    }
-  }
-
-  private struct ChatEventSortRecord {
-    let event: AgentChatEventEnvelope
-    let timestampKey: String
-  }
-
-  private func compareChatEventSortRecords(
-    _ lhs: ChatEventSortRecord,
-    _ rhs: ChatEventSortRecord
-  ) -> ComparisonResult {
-    if lhs.event.timestamp == rhs.event.timestamp {
-      return compareChatEventSequence(lhs.event.sequence, rhs.event.sequence)
-    }
-    let timestampOrder = lhs.timestampKey.compare(rhs.timestampKey)
-    if timestampOrder != .orderedSame { return timestampOrder }
-    return compareChatEventSequence(lhs.event.sequence, rhs.event.sequence)
-  }
-
-  private func canAppendChatEvent(_ envelope: AgentChatEventEnvelope, after last: AgentChatEventEnvelope) -> Bool {
-    if let lastSequence = last.sequence,
-       let envelopeSequence = envelope.sequence,
-       envelopeSequence <= lastSequence {
-      return false
-    }
-
-    if envelope.timestamp > last.timestamp {
-      return true
-    }
-    if envelope.timestamp == last.timestamp {
-      return (envelope.sequence ?? 0) >= (last.sequence ?? 0)
-    }
-
-    return compareChatEvents(last, envelope) != .orderedDescending
-  }
-
-  private func compareChatEvents(
-    _ lhs: AgentChatEventEnvelope,
-    _ rhs: AgentChatEventEnvelope
-  ) -> ComparisonResult {
-    if lhs.timestamp == rhs.timestamp {
-      return compareChatEventSequence(lhs.sequence, rhs.sequence)
-    }
-    let timestampOrder = chatEventTimestampSortKey(lhs.timestamp).compare(chatEventTimestampSortKey(rhs.timestamp))
-    if timestampOrder != .orderedSame { return timestampOrder }
-    return compareChatEventSequence(lhs.sequence, rhs.sequence)
-  }
-
-  private func chatEventTimestampSortKey(_ raw: String) -> String {
-    guard raw.hasSuffix("Z") else { return raw }
-    let withoutZone = raw.dropLast()
-    guard let dotIndex = withoutZone.lastIndex(of: ".") else {
-      return "\(withoutZone).000000000Z"
-    }
-    let prefix = withoutZone[..<dotIndex]
-    let fractionStart = withoutZone.index(after: dotIndex)
-    let fraction = String(withoutZone[fractionStart...].prefix(9))
-    let paddedFraction = fraction + String(repeating: "0", count: max(0, 9 - fraction.count))
-    return "\(prefix).\(paddedFraction)Z"
-  }
-
-  private func compareChatEventSequence(_ lhs: Int?, _ rhs: Int?) -> ComparisonResult {
-    let left = lhs ?? 0
-    let right = rhs ?? 0
-    if left == right { return .orderedSame }
-    return left < right ? .orderedAscending : .orderedDescending
-  }
-
-  private func trimChatEventHistory(_ events: [AgentChatEventEnvelope]) -> [AgentChatEventEnvelope] {
-    guard events.count > chatEventHistoryMaxEvents else { return events }
-    return Array(events.suffix(chatEventHistoryMaxEvents))
-  }
-
-  private func pruneChatEventHistoryCacheIfNeeded(preserving additionalSessionIds: Set<String> = []) {
-    let targetCount = max(chatEventHistoryMaxSessions, subscribedChatSessionIds.count + additionalSessionIds.count)
-    guard chatEventEnvelopesBySession.count > targetCount else { return }
-
-    let protectedSessionIds = subscribedChatSessionIds.union(additionalSessionIds)
-    let staleSessionIds = chatEventEnvelopesBySession.keys
-      .filter { !protectedSessionIds.contains($0) }
-      .sorted { lhs, rhs in
-        let leftEvent = chatEventEnvelopesBySession[lhs]?.last
-        let rightEvent = chatEventEnvelopesBySession[rhs]?.last
-        switch (leftEvent, rightEvent) {
-        case let (left?, right?):
-          let order = compareChatEvents(left, right)
-          return order == .orderedSame ? lhs < rhs : order == .orderedAscending
-        case (nil, nil):
-          return lhs < rhs
-        case (nil, _):
-          return true
-        case (_, nil):
-          return false
-        }
-      }
-    let dropCount = max(0, chatEventEnvelopesBySession.count - targetCount)
-    for sessionId in staleSessionIds.prefix(dropCount) {
-      chatEventEnvelopesBySession.removeValue(forKey: sessionId)
-      chatEventRevisionsBySession.removeValue(forKey: sessionId)
-      chatEventLastSeqBySession.removeValue(forKey: sessionId)
-      chatTurnActiveHintBySession.removeValue(forKey: sessionId)
-    }
-  }
-
   private func trimmedTerminalBuffer(_ buffer: String) -> String {
     guard buffer.count > syncTerminalBufferMaxCharacters else { return buffer }
     return String(buffer.suffix(syncTerminalBufferMaxCharacters))
@@ -22029,37 +21951,6 @@ final class SyncService: ObservableObject {
     }
   }
 
-  /// The single place the chat-event revision advances — keeps the
-  /// leading-edge timestamp and the published counter in lockstep.
-  private func bumpChatEventRevision() {
-    lastChatEventRevisionBumpAt = Date()
-    chatEventNotificationRevision += 1
-  }
-
-  private func markChatEventsChanged(immediate: Bool = false) {
-    if immediate {
-      chatEventRevisionTask?.cancel()
-      chatEventRevisionTask = nil
-      bumpChatEventRevision()
-      return
-    }
-
-    guard chatEventRevisionTask == nil else { return }
-    // Leading edge: the first event after a quiet period surfaces now instead
-    // of waiting out the coalescing window — streaming starts rendering the
-    // moment the first delta lands.
-    if Date().timeIntervalSince(lastChatEventRevisionBumpAt) >= chatEventNotificationCoalesceSeconds {
-      bumpChatEventRevision()
-      return
-    }
-    chatEventRevisionTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: chatEventNotificationCoalesceNanoseconds)
-      guard let self, !Task.isCancelled else { return }
-      self.bumpChatEventRevision()
-      self.chatEventRevisionTask = nil
-    }
-  }
-
   private func resetChatEventState(clearHistory: Bool) {
     // GitHub PR items are repo-scoped to the active project; drop them so a
     // project switch / reconnect re-fetches against the new repo instead of
@@ -22079,16 +21970,10 @@ final class SyncService: ObservableObject {
     chatSnapshotWatchdogsBySession.removeAll()
     chatSnapshotResendAttemptsBySession.removeAll()
     stalledChatSnapshotSessionIds.removeAll()
-    chatHistoryCursorBySession.removeAll()
-    chatHistoryCursorAdvancedByPageSessionIds.removeAll()
-    // Turn-active hints are scoped to the live connection's event stream —
-    // a stale "running" hint must not survive a project switch or reconnect.
-    chatTurnActiveHintBySession.removeAll()
     if clearHistory {
-      chatEventEnvelopesBySession.removeAll()
-      chatEventRevisionsBySession.removeAll()
       // Watermarks are only meaningful while the applied history is retained;
       // resuming from a seq after dropping history would skip those events.
+      // (The thread engines keep their own durable resume points.)
       chatEventLastSeqBySession.removeAll()
       // The summary cache is project-scoped. `cacheChatSummaries` merges rather
       // than replaces (so partial Work-list refreshes never evict the open
@@ -22098,10 +21983,7 @@ final class SyncService: ObservableObject {
       // Project-scoped for the same reason the summary cache is: a session id
       // from another project must never lend its lineage to a row here.
       sessionParentIdentityKeys.removeAll()
-    } else {
-      pruneChatEventHistoryCacheIfNeeded()
     }
-    markChatEventsChanged(immediate: true)
     localStateRevision += 1
   }
 
@@ -22256,8 +22138,18 @@ final class SyncService: ObservableObject {
       domainHydrationAttemptIds[domain] = nil
       domainHydrationBaselines[domain] = nil
       domainHydrationPendingCompletions[domain] = nil
-      domainStatuses[domain] = domainStatus(phase: phase, error: error, basedOn: domainStatuses[domain])
+      setDomainStatusIfChanged(
+        domain,
+        domainStatus(phase: phase, error: error, basedOn: domainStatuses[domain])
+      )
     }
+  }
+
+  /// Writing an equal value into a `@Published` dictionary still publishes;
+  /// overlapping hydration attempts re-assert `.hydrating` constantly.
+  private func setDomainStatusIfChanged(_ domain: SyncDomain, _ status: SyncDomainStatus) {
+    guard domainStatuses[domain] != status else { return }
+    domainStatuses[domain] = status
   }
 
   private func beginDomainHydrationAttempt(
@@ -22272,10 +22164,9 @@ final class SyncService: ObservableObject {
       }
       attempts.insert(attempt.id)
       domainHydrationAttemptIds[domain] = attempts
-      domainStatuses[domain] = domainStatus(
-        phase: .hydrating,
-        error: nil,
-        basedOn: domainStatuses[domain]
+      setDomainStatusIfChanged(
+        domain,
+        domainStatus(phase: .hydrating, error: nil, basedOn: domainStatuses[domain])
       )
     }
     return attempt
@@ -22355,6 +22246,12 @@ final class SyncService: ObservableObject {
     args: [String: Any],
     targetProjectId: String? = nil
   ) async throws -> Any {
+    // A file read made on behalf of a chat on another machine (proof
+    // artifacts) goes to that machine. See `SyncFleetTaskRoute`.
+    if let remote = SyncFleetTaskRoute.chat,
+       let route = try fleetRouteForTaskChat(remote) {
+      return try await route.connection.fileRequest(action: action, args: args)
+    }
     guard canSendLiveRequests() else {
       throw NSError(domain: "ADE", code: Self.fileRequestOfflineErrorCode, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
     }
@@ -22533,6 +22430,15 @@ extension SyncService {
   }
 
   private func performCommandRequestSafe(action: String, args: [String: Any]) async throws -> Any {
+    if case .routed(let result) = try await routeOrStripFleetTarget(
+      action: action,
+      args: args,
+      targetProjectId: nil,
+      targetProjectRootPath: nil,
+      timeoutNanoseconds: nil
+    ) {
+      return result
+    }
     guard supportsRemoteAction(action) else {
       throw NSError(
         domain: "ADE",
@@ -22711,14 +22617,16 @@ extension SyncService {
   /// Recompute `activeSessions` from the local `TerminalSessionSummary` roster
   /// and schedule a debounced snapshot write so widgets + live activities pick
   /// up the delta.
-  func refreshActiveSessionsAndSnapshot() {
+  /// `rows`: the session rows, already read off the main actor (the
+  /// post-changeset refresh). Nil reads them here.
+  func refreshActiveSessionsAndSnapshot(rows: [TerminalSessionSummary]? = nil) {
     // Through the chokepoint: this drops `.settled` rows below, and a plain
     // settle the user just tapped must disappear from the widget and Live
     // Activity immediately rather than waiting for the host's changeset. (A
     // "Dismiss & settle" still waits: `needs_you` outranks the settled tier and
     // the overlay does not touch the attention columns, which only the host
     // clears.)
-    let sessions = localSessions()
+    let sessions = rows.map { overlayLocalSessions($0) } ?? localSessions()
     let now = Date()
 
     // `activeSessions` holds every relevant chat session — running,
@@ -22845,10 +22753,11 @@ extension SyncService {
     guard nextSignature != activeSessionsSnapshotSignature else { return }
     activeSessionsSnapshotSignature = nextSignature
 
-    activeSessions = allAgents
-    awaitingInputSessionsCount = awaitingInputCount
-    runningChatSessionCount = runningChatCount
-    idleSessionsCount = idleCount
+    // Each is published: assign only what changed.
+    if activeSessions != allAgents { activeSessions = allAgents }
+    if awaitingInputSessionsCount != awaitingInputCount { awaitingInputSessionsCount = awaitingInputCount }
+    if runningChatSessionCount != runningChatCount { runningChatSessionCount = runningChatCount }
+    if idleSessionsCount != idleCount { idleSessionsCount = idleCount }
 
     scheduleWorkspaceSnapshotWrite()
   }
@@ -22881,7 +22790,12 @@ extension SyncService {
       do {
         let next = try await self.fetchCtoAttention()
         guard self.ctoAttentionGeneration == generation else { return }
-        self.ctoAttention = self.ctoAttention.updating(with: next)
+        // Polled every few seconds; an unchanged answer must not publish (every
+        // `@EnvironmentObject` reader app-wide re-renders on a publish).
+        let updated = self.ctoAttention.updating(with: next)
+        if updated != self.ctoAttention {
+          self.ctoAttention = updated
+        }
       } catch {
         // Keep the last known state on a transport failure. Host-side probe
         // failures arrive as explicit `unknown` and are ignored above.
@@ -22919,11 +22833,14 @@ extension SyncService {
     return hasher.finalize()
   }
 
+  /// The widget's pending-input id for a chat the row does not name one for:
+  /// read from the chat's warm thread engine (its canonical pending queue is
+  /// already folded), never by re-deriving a transcript here.
   private func pendingInputItemIdForSnapshot(sessionId: String) -> String? {
-    let events = chatEventEnvelopesBySession[sessionId] ?? []
-    guard !events.isEmpty else { return nil }
-    let transcript = makeWorkChatTranscript(from: events)
-    return derivePendingWorkInputs(from: transcript).last?.itemId
+    guard let key = chatThreadKey(for: sessionId),
+          let frame = chatThreadRegistry.existingModel(for: key)?.frame
+    else { return nil }
+    return frame.canonicalPendingInputs.last?.itemId
   }
 
   /// Debounced writer for the App Group `WorkspaceSnapshot`. Bounces for 2s
@@ -23643,9 +23560,7 @@ extension SyncService {
   private static let legacyRosterCacheKey = "ade.roster.cache.v1"
 
   private var rosterCacheKey: String {
-    let host = activeHostStorageKey() ?? "unpaired"
-    let encoded = Data(host.utf8).base64EncodedString()
-    return "ade.roster.cache.v2.\(encoded)"
+    syncRosterCacheKey(host: activeHostStorageKey() ?? "unpaired")
   }
 
   /// Subscribe to the all-projects roster once per live connection. Older hosts
@@ -23679,14 +23594,15 @@ extension SyncService {
     let changedProjectIds = rosterChangedProjectIds(previous: rosterProjects, next: nextProjects)
     rosterProjects = nextProjects
     rosterSeq = snapshot.seq
-    rosterSupported = true
+    if !rosterSupported { rosterSupported = true }
     rosterRevision &+= 1
     markRosterProjectsChanged(changedProjectIds)
     schedulePersistRoster()
+    applyChatThreadRosterFreshness(nextProjects)
   }
 
   func applyRosterDelta(_ delta: RemoteRosterDeltaPayload) {
-    rosterSupported = true
+    if !rosterSupported { rosterSupported = true }
     switch rosterApplyDelta(current: rosterProjects, currentSeq: rosterSeq, delta: delta) {
     case .needsSnapshot:
       // No baseline or a seq gap — re-request a full snapshot rather than apply
@@ -23700,12 +23616,32 @@ extension SyncService {
       // all-project chat-array comparison on the MainActor every 250 ms.
       let changedProjectIds = Set((delta.changed ?? []).map(\.projectId))
         .union(delta.removed ?? [])
-      rosterProjects = nextProjects
       rosterSeq = seq
-      rosterRevision &+= 1
-      markRosterProjectsChanged(changedProjectIds)
+      // Most deltas re-send projects whose content did not change. Compare
+      // just those (never the whole roster) and publish only a real change:
+      // an unconditional write here was ~6 SyncService publishes a second.
+      if rosterDeltaChangesContent(changedProjectIds, next: nextProjects) {
+        rosterProjects = nextProjects
+        rosterRevision &+= 1
+        markRosterProjectsChanged(changedProjectIds)
+      }
       schedulePersistRoster()
+      applyChatThreadRosterFreshness(delta.changed ?? [])
     }
+  }
+
+  private func rosterDeltaChangesContent(
+    _ changedProjectIds: Set<String>,
+    next: [RemoteRosterProject]
+  ) -> Bool {
+    guard next.count == rosterProjects.count,
+          next.map(\.projectId) == rosterProjects.map(\.projectId)
+    else { return true }
+    guard !changedProjectIds.isEmpty else { return false }
+    for (index, project) in next.enumerated() where changedProjectIds.contains(project.projectId) {
+      if rosterProjects[index] != project { return true }
+    }
+    return false
   }
 
   /// Roster entry for a catalog project, matched by id then normalized root path
@@ -24258,4 +24194,694 @@ func adeUsageStatsCommandArgs(preset: String, force: Bool) -> [String: Any] {
   var args: [String: Any] = ["preset": preset]
   if force { args["force"] = true }
   return args
+}
+
+// MARK: - Thread engine transport (mobile thread engine, I4)
+
+extension SyncService: ChatThreadTransport {
+  /// The engine key for a chat on the connected machine, in the scope the
+  /// session is routed to right now. Nil before a machine is known.
+  func chatThreadKey(for sessionId: String) -> ChatThreadKey? {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let remote = remoteMachineChatsBySession[trimmedSessionId] {
+      return ChatThreadKey(
+        machineKey: remote.machineKey,
+        sessionId: trimmedSessionId,
+        scope: .crossProject(projectId: remote.projectId, rootPath: remote.rootPath)
+      )
+    }
+    guard !trimmedSessionId.isEmpty,
+          let profile = activeHostProfile,
+          let machineKey = profileStorageKey(profile)
+    else { return nil }
+    let scope: ChatThreadScope
+    switch chatCommandScopeBySession[trimmedSessionId] {
+    case .personal:
+      scope = .personal
+    case .foreignProject(let projectId, let projectRootPath):
+      scope = .crossProject(projectId: projectId ?? "", rootPath: projectRootPath ?? "")
+    case nil:
+      scope = .project(activeProjectId ?? "")
+    }
+    return ChatThreadKey(machineKey: machineKey, sessionId: trimmedSessionId, scope: scope)
+  }
+
+  func chatThreadRequestSnapshot(_ key: ChatThreadKey, reason: String) {
+    if let connection = fleetConnection(forThreadKey: key) {
+      connection.requestChatSnapshot(sessionId: key.sessionId)
+      return
+    }
+    syncChatLog.notice(
+      "thread_snapshot_request session=\(key.sessionId, privacy: .public) reason=\(reason, privacy: .public)"
+    )
+    // A retry after a stall must clear the coalescing latch the stalled
+    // attempt opened; every other reason goes through the normal request.
+    if stalledChatSnapshotSessionIds.contains(key.sessionId) {
+      Task { @MainActor [weak self] in
+        await self?.retryFullChatEventSnapshot(sessionId: key.sessionId)
+      }
+      return
+    }
+    recentFullChatSnapshotRequestBySession.removeValue(forKey: key.sessionId)
+    Task { @MainActor [weak self] in
+      _ = try? await self?.requestFullChatEventSnapshot(sessionId: key.sessionId)
+    }
+  }
+
+  /// One older page for the thread engine. `chatLogV2` hosts page by durable
+  /// sequence (`beforeSequence`); older hosts by byte cursor. The reply is
+  /// decoded off the main actor with each row's raw bytes kept.
+  func chatThreadFetchOlderPage(
+    _ key: ChatThreadKey,
+    request: ChatThreadOlderRequest
+  ) async throws -> ChatThreadOlderPageInput {
+    if let connection = fleetConnection(forThreadKey: key) {
+      return try await connection.fetchOlderPage(sessionId: key.sessionId, request: request)
+    }
+    let sessionId = key.sessionId
+    if supportsChatHistoryPaging, subscribedChatSessionIds.contains(sessionId) {
+      let requestId = makeRequestId()
+      var payload = chatSubscriptionPayload(sessionId: sessionId, maxBytes: nil, includeSinceSeq: false)
+      switch request {
+      case .beforeSequence(let sequence):
+        payload["beforeSequence"] = sequence
+      case .beforeOffset(let offset):
+        payload["beforeOffset"] = max(0, offset)
+      }
+      payload["maxBytes"] = syncChatHistoryTailPageMaxBytes
+      do {
+        let raw = try await awaitResponse(
+          requestId: requestId,
+          disconnectOnTimeout: false,
+          timeoutMessage: "Timed out loading earlier chat messages.",
+          timeoutNanoseconds: 8_000_000_000
+        ) {
+          self.sendEnvelope(type: "chat_history", requestId: requestId, payload: payload)
+        }
+        let decoded = try await decodeOlderPage(raw, sessionId: sessionId)
+        // The socket handler that got this request cannot serve it (brain
+        // fallback handler, scope mismatch). The command path can.
+        guard decoded.unavailable, canFetchOlderPageByCommand(request) else { return decoded }
+        ScrollDiagnostics.shared.event("thread.olderPage.fallback", ["session": sessionId, "reason": "unavailable"])
+      } catch where isSyncRequestTimeoutError(error) && canFetchOlderPageByCommand(request) {
+        // A handler that never answers `chat_history`: the command path can.
+        ScrollDiagnostics.shared.event("thread.olderPage.fallback", ["session": sessionId, "reason": "timeout"])
+      }
+    }
+    guard canFetchOlderPageByCommand(request) else {
+      throw NSError(
+        domain: "ADE",
+        code: 27,
+        userInfo: [NSLocalizedDescriptionKey: "Open the chat to load earlier messages."]
+      )
+    }
+    var args: [String: Any] = ["sessionId": sessionId, "maxBytes": syncChatHistoryTailPageMaxBytes]
+    switch request {
+    case .beforeSequence(let sequence): args["beforeSequence"] = sequence
+    case .beforeOffset(let offset): args["beforeOffset"] = offset
+    }
+    let scope = chatCommandScope(for: sessionId)
+    let raw = try await sendCommand(
+      action: chatActionName("chat.getChatEventHistoryPage", sessionId: sessionId),
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 8_000_000_000,
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+    return try await decodeOlderPage(raw, sessionId: sessionId)
+  }
+
+  /// The history command pages by byte offset everywhere, and by durable
+  /// sequence only on hosts that advertise `chatHistoryPageBySequence` (an
+  /// older host would ignore the field and return the newest page).
+  private func canFetchOlderPageByCommand(_ request: ChatThreadOlderRequest) -> Bool {
+    switch request {
+    case .beforeOffset: return true
+    case .beforeSequence: return supportsChatHistoryPageBySequence
+    }
+  }
+
+  private func decodeOlderPage(_ raw: Any, sessionId: String) async throws -> ChatThreadOlderPageInput {
+    let decoded = await Task.detached(priority: .userInitiated) {
+      chatThreadDecodeOlderPage(raw, requestedSessionId: sessionId)
+    }.value
+    guard let decoded else {
+      throw NSError(
+        domain: "ADE",
+        code: 28,
+        userInfo: [NSLocalizedDescriptionKey: "Could not read earlier chat messages."]
+      )
+    }
+    return decoded
+  }
+
+  /// Background transition (edge case 17): drain every warm engine's pending
+  /// store writes and flush the store's batch to disk under a background task,
+  /// so a suspension or kill right after cannot lose the last batch.
+  func flushChatThreadLogsForBackground() {
+    let engines = chatThreadRegistry.warmKeys.compactMap { chatThreadRegistry.existingModel(for: $0)?.engine }
+    var taskId = UIBackgroundTaskIdentifier.invalid
+    taskId = UIApplication.shared.beginBackgroundTask(withName: "ade.chat-log.flush") {
+      UIApplication.shared.endBackgroundTask(taskId)
+      taskId = .invalid
+    }
+    Task { @MainActor in
+      for engine in engines {
+        await engine.flushPersistence()
+      }
+      await ChatLogStore.shared.flush()
+      if taskId != .invalid {
+        UIApplication.shared.endBackgroundTask(taskId)
+        taskId = .invalid
+      }
+    }
+  }
+
+  /// Launch prefetch (I6): fold the most recently opened chats from disk at
+  /// utility priority, so reopening any of them paints on the first frame.
+  func warmRecentChatThreads(limit: Int = 5) {
+    Task { @MainActor [weak self] in
+      let keys = await ChatLogStore.shared.recentKeys(limit: limit)
+      guard let self else { return }
+      let threadKeys = keys.compactMap { key -> ChatThreadKey? in
+        guard let scope = ChatThreadScope(storageKey: key.scopeKey) else { return nil }
+        return ChatThreadKey(machineKey: key.machineKey, sessionId: key.sessionId, scope: scope)
+      }
+      self.chatThreadRegistry.warm(threadKeys, priority: .utility)
+    }
+  }
+
+  /// Work list prefetch (I6): warm the engines for the chats the list shows
+  /// first and for every chat with a live turn. Project scope only — the Work
+  /// list is the active project's.
+  func warmChatThreads(sessionIds: [String]) {
+    let keys = sessionIds.compactMap { chatThreadKey(for: $0) }
+    guard !keys.isEmpty else { return }
+    chatThreadRegistry.warm(keys, priority: .utility)
+  }
+
+  /// Roster rows carry `historyGeneration`; hand them to the registry so a
+  /// warm chat whose history was rewritten on the host reloads.
+  func applyChatThreadRosterFreshness(_ projects: [RemoteRosterProject]) {
+    guard supportsChatLogV2,
+          let profile = activeHostProfile,
+          let machineKey = profileStorageKey(profile)
+    else { return }
+    var generationBySessionId: [String: Int] = [:]
+    for project in projects {
+      for chat in project.chats {
+        if let generation = chat.historyGeneration {
+          generationBySessionId[chat.id] = generation
+        }
+      }
+    }
+    chatThreadRegistry.applyRosterFreshness(
+      machineKey: machineKey,
+      generationBySessionId: generationBySessionId
+    )
+  }
+}
+
+// MARK: - Machine fleet seams (multi-machine phase 2/3)
+//
+// `SyncService` stays the FOCUSED machine's full connection. `MachineFleet`
+// keeps one light roster connection to each other live machine. These seams let
+// a fleet connection dial with exactly the focused connection's candidate
+// ranking, race, relay negotiation, DPoP proof and relay account token, without
+// touching the focused connection's own state.
+
+/// Makes a candidate race a fleet (roster) dial: its own staleness check and a
+/// roster-only peer description in the hello.
+struct SyncFleetDialContext {
+  let isCurrent: @MainActor () -> Bool
+  let peerMetadata: @MainActor (SyncConnectionAttemptMetadata) -> [String: Any]
+}
+
+extension SyncService {
+  func dialAttemptIsCurrent(_ generation: UInt64, _ fleetDial: SyncFleetDialContext?) -> Bool {
+    if let fleetDial { return fleetDial.isCurrent() }
+    return isCurrentConnectAttempt(generation)
+  }
+
+  /// Storage key of the focused machine (the active profile), if any.
+  var focusedMachineKey: String? {
+    activeHostProfile.flatMap(profileStorageKey)
+  }
+
+  /// Machines a roster connection must never dial right now: the focused
+  /// machine, the machine the focused socket is attached to, and any machine
+  /// the focused connection is dialing.
+  var fleetBlockedMachineKeys: Set<String> {
+    var keys = focusedDialingMachineKeys
+    if let focusedMachineKey { keys.insert(focusedMachineKey) }
+    if let focusedSocketMachineKey { keys.insert(focusedSocketMachineKey) }
+    return keys
+  }
+
+  /// True while a focused socket exists but its machine is not known yet. No
+  /// roster hello may be sent anywhere during this window.
+  var fleetHelloOnHold: Bool {
+    socket != nil && focusedSocketMachineKey == nil
+  }
+
+  /// Every saved machine with a usable credential, keyed by machine storage
+  /// key, most recently used first. Profiles without a stable key are skipped.
+  func fleetMachineProfiles() -> [SyncFleetMachineProfile] {
+    var seen = Set<String>()
+    return loadSavedProfiles().values
+      .sorted { shouldPreferProfile($0, over: $1) }
+      .compactMap { profile -> SyncFleetMachineProfile? in
+        guard profile.authKind == "paired",
+              let key = profileStorageKey(profile),
+              seen.insert(key).inserted,
+              tokenForProfile(profile) != nil
+        else { return nil }
+        return SyncFleetMachineProfile(machineKey: key, profile: profile)
+      }
+  }
+
+  func fleetToken(for profile: HostConnectionProfile) -> String? {
+    tokenForProfile(profile)
+  }
+
+  /// The roster cache key `SyncService` uses for this machine while it is
+  /// focused (`rosterCacheKey`), so a machine keeps one offline roster whether
+  /// it is focused or a fleet member.
+  func fleetRosterCacheKey(for profile: HostConnectionProfile) -> String? {
+    // The same order as `activeHostStorageKey`, from the saved profile alone.
+    let host: String
+    if let identity = normalizedHostStorageKey(profile.hostIdentity)
+      ?? normalizedHostStorageKey(profile.lastHostDeviceId) {
+      host = identity
+    } else if let address = normalizedHostStorageKey(profile.lastSuccessfulAddress) {
+      host = "\(address):\(profile.port)"
+    } else if let name = normalizedHostStorageKey(profile.hostName) {
+      host = "\(name):\(profile.port)"
+    } else {
+      return nil
+    }
+    return syncRosterCacheKey(host: host)
+  }
+
+  /// A fleet dial error that means the pairing itself was rejected by the
+  /// machine it belongs to. A fleet connection stops and asks the user; it
+  /// never forgets the pairing (only the focused connection may do that).
+  func fleetErrorIsPairingRejection(_ error: Error) -> Bool {
+    shouldInvalidateSavedPairing(for: error)
+  }
+
+  /// Roster-only hello peer: no replica cursor, no changeset capabilities.
+  /// Hosts that know `syncRole: "roster"` never replicate to this socket.
+  func fleetPeerMetadata(connectionAttempt: SyncConnectionAttemptMetadata) -> [String: Any] {
+    var metadata = currentPeerMetadata(connectionAttempt: connectionAttempt)
+    metadata["syncRole"] = "roster"
+    metadata["dbVersion"] = 0
+    metadata.removeValue(forKey: "dbVersionBySite")
+    metadata["capabilities"] = [
+      "chunkedEnvelopes",
+      "binaryEnvelopes",
+      "foldedReplay",
+      "mobileChatSlimV1",
+    ]
+    return metadata
+  }
+
+  /// Dial and authenticate a roster connection to a non-focused machine.
+  /// `isCurrent` must turn false as soon as the dial is stale or the machine
+  /// became focused; it is checked before the hello is sent.
+  func dialFleetConnection(
+    profile: HostConnectionProfile,
+    token: String,
+    isCurrent: @escaping @MainActor () -> Bool
+  ) async throws -> SyncFleetDialResult {
+    let attempts = try endpointAttemptPlan(for: profile, preferLiveCandidatesOnly: false)
+    guard !attempts.isEmpty else { throw noConnectableAddressError() }
+    let plan = syncConnectionRaceCandidatePlan(rankedAttempts: attempts)
+    let context = SyncFleetDialContext(
+      isCurrent: isCurrent,
+      peerMetadata: { [weak self] attempt in
+        self?.fleetPeerMetadata(connectionAttempt: attempt) ?? [:]
+      }
+    )
+    let candidate = try await raceAuthenticatedConnectionCandidates(
+      plan,
+      profile: profile,
+      pairedSecret: token,
+      connectAttemptGeneration: 0,
+      fleetDial: context
+    )
+    guard isCurrent() else {
+      candidate.task.cancel(with: .goingAway, reason: nil)
+      throw CancellationError()
+    }
+    let address = candidate.scheduled.endpoint.address
+    if syncIsFullWebSocketRoute(address),
+       let requirement = syncRelayReconnectAuthorizationRequirement(
+         usedAuthorization: candidate.relayAuthorization,
+         currentAuthorization: AccountService.shared.currentPairingAuthorization,
+         relayAccountOwnerId: profile.relayAccountOwnerId
+       ) {
+      candidate.task.cancel(with: .goingAway, reason: nil)
+      throw requirement
+    }
+    return SyncFleetDialResult(
+      task: candidate.task,
+      helloPayload: candidate.helloPayload,
+      address: address
+    )
+  }
+}
+
+// MARK: - Routing chats that live on another machine
+
+extension SyncService {
+  /// Route this chat's reads, writes and stream to another paired machine.
+  /// Falls back to the focused-machine cross-project scope when the machine is
+  /// in fact the focused one.
+  func setRemoteMachineChatScope(
+    sessionId: String,
+    machineKey: String,
+    projectId: String,
+    projectRootPath: String?
+  ) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    if machineKey == focusedMachineKey {
+      remoteMachineChatsBySession.removeValue(forKey: trimmedSessionId)
+      setCrossProjectChatScope(sessionId: trimmedSessionId, projectId: projectId, projectRootPath: projectRootPath)
+      return
+    }
+    chatCommandScopeBySession.removeValue(forKey: trimmedSessionId)
+    viewOwnedRemoteChatIds.insert(trimmedSessionId)
+    remoteMachineChatsBySession[trimmedSessionId] = SyncRemoteMachineChat(
+      machineKey: machineKey,
+      projectId: projectId,
+      rootPath: syncNormalizedProjectRootScope(projectRootPath) ?? projectRootPath ?? ""
+    )
+  }
+
+  /// The Work list's cross-machine rows: their row actions (archive, pin,
+  /// settle, rename) must reach the chat's own machine too.
+  func setWorkListRemoteChats(_ chats: [String: SyncRemoteMachineChat]) {
+    let focusedKey = focusedMachineKey
+    let next = chats.filter { $0.value.machineKey != focusedKey }
+    guard next != workListRemoteChats else { return }
+    for sessionId in workListRemoteChats.keys where next[sessionId] == nil && !viewOwnedRemoteChatIds.contains(sessionId) {
+      remoteMachineChatsBySession.removeValue(forKey: sessionId)
+    }
+    for (sessionId, entry) in next where !viewOwnedRemoteChatIds.contains(sessionId) {
+      remoteMachineChatsBySession[sessionId] = entry
+    }
+    workListRemoteChats = next
+  }
+
+  func isRemoteMachineChat(sessionId: String) -> Bool {
+    routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines)) != nil
+  }
+
+  /// The entry of a chat that another machine serves right now. Nil when the
+  /// chat's machine is the focused one: the focused connection serves it.
+  func routedRemoteMachineChat(_ trimmedSessionId: String) -> SyncRemoteMachineChat? {
+    guard let remote = remoteMachineChatsBySession[trimmedSessionId],
+          remote.machineKey != focusedMachineKey
+    else { return nil }
+    return remote
+  }
+
+  /// Moves open chats between the focused stream and the roster streams after
+  /// the focused machine changed. A chat whose machine is now focused joins
+  /// the focused stream. A chat of another machine leaves it, so a restore
+  /// never subscribes it on the wrong machine.
+  func rebalanceRemoteChatSubscriptions() {
+    var changed = false
+    for (sessionId, remote) in remoteMachineChatsBySession where viewOwnedRemoteChatIds.contains(sessionId) {
+      if remote.machineKey == focusedMachineKey {
+        // The stopped roster link must not subscribe it again later.
+        machineFleet?.connection(for: remote.machineKey)?.unsubscribeChat(sessionId: sessionId)
+        if !subscribedChatSessionIds.contains(sessionId) {
+          retainChatEventSubscription(sessionId: sessionId)
+          changed = true
+        }
+      } else if subscribedChatSessionIds.contains(sessionId) {
+        cancelDelayedChatUnsubscribe(sessionId: sessionId)
+        subscribedChatSessionIds.remove(sessionId)
+        chatSubscriptionsNeedingRemoteActivation.remove(sessionId)
+        clearChatSnapshotWatchdogState(sessionId: sessionId)
+        retainChatEventSubscription(sessionId: sessionId)
+        changed = true
+      }
+    }
+    if changed { objectWillChange.send() }
+  }
+
+  func remoteMachineChat(sessionId: String) -> SyncRemoteMachineChat? {
+    remoteMachineChatsBySession[sessionId.trimmingCharacters(in: .whitespacesAndNewlines)]
+  }
+
+  func remoteChatConnection(for sessionId: String) -> MachineConnection? {
+    guard let remote = routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+      return nil
+    }
+    return machineFleet?.connection(for: remote.machineKey)
+  }
+
+  /// The roster connection that serves a thread key, or nil when the key
+  /// belongs to the focused machine.
+  func fleetConnection(forThreadKey key: ChatThreadKey) -> MachineConnection? {
+    guard key.machineKey != focusedMachineKey else { return nil }
+    return machineFleet?.connection(for: key.machineKey)
+  }
+
+  /// Decide whether a command goes to another machine. Throws when it must go
+  /// to a machine that is not connected: it must never fall through to the
+  /// focused machine, where the same project id can name a different project.
+  func syncFleetRoute(
+    action: String,
+    args: [String: Any],
+    targetProjectId: String?,
+    targetProjectRootPath: String?
+  ) throws -> SyncFleetCommandRoute? {
+    if let marked = syncFleetParseMarkedProjectId(targetProjectId) {
+      return try fleetRoute(machineKey: marked.machineKey, projectId: marked.projectId, rootPath: targetProjectRootPath)
+    }
+    guard !remoteMachineChatsBySession.isEmpty else { return nil }
+    var sessionIds: [String] = []
+    if let sessionId = args["sessionId"] as? String { sessionIds.append(sessionId) }
+    if let many = args["sessionIds"] as? [String] { sessionIds.append(contentsOf: many) }
+    if (args["ownerKind"] as? String) == "chat_session", let ownerId = args["ownerId"] as? String {
+      sessionIds.append(ownerId)
+    }
+    for sessionId in sessionIds {
+      if let remote = routedRemoteMachineChat(sessionId.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        return try fleetRoute(machineKey: remote.machineKey, projectId: remote.projectId, rootPath: remote.rootPath)
+      }
+    }
+    if let remote = SyncFleetTaskRoute.chat, remote.machineKey != focusedMachineKey {
+      return try fleetRouteForTaskChat(remote)
+    }
+    return nil
+  }
+
+  func fleetRouteForTaskChat(_ remote: SyncRemoteMachineChat) throws -> SyncFleetCommandRoute? {
+    try fleetRoute(machineKey: remote.machineKey, projectId: remote.projectId, rootPath: remote.rootPath)
+  }
+
+  private func fleetRoute(machineKey: String, projectId: String, rootPath: String?) throws -> SyncFleetCommandRoute? {
+    // The chat's machine became the focused one: the focused path serves it.
+    guard machineKey != focusedMachineKey else { return nil }
+    guard let connection = machineFleet?.connection(for: machineKey) else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "That machine is not paired with this phone any more."])
+    }
+    guard connection.isLive else {
+      let name = connection.hostName ?? "That machine"
+      throw NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach \(name) right now."])
+    }
+    let root = rootPath.flatMap { $0.isEmpty ? nil : $0 }
+    return SyncFleetCommandRoute(connection: connection, projectId: projectId, rootPath: root)
+  }
+
+  /// Sends a command that belongs to another machine to that machine now, or
+  /// throws. Such a command is never queued and never reaches the focused
+  /// machine. Otherwise returns the plain project id for the focused path: a
+  /// machine marker for the focused machine itself (it became focused while
+  /// its chat was open) loses its marker.
+  func routeOrStripFleetTarget(
+    action: String,
+    args: [String: Any],
+    targetProjectId: String?,
+    targetProjectRootPath: String?,
+    timeoutNanoseconds: UInt64?
+  ) async throws -> SyncFleetTargetResolution {
+    if let route = try syncFleetRoute(
+      action: action,
+      args: args,
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath
+    ) {
+      let result = try await route.connection.sendCommand(
+        action: action,
+        args: args,
+        projectId: route.projectId,
+        projectRootPath: route.rootPath,
+        timeoutNanoseconds: timeoutNanoseconds
+      )
+      return .routed(result)
+    }
+    return .focused(projectId: syncFleetParseMarkedProjectId(targetProjectId)?.projectId ?? targetProjectId)
+  }
+}
+
+extension SyncService {
+  /// `chatLogV2` for the machine that owns this chat.
+  func chatSupportsLogV2(sessionId: String) -> Bool {
+    if isRemoteMachineChat(sessionId: sessionId) {
+      return remoteChatConnection(for: sessionId)?.supportsChatLogV2 == true
+    }
+    return supportsChatLogV2
+  }
+
+  /// Whether the machine that owns this chat is reachable right now.
+  func chatHostIsReachable(sessionId: String) -> Bool {
+    if isRemoteMachineChat(sessionId: sessionId) {
+      return remoteChatConnection(for: sessionId)?.isLive == true
+    }
+    return connectionState == .connected
+  }
+
+  /// The machine name to show under a chat's title.
+  func chatMachineName(sessionId: String) -> String? {
+    if let connection = remoteChatConnection(for: sessionId) {
+      return connection.hostName ?? syncNonEmpty(connection.profile.hostName)
+    }
+    return hostName ?? activeHostProfile?.hostName
+  }
+
+  /// A remote machine's connection changed phase. Only chats open on that
+  /// machine care, so the focused observers re-render only then: their
+  /// reachability gates re-evaluate.
+  func fleetConnectionPhaseChanged(machineKey: String) {
+    guard remoteMachineChatsBySession.values.contains(where: { $0.machineKey == machineKey }) else { return }
+    objectWillChange.send()
+  }
+}
+
+// MARK: - Hub actions on other machines
+
+extension SyncService {
+  /// Make another paired machine the focused one (full sync). Returns true
+  /// when the phone attached to that machine.
+  @discardableResult
+  func switchFocus(toMachineKey machineKey: String) async -> Bool {
+    if machineKey == focusedMachineKey, connectionState == .connected { return true }
+    guard let entry = fleetMachineProfiles().first(where: { $0.machineKey == machineKey }),
+          let host = discoveredHost(fromSavedProfile: entry.profile)
+    else {
+      lastConnectAttemptFailure = SyncConnectAttemptFailure(
+        message: "This saved machine no longer has pairing credentials. Pair again from Settings."
+      )
+      return false
+    }
+    // Leave the previous machine's project; the Hub is the landing surface.
+    projectHubPresented = true
+    return await reconnect(toSavedHost: host)
+  }
+
+  /// Open a project that lives on another machine: focus that machine, then
+  /// select the project from its catalog.
+  func openProject(_ project: MobileProjectSummary, onMachine machineKey: String) async {
+    guard await switchFocus(toMachineKey: machineKey) else { return }
+    let root = normalizedProjectRoot(project.rootPath)
+    let match = projects.first { candidate in
+      candidate.id == project.id
+        || (root != nil && normalizedProjectRoot(candidate.rootPath) == root)
+    }
+    selectProject(match ?? project)
+  }
+
+  /// Archive / unarchive / delete a chat on another machine from the Hub.
+  func performRosterChatAction(
+    _ action: String,
+    sessionId: String,
+    project: MobileProjectSummary,
+    onMachine machineKey: String
+  ) async throws {
+    guard machineKey != focusedMachineKey else {
+      try await performRosterChatAction(action, sessionId: sessionId, project: project)
+      return
+    }
+    guard let route = try fleetRouteForTaskChat(SyncRemoteMachineChat(
+      machineKey: machineKey,
+      projectId: project.id,
+      rootPath: project.rootPath ?? ""
+    )) else {
+      try await performRosterChatAction(action, sessionId: sessionId, project: project)
+      return
+    }
+    _ = try await route.connection.sendCommand(
+      action: action,
+      args: ["sessionId": sessionId],
+      projectId: route.projectId,
+      projectRootPath: route.rootPath
+    )
+    route.connection.requestRosterSnapshot()
+  }
+}
+
+extension RemoteRosterProject {
+  /// A project summary for a roster project on another machine. That machine's
+  /// catalog is not on this phone; the roster carries what the Hub needs.
+  var asRemoteMachineProjectSummary: MobileProjectSummary {
+    MobileProjectSummary(
+      id: projectId,
+      displayName: displayName,
+      rootPath: rootPath,
+      lastOpenedAt: lastOpenedAt,
+      iconDataUrl: iconDataUrl,
+      laneCount: lanes.count,
+      isAvailable: true,
+      isCached: false,
+      isOpen: booted
+    )
+  }
+}
+
+// MARK: - Links into another machine's chat
+
+struct SyncFleetChatTarget: Equatable {
+  let machineKey: String
+  let project: RemoteRosterProject
+  let lane: RemoteRosterLane?
+  let chat: RemoteRosterChat
+}
+
+extension SyncService {
+  /// A chat that a roster connection to another machine knows about. A link
+  /// (push, widget, Activity) to it opens through that connection instead of
+  /// switching the phone's focus. Only machines the link may name: the named
+  /// machine, or any fleet machine when the link names none.
+  func fleetChatTarget(for request: WorkSessionNavigationRequest) -> SyncFleetChatTarget? {
+    guard let fleet = machineFleet else { return nil }
+    let focusedKey = focusedMachineKey
+    // The link names an account machine; its fleet key is its device id.
+    var namedFleetKey: String?
+    if let named = request.accountMachineKey.flatMap(syncNonEmpty) {
+      guard let deviceId = syncAccountMachineNavigationTarget(
+        rawMachineKey: named,
+        machines: AccountService.shared.machines
+      ).flatMap({ syncNonEmpty($0.deviceId) }) else { return nil }
+      namedFleetKey = "machine:\(deviceId.lowercased())"
+    }
+    for machine in fleet.machines where machine.machineKey != focusedKey {
+      if let namedFleetKey, machine.machineKey != namedFleetKey { continue }
+      for project in machine.projects {
+        guard let chat = project.chats.first(where: {
+          $0.id == request.sessionId && $0.isChatTool && !$0.isIdentityChat
+        }) else { continue }
+        let lane = project.lanes.first { $0.id == chat.laneId }
+        return SyncFleetChatTarget(machineKey: machine.machineKey, project: project, lane: lane, chat: chat)
+      }
+    }
+    return nil
+  }
 }

@@ -259,6 +259,47 @@ describe("appStore", () => {
       expect(latest).toBeTruthy();
       expect(JSON.parse(latest![1])).toMatchObject({ theme: "dark" });
     });
+
+    it("selects a shipped theme by id and derives its base mode", () => {
+      useAppStore.getState().setTheme("parchment");
+      expect(useAppStore.getState().themeId).toBe("parchment");
+      // Parchment is a light theme; `theme` stays the base mode every existing
+      // surface reads.
+      expect(useAppStore.getState().theme).toBe("light");
+      const latestCalls = mockLocalStorage.setItem.mock.calls
+        .filter(([key]) => key === "ade.userPreferences.v1");
+      const latest = latestCalls[latestCalls.length - 1];
+      expect(JSON.parse(latest[1])).toMatchObject({ themeId: "parchment", theme: "light" });
+      useAppStore.getState().setTheme("dark");
+    });
+
+    it("round-trips a custom theme and its selection through the preferences blob", () => {
+      const custom = {
+        formatVersion: 1 as const,
+        id: "my-theme",
+        name: "My Theme",
+        baseMode: "light" as const,
+        source: "custom" as const,
+        palette: { bg: "#ffffff", fg: "#111111", surface: "#fafafa", card: "#ffffff", accent: "#be185d" },
+      };
+      useAppStore.getState().setCustomThemes([custom]);
+      useAppStore.getState().setTheme("my-theme");
+
+      expect(useAppStore.getState().themeId).toBe("my-theme");
+      expect(useAppStore.getState().theme).toBe("light");
+      expect(useAppStore.getState().customThemes).toHaveLength(1);
+
+      const latestCalls = mockLocalStorage.setItem.mock.calls
+        .filter(([key]) => key === "ade.userPreferences.v1");
+      const latest = latestCalls[latestCalls.length - 1];
+      const persisted = JSON.parse(latest[1]);
+      expect(persisted).toMatchObject({ themeId: "my-theme", theme: "light" });
+      expect(persisted.customThemes).toHaveLength(1);
+      expect(persisted.customThemes[0]).toMatchObject({ id: "my-theme", name: "My Theme" });
+
+      useAppStore.getState().setTheme("dark");
+      useAppStore.getState().setCustomThemes([]);
+    });
   });
 
   describe("setTerminalPreferences", () => {

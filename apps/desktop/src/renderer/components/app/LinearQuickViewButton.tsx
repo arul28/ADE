@@ -26,7 +26,8 @@ import {
   linearBrowserIssueToLaneIssue,
   type BatchProgress,
 } from "./LinearIssueBrowser";
-import { BatchLaunchModal, type BatchLaunchSubmit } from "./BatchLaunchModal";
+import { BatchLaunchModal, type BatchLaunchMachine, type BatchLaunchSubmit } from "./BatchLaunchModal";
+import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 import {
   defaultKickoffIntro,
@@ -106,11 +107,18 @@ export function LinearQuickViewButton({
   onOpenHarnessSettings,
   variant = "icon",
   onMenuActivate,
+  showTrigger = true,
 }: {
   /** Forwarded to the batch launch modal so its model picker can reach Settings. */
   onOpenHarnessSettings?: () => void;
   variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
+  /**
+   * False hides the header button while keeping the component mounted, so
+   * issue deeplinks still open the quick view or the project prompt when no
+   * project surface is on screen.
+   */
+  showTrigger?: boolean;
 } = {}) {
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
@@ -136,6 +144,10 @@ export function LinearQuickViewButton({
   const occludesNativeBrowser = open || batchModalOpen;
   // Remembers each issue's chosen config so "Retry failed" reuses the same model.
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
+  // The machine each issue's batch went to, so "Retry failed" re-runs it there.
+  const batchMachineByIssueRef = useRef<Map<string, BatchLaunchMachine>>(new Map());
+  // Lane id → the machine it was created on, so "Open lane" selects it there.
+  const batchMachineByLaneIdRef = useRef<Map<string, BatchLaunchMachine>>(new Map());
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
 
@@ -331,8 +343,12 @@ export function LinearQuickViewButton({
     [],
   );
 
-  const launchBatch = useCallback(async (entries: BatchLaunchSubmit[]) => {
+  const launchBatch = useCallback(async (entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
     if (!entries.length) return;
+    // Every create, launch and rollback in this batch goes to the chosen
+    // machine; no call is left to fall back to the tab's machine.
+    const pin = machine.pin;
+    for (const { issue } of entries) batchMachineByIssueRef.current.set(issue.id, machine);
     batchAgentReadinessRef.current.beginBatch();
     if (launchPromptClipboardEnabled) {
       const lastLaunchEntry = [...entries].reverse().find(({ config }) => !config.laneOnly);
@@ -365,13 +381,13 @@ export function LinearQuickViewButton({
     const result = await runBatchLaunch(
       entries,
       {
-        createLane: (args) => window.ade.lanes.create(args),
+        createLane: (args) => (pin ? window.ade.lanes.create(args, pin) : window.ade.lanes.create(args)),
         // Single headless launch: creates the session and runs the kickoff turn
         // server-side without a mounted chat pane. When the user picked a
         // permission mode it is forwarded; otherwise the IPC defaults to an
         // autonomous-runnable mode.
         launch: async (args) => {
-          const session = await window.ade.agentChat.launch({
+          const launchArgs: Parameters<typeof window.ade.agentChat.launch>[0] = {
             laneId: args.laneId,
             provider: args.provider,
             model: args.model,
@@ -390,8 +406,11 @@ export function LinearQuickViewButton({
             ...(args.cursorConfigValues !== undefined ? { cursorConfigValues: args.cursorConfigValues } : {}),
             kickoffText: args.kickoffText,
             contextAttachments: args.contextAttachments,
-          });
-          if (activeProjectRoot) {
+          };
+          const session = pin
+            ? await window.ade.agentChat.launch(launchArgs, pin)
+            : await window.ade.agentChat.launch(launchArgs);
+          if (activeProjectRoot && !pin) {
             announceWorkChatSessionCreated(activeProjectRoot, session);
           }
           return session;
@@ -399,8 +418,8 @@ export function LinearQuickViewButton({
         // CLI-agent variant: spawns a tracked terminal pty with the issue
         // attached so the agent drives it via `ade linear`. Returns the pty
         // session id, which runBatchLaunch records like a chat session id.
-        launchCli: (args) =>
-          window.ade.agentChat.launchCli({
+        launchCli: (args) => {
+          const cliArgs: Parameters<typeof window.ade.agentChat.launchCli>[0] = {
             laneId: args.laneId,
             provider: args.provider,
             model: args.model,
@@ -409,15 +428,20 @@ export function LinearQuickViewButton({
             ...(args.permissionMode != null ? { permissionMode: args.permissionMode } : {}),
             kickoffPrompt: args.kickoffPrompt,
             linearIssues: args.linearIssues,
-          }),
+          };
+          return pin ? window.ade.agentChat.launchCli(cliArgs, pin) : window.ade.agentChat.launchCli(cliArgs);
+        },
         deleteLane: (args) =>
-          window.ade.lanes.delete(args).then(() => undefined),
+          (pin ? window.ade.lanes.delete(args, pin) : window.ade.lanes.delete(args)).then(() => undefined),
       },
       {
         onItem: (issueId, patch) => {
           // As soon as an issue reports its materialized lane id, drop its
           // optimistic spinner placeholder — the real lane will render instead.
-          if (patch.laneId) clearCreatingIssue(issueId);
+          if (patch.laneId) {
+            clearCreatingIssue(issueId);
+            batchMachineByLaneIdRef.current.set(patch.laneId, machine);
+          }
           const earlyOutcome = patch.sessionId
             ? batchAgentReadinessRef.current.registerSession(issueId, patch.sessionId)
             : null;
@@ -438,8 +462,9 @@ export function LinearQuickViewButton({
     // Clear any placeholders whose issues failed before a lane materialized so a
     // failed launch never leaves a permanent spinner tab.
     for (const issueId of result.failedIssueIds) clearCreatingIssue(issueId);
-    await refreshLanes({ includeStatus: false }).catch(() => undefined);
-    if (result.createdLaneIds.length || result.createdSessionIds.length) {
+    if (pin) requestCrossMachineLanesForMachine(machine.machineId);
+    else await refreshLanes({ includeStatus: false }).catch(() => undefined);
+    if (!pin && (result.createdLaneIds.length || result.createdSessionIds.length)) {
       rememberLaunchedLanes({
         laneIds: result.createdLaneIds,
         sessionIds: result.createdSessionIds,
@@ -447,13 +472,13 @@ export function LinearQuickViewButton({
     }
   }, [activeProjectRoot, launchPromptClipboardEnabled, refreshLanes]);
 
-  const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[]) => {
+  const handleBatchLaunch = useCallback((entries: BatchLaunchSubmit[], machine: BatchLaunchMachine) => {
     // Close + reroute synchronously; the orchestrator runs detached so the
     // Lanes tab opens immediately rather than this being a progress view.
     setBatchModalOpen(false);
     close();
     window.location.hash = "#/lanes?drawer=stack";
-    void launchBatch(entries).catch((err) => {
+    void launchBatch(entries, machine).catch((err) => {
       console.error("[Linear] Batch launch failed:", err);
     });
   }, [close, launchBatch]);
@@ -473,6 +498,11 @@ export function LinearQuickViewButton({
   const handleRetryFailed = useCallback(() => {
     const failed = [...batchLaunchStates.values()].filter((state) => state.status === "failed");
     if (!failed.length) return;
+    // Retries go back to the machine each issue was sent to; issues with no
+    // recorded machine are not retried rather than guessed.
+    const machineIds = new Set(failed.map((state) => batchMachineByIssueRef.current.get(state.issue.id)?.machineId ?? ""));
+    if (machineIds.has("") || machineIds.size !== 1) return;
+    const machine = batchMachineByIssueRef.current.get(failed[0]!.issue.id)!;
     const entries: BatchLaunchSubmit[] = failed.map((state) => ({
       issue: state.issue,
       config: batchConfigByIssueRef.current.get(state.issue.id) ?? {
@@ -483,7 +513,7 @@ export function LinearQuickViewButton({
         branchOverride: "",
       },
     }));
-    void launchBatch(entries).catch((err) => {
+    void launchBatch(entries, machine).catch((err) => {
       console.error("[Linear] Batch retry failed:", err);
     });
   }, [batchLaunchStates, launchBatch]);
@@ -493,6 +523,13 @@ export function LinearQuickViewButton({
   }, []);
 
   const handleOpenBatchLane = useCallback((laneId: string) => {
+    const machine = batchMachineByLaneIdRef.current.get(laneId);
+    if (machine?.pin) {
+      // A lane on another machine is selected through its machine; the bare id
+      // would select a same-id lane on the tab's machine.
+      window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&machineId=${encodeURIComponent(machine.machineId)}&focus=single`;
+      return;
+    }
     selectLane(laneId);
     window.location.hash = `#/lanes?laneId=${encodeURIComponent(laneId)}&focus=single`;
   }, [selectLane]);
@@ -666,7 +703,7 @@ export function LinearQuickViewButton({
 
   return (
     <>
-      {trigger}
+      {showTrigger ? trigger : null}
       {connectionPromptModal}
 
       <Dialog

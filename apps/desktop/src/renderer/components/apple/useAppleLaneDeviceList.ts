@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type {
   AppleDeviceDiskUsage,
+  AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
+  AppleNewDeviceSpec,
   AppleSimulatorOwner,
+  AppleSimulatorOwnershipInfo,
   IosSimulatorStatus,
   OpenProjectBinding,
 } from "../../../shared/types";
@@ -28,7 +31,13 @@ export type AppleLaneDeviceList = {
   owners: AppleSimulatorOwner[];
   /** Measured by a SECOND `deviceList`, after the list has painted. */
   disk: AppleDeviceDiskUsage | null;
+  /** Who each device belongs to; arrives with `disk`. */
+  ownership: AppleSimulatorOwnershipInfo[];
   measuringDisk: boolean;
+  /** Installed runtimes and their device types, for the Create control. */
+  runtimes: AppleInstalledRuntime[];
+  /** The service's default runtime and model, where the Create control starts. */
+  defaultNewDevice: AppleNewDeviceSpec | null;
   refreshing: boolean;
   /**
    * The last list read that found the lane's device booted, else null. A new
@@ -67,6 +76,9 @@ export function useAppleLaneDeviceList({
   const [laneDevice, setLaneDevice] = useState<AppleLaneDevice | null>(null);
   const [owners, setOwners] = useState<AppleSimulatorOwner[]>([]);
   const [disk, setDisk] = useState<AppleDeviceDiskUsage | null>(null);
+  const [ownership, setOwnership] = useState<AppleSimulatorOwnershipInfo[]>([]);
+  const [runtimes, setRuntimes] = useState<AppleInstalledRuntime[]>([]);
+  const [defaultNewDevice, setDefaultNewDevice] = useState<AppleNewDeviceSpec | null>(null);
   const [measuringDisk, setMeasuringDisk] = useState(false);
   const [listNonce, setListNonce] = useState(0);
   const [refreshing, setRefreshing] = useState(false);
@@ -114,10 +126,12 @@ export function useAppleLaneDeviceList({
     let cancelled = false;
     setRefreshing(true);
     void window.ade.iosSimulator
-      .deviceList({ laneId, chatSessionId: sessionId, installed: true }, runtimePinRef.current)
+      .deviceList({ laneId, chatSessionId: sessionId, installed: true, runtimes: true }, runtimePinRef.current)
       .then((next) => {
         if (cancelled) return;
         setInstalled(next.installed);
+        setRuntimes(next.runtimes ?? []);
+        setDefaultNewDevice(next.defaultNewDevice ?? null);
         setLaneDevice(next.lane);
         setBootedRead(next.lane && laneDeviceBooted(next) ? { udid: next.lane.udid } : null);
         setOwners(next.owners ?? []);
@@ -129,7 +143,12 @@ export function useAppleLaneDeviceList({
          * on this owner's machine is the difference between a list that
          * paints and a list that hangs.
          */
-        if (next.lane || next.installed.length === 0) return;
+        if (next.lane || next.installed.length === 0) {
+          // No second read: drop the last one, or deleted devices keep their tags.
+          setDisk(null);
+          setOwnership([]);
+          return;
+        }
         setMeasuringDisk(true);
         void window.ade.iosSimulator
           .deviceList(
@@ -137,7 +156,9 @@ export function useAppleLaneDeviceList({
             runtimePinRef.current,
           )
           .then((measured) => {
-            if (!cancelled) setDisk(measured.disk ?? null);
+            if (cancelled) return;
+            setDisk(measured.disk ?? null);
+            setOwnership(measured.ownership ?? []);
           })
           // A measurement that fails costs the line its number, never the page.
           .catch(() => undefined)
@@ -162,7 +183,10 @@ export function useAppleLaneDeviceList({
     laneDevice,
     owners,
     disk,
+    ownership,
     measuringDisk,
+    runtimes,
+    defaultNewDevice,
     refreshing,
     bootedRead,
     refreshList,

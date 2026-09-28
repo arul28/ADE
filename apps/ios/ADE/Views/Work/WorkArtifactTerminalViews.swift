@@ -23,10 +23,14 @@ final class WorkArtifactVideoPlayerModel: ObservableObject {
 /// via `.workArtifactInlineVideoChrome()`.
 struct WorkArtifactVideoPlayerView: View {
   let url: URL
+  /// A chapter's start, in seconds: set it and the player seeks there, plays,
+  /// and clears it.
+  var seek: Binding<Double?>?
   @StateObject var model: WorkArtifactVideoPlayerModel
 
-  init(url: URL) {
+  init(url: URL, seek: Binding<Double?>? = nil) {
     self.url = url
+    self.seek = seek
     _model = StateObject(wrappedValue: WorkArtifactVideoPlayerModel(url: url))
   }
 
@@ -35,6 +39,75 @@ struct WorkArtifactVideoPlayerView: View {
       .onChange(of: url) { _, newValue in
         model.update(url: newValue)
       }
+      .onChange(of: seek?.wrappedValue) { _, requested in
+        guard let requested else { return }
+        model.player.seek(to: CMTime(seconds: requested, preferredTimescale: 600))
+        model.player.play()
+        seek?.wrappedValue = nil
+      }
+  }
+}
+
+/// One step caption of a demo video (`metadata.demo.steps`): where it starts
+/// in the video, and what the agent called the step.
+struct WorkDemoChapter: Equatable {
+  let seconds: Double
+  let text: String
+}
+
+/// The chapters a filed demo lists, or none. The desktop's `readDemoChapters`
+/// reads the same field the same way.
+func workDemoChapters(_ metadataJson: String?) -> [WorkDemoChapter] {
+  guard
+    let data = metadataJson?.data(using: .utf8),
+    let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+    let demo = root["demo"] as? [String: Any],
+    let steps = demo["steps"] as? [[String: Any]]
+  else { return [] }
+  return steps.compactMap { step in
+    guard
+      let seconds = (step["t"] as? NSNumber)?.doubleValue, seconds.isFinite, seconds >= 0,
+      let text = (step["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty
+    else { return nil }
+    return WorkDemoChapter(seconds: seconds, text: text)
+  }
+}
+
+/// A demo's step captions as a row of chapters under its player. A tap seeks
+/// the video to the step and plays it.
+struct WorkDemoChaptersRow: View {
+  let chapters: [WorkDemoChapter]
+  let onSelect: (Double) -> Void
+
+  var body: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 6) {
+        ForEach(Array(chapters.enumerated()), id: \.offset) { _, chapter in
+          Button {
+            onSelect(chapter.seconds)
+          } label: {
+            HStack(spacing: 5) {
+              Text(Self.clock(chapter.seconds))
+                .monospacedDigit()
+                .foregroundStyle(ADEColor.textSecondary)
+              Text(chapter.text)
+                .lineLimit(1)
+            }
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(ADEColor.recessedBackground.opacity(0.6), in: Capsule())
+          }
+          .buttonStyle(.plain)
+          .accessibilityLabel("Play from \(chapter.text)")
+        }
+      }
+    }
+  }
+
+  private static func clock(_ seconds: Double) -> String {
+    let whole = max(0, Int(seconds.rounded(.down)))
+    return String(format: "%d:%02d", whole / 60, whole % 60)
   }
 }
 

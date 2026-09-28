@@ -31,7 +31,7 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/authDetector.ts` | Discovers available credentials (CLI, API key, OAuth) and reports auth status. |
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode, and injects runtime-specific native-subagent versus ADE-child routing guidance. |
-| `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts`, `codexSubagentUsage.ts`, `providerUsageAccount.ts` | Turn telemetry helpers for the inline OpenCode, Codex, and Claude adapters. `openCodeTurnUsage` sums OpenCode `step-finish` parts into the done event, builds the per-step live `context_usage` sample, and maps OpenCode's `auth.json` credential type (read for `type`/`accountId` only, cached) to the turn's account. `codexSubagentUsage` maps a subagent thread's token counter to the subagent usage split and reads a subagent's rollout `token_usage_record` lines back when no live counter arrived. `providerUsageAccount` decides the Claude and Codex account kind and caches the provider-instance lookup behind it. |
+| `apps/desktop/src/main/services/chat/openCodeTurnUsage.ts`, `codexSubagentUsage.ts`, `providerUsageAccount.ts` | Turn telemetry helpers for the inline OpenCode, Codex, and Claude adapters. `openCodeTurnUsage` sums OpenCode `step-finish` parts into the done event, builds the per-step live `context_usage` sample, and maps OpenCode's owned-store credential type (read for `type`/`accountId` only, cached) to the turn's account. `codexSubagentUsage` maps a subagent thread's token counter to the subagent usage split and reads a subagent's rollout `token_usage_record` lines back when no live counter arrived. `providerUsageAccount` decides the Claude and Codex account kind and caches the provider-instance lookup behind it. |
 | `apps/desktop/src/main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid SDK adapter. `droidSdkPool` forks `droidSdkWorker.cjs` (one per session), brokers prompt sends, permission requests, ask-user prompts, and settings updates via the JSON-line protocol in `droidSdkProtocol`. Send payloads carry screenshot paths (`DroidSdkUserImage`), and the worker materializes bytes locally through `workerAttachmentImages.ts`. `droidSdkEventMapper` translates Droid SDK events into the canonical `AgentChatEventEnvelope` shape; the per-session mapper state (`createDroidSdkEventMapperState`) tracks streaming text/thinking item ids, in-flight tool-use names, cumulative token usage, live context samples, provider compaction lifecycle, and derived mission-worker usage. |
 | `apps/desktop/src/main/services/chat/piSdkPool.ts`, `piSdkWorker.ts`, `piSdkProtocol.ts`, `piSdkEventMapper.ts` | Pi adapter. `piSdkPool` forks the worker (one per session key) and brokers prompts, model/thinking changes, compaction, inventory reads, sign-in, and the reverse-RPC UI channel described below. `piSdkProtocol` is protocol version 2 and carries the `ui_request` / `ui_notice` / `ui_cancel` / `ui_response` frames plus `login` / `login_cancel`, and validates every frame in both directions. `piSdkEventMapper` translates Pi SDK events into `AgentChatEvent`s and owns the card translation helpers (`piUiRequestToPendingInput`, `piUiResponseFromAnswer`, `piUiNoticeToChatEvents`, `piExtensionLoadNotice`). `piSdkSelection` applies the picked model and thinking level exactly and keeps Pi's settings read-only. |
 | `apps/desktop/src/main/services/chat/piSdkUiBridge.ts` | Worker-side half of the UI channel, deliberately free of Pi imports. Funnels Pi's three unrelated callback APIs — `AuthInteraction`, custom-tool `execute`, and an extension's `ExtensionUIContext` — into one never-rejecting `request()` that resolves to `null` when a card is dismissed, a turn aborts, or the worker is disposed. Also builds ADE's `ask_user` tool, the per-tool-call approval gate, and the extension UI context. |
@@ -261,9 +261,11 @@ non-secret `env`/`config` source marker to the renderer. A provider with an
 environment-backed API credential therefore gets an API-key editor even when
 OpenCode does not expose an OAuth plugin for it, but ADE does not offer a
 disconnect action for a credential it cannot remove. OAuth methods still come
-from OpenCode's `/provider/auth` endpoint, and API-key writes go through
-OpenCode's `/auth/:providerID` endpoint before ADE mirrors the credential into
-its encrypted key store. ADE shows Verify only for providers with an explicit
+from OpenCode's `integration.list` / `integration.get`, and a connect goes
+through `integration.oauth.connect` / `.status` / `.complete` / `.cancel`;
+API-key writes go through `integration.connect.key` and removal through
+`credential.remove`, before ADE mirrors the credential into its encrypted key
+store. ADE shows Verify only for providers with an explicit
 provider-native verifier; dynamic providers remain selectable without a false
 verification result.
 
@@ -415,7 +417,7 @@ live runtime rather than read off a schema:
 | Codex | `thread/start` + `turn/start` JSON-RPC args | `config.toml`'s `service_tier` applies | `null` reports `"default"` — a real downgrade |
 | Droid | `createSession` / `updateSettings` SDK options | `~/.factory/settings.json` applies, resolved **per key** | `null` wedges the Droid RPC for 30 s — never send it (`reasoningEffort` is not nullable either; see below for how a cleared effort is reset) |
 | Cursor | `local.sandboxOptions` on the SDK agent options | `~/.cursor/sandbox.json` decides | `false` returns `insecure_none` without ever reading that file — ADE always sends `false`, so the omit column never applies to it |
-| OpenCode | `OPENCODE_CONFIG_CONTENT` | the user's `opencode.json` applies | n/a — this env var deep-merges **last**, so any key ADE names wins |
+| OpenCode | `OPENCODE_CONFIG` (a generated, hot-reloaded file) | the user's `opencode.json` (`XDG_CONFIG_HOME/opencode`) still loads underneath | n/a — the config layers under project files, so any key ADE names in it can be overridden by a project's own `opencode.json` |
 
 ### Provider config homes
 
@@ -546,16 +548,14 @@ Cursor workers (`cursorSdkWorker.ts`) and relies on ADE hook denials as the
 permission guard, so `~/.cursor/sandbox.json` is never consulted and there is no
 ADE-side sandbox setting to resolve.
 
-**OpenCode.** `OPENCODE_CONFIG_CONTENT` deep-merges last, so anything
-`buildOpenCodeConfig` names outranks the user's `opencode.json` and only
-managed/MDM config beats it. `share` and `snapshot` are therefore omitted —
-neither has ADE UI, and forcing `snapshot: false` silently disabled OpenCode's
-own `/undo` and `/revert`, whose documented default is `true`. `autoupdate`
-moved out of config into `OPENCODE_DISABLE_AUTOUPDATE=1` on the server env: ADE
-does pin the binary, but that does not need the highest-precedence config slot.
-Both env builders set it — `buildIsolatedOpenCodeEnv` rebuilds the env from
-scratch and drops every inherited `OPENCODE_*` var, so an isolated server would
-otherwise self-update the binary ADE pinned.
+**OpenCode.** `buildOpenCodeConfig` writes ADE's generated `OPENCODE_CONFIG`
+file, which layers over the user's global `opencode.json` but under project
+config files, so a project's own config can still override a key ADE names.
+`share: "disabled"` and `update: "disable"` are the two fields ADE states
+outright — neither has ADE UI beyond "off", and ADE pins the binary itself, so
+letting OpenCode self-update would break that pin. The server env also sets
+`OPENCODE_DISABLE_AUTOUPDATE=1` as a second, environment-level backstop for the
+same reason.
 
 Local provider blocks (`ollama`, `lmstudio`) are emitted only when the user
 configured an endpoint or ADE discovered models for that family. An
@@ -912,57 +912,31 @@ picker state matches the documented default; the explicit Codex
 
 ### OpenCode
 
-`AgentChatOpenCodePermissionMode`:
+Four `OpenCodeAgentProfile` agents, each an `agent` entry in the config ADE
+generates (`openCodeConfig.ts`) and ships through the `OPENCODE_CONFIG` file:
 
-| Mode | Behavior |
-|---|---|
-| `plan` | Read-only. |
-| `edit` | Read/write allowed; bash gated. |
-| `full-auto` | Proceed without asking. |
+| Mode | Agent | Behavior |
+|---|---|---|
+| `plan` | `ade-plan` | Denies edits, subagents, web search, and skills; asks for shell. |
+| `edit` | `ade-edit` | Asks for edits and shell. |
+| `full-auto` | `ade-full-auto` | `*` allow — proceeds without asking. |
+| (one-shot helper) | `ade-helper` | Denies every action with a side effect. |
 
-Each mode is an `agent` entry in the config ADE ships through
-`OPENCODE_CONFIG_CONTENT`, carrying an explicit `permission` block.
-`OpenCodePermissionKey` in `openCodeRuntime.ts` names the keys ADE sets; the
-OpenCode SDK's own type declares only five of them and absorbs the rest through
-an index signature, so a misspelled key compiles and silently fails to apply
-(`websearch` vs `web_search` is a pair this codebase has already been bitten by).
-
-- **`plan` denies `task`, not just `edit`.** A spawned subagent runs under its
-  own ruleset — OpenCode's `general` agent is `merge(base, todowrite: deny)`,
-  i.e. edit *allowed* — so leaving `task` open let a plan-mode session write
-  files through a child session. Plan has to mean plan. Plan also denies
-  `websearch` and `skill`; that is the supported spelling of what the deprecated
-  agent-level `tools` map used to express, since OpenCode desugars that map into
-  exactly these permission entries and an explicit `permission` block wins over
-  it.
-- **`full-auto` states `read: "allow"` and `task: "allow"`.** Most ungated keys
-  resolve to `allow` from OpenCode's base `*` rule, but `read` does not: the base
-  ruleset asks before reading `*.env` / `*.env.*`, so full access still prompted.
-- **No ADE ruleset states `external_directory` at all.** The boundary itself
-  still holds — it is ADE's lane worktree, not a permission tier the user picked,
-  the same reason the system prompt confines edits to the lane — but omitting the
-  key is how ADE gets it. OpenCode's own default for the key is
-  `{"*": "ask", <tmp>: "allow", <skill dirs>: "allow", <reference dirs>: "allow"}`.
-  A bare string expands to a single `{pattern: "*"}` rule, an agent block's rules
-  are appended *after* the defaults, and lookup is a `findLast` over the merged
-  list — so a bare value wins for every path and silently revokes OpenCode's
-  access to its own temp, skill, and reference directories. That is true of
-  `"deny"` as much as `"ask"`, which is why `ade-plan` and `ade-helper` drop the
-  key too. That does loosen them: both used to hard-deny every outside-worktree
-  path and now ask for one. Each ask has an answer, which is what makes it
-  acceptable — plan raises an approval card the user decides, and a helper ask is
-  rejected on arrival by the `permission.asked` responder in
-  `runOpenCodeTextPrompt`, because a one-shot prompt has no UI and an unanswered
-  ask would hang it until the caller aborts. The rule binds all four rulesets and
-  is pinned by the test "never states external_directory on any ADE ruleset".
+`buildOpenCodePermissions` in `openCodeConfig.ts` builds each agent's ordered
+`permissions` rules, evaluated last-match-wins after OpenCode's own base
+policy (`* allow`, then asks for external directories and `.env` reads). See
+[OpenCode integration › Permissions and questions](./opencode-integration.md#permissions-and-questions)
+for the full rule set and the `external_directory` carve-out that keeps
+`ade-plan` and `ade-helper` from also revoking OpenCode's access to its own
+temp, skill, and reference directories.
 
 #### OpenCode turn telemetry
 
 OpenCode reports usage once per model request, as a `step-finish` part
 (`{ cost, tokens: { input, output, reasoning, cache: { read, write } } }`, where
-`input` is the uncached input). `runTurn` records every parent-session
-`step-finish` by part id (a re-sent part replaces, never double counts), and the
-completed turn's `done` event reports:
+`input` is the uncached input). `openCodeTurnUsage.ts` records every
+parent-session `step-finish` by part id (a re-sent part replaces, never double
+counts), and the completed turn's `done` event reports:
 
 - `usage` token fields summed over every step, `reasoningTokens` included;
 - `usage.contextTokens`, the last step's `input + cache.read + cache.write`;
@@ -986,13 +960,13 @@ id of the model the prompt asked for, which is the fast sibling on a Fast turn
 that runs through one. `done.account` names the upstream provider (`upstream`):
 `lmstudio` and `ollama` are `local` with the endpoint ADE configures for them;
 `opencode` and `opencode-go` (Zen and Go) are `subscription`, with the email
-from the `account` table in `opencode.db` when a row exists; any other provider
-takes its kind from OpenCode's `auth.json` entry (`type: "api"` is `api_key`,
-`type: "oauth"` is `subscription` with `accountId` when present), and a provider
-with no entry is `unknown`. Only `type` and `accountId` are read from
-`auth.json`, never a token. The data directory is `$XDG_DATA_HOME/opencode`
-when set, else `~/.local/share/opencode`. Both lookups are cached for five
-minutes, so a turn does not read either file.
+from the `account` table in ADE's owned `opencode.db` when a row exists; any
+other provider takes its kind from that store's `credential` table
+(`readOpenCodeCredentials`: `type: "key"` is `api_key`, `type: "oauth"` is
+`subscription` with `accountId` when present), and a provider with no entry is
+`unknown`. Only `type` and `accountId` are read from the credential's `value`
+JSON, never the secret itself. Both lookups are cached for five minutes, so a
+turn does not read either table.
 
 ### Pi
 
@@ -1152,9 +1126,9 @@ app-server folds a `turn/steer` request into the running turn, so
 there is no cancel-and-resend. `@cursor/sdk` 1.0.31 added `Run.steer(text)`,
 which folds a message into the live local run, so the same table gives Cursor
 all three modes Claude has — read the table for the list rather than restating
-it here. OpenCode's v2 session prompt admits an input with
-`delivery: "steer"` (`v2.session.prompt`, the same route the server's own
-follow-up steering uses), which the live agent loop picks up at the next model
+it here. OpenCode's `session.prompt` admits an input with
+`delivery: "steer"`, the same route the server's own
+follow-up steering uses, which the live agent loop picks up at the next model
 step; like Codex it gets `inline` and `queue` and no `interrupt`. What Cursor
 does *not* share is the meaning of its interrupt: it stops
 the run, waits for the turn to settle, and sends the message as the next turn on
@@ -1531,7 +1505,7 @@ The model and effort the chat shows must be the ones the provider runs.
 | Claude | `buildClaudeQueryOptions` sends `model` (`resolveClaudeCliModel`, or a preset's own id) and `effort` | Teardown, then a new query; a live query also gets `setModel` | A change resets the query |
 | Codex | `thread/start` and `thread/resume` send `model` and the effort config | `thread/settings/update` on a live thread; `turn/start` sends `model` and `effort` every turn | Sent every turn |
 | Cursor | `ensureCursorSdkRuntime` sends `{ id, params }`; the pool key holds both. Params carry effort, the tier, and the chat's `cursorConfigValues` | Teardown, or deferred to turn end while busy (`pendingModelSwitchReset`, local and cloud) | Params are recomputed every turn. A local send loads a cold catalog first; every cloud run (create and follow-up) is verified or refused |
-| OpenCode | `promptAsync` sends `model` and `variant` every prompt, from `resolveOpenCodeFastEffortSelection`; Fast can send the `<id>-fast` sibling as `model` | Teardown | `variant` is OpenCode's own key (`openCodeVariantKeys`). A row offers only the variants OpenCode reported for it; the no-inventory fallback keeps the canonical Anthropic effort tiers but never offers Fast |
+| OpenCode | `session.prompt` sends `model` and `variant` every prompt, from `resolveOpenCodeFastEffortSelection`; Fast can send the `<id>-fast` sibling as `model` | Teardown; a fresh OpenCode session opens with ADE's reconstruction context | `variant` is OpenCode's own key (`openCodeVariantKeys`). A row offers only the variants OpenCode reported for it; the no-inventory fallback keeps the canonical Anthropic effort tiers but never offers Fast |
 | Droid | `createSession` / `updateSettings` send `modelId` and `reasoningEffort` every turn | Teardown | `ultracode` is sent as `xhigh`; a cleared effort ADE had stated is reset to Droid's default for the model |
 | Pi | The worker's `createAgentSession({ model })` with the exact catalog model, then `setThinkingLevel`; an explicit model wins over the session file | Teardown | Pi's own levels per model, through `piThinkingLevel`; none picked means Pi's default |
 

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ArrowClockwise, BookOpen, MagnifyingGlass, Plus } from "@phosphor-icons/react";
 import type {
   AutomationAction,
@@ -14,6 +14,17 @@ import { inputCls } from "../designTokens";
 import { IngressStatusStrip } from "../settings/IngressStatusStrip";
 import { AutomationsEmptyState, AutomationsFilterEmptyState } from "./AutomationsEmptyState";
 import { RuleRow, ruleOrigin } from "./RuleRow";
+import type { MachineChipModel } from "../../../state/laneMachineRouting";
+
+/** How a rule row shows the machine it runs on. */
+export type RuleMachineView = {
+  /** Null when the project is on one machine (no chips then). */
+  chip: MachineChipModel | null;
+  /** Non-null while that machine is unreachable. */
+  offlineMessage: string | null;
+  /** False for rules on another machine: the tab's ingress status says nothing about them. */
+  isActiveBinding: boolean;
+};
 
 /** Provenance axis for the list: everything, the CTO's rules, or handoffs. */
 export type RuleOriginFilter = "all" | "cto" | "handoff";
@@ -75,6 +86,10 @@ const FILTER_CHIP_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.
 const TOOLBAR_ICON_BUTTON_CLASS =
   "flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-fg transition-colors hover:bg-white/[0.06] hover:text-fg disabled:opacity-50";
 
+function defaultRuleKey(rule: AutomationRuleSummary): string {
+  return rule.id;
+}
+
 export function RuleList({
   rules,
   selectedRuleId,
@@ -93,8 +108,20 @@ export function RuleList({
   onOpenTemplates,
   onUseTemplate,
   onRefresh,
+  ruleKey = defaultRuleKey,
+  machineOf,
+  machineNotes = null,
 }: {
   rules: AutomationRuleSummary[];
+  /**
+   * Row identity. Rules come from every machine and a rule id is only unique
+   * on its own machine, so the workspace passes a machine-qualified key; every
+   * row callback receives that key. Defaults to `rule.id`.
+   */
+  ruleKey?: (rule: AutomationRuleSummary) => string;
+  machineOf?: (rule: AutomationRuleSummary) => RuleMachineView | null;
+  /** Quiet per-machine status ("Loading Mac Studio…"), rendered above the list. */
+  machineNotes?: ReactNode;
   selectedRuleId: string | null;
   search: string;
   loading: boolean;
@@ -202,6 +229,8 @@ export function RuleList({
 
       <IngressStatusStrip ingressStatus={ingressStatus} />
 
+      {machineNotes}
+
       {error ? (
         <Banner
           layout="inline"
@@ -220,19 +249,25 @@ export function RuleList({
           />
         ) : (
           <div className="space-y-2">
-            {visibleRules.map((rule) => (
-              <RuleRow
-                key={rule.id}
-                rule={rule}
-                delivery={delivery}
-                selected={rule.id === selectedRuleId}
-                onSelect={() => onSelect(rule.id)}
-                onToggle={(enabled) => onToggle(rule.id, enabled)}
-                onRunNow={() => onRunNow(rule)}
-                onOpenHistory={() => onOpenHistory(rule.id)}
-                onDelete={() => onDelete(rule.id)}
-              />
-            ))}
+            {visibleRules.map((rule) => {
+              const key = ruleKey(rule);
+              const machine = machineOf?.(rule) ?? null;
+              return (
+                <RuleRow
+                  key={key}
+                  rule={rule}
+                  delivery={machine && !machine.isActiveBinding ? null : delivery}
+                  selected={key === selectedRuleId}
+                  machineChip={machine?.chip ?? null}
+                  offlineMessage={machine?.offlineMessage ?? null}
+                  onSelect={() => onSelect(key)}
+                  onToggle={(enabled) => onToggle(key, enabled)}
+                  onRunNow={() => onRunNow(rule)}
+                  onOpenHistory={() => onOpenHistory(key)}
+                  onDelete={() => onDelete(key)}
+                />
+              );
+            })}
           </div>
         )}
       </div>

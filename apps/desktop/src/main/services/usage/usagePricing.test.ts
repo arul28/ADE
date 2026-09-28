@@ -164,3 +164,26 @@ describe("DeepSeek peak hours", () => {
     expect(ratesForRequest("deepseek-ai/DeepSeek-V3", offPeakPrice, { timestampMs: mondayPeak }).input).toBeCloseTo(0.15 * PER_M);
   });
 });
+
+describe("Claude fast mode", () => {
+  const opus55 = tokenPrice(4, 20, 0.2, 5);
+
+  it("doubles every rate for a fast request and leaves a standard one alone", () => {
+    const standard = ratesForRequest("claude-opus-5-5", opus55, {});
+    const fast = ratesForRequest("claude-opus-5-5", opus55, { fast: true });
+    expect(standard.input).toBeCloseTo(4 * PER_M);
+    expect(fast.input).toBeCloseTo(8 * PER_M);
+    expect(fast.output).toBeCloseTo(40 * PER_M);
+    expect(fast.cacheRead).toBeCloseTo(0.4 * PER_M);
+    expect(fast.cacheWrite).toBeCloseTo(10 * PER_M);
+  });
+
+  it("composes with a long-context tier rather than replacing it", () => {
+    const tiered = {
+      input: 4 * PER_M, output: 20 * PER_M, cacheWrite: 5 * PER_M, cacheRead: 0.2 * PER_M,
+      tiers: [{ aboveContextTokens: 200_000, input: 8 * PER_M, output: 40 * PER_M, cacheWrite: 10 * PER_M, cacheRead: 0.4 * PER_M }],
+    };
+    expect(ratesForRequest("claude-opus-5-5", tiered, { contextTokens: 250_000, fast: true }).output)
+      .toBeCloseTo(80 * PER_M);
+  });
+});

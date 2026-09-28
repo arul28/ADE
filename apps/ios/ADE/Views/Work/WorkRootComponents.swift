@@ -5,14 +5,9 @@ import AVKit
 // The session row card itself (`WorkSessionRow`, its leaf views and the preview-line
 // helpers) lives in `WorkSessionRowCard.swift`; this file keeps the surrounding list chrome.
 
-/// Work sidebar toolbar matching the desktop `SessionListPane` layout: one 44pt row holding the
-/// search field, the funnel toggle that reveals the Group-by + Lane filter panel, and a compose
-/// menu carrying both creation actions.
-///
-/// The header is one row on purpose. It used to be three — search + funnel, then a full-width
-/// "Start new chat" / "Add lane" hero pair, then a `N waiting` chip — which pushed the first
-/// session row most of a thumb below the top bar and spent amber on a count that the bell already
-/// badges. Creation is a two-item menu behind one icon; the count rollup is gone entirely.
+/// Expanded filter panel under the Work header: status, group-by and lane
+/// chips, plus a Clear affordance while any filter or search is applied. Search
+/// itself and the chip that toggles this panel live in `WorkRootHeader`.
 struct WorkFiltersSection: View {
   @Binding var searchText: String
   @Binding var selectedLaneId: String
@@ -20,15 +15,7 @@ struct WorkFiltersSection: View {
   @Binding var organization: WorkSessionOrganization
   @Binding var filterOpen: Bool
   let lanes: [LaneSummary]
-  let isLive: Bool
   let onClear: () -> Void
-  let onNewChat: () -> Void
-  let onAddLane: () -> Void
-
-  private var selectedLaneName: String {
-    if selectedLaneId == "all" { return "All lanes" }
-    return lanes.first(where: { $0.id == selectedLaneId })?.name ?? "All lanes"
-  }
 
   private var hasActiveFilters: Bool {
     selectedStatus != .all
@@ -38,96 +25,6 @@ struct WorkFiltersSection: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 8) {
-        HStack(spacing: 8) {
-          Image(systemName: "magnifyingglass")
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(ADEColor.textMuted)
-          TextField("Search sessions, lanes, output", text: $searchText)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.footnote)
-          if !searchText.isEmpty {
-            Button {
-              searchText = ""
-            } label: {
-              Image(systemName: "xmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(ADEColor.textMuted)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Clear search")
-          }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        // 44, not the old 32: a text field's tap target is its own bounds, so a
-        // `.contentShape` on a taller wrapper would not extend it. This is the
-        // one control in the row that has to grow to reach the minimum.
-        .frame(minHeight: 44)
-        .frame(maxWidth: .infinity)
-        .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .stroke(ADEColor.glassBorder, lineWidth: 0.5)
-        )
-
-        Button {
-          withAnimation(.snappy(duration: 0.2)) {
-            filterOpen.toggle()
-          }
-        } label: {
-          Image(systemName: filterOpen ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease.circle")
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(filterOpen ? ADEColor.accent : ADEColor.textSecondary)
-            .frame(width: 32, height: 32)
-            .background(
-              (filterOpen ? ADEColor.accent.opacity(0.12) : ADEColor.composerBackground),
-              in: RoundedRectangle(cornerRadius: 10, style: .continuous)
-            )
-            .overlay(
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(filterOpen ? ADEColor.accent.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.5)
-            )
-            // The chip stays 32pt; the hit area is grown to 44 around it rather
-            // than by inflating the visual, which is what keeps the row's rhythm.
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Toggle filter panel")
-
-        // Creation is one icon with two items. Both used to be full-width hero
-        // buttons stacked under the search field; they are rare actions that were
-        // spending the most valuable strip on the screen.
-        Menu {
-          Button(action: onNewChat) {
-            Label("New chat", systemImage: "plus.bubble")
-          }
-          Button(action: onAddLane) {
-            Label("New lane", systemImage: "plus.square.on.square")
-          }
-        } label: {
-          Image(systemName: "square.and.pencil")
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(isLive ? ADEColor.accent : ADEColor.textMuted)
-            .frame(width: 32, height: 32)
-            .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(isLive ? ADEColor.accent.opacity(0.3) : ADEColor.glassBorder, lineWidth: 0.6)
-            )
-            .frame(width: 44, height: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!isLive)
-        .opacity(isLive ? 1 : 0.55)
-        .accessibilityLabel("New chat or lane")
-        .accessibilityHint(isLive ? "Opens chat and lane creation options" : "Reconnect to machine before creating lanes")
-      }
-      .frame(minHeight: 44)
-
       if hasActiveFilters {
         HStack(spacing: 6) {
           Spacer(minLength: 0)
@@ -916,6 +813,8 @@ struct WorkSessionListRow: View {
         }
       }
     }
+    // Rows have no card, so the long-press lift needs a shape of its own.
+    .contentShape(.contextMenuPreview, RoundedRectangle(cornerRadius: 12, style: .continuous))
     // Desktop's tree, in desktop's order (`SessionContextMenu.tsx`): identity
     // first, then lifecycle, then the places this session also appears, then —
     // fenced behind a divider and never before it — the deletes. Ordering is not
@@ -1412,5 +1311,279 @@ struct WorkTag: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 5)
       .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+  }
+}
+
+// MARK: - Work header
+
+/// Everything the Work header can do, bundled so the header stays a value with
+/// no reference to `SyncService` (and therefore no reason to re-render on its
+/// publishes).
+struct WorkRootHeaderActions {
+  var onBackToHub: () -> Void = {}
+  var onNewChat: () -> Void = {}
+  var onCancelSelection: () -> Void = {}
+  var onOpenActivity: () -> Void = {}
+  var onOpenLinear: () -> Void = {}
+  var onOpenCursorCloud: () -> Void = {}
+  var onOpenSettings: () -> Void = {}
+}
+
+/// The Work tab's header, one row:
+///
+///     [project / back] Work [ search ……………… (filter) ] [new chat] [⋯]
+///
+/// The project control keeps the hub-back behaviour of `ADEHubBackButton`.
+/// Linear, Cursor Cloud, Settings and the Activity drawer live in the overflow
+/// menu, whose icon carries the unread dot the bell used to.
+struct WorkRootHeader: View {
+  let projectIconDataUrl: String?
+  @Binding var searchText: String
+  @Binding var filterOpen: Bool
+  /// Lane + status filters applied (search excluded — the field shows it).
+  let activeFilterCount: Int
+  let isLive: Bool
+  let showsLinear: Bool
+  let showsCursorCloud: Bool
+  /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
+  let selectionCount: Int?
+  let actions: WorkRootHeaderActions
+
+  var body: some View {
+    HStack(spacing: 8) {
+      if let selectionCount {
+        Text("\(selectionCount) selected")
+          .font(.system(size: 22, weight: .heavy, design: .rounded))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .accessibilityAddTraits(.isHeader)
+        Spacer(minLength: 8)
+        Button("Cancel", action: actions.onCancelSelection)
+          .font(.body.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+          .frame(minHeight: 44)
+          .accessibilityLabel("Cancel selection")
+      } else {
+        WorkHeaderProjectButton(iconDataUrl: projectIconDataUrl, action: actions.onBackToHub)
+        Text("Work")
+          .font(.system(size: 22, weight: .heavy, design: .rounded))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .fixedSize()
+          .accessibilityAddTraits(.isHeader)
+        WorkHeaderSearchField(
+          searchText: $searchText,
+          filterOpen: $filterOpen,
+          activeFilterCount: activeFilterCount
+        )
+        Button(action: actions.onNewChat) {
+          Image(systemName: "square.and.pencil")
+            .font(.system(size: 18, weight: .medium))
+            .foregroundStyle(isLive ? ADEColor.textPrimary : ADEColor.textMuted)
+            .frame(width: 32, height: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isLive)
+        .accessibilityLabel("New chat")
+        .accessibilityHint(isLive ? "Opens a new chat" : "Reconnect to the machine to start a chat")
+        WorkHeaderOverflowMenu(
+          showsLinear: showsLinear,
+          showsCursorCloud: showsCursorCloud,
+          actions: actions
+        )
+      }
+    }
+    .padding(.horizontal, 16)
+    .frame(minHeight: 56)
+    .background {
+      LinearGradient(
+        colors: [
+          ADEColor.pageBackground,
+          ADEColor.pageBackground.opacity(0.98),
+          ADEColor.pageBackground.opacity(0.88),
+          ADEColor.pageBackground.opacity(0)
+        ],
+        startPoint: .top,
+        endPoint: .bottom
+      )
+      .ignoresSafeArea(edges: .top)
+      .allowsHitTesting(false)
+    }
+  }
+}
+
+/// Back-to-hub control: a small chevron and the project's icon, or the ADE mark
+/// when the project has none. Same action as `ADEHubBackButton`, without the
+/// capsule so it sits flat in the one-row header.
+private struct WorkHeaderProjectButton: View {
+  let iconDataUrl: String?
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 3) {
+        Image(systemName: "chevron.left")
+          .font(.system(size: 13, weight: .bold))
+          .foregroundStyle(ADEColor.accent)
+        if let icon = projectIconImage(from: iconDataUrl) {
+          Image(uiImage: icon).projectIconStyle(size: 26, cornerRadius: 7)
+        } else {
+          Image("BrandMark")
+            .resizable()
+            .interpolation(.high)
+            .aspectRatio(contentMode: .fit)
+            .frame(width: 38, height: 26)
+        }
+      }
+      .frame(minHeight: 44)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Back to all projects")
+    .accessibilityHint("Returns to the project hub.")
+  }
+}
+
+/// Search that takes the header's remaining width, with the filter control as a
+/// chip inside its trailing edge. The chip turns accent while the panel is open
+/// or a lane/status filter is applied, and shows how many are applied.
+private struct WorkHeaderSearchField: View {
+  @Binding var searchText: String
+  @Binding var filterOpen: Bool
+  let activeFilterCount: Int
+
+  private var chipActive: Bool { filterOpen || activeFilterCount > 0 }
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textMuted)
+        .accessibilityHidden(true)
+      TextField("Search", text: $searchText)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .font(.subheadline)
+        .submitLabel(.search)
+        .accessibilityLabel("Search sessions, lanes, output")
+      if !searchText.isEmpty {
+        Button {
+          searchText = ""
+        } label: {
+          Image(systemName: "xmark.circle.fill")
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 24, height: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Clear search")
+      }
+      Button {
+        withAnimation(.snappy(duration: 0.2)) {
+          filterOpen.toggle()
+        }
+      } label: {
+        HStack(spacing: 3) {
+          Image(systemName: "line.3.horizontal.decrease")
+            .font(.system(size: 11, weight: .bold))
+          if activeFilterCount > 0 {
+            Text("\(activeFilterCount)")
+              .font(.caption2.monospacedDigit().weight(.bold))
+          }
+        }
+        .foregroundStyle(chipActive ? ADEColor.accent : ADEColor.textSecondary)
+        .padding(.horizontal, 8)
+        .frame(height: 24)
+        .background(
+          chipActive ? ADEColor.accent.opacity(0.14) : ADEColor.recessedBackground,
+          in: Capsule(style: .continuous)
+        )
+        .frame(minWidth: 36, minHeight: 40)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Filters")
+      .accessibilityValue(activeFilterCount > 0 ? "\(activeFilterCount) applied" : (filterOpen ? "Open" : "None"))
+      .accessibilityHint(filterOpen ? "Hides the filter panel" : "Shows status, group and lane filters")
+    }
+    .padding(.leading, 10)
+    .padding(.trailing, 4)
+    .frame(minHeight: 40)
+    .frame(maxWidth: .infinity)
+    .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+  }
+}
+
+/// The "⋯" menu: Activity, Linear, Cursor Cloud, Settings. A plain icon with a
+/// warning dot while the Activity drawer has unread needs-you items — the same
+/// `unreadCount` the bell used — so moving the bell in here loses no signal.
+///
+/// The only observer in the header, and of `ActivityDrawerModel` alone.
+private struct WorkHeaderOverflowMenu: View {
+  @EnvironmentObject private var drawer: ActivityDrawerModel
+  let showsLinear: Bool
+  let showsCursorCloud: Bool
+  let actions: WorkRootHeaderActions
+
+  private var unread: Int { drawer.unreadCount }
+
+  var body: some View {
+    Menu {
+      Button {
+        ADEHaptics.light()
+        actions.onOpenActivity()
+      } label: {
+        Label(
+          unread > 0 ? "Activity · \(unread) need\(unread == 1 ? "s" : "") you" : "Activity",
+          systemImage: unread > 0 ? "bell.badge" : "bell"
+        )
+      }
+      if showsLinear {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenLinear()
+        } label: {
+          Label { Text("Linear") } icon: { Image("LinearLogo") }
+        }
+      }
+      if showsCursorCloud {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenCursorCloud()
+        } label: {
+          Label { Text("Cursor Cloud") } icon: { Image("CursorCloudLogo") }
+        }
+      }
+      Divider()
+      Button(action: actions.onOpenSettings) {
+        Label("Settings", systemImage: "gearshape")
+      }
+    } label: {
+      Image(systemName: "ellipsis")
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .frame(width: 32, height: 44)
+        .overlay(alignment: .topTrailing) {
+          if unread > 0 {
+            Circle()
+              .fill(ADEColor.warning)
+              .frame(width: 8, height: 8)
+              .overlay(Circle().stroke(ADEColor.pageBackground, lineWidth: 1.5))
+              .offset(x: -2, y: 10)
+              .transition(.scale.combined(with: .opacity))
+          }
+        }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .animation(.snappy(duration: 0.2), value: unread > 0)
+    .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
+    .accessibilityHint("Activity, Linear, Cursor Cloud and Settings")
   }
 }

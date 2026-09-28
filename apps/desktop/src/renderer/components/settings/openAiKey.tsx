@@ -20,6 +20,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import type { MachineApiKeyStatus } from "../../../shared/types/config";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 /** The provider id the voice key is stored under — the same `OPENAI_API_KEY` secret. */
 export const OPENAI_VOICE_PROVIDER = "openai";
@@ -75,6 +76,10 @@ export function useMachineOpenAiKey(): MachineOpenAiKey {
   const mounted = useRef(true);
 
   const bridge = typeof window !== "undefined" ? window.ade?.ai : undefined;
+  // Another machine's key lives in that machine's ADE home, reached through its
+  // runtime. This computer keeps the local path it always had (null pin).
+  const { pin: scopePin, isThisMachine } = useSettingsMachineScope();
+  const pin = isThisMachine ? null : scopePin;
   const supported = Boolean(bridge?.getMachineApiKeyStatus);
 
   useEffect(() => {
@@ -96,7 +101,7 @@ export function useMachineOpenAiKey(): MachineOpenAiKey {
     // the next, so a read still in flight when the effect re-runs passes it and
     // writes a superseded answer into state. `stale` is per run.
     let stale = false;
-    void read(OPENAI_VOICE_PROVIDER)
+    void read(OPENAI_VOICE_PROVIDER, pin)
       .then((next) => {
         if (stale) return;
         setStatus(next);
@@ -111,7 +116,7 @@ export function useMachineOpenAiKey(): MachineOpenAiKey {
         setLoading(false);
       });
     return () => { stale = true; };
-  }, [bridge]);
+  }, [bridge, pin]);
 
   const save = useCallback(
     async (key: string): Promise<boolean> => {
@@ -127,7 +132,7 @@ export function useMachineOpenAiKey(): MachineOpenAiKey {
       }
       setLoading(true);
       try {
-        const next = await write(OPENAI_VOICE_PROVIDER, trimmed);
+        const next = await write(OPENAI_VOICE_PROVIDER, trimmed, pin);
         if (mounted.current) {
           setStatus(next);
           setError(null);
@@ -142,7 +147,7 @@ export function useMachineOpenAiKey(): MachineOpenAiKey {
         if (mounted.current) setLoading(false);
       }
     },
-    [bridge],
+    [bridge, pin],
   );
 
   const remove = useCallback(async (): Promise<boolean> => {
@@ -153,7 +158,7 @@ export function useMachineOpenAiKey(): MachineOpenAiKey {
     }
     setLoading(true);
     try {
-      const next = await drop(OPENAI_VOICE_PROVIDER);
+      const next = await drop(OPENAI_VOICE_PROVIDER, pin);
       if (mounted.current) {
         setStatus(next);
         setError(null);
@@ -165,7 +170,7 @@ export function useMachineOpenAiKey(): MachineOpenAiKey {
     } finally {
       if (mounted.current) setLoading(false);
     }
-  }, [bridge]);
+  }, [bridge, pin]);
 
   return { status, loading, supported, error, save, remove };
 }

@@ -259,6 +259,26 @@ async function assertBundledMacDesktopDriver(resourcesPath, description) {
   }
 }
 
+/**
+ * `ade-media` renders every demo video on a Mac. Missing, the app still runs,
+ * but every recording falls back to its raw file, so a release without it is
+ * a broken release, not a smaller one.
+ */
+async function assertBundledAdeMedia(resourcesPath, description) {
+  const helperPath = path.join(resourcesPath, "native", "ade-media");
+  await assertPathExists(helperPath, `native demo engine for ${description}`);
+  await assertExecutable(helperPath, `native demo engine for ${description}`);
+  const { stdout } = await execFileAsync("lipo", ["-archs", helperPath]);
+  const architectures = new Set(stdout.trim().split(/\s+/).filter(Boolean));
+  for (const architecture of ["arm64", "x86_64"]) {
+    if (!architectures.has(architecture)) {
+      throw new Error(
+        `[release:mac] Native demo engine for ${description} is missing ${architecture}: ${helperPath}`,
+      );
+    }
+  }
+}
+
 async function assertBundledAttentionNotch(resourcesPath, description) {
   const helperPath = path.join(resourcesPath, "native", "ade-attention-notch");
   const resourceBundlePath = path.join(
@@ -511,6 +531,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertBundledAttentionNotch(resourcesPath, description);
   await assertBundledMacDesktopDriver(resourcesPath, description);
   await assertBundledCaptureHelper(resourcesPath, description);
+  await assertBundledAdeMedia(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);
   assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));

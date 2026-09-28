@@ -1,3 +1,5 @@
+import type { GitHubTabSort } from "./tabs/prBlockedSort";
+
 export type PrWorkflowTab = "integration" | "rebase";
 export type PrActiveTab = "github" | "normal" | PrWorkflowTab;
 export type PrDetailRouteTab = "overview" | "files" | "checks";
@@ -30,6 +32,8 @@ export type ParsedPrsRouteState = {
   threadId: string | null;
   commitSha: string | null;
   detailTab: PrDetailRouteTab | null;
+  /** GitHub-tab row sort; only "blocked" is ever written to the URL. */
+  githubSort: GitHubTabSort | null;
 };
 
 export function prRouteSelectionTarget(route: ParsedPrsRouteState): PrRouteSelectionTarget | null {
@@ -121,6 +125,10 @@ function parseDetailTab(value: string | null): PrDetailRouteTab | null {
   return null;
 }
 
+function parseGithubSort(value: string | null): GitHubTabSort | null {
+  return value === "blocked" || value === "updated" ? value : null;
+}
+
 function parseHashParams(hash: string): URLSearchParams {
   const queryIndex = hash.indexOf("?");
   if (queryIndex < 0) return new URLSearchParams();
@@ -166,6 +174,7 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
     threadId: pick("threadId"),
     commitSha: pick("commitSha"),
     detailTab: parseDetailTab(routeParams.get("detailTab")),
+    githubSort: parseGithubSort(routeParams.get("sort")),
   };
 }
 
@@ -248,6 +257,7 @@ export function buildPrsRouteSearch(args: {
   threadId?: string | null;
   commitSha?: string | null;
   detailTab?: PrDetailRouteTab | null;
+  githubSort?: GitHubTabSort | null;
 }): string {
   const params = new URLSearchParams();
 
@@ -264,6 +274,7 @@ export function buildPrsRouteSearch(args: {
     if ((args.selectedPrId || args.selectedPrNumber != null) && args.detailTab) {
       params.set("detailTab", args.detailTab);
     }
+    if (args.githubSort) params.set("sort", args.githubSort);
   } else {
     params.set("tab", "workflows");
     params.set("workflow", args.activeTab);

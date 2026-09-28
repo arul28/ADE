@@ -1,12 +1,16 @@
-import { useMemo, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowsClockwise, Copy, DotsThree } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
 import type {
   AppleDeviceDiskUsage,
+  AppleInstalledRuntime,
   AppleInstalledSimulator,
   AppleLaneDevice,
+  AppleLaneDeviceFamily,
+  AppleNewDeviceSpec,
   AppleSimulatorOwner,
+  AppleSimulatorOwnershipInfo,
 } from "../../../shared/types/iosSimulator";
 import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
@@ -34,11 +38,12 @@ import {
 } from "./appleDeviceFamily";
 import { isAppleSimulatorBooted } from "./appleDeviceState";
 import { DangerConfirmMenuItem } from "./DangerConfirmMenuItem";
+import { DrawerMenu, type DrawerMenuOption } from "./drawer/drawerPrimitives";
 import {
-  appleDefaultTemplateUdid,
   appleDeviceDiskLabel,
+  appleDiskLabel,
+  appleDiskTotalLabel,
   appleOwnerLaneLabel,
-  isAppleCloneSource,
   partitionApplePickerDevices,
 } from "./applePickerInventory";
 
@@ -65,13 +70,21 @@ export type AppleDevicePickerProps = {
   disk?: AppleDeviceDiskUsage | null;
   /** True while that second, disk-only read is in flight. */
   measuringDisk?: boolean;
-  /** The udid a start is in flight for, or `"create"` while cloning. */
+  /** `deviceList({ runtimes: true }).runtimes`: what a new device can run. */
+  runtimes?: readonly AppleInstalledRuntime[] | null;
+  /** `deviceList({ runtimes: true }).defaultNewDevice`: where the Create control starts. */
+  defaultNewDevice?: AppleNewDeviceSpec | null;
+  /** `deviceList({ disk: true }).ownership`: who each device belongs to. */
+  ownership?: readonly AppleSimulatorOwnershipInfo[] | null;
+  /** The udid a start is in flight for, or `"create"` while making a new device. */
   pending: string | null;
-  /** The project's last used template, when there is one. */
-  lastUsedUdid: string | null;
   refreshing: boolean;
   onStart: (udid: string) => void;
-  onCreate: (sourceUdid: string) => void;
+  onCreate: (spec: AppleNewDeviceSpec) => void;
+  /** Run the cleanup pass now. Absent hides the button. */
+  onCleanup?: () => void;
+  /** True while that pass runs. */
+  cleaning?: boolean;
   /** Delete one installed simulator. Only ever offered for a device no lane holds. */
   onDelete?: (udid: string) => void;
   onRefresh: () => void;
@@ -122,20 +135,20 @@ export function AppleDevicePicker({
   laneDevice,
   disk,
   measuringDisk = false,
+  runtimes,
+  defaultNewDevice,
+  ownership,
   pending,
-  lastUsedUdid,
   refreshing,
   onStart,
   onCreate,
+  onCleanup,
+  cleaning = false,
   onDelete,
   onRefresh,
   playing = true,
 }: AppleDevicePickerProps) {
   const theme = useAppStore((s) => s.theme);
-  const templates = useMemo(
-    () => [...installed].sort((a, b) => a.name.localeCompare(b.name)),
-    [installed],
-  );
 
   const partition = useMemo(
     () => partitionApplePickerDevices({ installed, owners, laneDevice }),
@@ -151,20 +164,17 @@ export function AppleDevicePicker({
     [partition.elsewhere],
   );
 
-  const defaultTemplate = useMemo(
-    () => appleDefaultTemplateUdid({ installed, lastUsedUdid, owners }),
-    [installed, lastUsedUdid, owners],
+  const ownershipBy = useMemo(
+    () => new Map((ownership ?? []).map((entry) => [entry.udid, entry])),
+    [ownership],
   );
-  const [source, setSource] = useState<string | null>(null);
-  const selectedSource = source && templates.some((entry) => entry.udid === source)
-    ? source
-    : defaultTemplate;
 
   const busy = pending !== null;
+  const canCreate = (runtimes ?? []).some((runtime) => runtime.deviceTypes.length > 0);
 
   return (
     <PickerPage theme={theme} playing={playing}>
-      {installed.length === 0 ? (
+      {installed.length === 0 && !canCreate ? (
         <EmptyCard refreshing={refreshing} onRefresh={onRefresh} />
       ) : (
         <>
@@ -199,6 +209,7 @@ export function AppleDevicePicker({
                     family={group.family}
                     owner={takenBy.get(simulator.udid) ?? null}
                     mine={partition.mine?.udid === simulator.udid}
+                    ownership={ownershipBy.get(simulator.udid) ?? null}
                     disk={disk}
                     pending={pending === simulator.udid}
                     disabled={busy}
@@ -211,16 +222,22 @@ export function AppleDevicePicker({
           ))}
 
           <CreateSection
-            templates={templates}
-            heldElsewhere={takenBy}
-            value={selectedSource}
-            disk={disk}
-            measuringDisk={measuringDisk}
+            runtimes={runtimes ?? []}
+            defaultSpec={defaultNewDevice ?? null}
             missing={partition.laneDeviceMissing ? laneDevice : null}
             disabled={busy}
             creating={pending === "create"}
-            onChange={setSource}
-            onCreate={() => selectedSource && onCreate(selectedSource)}
+            onCreate={onCreate}
+          />
+
+          <StorageSection
+            disk={disk}
+            measuringDisk={measuringDisk}
+            ownership={ownership ?? []}
+            installedCount={installed.length}
+            cleaning={cleaning}
+            disabled={busy}
+            {...(onCleanup ? { onCleanup } : {})}
           />
         </>
       )}
@@ -334,6 +351,7 @@ function DeviceCard({
   family,
   owner,
   mine,
+  ownership,
   disk,
   pending,
   disabled,
@@ -346,6 +364,8 @@ function DeviceCard({
   owner: AppleSimulatorOwner | null;
   /** Set when THIS lane holds it — reachable only from a half-started state. */
   mine: boolean;
+  /** Who the device belongs to, once the storage read lands. */
+  ownership: AppleSimulatorOwnershipInfo | null;
   disk: AppleDeviceDiskUsage | null | undefined;
   pending: boolean;
   disabled: boolean;
@@ -419,10 +439,28 @@ function DeviceCard({
               <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
                 Yours
               </span>
+            ) : ownership?.ownership === "ade-orphan" ? (
+              <PaneTooltip label="ADE made this device and no lane holds it. Clean up deletes it." side="bottom">
+                <span
+                  data-apple-device-leftover=""
+                  className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-warning"
+                >
+                  Leftover
+                </span>
+              </PaneTooltip>
             ) : booted ? (
               <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-success">
                 Running
               </span>
+            ) : ownership?.looksLikeAde ? (
+              <PaneTooltip label="Named like an ADE device, but made before ADE marked its devices. Delete it here if you do not use it." side="bottom">
+                <span
+                  data-apple-device-unmarked=""
+                  className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg"
+                >
+                  Old ADE?
+                </span>
+              </PaneTooltip>
             ) : null}
           </span>
           <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
@@ -514,75 +552,58 @@ function DeviceMenu({
   );
 }
 
-/** ARIA radiogroup keys: arrows step and wrap, Home and End jump. */
-const RADIO_KEY_MOVES = new Map<string, 1 | -1 | "first" | "last">([
-  ["ArrowDown", 1],
-  ["ArrowRight", 1],
-  ["ArrowUp", -1],
-  ["ArrowLeft", -1],
-  ["Home", "first"],
-  ["End", "last"],
-]);
+const FAMILY_GROUP_LABEL: Record<AppleLaneDeviceFamily, string> = {
+  iphone: "iPhone",
+  ipad: "iPad",
+  watch: "Watch",
+};
 
 /**
- * Make another one, at the foot of the page where the owner put it.
+ * Make a new device, at the foot of the page where the owner put it.
  *
- * A row per installed device, each one a source a copy is made from, and each
- * one honest about the cost. `simctl clone` duplicates the source's data
- * directory, so a copy of a 3.2 GB device is about 3.2 GB — the runtime is NOT
- * downloaded again, and saying so next to a number is the only way that reads
- * as reassurance rather than as a bill. Before the disk read lands there is no
- * number to show, so the row says what is certain: nothing is downloaded.
+ * A new device is EMPTY: it runs an installed runtime and copies nothing from
+ * any other simulator, so it starts at a few megabytes and grows only with
+ * what this lane installs. ADE deletes it, and all its data, when the lane is
+ * archived or deleted. The runtime choice appears only when this Mac has more
+ * than one; the model list is the one that runtime supports, newest first.
  */
 function CreateSection({
-  templates,
-  heldElsewhere,
-  value,
-  disk,
-  measuringDisk,
+  runtimes,
+  defaultSpec,
   missing,
   disabled,
   creating,
-  onChange,
   onCreate,
 }: {
-  templates: readonly AppleInstalledSimulator[];
-  /** Devices another lane holds; no copy is made from them. */
-  heldElsewhere: Pick<ReadonlySet<string>, "has">;
-  value: string | null;
-  disk: AppleDeviceDiskUsage | null | undefined;
-  measuringDisk: boolean;
+  runtimes: readonly AppleInstalledRuntime[];
+  /** The service's default; the first runtime and its first iPhone when absent. */
+  defaultSpec: AppleNewDeviceSpec | null;
   /** Set when the lane's registry row points at a simulator that is gone. */
   missing: AppleLaneDevice | null | undefined;
   disabled: boolean;
   creating: boolean;
-  onChange: (udid: string) => void;
-  onCreate: () => void;
+  onCreate: (spec: AppleNewDeviceSpec) => void;
 }) {
-  // Only devices a copy can actually be made from.
-  const sources = templates.filter((entry) => isAppleCloneSource(entry, heldElsewhere));
-  // Roving tabindex: the checked radio is the group's one Tab stop, or the
-  // first one while none is checked.
-  const focusUdid = sources.some((entry) => entry.udid === value) ? value : sources[0]?.udid ?? null;
-  const costFor = (simulator: AppleInstalledSimulator): string => {
-    const size = appleDeviceDiskLabel(disk, simulator.udid);
-    if (size) return `${simulator.runtime} · copy costs about ${size}, no download`;
-    if (measuringDisk) return `${simulator.runtime} · measuring…`;
-    return `${simulator.runtime} · already installed, no download`;
-  };
-  const onRadioKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    const move = RADIO_KEY_MOVES.get(event.key);
-    if (!move || sources.length === 0 || disabled) return;
-    event.preventDefault();
-    let next = 0;
-    if (move === "last") next = sources.length - 1;
-    else if (move !== "first") {
-      const current = sources.findIndex((entry) => entry.udid === focusUdid);
-      next = (current + move + sources.length) % sources.length;
-    }
-    onChange(sources[next]!.udid);
-    event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
-  };
+  const [runtimeId, setRuntimeId] = useState<string | null>(null);
+  const [typeId, setTypeId] = useState<string | null>(null);
+  const creatable = runtimes.filter((entry) => entry.deviceTypes.length > 0);
+  const runtime = creatable.find((entry) => entry.identifier === (runtimeId ?? defaultSpec?.runtime))
+    ?? creatable[0]
+    ?? null;
+  const types = runtime?.deviceTypes ?? [];
+  // The service's default model applies only to the service's default runtime.
+  const wantedType = typeId ?? (runtime?.identifier === defaultSpec?.runtime ? defaultSpec?.deviceType : null);
+  const deviceType = types.find((entry) => entry.identifier === wantedType)
+    ?? types.find((entry) => entry.family === "iphone")
+    ?? types[0]
+    ?? null;
+  const runtimeOptions: DrawerMenuOption<string>[] = creatable.map((entry) => ({ value: entry.identifier, label: entry.name }));
+  const typeOptions: DrawerMenuOption<string>[] = types.map((entry) => ({
+    value: entry.identifier,
+    label: entry.name,
+    group: FAMILY_GROUP_LABEL[entry.family],
+  }));
+  if (!runtime) return null;
   return (
     <section
       aria-label="Create a new one"
@@ -600,60 +621,128 @@ function CreateSection({
           {`${missing.name} is registered to this lane but is not installed any more.`}
         </p>
       ) : null}
-      <div className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-1 p-2">
-        <div
-          role="radiogroup"
-          aria-label="Device to copy"
-          className="flex min-w-0 flex-col"
-          onKeyDown={onRadioKeyDown}
-        >
-          {sources.map((simulator) => {
-            const selected = simulator.udid === value;
-            return (
-              <button
-                key={simulator.udid}
-                type="button"
-                role="radio"
-                aria-checked={selected}
-                tabIndex={simulator.udid === focusUdid ? 0 : -1}
-                disabled={disabled}
-                data-apple-create-source={simulator.udid}
-                onClick={() => onChange(simulator.udid)}
-                className={cn(
-                  "flex min-w-0 items-baseline gap-2 rounded-md px-2 py-1.5 text-left",
-                  "transition-colors duration-[120ms] ease-out",
-                  selected ? "bg-accent/12" : "hover:bg-white/[0.04]",
-                  disabled && "cursor-not-allowed opacity-50",
-                )}
-              >
-                <span
-                  className={cn(
-                    "min-w-0 flex-1 break-words font-sans text-[12px] leading-5",
-                    selected ? "font-medium text-fg" : "text-fg/80",
-                  )}
-                >
-                  {simulator.name}
-                </span>
-                <span className="min-w-0 shrink-0 font-sans text-[10px] leading-4 text-muted-fg">
-                  {costFor(simulator)}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-        <div className="flex min-w-0 items-center justify-end pt-0.5">
+      <div className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-2 p-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          {runtimeOptions.length > 1 ? (
+            <DrawerMenu
+              ariaLabel="Runtime"
+              value={runtime.identifier}
+              placeholder="Runtime"
+              options={runtimeOptions}
+              disabled={disabled}
+              onChange={(next) => {
+                setRuntimeId(next);
+                setTypeId(null);
+              }}
+            />
+          ) : (
+            <span data-apple-create-runtime="" className="shrink-0 font-sans text-[12px] leading-5 text-fg/80">
+              {runtime.name}
+            </span>
+          )}
+          <DrawerMenu
+            ariaLabel="Device model"
+            value={deviceType?.identifier ?? null}
+            placeholder="Model"
+            options={typeOptions}
+            disabled={disabled}
+            onChange={setTypeId}
+            className="max-w-[14rem]"
+          />
+          <span className="min-w-0 flex-1" />
           <Button
             variant="primary"
             size="sm"
-            disabled={disabled || !value}
+            disabled={disabled || !deviceType}
             aria-label="Create a new simulator for this lane"
-            onClick={onCreate}
+            onClick={() => deviceType && onCreate({ runtime: runtime.identifier, deviceType: deviceType.identifier })}
             className="shrink-0"
           >
             {creating ? <Spinner /> : null}
             Create
           </Button>
         </div>
+        <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+          Starts empty. Nothing is copied or downloaded. Deleted with the lane.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * What the simulators cost, and the one button that gets space back.
+ *
+ * "Clean up" runs the same pass ADE runs every 15 minutes: it deletes ADE
+ * devices no lane holds (the "Leftover" cards) and powers off idle ADE devices.
+ * It never deletes a simulator ADE did not make; an "Old ADE?" card is the
+ * user's to delete from its own menu.
+ */
+function StorageSection({
+  disk,
+  measuringDisk,
+  ownership,
+  installedCount,
+  cleaning,
+  disabled,
+  onCleanup,
+}: {
+  disk: AppleDeviceDiskUsage | null | undefined;
+  measuringDisk: boolean;
+  ownership: readonly AppleSimulatorOwnershipInfo[];
+  installedCount: number;
+  cleaning: boolean;
+  disabled: boolean;
+  onCleanup?: () => void;
+}) {
+  const total = appleDiskTotalLabel(disk);
+  if (!total && !measuringDisk && !onCleanup) return null;
+  const leftovers = ownership.filter((entry) => entry.ownership === "ade-orphan");
+  const leftoverBytes = leftovers.reduce(
+    (sum, entry) => sum + (disk?.devices.find((row) => row.udid === entry.udid)?.bytes ?? 0),
+    0,
+  );
+  const leftoverLabel = leftovers.length && disk ? appleDiskLabel(leftoverBytes) : null;
+  const unmarked = ownership.filter((entry) => entry.looksLikeAde).length;
+  const summary = measuringDisk && !total
+    ? "Measuring…"
+    : [
+      total ? `${installedCount} simulators use ${total}` : `${installedCount} simulators`,
+      leftovers.length ? `${leftovers.length} leftover${leftoverLabel ? ` (${leftoverLabel})` : ""}` : null,
+      unmarked ? `${unmarked} old ADE?` : null,
+    ].filter(Boolean).join(" · ");
+  return (
+    <section
+      aria-label="Storage"
+      data-apple-picker-section="Storage"
+      className="flex min-w-0 flex-col gap-2 pt-1"
+    >
+      <h3 className="px-0.5 font-sans text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg">
+        Storage
+      </h3>
+      <div className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-2 p-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span data-apple-storage-summary="" className="min-w-0 flex-1 break-words font-sans text-[12px] leading-5 text-fg/85">
+            {summary}
+          </span>
+          {onCleanup ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={disabled || cleaning}
+              aria-label="Clean up ADE simulators"
+              data-apple-storage-cleanup=""
+              onClick={onCleanup}
+              className="shrink-0"
+            >
+              {cleaning ? <Spinner /> : null}
+              Clean up
+            </Button>
+          ) : null}
+        </div>
+        <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+          Removes ADE's leftover devices and powers off idle ones. Your own simulators are never touched.
+        </p>
       </div>
     </section>
   );

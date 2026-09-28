@@ -18,8 +18,8 @@
 import type { AgentChatCursorConfigOption, AgentChatSession } from "../../../shared/types";
 import {
   cursorControlParameterIds,
+  cursorServiceTierOfParameterValue,
   normalizeCursorMetadataText,
-  normalizeCursorServiceTierValue,
   peekCursorSdkCatalogRows,
   readCursorSdkCatalog,
   type CursorCliModelRow,
@@ -223,15 +223,15 @@ function resolveCursorSdkModelSelectionFromRows(
       const label = normalizeCursorMetadataText(`${variant.displayName} ${variant.description ?? ""}`);
       return variant.params.some((param) =>
         serviceTierParameterIds.has(param.id)
-        && normalizeCursorServiceTierValue(param.value) === "fast",
+        && cursorServiceTierOfParameterValue({ id: param.id }, param.value) === "fast",
       ) || label.includes("fast");
     });
     if (matchingVariant) applyParams(matchingVariant.params, { preserveExistingReasoning: true });
     for (const parameter of row.parameters ?? []) {
       if (!serviceTierParameterIds.has(parameter.id)) continue;
       const value = parameter.values.find((entry) =>
-        normalizeCursorServiceTierValue(entry.value) === "fast"
-        || normalizeCursorServiceTierValue(entry.displayName) === "fast",
+        cursorServiceTierOfParameterValue(parameter, entry.value) === "fast"
+        || cursorServiceTierOfParameterValue(parameter, entry.displayName) === "fast",
       );
       if (value) out.set(parameter.id, value.value);
     }
@@ -242,11 +242,11 @@ function resolveCursorSdkModelSelectionFromRows(
       const label = normalizeCursorMetadataText(`${variant.displayName} ${variant.description ?? ""}`);
       const hasFastParam = variant.params.some((param) =>
         serviceTierParameterIds.has(param.id)
-        && normalizeCursorServiceTierValue(param.value) === "fast"
+        && cursorServiceTierOfParameterValue({ id: param.id }, param.value) === "fast"
       );
       const hasStandardParam = variant.params.some((param) =>
         serviceTierParameterIds.has(param.id)
-        && normalizeCursorServiceTierValue(param.value) === "standard"
+        && cursorServiceTierOfParameterValue({ id: param.id }, param.value) === "standard"
       );
       return hasStandardParam || (!hasFastParam && /\b(standard|default|regular|base|normal|slow)\b/.test(label));
     });
@@ -254,8 +254,8 @@ function resolveCursorSdkModelSelectionFromRows(
     for (const parameter of row.parameters ?? []) {
       if (!serviceTierParameterIds.has(parameter.id)) continue;
       const value = parameter.values.find((entry) =>
-        normalizeCursorServiceTierValue(entry.value) === "standard"
-        || normalizeCursorServiceTierValue(entry.displayName) === "standard"
+        cursorServiceTierOfParameterValue(parameter, entry.value) === "standard"
+        || cursorServiceTierOfParameterValue(parameter, entry.displayName) === "standard"
       );
       if (value) out.set(parameter.id, value.value);
     }
@@ -301,14 +301,14 @@ function resolveCursorSdkModelSelectionFromRows(
   if (wantsFast && serviceTierParameterIds.size > 0) {
     const matched = params.some((param) =>
       serviceTierParameterIds.has(param.id)
-      && normalizeCursorServiceTierValue(param.value) === "fast"
+      && cursorServiceTierOfParameterValue({ id: param.id }, param.value) === "fast"
     );
     if (!matched) unmet.push("fast");
   }
   if (wantsStandard && serviceTierParameterIds.size > 0) {
     const matched = params.some((param) =>
       serviceTierParameterIds.has(param.id)
-      && normalizeCursorServiceTierValue(param.value) === "standard"
+      && cursorServiceTierOfParameterValue({ id: param.id }, param.value) === "standard"
     );
     if (!matched) unmet.push("standard");
   }

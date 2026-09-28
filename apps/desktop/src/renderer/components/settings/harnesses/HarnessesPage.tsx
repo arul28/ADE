@@ -27,6 +27,8 @@ import { PresetAgent, PresetModels } from "./presetFacts";
 import { loadHarnessAccounts, proxySignInAvailable, readStoredKeySources, type HarnessAccountSource } from "./harnessSources";
 import { HarnessWizard, emptyHarnessDraft } from "./HarnessWizard";
 import { useHarnessPresets } from "./useHarnessPresets";
+import { useSettingsMachineScope } from "../SettingsMachineScope";
+import { useApiCredentialsPin } from "../providers/keys/useApiCredentials";
 
 /**
  * Settings → Providers → Custom.
@@ -92,6 +94,10 @@ type WizardState =
   | { mode: "edit"; presetId: string; draft: HarnessPresetDraft };
 
 export function HarnessesPage({ onBack }: { onBack?: () => void }) {
+  // Presets are account-wide; what they can run on is read from the machine
+  // the page shows.
+  const { pin } = useSettingsMachineScope();
+  const credentialPin = useApiCredentialsPin();
   const { presets, createPreset, updatePreset, duplicatePreset, deletePreset } = useHarnessPresets();
   const [wizard, setWizard] = useState<WizardState>({ mode: "closed" });
   const [status, setStatus] = useState<AiSettingsStatus | null>(null);
@@ -113,13 +119,13 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
       try {
         const apiCredentials = window.ade?.apiCredentials;
         const credentialRows = typeof apiCredentials?.list === "function"
-          ? apiCredentials.list().catch(() => [] as ApiCredentialSummary[])
+          ? apiCredentials.list({}, credentialPin).catch(() => [] as ApiCredentialSummary[])
           : Promise.resolve([] as ApiCredentialSummary[]);
         const [next, keys, credentials, accountRows] = await Promise.all([
-          window.ade?.ai?.getStatus?.() ?? Promise.resolve(null),
-          window.ade?.ai?.listApiKeys?.() ?? Promise.resolve([] as string[]),
+          window.ade?.ai?.getStatus?.(undefined, pin) ?? Promise.resolve(null),
+          window.ade?.ai?.listApiKeys?.(pin) ?? Promise.resolve([] as string[]),
           credentialRows,
-          loadHarnessAccounts(),
+          loadHarnessAccounts(pin),
         ]);
         if (cancelled) return;
         setStatus(next ?? null);
@@ -136,7 +142,7 @@ export function HarnessesPage({ onBack }: { onBack?: () => void }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [credentialPin, pin]);
 
   const accountLabel = useCallback(
     (instanceId: string) => accounts.find((entry) => entry.instanceId === instanceId)?.label ?? null,

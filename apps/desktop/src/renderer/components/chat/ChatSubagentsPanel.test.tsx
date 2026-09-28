@@ -93,8 +93,8 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(screen.queryByText("Progress")).toBeNull();
     const section = screen.getByTestId("chat-info-tasks");
     expect(within(section).getByText("Tasks")).toBeTruthy();
-    // A plan list carries its own header: label + derived count.
-    expect(within(section).getByText("Plan")).toBeTruthy();
+    // The section's own header carries the derived count; the list no longer
+    // repeats a "Plan" title above it.
     expect(within(section).getByText("2/5")).toBeTruthy();
     expect([...section.querySelectorAll<HTMLElement>("[data-task-status]")].map((row) => row.textContent)).toEqual([
       "Map theme plumbing",

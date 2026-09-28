@@ -417,6 +417,41 @@ export function removeChatLaunch(launchId: string): void {
   });
 }
 
+const refreshingLaunchIds = new Set<string>();
+
+/**
+ * Re-read one launch from its host and apply it. Used when something else
+ * (the transcript's finished setup card, the chat's own messages) says the
+ * held snapshot is behind — a lost live event must not freeze the card, the
+ * Work row and the slide-out. At most one read per launch is in flight. A
+ * host that no longer has the launch (its retention ran out) drops the entry,
+ * the same as a list re-read would.
+ */
+export function refreshChatLaunch(launchId: string | null | undefined): void {
+  const entry = launchId ? chatLaunchStore.getState().entries[launchId] : undefined;
+  const api = typeof window !== "undefined" ? window.ade?.chatLaunch : undefined;
+  if (!entry || !entry.hostSeen || !api?.get || refreshingLaunchIds.has(entry.launchId)) return;
+  const id = entry.launchId;
+  refreshingLaunchIds.add(id);
+  let request: Promise<ChatLaunchSnapshot | null>;
+  try {
+    request = api.get({ launchId: id }, entry.binding ?? undefined);
+  } catch {
+    refreshingLaunchIds.delete(id);
+    return;
+  }
+  void Promise.resolve(request).then((snapshot) => {
+    const current = chatLaunchStore.getState().entries[id];
+    if (!current) return;
+    if (snapshot) applyChatLaunchSnapshot(current.binding, snapshot);
+    else if (current.hostSeen) removeChatLaunch(id);
+  }).catch(() => {
+    // The next list re-read (resync, visibility) corrects it instead.
+  }).finally(() => {
+    refreshingLaunchIds.delete(id);
+  });
+}
+
 export function dismissChatLaunches(launchIds: readonly string[]): void {
   if (launchIds.length === 0) return;
   chatLaunchStore.setState((state) => {
@@ -455,6 +490,7 @@ export function resetChatLaunchStoreForTests(): void {
   chatLaunchStore.setState({ entries: {}, dismissed: {} });
   localRecords.clear();
   unsentQueuedMessages.clear();
+  refreshingLaunchIds.clear();
   cachedOriginClientId = null;
 }
 
@@ -634,6 +670,39 @@ export function useChatLaunchRowState(sessionId: string | null | undefined): Cha
     const pending = snapshot.kind === "chat" && isChatLaunchPending(snapshot);
     return { startedAt: snapshot.startedAt, pending, failed: pending && snapshot.phase === "failed" };
   }, sameRowState);
+}
+
+export type ChatLaunchQueuedState = {
+  /** Messages still waiting to reach the chat. */
+  count: number;
+  /** At least one is being delivered right now (agent started, none failed). */
+  sending: boolean;
+  /** At least one failed its last delivery attempt. */
+  failed: boolean;
+};
+
+function sameQueuedState(a: ChatLaunchQueuedState, b: ChatLaunchQueuedState): boolean {
+  return a.count === b.count && a.sending === b.sending && a.failed === b.failed;
+}
+
+/**
+ * The outbox state a session row shows: how many messages a launch still owes
+ * this chat, whether delivery is in flight, and whether it failed. Structurally
+ * shared, so a row re-renders only when one of those three changes — not on
+ * every stage tick.
+ */
+export function useChatLaunchQueuedState(sessionId: string | null | undefined): ChatLaunchQueuedState {
+  return useChatLaunchSelector((state) => {
+    const snapshot = sessionId ? state.entries[sessionId]?.snapshot : undefined;
+    const queued = snapshot?.queuedMessages ?? [];
+    return {
+      count: queued.length,
+      sending: queued.length > 0
+        && queued.every((message) => !message.deliveryError)
+        && snapshot?.agentStarted === true,
+      failed: queued.some((message) => Boolean(message.deliveryError)),
+    };
+  }, sameQueuedState);
 }
 
 /** The launch's one-line status ("Checking out files · 62%"); re-renders only when the text changes. */

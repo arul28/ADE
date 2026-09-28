@@ -41,6 +41,7 @@ import type {
 } from "../../../shared/types";
 import { normalizeSyncStatusLaneIds, settleLaneSyncStatuses } from "../../../shared/gitSyncStatuses";
 import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
+import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
@@ -1403,7 +1404,7 @@ export function createGitOperationsService({
         kind: "git_fetch",
         reason: "fetch",
         fn: async (lane) => {
-          await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+          await runGitOrThrow(["fetch", "--prune"], { cwd: lane.worktreePath, timeoutMs: GIT_FETCH_TIMEOUT_MS });
         }
       });
       return action;

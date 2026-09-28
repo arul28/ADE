@@ -7,10 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.79] - 2026-09-25
+
+### Computer use
+
+- One computer-use contract: App Control at the Mac Desktop level, lane isolation, and a browser access setting (#1322).
+
+### Chat
+
+- Finished turns fold, one task list, and sources on every client (#1306).
+- Steers show at once, and subagent reports do not repeat (#1312).
+
+### Work
+
+- Chat activity comes from tool calls (#1320). The Work board shows every machine's chats (#1316). Configure a new lane from the composer (#1318). Session cards drop the model name (#1313).
+
+### PRs
+
+- The PR-to-lane flow names and reads as a lane (#1317). Drifted PRs show and Cursor automations run in full-auto (#1308). A failing CI stretch is announced once (#1314). Faster sync-status reads in Create PR (#1294).
+
+### Lanes
+
+- Orphan external lanes delete, and their folders can be revealed (#1315).
+
+### Apple devices
+
+- The tools card can claim a device (#1319).
+
 ### Providers
 
 - Claude Opus 5.5 (`claude-opus-5-5`) is the generic Opus model, with medium effort and Fast mode. Opus 5 stays selectable. Opus 4.8 is removed from the picker and its saved ids resolve to Opus 5.
 - Claude Agent SDK 0.3.280.
+
+### iOS
+
+- A new thread engine with desktop turn parity and bounded sync replies (#1323).
 
 ## [1.2.78] - 2026-09-24
 
@@ -2105,7 +2136,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.78...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.79...HEAD
+[1.2.79]: https://github.com/arul28/ADE/compare/v1.2.78...v1.2.79
 [1.2.78]: https://github.com/arul28/ADE/compare/v1.2.77...v1.2.78
 [1.2.77]: https://github.com/arul28/ADE/compare/v1.2.76...v1.2.77
 [1.2.76]: https://github.com/arul28/ADE/compare/v1.2.75...v1.2.76

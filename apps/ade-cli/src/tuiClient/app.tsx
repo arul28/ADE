@@ -17,6 +17,7 @@ import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBas
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
 import {
+  activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   supportsActiveTurnDispatchMode,
   cursorSessionRunsInCloud,
@@ -11317,8 +11318,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       // "/steer send" there would offer a command that always falls back to the
       // queue. The table stays per-provider; only this advert knows the session.
       const steerRunsInCloud = cursorSessionRunsInCloud(activeSession);
+      // `/steer send` acts on the latest staged message; one carrying
+      // attachments Cursor's text-only live steer cannot take is not offered it.
+      const latestStagedSteer = pendingSteers[pendingSteers.length - 1];
+      const latestSteerInlineBlocked = latestStagedSteer
+        ? activeTurnInlineAttachmentBlock(steerProvider, {
+          attachments: latestStagedSteer.attachments ?? [],
+          contextAttachmentCount: latestStagedSteer.contextAttachmentCount ?? 0,
+        }) != null
+        : false;
       const dispatchHint = [
-        supportsActiveTurnDispatchMode(steerProvider, "inline") && !steerRunsInCloud ? "/steer send" : null,
+        supportsActiveTurnDispatchMode(steerProvider, "inline") && !steerRunsInCloud && !latestSteerInlineBlocked
+          ? "/steer send"
+          : null,
         supportsActiveTurnDispatchMode(steerProvider, "interrupt") ? "/steer interrupt" : null,
       ].filter((entry): entry is string => entry != null);
       const hintLine = pendingSteers.length
@@ -12884,6 +12896,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const mode = name === "/steer send" ? "inline" : "interrupt";
         if (!supportsActiveTurnDispatchMode(provider, mode)) {
           addNotice(unsupportedActiveTurnDispatchModeMessage(provider, mode), "error");
+          return;
+        }
+        const inlineAttachmentBlock = mode === "inline"
+          ? activeTurnInlineAttachmentBlock(provider, {
+            attachments: latestSteer.attachments ?? [],
+            contextAttachmentCount: latestSteer.contextAttachmentCount ?? 0,
+          })
+          : null;
+        if (inlineAttachmentBlock) {
+          addNotice(
+            supportsActiveTurnDispatchMode(provider, "interrupt")
+              ? `${inlineAttachmentBlock} Use /steer interrupt to send it now, or it sends when this turn ends.`
+              : `${inlineAttachmentBlock} It sends when this turn ends.`,
+            "info",
+          );
           return;
         }
         const agentLabel = providerDisplayLabel(provider, "the agent");

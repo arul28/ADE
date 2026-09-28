@@ -945,8 +945,22 @@ A handful have more logic:
   Lanes tab consumes (runtime bucket summaries, rebase suggestions,
   auto-rebase statuses, batch assessment).
 - **`prs.refresh`** — delegates to `prService.refresh`, then
-  re-lists PRs and returns both the PR list and the snapshots in a
-  single response.
+  re-lists PRs and returns the PR list plus a **bounded** set of snapshots:
+  `{ refreshedCount, prs, snapshots, snapshotScope, omittedSnapshotPrIds }`.
+  Args: `prId` / `prIds` (snapshots for exactly those PRs) and
+  `includeSnapshots: "active" | "all" | "none"` (default `"active"`: open or
+  draft PRs, and PRs whose lane is not archived). Snapshots are capped at
+  6 MiB per reply, open PRs first; the ones left out are listed in
+  `omittedSnapshotPrIds` and load one PR at a time (`{ prId }`) when opened.
+  An argument-less refresh used to return every stored snapshot — 17 MB on a
+  real project — which the host refused to send and closed the phone over.
+- **Reply size guard.** `execute` measures every command's serialized result;
+  over 12 MiB (`SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES`) the command fails with
+  `{ ok: false, error: { code: "result_too_large", message, bytes, limitBytes } }`.
+  The host's `sendRequired` does the same for any request-bound reply that
+  cannot fit the 16 MiB send budget, and keeps the socket open; only a peer
+  whose queue is already full, or backpressured past the timeout, is closed
+  with 4001.
 - **`prs.getMobileSnapshot`** — calls `prService.getMobileSnapshot`,
   which builds stack chains from `laneService.list`, classifies each
   PR's action capabilities, resolves per-lane create-PR eligibility

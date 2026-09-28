@@ -5,6 +5,11 @@ import { FileCode } from "@phosphor-icons/react";
 
 import { MOSAIC_FENCE_LANGUAGE } from "../../../shared/chatMosaic";
 import { hasOpenSceneFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";
+import {
+  parseProofCitationUrl,
+  parseProofCompareBlock,
+  PROOF_COMPARE_FENCE_LANGUAGE,
+} from "../../../shared/proofCitation";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
 import { useChatChromeTint } from "./chatAppearance";
@@ -17,6 +22,7 @@ import {
 } from "./chatWorkspacePaths";
 import { HighlightedCode } from "./CodeHighlighter";
 import { MosaicCard } from "./MosaicCard";
+import { ProofCitationFigure, ProofCompareFigure } from "./ChatProofCitation";
 import { SceneFrame } from "./SceneFrame";
 
 /**
@@ -84,6 +90,20 @@ function WorkspacePathLink({
 /* ── Markdown renderer ── */
 
 type MarkdownComponents = React.ComponentProps<typeof ReactMarkdown>["components"];
+
+/** A hast node, as react-markdown hands it to a component override. */
+type MarkdownNode = { type?: string; tagName?: string; properties?: Record<string, unknown>; children?: MarkdownNode[] };
+
+/**
+ * True when a paragraph holds an `ade-proof://` image. The proof figure is
+ * block content, and a paragraph cannot contain it.
+ */
+function paragraphHasProofCitation(node: MarkdownNode | undefined): boolean {
+  return (node?.children ?? []).some((child) =>
+    child.type === "element"
+    && child.tagName === "img"
+    && parseProofCitationUrl(typeof child.properties?.src === "string" ? child.properties.src : null) !== null);
+}
 
 /** Module-level so the plugin array never changes identity between renders. */
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm];
@@ -186,6 +206,16 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     ...(thought
       ? { hr: () => <div aria-hidden data-thought-fragment-gap="" className="h-[0.6lh]" /> }
       : {}),
+    p: ({ children, node }) => (
+      paragraphHasProofCitation(node as MarkdownNode | undefined)
+        ? <div data-proof-citation-paragraph="" className="my-3">{children}</div>
+        : <p>{children}</p>
+    ),
+    img: ({ src, alt }) => {
+      const artifactId = parseProofCitationUrl(typeof src === "string" ? src : null);
+      if (artifactId) return <ProofCitationFigure artifactId={artifactId} caption={alt ?? null} />;
+      return <img src={typeof src === "string" ? src : undefined} alt={alt ?? ""} />;
+    },
     h1: ({ children }) => <h1 className="text-[1rem]">{children}</h1>,
     h2: ({ children }) => <h2 className="text-[0.95rem]">{children}</h2>,
     h3: ({ children }) => <h3 className="text-[0.9rem]">{children}</h3>,
@@ -246,6 +276,11 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         : "text";
       if (isBlock && language === MOSAIC_FENCE_LANGUAGE && mosaic) {
         return <MosaicCard source={text} cardKey={mosaic.cardKeyFor(text, mosaicScopeKey ?? "")} onSubmit={mosaic.onSubmit} />;
+      }
+      if (isBlock && language === PROOF_COMPARE_FENCE_LANGUAGE) {
+        const block = parseProofCompareBlock(text);
+        // A block that names no pair renders as the code it is.
+        if (block) return <ProofCompareFigure block={block} />;
       }
       // Scenes are not gated on a render context: any agent may draw, and the
       // sandbox rather than the caller is what makes that safe.

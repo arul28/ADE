@@ -207,6 +207,14 @@ export type SyncPeerMetadata = {
   appVersion?: string;
   appBuild?: string;
   bundleIdentifier?: string;
+  /**
+   * `"roster"` marks a light socket that carries only the machine-wide roster,
+   * cross-project chats and routed commands. Hosts never replicate CRDT
+   * changesets to it, ignore any it sends, and never record a delivered
+   * cursor for it. Absent (or any other value) means a full replica, as
+   * before. Hosts that honor it say so with the `rosterPeer` hello feature.
+   */
+  syncRole?: "roster";
 };
 
 export type SyncPeerConnectionState = SyncPeerMetadata & {
@@ -806,6 +814,14 @@ export type SyncRouteHealth = {
 export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
+  /**
+   * Why a viewer is a viewer. `saved_connection`: the user connected this
+   * runtime to another host on purpose, which is intended and never goes
+   * stale. `cluster_record`: the project database still names another,
+   * recently seen device as host; once that device counts as gone, this
+   * runtime takes hosting back. Absent on a host and on older runtimes.
+   */
+  viewerReason?: "saved_connection" | "cluster_record";
   runtimeMode?: SyncRuntimeMode;
   runtimeRole?: SyncRuntimeRole;
   localDevice: SyncDeviceRecord;
@@ -853,6 +869,12 @@ export type SyncFeatureFlags = {
    * client without a decoder keeps the still-image fallback.
    */
   macDesktopStream?: true;
+  /**
+   * OpenCode chats accept a mid-turn message as an inbox steer (the "inline"
+   * send mode). Older hosts omit it and only queue, so a client offers inline
+   * for OpenCode only when this is present.
+   */
+  openCodeInboxSteer?: true;
   /**
    * The host serves `macDesktop.takeControl` and its siblings, so the hosted
    * web client may take the lane's input lease over the sync socket. Advertised
@@ -902,6 +924,29 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   /**
+   * The history-page commands (`chat.getChatEventHistoryPage`,
+   * `agentChat.getEventHistoryPage`, `personalChats.getEventHistoryPage`)
+   * accept `beforeSequence` (chatLogV2 durable sequence; rows with
+   * `sequence < beforeSequence`, precedence over `beforeOffset`). An older
+   * host ignores the field and returns the newest page, so clients send it
+   * only when this is present.
+   */
+  chatHistoryPageBySequence?: {
+    enabled: true;
+  };
+  /**
+   * Durable chat log protocol: `chat_subscribe` accepts `sinceSequence` +
+   * `generation` (durable resume) and `chatLogV2` (turn-aligned snapshot with
+   * `pinnedEvents`); acks, `chat_history` pages and roster chat rows carry
+   * `historyGeneration` (and `maxSequence` where noted); folded replay rows
+   * carry `sequenceStart`. Absent on older hosts.
+   */
+  chatLogV2?: {
+    enabled: true;
+    /** Largest persisted byte span a durable resume will replay. */
+    resumeMaxBytes: number;
+  };
+  /**
    * Streamed HTTP attachment upload. When present, a client may mint a ticket
    * with `chat.createAttachmentUpload` and POST the file body to `path` on this
    * host's sync HTTP port instead of base64-ing it through the command channel,
@@ -923,6 +968,25 @@ export type SyncFeatureFlags = {
   };
   changesetAck: {
     enabled: boolean;
+  };
+  /**
+   * The host answers `roster_subscribe` with the machine-wide roster
+   * (`roster_snapshot` / `roster_delta`). Older hosts omit it; a host that
+   * advertises `enabled: false` stays silent on `roster_subscribe`.
+   */
+  roster?: {
+    enabled: boolean;
+  };
+  /**
+   * The host honors `peer.syncRole: "roster"` on hello (see SyncPeerMetadata):
+   * no changeset replication, no cursor bookkeeping for that socket. A client
+   * that opens a roster socket must close it on a host without this feature,
+   * or the host would replicate the whole project DB to it. Advertised only
+   * alongside an enabled `roster` feed, since a roster socket without one
+   * would look live and never receive a roster.
+   */
+  rosterPeer?: {
+    enabled: true;
   };
   /**
    * Bidirectional oversized-envelope framing. The host returns this only to a
@@ -1073,6 +1137,13 @@ export type SyncRosterChat = {
    */
   snoozedUntil?: string | null;
   snoozedAt?: string | null;
+  /**
+   * Agent chats only (`chatLogV2` hosts): the chat's durable envelope
+   * `sequence` high-water and `historyGeneration`, so a client can tell which
+   * cached chat logs are current without subscribing to each one.
+   */
+  maxSequence?: number;
+  historyGeneration?: number;
 };
 
 export type SyncRosterLane = {
@@ -1088,6 +1159,14 @@ export type SyncRosterProject = {
   projectId: string;
   rootPath?: string | null;
   displayName: string;
+  /**
+   * The repo's `origin` remote as a normalized identity
+   * (`normalizeGitRemoteIdentity`: lowercase, host + path, no scheme, user,
+   * port, query or `.git`, so the SSH and HTTPS forms of one repo are equal),
+   * or null when the project has no origin. Clients match one repo across
+   * machines by it. Optional: older hosts omit it and older phones ignore it.
+   */
+  repoOriginUrl?: string | null;
   iconDataUrl?: string | null;
   lastOpenedAt?: string | null;
   /** true ⇒ live running/awaiting fidelity; false ⇒ disk-derived status only. */
@@ -1824,6 +1903,26 @@ export type SyncChatSubscribePayload = {
    */
   sinceSeq?: number;
   /**
+   * Durable resume marker (`chatLogV2` hosts): the highest envelope `sequence`
+   * the client holds for this chat. Unlike `sinceSeq` it survives host
+   * restarts. When `generation` matches the chat's current `historyGeneration`
+   * and the host can serve every persisted event with `sequence >
+   * sinceSequence` within its resume cap, the ack is `{resumed: true,
+   * resumeKind: "sequence"}` and those events follow as ordinary `chat_event`
+   * envelopes in sequence order. Otherwise the host answers with a normal
+   * snapshot marked `gap: true`. Takes precedence over `sinceSeq`.
+   */
+  sinceSequence?: number;
+  /** The `historyGeneration` the client's cached log belongs to. */
+  generation?: number;
+  /**
+   * Opt in to the `chatLogV2` snapshot shape: the snapshot cut is moved back to
+   * the nearest turn boundary (`user_message` or turn `status: started`), and
+   * unresolved approval requests older than the window arrive in
+   * `pinnedEvents` instead of being spliced into `events`.
+   */
+  chatLogV2?: boolean;
+  /**
    * Cross-project "quick look" override. When present and identifying a
    * registered project OTHER than the one this sync socket is scoped to, the
    * host serves this session's transcript + live events from that foreign
@@ -1866,6 +1965,32 @@ export type SyncChatSubscribeSnapshotPayload = {
    * the host has no live summary for the session.
    */
   turnActive?: boolean;
+  /**
+   * How a `resumed: true` ack was served: `"seq"` from the host's in-memory
+   * replay ring (`sinceSeq`), `"sequence"` from the persisted log
+   * (`sinceSequence`). Absent on snapshots and on hosts that predate it.
+   */
+  resumeKind?: "seq" | "sequence";
+  /**
+   * True when the client asked for a durable resume (`sinceSequence`) and the
+   * host could not serve it (generation changed, gap larger than the resume
+   * cap, unknown sequence, or a scope without a durable log). This snapshot is
+   * authoritative: the client must drop cached rows it cannot place.
+   */
+  gap?: boolean;
+  /** The chat's `historyGeneration`. Absent for scopes that do not track one. */
+  historyGeneration?: number;
+  /**
+   * The chat's durable `sequence` high-water at ack time. Events after it
+   * follow on the live stream.
+   */
+  maxSequence?: number;
+  /**
+   * `chatLogV2` snapshots only: unresolved `approval_request` envelopes older
+   * than the snapshot window. They are still pending and answerable; they are
+   * not part of the contiguous `events` range.
+   */
+  pinnedEvents?: AgentChatEventEnvelope[];
 };
 
 export type SyncChatUnsubscribePayload = {
@@ -1879,6 +2004,14 @@ export type SyncChatUnsubscribePayload = {
 
 export type SyncChatHistoryRequestPayload = SyncChatUnsubscribePayload & {
   beforeOffset: number;
+  /**
+   * `chatLogV2` sequence cursor, used instead of `beforeOffset` when present:
+   * the page holds the persisted events with `sequence < beforeSequence`
+   * (newest window within the byte cap, returned oldest first), with the same
+   * `hasMore` and a `historyGeneration`. A client whose cached log trims its
+   * oldest rows pages older history by its oldest cached sequence.
+   */
+  beforeSequence?: number;
   maxBytes?: number;
 };
 
@@ -2047,6 +2180,101 @@ export type SyncMacDesktopInputCall =
  * to null, because its `filePath` is host state no read-only client can use.
  */
 export type SyncMacDesktopStatus = Omit<MacDesktopStatus, "recording"> & { recording: null };
+
+// ---------------------------------------------------------------------------
+// App Control live frames over the sync socket
+//
+// App Control already has a CDP screencast: JPEG frames the brain receives for
+// the desktop's own live view. The brain forwards those frames to a phone or
+// hosted web client that subscribes by lane. There is no video encoder here.
+// Each subscription is throttled on the brain: at most `maxFps` frames a
+// second, a byte budget per second, and only the newest frame is kept. A frame
+// that cannot go out is replaced by the next one, never queued.
+// ---------------------------------------------------------------------------
+
+/**
+ * An App Control session as a sync client may read it. The launch command, the
+ * CDP websocket endpoint, the pid, and the terminal ids are host-only state, so
+ * they are always null here.
+ */
+export type SyncAppControlSession = {
+  id: string;
+  appKind: string;
+  label: string;
+  laneId: string | null;
+  chatSessionId: string | null;
+  provider: string;
+  driver: string;
+  status: string;
+  cdpTargetId: string | null;
+  startedAt: string;
+  connectedAt: string | null;
+  lastError: string | null;
+};
+
+/** The `appControl.status` reply. */
+export type SyncAppControlStatus = {
+  /** The lane the caller asked about (or the chat's lane); null when neither named one. */
+  laneId: string | null;
+  platform: string;
+  supported: boolean;
+  /** The lane's session. Null with no lane: a viewer never falls back to another lane's app. */
+  session: SyncAppControlSession | null;
+  stream: {
+    /** A frame for this lane arrived in the last few seconds. */
+    live: boolean;
+    lastFrameAt: string | null;
+    width: number | null;
+    height: number | null;
+    /** Live sync subscriptions on this lane, from every connection. */
+    viewerCount: number;
+  };
+};
+
+/**
+ * One pushed App Control frame. The fields after `seq` match
+ * `AppControlScreencastFrame`, so a web client can hand the frame to the same
+ * renderer code the desktop uses. `seq` counts frames the brain sent on this
+ * subscription; a gap is normal (frames are dropped, not queued).
+ */
+export type SyncAppControlStreamFramePayload = {
+  subscriptionId: string;
+  laneId: string;
+  seq: number;
+  sessionId: string;
+  cdpTargetId: string | null;
+  mimeType: "image/jpeg" | "image/png";
+  /** Base64 image bytes, no `data:` prefix. */
+  data: string;
+  width: number;
+  height: number;
+  scale: number;
+  viewportWidth?: number;
+  viewportHeight?: number;
+  devicePixelRatio?: number;
+  scaleX?: number;
+  scaleY?: number;
+  capturedAt: string;
+};
+
+export type SyncAppControlStreamEndedPayload = {
+  subscriptionId: string;
+  reason: "unsubscribed" | "connection_closed" | "stopped" | "error";
+  message?: string;
+};
+
+/** The `appControl.streamSubscribe` reply. */
+export type SyncAppControlStreamSubscribeResult = {
+  ok: true;
+  laneId: string;
+  /** The frame rate the brain will not exceed for this subscription. */
+  maxFps: number;
+  /** The lane's session when the subscription started, or null. */
+  session: SyncAppControlSession | null;
+  /** Size of the newest frame the brain holds, if any. It is sent right away. */
+  width: number | null;
+  height: number | null;
+};
 
 export type SyncRunQuickCommandArgs = {
   laneId: string;
@@ -2560,6 +2788,12 @@ export type SyncRemoteCommandAction =
   | "macDesktop.returnControl"
   | "macDesktop.renewLease"
   | "macDesktop.input"
+  // App Control live view. All three are read-only and viewer-allowed. Frames
+  // and the end notice are pushed back on `appControl.streamFrame` /
+  // `appControl.streamEnded` envelopes.
+  | "appControl.status"
+  | "appControl.streamSubscribe"
+  | "appControl.streamUnsubscribe"
   // Apple device environment. `apple.status` and `apple.streamTicket` are
   // viewer-allowed (the phone is view-only); everything that drives or
   // provisions a device is controller-only, so a viewer role cannot tap.
@@ -2616,6 +2850,10 @@ export type SyncCommandResultPayload = {
     conflict?: SyncHostConflictPublic | null;
     recoveryEligible?: boolean;
     snapshot?: SyncHostReadinessSnapshot;
+    /** `result_too_large` only: size of the reply that was refused, in bytes. */
+    bytes?: number;
+    /** `result_too_large` only: the limit it went over, in bytes. */
+    limitBytes?: number;
   };
 };
 
@@ -2713,6 +2951,15 @@ export type SyncMacDesktopStreamEndedEnvelope = SyncEnvelopeWithPayload<
   "macDesktop.streamEnded",
   SyncMacDesktopStreamEndedPayload
 >;
+/** Host→client push for an App Control frame subscription. */
+export type SyncAppControlStreamFrameEnvelope = SyncEnvelopeWithPayload<
+  "appControl.streamFrame",
+  SyncAppControlStreamFramePayload
+>;
+export type SyncAppControlStreamEndedEnvelope = SyncEnvelopeWithPayload<
+  "appControl.streamEnded",
+  SyncAppControlStreamEndedPayload
+>;
 export type SyncChatToolResultEnvelope = SyncEnvelopeWithPayload<
   "chat_tool_result",
   SyncChatToolResultRequestPayload | SyncChatToolResultResponsePayload
@@ -2807,6 +3054,8 @@ export type SyncEnvelope =
   | SyncChatEventEnvelope
   | SyncMacDesktopStreamRecordEnvelope
   | SyncMacDesktopStreamEndedEnvelope
+  | SyncAppControlStreamFrameEnvelope
+  | SyncAppControlStreamEndedEnvelope
   | SyncChatHistoryEnvelope
   | SyncChatToolResultEnvelope
   | SyncBrainStatusEnvelope

@@ -130,6 +130,8 @@ import {
 import { listCursorBilledUsage } from "./cursorBilledUsageStore";
 import { isPathInside, pathComparisonKey, pathKey } from "../shared/pathCompare";
 import {
+  MAX_LIVE_QUOTA_ACCOUNTS,
+  MAX_LIVE_QUOTA_WINDOWS,
   buildRollupRows,
   mergeAccountUsageStats,
   type AccountUsageContribution,
@@ -192,6 +194,12 @@ import {
   type ClaudeUsageResponse,
   type CodexResetCredits,
 } from "./providerQuotaParsers";
+import {
+  consumeClaudeResetCredit,
+  isClaudeResetCreditsSupported,
+  readClaudeResetCredits,
+  type ClaudeResetCredits,
+} from "./claudeResetCredits";
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -224,8 +232,12 @@ const QUOTA_REFRESH_RESPONSE_TIMEOUT_MS = 20_000;
  * v4: Codex token accounting was corrected (lifetime Codex tokens moved from
  * 251.3B to ~91.7B, cross-checked against an independent counter), so every v3
  * snapshot on disk carries obsolete totals and must be discarded.
+ *
+ * v5: Claude fast-mode requests now price at the fast multiple, which the
+ * transcript scan reads from `usage.speed`. A v4 snapshot's costs were computed
+ * without the flag, so they must be re-derived once.
  */
-const USAGE_SNAPSHOT_CACHE_VERSION = 4;
+const USAGE_SNAPSHOT_CACHE_VERSION = 5;
 const USAGE_SNAPSHOT_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const USAGE_SNAPSHOT_CACHE_PATH = path.join(os.homedir(), ".ade", "cache", "usage-snapshot.json");
 const GITHUB_STATS_CACHE_TTL_MS = 10 * 60_000;
@@ -1206,6 +1218,12 @@ type CodexAppServerRpcRequest = {
  * Throws on a missing binary, a spawn failure, a non-zero exit, or the timeout.
  * Callers decide what an unavailable app-server means for them — a poll
  * degrades, a credit spend fails loudly.
+ *
+ * stdin stays open until every requested response id has arrived (or the
+ * timeout kills the tree). The app-server aborts an in-flight request the
+ * instant it sees stdin EOF, and a rate-limit read is a network round-trip —
+ * closing stdin right after the write returned only the `initialize` reply and
+ * silently dropped the read.
  */
 async function runCodexAppServerJsonRpc(args: {
   logger: Logger;
@@ -1278,10 +1296,41 @@ async function runCodexAppServerJsonRpc(args: {
       let stderr = "";
       const maxStdout = 50_000;
       const maxStderr = 10_000;
+
+      // Every requested response id must arrive before stdin closes. The
+      // app-server interleaves notifications (configWarning,
+      // remoteControl/status/changed, account/updated) between replies; they
+      // carry no numeric id and are ignored here. The result parse after close
+      // still filters to lines that carry a `result`.
+      const pendingResponseIds = new Set<number>(requests.map((request) => request.id));
+      let stdinClosed = false;
+      let stdoutCarry = "";
+      const closeStdinOnceRepliesArrive = () => {
+        if (stdinClosed || pendingResponseIds.size > 0) return;
+        stdinClosed = true;
+        try {
+          child.stdin?.end();
+        } catch (err) {
+          if (isBenignStdinCloseError(err)) return;
+          logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
+            error: getErrorMessage(err),
+          });
+        }
+      };
       child.stdout?.on("data", (chunk: Buffer) => {
         if (stdout.length >= maxStdout) return;
         const s = chunk.toString("utf8");
         stdout += s.slice(0, maxStdout - stdout.length);
+        stdoutCarry += s;
+        const lines = stdoutCarry.split("\n");
+        stdoutCarry = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.length) continue;
+          const parsed = safeJsonParse<Record<string, unknown>>(trimmed, {});
+          if (typeof parsed.id === "number") pendingResponseIds.delete(parsed.id);
+        }
+        closeStdinOnceRepliesArrive();
       });
       child.stderr?.on("data", (chunk: Buffer) => {
         if (stderr.length >= maxStderr) return;
@@ -1319,14 +1368,17 @@ async function runCodexAppServerJsonRpc(args: {
 
       try {
         child.stdin?.write(combined);
-        child.stdin?.end();
       } catch (err) {
         if (isBenignStdinCloseError(err)) return;
         logger.warn("usage.poll.codex_cli_rpc_stdin_failed", {
           error: getErrorMessage(err),
         });
         finish(() => reject(err));
+        return;
       }
+      // With no requests there is nothing to wait for; otherwise the stdout
+      // handler closes stdin once every reply is in.
+      closeStdinOnceRepliesArrive();
     },
   );
 
@@ -1608,6 +1660,204 @@ const CODEX_RESET_CREDIT_OUTCOME_MESSAGE: Record<
   alreadyRedeemed: "That reset credit was already redeemed.",
 };
 
+// ── Claude reset credits ─────────────────────────────────────────────────
+//
+// Claude Code's `cedar_ember` program grants banked resets the way Codex does:
+// the CLI reads the grants from its OAuth usage endpoint and claims one against
+// the account's organization. ADE reads the same endpoint with the CLI's
+// on-disk OAuth token. On macOS that token lives in the Keychain, which ADE
+// deliberately never turns into an unattended HTTP call, so the probe returns
+// "no credits" there without sending anything and the control stays hidden.
+// The read is the fast HTTP path — no subprocess, no Keychain.
+
+/** At most one read per account per this interval; explicit refresh bypasses it. */
+const CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
+
+type ClaudeResetCreditCacheEntry = {
+  credits: ClaudeResetCredits;
+  readAt: number;
+};
+
+/** Keyed by config home; `""` is the machine default account. */
+const claudeResetCreditCache = new Map<string, ClaudeResetCreditCacheEntry>();
+/** Reads in flight, so a burst of snapshot reads sends one request. */
+const claudeResetCreditProbesInFlight = new Map<string, Promise<void>>();
+
+function claudeResetCreditCacheKey(configHome: string | undefined): string {
+  return configHome?.trim() ?? "";
+}
+
+function readCachedClaudeResetCredits(configHome: string | undefined): ClaudeResetCredits | null {
+  return claudeResetCreditCache.get(claudeResetCreditCacheKey(configHome))?.credits ?? null;
+}
+
+/**
+ * The client-facing shape. `nextCreditId` is a redemption handle, not a fact a
+ * client needs, so it stays in the main process — the same `availableCount` /
+ * `nextExpiresAt` contract the generic "Use reset" control already reads.
+ */
+function claudeResetCreditsContract(
+  credits: ClaudeResetCredits | null,
+): UsageAccount["resetCredits"] | null {
+  if (!credits) return null;
+  return {
+    availableCount: credits.availableCount,
+    ...(credits.nextExpiresAt ? { nextExpiresAt: credits.nextExpiresAt } : {}),
+  };
+}
+
+/**
+ * Read one account's banked credits, at most once per
+ * {@link CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS} unless `force` is set.
+ *
+ * Never throws. On macOS the feature is not offered, so the field is zeroed
+ * without reading anything. On a real read failure the previous reading is kept
+ * — a transient outage must not blank a live control — and only a confirmed
+ * response can replace it, with zero when the account has no redeemable grant.
+ * The token comes from the credential path's cache when it has one (possibly
+ * refreshed), falling back to the file.
+ */
+async function probeClaudeResetCredits(args: {
+  logger: Logger;
+  configHome?: string;
+  force?: boolean;
+}): Promise<void> {
+  const key = claudeResetCreditCacheKey(args.configHome);
+  const cached = claudeResetCreditCache.get(key);
+  if (!args.force && cached && Date.now() - cached.readAt < CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS) {
+    return;
+  }
+  const inFlight = claudeResetCreditProbesInFlight.get(key);
+  if (inFlight) return inFlight;
+  const probe = (async () => {
+    try {
+      if (!isClaudeResetCreditsSupported()) {
+        claudeResetCreditCache.set(key, { credits: { availableCount: 0 }, readAt: Date.now() });
+        return;
+      }
+      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
+      const read = await readClaudeResetCredits({
+        ...(args.configHome ? { configHome: args.configHome } : {}),
+        ...(accessToken ? { accessToken } : {}),
+      });
+      claudeResetCreditCache.set(key, {
+        credits: read.status === "ok"
+          ? read.credits ?? { availableCount: 0 }
+          : cached?.credits ?? { availableCount: 0 },
+        readAt: Date.now(),
+      });
+    } catch (error) {
+      args.logger.warn("usage.claude_reset_credit_probe_failed", {
+        error: getErrorMessage(error),
+      });
+      // Remembered as a failed attempt so a machine without Claude does not
+      // re-send on every snapshot. The previous reading is kept when there was
+      // one; only the clock moves.
+      claudeResetCreditCache.set(key, {
+        credits: cached?.credits ?? { availableCount: 0 },
+        readAt: Date.now(),
+      });
+    } finally {
+      claudeResetCreditProbesInFlight.delete(key);
+    }
+  })();
+  claudeResetCreditProbesInFlight.set(key, probe);
+  return probe;
+}
+
+/**
+ * The cached (and possibly refreshed) access token for one Claude account, or
+ * null. `allowKeychain` is false so the reset path never opens the macOS
+ * Keychain; the quota poll that runs earlier in the same pass has usually
+ * already warmed this cache.
+ */
+async function readClaudeCredentialAccessToken(
+  logger: Logger,
+  configHome: string | undefined,
+): Promise<string | null> {
+  const creds = await readClaudeCredentialsWithRefresh(logger, {
+    allowKeychain: false,
+    ...(configHome ? { configHome } : {}),
+  });
+  return creds?.accessToken ?? null;
+}
+
+/** Spends in flight, keyed by config home — one per account at a time. */
+const claudeResetCreditConsumeInFlight = new Map<string, Promise<UsageResetCreditResult>>();
+/**
+ * The request id held for an account until an outcome comes back.
+ *
+ * Held rather than minted per attempt: a claim that timed out or that Claude
+ * could not confirm may already have been applied, and a retry with a fresh id
+ * would ask Claude to treat it as a second claim. It is bound to the grant it
+ * was minted for, so a different grant gets a fresh id; a local "no credit"
+ * never mints one because nothing was sent.
+ */
+const claudeResetCreditRequestIds = new Map<string, { requestId: string; grantId: string }>();
+
+/**
+ * Spend one banked Claude reset credit for `configHome`.
+ *
+ * Single-flight per account, with the pending claim — its grant id and request
+ * id together — held across an unconfirmed claim, so a retry repeats the exact
+ * request that may already have applied instead of spending a second credit on
+ * whatever grant a later probe selected. The windows are re-read afterwards by
+ * the caller because the outcome alone is not the user-visible fact.
+ */
+async function spendClaudeResetCredit(args: {
+  logger: Logger;
+  configHome?: string;
+}): Promise<UsageResetCreditResult> {
+  const key = claudeResetCreditCacheKey(args.configHome);
+  const inFlight = claudeResetCreditConsumeInFlight.get(key);
+  if (inFlight) return inFlight;
+  const attempt = (async (): Promise<UsageResetCreditResult> => {
+    try {
+      const held = claudeResetCreditRequestIds.get(key);
+      // A held claim is retried exactly, even when a newer probe has selected a
+      // different grant; only a fresh claim reads the cache.
+      const grantId = held?.grantId ?? readCachedClaudeResetCredits(args.configHome)?.nextCreditId;
+      if (!grantId) {
+        // Nothing was sent, so no request id is minted or held.
+        return {
+          ok: false,
+          status: "noCredit",
+          message: "No reset credit is banked on this account.",
+        };
+      }
+      const requestId = held?.requestId ?? randomUUID();
+      claudeResetCreditRequestIds.set(key, { requestId, grantId });
+      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
+      const { result, retrySameClaim } = await consumeClaudeResetCredit({
+        ...(args.configHome ? { configHome: args.configHome } : {}),
+        ...(accessToken ? { accessToken } : {}),
+        grantId,
+        requestId,
+      });
+      if (!retrySameClaim) claudeResetCreditRequestIds.delete(key);
+      if (result.status === "failure") {
+        args.logger.warn("usage.claude_reset_credit_consume_failed", {
+          error: result.message,
+        });
+      }
+      return result;
+    } catch (error) {
+      args.logger.warn("usage.claude_reset_credit_consume_failed", {
+        error: getErrorMessage(error),
+      });
+      return {
+        ok: false,
+        status: "failure",
+        message: `Could not reach Claude to spend the reset: ${getErrorMessage(error)}`,
+      };
+    } finally {
+      claudeResetCreditConsumeInFlight.delete(key);
+    }
+  })();
+  claudeResetCreditConsumeInFlight.set(key, attempt);
+  return attempt;
+}
+
 // ── Local Cost Scanning ──────────────────────────────────────────
 
 export function bucketDaily7d(entries: TokenEntry[], nowMs: number): number[] {
@@ -1663,6 +1913,7 @@ function calculateTokenEntryCost(entry: TokenEntry): number {
   const rates = ratesForRequest(entry.model, resolveTokenPrice(entry.model), {
     contextTokens: entry.requestContextTokens,
     timestampMs: entry.timestamp,
+    fast: entry.fast === true,
   });
   const tokensUsd = priceTokenSplit(rates, {
     input: toNonNegativeInt(entry.billableInputTokens ?? entry.inputTokens),
@@ -2916,11 +3167,13 @@ async function stampProviderAccounts(
       const known = Boolean(identity.email || identity.plan);
       const signedIn = instance.signedIn === true;
       if (!instance.isDefault && !known && !signedIn && !activeAccountIds.has(id)) continue;
-      // Codex-only: Claude grants no reset credits, so the field stays absent
-      // there and every client reads that as "nothing to spend".
+      // Claude and Codex both grant banked resets; every other provider leaves
+      // the field absent, which every client reads as "nothing to spend".
       const resetCredits = key === "codex"
         ? readCachedCodexResetCredits(scopedConfigHome(key, instance))
-        : null;
+        : key === "claude"
+          ? claudeResetCreditsContract(readCachedClaudeResetCredits(scopedConfigHome(key, instance)))
+          : null;
       accounts.push({
         id,
         provider: key,
@@ -2941,6 +3194,18 @@ async function stampProviderAccounts(
 
 function isQuotaInstanceProvider(provider: UsageProvider): provider is QuotaInstanceProvider {
   return provider === "claude" || provider === "codex";
+}
+
+/**
+ * The provider a reset-credit account id belongs to, or null for an id that
+ * names no provider ADE can spend a credit on.
+ *
+ * Account ids are `<provider>:<instanceId>` (see `usageAccountId`), so the
+ * prefix is the only thing to read before touching the account registry.
+ */
+function resetCreditProviderForAccountId(accountId: string): QuotaInstanceProvider | null {
+  const prefix = accountId.split(":")[0];
+  return prefix === "claude" || prefix === "codex" ? prefix : null;
 }
 
 function buildProviderWindows(
@@ -3613,6 +3878,20 @@ export function createUsageTrackingService({
   >();
 
   /**
+   * Each reachable peer's live quota, keyed by machine key.
+   *
+   * Deliberately in memory and never stored: a quota window moves every poll, so
+   * a stored copy would churn the CRR clock and reopen the self-feeding refresh
+   * loop the rollup store's no-op detection exists to prevent. It only lives
+   * for the session in which the page actually refreshed that machine, which is
+   * exactly what "live" means.
+   */
+  const accountLiveQuota = new Map<
+    string,
+    { windows: UsageWindow[]; accounts: UsageAccount[] }
+  >();
+
+  /**
    * The transcript-source marker, resolved once per ledger scan.
    *
    * `buildTranscriptSource` reads — and on a fresh machine creates — a dot file
@@ -3671,6 +3950,10 @@ export function createUsageTrackingService({
       capturedAt: new Date(costCacheTimestamp || nowMs).toISOString(),
       source: resolveTranscriptSource(),
       rows,
+      // The live side channel a peer pools for its cross-machine limits view.
+      // Bounded here too, so an unbounded snapshot cannot ride the wire.
+      windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
+      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
     };
   }
 
@@ -3743,14 +4026,26 @@ export function createUsageTrackingService({
     // machine's own `prune` deletes those rows and the next fetch puts them
     // straight back — the CRR delete/insert churn, arriving over the wire.
     const oldestDay = rollupOldestDay(startedAtMs);
+    // Replace wholesale: only machines reached in this round have fresh live
+    // readings. A machine's durable rows stay; its live windows are "live" and
+    // a round that did not reach it has none to show.
+    accountLiveQuota.clear();
     for (const rollup of rollups) {
       try {
         // Unknown identity cannot match anything, and nothing was published
         // under this machine's name either, so there is no self-row to skip.
         if (rollup.machineKey === readLocalMachineIdentity()?.machineKey) continue;
+        const liveWindows = Array.isArray(rollup.windows) ? rollup.windows : [];
+        const liveAccounts = Array.isArray(rollup.accounts) ? rollup.accounts : [];
+        if (liveWindows.length > 0 || liveAccounts.length > 0) {
+          accountLiveQuota.set(rollup.machineKey, { windows: liveWindows, accounts: liveAccounts });
+        }
+        // The live side channel is never stored: it changes every poll, and a
+        // stored copy would churn the CRR clock. Strip it before publish.
+        const { windows: _windows, accounts: _accounts, ...storedRollup } = rollup;
         const bounded = oldestDay
-          ? { ...rollup, rows: rollup.rows.filter((row) => row.date >= oldestDay) }
-          : rollup;
+          ? { ...storedRollup, rows: storedRollup.rows.filter((row) => row.date >= oldestDay) }
+          : storedRollup;
         // Fetched from that machine, not scanned here: this side cannot know
         // which of the peer's providers failed, so it must not delete one
         // that simply did not appear. See `publish`'s `ownerAuthoritative`.
@@ -3873,11 +4168,14 @@ export function createUsageTrackingService({
       // usage. A null rollup lists it honestly as not yet reporting.
       rollup: costCacheTimestamp === 0 ? null : buildLocalRollup(nowMs),
       ...(identity ? {} : { message: "couldn't identify this computer" }),
+      liveWindows: lastSnapshot.windows,
+      liveAccounts: lastSnapshot.accounts ?? [],
     }];
     const seen = new Set<string>([localKey]);
     for (const rollup of accountRollupStore.readAll()) {
       if (rollup.machineKey === localKey) continue;
       seen.add(rollup.machineKey);
+      const live = accountLiveQuota.get(rollup.machineKey);
       contributions.push({
         machineKey: rollup.machineKey,
         label: rollup.label,
@@ -3885,6 +4183,7 @@ export function createUsageTrackingService({
         isLocal: false,
         origin: "rollup",
         rollup,
+        ...(live ? { liveWindows: live.windows, liveAccounts: live.accounts } : {}),
       });
     }
     for (const [machineKey, failure] of accountRollupFailures) {
@@ -4424,17 +4723,26 @@ export function createUsageTrackingService({
         // arrived without one (a carried-forward window from a host that
         // predates accounts, or an injected poller in a test), and the honest
         // answer there is the provider's default account.
-        // Reset credits live only on the app-server, which the HTTP quota path
-        // never touches — so they are read here rather than inside the provider
-        // poll, which stays spawn-free by design on its fast path. Bounded to
-        // one short-lived app-server per account per 15 minutes; an explicit
-        // user refresh bypasses that, because a Refresh that does not refresh
-        // is a lie. Never throws: a machine without Codex simply has none.
-        await Promise.all(readQuotaInstances("codex").map((instance) => probeCodexResetCredits({
-          logger,
-          ...(scopedConfigHome("codex", instance) ? { configHome: scopedConfigHome("codex", instance)! } : {}),
-          force: reason === "user",
-        })));
+        // Reset credits are read here rather than inside the provider poll: the
+        // Codex credits live only on the app-server the HTTP quota path never
+        // touches, and the Claude credits come from a separate usage-endpoint
+        // read with `cedar_ember` params. Both stay bounded — one short-lived
+        // app-server per Codex account, one HTTP read per Claude account, at
+        // most once per 15 minutes; an explicit user refresh bypasses that,
+        // because a Refresh that does not refresh is a lie. Neither throws: a
+        // machine without Codex or without a readable Claude login has none.
+        await Promise.all([
+          ...readQuotaInstances("codex").map((instance) => probeCodexResetCredits({
+            logger,
+            ...(scopedConfigHome("codex", instance) ? { configHome: scopedConfigHome("codex", instance)! } : {}),
+            force: reason === "user",
+          })),
+          ...readQuotaInstances("claude").map((instance) => probeClaudeResetCredits({
+            logger,
+            ...(scopedConfigHome("claude", instance) ? { configHome: scopedConfigHome("claude", instance)! } : {}),
+            force: reason === "user",
+          })),
+        ]);
         const { accounts, defaultAccountIdByProvider } = await stampProviderAccounts(
           providerStatus,
           readLocalMachineIdentity()?.label ?? os.hostname(),
@@ -4574,7 +4882,10 @@ export function createUsageTrackingService({
     }
   }
 
-  function captureResetCreditOutcome(result: UsageResetCreditResult): void {
+  function captureResetCreditOutcome(
+    result: UsageResetCreditResult,
+    provider?: "claude" | "codex",
+  ): void {
     // `resetCreditOutcomeKey` is the one classifier: it already rejects an
     // unrecognized (or inherited, like `toString`) wire status, so the key it
     // returns can index the table directly. Reading the same verdict the user's
@@ -4589,6 +4900,7 @@ export function createUsageTrackingService({
         analytics: { captureInternal: sink },
         surface: "api",
         outcome,
+        ...(provider ? { provider } : {}),
       });
     } catch (error) {
       logger.debug("usage.reset_credit_analytics_failed", { error: getErrorMessage(error) });
@@ -4617,38 +4929,56 @@ export function createUsageTrackingService({
       const failure: UsageResetCreditResult = {
         ok: false,
         status: "failure",
-        message: "Name the Codex account whose reset credit to spend.",
+        message: "Name the account whose reset credit to spend.",
       };
       captureResetCreditOutcome(failure);
       return failure;
     }
+    // The account id is `<provider>:<instanceId>` (see `usageAccountId`), so the
+    // provider prefix names which reset path to use before any registry read.
+    const provider = resetCreditProviderForAccountId(accountId);
     // Use the injected account registry too, so reset spending targets the same
     // selected account that polling and credit probing use.
-    const instance = readQuotaInstances("codex")
-      .find((entry) => usageAccountId({ provider: "codex", instanceId: entry.id }) === accountId);
-    if (!instance) {
+    const instance = provider
+      ? readQuotaInstances(provider)
+        .find((entry) => usageAccountId({ provider, instanceId: entry.id }) === accountId)
+      : undefined;
+    if (!provider || !instance) {
       // Deliberately specific: the caller named an account this machine does
       // not have, which is different from a spend that failed.
       const failure: UsageResetCreditResult = {
         ok: false,
         status: "failure",
-        message: "That Codex account is not signed in on this computer.",
+        message: "That account is not signed in on this computer.",
       };
-      captureResetCreditOutcome(failure);
+      captureResetCreditOutcome(failure, provider ?? undefined);
       return failure;
     }
-    const configHome = scopedConfigHome("codex", instance);
-    const result = await consumeCodexResetCredit({
-      logger,
-      ...(configHome ? { configHome } : {}),
-    });
+    const configHome = scopedConfigHome(provider, instance);
+    const result = provider === "codex"
+      ? await consumeCodexResetCredit({
+        logger,
+        ...(configHome ? { configHome } : {}),
+      })
+      : await spendClaudeResetCredit({
+        logger,
+        ...(configHome ? { configHome } : {}),
+      });
     // Re-read regardless of outcome: `nothingToReset` and `alreadyRedeemed`
     // both mean the displayed numbers may be stale too.
-    await probeCodexResetCredits({
-      logger,
-      ...(configHome ? { configHome } : {}),
-      force: true,
-    });
+    if (provider === "codex") {
+      await probeCodexResetCredits({
+        logger,
+        ...(configHome ? { configHome } : {}),
+        force: true,
+      });
+    } else {
+      await probeClaudeResetCredits({
+        logger,
+        ...(configHome ? { configHome } : {}),
+        force: true,
+      });
+    }
     try {
       await forceRefresh({ allowInteractiveAuth: false });
     } catch (error) {
@@ -4657,11 +4987,12 @@ export function createUsageTrackingService({
       // `resetCreditOutcomeText`, and `workResetCreditOutcomeText` on iOS), so
       // a `message` added here would never be shown; the stale meter is what
       // the log is for.
-      logger.warn("usage.codex_reset_credit_refresh_failed", {
+      logger.warn("usage.reset_credit_refresh_failed", {
+        provider,
         error: getErrorMessage(error),
       });
     }
-    captureResetCreditOutcome(result);
+    captureResetCreditOutcome(result, provider);
     return result;
   }
 
@@ -5061,6 +5392,9 @@ export const _testing = {
   consumeCodexResetCredit,
   probeCodexResetCredits,
   readCachedCodexResetCredits,
+  spendClaudeResetCredit,
+  probeClaudeResetCredits,
+  readCachedClaudeResetCredits,
   listQuotaInstances,
   mergeInstancePollResults,
   defaultTranscriptRoots,

@@ -482,6 +482,13 @@ final class AccessibilityDriver {
         for action in preferred where record.actions.contains(action) {
             if Self.perform(element, action) { return }
         }
+        // A click on a text field or area means "put the caret here". It has
+        // no press, and its action list often offers only `AXShowMenu`, so the
+        // last resort below would open the context menu instead.
+        if record.role == kAXTextFieldRole || record.role == kAXTextAreaRole || record.role == kAXComboBoxRole {
+            let focused = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+            if AXCallResult.wasDelivered(rawError: focused.rawValue) { return }
+        }
         // Last resort: whatever the element says it can do, in its own order.
         for action in record.actions where action != "AXShowAlternateUI" && action != "AXShowDefaultUI" {
             if Self.perform(element, action) { return }

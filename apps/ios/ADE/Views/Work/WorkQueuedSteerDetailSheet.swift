@@ -115,7 +115,16 @@ struct WorkQueuedSteerDetailSheet: View {
   /// strip's one-line disposition had no room to say so.
   private var stateDetail: String {
     let staged = "Staged \(relativeTimestamp(steer.timestamp))."
-    return "\(staged) \(workQueuedSteerDisposition(capability: capability, turnActive: turnActive).detailText)"
+    let disposition = workQueuedSteerDisposition(
+      capability: capability,
+      turnActive: turnActive,
+      inlineBlockedReason: inlineAttachmentBlockReason
+    )
+    return "\(staged) \(disposition.detailText)"
+  }
+
+  private var inlineAttachmentBlockReason: String? {
+    capability.inlineAttachmentBlockReason(attachmentTypes: (steer.attachments ?? []).map(\.type))
   }
 
   private var sendNowRow: some View {
@@ -135,6 +144,7 @@ struct WorkQueuedSteerDetailSheet: View {
     if !capability.modes.contains(.inline) {
       return "\(capability.agentLabel) can't take a message mid-turn."
     }
+    if let inlineAttachmentBlockReason { return inlineAttachmentBlockReason }
     if onDispatchInline == nil { return "Not available on this session." }
     if !turnActive { return "No turn is running." }
     return nil

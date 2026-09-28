@@ -114,6 +114,10 @@ import type {
   BuiltInBrowserElementTargetInput,
 } from "./builtInBrowserService";
 import { evaluateInTab } from "./builtInBrowserCdp";
+import { DEMO_RAW_FILE_EXTENSION, type DemoArtifactMetadata, type DemoEngine } from "../../../shared/demoVideo/demoContract";
+import { produceDemoVideo } from "../demoVideo/demoRenderService";
+import { watchDemoRecording } from "../demoVideo/demoRecordingGuard";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 
 const DEFAULT_FIND_IN_PAGE_TIMEOUT_MS = 5_000;
 const MAX_FIND_IN_PAGE_TIMEOUT_MS = 30_000;
@@ -123,6 +127,20 @@ const MAX_UPLOAD_FILE_COUNT = 20;
 const RECORDING_CACHE_DIR = "recordings";
 const BROWSER_RECORDER_PARTITION = "ade-browser-recorder";
 const DISPLAY_MEDIA_ARM_TTL_MS = 10_000;
+/** The capture page's address, answered only inside the recorder partition. */
+const CAPTURE_PAGE_URL = "https://ade-browser-recorder.invalid/capture";
+
+/** The demo track key of a tab's recording. */
+export function builtInBrowserRecordingKey(tabId: string): string {
+  return `browser:${tabId}`;
+}
+
+const SILENT_LOGGER: Logger = {
+  debug: () => {},
+  info: () => {},
+  warn: () => {},
+  error: () => {},
+} as unknown as Logger;
 
 /**
  * The tab's current document title, or `null` once its WebContents is gone.
@@ -267,6 +285,15 @@ export type BuiltInBrowserTabCapabilityDeps = {
    * has to force visibility to get a frame at all.
    */
   isTabSurfaced?: (tabId: string) => boolean;
+  /**
+   * Keep this tab parked with a compositor surface until the returned release
+   * is called — the same scoped capture hold observe and screenshot take, held
+   * here for the length of a recording so a tab nobody is looking at still
+   * produces frames. Resolves once the view is ready to be captured.
+   */
+  holdCaptureSurface?: (tabId: string) => Promise<() => void>;
+  /** The desktop's Chromium demo engine, which makes a recording's video. */
+  demoEngine: DemoEngine | null;
   tabById: (tabId: string | null | undefined) => BrowserTabState | null;
   targetTabFromInput: (
     input: BuiltInBrowserTabTargetArgs | undefined,
@@ -601,6 +628,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         // DevTools and the CDP debugger cannot own the same target, so opening
         // DevTools would silently kill an in-flight network log. Recording is
         // unaffected: it captures through getDisplayMedia, not the debugger.
+        // The agent viewport is ADE's own layout pin, not something the
+        // person asked for, so it steps aside rather than refusing: the page
+        // lays out at its box while DevTools is open, and the service re-pins
+        // it when DevTools closes (`tabUsesAgentViewport`).
+        if (tab.debuggerHolds.has("agent-viewport")) releaseDebuggerHold(tab, "agent-viewport");
         if (tab.debuggerHolds.size > 0) {
           const owner = tab.debuggerHolds.has("network") ? "network" : "emulation";
           const fix = owner === "network"
@@ -1142,6 +1174,35 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
 
   /* ── Recording ─────────────────────────────────────────────────────────── */
 
+  /**
+   * Ties a recording's capture hold to the recording's own ending, whichever
+   * way it ends — `stop` (agent or max-duration) or `abort` (handoff, tab
+   * teardown) — so no path leaves a finished recording's tab parked.
+   */
+  /** The `plain` a recording was started with, by its (wrapped) session. */
+  const recordingPlain = new WeakMap<BuiltInBrowserRecordingSession, boolean>();
+
+  const releaseHoldWhenRecordingEnds = (
+    session: BuiltInBrowserRecordingSession,
+    release: () => void,
+  ): BuiltInBrowserRecordingSession => ({
+    ...session,
+    stop: async () => {
+      try {
+        return await session.stop();
+      } finally {
+        release();
+      }
+    },
+    abort: () => {
+      try {
+        session.abort();
+      } finally {
+        release();
+      }
+    },
+  });
+
   const recordingDirectory = (tab: BrowserTabState, recordingId: string): string =>
     path.join(observationDirectory(tab), RECORDING_CACHE_DIR, sanitizeObservationPathSegment(recordingId));
 
@@ -1157,32 +1218,90 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     }
     const fps = normalizeBuiltInBrowserRecordingFps(input.fps);
     const caption = stringOrNull(input.caption);
+    const plain = input.plain === true;
     const recordingId = `rec-${Date.now()}-${randomUUID()}`;
+    const trackKey = builtInBrowserRecordingKey(tab.id);
     const directory = recordingDirectory(tab, recordingId);
-    const session: BuiltInBrowserRecordingSession = await runTracedTabCapability(
-      tab,
-      "startRecording",
-      input,
-      () => createBuiltInBrowserRecordingSession({
-        id: recordingId,
-        directory,
-        fps,
-        caption,
-        createRecorder: tabRecorderFactory(tab),
-        logger: logger(),
-        // The cap is the session's own, not the caller's: an agent that forgets
-        // `stopRecording` (or dies mid-run) must not capture until the app quits.
-        maxDurationMs: BUILT_IN_BROWSER_MAX_RECORDING_MS,
-        onMaxDurationReached: () => {
-          void finishRecording(tab, session, "max_duration").catch((error) => {
-            logger()?.warn("built_in_browser.recording_max_duration_stop_failed", {
-              tabId: tab.id,
-              err: errorMessage(error),
+    // A tab the pane is not showing has no surface and records black or not at
+    // all; hold it parked from before the stream is negotiated until the
+    // recording is finished.
+    const releaseCaptureHold = deps.holdCaptureSurface
+      ? await deps.holdCaptureSurface(tab.id)
+      : () => {};
+    // The hold can wait out a warm; a second start that raced us is refused
+    // here rather than opening a second recorder on the same tab.
+    if (tab.recording) {
+      releaseCaptureHold();
+      throw new Error(`Browser tab ${tab.id} is already recording. Stop the current recording first.`);
+    }
+    let session: BuiltInBrowserRecordingSession;
+    // Begun before the stream is negotiated: an action while it starts is
+    // placed at the capture's first frame.
+    demoTrackRegistry.begin(trackKey, {
+      surface: "browser",
+      chatSessionId: stringOrNull(input.chatSessionId),
+      laneId: stringOrNull(input.laneId),
+    });
+    try {
+      const created = await runTracedTabCapability(
+        tab,
+        "startRecording",
+        input,
+        () => createBuiltInBrowserRecordingSession({
+          id: recordingId,
+          directory,
+          fps,
+          caption,
+          createRecorder: tabRecorderFactory(tab),
+          logger: logger(),
+          // The cap is the session's own, not the caller's: an agent that forgets
+          // `stopRecording` (or dies mid-run) must not capture until the app quits.
+          maxDurationMs: BUILT_IN_BROWSER_MAX_RECORDING_MS,
+          onMaxDurationReached: () => {
+            void finishRecording(tab, session, "max_duration").catch((error) => {
+              logger()?.warn("built_in_browser.recording_max_duration_stop_failed", {
+                tabId: tab.id,
+                err: errorMessage(error),
+              });
             });
+          },
+        }),
+      );
+      const held = releaseHoldWhenRecordingEnds(created, releaseCaptureHold);
+      // The limits every recording shares: no action for 2 minutes, a 2 GB
+      // raw file, or an almost full disk stop it and file it. A person's own
+      // clicks in the pane go to the page and are never noted, so the idle
+      // stop is only for a recording a chat started.
+      const stopLimitWatch = watchDemoRecording({
+        key: trackKey,
+        rawPath: path.join(directory, `${recordingId}${DEMO_RAW_FILE_EXTENSION}`),
+        logger: logger(),
+        idleStop: Boolean(stringOrNull(input.chatSessionId)),
+        onLimit: (limit) => {
+          void finishRecording(tab, session, limit).catch((error) => {
+            logger()?.warn("built_in_browser.recording_limit_stop_failed", { tabId: tab.id, limit, err: errorMessage(error) });
           });
         },
-      }),
-    );
+      });
+      // An aborted recording (handoff, tab teardown) files nothing; drop its track.
+      session = {
+        ...held,
+        stop: async () => {
+          stopLimitWatch();
+          return await held.stop();
+        },
+        abort: () => {
+          stopLimitWatch();
+          demoTrackRegistry.discard(trackKey);
+          held.abort();
+        },
+      };
+      recordingPlain.set(session, plain);
+    } catch (error) {
+      demoTrackRegistry.discard(trackKey);
+      releaseCaptureHold();
+      throw error;
+    }
     tab.recording = session;
     const status: { startedAt: string; fps: number } = { startedAt: session.startedAt, fps };
     emit({
@@ -1209,8 +1328,9 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     });
     const session = tab.recording;
     if (!session) throw new Error(`Browser tab ${tab.id} is not recording.`);
+    const plain = typeof input.plain === "boolean" ? input.plain : null;
     const result = await runTracedTabCapability(tab, "stopRecording", input, () =>
-      finishRecording(tab, session, null));
+      finishRecording(tab, session, null, plain));
     return { ...result, status: statusForInput(input) };
   }
 
@@ -1222,10 +1342,18 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
   const finishRecording = async (
     tab: BrowserTabState,
     session: BuiltInBrowserRecordingSession,
-    endedBy: Extract<BuiltInBrowserRecordingEndedBy, "max_duration"> | null,
+    endedBy: Extract<BuiltInBrowserRecordingEndedBy, "max_duration" | "idle" | "disk"> | null,
+    plainOverride: boolean | null = null,
   ): Promise<Omit<BuiltInBrowserStopRecordingResult, "status">> => {
     if (tab.recording === session) tab.recording = null;
-    const result = await session.stop();
+    const trackKey = builtInBrowserRecordingKey(tab.id);
+    let result: Awaited<ReturnType<BuiltInBrowserRecordingSession["stop"]>>;
+    try {
+      result = await session.stop();
+    } catch (error) {
+      demoTrackRegistry.discard(trackKey);
+      throw error;
+    }
     emit({
       type: "recording",
       tabId: tab.id,
@@ -1250,26 +1378,69 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
         frameCount: result.frameCount,
       });
     }
+    const video = await produceBrowserDemo(trackKey, result, plainOverride ?? recordingPlain.get(session) ?? false);
     return {
       tabId: tab.id,
-      path: result.filePath,
+      path: video.path,
       relativePath: observationRelativeBasePath
-        ? path.relative(observationRelativeBasePath, result.filePath)
+        ? path.relative(observationRelativeBasePath, video.path)
         : null,
       durationMs: result.durationMs,
       fps: session.fps,
       frameCount: result.frameCount,
-      format: result.format,
-      mimeType: result.mimeType,
+      format: video.format,
+      mimeType: video.mimeType,
       caption: session.caption,
       manifestPath: result.manifestPath,
+      demo: video.demo,
     };
+  };
+
+  /**
+   * Turns the tab's raw capture into the one file a recording leaves: the demo
+   * (or, with `plain`, the plain video), rendered by the desktop's Chromium
+   * engine with the tab's action track. The raw capture is deleted either way.
+   * A recorder that wrote a playable file itself is passed through as it is.
+   */
+  const produceBrowserDemo = async (
+    trackKey: string,
+    result: Awaited<ReturnType<BuiltInBrowserRecordingSession["stop"]>>,
+    plain: boolean,
+  ): Promise<{ path: string; format: BuiltInBrowserStopRecordingResult["format"]; mimeType: string; demo: DemoArtifactMetadata | null }> => {
+    const rawPath = result.filePath;
+    if (path.extname(rawPath).toLowerCase() !== DEMO_RAW_FILE_EXTENSION) {
+      demoTrackRegistry.discard(trackKey);
+      return { path: rawPath, format: result.format, mimeType: result.mimeType, demo: null };
+    }
+    if (typeof result.firstFrameAtMs === "number") demoTrackRegistry.markFirstFrame(trackKey, result.firstFrameAtMs);
+    const sourceSeconds = typeof result.sourceSeconds === "number" && Number.isFinite(result.sourceSeconds)
+      ? result.sourceSeconds
+      : result.durationMs / 1000;
+    const track = demoTrackRegistry.end(trackKey, { durationSeconds: sourceSeconds });
+    const log = logger() ?? SILENT_LOGGER;
+    try {
+      const produced = await produceDemoVideo({
+        rawPath,
+        outputPath: `${rawPath.slice(0, -DEMO_RAW_FILE_EXTENSION.length)}.mp4`,
+        track,
+        plain,
+        engines: [deps.demoEngine],
+        logger: log,
+      });
+      return { path: produced.path, format: "mp4", mimeType: "video/mp4", demo: produced.metadata };
+    } catch (error) {
+      // An `.aderaw` capture cannot be played, so there is nothing to keep.
+      await fs.rm(rawPath, { force: true }).catch(() => {});
+      throw new Error(`The browser recording could not be made into a video: ${errorMessage(error)}`);
+    }
   };
 
   const tabRecorderFactory = (tab: BrowserTabState): BuiltInBrowserRecorderFactory => {
     if (deps.createTabRecorder) return deps.createTabRecorder;
     const createCaptureWindow = deps.createRecordingWindow ?? defaultCaptureWindowFactory;
+    serveCapturePage();
     return createDisplayMediaRecorderFactory({
+      capturePageUrl: CAPTURE_PAGE_URL,
       createCaptureWindow: () => {
         const captureWindow = createCaptureWindow();
         if (!captureWindow) {
@@ -1312,6 +1483,26 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     return () => {
       armedDisplayMediaFrames.delete(frameTreeNodeId);
     };
+  };
+
+  /**
+   * The capture page encodes with WebCodecs, which exists only in a secure
+   * context (`about:blank` is not one), so the page is served over https by
+   * the recorder partition itself. That partition is the capture page's
+   * alone: every https request in it gets the empty page, and nothing it asks
+   * for reaches the network.
+   */
+  const serveCapturePage = (): void => {
+    try {
+      const captureSession = session.fromPartition(BROWSER_RECORDER_PARTITION);
+      if (captureSession.protocol.isProtocolHandled("https")) return;
+      captureSession.protocol.handle("https", () => new Response(
+        "<!doctype html><meta charset=utf-8><title>ADE browser recorder</title>",
+        { headers: { "content-type": "text/html; charset=utf-8" } },
+      ));
+    } catch (error) {
+      logger()?.warn("built_in_browser.recording_page_unavailable", { err: errorMessage(error) });
+    }
   };
 
   const defaultCaptureWindowFactory = (): CaptureWindowLike => {

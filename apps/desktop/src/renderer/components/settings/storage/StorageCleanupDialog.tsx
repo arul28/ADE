@@ -10,6 +10,7 @@ import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { baseName, formatBytes, type SafeCleanupGroup } from "./storageView";
+import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 /**
  * Optional "safe cleanup" plan. When present the dialog shows a grouped,
@@ -156,6 +157,8 @@ export function StorageCleanupDialog({
   onClose: () => void;
   onCleaned: (result: StorageCleanupResult) => void;
 }) {
+  // Removes files on the machine the Settings page is showing, never another.
+  const { pin } = useSettingsMachineScope();
   const [stage, setStage] = React.useState<Stage>("loading");
   const [preview, setPreview] = React.useState<StorageCleanupPreview | null>(null);
   const [result, setResult] = React.useState<StorageCleanupResult | null>(null);
@@ -190,7 +193,7 @@ export function StorageCleanupDialog({
     setStage("loading");
     setPreview(null);
     return window.ade.storage
-      .cleanupPreview(openTargets)
+      .cleanupPreview(openTargets, pin)
       .then((next) => {
         if (requestRef.current !== requestId) return;
         setPreview(next);
@@ -202,7 +205,7 @@ export function StorageCleanupDialog({
         setErrorPhase("checking");
         setStage("error");
       });
-  }, []);
+  }, [pin]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -229,7 +232,7 @@ export function StorageCleanupDialog({
         return;
       }
       const filesystemResult = preview.items.length > 0
-        ? await window.ade.storage.cleanup(targets, { preview })
+        ? await window.ade.storage.cleanup(targets, { preview }, pin)
         : { removed: [], failed: [], freedBytes: 0 };
       const nextReport = plan?.runMaintenance ? await plan.runMaintenance() : null;
       const maintenanceBytes = typeof nextReport?.reclaimedBytes === "number" && Number.isFinite(nextReport.reclaimedBytes)
@@ -251,7 +254,7 @@ export function StorageCleanupDialog({
       setErrorPhase("removing");
       setStage("error");
     }
-  }, [plan, preview, targets, onCleaned]);
+  }, [pin, plan, preview, targets, onCleaned]);
 
   if (!open) return null;
 

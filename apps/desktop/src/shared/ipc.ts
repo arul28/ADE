@@ -435,6 +435,7 @@ export const IPC = {
   computerUseUpdateArtifactReview: "ade.computerUse.updateArtifactReview",
   computerUseReadArtifactPreview: "ade.computerUse.readArtifactPreview",
   computerUseMediaBaseUrl: "ade.computerUse.mediaBaseUrl",
+  computerUseSaveMediaAs: "ade.computerUse.saveMediaAs",
   computerUseEvent: "ade.computerUse.event",
   iosSimulatorGetStatus: "ade.iosSimulator.getStatus",
   iosSimulatorListDevices: "ade.iosSimulator.listDevices",
@@ -464,6 +465,7 @@ export const IPC = {
   iosSimulatorDeviceDelete: "ade.iosSimulator.deviceDelete",
   iosSimulatorDeviceDetach: "ade.iosSimulator.deviceDetach",
   iosSimulatorDeviceDeleteInstalled: "ade.iosSimulator.deviceDeleteInstalled",
+  iosSimulatorDeviceCleanup: "ade.iosSimulator.deviceCleanup",
   iosSimulatorFrame: "ade.iosSimulator.frame",
   iosSimulatorRecordStart: "ade.iosSimulator.recordStart",
   iosSimulatorRecordStop: "ade.iosSimulator.recordStop",
@@ -559,6 +561,11 @@ export const IPC = {
   appControlDispatchKey: "ade.appControl.dispatchKey",
   appControlListTargets: "ade.appControl.listTargets",
   appControlAttachToTarget: "ade.appControl.attachToTarget",
+  appControlStartRecording: "ade.appControl.startRecording",
+  appControlStopRecording: "ade.appControl.stopRecording",
+  appControlGetRecordingStatus: "ade.appControl.getRecordingStatus",
+  appControlCaptureProof: "ade.appControl.captureProof",
+  appControlGetLatestFrame: "ade.appControl.getLatestFrame",
   appControlEvent: "ade.appControl.event",
   builtInBrowserGetStatus: "ade.builtInBrowser.getStatus",
   builtInBrowserGetAgentPresence: "ade.builtInBrowser.getAgentPresence",
@@ -566,6 +573,11 @@ export const IPC = {
   builtInBrowserGetProfileDiagnostics: "ade.builtInBrowser.getProfileDiagnostics",
   builtInBrowserListPermissions: "ade.builtInBrowser.listPermissions",
   builtInBrowserClearPermissions: "ade.builtInBrowser.clearPermissions",
+  builtInBrowserAgentAccessGet: "ade.builtInBrowser.agentAccess.get",
+  builtInBrowserAgentAccessSetMode: "ade.builtInBrowser.agentAccess.setMode",
+  builtInBrowserAgentAccessAnswer: "ade.builtInBrowser.agentAccess.answer",
+  builtInBrowserAgentAccessRevoke: "ade.builtInBrowser.agentAccess.revoke",
+  builtInBrowserAgentAccessEvent: "ade.builtInBrowser.agentAccess.event",
   /**
    * Login import. Trusted-renderer-only, like the profile diagnostics and
    * permission administration above it: importing a browser's cookies hands
@@ -789,6 +801,7 @@ export const IPC = {
    * provider's settings page opens — never on a status refresh.
    */
   aiAcpProviderDiagnostics: "ade.ai.acpProviderDiagnostics",
+  aiAcpProviderUpdate: "ade.ai.acpProviderUpdate",
   aiOpencodeAuthMethods: "ade.ai.opencodeAuthMethods",
   aiOpencodeOAuthStart: "ade.ai.opencodeOAuthStart",
   aiOpencodeOAuthCancel: "ade.ai.opencodeOAuthCancel",

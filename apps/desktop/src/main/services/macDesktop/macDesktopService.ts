@@ -15,6 +15,7 @@
  */
 
 import fs from "node:fs";
+import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import {
   MAC_DESKTOP_DEFAULT_RESOLUTION,
@@ -46,6 +47,8 @@ import {
   type MacDesktopRecordStartArgs,
   type MacDesktopRecordingStatus,
   type MacDesktopRecheckPermissionsArgs,
+  type MacDesktopQuitAppArgs,
+  type MacDesktopQuitAppResult,
   type MacDesktopReleaseArgs,
   type MacDesktopRequestPermissionArgs,
   type MacDesktopResolutionPreset,
@@ -159,6 +162,8 @@ export type MacDesktopAnalyticsProperties = {
 };
 
 export type MacDesktopServiceDeps = {
+  /** The engines that turn a raw recording into its demo. Defaults to this process's Swift engine. */
+  demoEngines?: DemoEngineSet | null;
   projectRoot: string;
   logger: Logger;
   /**
@@ -177,6 +182,12 @@ export type MacDesktopServiceDeps = {
   resolvePrimaryPrUrl?: ((laneId: string) => Promise<string | null> | string | null) | null;
   /** `computerUseArtifactBrokerService.ingest`. The one proof path. */
   ingestArtifacts?: ((request: ComputerUseArtifactIngestionRequest) => ComputerUseArtifactIngestionResult) | null;
+  /**
+   * The lane whose App Control session runs this process, or null. `claim`
+   * refuses a window of another lane's App Control app: that app is the other
+   * lane's, and parking it here would hand this lane its screen.
+   */
+  appControlLaneForProcess?: ((pid: number) => Promise<string | null> | string | null) | null;
   /**
    * The pending-input card. Wired to `agentChatService.requestChatInput`, the
    * same call `ade chat ask` and MCP elicitation resolve through, so the lease
@@ -235,6 +246,12 @@ function asNullableDisplayId(raw: unknown): number | null {
  * be typed against them.
  */
 export type MacDesktopRuntimeService = MacDesktopServiceApi & {
+  /**
+   * The lane whose display holds this process's windows, or null. App Control
+   * asks before it attaches, so one lane cannot drive an app another lane
+   * parked on its screen. Host-local, so it is not on the shared contract.
+   */
+  laneForProcess(pid: number): string | null;
   beginTurn(args: { laneId: string; chatSessionId: string; turnId: string }): Promise<void>;
   /**
    * The sync live view's stream owner. Kept off `startStream` so a subscription
@@ -515,6 +532,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
   const activeProvider = () => driverLifecycle.activeProvider();
 
   const streamingDeps: Parameters<typeof createMacDesktopStreaming>[0] = {
+    onStreamNeverSent: () => driverLifecycle.sampleCaptureStall("stream_never_sent"),
     logger: deps.logger,
     now,
     isDarwin,
@@ -551,6 +569,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         : `Lane ${laneId} is not recording its desktop.`,
     ),
     onRecordingFiled: () => captureOutcome("recorded"),
+    demoEngines: deps.demoEngines ?? createDemoEngineSet({ logger: deps.logger }),
   });
   const recordings = recording.recordings;
 
@@ -584,6 +603,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     },
     assertPermission,
     ownership,
+    appControlLaneForProcess: deps.appControlLaneForProcess ?? null,
   });
 
   const leaseFlow = createMacDesktopLeaseFlow({
@@ -1106,6 +1126,11 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       return await windowLifecycle.releaseWindow(args);
     },
 
+    async quitApp(args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult> {
+      assertSupported();
+      return await windowLifecycle.quitApp(args);
+    },
+
     async observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation> {
       assertSupported();
       return await input.observe(args);
@@ -1391,6 +1416,15 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     async releaseStreamSubscription(subscriptionId: string): Promise<void> {
       await streaming.releaseStreamSubscription(subscriptionId.trim());
     },
+    /**
+     * The lane whose display holds this process's windows, or null. App
+     * Control refuses to attach to it from any other lane: the app is on that
+     * lane's screen. Off macOS nothing is ever parked, so this answers null.
+     */
+    laneForProcess(pid: number): string | null {
+      return ownership.laneForProcess(pid);
+    },
+
     /** The KV key the resolution preset is stored under. */
     resolutionSettingKey: MAC_DESKTOP_RESOLUTION_SETTING_KEY,
     setResolution(preset: MacDesktopResolutionPreset): void {

@@ -899,9 +899,11 @@ struct WorkComposerSuggestion: Identifiable, Equatable {
   var isDirectory: Bool = false
 }
 
-/// Curated per-provider slash commands, ported from the retired
-/// `WorkSlashCommandsSheet`. iOS keeps a tight, recognizable set per provider;
-/// the desktop registry is richer but not yet exposed to mobile over sync.
+/// Minimal static fallback for the `/` trigger, ported from the retired
+/// `WorkSlashCommandsSheet`. The host's discovered registry
+/// (`chat.getSlashCommands`, rendered through `WorkComposerSlashRegistry`) is
+/// the real source; this set only covers an older host that omits the command,
+/// or the moment before the fetch lands.
 enum WorkComposerSlashCatalog {
   static func commands(provider: String) -> [(command: String, description: String)] {
     switch provider.lowercased() {
@@ -956,6 +958,78 @@ enum WorkComposerSlashCatalog {
   }
 }
 
+/// The host's discovered slash-command registry, mapped to suggestion rows.
+///
+/// The desktop brain discovers each provider's real commands
+/// (`claudeSlashCommandDiscovery`, `codexSlashCommandDiscovery`,
+/// `cursorSlashCommandDiscovery`) and answers `chat.getSlashCommands`. iOS
+/// renders that list instead of the hand-maintained `WorkComposerSlashCatalog`,
+/// which drifts. When the host does not advertise the command (an older brain)
+/// or the fetch has not landed yet, the minimal static catalog is the fallback,
+/// so the typed `/` trigger always has something to show.
+enum WorkComposerSlashRegistry {
+  /// Upper bound on rows rendered from the host registry. A pathological host
+  /// listing must not push an unbounded strip at the composer.
+  static let maxCommands = 200
+
+  /// Map a host command to a row, or nil when its name is unusable.
+  static func suggestion(for command: HostSlashCommand) -> WorkComposerSuggestion? {
+    let token = normalizedName(command.name)
+    guard !token.isEmpty else { return nil }
+    return WorkComposerSuggestion(
+      id: "slash:\(token)",
+      kind: .slash,
+      title: token,
+      subtitle: subtitle(for: command),
+      insertText: token
+    )
+  }
+
+  /// Filter to rows whose token prefixes the typed query.
+  static func suggestions(from commands: [HostSlashCommand], query: String) -> [WorkComposerSuggestion] {
+    let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return commands.prefix(maxCommands).compactMap { command in
+      guard let suggestion = suggestion(for: command) else { return nil }
+      guard trimmed.isEmpty || suggestion.title.dropFirst().lowercased().hasPrefix(trimmed) else {
+        return nil
+      }
+      return suggestion
+    }
+  }
+
+  /// The host list when it has anything usable, else the minimal static set.
+  static func suggestions(
+    host: [HostSlashCommand]?,
+    provider: String,
+    query: String
+  ) -> [WorkComposerSuggestion] {
+    guard let host, !host.isEmpty else {
+      return WorkComposerSlashCatalog.suggestions(provider: provider, query: query)
+    }
+    return suggestions(from: host, query: query)
+  }
+
+  /// A slash command token always starts with `/`; the host may omit it.
+  static func normalizedName(_ raw: String) -> String {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "" }
+    return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
+  }
+
+  /// Name + description + whether it takes arguments, in one line. The
+  /// argument hint is the host's own cue that the command accepts input.
+  static func subtitle(for command: HostSlashCommand) -> String? {
+    let description = command.description?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let hint = command.argumentHint?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    switch (description.isEmpty, hint.isEmpty) {
+    case (false, false): return "\(description) · \(hint)"
+    case (false, true): return description
+    case (true, false): return hint
+    case (true, true): return nil
+    }
+  }
+}
+
 /// Drives the inline suggestion strip: consumes trigger matches from the text
 /// view, resolves suggestions (curated slash list locally, file quick-open over
 /// sync), and hands committed selections back to the text view for splicing.
@@ -968,7 +1042,13 @@ final class WorkComposerSuggestionController: ObservableObject {
   @Published private(set) var suggestions: [WorkComposerSuggestion] = []
   @Published private(set) var isLoading = false
 
-  var provider: String = ""
+  var provider: String = "" {
+    didSet {
+      guard oldValue != provider else { return }
+      // A different provider advertises a completely different command set.
+      resetSlashRegistry()
+    }
+  }
   var laneId: String? {
     didSet {
       // The cached workspace belongs to the previous lane; a stale entry
@@ -983,6 +1063,9 @@ final class WorkComposerSuggestionController: ObservableObject {
         cachedWorkspaceId = nil
         fileCache.removeAll()
         fileCacheOrder.removeAll()
+        // Slash commands are discovered per lane worktree, so a lane change
+        // drops the previous lane's registry rather than showing its commands.
+        resetSlashRegistry()
         if let match = activeMatch, match.kind == .at {
           // An @ trigger typed against the previous lane re-fetches against
           // the new one instead of keeping the superseded results.
@@ -1004,6 +1087,17 @@ final class WorkComposerSuggestionController: ObservableObject {
   /// Bumped on every lane change; every post-await write in a fetch compares
   /// its captured value so a superseded task cannot touch the new lane's state.
   private var laneGeneration = 0
+
+  /// The host-discovered slash registry for the current provider, or nil until
+  /// it lands. Nil (and an unsupported host) renders the minimal static
+  /// fallback, so the `/` trigger is never empty.
+  private var hostSlashCommands: [HostSlashCommand]?
+  private var slashFetchTask: Task<Void, Never>?
+  /// True once the registry cannot be fetched for this provider/lane — an older
+  /// host that does not advertise it, or a failed/offline attempt. One attempt
+  /// per provider/lane keeps an offline composer from re-asking on every
+  /// keystroke; the static fallback covers the gap.
+  private var slashRegistryUnavailable = false
 
   /// Per-lane quick-open results keyed by lowercased query (`""` is the browse
   /// list). Backspacing through a path is the common case on mobile and every
@@ -1034,6 +1128,59 @@ final class WorkComposerSuggestionController: ObservableObject {
     }
   }
 
+  /// Rows for the active `/` trigger: the host registry once fetched, else the
+  /// minimal static catalog. Also kicks off the one-shot host fetch.
+  private func refreshSlashSuggestions(query: String) {
+    suggestions = WorkComposerSlashRegistry.suggestions(
+      host: hostSlashCommands,
+      provider: provider,
+      query: query
+    )
+    fetchSlashRegistryIfNeeded()
+  }
+
+  /// Drop the cached registry and any in-flight fetch. Called when the provider
+  /// or the lane changes, because the host discovers commands per worktree.
+  private func resetSlashRegistry() {
+    hostSlashCommands = nil
+    slashFetchTask?.cancel()
+    slashFetchTask = nil
+    slashRegistryUnavailable = false
+  }
+
+  /// Fetch `chat.getSlashCommands` once per provider/lane. A host that does not
+  /// advertise the command, or a fetch that fails (offline), leaves the static
+  /// fallback in place and does not retry until the provider or lane changes.
+  private func fetchSlashRegistryIfNeeded() {
+    guard hostSlashCommands == nil, slashFetchTask == nil, !slashRegistryUnavailable else { return }
+    guard let syncService, syncService.supportsSlashCommandRegistry else {
+      slashRegistryUnavailable = true
+      return
+    }
+    let provider = provider
+    let laneId = laneId
+    let generation = laneGeneration
+    slashFetchTask = Task { [weak self] in
+      defer { self?.slashFetchTask = nil }
+      do {
+        let commands = try await syncService.getSlashCommands(provider: provider, laneId: laneId)
+        guard let self, !Task.isCancelled else { return }
+        guard self.laneGeneration == generation, self.provider == provider else { return }
+        self.hostSlashCommands = commands
+        if let match = self.activeMatch, match.kind == .slash {
+          self.suggestions = WorkComposerSlashRegistry.suggestions(
+            host: commands,
+            provider: provider,
+            query: match.query
+          )
+        }
+      } catch {
+        guard let self, !Task.isCancelled else { return }
+        self.slashRegistryUnavailable = true
+      }
+    }
+  }
+
   var isVisible: Bool {
     activeMatch != nil && (isLoading || !suggestions.isEmpty)
   }
@@ -1052,7 +1199,7 @@ final class WorkComposerSuggestionController: ObservableObject {
     case .slash:
       fetchTask?.cancel()
       isLoading = false
-      suggestions = WorkComposerSlashCatalog.suggestions(provider: provider, query: match.query)
+      refreshSlashSuggestions(query: match.query)
     case .at:
       scheduleFileFetch(query: WorkComposerTriggerDetector.fileSearchQuery(for: match.query))
     case .hash:

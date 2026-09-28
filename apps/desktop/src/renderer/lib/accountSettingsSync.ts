@@ -46,6 +46,7 @@ import type {
 } from "../../shared/types/accountSettings";
 import type { SettingScope } from "../components/settings/settingsManifest";
 import type { AppState } from "../state/appStore";
+import type { AdeTheme } from "../../shared/theme";
 
 /** How often a signed-in machine reconciles with the account. */
 export const ACCOUNT_SETTINGS_POLL_MS = 30_000;
@@ -112,6 +113,15 @@ function pref<Value>(
  */
 export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   pref("theme", (state) => state.theme, (state, value) => state.setTheme(value)),
+  // The active theme's id travels with the base mode so "themes follow you to
+  // another machine" is true for a custom theme, not just dark/light. A custom
+  // id whose definition has not landed yet paints as the default until its row
+  // arrives; `setTheme` keeps the id rather than resolving it.
+  pref("themeId", (state) => state.themeId, (state, value) => state.setTheme(value)),
+  // Custom themes are one account-scoped list, like harness presets: the whole
+  // list is one value under one key, so newer-wins applies to the list and two
+  // machines never interleave half of each other's themes.
+  pref("customThemes", (state) => state.customThemes, (state, value) => state.setCustomThemes(value as AdeTheme[])),
   pref("terminalPreferences", (state) => state.terminalPreferences, (state, value) => state.setTerminalPreferences(value)),
   pref("smartTooltipsEnabled", (state) => state.smartTooltipsEnabled, (state, value) => state.setSmartTooltipsEnabled(value)),
   pref("launchPromptClipboardEnabled", (state) => state.launchPromptClipboardEnabled, (state, value) => state.setLaunchPromptClipboardEnabled(value)),

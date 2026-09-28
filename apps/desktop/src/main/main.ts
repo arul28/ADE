@@ -82,6 +82,7 @@ import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
   captureMacDesktopAnalytics,
+  captureAppControlAnalytics,
   captureChatHandoffReplayAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -113,6 +114,11 @@ import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
+import {
+  createDefaultBranchAutoPullService,
+  detectInProgressGitOperation,
+} from "./services/lanes/defaultBranchAutoPull";
+import { parseWorktreeStatusPorcelainV2 } from "./services/lanes/laneBranchDrift";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
 import { createLaneProxyService } from "./services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "../../../ade-cli/src/services/proxy/proxyService";
@@ -151,7 +157,14 @@ import { createProjectSearchService } from "./services/search/searchServiceWirin
 import type { SearchService } from "./services/search/searchService";
 import { createExternalSessionsService } from "./services/externalSessions/externalSessionsService";
 import { chatImportedRefsProvider } from "./services/externalSessions/liveChatProviderRefs";
-import { runGit } from "./services/git/git";
+import {
+  GitUntrustedFolderError,
+  gitOwnershipReason,
+  gitUntrustedFolderProblem,
+  runGit,
+  trustGitSafeDirectory,
+} from "./services/git/git";
+import { codedError, GIT_UNTRUSTED_FOLDER_CODE } from "../shared/codedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -220,6 +233,7 @@ import { browseProjectDirectories } from "./services/projects/projectBrowserServ
 import { resolveWindowTabRoots } from "./services/projects/windowTabRootAuthorization";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
+import { selectUpdateWorkspaceRestore } from "./services/updates/updateWorkspace";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
 import { IPC } from "../shared/ipc";
@@ -364,6 +378,8 @@ import { createLinearChatLinkPublisher, publishLinearLaneCard } from "./services
 import { createComputerUseArtifactBrokerService } from "./services/computerUse/computerUseArtifactBrokerService";
 import {
   respondToArtifactProtocolRequest,
+  type ArtifactServeRefusal,
+  type ArtifactServeScope,
   type RemoteArtifactRangeReader,
 } from "./services/computerUse/artifactStreamProtocol";
 import { createArtifactMediaServer } from "./services/computerUse/artifactMediaServer";
@@ -371,11 +387,15 @@ import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
+import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
 import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
 import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
 import { createAppControlService } from "./services/appControl/appControlService";
+import { createAppControlScreencastRecorderHost } from "./services/appControl/appControlScreencastRecorderHost";
+import { createChromiumDemoEngine } from "./services/demoVideo/chromiumDemoEngine";
+import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
 import { BUILT_IN_BROWSER_PARTITION } from "./services/builtInBrowser/builtInBrowserConstants";
@@ -603,6 +623,7 @@ const defaultEnabledBackgroundTaskFlags = new Set<string>([
   "ADE_ENABLE_CONFIG_RELOAD",
   "ADE_ENABLE_USAGE_TRACKING",
   "ADE_ENABLE_HEAD_WATCHER",
+  "ADE_ENABLE_AUTO_PULL_DEFAULT",
   "ADE_ENABLE_PORT_ALLOCATION_RECOVERY",
   "ADE_ENABLE_PR_POLLING",
   // reconcile-on-focus is the default catch-up safety net (the brain has no PR
@@ -1355,15 +1376,70 @@ app.whenReady().then(async () => {
   /** Reads proof bytes from a paired computer; set once the runtime bridge is up. */
   let remoteArtifactRangeReader: RemoteArtifactRangeReader | null = null;
 
+  /**
+   * The project a proof read is served from. A URL that names a `root` is
+   * served from that project, and only when it is open on this computer: a
+   * chat's proof must not depend on which window last had focus. A URL with no
+   * `root` (an older stored uri) keeps the focused project. Either way the
+   * path stays jailed in that one project's `.ade/artifacts`.
+   */
+  const artifactServeScope = (requestedRoot: string | null): ArtifactServeScope => {
+    if (!requestedRoot) return { projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir };
+    let openRoot: string | null = null;
+    for (const root of projectContexts.keys()) {
+      if (pathsEqual(root, requestedRoot)) {
+        openRoot = root;
+        break;
+      }
+    }
+    if (!openRoot) return { projectRoot: null, allowedDir: null, refusal: "unknown-project" };
+    try {
+      return { projectRoot: openRoot, allowedDir: resolveAdeLayout(openRoot).artifactsDir };
+    } catch {
+      return { projectRoot: openRoot, allowedDir: null };
+    }
+  };
+  const logArtifactServeRefusal = (refusal: ArtifactServeRefusal): void => {
+    logMachineEvent("warn", "computer_use.artifact_serve_refused", refusal);
+  };
+
   // Proof videos play from this loopback server, not `ade-artifact://`:
   // `protocol.handle` cannot answer the second Range read a long recording
   // needs. It starts on the first renderer ask and closes on quit.
   const artifactMediaServer = createArtifactMediaServer({
-    localScope: () => ({ projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir }),
+    localScope: artifactServeScope,
     remoteReader: () => remoteArtifactRangeReader,
-    warn: (message, details) => console.warn(message, details),
+    warn: (message, details) => logMachineEvent("warn", "computer_use.artifact_media_failed", { message, ...details }),
+    onRefused: logArtifactServeRefusal,
   });
   ipcMain.handle(IPC.computerUseMediaBaseUrl, () => artifactMediaServer.baseUrl());
+  // Saves a proof video that plays from the media server. The renderer cannot
+  // read that server (a different origin with no CORS) and the whole-file
+  // preview read stops at 10 MB, so main asks where to save and streams the
+  // file there. Only URLs on this app's own media server are accepted.
+  ipcMain.handle(
+    IPC.computerUseSaveMediaAs,
+    async (event, arg: { url?: unknown; fileName?: unknown }): Promise<{ saved: boolean; path?: string }> => {
+      const url = typeof arg?.url === "string" ? arg.url : "";
+      const base = await artifactMediaServer.baseUrl();
+      if (!url || !url.startsWith(base.replace(/\/+$/, "") + "/")) {
+        throw new Error("Only proof media from ADE's media server can be saved this way.");
+      }
+      const fileName = typeof arg?.fileName === "string" && arg.fileName.trim()
+        ? path.basename(arg.fileName.trim())
+        : "ade-proof.mp4";
+      const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
+      const options = { title: "Save proof", defaultPath: path.join(app.getPath("downloads"), fileName) };
+      const choice = win ? await dialog.showSaveDialog(win, options) : await dialog.showSaveDialog(options);
+      if (choice.canceled || !choice.filePath) return { saved: false };
+      const response = await fetch(url);
+      if (!response.ok || !response.body) throw new Error(`The media server answered ${response.status}.`);
+      const { Readable } = await import("node:stream");
+      const { pipeline } = await import("node:stream/promises");
+      await pipeline(Readable.fromWeb(response.body as import("node:stream/web").ReadableStream), fs.createWriteStream(choice.filePath));
+      return { saved: true, path: choice.filePath };
+    },
+  );
   app.on("will-quit", () => {
     void artifactMediaServer.close();
   });
@@ -1380,8 +1456,8 @@ app.whenReady().then(async () => {
   // Handle ade-artifact:// requests — serves local files for proof drawer images.
   protocol.handle("ade-artifact", (request) => respondToArtifactProtocolRequest(
     request,
-    { projectRoot: activeProjectRoot, allowedDir: adeArtifactAllowedDir },
-    (message, details) => console.warn(message, details),
+    artifactServeScope,
+    logArtifactServeRefusal,
   ));
   // What this computer's GPU was told to do, decided before any project opens.
   logMachineEvent("info", "app.hardware_acceleration", {
@@ -1609,8 +1685,17 @@ app.whenReady().then(async () => {
     }
   };
 
+  // The desktop bridge's log, which the demo engine shares.
+  const builtInBrowserBridgeLogger = createFileLogger(
+    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
+  );
+  // The Chromium demo engine (renders `.aderaw` captures on any OS). One per
+  // desktop, shared by the built-in browser's recorder, App Control and the
+  // runtime daemon (over the bridge below), so jobs queue on one hidden renderer.
+  const chromiumDemoEngine = createChromiumDemoEngine({ logger: builtInBrowserBridgeLogger });
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
+    demoEngine: chromiumDemoEngine,
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {
       const normalizedRoot = normalizeProjectRoot(projectRoot);
@@ -1657,6 +1742,49 @@ app.whenReady().then(async () => {
       }
       return getActiveContext().projectConfigService?.getEffective().browser?.autoOpenDevServer ?? true;
     },
+    // The origin-approval prompt names the chat and lane the way the person
+    // knows them. A chat belongs to one project context; its session row
+    // carries both its title and its lane's name.
+    // A runtime-backed project keeps its chats in the brain, so the local
+    // session row can be missing; the chat service and the lane still answer.
+    describeAgent: async ({ laneId, chatSessionId }) => {
+      for (const [projectRoot, ctx] of projectContexts) {
+        const session = chatSessionId ? ctx.sessionService?.get(chatSessionId) ?? null : null;
+        if (session && session.title && session.laneName) {
+          return { chatTitle: session.title, laneName: session.laneName, projectRoot };
+        }
+        const summary = chatSessionId
+          ? await ctx.agentChatService?.getSessionSummary(chatSessionId).catch(() => null) ?? null
+          : null;
+        const chatTitle = session?.title || summary?.title || null;
+        const resolvedLaneId = laneId || summary?.laneId || null;
+        const lane = resolvedLaneId
+          ? await ctx.laneService?.getSummary(resolvedLaneId, { includeStatus: false }).catch(() => null) ?? null
+          : null;
+        if (session || summary || lane) {
+          return { chatTitle, laneName: session?.laneName || lane?.name || null, projectRoot };
+        }
+        // A runtime-backed context has neither service here: ask its brain.
+        if (!shouldUseInProcessProjectRuntime()) {
+          const fromBrain = await describeAgentFromRuntime(projectRoot, laneId, chatSessionId);
+          if (fromBrain) return fromBrain;
+        }
+      }
+      return null;
+    },
+    // "Agents can use the ADE browser" is machine-wide, like the browser
+    // profile it protects, so it lives in the desktop's global state. Electron
+    // main owns the browser, so main is where every caller — a local chat, the
+    // brain's desktop bridge, a remote runtime forwarding to this Mac — is
+    // checked against it.
+    agentAccessStore: {
+      read: () => readGlobalState(globalStatePath).builtInBrowserAgentAccess ?? null,
+      write: (next) => {
+        const current = readGlobalState(globalStatePath);
+        writeGlobalState(globalStatePath, { ...current, builtInBrowserAgentAccess: next });
+      },
+    },
+    onAgentAccessChange: (snapshot) => broadcast(IPC.builtInBrowserAgentAccessEvent, snapshot),
     onHandoff: createBuiltInBrowserHandoffSessionListener({
       getLogger: () => getActiveContext().logger,
       // A chat session belongs to exactly one project context, and a handoff can
@@ -1681,18 +1809,24 @@ app.whenReady().then(async () => {
   // service itself (it needs WebContentsView). The bridge socket lives under
   // `<adeHome>/sock/desktop-bridge.sock`; the daemon discovers it via
   // resolveMachineAdeLayout() or ADE_DESKTOP_BRIDGE_SOCKET_PATH.
-  const builtInBrowserBridgeLogger = createFileLogger(
-    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
-  );
   const builtInBrowserBridgeSocketPath =
     process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
     || machineAdeLayout.desktopBridgeSocketPath;
+  // The App Control screencast encoder (Windows/Linux recording engine). One
+  // per desktop: recordings are keyed per lane, and lane ids are unique across
+  // projects. In-process project contexts use it directly; the runtime daemon
+  // reaches it over the bridge below. It opens no window until a recording starts.
+  const appControlScreencastRecorder = createAppControlScreencastRecorderHost({
+    logger: builtInBrowserBridgeLogger,
+  });
   let builtInBrowserBridgeServer: ReturnType<typeof startBuiltInBrowserDesktopBridgeServer> | null = null;
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
       socketPath: builtInBrowserBridgeSocketPath,
       service: builtInBrowserService,
       logger: builtInBrowserBridgeLogger,
+      appControlScreencastRecorder,
+      demoEngine: chromiumDemoEngine,
     });
   } catch (error) {
     builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
@@ -1938,6 +2072,37 @@ app.whenReady().then(async () => {
   const shouldUseInProcessProjectRuntime = (): boolean =>
     process.env.NODE_ENV === "test";
 
+  /**
+   * The chat title and lane name for the browser agent-access prompt, read
+   * from the project's brain. A runtime-backed project keeps its chats and
+   * lanes there, not in this process. Best-effort: on any failure the prompt
+   * falls back to short ids.
+   */
+  const describeAgentFromRuntime = async (
+    projectRoot: string,
+    laneId: string | null,
+    chatSessionId: string | null,
+  ): Promise<{ chatTitle: string | null; laneName: string | null; projectRoot: string } | null> => {
+    const read = async (request: { domain: string; action: string; args?: Record<string, unknown>; argsList?: unknown[] }) => {
+      try {
+        const response = await localRuntimePool.callActionForRoot(projectRoot, request);
+        return response.result && typeof response.result === "object" ? response.result as Record<string, unknown> : null;
+      } catch {
+        return null;
+      }
+    };
+    const summary = chatSessionId
+      ? await read({ domain: "chat", action: "getSessionSummary", argsList: [chatSessionId] })
+      : null;
+    const resolvedLaneId = laneId || (typeof summary?.laneId === "string" ? summary.laneId : null);
+    const lane = resolvedLaneId
+      ? await read({ domain: "lane", action: "getSummary", args: { laneId: resolvedLaneId, includeStatus: false } })
+      : null;
+    const chatTitle = typeof summary?.title === "string" && summary.title.trim() ? summary.title : null;
+    const laneName = typeof lane?.name === "string" && lane.name.trim() ? lane.name : null;
+    return chatTitle || laneName ? { chatTitle, laneName, projectRoot } : null;
+  };
+
   const projectForRoot = (projectRoot: string | null): ProjectInfo | null => {
     if (!projectRoot) return null;
     return projectContexts.get(projectRoot)?.project ?? null;
@@ -2017,8 +2182,32 @@ app.whenReady().then(async () => {
     for (const root of authorizedLocalRoots) {
       rememberWindowKnownLocalProjectRoot(windowId, root);
     }
+    persistUpdateWorkspace();
     scheduleProjectContextRebalance();
     return projectsForWindowTabs(windowId);
+  };
+
+  const persistUpdateWorkspace = (): void => {
+    const localRoots: string[] = [];
+    let fallbackActiveRoot: string | null = null;
+    for (const [windowId, tabRoots] of windowProjectTabRoots) {
+      for (const root of tabRoots) {
+        if (!localRoots.some((existing) => pathsEqual(existing, root))) localRoots.push(root);
+      }
+      const bound = windowProjectRoots.get(windowId) ?? null;
+      if (bound && localRoots.some((root) => pathsEqual(root, bound))) fallbackActiveRoot = bound;
+    }
+    const activeLocalRoot = activeProjectRoot && localRoots.some((root) => pathsEqual(root, activeProjectRoot))
+      ? activeProjectRoot
+      : fallbackActiveRoot;
+    const current = readGlobalState(globalStatePath);
+    writeGlobalState(globalStatePath, {
+      ...current,
+      updateWorkspace: {
+        localRoots,
+        activeLocalRoot,
+      },
+    });
   };
 
   const bindingForLocalProject = (project: ProjectInfo | null): OpenProjectBinding | null =>
@@ -2238,6 +2427,7 @@ app.whenReady().then(async () => {
       emitProjectChangedToWindow(windowId, project);
       emitProjectBindingChangedToWindow(windowId, bindingForLocalProject(project));
     }
+    if (windowId != null && normalizedRoot) persistUpdateWorkspace();
   };
 
   const persistLastRemoteProjectBinding = (
@@ -2598,6 +2788,9 @@ app.whenReady().then(async () => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
     });
+    // Windows are still open here. The quit that follows closes them, and each
+    // closed handler would otherwise save an empty tab list over this snapshot.
+    persistUpdateWorkspace();
     // From here until the app quits, the missing (or old) background service
     // is the update working. The pool must not answer it with a repair that
     // reinstalls what this function is about to remove.
@@ -4000,6 +4193,7 @@ app.whenReady().then(async () => {
       getLocalGitHubToken: () => githubService.getGitTransportTokenOrThrowAsync(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
+        feedDemoTrackFromChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
       onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
@@ -4182,6 +4376,52 @@ app.whenReady().then(async () => {
     });
     testServiceRef = testService;
     gitServiceRef = gitService;
+
+    /*
+     * Default-branch auto-pull.
+     *
+     * Keeps the primary checkout's default branch current without a manual
+     * pull. Fast-forward only, and only when every local safety gate passes:
+     * the primary lane, an attached HEAD on the lane's branch, no tracked
+     * change in the index or worktree, no rebase/merge/cherry-pick in flight,
+     * no held worktree lease, and a configured upstream. A failed fetch
+     * (offline, no auth, no remote) is a silent skip. Started on project open
+     * and repeated on a bounded background timer — the same "startup plus
+     * background refresh" trigger t3code uses (#9277).
+     */
+    const defaultBranchAutoPullService = createDefaultBranchAutoPullService({
+      logger,
+      getPrimaryLane: () => laneService.getPrimaryLane(),
+      readWorktreeStatus: async (worktreePath) => {
+        const res = await runGit(
+          ["status", "--porcelain=v2", "--branch", "--untracked-files=normal", "-z"],
+          { cwd: worktreePath, timeoutMs: 10_000 },
+        );
+        if (res.exitCode !== 0) return null;
+        const parsed = parseWorktreeStatusPorcelainV2(res.stdout);
+        return { staged: parsed.staged, unstaged: parsed.unstaged, headBranchRef: parsed.headBranchRef };
+      },
+      detectInProgressOperation: async (worktreePath) => {
+        const res = await runGit(["rev-parse", "--absolute-git-dir"], {
+          cwd: worktreePath,
+          timeoutMs: 5_000,
+        });
+        if (res.exitCode !== 0) return null;
+        const gitDir = res.stdout.trim();
+        return gitDir ? detectInProgressGitOperation(gitDir) : null;
+      },
+      isWorktreeLocked: (laneId) => laneWorktreeLockService.getActiveForLane(laneId).length > 0,
+      readSyncStatus: async (laneId) => {
+        const status = await gitService.getSyncStatus({ laneId });
+        return { hasUpstream: status.hasUpstream, ahead: status.ahead, behind: status.behind };
+      },
+      fetch: async (laneId) => {
+        await gitService.fetch({ laneId });
+      },
+      pullFastForward: async (laneId) => {
+        await gitService.pull({ laneId, mode: "ff-only" });
+      },
+    });
 
     if (automationsEnabled) {
       automationService = createAutomationService({
@@ -4459,6 +4699,9 @@ app.whenReady().then(async () => {
     computerUseArtifactBrokerService.setChatTurnStartResolver(
       (sessionId) => agentChatService.getTurnStartedAt(sessionId),
     );
+    computerUseArtifactBrokerService.setChatTurnIdResolver(
+      (sessionId) => agentChatService.getTurnId(sessionId),
+    );
 
     // Backfill starts well past the boot window so index writes never compete
     // with project startup.
@@ -4532,7 +4775,14 @@ app.whenReady().then(async () => {
       recordingDeps: { artifactFiler: computerUseArtifactBrokerService },
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
+      // Lane-device cleanup and idle power-off for this project.
+      backgroundMaintenance: true,
     });
+    // An archived or deleted lane lets go of its Apple device session here;
+    // the device itself goes in `releaseLaneAppleDevice`.
+    laneTeardownDeps.iosSimulatorService = {
+      stopForLane: (laneId: string) => iosSimulatorService.stopForLane(laneId),
+    };
     /**
      * Brain-side video forwarder for this embedded host.
      *
@@ -4601,6 +4851,9 @@ app.whenReady().then(async () => {
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      // A lane may not claim another lane's App Control app. Read at call
+      // time: the App Control service is built just below.
+      appControlLaneForProcess: (pid: number) => appControlService.laneForAppProcess(pid),
       // The real-input lease question rides the normal pending-input card, the
       // same one `ade chat ask` and MCP elicitation resolve through.
       requestChatInput: (input) => agentChatService.requestChatInput(input),
@@ -4637,32 +4890,56 @@ app.whenReady().then(async () => {
       projectRoot,
       logger,
       ptyService,
-      resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
-        const explicitLaneId = laneId?.trim();
-        if (explicitLaneId) return explicitLaneId;
-        const chatId = chatSessionId?.trim();
-        if (chatId) {
-          const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
-          if (chatSession?.laneId) return chatSession.laneId;
-        }
-        const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
-        const lanes = await laneService.list({ includeArchived: false });
-        const matchingLane = lanes.find((lane) => {
-          const worktreePath = path.resolve(lane.worktreePath);
-          const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-          return (
-            targetRoot === worktreePath
-            || targetRoot.startsWith(`${worktreePath}${path.sep}`)
-            || (attachedRootPath !== null
-              && (targetRoot === attachedRootPath
-                || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
-          );
-        });
-        return matchingLane?.id ?? lanes[0]?.id ?? null;
+      // No fallback lane: a session whose lane cannot be resolved is refused.
+      resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
+        laneId,
+        chatSessionId,
+        cwd,
+        getChatLaneId: async (chatId) => {
+            const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
+            return chatSession?.laneId ?? null;
+          },
+        isLiveLane: (id) => laneService.findLaneIdentity(id) !== null,
+        laneIdForPath: (absolutePath) => laneService.getLaneIdForPath(absolutePath),
+        isPrimaryLane: async (id) => (await laneService.getSummary(id, { includeStatus: false }))?.laneType === "primary",
+      }),
+      resolveChatLaneId: async (chatId) => {
+        const chatSession = await agentChatService.getSessionSummary(chatId).catch(() => null);
+        return chatSession?.laneId ?? null;
       },
-      onEvent: (payload) =>
-        emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
+      onEvent: (payload) => {
+        if (payload.type === "session-started") {
+          captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
+        }
+        emitProjectEvent(projectRoot, IPC.appControlEvent, payload);
+      },
+      // Recording: macOS records the app's window with the desktop helper
+      // (the service's default); Windows/Linux use this desktop's encoder.
+      getScreencastRecorder: () => appControlScreencastRecorder,
+      getChromiumDemoEngine: () => chromiumDemoEngine,
+      // A lane may not attach to an app another lane's Mac Desktop holds.
+      macDesktopLaneForProcess: (pid: number) => macDesktopService.laneForProcess(pid),
+      ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+      resolvePrimaryPrUrl: (laneId: string): string | null =>
+        prService?.getForLane(laneId)?.githubUrl ?? null,
+      resolveLaneName: async (laneId: string): Promise<string | null> => {
+        const lane = await laneService.getSummary(laneId).catch(() => null);
+        return lane?.name ?? null;
+      },
     });
+    // The session is per lane and owned by a chat: it goes when the chat ends
+    // and when its lane is archived or deleted.
+    agentChatService.registerChatSessionEndedListener((sessionId) => {
+      void appControlService.stopForChat(sessionId).catch((error: unknown) => {
+        logger.debug("app_control.release_on_chat_end_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    laneTeardownDeps.appControlService = {
+      stopForLane: (laneId: string) => appControlService.stopForLane(laneId),
+    };
     const usageTrackingService = createUsageTrackingService({
       logger,
       db,
@@ -5094,6 +5371,7 @@ app.whenReady().then(async () => {
 
     const disposeHeadWatcher = () => {
       headWatcherActive = false;
+      defaultBranchAutoPullService.stop();
       for (const cancel of deferredProjectStartCancels) {
         cancel();
       }
@@ -5114,6 +5392,23 @@ app.whenReady().then(async () => {
       15_000,
       "ADE_ENABLE_HEAD_WATCHER",
     );
+
+    // Local-runtime only: a remote-bound desktop must never mutate a checkout
+    // that lives on another machine. The service's own gates make it a no-op
+    // when the project has no primary lane yet.
+    if (shouldUseInProcessProjectRuntime()) {
+      scheduleBackgroundProjectTask(
+        "git.auto_pull_default.start",
+        () => defaultBranchAutoPullService.start(),
+        (error) => {
+          logger.warn("git.auto_pull_start_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+        20_000,
+        "ADE_ENABLE_AUTO_PULL_DEFAULT",
+      );
+    }
 
     const state = upsertRecentProject(
       readGlobalState(globalStatePath),
@@ -6246,7 +6541,10 @@ app.whenReady().then(async () => {
     }
     try {
       return normalizeProjectRoot(await resolveRepoRoot(requestedRoot));
-    } catch {
+    } catch (error) {
+      // Trusting a folder is only offered on the desktop, where the user can
+      // see which folder and who owns it; say why instead of "not a repo".
+      if (error instanceof GitUntrustedFolderError) throw new Error(error.message);
       throw new Error("Choose a Git repository folder.");
     }
   }
@@ -6602,8 +6900,75 @@ app.whenReady().then(async () => {
     path.join(app.getPath("userData"), "project-open.jsonl"),
   );
 
+  /**
+   * `resolveRepoRoot` for a folder the user chose to open. When git refuses it
+   * for belonging to another account (safe.directory), this throws a
+   * `git_untrusted_folder` coded error and the renderer asks "Trust this
+   * folder?". Only after the user says yes does the retry arrive with
+   * `trustGitOwnership`, and only then is that one folder added to their
+   * global safe.directory list. Nothing else — background scans, agents, the
+   * CLI, mobile — ever trusts a folder.
+   *
+   * The flag alone is not enough: main records which renderer it asked, about
+   * which folder, and honours `trustGitOwnership` once, only from that
+   * renderer and only for that folder. A renderer that sends the flag on a
+   * first call, or for a folder it was never asked about, gets the prompt.
+   */
+  /** webContents id → the folder main asked that renderer to trust. Spent on the next answer. */
+  const pendingGitTrustPrompts = new Map<number, { gitPath: string; expiresAt: number }>();
+  const GIT_TRUST_PROMPT_TTL_MS = 10 * 60_000;
+
+  const resolveRepoRootForUserOpen = async (
+    selectedPath: string,
+    trustGitOwnership: boolean,
+    webContentsId: number | null,
+  ): Promise<string> => {
+    // A trust answer is spent by the call that carries it, whatever happens.
+    const asked = trustGitOwnership && webContentsId != null ? pendingGitTrustPrompts.get(webContentsId) ?? null : null;
+    if (trustGitOwnership && webContentsId != null) pendingGitTrustPrompts.delete(webContentsId);
+    try {
+      return await resolveRepoRoot(selectedPath);
+    } catch (error) {
+      const problem = gitUntrustedFolderProblem(error);
+      if (!problem) throw error;
+      const answered = Boolean(
+        asked && asked.expiresAt > Date.now() && pathsEqual(asked.gitPath, problem.path),
+      );
+      if (!answered) {
+        projectOpenLogger.info("project.open.git_untrusted_folder", {
+          selectedPath,
+          gitPath: problem.path,
+          owner: problem.owner ?? null,
+          ...(trustGitOwnership ? { unaskedTrust: true } : {}),
+        });
+        if (webContentsId != null) {
+          pendingGitTrustPrompts.set(webContentsId, {
+            gitPath: problem.path,
+            expiresAt: Date.now() + GIT_TRUST_PROMPT_TTL_MS,
+          });
+        }
+        throw codedError(gitOwnershipReason(problem), GIT_UNTRUSTED_FOLDER_CODE);
+      }
+      const trusted = await trustGitSafeDirectory(problem.path);
+      projectOpenLogger.info("project.open.git_folder_trusted", {
+        selectedPath,
+        safeDirectory: trusted.spec,
+        added: trusted.added,
+      });
+      try {
+        return await resolveRepoRoot(selectedPath);
+      } catch (retryError) {
+        // Still refused after trusting (git spells the folder differently, or
+        // a parent needs it too): say so plainly rather than asking again.
+        if (retryError instanceof GitUntrustedFolderError) throw new Error(retryError.message);
+        throw retryError;
+      }
+    }
+  };
+
   const switchProjectFromDialog = async (
     selectedPath: string,
+    options: { trustGitOwnership?: boolean; webContentsId?: number | null } = {},
   ): Promise<ProjectInfo> => {
     const startedAt = Date.now();
     const windowId = currentIpcWindowId();
@@ -6660,7 +7025,13 @@ app.whenReady().then(async () => {
     projectOpenLogger.info("project.open.begin", { selectedPath });
     try {
       const resolveStartedAt = Date.now();
-      repoRoot = normalizeProjectRoot(await resolveRepoRoot(selectedPath)); // require a real git repo for onboarding.
+      repoRoot = normalizeProjectRoot(
+        await resolveRepoRootForUserOpen(
+          selectedPath,
+          options.trustGitOwnership === true,
+          options.webContentsId ?? null,
+        ),
+      ); // require a real git repo for onboarding.
       // INVARIANT: a root is recorded as "attempted" only once it has been
       // proven to be a real git repository on disk — `resolveRepoRoot` throws
       // otherwise. The registry widens what a renderer may later name in
@@ -6835,6 +7206,7 @@ app.whenReady().then(async () => {
       setForegroundProject(firstOpenWindowProjectRoot());
       replaceDormantContext(normalizedRoot);
     }
+    persistUpdateWorkspace();
   };
 
   const closeCurrentProject = async () => {
@@ -6850,6 +7222,7 @@ app.whenReady().then(async () => {
       if (previousRoot) tabRoots?.delete(normalizeProjectRoot(previousRoot));
       const nextRoot = tabRoots?.values().next().value ?? null;
       bindWindowToProject(windowId, nextRoot, { emit: true, foreground: false });
+      if (nextRoot == null) persistUpdateWorkspace();
       if (nextRoot == null && (activeProjectRoot === previousRoot || activeProjectRoot == null)) {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
@@ -6891,7 +7264,7 @@ app.whenReady().then(async () => {
 
   const shutdownOpenCodeServersBestEffort = (): void => {
     try {
-      const { shutdownOpenCodeServers } = require("./services/opencode/openCodeServerManager");
+      const { shutdownOpenCodeServers } = require("./services/opencode/openCodeServer");
       shutdownOpenCodeServers();
     } catch {
       // ignore if module not loaded
@@ -7128,6 +7501,12 @@ app.whenReady().then(async () => {
       }
       try {
         builtInBrowserBridgeServer?.dispose();
+      } catch {
+        // ignore
+      }
+      try {
+        appControlScreencastRecorder.dispose();
+        chromiumDemoEngine.dispose();
       } catch {
         // ignore
       }
@@ -7501,7 +7880,7 @@ app.whenReady().then(async () => {
   });
 
   try {
-    const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServerManager");
+    const { recoverManagedOpenCodeOrphans } = require("./services/opencode/openCodeServer");
     void recoverManagedOpenCodeOrphans({ force: true, logger: getActiveContext().logger }).catch((error: unknown) => {
       getActiveContext().logger.warn("opencode.orphan_recovery_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -7609,6 +7988,7 @@ app.whenReady().then(async () => {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
       scheduleProjectContextRebalance();
+      if (!autoUpdateService.isInstallQuitArmed()) persistUpdateWorkspace();
     });
   };
 
@@ -8680,18 +9060,58 @@ app.whenReady().then(async () => {
     }
   }
 
+  const savedUpdateState = readGlobalState(globalStatePath);
+  const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
+    restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true,
+    explicitLaunch: shouldOpenStartupProject,
+    saved: savedUpdateState.updateWorkspace,
+    normalizeProjectPath: normalizeProjectRoot,
+    isLikelyRepoRoot,
+  });
+  if (savedUpdateState.restoreUpdateWorkspaceOnLaunch) {
+    const cleared = readGlobalState(globalStatePath);
+    writeGlobalState(globalStatePath, {
+      ...cleared,
+      restoreUpdateWorkspaceOnLaunch: false,
+    });
+  }
+  if (updateWorkspaceRestore.localRoots.length > 0) {
+    const warmOrder = [
+      ...updateWorkspaceRestore.localRoots.filter((root) => !pathsEqual(root, updateWorkspaceRestore.activeLocalRoot)),
+      ...(updateWorkspaceRestore.activeLocalRoot ? [updateWorkspaceRestore.activeLocalRoot] : []),
+    ];
+    for (const root of warmOrder) {
+      try {
+        await switchProjectFromDialog(root);
+      } catch {
+        // A checkout that is gone stays off the restored tab strip.
+      }
+    }
+  }
+  const restoredLocalRoots = updateWorkspaceRestore.localRoots.filter((root) => projectForRoot(root) != null);
+  const restoredActiveRoot = restoredLocalRoots.find((root) => pathsEqual(root, updateWorkspaceRestore.activeLocalRoot))
+    ?? restoredLocalRoots[0]
+    ?? null;
+  const restoringUpdateWorkspace = restoredLocalRoots.length > 0;
+
   const initialRemoteProjectBinding =
-    shouldOpenStartupProject ? null : savedRemoteProjectBinding;
-  const initialWindowProjectRoot = shouldOpenStartupProject ? activeProjectRoot : null;
+    shouldOpenStartupProject || restoringUpdateWorkspace ? null : savedRemoteProjectBinding;
+  const initialWindowProjectRoot = shouldOpenStartupProject
+    ? activeProjectRoot
+    : restoredActiveRoot;
   const initialWindow = await createWindow({
     logger: getActiveContext().logger,
     onRendererRecovery: reportRendererRecovery,
-    onCreated: (createdWindow) =>
+    onCreated: (createdWindow) => {
       registerWindowSession(
         createdWindow,
         initialWindowProjectRoot,
         initialRemoteProjectBinding,
-      ),
+      );
+      if (restoredLocalRoots.length > 0) {
+        rememberWindowProjectTabs(createdWindow.id, restoredLocalRoots);
+      }
+    },
     onCloseRequested: handleMainWindowCloseRequested,
   });
   builtInBrowserService.attachToWindow(initialWindow);

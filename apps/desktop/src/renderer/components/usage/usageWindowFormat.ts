@@ -3,8 +3,9 @@
  *
  * One place to phrase "82% used, resets in 3h", so the pace bars inside the
  * top-bar popover and the "updated 2m ago" line above them cannot describe one
- * window in two different dialects. Live quota lives only in that popover now;
- * the Usage page is spend and history.
+ * window in two different dialects. Live quota lives in the popover (this
+ * machine) and, pooled across machines, in the Usage page's "All machines"
+ * scope; the rest of the page is spend and history.
  */
 import type { UsagePacing, UsageWindow } from "../../../shared/types";
 import type { UsageWindowLabelInput } from "../../../shared/usageWindowPresentation";

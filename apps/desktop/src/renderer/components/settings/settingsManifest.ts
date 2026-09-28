@@ -44,15 +44,16 @@ export const SETTINGS_TAB_IDS = [
 export type SettingsTabId = (typeof SETTINGS_TAB_IDS)[number];
 
 /**
- * The four sidebar groups. The group IS the scope — that is the whole
- * reorganisation in one sentence.
+ * The three sidebar groups, one per place a setting can live:
  *
- * Preferences are account-scoped too, so strictly they belong under Account.
- * They get their own group because they are what people change most, and
- * burying the theme switch under an identity heading would be organising the
- * page around the storage engine rather than around the person using it.
+ *  - **Account** applies everywhere you sign in.
+ *  - **Project** is this repository, shared across every machine that has it.
+ *  - **Machines** is one entry per machine (This computer, then each connected
+ *    one). Its pages read and write through that machine's pin.
+ *
+ * The group IS the scope — that is the whole reorganisation in one sentence.
  */
-export type SettingsGroupId = "account" | "preferences" | "repo" | "machine";
+export type SettingsGroupId = "account" | "project" | "machines";
 
 export type SettingsTab = {
   id: SettingsTabId;
@@ -86,44 +87,47 @@ export type SettingsGroup = {
 };
 
 /**
- * Render order. Account first because it answers "who am I", Preferences next
- * because it is the most-visited, then the repository, then the machine —
- * broadest reach to narrowest.
+ * Render order: broadest reach to narrowest.
  */
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
   { id: "account", label: "Account", scope: "account" },
-  { id: "preferences", label: "Preferences", scope: "account" },
-  // Named after the repository at render time. A group called "Project" would
-  // be one more abstraction between the user and the thing they are changing.
-  { id: "repo", label: null, scope: "account-repo" },
-  // Sourced from `THIS_MACHINE_NAME`, never spelled out, so it cannot lie on
-  // Windows.
-  { id: "machine", label: null, scope: "machine" },
+  { id: "project", label: "Project", scope: "account-repo" },
+  // The Machines group lists machines, not pages; its pages hang under the
+  // selected machine. Machine names come from `shared/machineIdentity`.
+  { id: "machines", label: "Machines", scope: "machine" },
 ] as const;
 
+/** The pages that exist once per machine. */
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["general", "agents", "lanes-git", "integrations", "storage"];
+
+export function isMachineSettingsTab(tab: SettingsTabId): boolean {
+  return MACHINE_SETTINGS_TAB_IDS.includes(tab);
+}
+
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  // ── Account ────────────────────────────────────────────────────────────
+  // ── Account: applies everywhere ─────────────────────────────────────────
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
-  { id: "secrets", label: "Secrets", description: "Keys and tokens your agents use, on every computer you sign in on.", group: "account" },
-  { id: "stats", label: "Usage", description: "Spend, limits, and pacing across your providers and machines.", group: "account" },
+  { id: "appearance", label: "Appearance", description: "Theme, terminal text, and Apple Development.", group: "account" },
+  { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "account" },
+  { id: "notifications", label: "Notifications", description: "What ADE interrupts you for, and how.", group: "account" },
+  { id: "activity", label: "Activity", description: "What's running everywhere, and how ADE shows it.", group: "account" },
+  { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
 
-  // ── Preferences ────────────────────────────────────────────────────────
-  { id: "appearance", label: "Appearance", description: "Theme, terminal text, and Apple Development.", group: "preferences" },
-  { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "preferences" },
+  // ── Project: this repository, on every machine ─────────────────────────
+  // Only what actually syncs through the account under this repository's
+  // identity. Everything else a repo "has" lives in each checkout's
+  // `.ade/local.yaml` or a machine credential store, so it is per machine.
+  { id: "secrets", label: "Secrets", description: "Keys and tokens your agents use in this repository, on every machine.", group: "project" },
+
+  // ── Machines: one set of these pages per machine ───────────────────────
+  { id: "general", label: "General", description: "ADE on this machine: runtime, project health, links, privacy, and power.", group: "machines" },
   // No description. The page is a list of named providers with their status —
   // a sentence restating that above it is the caption the owner called out.
-  { id: "agents", label: "Providers", group: "preferences" },
-  { id: "lanes-git", label: "Lanes", description: "How lanes start, stay current, and tell you they fell behind.", group: "preferences" },
-  { id: "notifications", label: "Notifications", description: "What ADE interrupts you for, and how.", group: "preferences" },
-  { id: "activity", label: "Activity", description: "What's running everywhere, and how ADE shows it.", group: "preferences" },
-
-  // ── This repository ────────────────────────────────────────────────────
-  { id: "integrations", label: "Integrations", description: "GitHub and Linear, for this repository.", group: "repo" },
-
-  // ── This computer ──────────────────────────────────────────────────────
-  { id: "general", label: "General", description: "ADE runtime status, project health, CLI access, and privacy.", group: "machine" },
-  { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear.", group: "machine" },
+  { id: "agents", label: "Providers", group: "machines" },
+  { id: "lanes-git", label: "Lanes", description: "How lanes start and stay current in this machine's checkout.", group: "machines" },
+  { id: "integrations", label: "Integrations", description: "GitHub and Linear, as connected on this machine.", group: "machines" },
+  { id: "storage", label: "Diagnostics", description: "What ADE keeps on disk, and what you can clear.", group: "machines" },
 ] as const;
 
 /**
@@ -186,6 +190,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["profile", "sign in", "sign out", "log out", "email", "avatar", "macs", "computers", "identity"],
     tab: "account",
     anchor: "account-profile",
+    scope: "account",
+    web: "account",
+    group: "Account",
+  },
+  {
+    id: "account.computers",
+    label: "Your computers",
+    keywords: ["computers", "machines", "macs", "reconnect", "this computer", "account directory"],
+    tab: "account",
+    anchor: "account-computers",
     scope: "account",
     web: "account",
     group: "Account",
@@ -253,11 +267,23 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["browser", "external", "system browser", "in-app", "click", "url", "hyperlink"],
     tab: "general",
     anchor: "link-open-mode",
-    scope: "account",
+    scope: "machine-repo",
     // The built-in browser is an Electron surface with a machine-local profile;
     // a hosted tab has neither, and its own browser already owns link handling.
     web: "hidden",
     group: "Links",
+  },
+  {
+    id: "general.browser-agent-access",
+    label: "Agents can use the ADE browser",
+    keywords: ["browser", "agent", "approve", "approval", "allow", "block", "lane", "chat", "permission", "consent", "signed in"],
+    tab: "general",
+    anchor: "browser-agent-access",
+    scope: "machine",
+    // The ADE browser and its signed-in profile live in the desktop main
+    // process; a hosted tab has neither.
+    web: "hidden",
+    group: "ADE browser",
   },
   {
     id: "general.analytics",
@@ -265,7 +291,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["telemetry", "posthog", "tracking", "privacy", "opt out"],
     tab: "general",
     anchor: "product-analytics",
-    scope: "account",
+    scope: "machine",
     web: "browser",
     group: "Privacy",
   },
@@ -278,7 +304,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["diagnostics", "crash", "report", "report issue", "privacy", "error", "send", "opt out"],
     tab: "general",
     anchor: "diagnostics-sharing",
-    scope: "account",
+    scope: "machine",
     // Machine-local consent written into `~/.ade/secrets` by the main process;
     // a browser has no such file, so the toggle is not offered there.
     web: "hidden",
@@ -475,7 +501,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     ],
     tab: "agents",
     anchor: "ai-providers",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -489,7 +515,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["anthropic", "claude", "provider", "sign in", "api key", "model", "permission", "account", "accounts", "instance"],
     tab: "agents",
     anchor: "ai-provider-claude",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -499,7 +525,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["openai", "chatgpt", "codex", "provider", "sign in", "api key", "model", "permission", "account", "accounts", "instance"],
     tab: "agents",
     anchor: "ai-provider-codex",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -509,7 +535,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["cursor", "provider", "oauth", "sign in", "api key", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-cursor",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -519,7 +545,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["factory", "droid", "provider", "sign in", "api key", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-droid",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -529,7 +555,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["pi", "earendil", "provider", "sign in", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-pi",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -546,7 +572,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     ],
     tab: "agents",
     anchor: "ai-provider-opencode",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -556,7 +582,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["qwen", "alibaba", "qwen code", "acp", "provider", "sign in", "api key", "openai", "base url", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-qwen",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -566,7 +592,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["kimi", "moonshot", "moonshotai", "kimi code", "acp", "provider", "sign in", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-kimi",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -576,7 +602,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["grok", "xai", "x.ai", "acp", "provider", "sign in", "api key", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-grok",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -586,7 +612,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["copilot", "github", "github copilot", "acp", "provider", "sign in", "model", "permission"],
     tab: "agents",
     anchor: "ai-provider-copilot",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Connections",
   },
@@ -637,9 +663,9 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "agents.budget",
     label: "Spend cap",
     keywords: ["budget", "cost", "limit", "dollars", "spend"],
-    tab: "stats",
+    tab: "agents",
     anchor: "budget-cap",
-    scope: "account",
+    scope: "machine-repo",
     web: "hidden",
     group: "Budget",
   },
@@ -661,7 +687,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["remote", "local", "branch", "upstream", "fetch", "start"],
     tab: "lanes-git",
     anchor: "new-lane-base",
-    scope: "account",
+    scope: "machine-repo",
     web: "machine",
     group: "Starting lanes",
   },
@@ -671,7 +697,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["rebase", "stack", "parent", "child", "dependent", "current"],
     tab: "lanes-git",
     anchor: "auto-rebase",
-    scope: "account",
+    scope: "machine-repo",
     web: "machine",
     group: "Rebase & stacking",
   },
@@ -681,7 +707,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["banner", "badge", "notification", "behind", "nag", "suggest", "off", "quiet"],
     tab: "lanes-git",
     anchor: "rebase-suggestions",
-    scope: "account",
+    scope: "machine-repo",
     web: "machine",
     group: "Rebase & stacking",
   },
@@ -691,7 +717,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["threshold", "behind", "commits", "minimum", "rebase"],
     tab: "lanes-git",
     anchor: "rebase-min-behind",
-    scope: "account",
+    scope: "machine-repo",
     web: "machine",
     group: "Rebase & stacking",
   },
@@ -701,7 +727,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["template", "scaffold", "preset", "default lane"],
     tab: "lanes-git",
     anchor: "lane-templates",
-    scope: "account",
+    scope: "machine-repo",
     web: "hidden",
     group: "Templates",
   },
@@ -711,7 +737,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["pull request", "transcript", "attach", "review"],
     tab: "lanes-git",
     anchor: "pr-chat-transcripts",
-    scope: "account-repo",
+    scope: "machine-repo",
     web: "machine",
     group: "Pull requests",
   },
@@ -723,7 +749,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["git", "pr", "pull request", "token", "pat", "app", "auth", "webhook"],
     tab: "integrations",
     anchor: "github-connection",
-    scope: "account-repo",
+    scope: "machine",
     web: "hidden",
     group: "GitHub",
   },
@@ -733,7 +759,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["issue", "ticket", "oauth", "sync", "workflow"],
     tab: "integrations",
     anchor: "linear-connection",
-    scope: "account-repo",
+    scope: "machine",
     web: "hidden",
     group: "Linear",
   },
@@ -927,7 +953,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["archive", "inactivity", "cleanup", "worktree", "max lanes", "retention"],
     tab: "storage",
     anchor: "lane-storage-rules",
-    scope: "account-repo",
+    scope: "machine-repo",
     web: "hidden",
     group: "Disk",
   },
@@ -937,7 +963,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["session", "idle", "close", "terminal", "cleanup"],
     tab: "storage",
     anchor: "session-lifecycle",
-    scope: "account",
+    scope: "machine",
     web: "hidden",
     group: "Sessions",
   },

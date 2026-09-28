@@ -1,10 +1,13 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { IosSimH264Video, isWebCodecsAvailable } from "../chat/IosSimH264Video";
+import { H264StreamView } from "../chat/H264StreamView";
+import { h264SourceForUrl, isWebCodecsAvailable } from "../chat/h264StreamPlayer";
 import { cn } from "../ui/cn";
 import type { AppleDeviceOrientation } from "../../../shared/types";
+import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
 import {
   AppleDevice3DView,
   type AppleDevice3DFailure,
+  type AppleDeviceDuoProps,
   type AppleDeviceFamily,
 } from "./AppleDevice3DView";
 import {
@@ -49,6 +52,12 @@ export type AppleDeviceStageProps = {
   devicePointSize: { width: number; height: number } | null;
   /** False while watching someone else's device, or while inspect owns the pointer. */
   interactive: boolean;
+  /**
+   * Foldable body controls, passed ONLY when the caller has proven the device
+   * reports fold/dual-screen support. Absent for every other device, so the 3D
+   * presenter takes its unchanged GLB path.
+   */
+  duo?: AppleDeviceDuoProps | undefined;
   onDeviceInput: (input: AppleDeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */
@@ -117,6 +126,7 @@ export function AppleDeviceStage({
   orientation,
   devicePointSize,
   interactive,
+  duo,
   onDeviceInput,
   onDeviceScroll,
   onDeviceKey,
@@ -178,9 +188,10 @@ export function AppleDeviceStage({
     >
       <div style={videoStyle} data-apple-stage-screen="">
         {streamUrl ? (
-          <IosSimH264Video
-            url={streamUrl}
-            token={streamToken}
+          <H264StreamView
+            source={h264SourceForUrl(streamUrl, streamToken)}
+            streamName="simulator video stream"
+            streamGoneCode={APPLE_STREAM_NOT_RUNNING_CODE}
             reconnectNonce={reconnectNonce}
             onStatus={onReaderStatus}
             onDimensions={handleDimensions}
@@ -215,6 +226,7 @@ export function AppleDeviceStage({
           screenPixelSize={screenPixelSize ?? { width: 0, height: 0 }}
           devicePointSize={devicePointSize}
           interactive={interactive}
+          duo={duo}
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}
           onDeviceKey={onDeviceKey}

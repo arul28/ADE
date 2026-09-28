@@ -584,6 +584,12 @@ export type ChatTranscriptRenderEnvelope = {
    */
   voiceCallId?: string;
   /**
+   * Copied off the source envelope's `provenance.timestampSynthetic`. True when
+   * `timestamp` is an ordering placeholder with no provider time behind it; the
+   * row still sorts on it but must not show it as a clock (subagent drill-in).
+   */
+  timestampSynthetic?: boolean;
+  /**
    * What names this row on disk for a scene drawn in it.
    *
    * Derived here, from the row's own event and key, because row identity is a
@@ -617,6 +623,8 @@ export type ChatTranscriptGroupedEnvelope = {
   repeatCount?: number;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `voiceCallId`. */
   voiceCallId?: string;
+  /** Carried through from `ChatTranscriptRenderEnvelope`; see its `timestampSynthetic`. */
+  timestampSynthetic?: boolean;
   /** Carried through from `ChatTranscriptRenderEnvelope`; see its `sceneScopeKey`. */
   sceneScopeKey?: string;
 };
@@ -1048,8 +1056,44 @@ function stampSceneScopeKey<T extends ChatTranscriptRenderEnvelope>(row: T): T {
   return { ...row, sceneScopeKey: sceneRowIdentity(event, row.key) };
 }
 
+const MARKDOWN_INLINE_CHARS = /[*_`[\]~#>+-]/;
+
+/**
+ * Strip inline Markdown for a collapsed one-line preview. A small scanner, not
+ * a parser: it removes the punctuation a preview would otherwise show as
+ * literal (`**bold**`, `_italic_`, `` `code` ``, `[label](url)`, `~~gone~~`)
+ * plus line-leading headings, blockquotes, and list markers.
+ *
+ * Deliberately conservative so it does not corrupt text that only looks like
+ * Markdown: emphasis markers are removed only in pairs, `_`/`*` only at word
+ * boundaries, so `snake_case`, a shell glob, and a lone `*` survive.
+ */
+export function stripInlineMarkdown(value: string): string {
+  if (!MARKDOWN_INLINE_CHARS.test(value) && !/^[ \t]{0,3}\d+[.)]\s/m.test(value)) return value;
+  const withoutLinks = value.replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
+  const withoutCode = withoutLinks.replace(/`+([^`]+)`+/g, "$1");
+  const withoutBold = withoutCode
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1");
+  const withoutStrike = withoutBold.replace(/~~([^~]+)~~/g, "$1");
+  const withoutEmphasis = withoutStrike
+    .replace(/(^|[^\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?=[^\w*]|$)/g, "$1$2")
+    .replace(/(^|[^\w_])_([^_\s](?:[^_\n]*[^_\s])?)_(?=[^\w_]|$)/g, "$1$2");
+  return withoutEmphasis
+    .split("\n")
+    .map((line) => line
+      .replace(/^\s{0,3}(?:#{1,6}\s+|>\s+)/, "")
+      .replace(/^\s{0,3}(?:[-+*]|\d+[.)])\s+/, ""))
+    .join("\n");
+}
+
+/** Whitespace-collapse without touching Markdown, for internal comparisons. */
+function normalizeInlineText(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 export function summarizeInlineText(value: string, maxChars = 120): string {
-  const text = value.replace(/\s+/g, " ").trim();
+  const text = normalizeInlineText(stripInlineMarkdown(value));
   if (!text.length) return "";
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }
@@ -1476,7 +1520,10 @@ function buildCommandWorkLogEvent(
   event: Extract<AgentChatEvent, { type: "command" }>,
   timestamp: string,
 ): WorkLogRenderEvent {
-  const collapseKey = buildCollapseKey("command", event, event.command);
+  // A provider may refine a partial command while keeping the same item id.
+  // Use the command text only as a fallback when the event has no stable id.
+  const hasStableItemId = Boolean(event.logicalItemId ?? event.itemId);
+  const collapseKey = buildCollapseKey("command", event, hasStableItemId ? undefined : event.command);
   return {
     type: "work_log_entry",
     collapseKey,
@@ -2734,7 +2781,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "status") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 120).toLowerCase();
+    const normalizedMessage = normalizeInlineText(event.message ?? "").toLowerCase();
     const keepStatus =
       event.turnStatus === "failed"
       || event.turnStatus === "interrupted"
@@ -2791,7 +2838,7 @@ export function appendCollapsedChatTranscriptEvent(
   }
 
   if (event.type === "delegation_state") {
-    const normalizedMessage = summarizeInlineText(event.message ?? "", 140);
+    const normalizedMessage = normalizeInlineText(event.message ?? "");
     const keepDelegation =
       normalizedMessage.length > 0
       || event.contract.status === "blocked"
@@ -2858,6 +2905,13 @@ export function appendCollapsedChatTranscriptEvent(
       rows[rows.length - 1] = {
         ...previous,
         timestamp: envelope.timestamp,
+        // The merged row now carries this envelope's time, so its synthetic
+        // marker must follow that time: fragments with one messageId but
+        // different item ids can reach this branch with different provenance,
+        // and a stale marker would hide (or invent) the clock.
+        ...(envelope.provenance?.timestampSynthetic === true
+          ? { timestampSynthetic: true }
+          : { timestampSynthetic: false }),
         event: {
           ...previous.event,
           text: `${previous.event.text}${event.text}`,
@@ -3260,12 +3314,20 @@ function appendCollapsedEventWithVoiceStamp(
   context: CollapseTranscriptContext,
 ): void {
   const callId = envelope.provenance?.voiceCallId?.trim() || null;
+  const timestampSynthetic = envelope.provenance?.timestampSynthetic === true;
   const before = rows.length;
   const rowKey = allocateTranscriptEventRowKey(envelope, context.eventRowKeyOrdinals);
   appendCollapsedChatTranscriptEvent(rows, envelope, rowKey, context);
   for (let index = before; index < rows.length; index += 1) {
     const row = rows[index]!;
-    rows[index] = stampSceneScopeKey(callId ? { ...row, voiceCallId: callId } : row);
+    const stamped = callId || timestampSynthetic
+      ? {
+        ...row,
+        ...(callId ? { voiceCallId: callId } : {}),
+        ...(timestampSynthetic ? { timestampSynthetic: true } : {}),
+      }
+      : row;
+    rows[index] = stampSceneScopeKey(stamped);
   }
 }
 

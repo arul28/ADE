@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import os
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let localDeleteColumnId = "-1"
@@ -248,8 +249,26 @@ final class DatabaseService {
   private let accessQueue = DispatchQueue(label: "com.ade.database", qos: .userInitiated)
 
   private func withLock<T>(_ body: () throws -> T) rethrows -> T {
-    try accessQueue.sync(execute: body)
+    guard Thread.isMainThread, DatabaseService.mainThreadWaitReporter != nil else {
+      return try accessQueue.sync(execute: body)
+    }
+    // Diagnostics: how long the main thread waited for the queue (a
+    // background changeset apply holds it for a whole batch).
+    let start = CFAbsoluteTimeGetCurrent()
+    var waitedMs = 0.0
+    let result = try accessQueue.sync { () throws -> T in
+      waitedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+      return try body()
+    }
+    if waitedMs > 8 {
+      let caller = Thread.callStackSymbols.dropFirst(2).prefix(2).joined(separator: " | ")
+      DatabaseService.mainThreadWaitReporter?(waitedMs, String(caller.prefix(300)))
+    }
+    return result
   }
+
+  /// Set by scroll diagnostics; nil (the default) costs nothing.
+  nonisolated(unsafe) static var mainThreadWaitReporter: ((Double, String) -> Void)?
 
   private var db: OpaquePointer?
   private let encoder = JSONEncoder()
@@ -259,7 +278,14 @@ final class DatabaseService {
   private let dbURL: URL
   private let siteIdURL: URL
   private let bootstrapSQLOverride: String?
-  private var localDbVersion = 0
+  private var localDbVersion = 0 {
+    didSet { publishedDbVersion.withLock { $0 = localDbVersion } }
+  }
+  /// `localDbVersion`, readable without the access queue. A changeset apply
+  /// holds that queue for the whole batch, and the main actor reads the
+  /// version on every relay tick and heartbeat: through the queue it waited
+  /// for the apply (55-120 ms frames).
+  private let publishedDbVersion = OSAllocatedUnfairLock(initialState: 0)
   private var cachedSiteIdHex = ""
   private var cachedSiteIdBlob = Data()
   private var shouldCaptureLocalChanges = true
@@ -318,7 +344,7 @@ final class DatabaseService {
   }
 
   func currentDbVersion() -> Int {
-    withLock { localDbVersion }
+    publishedDbVersion.withLock { $0 }
   }
 
   func exportChangesSince(version: Int) -> [CrsqlChangeRow] {
@@ -1393,14 +1419,20 @@ final class DatabaseService {
       }
       let hydratablePrs = payload.prs.filter { availableLaneIds.contains($0.laneId) }
       let hydratablePrIds = Set(hydratablePrs.map(\.id))
+      // A bounded refresh (open PRs and live lanes only) says nothing about
+      // the snapshots it left out; clearing those would wipe every merged PR's
+      // cached detail on each hydration.
+      let snapshotClearPrIds = payload.coversEveryListedSnapshot
+        ? hydratablePrIds
+        : hydratablePrIds.intersection(payload.snapshots.map(\.prId))
 
-      if !hydratablePrIds.isEmpty {
-        let placeholders = Array(repeating: "?", count: hydratablePrIds.count).joined(separator: ", ")
+      if !snapshotClearPrIds.isEmpty {
+        let placeholders = Array(repeating: "?", count: snapshotClearPrIds.count).joined(separator: ", ")
         _ = try execute("""
           delete from pull_request_snapshots
            where pr_id in (\(placeholders))
         """) { statement in
-          for (index, prId) in hydratablePrIds.sorted().enumerated() {
+          for (index, prId) in snapshotClearPrIds.sorted().enumerated() {
             try bindText(prId, to: statement, index: Int32(index + 1))
           }
         }
@@ -2201,13 +2233,31 @@ final class DatabaseService {
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
-    withLock { fetchComputerUseArtifactsLocked(ownerKind: ownerKind, ownerId: ownerId) }
+    withLock { fetchComputerUseArtifactsLocked(filter: .owner(kind: ownerKind, id: ownerId)) }
   }
 
-  private func fetchComputerUseArtifactsLocked(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
+  /// One proof record by id, from any owner in the current project. An answer
+  /// can cite proof another chat in the same project filed.
+  func fetchComputerUseArtifact(id artifactId: String) -> ComputerUseArtifactSummary? {
+    withLock { fetchComputerUseArtifactsLocked(filter: .artifact(id: artifactId)).first }
+  }
+
+  private enum ComputerUseArtifactFilter {
+    case owner(kind: String, id: String)
+    case artifact(id: String)
+  }
+
+  private func fetchComputerUseArtifactsLocked(filter: ComputerUseArtifactFilter) -> [ComputerUseArtifactSummary] {
     let projectIds = currentProjectScopeIds()
     guard !projectIds.isEmpty else { return [] }
     let projectPlaceholders = Array(repeating: "?", count: projectIds.count).joined(separator: ", ")
+    let filterClause: String
+    switch filter {
+    case .owner:
+      filterClause = "and l.owner_kind = ? and l.owner_id = ?"
+    case .artifact:
+      filterClause = "and a.id = ?"
+    }
 
     let sql = """
       select a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name, a.original_type,
@@ -2217,8 +2267,7 @@ final class DatabaseService {
         inner join computer_use_artifact_links l on l.artifact_id = a.id
        where a.project_id in (\(projectPlaceholders))
          and l.project_id in (\(projectPlaceholders))
-         and l.owner_kind = ?
-         and l.owner_id = ?
+         \(filterClause)
        order by a.created_at asc
     """
 
@@ -2232,9 +2281,14 @@ final class DatabaseService {
         try self.bindText(projectId, to: statement, index: index)
         index += 1
       }
-      try self.bindText(ownerKind, to: statement, index: index)
-      index += 1
-      try self.bindText(ownerId, to: statement, index: index)
+      switch filter {
+      case .owner(let kind, let id):
+        try self.bindText(kind, to: statement, index: index)
+        index += 1
+        try self.bindText(id, to: statement, index: index)
+      case .artifact(let id):
+        try self.bindText(id, to: statement, index: index)
+      }
     }, map: { statement in
       ComputerUseArtifactRow(
         id: stringValue(statement, index: 0) ?? "",

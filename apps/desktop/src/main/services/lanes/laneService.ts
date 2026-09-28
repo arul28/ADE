@@ -97,7 +97,9 @@ import {
   resolveAppliedAutoLaneBranchFragment,
 } from "../../../shared/laneNameFallback";
 
-import { releaseLaneAppleDevice } from "../ios/laneDeviceRegistry";
+import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
+import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
+import { bareSimulatorPowerOff } from "../ios/simulatorPower";
 
 /** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
 const execFileAsync = promisify(execFileCallback);
@@ -1368,6 +1370,21 @@ export type LaneDeleteTeardownDeps = {
   macDesktopService?: {
     destroyForLane: (laneId: string) => Promise<{ destroyed: boolean }>;
   };
+  /**
+   * The lane's App Control session: quits the app ADE launched for the lane and
+   * detaches an attached one. Best-effort, like the Mac Desktop step.
+   */
+  appControlService?: {
+    stopForLane: (laneId: string) => Promise<unknown>;
+  };
+  /**
+   * The lane's Apple device session in this process: its recording, stream and
+   * chat claim. The device itself is deleted (or, if attached, released) on
+   * disk by `releaseLaneAppleDevice`, which needs no service.
+   */
+  iosSimulatorService?: {
+    stopForLane: (laneId: string) => Promise<void>;
+  };
 };
 
 export function createLaneService({
@@ -2066,6 +2083,19 @@ export function createLaneService({
       updated_at: now,
       last_checked_out_at: options.lastCheckedOutAt !== undefined ? options.lastCheckedOutAt : existing?.last_checked_out_at ?? null,
     };
+    // An upsert that changes nothing writes nothing. Bumping `updated_at` alone
+    // is a replicated write (cr-sqlite ships it to every synced peer), and the
+    // lane status refresh calls this for every lane on every pass.
+    if (
+      existing
+      && existing.branch_ref === profile.branch_ref
+      && existing.base_ref === profile.base_ref
+      && (existing.parent_lane_id ?? null) === (profile.parent_lane_id ?? null)
+      && (existing.source_branch_ref ?? null) === (profile.source_branch_ref ?? null)
+      && (existing.last_checked_out_at ?? null) === (profile.last_checked_out_at ?? null)
+    ) {
+      return toLaneBranchProfile(existing);
+    }
     if (existing) {
       db.run(
         `
@@ -2913,13 +2943,59 @@ export function createLaneService({
     // the table's primary key, so keep the keeper's binding when it already has
     // one and only adopt the duplicate's otherwise. Without this the duplicate's
     // row is dropped by the cleanup below and the keeper forgets its simulator,
-    // so a later lane delete never releases the clone.
+    // so a later lane delete never releases the device.
     const keeperHasAppleDevice = db.get<{ one: number }>(
       "select 1 as one from lane_apple_devices where lane_id = ? limit 1",
       [keeperId],
     );
     if (keeperHasAppleDevice) {
+      // Both lanes had a device. The keeper's stays; the duplicate's is deleted,
+      // not just forgotten — a dropped row with its simulator left on disk is
+      // exactly how a device leaks. This runs inside the caller's transaction,
+      // so the delete waits until it has settled and checks again then: a
+      // rollback brings the row back, and a udid another lane holds (the keeper
+      // included) is never touched.
+      const orphan = readLaneAppleDeviceRecord(db, duplicateId);
       db.run("delete from lane_apple_devices where lane_id = ?", [duplicateId]);
+      if (orphan && process.platform === "darwin") {
+        setTimeout(() => {
+          try {
+            if (readLaneAppleDeviceRecord(db, duplicateId)) return;
+            if (anotherLaneHoldsUdid(db, orphan.device.udid, duplicateId)) return;
+          } catch (error) {
+            // A read that failed says nothing; nothing is deleted on a guess.
+            logger.warn("lane.merge.apple_device_check_failed", {
+              laneId: duplicateId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+            return;
+          }
+          void endLaneDeviceOnDisk({
+            device: orphan.device,
+            adeInstalledBundleIds: orphan.adeInstalledBundleIds,
+            run: runAppleCommand,
+            powerOff: bareSimulatorPowerOff(runAppleCommand),
+            stillFree: () => {
+              try {
+                return !readLaneAppleDeviceRecord(db, duplicateId)
+                  && !anotherLaneHoldsUdid(db, orphan.device.udid, duplicateId);
+              } catch {
+                return false;
+              }
+            },
+            logger,
+          }).then((ended) => {
+            // The duplicate's row is gone, so nothing retries this; say what is left.
+            if (!ended.complete) {
+              logger.warn("lane.merge.apple_device_left", {
+                laneId: duplicateId,
+                udid: orphan.device.udid,
+                remainingBundleIds: ended.remainingBundleIds,
+              });
+            }
+          }, () => undefined);
+        }, 0);
+      }
     } else {
       db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     }
@@ -4485,6 +4561,52 @@ export function createLaneService({
     return row;
   };
 
+  /** `simctl` for the Apple device release, outside any simulator service. */
+  const runAppleCommand = async (
+    command: string,
+    commandArgs: string[],
+    options?: { timeoutMs?: number },
+  ): Promise<{ stdout: string; stderr: string }> => {
+    const result = await execFileAsync(command, commandArgs, {
+      timeout: options?.timeoutMs ?? 30_000,
+      // No console window on Windows, and no argv shell parsing on any
+      // platform — the simctl arguments are literal.
+      windowsHide: true,
+    });
+    return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
+  };
+
+  /**
+   * The lane's Apple device and build cache, on archive and on delete.
+   *
+   * Not awaited by the caller: `simctl delete` can take tens of seconds on a
+   * large device set, and the lane change is already done. An ADE device is
+   * deleted with all its data; an attached one is released. See
+   * `releaseLaneAppleDevice`.
+   */
+  const releaseAppleSideOfLane = (
+    laneId: string,
+    options: { worktreePath: string | null; removeRecordings: boolean },
+  ): void => {
+    void releaseLaneAppleDevice({
+      laneId,
+      projectRoot,
+      store: db,
+      run: runAppleCommand,
+      removeDirectory: (directory: string) => fs.promises.rm(directory, { recursive: true, force: true }),
+      removeRecordings: options.removeRecordings,
+      derivedDataDirectories: options.worktreePath && !pathsEqual(path.resolve(options.worktreePath), path.resolve(projectRoot))
+        ? [appleLaneDerivedDataPath(options.worktreePath)]
+        : [],
+      logger,
+    }).catch((error: unknown) => {
+      logger.warn("lane.apple_release_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+
   /**
    * The archive itself: stop the lane's running work, run whatever the caller
    * wants done between that and the status write, then write the archived
@@ -4513,6 +4635,10 @@ export function createLaneService({
     const now = new Date().toISOString();
     db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
     invalidateLanePathCaches();
+    // An archived lane keeps nothing on the Apple side but its recordings: the
+    // device (if ADE made it) and the build cache are deleted, and unarchiving
+    // makes a new device on the next ask.
+    releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: false });
     broadcastLifecycleEvent({
       type: "lane-archived",
       laneId,
@@ -4560,6 +4686,12 @@ export function createLaneService({
     try {
       await teardownDeps?.macDesktopService?.destroyForLane(laneId);
     } catch (error) { warn("destroy_mac_desktop", error); }
+    try {
+      await teardownDeps?.appControlService?.stopForLane(laneId);
+    } catch (error) { warn("stop_app_control", error); }
+    try {
+      await teardownDeps?.iosSimulatorService?.stopForLane(laneId);
+    } catch (error) { warn("stop_apple_device", error); }
   };
 
   // Named so a few methods (branch-drift resolution) can delegate to sibling
@@ -4567,6 +4699,24 @@ export function createLaneService({
   const laneServiceApi = {
     async ensurePrimaryLane(): Promise<void> {
       await ensurePrimaryLane();
+    },
+
+    /**
+     * The project's primary checkout, or null before it exists. Reads the live
+     * row so a branch switch on Primary is reflected immediately — the
+     * default-branch auto-pull keys off `branchRef`, which is the branch the
+     * checkout is actually on.
+     */
+    getPrimaryLane(): { laneId: string; worktreePath: string; branchRef: string } | null {
+      const primary = getActivePrimaryLane();
+      if (!primary?.id) return null;
+      const row = getLaneRow(primary.id);
+      if (!row?.worktree_path) return null;
+      return {
+        laneId: row.id,
+        worktreePath: row.worktree_path,
+        branchRef: row.branch_ref || primary.branch_ref,
+      };
     },
 
     async list(args: ListLanesArgs = {}): Promise<LaneSummary[]> {
@@ -6607,7 +6757,18 @@ export function createLaneService({
       invalidateLaneListCache();
 
       try {
-        await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        // A lane that already contains the new parent's tip (it merged that
+        // parent in) needs only the record change. `git rebase` would still
+        // refuse on a dirty worktree, and it could rewrite merge commits.
+        const alreadyContainsParent = preHeadSha
+          ? (await runGit(["merge-base", "--is-ancestor", newParentHead, preHeadSha], {
+              cwd: lane.worktree_path,
+              timeoutMs: 15_000,
+            })).exitCode === 0
+          : false;
+        if (!alreadyContainsParent) {
+          await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
+        }
       } catch (error) {
         try {
           await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 20_000 });
@@ -7716,6 +7877,29 @@ export function createLaneService({
           return { detail: result.destroyed ? "display destroyed" : "no display" };
         }, { fatal: false });
 
+        // Not a named step: the delete dialog's step list is a shared contract
+        // (desktop and phone), and releasing App Control has nothing for the
+        // user to watch. Best-effort, before the worktree goes away under the
+        // app it launched.
+        try {
+          await teardownDeps?.appControlService?.stopForLane(laneId);
+        } catch (error) {
+          logger.warn("lane.delete.stop_app_control_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+        // The same for the lane's Apple device session, so its stream and
+        // recording end before the device is deleted under them.
+        try {
+          await teardownDeps?.iosSimulatorService?.stopForLane(laneId);
+        } catch (error) {
+          logger.warn("lane.delete.stop_apple_device_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };
           try {
@@ -7947,28 +8131,13 @@ export function createLaneService({
             throw error;
           }
           const removedProofFiles = removeLaneArtifactFiles(laneId, laneArtifactFiles);
-          // The lane's Apple device and its recordings go with it. Not awaited:
-          // `simctl delete` can take tens of seconds on a large device set and
-          // the lane row is already gone, so blocking the delete on it would
-          // only make the progress UI look wedged. It deletes a CLONE and only
-          // detaches an attached device — ADE never deletes a simulator it did
-          // not create.
-          void releaseLaneAppleDevice({
-            laneId,
-            projectRoot,
-            store: db,
-            run: async (command, commandArgs, options) => {
-              const result = await execFileAsync(command, commandArgs, {
-                timeout: options?.timeoutMs ?? 30_000,
-                // No console window on Windows, and no argv shell parsing on any
-                // platform — the simctl arguments are literal.
-                windowsHide: true,
-              });
-              return { stdout: result.stdout?.toString() ?? "", stderr: result.stderr?.toString() ?? "" };
-            },
-            removeDirectory: (directory) => fs.promises.rm(directory, { recursive: true, force: true }),
-            logger,
-          });
+          // The lane's Apple device, build cache and recordings go with it.
+          // Not awaited: `simctl delete` can take tens of seconds on a large
+          // device set and the lane row is already gone, so blocking the delete
+          // on it would only make the progress UI look wedged. It deletes an
+          // ADE device and only releases an attached one — ADE never deletes a
+          // simulator it did not create.
+          releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: true });
           if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
           return removedProofFiles === laneArtifactFiles.length
             ? { detail: `${removedProofFiles} proof file(s) removed` }

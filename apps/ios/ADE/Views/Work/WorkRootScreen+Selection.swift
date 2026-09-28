@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 
-extension WorkRootScreen {
+extension WorkRootListScreen {
   var bulkSelectedSessions: [TerminalSessionSummary] {
     mergedSessions.filter { selectedSessionIds.contains($0.id) }
   }

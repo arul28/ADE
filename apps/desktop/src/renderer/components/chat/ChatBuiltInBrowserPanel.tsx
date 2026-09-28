@@ -2449,8 +2449,14 @@ export function ChatBuiltInBrowserPanel({
     urlDisplay,
     urlInput,
   ]);
-  const emulationWidth = emulation?.width && emulation.width > 0 ? emulation.width : null;
-  const emulationHeight = emulation?.height && emulation.height > 0 ? emulation.height : null;
+  // An agent-owned or recording tab is laid out at a fixed desktop size by
+  // main (`agentViewport`); it letterboxes exactly like a device preset, so a
+  // narrow pane shows the whole page shrunk rather than a page reflowed into a
+  // strip. An explicit preset wins.
+  const agentViewport = emulation ? null : activeTab?.agentViewport ?? null;
+  const layoutSize = emulation ?? agentViewport;
+  const emulationWidth = layoutSize?.width && layoutSize.width > 0 ? layoutSize.width : null;
+  const emulationHeight = layoutSize?.height && layoutSize.height > 0 ? layoutSize.height : null;
   const emulationSize = useMemo(
     () => (emulationWidth && emulationHeight ? { width: emulationWidth, height: emulationHeight } : null),
     [emulationHeight, emulationWidth],
@@ -2859,6 +2865,7 @@ export function ChatBuiltInBrowserPanel({
           launchpadGroups={launchpadGroups}
           letterboxed={letterboxed}
           emulation={emulation}
+          agentViewport={agentViewport}
           busy={busy}
           onRotateEmulation={handleRotateEmulation}
         />

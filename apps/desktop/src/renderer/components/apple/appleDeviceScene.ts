@@ -2,9 +2,21 @@
 // (MIT, T3 Tools Inc.): the normalized-GLB display contract (one
 // `device-screen` mesh, portrait, front +Z, height 2.2) and the planar display
 // UVs.
-import type { BufferGeometry, Group, Material, Mesh, Object3D, Texture } from "three";
+import type {
+  BufferGeometry,
+  Group,
+  Material,
+  Mesh,
+  Object3D,
+  Raycaster,
+  Texture,
+  Vector3,
+} from "three";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import type { AppleDeviceModelId, AppleDeviceModelSource } from "./appleDeviceModels";
+
+/** A body that is not a bundled GLB — today only the procedural Duo. */
+export type AppleDeviceBodyModelId = AppleDeviceModelId | "duo-procedural";
 
 /**
  * The 3D device's body and screen: the three.js runtime, the imported body
@@ -30,13 +42,39 @@ export type DisplayLayout = {
   aspect: number;
 };
 
+/**
+ * The articulated controls a foldable body adds. Absent on every imported GLB
+ * body, so the single-display path never touches them and pays nothing.
+ */
+export type DuoBodyControls = {
+  /** Fold both halves to an interior hinge angle (0 shut, 180 flat). */
+  setHinge: (angle: number, lowerFlat: boolean) => void;
+  /**
+   * Raycast both panels and answer the hit in continuous inner-display
+   * portrait coordinates. Null when the ray misses both halves.
+   */
+  pickInner: (raycaster: Raycaster) => { u: number; vFromBottom: number } | null;
+  /**
+   * Continuous inner-display portrait coordinates → that panel's world
+   * position. Null when the point cannot be placed.
+   */
+  innerToWorld: (u: number, vFromBottom: number) => Vector3 | null;
+};
+
 export type DeviceBody = {
-  modelId: AppleDeviceModelId;
+  modelId: AppleDeviceBodyModelId;
   root: Group;
   orientation: Group;
+  /** The primary display mesh — always `panels[0]`. */
   display: Mesh;
+  /** Every mesh the live framebuffer is painted on: one, or the Duo's two. */
+  panels: Mesh[];
   screenWidth: number;
   screenHeight: number;
+  /** Recompute each panel's texture UVs for a new orientation. */
+  rewriteUvs: (THREE: ThreeNS, layout: DisplayLayout) => void;
+  /** Foldable bodies only; undefined for every imported GLB. */
+  duo?: DuoBodyControls;
   dispose: () => void;
 };
 
@@ -184,6 +222,27 @@ export function orientedToPortrait(
   }
 }
 
+/**
+ * Continuous portrait coordinates → the texture's own uv.
+ *
+ * The single display and the Duo's two halves both speak portrait (u,
+ * vFromBottom) over the whole canvas; only this rotation term differs. Keeping
+ * it in one place is what stops the two paths from disagreeing on a landscape
+ * device.
+ */
+export function portraitUvToTextureUv(
+  u: number,
+  vFromBottom: number,
+  layout: DisplayLayout,
+): { u: number; v: number } {
+  if (layout.rawLandscape) {
+    return layout.rotation > 0
+      ? { u: 1 - vFromBottom, v: u }
+      : { u: vFromBottom, v: 1 - u };
+  }
+  return { u, v: vFromBottom };
+}
+
 export function writeScreenUvs(
   THREE: ThreeNS,
   geometry: BufferGeometry,
@@ -198,12 +257,9 @@ export function writeScreenUvs(
   const uv = geometry.getAttribute("uv");
   for (let i = 0; i < position.count; i++) {
     const u = (position.getX(i) + width / 2) / width;
-    const v = (position.getY(i) + height / 2) / height;
-    if (layout.rawLandscape) {
-      uv.setXY(i, layout.rotation > 0 ? 1 - v : v, layout.rotation > 0 ? u : 1 - u);
-    } else {
-      uv.setXY(i, u, v);
-    }
+    const vFromBottom = (position.getY(i) + height / 2) / height;
+    const texture = portraitUvToTextureUv(u, vFromBottom, layout);
+    uv.setXY(i, texture.u, texture.v);
   }
   uv.needsUpdate = true;
 }
@@ -293,8 +349,12 @@ export function createImportedBody(
     root,
     orientation,
     display,
+    panels: [display],
     screenWidth,
     screenHeight,
+    rewriteUvs(three, nextLayout) {
+      writeScreenUvs(three, display.geometry, screenWidth, screenHeight, nextLayout);
+    },
     dispose() {
       display.position.z = restZ;
       display.renderOrder = 0;

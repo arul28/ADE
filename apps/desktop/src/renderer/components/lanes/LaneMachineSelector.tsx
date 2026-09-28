@@ -1,9 +1,10 @@
-import { Desktop, DesktopTower, Plus } from "@phosphor-icons/react";
+import { Desktop, DesktopTower, Plus, Scales } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { formatBytes } from "../../lib/format";
 import { LABEL_CLASS_NAME, SECTION_CLASS_NAME, CARD_CLASS_NAME, CARD_ACTIVE_CLASS_NAME } from "./laneDialogTokens";
 import {
   canCreateLaneOnMachine,
+  chooseLaneMachineByLoad,
   isLowLaneMachineDisk,
   THIS_MACHINE_ID,
   type LaneMachineOption,
@@ -30,9 +31,52 @@ export function LaneMachineSelector({
   onConnectMachine?: () => void;
   disabled?: boolean;
 }) {
+  /*
+   * The machine is always an explicit choice; `selectedMachineId` is "" until
+   * one is made and no card reads as selected. The Auto card offers the
+   * least-loaded machine in one click; picking a named machine below forces
+   * one. With fewer than two machines able to host this repo there is nothing
+   * to balance, so the card is absent.
+   */
+  const eligibleCount = machines.filter(canCreateLaneOnMachine).length;
+  const autoMachine = eligibleCount >= 2
+    ? machines.find((machine) => machine.id === chooseLaneMachineByLoad(machines)) ?? null
+    : null;
   return (
     <section className={SECTION_CLASS_NAME} data-tour="lanes.createDialog.machine">
       <span className={LABEL_CLASS_NAME}>Create on</span>
+      {!selectedMachineId ? (
+        <span className="ml-2 text-[10px] text-amber-300/80" data-testid="lane-machine-selector-required">
+          Choose a machine
+        </span>
+      ) : null}
+      {autoMachine ? (
+        <button
+          type="button"
+          aria-pressed={selectedMachineId === autoMachine.id}
+          disabled={disabled}
+          title={`Balance across ${eligibleCount} connected machines`}
+          onClick={() => onSelectMachine(autoMachine.id)}
+          className={cn(
+            CARD_CLASS_NAME,
+            "mt-2 flex w-full items-center gap-2 !px-2.5 !py-2 text-left",
+            selectedMachineId === autoMachine.id && CARD_ACTIVE_CLASS_NAME,
+          )}
+        >
+          <span
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-white/[0.06] text-muted-fg"
+            aria-hidden="true"
+          >
+            <Scales size={14} weight="duotone" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-xs font-semibold text-fg">Auto — least loaded</span>
+            <span className="block truncate text-[10px] leading-snug text-muted-fg/60">
+              {`Least loaded · ${autoMachine.name}`}
+            </span>
+          </span>
+        </button>
+      ) : null}
       <div
         className="mt-2 grid grid-cols-2 gap-2"
         role="radiogroup"

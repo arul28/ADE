@@ -98,6 +98,9 @@ export class ProjectScopeRegistry {
     ): Promise<unknown> => {
       return await this.executeRemoteCommand(payload, context);
     },
+    releaseStreamConnection: (connectionId: string): void => {
+      this.releaseStreamConnection(connectionId);
+    },
   };
 
   constructor(
@@ -548,6 +551,24 @@ export class ProjectScopeRegistry {
       hostDiscoveryEnabled: isHost ? base.hostDiscoveryEnabled ?? true : false,
       remoteCommandExecutor: base.remoteCommandExecutor ?? this.remoteCommandExecutor,
     };
+  }
+
+  /**
+   * A sync socket closed: end its live Mac Desktop and App Control viewers in
+   * every booted project, not only the host's. One scope failing (or still
+   * booting and then failing) never blocks the others.
+   */
+  private releaseStreamConnection(connectionId: string): void {
+    for (const scopePromise of this.scopes.values()) {
+      void scopePromise
+        .then((scope) => {
+          scope.runtime.syncService?.releaseStreamConnection(connectionId);
+        })
+        .catch(() => {
+          // A scope that failed to boot holds no viewers; one whose release
+          // threw is logged by the sync service itself.
+        });
+    }
   }
 
   private async executeRemoteCommand(

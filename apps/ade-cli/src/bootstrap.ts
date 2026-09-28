@@ -7,6 +7,7 @@ import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
+import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import {
   clearLastFailure,
   recordLastFailure,
@@ -155,6 +156,7 @@ import {
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
+  captureAppControlAnalytics,
   captureMacDesktopAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -181,17 +183,21 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
+import { resolveSessionLaneId } from "../../desktop/src/main/services/lanes/resolveSessionLaneId";
 import {
   createMacDesktopService,
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
+import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBridgeBrowserActorCapabilityIssuer,
   createBuiltInBrowserDesktopBridgeClient,
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
+import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
+import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
   createRemoteBrowserForwarder,
@@ -244,12 +250,16 @@ import {
 import { createTeardownStack } from "./services/runtime/startupTeardown";
 import {
   adeCliShimDirName,
+  packagedCliNodeModulePaths,
   renderAdeCliShim,
   resolveAdeCliShimBrain,
   type AdeCliShimBrain,
 } from "./services/runtime/adeCliShim";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
+import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
 import { createPrEventFanout } from "./prEventFanout";
+import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
+import type { CtoActionCaller } from "./adeRpcServer";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 
 /** One warm-runtime budget for every project scope this brain opens. */
@@ -498,7 +508,12 @@ function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain): { dir: str
   const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
   try {
     fs.mkdirSync(shimDir, { recursive: true });
-    const body = renderAdeCliShim({ entryPath, execPath: process.execPath, brain });
+    const body = renderAdeCliShim({
+      entryPath,
+      execPath: process.execPath,
+      brain,
+      nodeModulePaths: packagedCliNodeModulePaths(entryPath),
+    });
     if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
       fs.writeFileSync(shimPath, body, "utf8");
     }
@@ -649,7 +664,7 @@ export function createHeadlessAdeCliAgentEnv(
   } = {},
 ): NodeJS.ProcessEnv {
   cleanupLegacyBundledAdeSkillsForCli();
-  const next: NodeJS.ProcessEnv = { ...baseEnv };
+  const next: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...baseEnv });
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: next,
     includeInteractiveShell: true,
@@ -1428,6 +1443,8 @@ export async function createAdeRuntime(args: {
       dismiss: (args) => rebaseSuggestionService.dismiss(args),
     };
 
+    // Set once the runtime below is assembled; the CTO's home-machine actions read it.
+    let runtimeForCtoActions: AdeRuntime | null = null;
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
@@ -1435,11 +1452,42 @@ export async function createAdeRuntime(args: {
         ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
         : null,
     });
+    const ctoAppVersion = process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0";
+    // The CTO's generic actions on this machine run through the same RPC
+    // dispatcher, under the same CTO caller identity, as they would from
+    // another machine. Built once, when the runtime exists and a tool needs it.
+    let ctoLocalActionCaller: Promise<CtoActionCaller> | null = null;
+    const getCtoLocalActionCaller = (): Promise<CtoActionCaller> | null => {
+      const runtime = runtimeForCtoActions;
+      if (!runtime) return null;
+      ctoLocalActionCaller ??= import("./adeRpcServer")
+        .then(({ createCtoActionCaller }) => createCtoActionCaller({ runtime, serverVersion: ctoAppVersion }))
+        .catch((error) => {
+          ctoLocalActionCaller = null;
+          throw error;
+        });
+      return ctoLocalActionCaller;
+    };
+    // The CTO acting on the account's other machines, for this project's
+    // repository there. Built when the CTO's tools are, and reads nothing from
+    // the account until one of them reaches another machine.
+    let ctoCrossMachine: ReturnType<typeof createCtoCrossMachineBridge> | null = null;
+    const getCtoCrossMachine = () => {
+      ctoCrossMachine ??= createCtoCrossMachineBridge({
+        projectRoot,
+        appVersion: ctoAppVersion,
+        logger,
+        getLocalActionCaller: getCtoLocalActionCaller,
+        getAccess: () => ctoStateService.getCrossMachineAccess(),
+      });
+      return ctoCrossMachine;
+    };
     const ctoStateService = createCtoStateService({
       db,
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
+      capabilities: { crossMachine: true },
       // Resolved on every refresh, not captured here: the chat and automation
       // services are constructed further down, so the live block must read
       // them through a thunk rather than pin whatever was null at this point.
@@ -1451,6 +1499,9 @@ export async function createAdeRuntime(args: {
           prService: headlessLinearServices.prService,
           automationService: automationServiceRef,
           listChats: chat.listSessions,
+          // Only a bridge the CTO's tools already built: the live-state block
+          // must not be what starts reading the account directory.
+          crossMachine: ctoCrossMachine,
         };
       },
     });
@@ -1522,8 +1573,17 @@ export async function createAdeRuntime(args: {
           accentColor: () => ADE_ACCENT_COLOR,
         },
         onEvent: (event) => pushEvent("runtime", { type: "ios_simulator_event", event }),
+        // Lane-device cleanup and idle power-off for this project.
+        backgroundMaintenance: true,
       });
     teardown.push(() => iosSimulatorService?.dispose());
+    if (iosSimulatorService) {
+      // An archived or deleted lane lets go of its Apple device session here;
+      // the device itself goes in `releaseLaneAppleDevice`.
+      laneTeardownDeps.iosSimulatorService = {
+        stopForLane: (laneId: string) => iosSimulatorService.stopForLane(laneId),
+      };
+    }
     /**
      * Brain-side video forwarder for remote viewers.
      *
@@ -1562,38 +1622,81 @@ export async function createAdeRuntime(args: {
     // closure reads at call time. The chat session store lives in agentChatService
     // (getSessionSummary), not in sessionService (which holds terminal sessions).
     const agentChatServiceHolder: { current: ReturnType<typeof createAgentChatService> | null } = { current: null };
+    // Windows/Linux App Control recording runs in the desktop's encoder, over
+    // the desktop bridge. Set once the bridge client exists (below); null
+    // while no desktop has attached here, which refuses a screencast start.
+    const desktopBridgeHolder: {
+      current: ReturnType<typeof createAppControlRecorderBridgeClient> | null;
+      /** The desktop's Chromium demo engine, over the same bridge. */
+      demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
+      isAttached: () => boolean;
+    } = { current: null, demoEngine: null, isAttached: () => false };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
         projectRoot,
         logger,
         ptyService,
-        onEvent: (event) => pushEvent("runtime", { type: "app_control_event", event }),
-        resolveLaneId: async ({ cwd, projectRoot: requestedProjectRoot, laneId, chatSessionId }) => {
-          const explicitLaneId = laneId?.trim();
-          if (explicitLaneId) return explicitLaneId;
-          const chatId = chatSessionId?.trim();
-          if (chatId && agentChatServiceHolder.current) {
-            const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
-            if (chatSession?.laneId) return chatSession.laneId;
+        onEvent: (event) => {
+          if (event.type === "session-started") {
+            captureAppControlAnalytics({ analytics: productAnalyticsService, outcome: "started" });
           }
-          const targetRoot = path.resolve(cwd || requestedProjectRoot || projectRoot);
-          const lanes = await laneService.list({ includeArchived: false });
-          const matchingLane = lanes.find((lane) => {
-            const worktreePath = path.resolve(lane.worktreePath);
-            const attachedRootPath = lane.attachedRootPath ? path.resolve(lane.attachedRootPath) : null;
-            return (
-              targetRoot === worktreePath
-              || targetRoot.startsWith(`${worktreePath}${path.sep}`)
-              || (attachedRootPath !== null
-                && (targetRoot === attachedRootPath
-                  || targetRoot.startsWith(`${attachedRootPath}${path.sep}`)))
-            );
-          });
-          return matchingLane?.id ?? lanes[0]?.id ?? null;
+          pushEvent("runtime", { type: "app_control_event", event });
         },
+        resolveChatLaneId: async (chatId) => {
+          if (!agentChatServiceHolder.current) return null;
+          const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+          return chatSession?.laneId ?? null;
+        },
+        getScreencastRecorder: () =>
+          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.current : null,
+        getChromiumDemoEngine: () =>
+          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
+        // A lane may not attach to an app another lane's Mac Desktop holds.
+        // Read at call time: the Mac Desktop service is built just below.
+        macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
+        ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        resolvePrimaryPrUrl: (laneId: string): string | null =>
+          prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
+        resolveLaneName: async (laneId: string): Promise<string | null> => {
+          const lane = await laneService.getSummary(laneId).catch(() => null);
+          return lane?.name ?? null;
+        },
+        // No fallback lane: a session whose lane cannot be resolved is refused.
+        resolveLaneId: ({ cwd, laneId, chatSessionId }) => resolveSessionLaneId({
+          laneId,
+          chatSessionId,
+          cwd,
+          getChatLaneId: async (chatId) => {
+            if (!agentChatServiceHolder.current) return null;
+            const chatSession = await agentChatServiceHolder.current.getSessionSummary(chatId).catch(() => null);
+            return chatSession?.laneId ?? null;
+          },
+          isLiveLane: (id) => laneService.findLaneIdentity(id) !== null,
+          laneIdForPath: (absolutePath) => laneService.getLaneIdForPath(absolutePath),
+          isPrimaryLane: async (id) => (await laneService.getSummary(id, { includeStatus: false }))?.laneType === "primary",
+        }),
       });
+    // Teardown runs last-in first-out. The recorder bridge client is created
+    // further down, but its release is registered here so it runs AFTER
+    // appControlService.dispose: the service cancels its running recordings
+    // through that client, and a client disposed first drops the cancels,
+    // orphaning the desktop's encoder window for the lane.
+    teardown.push(() => {
+      const bridge = desktopBridgeHolder.current;
+      desktopBridgeHolder.current = null;
+      bridge?.dispose();
+      const demoEngine = desktopBridgeHolder.demoEngine;
+      desktopBridgeHolder.demoEngine = null;
+      demoEngine?.dispose();
+    });
     teardown.push(() => appControlService?.dispose());
+    if (appControlService) {
+      // An archived or deleted lane takes its App Control session with it.
+      laneTeardownDeps.appControlService = {
+        stopForLane: (laneId: string) => appControlService.stopForLane(laneId),
+      };
+    }
     /**
      * One private macOS screen per lane.
      *
@@ -1627,6 +1730,9 @@ export async function createAdeRuntime(args: {
         resolvePrimaryPrUrl: (laneId: string): string | null =>
           prServiceRef?.getForLane(laneId)?.githubUrl ?? null,
         ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
+        // A lane may not claim another lane's App Control app onto its screen.
+        appControlLaneForProcess: (pid: number): Promise<string | null> | null =>
+          appControlService?.laneForAppProcess(pid) ?? null,
         // The lease question rides the normal pending-input card.
         requestChatInput: async (input) => {
           const chat = agentChatServiceHolder.current;
@@ -1675,6 +1781,21 @@ export async function createAdeRuntime(args: {
       )
       : null;
     builtInBrowserBridgeForCapabilities = builtInBrowserBridge;
+    if (appControlService) {
+      const appControlRecorderBridge = createAppControlRecorderBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
+        logger,
+      });
+      desktopBridgeHolder.current = appControlRecorderBridge;
+      desktopBridgeHolder.demoEngine = createDemoEngineBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
+        logger,
+      });
+      desktopBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
+      // Released by the teardown step registered before appControlService's.
+    }
     teardown.push(() => {
       builtInBrowserBridgeForCapabilities = null;
       builtInBrowserBridge?.dispose();
@@ -1694,7 +1815,7 @@ export async function createAdeRuntime(args: {
         ? () => builtInBrowserBridge.getStatusForRuntime()
         : null,
       getAppControlStatus: appControlService
-        ? () => appControlService.getStatus()
+        ? (laneId) => appControlService.getStatus({ laneId })
         : null,
       // The runtime's own Mac Desktop service, read-only: the mirror holds
       // `getStatus` + `subscribe` and nothing that can start a display or move
@@ -1832,12 +1953,17 @@ export async function createAdeRuntime(args: {
         aiIntegrationService,
         ctoStateService,
         ctoMemoryService,
+        // The CTO acting on the account's other machines, for this project's
+        // repository there. Built on first use: most CTO turns never leave the
+        // home machine, and a project with no CTO turns never pays for it.
+        getCtoCrossMachine,
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
         getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
+          feedDemoTrackFromChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
         },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
@@ -1890,6 +2016,9 @@ export async function createAdeRuntime(args: {
     computerUseArtifactBrokerService.setChatTurnStartResolver(
       (sessionId) => agentChatService?.getTurnStartedAt?.(sessionId) ?? null,
     );
+    computerUseArtifactBrokerService.setChatTurnIdResolver(
+      (sessionId) => agentChatService?.getTurnId?.(sessionId) ?? null,
+    );
     bindIosSimulatorReleaseOnChatEnd({
       agentChatService,
       iosSimulatorService,
@@ -1903,6 +2032,16 @@ export async function createAdeRuntime(args: {
         ? { releaseIfOwnedBy: (sessionId: string) => macDesktopService.releaseIfOwnedBy(sessionId) }
         : null,
       logEvent: "mac_desktop.release_on_chat_end_failed",
+      logger,
+    });
+    // A chat that ends releases the App Control session it owns: ADE quits
+    // the app it launched and detaches one it only attached to.
+    bindDeviceReleaseOnChatEnd({
+      agentChatService,
+      device: appControlService
+        ? { releaseIfOwnedBy: (sessionId: string) => appControlService.stopForChat(sessionId) }
+        : null,
+      logEvent: "app_control.release_on_chat_end_failed",
       logger,
     });
     if (agentChatService) {
@@ -1945,13 +2084,28 @@ export async function createAdeRuntime(args: {
             return false;
           }
         },
-        resolveBase: async () => {
-          const { baseRef, fetchSucceeded } = await resolveLaneCreateRemoteBaseDetailed({
+        resolveBase: async (progress) => {
+          const resolution = await resolveLaneCreateRemoteBaseDetailed({
             laneService,
             gitService,
             projectConfigService,
+            ...(progress?.onWaitingForStaleFetch ? { onWaitingForStaleFetch: progress.onWaitingForStaleFetch } : {}),
           });
-          return { baseRef, fetch: baseRef ? (fetchSucceeded === false ? "failed" : "ok") : "skipped" };
+          const { baseRef, fetchSucceeded, fetchOutcome, fetchError, freshness, stale } = resolution;
+          const fetch = !baseRef
+            ? "skipped"
+            : fetchSucceeded === false
+              ? (fetchOutcome === "timeout" ? "timeout" : "failed")
+              : "ok";
+          return {
+            baseRef,
+            fetch,
+            fetchError: fetchError ?? null,
+            lastFetchedAtMs: freshness?.lastFetchedAtMs ?? null,
+            baseCommittedAtMs: freshness?.committedAtMs ?? null,
+            behindLocal: freshness?.behindLocal ?? null,
+            stale: stale === true,
+          };
         },
         resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
         resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),
@@ -2627,6 +2781,15 @@ export async function createAdeRuntime(args: {
         getExternalSessionsService: () => externalSessionsService,
         workToolsStateService,
         macDesktopService,
+        // App Control's `onEvent` feeds the runtime event buffer; the live
+        // view for phones and the web client reads the same events there.
+        appControl: appControlService
+          ? {
+              getStatus: appControlService.getStatus,
+              subscribeEvents: appControlEventsFromRuntimeBuffer(eventBuffer),
+              getLatestFrame: appControlService.getLatestFrame,
+            }
+          : null,
         appleDeviceService: iosSimulatorService,
         appleStreamRelay,
         getAppleRemoteBitrateKbpsCap: appleRemoteBitrateKbpsCap,
@@ -2849,6 +3012,7 @@ export async function createAdeRuntime(args: {
     automationService?.bindAdeActionRegistry(
       createAutomationAdeActionLookup(() => getAdeActionDomainServices(runtime)),
     );
+    runtimeForCtoActions = runtime;
 
     usageTrackingService.start();
     runtimeCreated = true;

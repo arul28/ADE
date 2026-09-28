@@ -134,7 +134,8 @@ export const WORK_TOOLS_STATE_EVENT_DEBOUNCE_MS = 250;
 export const WORK_TOOLS_MAC_DESKTOP_STATUS_DEADLINE_MS = 2_000;
 
 export type WorkToolsBrowserStatusReader = () => Promise<BuiltInBrowserRuntimeStatus>;
-export type WorkToolsAppControlStatusReader = () => AppControlStatus | Promise<AppControlStatus>;
+/** Reads one lane's App Control status: sessions are per lane. */
+export type WorkToolsAppControlStatusReader = (laneId: string) => AppControlStatus | Promise<AppControlStatus>;
 
 /**
  * The slice of the Mac Desktop service this aggregator is allowed to hold.
@@ -237,6 +238,8 @@ export type WorkToolsStateService = {
   noteAgentAppleActivity(args: AgentDeviceActivity): boolean;
   /** An agent drove this chat's lane Mac Desktop; see `WorkToolShowRequests`. */
   noteAgentMacDesktopActivity(args: AgentDeviceActivity): boolean;
+  /** An agent drove this chat's lane App Control app; see `WorkToolShowRequests`. */
+  noteAgentAppControlActivity(args: AgentDeviceActivity): boolean;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -680,7 +683,7 @@ export function createWorkToolsStateService(
     if (!reader) return null;
     let status: AppControlStatus;
     try {
-      status = await reader();
+      status = await reader(laneId);
     } catch (error) {
       args.logger?.debug("work_tools.app_control_status_failed", {
         err: error instanceof Error ? error.message : String(error),
@@ -965,6 +968,10 @@ export function createWorkToolsStateService(
 
     noteAgentMacDesktopActivity(input) {
       return args.showRequests?.noteAgentMacDesktopActivity(input) ?? false;
+    },
+
+    noteAgentAppControlActivity(input) {
+      return args.showRequests?.noteAgentAppControlActivity(input) ?? false;
     },
 
     flushPendingEvents() {

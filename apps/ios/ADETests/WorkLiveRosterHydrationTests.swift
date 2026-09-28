@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import ADE
 
@@ -524,6 +525,39 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
     XCTAssertEqual(database.fetchPullRequests().map(\.id), [baselinePullRequest.id])
   }
 
+  /// A `roster_delta` that re-sends a project unchanged must not publish:
+  /// every SyncService publish re-evaluates every observer, and unconditional
+  /// writes here were a steady ~6 publishes a second on a connected phone.
+  @MainActor
+  func testRosterDeltaWithUnchangedContentDoesNotPublish() {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    let service = SyncService(database: database)
+    defer { database.close() }
+    let chat = makeRosterChat(id: "chat-a", laneId: "lane-a")
+    let roster = makeRoster(
+      projectId: "p",
+      name: "P",
+      lanes: [makeRosterLane(id: "lane-a", name: "A", branch: "main")],
+      chats: [chat]
+    )
+    service.applyRosterSnapshot(RemoteRosterSnapshotPayload(seq: 1, projects: [roster]))
+    let revision = service.rosterRevision
+
+    var publishes = 0
+    let cancellable = service.objectWillChange.sink { _ in publishes += 1 }
+    defer { cancellable.cancel() }
+    service.applyRosterDelta(RemoteRosterDeltaPayload(seq: 2, changed: [roster], removed: nil))
+    XCTAssertEqual(publishes, 0)
+    XCTAssertEqual(service.rosterRevision, revision)
+
+    var renamed = roster
+    renamed.displayName = "Renamed"
+    service.applyRosterDelta(RemoteRosterDeltaPayload(seq: 3, changed: [renamed], removed: nil))
+    XCTAssertGreaterThan(publishes, 0)
+    XCTAssertEqual(service.rosterProjects.first?.displayName, "Renamed")
+    XCTAssertEqual(service.rosterRevision, revision + 1)
+  }
+
   @MainActor
   func testRosterCacheIsIsolatedByLegacyHostPortWhenProjectIdentityMatches() {
     let database = DatabaseService(baseURL: makeTemporaryDirectory())
@@ -748,6 +782,271 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
       sessions: [],
       chatSessions: [],
       signature: signature
+    )
+  }
+
+  // The host used to answer an argument-less prs.refresh with every stored
+  // snapshot (17 MB on a real project) and close the socket over it. The phone
+  // now asks for the bounded form, and a refresh that brings back fewer
+  // snapshots must not drop the ones it simply did not ask for.
+  @MainActor
+  func testPullRequestHydrationRequestsBoundedSnapshotsAndKeepsUnrequestedOnes() async throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at) values
+      ('project-a', '/tmp/a', 'A', 'main', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/a")
+    let lane = makeLane(id: "lane-a", name: "A")
+    try database.replaceLaneSnapshots([lane])
+    var merged = makePullRequest(id: "pr-merged", laneId: lane.id, projectId: "project-a")
+    merged.state = "merged"
+    let open = makePullRequest(id: "pr-open", laneId: lane.id, projectId: "project-a")
+    try database.replacePullRequestHydration(PullRequestRefreshPayload(
+      refreshedCount: 1,
+      prs: [merged],
+      snapshots: [makeSnapshot(prId: merged.id)]
+    ))
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: merged.id))
+
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+    }
+
+    let refresh = Task { try await service.refreshPullRequestSnapshots() }
+    let requestId = try await awaitCapturedCommandRequestId(service)
+    let args = try XCTUnwrap(service.capturedCommandArgsForTesting(requestId: requestId))
+    XCTAssertEqual(args["includeSnapshots"] as? String, "active")
+    XCTAssertNil(args["prId"])
+
+    let encoder = JSONEncoder()
+    let result: [String: Any] = [
+      "refreshedCount": 2,
+      "prs": try [merged, open].map { try JSONSerialization.jsonObject(with: encoder.encode($0)) },
+      "snapshots": [try JSONSerialization.jsonObject(with: encoder.encode(makeSnapshot(prId: open.id)))],
+      "snapshotScope": "active",
+      "omittedSnapshotPrIds": [String](),
+    ]
+    service.completeCapturedRequestForTesting(requestId: requestId, result: result)
+    try await refresh.value
+
+    XCTAssertEqual(Set(database.fetchPullRequests().map(\.id)), [merged.id, open.id])
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: open.id))
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: merged.id), "a bounded refresh must not prune snapshots it did not ask for")
+  }
+
+  @MainActor
+  func testResultTooLargeFailsOnlyThatCallWithoutReconnectOrRetry() async throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at) values
+      ('project-a', '/tmp/a', 'A', 'main', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/a")
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+    }
+    let generation = service.connectionGenerationForTesting()
+
+    let refresh = Task { try await service.refreshPullRequestSnapshots() }
+    let requestId = try await awaitCapturedCommandRequestId(service)
+    service.completeCapturedRequestForTesting(requestId: requestId, result: [
+      "commandId": requestId,
+      "ok": false,
+      "error": [
+        "code": "result_too_large",
+        "message": "The reply to prs.refresh was 16.3 MB, over the 12.0 MB sync limit.",
+        "bytes": 17_052_554,
+        "limitBytes": 12_582_912,
+      ],
+    ] as [String: Any])
+
+    do {
+      try await refresh.value
+      XCTFail("Expected result_too_large to fail the refresh.")
+    } catch {
+      XCTAssertTrue(isSyncResultTooLargeError(error))
+      XCTAssertFalse(isSyncRequestTimeoutError(error))
+      XCTAssertTrue(SyncUserFacingError.message(for: error).contains("too large"))
+      XCTAssertTrue(SyncUserFacingError.message(for: error).contains("16.3 MB"))
+    }
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertEqual(service.connectionGenerationForTesting(), generation)
+    XCTAssertEqual(service.status(for: .prs).phase, .failed)
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "command"), 1, "must not retry the same request")
+    XCTAssertTrue(service.pendingOperationsForTesting().isEmpty, "must not queue the refused command for replay")
+    XCTAssertFalse(service.hasScheduledReconnectWorkForTesting())
+  }
+
+  // The owner's installed brain ignores `includeSnapshots`; an argument-less
+  // prs.refresh there is still 17 MB. With `prs.list` advertised the phone
+  // never sends that call.
+  @MainActor
+  func testPullRequestHydrationIsTwoStepAndBatchedWhenHostHasPrsList() async throws {
+    let (database, service) = try makeTwoStepPrService()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      database.close()
+    }
+    let lane = makeLane(id: "lane-a", name: "A")
+    var archivedLane = makeLane(id: "lane-archived", name: "Archived")
+    archivedLane.archivedAt = "2026-07-22T00:00:00.000Z"
+    try database.replaceLaneSnapshots([lane, archivedLane])
+    var mergedGone = makePullRequest(id: "pr-merged-archived", laneId: archivedLane.id, projectId: "project-a")
+    mergedGone.state = "merged"
+    // Cached snapshot for a PR that will not be asked for.
+    try database.replacePullRequestHydration(PullRequestRefreshPayload(
+      refreshedCount: 1, prs: [mergedGone], snapshots: [makeSnapshot(prId: mergedGone.id)]
+    ))
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: mergedGone.id))
+    XCTAssertEqual(database.fetchLanes(includeArchived: false).map(\.id), [lane.id])
+
+    var openPrs = (0..<30).map { makePullRequest(id: "pr-open-\($0)", laneId: lane.id, projectId: "project-a") }
+    var mergedLive = makePullRequest(id: "pr-merged-live", laneId: lane.id, projectId: "project-a")
+    mergedLive.state = "merged"
+    openPrs.append(mergedLive)
+    let listed = openPrs + [mergedGone]
+
+    let refresh = Task { try await service.refreshPullRequestSnapshots() }
+    let listId = try await awaitCapturedCommand(service, index: 0)
+    XCTAssertEqual(service.capturedCommandForTesting(requestId: listId)?.action, "prs.list")
+    XCTAssertTrue(service.capturedCommandArgsForTesting(requestId: listId)?.isEmpty ?? true)
+    service.completeCapturedRequestForTesting(requestId: listId, result: try encodeJSON(listed))
+
+    var requestedBatches: [[String]] = []
+    for index in 1...2 {
+      let refreshId = try await awaitCapturedCommand(service, index: index)
+      XCTAssertEqual(service.capturedCommandForTesting(requestId: refreshId)?.action, "prs.refresh")
+      let args = try XCTUnwrap(service.capturedCommandArgsForTesting(requestId: refreshId))
+      XCTAssertEqual(args["includeSnapshots"] as? String, "active")
+      let batch = try XCTUnwrap(args["prIds"] as? [String])
+      requestedBatches.append(batch)
+      // An old brain answers with the whole list and only the asked-for snapshots.
+      service.completeCapturedRequestForTesting(requestId: refreshId, result: [
+        "refreshedCount": batch.count,
+        "prs": try encodeJSON(listed),
+        "snapshots": try encodeJSON(batch.map { makeSnapshot(prId: $0) }),
+      ] as [String: Any])
+    }
+    try await refresh.value
+
+    XCTAssertEqual(requestedBatches.map(\.count), [25, 6])
+    XCTAssertEqual(Set(requestedBatches.flatMap { $0 }), Set(openPrs.map(\.id)))
+    XCTAssertFalse(requestedBatches.flatMap { $0 }.contains(mergedGone.id))
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "command"), 3)
+    XCTAssertEqual(Set(database.fetchPullRequests().map(\.id)), Set(listed.map(\.id)))
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: "pr-open-29"))
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: mergedLive.id))
+    XCTAssertNotNil(database.fetchPullRequestSnapshot(prId: mergedGone.id), "must keep snapshots it did not ask for")
+    XCTAssertEqual(service.status(for: .prs).phase, .ready)
+  }
+
+  @MainActor
+  func testPullRequestHydrationSkipsRefreshWhenNothingIsActive() async throws {
+    let (database, service) = try makeTwoStepPrService()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      database.close()
+    }
+    var archivedLane = makeLane(id: "lane-archived", name: "Archived")
+    archivedLane.archivedAt = "2026-07-22T00:00:00.000Z"
+    try database.replaceLaneSnapshots([makeLane(id: "lane-a", name: "A"), archivedLane])
+    var merged = makePullRequest(id: "pr-merged", laneId: "lane-archived", projectId: "project-a")
+    merged.state = "merged"
+
+    let refresh = Task { try await service.refreshPullRequestSnapshots() }
+    let listId = try await awaitCapturedCommand(service, index: 0)
+    service.completeCapturedRequestForTesting(requestId: listId, result: try encodeJSON([merged]))
+    try await refresh.value
+
+    // An old brain would read an empty prIds as "every PR".
+    XCTAssertEqual(service.capturedOutboundEnvelopeCountForTesting(type: "command"), 1)
+    XCTAssertEqual(service.status(for: .prs).phase, .ready)
+  }
+
+  func testPullRequestRefreshBatchesAndActiveRule() {
+    XCTAssertEqual(syncPullRequestRefreshBatches([]), [])
+    XCTAssertEqual(syncPullRequestRefreshBatches(["a", "b", "c"], size: 2), [["a", "b"], ["c"]])
+    XCTAssertEqual(syncPullRequestRefreshBatches((0..<50).map(String.init)).map(\.count), [25, 25])
+    var draft = makePullRequest(id: "draft", laneId: "x", projectId: "p")
+    draft.state = "draft"
+    var closedLive = makePullRequest(id: "closed-live", laneId: "live", projectId: "p")
+    closedLive.state = "closed"
+    var mergedDead = makePullRequest(id: "merged-dead", laneId: "dead", projectId: "p")
+    mergedDead.state = "merged"
+    XCTAssertEqual(
+      syncActivePullRequestIds([draft, closedLive, mergedDead], liveLaneIds: ["live"]),
+      ["draft", "closed-live"]
+    )
+  }
+
+  @MainActor
+  private func makeTwoStepPrService() throws -> (DatabaseService, SyncService) {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    try database.executeSqlForTesting("""
+      insert into projects (id, root_path, display_name, default_base_ref, created_at, last_opened_at) values
+      ('project-a', '/tmp/a', 'A', 'main', '2026-07-22T00:00:00.000Z', '2026-07-22T00:00:00.000Z');
+    """)
+    let service = SyncService(database: database)
+    service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/a")
+    let policy = SyncRemoteCommandPolicy(viewerAllowed: true, requiresApproval: nil, localOnly: nil, queueable: nil)
+    service.setRemoteCommandDescriptorsForTesting([
+      SyncRemoteCommandDescriptor(action: "prs.list", policy: policy),
+      SyncRemoteCommandDescriptor(action: "prs.refresh", policy: policy),
+    ])
+    service.configureConnectedTransportForTesting()
+    service.beginOutboundEnvelopeCaptureForTesting()
+    return (database, service)
+  }
+
+  @MainActor
+  private func awaitCapturedCommand(_ service: SyncService, index: Int) async throws -> String {
+    var ids: [String] = []
+    for _ in 0..<200 where ids.count <= index {
+      await Task.yield()
+      ids = service.capturedOutboundRequestIdsForTesting(type: "command")
+    }
+    XCTAssertGreaterThan(ids.count, index, "expected command #\(index)")
+    return try XCTUnwrap(ids.count > index ? ids[index] : nil)
+  }
+
+  private func encodeJSON<T: Encodable>(_ value: T) throws -> Any {
+    try JSONSerialization.jsonObject(with: JSONEncoder().encode(value))
+  }
+
+  @MainActor
+  private func awaitCapturedCommandRequestId(_ service: SyncService) async throws -> String {
+    var requestId: String?
+    for _ in 0..<50 where requestId == nil {
+      await Task.yield()
+      requestId = service.capturedOutboundRequestIdsForTesting(type: "command").first
+    }
+    return try XCTUnwrap(requestId)
+  }
+
+  private func makeSnapshot(prId: String) -> PullRequestSnapshotHydration {
+    PullRequestSnapshotHydration(
+      prId: prId,
+      detail: nil,
+      status: nil,
+      checks: [],
+      reviews: [],
+      comments: [],
+      files: [],
+      commits: [],
+      updatedAt: "2026-07-22T00:00:02.000Z"
     )
   }
 

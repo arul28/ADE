@@ -11,7 +11,9 @@ import {
   decodeRemoteArtifactChunk,
   parseRangeHeader,
   resolveByteRange,
-  resolveContainedArtifactFile,
+  resolveScopedArtifactFile,
+  type ArtifactScopeResolver,
+  type ArtifactServeRefusalLogger,
   type RemoteArtifactRangeReader,
   type RequestedByteRange,
 } from "./artifactStreamProtocol";
@@ -33,10 +35,15 @@ import {
  */
 
 export type ArtifactMediaServerDeps = {
-  /** The active project root and its artifacts dir, read on every request. */
-  localScope: () => { projectRoot: string | null; allowedDir: string | null };
+  /**
+   * The project a local request is served from, read on every request: the
+   * project the URL's `root` names, or the focused one when it names none.
+   */
+  localScope: ArtifactScopeResolver;
   remoteReader: () => RemoteArtifactRangeReader | null;
   warn?: (message: string, details: Record<string, unknown>) => void;
+  /** Records a refused local read: reason, project, and the path asked for. */
+  onRefused?: ArtifactServeRefusalLogger;
   /** Tests pin the token; the app lets the server make one. */
   token?: string;
 };
@@ -132,23 +139,18 @@ function waitForDrain(res: http.ServerResponse): Promise<boolean> {
 async function serveLocal(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  relativePath: string,
+  target: { relativePath: string; projectRoot: string | null },
   deps: ArtifactMediaServerDeps,
 ): Promise<void> {
-  const scope = deps.localScope();
-  const file = resolveContainedArtifactFile({
-    requestedPath: relativePath,
+  const file = resolveScopedArtifactFile({
+    surface: "artifact-media",
+    requestedPath: target.relativePath,
     projectRelative: true,
-    projectRoot: scope.projectRoot,
-    allowedDir: scope.allowedDir,
+    requestedRoot: target.projectRoot,
+    resolveScope: deps.localScope,
+    onRefused: deps.onRefused,
   });
   if (!file.ok) {
-    if (file.reason === "outside") {
-      deps.warn?.("[artifact-media] rejected path outside artifacts dir", {
-        resolvedFile: file.filePath,
-        allowedDir: scope.allowedDir,
-      });
-    }
     sendText(res, 404, "Not found");
     return;
   }
@@ -257,7 +259,7 @@ export function createArtifactMediaServer(deps: ArtifactMediaServerDeps): Artifa
       return;
     }
     const served = target.kind === "project"
-      ? serveLocal(req, res, target.relativePath, deps)
+      ? serveLocal(req, res, target, deps)
       : serveRemote(req, res, target, deps.remoteReader());
     served.catch((error: unknown) => {
       deps.warn?.("[artifact-media] request failed", {

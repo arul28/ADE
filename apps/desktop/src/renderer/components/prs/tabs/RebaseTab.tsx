@@ -25,6 +25,9 @@ import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 import { formatTimeAgo } from "../shared/prFormatters";
 import { getModelById } from "../../../../shared/modelRegistry";
+import type { WorkflowItemMachine } from "../state/workflowMachines";
+import { machineBlockedReason, pinArg, useStableBinding } from "../../../state/laneMachineRouting";
+import { MachineChip } from "../../shared/MachineChip";
 
 function providerForModel(modelId: string): "codex" | "claude" {
   const descriptor = getModelById(modelId);
@@ -44,13 +47,31 @@ type RebaseTabProps = {
   onResolverChange: (model: string, level: string) => void;
   onResolverPermissionChange: (mode: PrAgentPermissionMode) => void;
   onRefresh: () => Promise<void>;
+  /**
+   * The machine that owns a lane. Every action on a need runs there with its
+   * pin; an unreachable owner blocks the action instead of falling back to the
+   * tab's machine. Absent = every lane is on the tab's machine.
+   */
+  machineForLane?: (laneId: string | null | undefined) => WorkflowItemMachine | null;
+  /** After an action ran on another machine: re-read that machine's needs. */
+  onMachineActionDone?: (machineId: string) => void;
+  /**
+   * The id to send to a lane's own machine. Other machines' needs and lanes
+   * are listed under view ids; absent = every id is already real.
+   */
+  realLaneId?: (laneId: string) => string;
 };
 
 type RebaseSectionKey = "lane_base" | "pr_target" | "stack_attention";
 type NeedSectionKey = Exclude<RebaseSectionKey, "stack_attention">;
 
-function rebaseRunKey(args: { laneId: string; baseBranch?: string | null }): string {
-  return `${args.laneId}:${branchNameFromRef(args.baseBranch)}`;
+/**
+ * A run's identity for matching it to a need: its machine, its lane's real id
+ * and its base. Lane ids are unique per machine only, so a run on one machine
+ * must never be taken for a same-id need on another.
+ */
+function rebaseRunKey(args: { machineId: string | null | undefined; laneId: string; baseBranch?: string | null }): string {
+  return `${args.machineId ?? ""}|${args.laneId}:${branchNameFromRef(args.baseBranch)}`;
 }
 
 /* ── inline style constants ── */
@@ -110,7 +131,11 @@ export function RebaseTab({
   onResolverChange,
   onResolverPermissionChange,
   onRefresh,
+  machineForLane,
+  onMachineActionDone,
+  realLaneId: toRealLaneId,
 }: RebaseTabProps) {
+  const realLaneId = React.useCallback((laneId: string) => toRealLaneId?.(laneId) ?? laneId, [toRealLaneId]);
   // Inside the PRs page the list goes to the list column; on its own it keeps
   // the tiled list and detail panes.
   const listHost = usePrsListHost();
@@ -128,13 +153,17 @@ export function RebaseTab({
   const [selectedPushLaneIds, setSelectedPushLaneIds] = React.useState<string[]>([]);
   const activeRunIdRef = React.useRef<string | null>(null);
 
+  // The machine of the need being acted on; set below once selection resolves.
+  const actionMachineRef = React.useRef<WorkflowItemMachine | null>(null);
   const refreshRebaseNeeds = React.useCallback(async () => {
+    const machine = actionMachineRef.current;
     try {
-      await window.ade.rebase.scanNeeds();
+      await window.ade.rebase.scanNeeds(...pinArg(machine?.pin));
     } catch {
       /* best effort */
     }
-  }, []);
+    if (machine?.pin) onMachineActionDone?.(machine.machineId);
+  }, [onMachineActionDone]);
 
   // Drift commits state
   const [driftCommits, setDriftCommits] = React.useState<GitCommitSummary[]>([]);
@@ -203,11 +232,6 @@ export function RebaseTab({
     [selectedNeed, upstreamChainByLaneId],
   );
 
-  const selectedNeedRunKey = React.useMemo(
-    () => (selectedNeed ? rebaseRunKey({ laneId: selectedNeed.laneId, baseBranch: selectedNeed.baseBranch }) : null),
-    [selectedNeed],
-  );
-
   const selectedLane = React.useMemo(
     () => {
       if (selectedNeed) return laneById.get(selectedNeed.laneId) ?? null;
@@ -216,6 +240,40 @@ export function RebaseTab({
     },
     [laneById, selectedAttentionItem, selectedNeed],
   );
+
+  // Where the selected item's calls go, and why they can't when they can't.
+  const selectedLaneId = selectedNeed?.laneId ?? selectedAttentionItem?.laneId ?? null;
+  const selectedMachine = React.useMemo(
+    () => machineForLane?.(selectedLaneId) ?? null,
+    [machineForLane, selectedLaneId],
+  );
+  const selectedBlocked = machineBlockedReason(selectedMachine);
+  // Held by the pin's key: the machine objects are re-derived on every read.
+  const selectedPin = useStableBinding(selectedMachine?.pin ?? null);
+  const onPin = React.useMemo(() => pinArg(selectedPin), [selectedPin]);
+  // The run's machine is fixed when it starts; abort/rollback/push follow it.
+  const [activeRunMachine, setActiveRunMachine] = React.useState<WorkflowItemMachine | null>(null);
+  const runPinBinding = useStableBinding((activeRunMachine ?? selectedMachine)?.pin ?? null);
+  const runPin = React.useMemo(() => pinArg(runPinBinding), [runPinBinding]);
+  actionMachineRef.current = activeRunMachine ?? selectedMachine;
+  // Runs report the lane's real id, on the machine the run belongs to.
+  const selectedNeedRunKey = React.useMemo(
+    () => (selectedNeed
+      ? rebaseRunKey({
+          machineId: selectedMachine?.machineId,
+          laneId: realLaneId(selectedNeed.laneId),
+          baseBranch: selectedNeed.baseBranch,
+        })
+      : null),
+    [realLaneId, selectedMachine?.machineId, selectedNeed],
+  );
+  React.useEffect(() => {
+    if (!activeRun) setActiveRunMachine(null);
+  }, [activeRun]);
+  const guardAction = (): boolean => {
+    if (selectedBlocked) setRebaseError(selectedBlocked);
+    return !selectedBlocked;
+  };
 
   const hasChildren = (selectedLane?.childCount ?? 0) > 0;
   const selectedNeedIsPrTarget = selectedNeed?.kind === "pr_target";
@@ -263,18 +321,26 @@ export function RebaseTab({
   React.useEffect(() => {
     activeRunIdRef.current = activeRun?.runId ?? null;
     activeRunKeyRef.current = activeRun
-      ? rebaseRunKey({ laneId: activeRun.rootLaneId, baseBranch: activeRun.baseBranch })
+      ? rebaseRunKey({
+          machineId: (activeRunMachine ?? actionMachineRef.current)?.machineId,
+          laneId: activeRun.rootLaneId,
+          baseBranch: activeRun.baseBranch,
+        })
       : null;
-  }, [activeRun]);
+  }, [activeRun, activeRunMachine]);
 
   // Subscribe to rebase events
   React.useEffect(() => {
+    // The stream is the machine `runPin` addresses; its events are that machine's runs.
+    const streamMachine = actionMachineRef.current;
     const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
       if (event.type === "rebase-run-updated") {
         const incomingRunKey = rebaseRunKey({
+          machineId: streamMachine?.machineId,
           laneId: event.run.rootLaneId,
           baseBranch: event.run.baseBranch,
         });
+        const adopting = !activeRunIdRef.current && Boolean(selectedNeedRunKey) && incomingRunKey === selectedNeedRunKey;
         setActiveRun((prev) => {
           if (prev?.runId) {
             if (event.run.runId !== prev.runId) return prev;
@@ -285,6 +351,9 @@ export function RebaseTab({
           activeRunKeyRef.current = incomingRunKey;
           return event.run;
         });
+        // An adopted run stays on its machine: abort/rollback/push follow it
+        // even when the selection moves elsewhere.
+        if (adopting) setActiveRunMachine(streamMachine);
         if (event.run.state !== "running") {
           void refreshRebaseNeeds();
         }
@@ -297,20 +366,24 @@ export function RebaseTab({
           return next.slice(-80);
         });
       }
-    });
+    }, ...runPin);
     return unsubscribe;
-  }, [refreshRebaseNeeds, selectedNeedRunKey]);
+  }, [refreshRebaseNeeds, runPin, selectedNeedRunKey]);
 
   // Fetch drift commits when selected need changes
   const driftSourceLaneId = React.useMemo(() => {
     if (!selectedNeed || selectedNeed.behindBy === 0) return null;
     const baseBranch = branchNameFromRef(selectedNeed.baseBranch);
     if (!baseBranch) return null;
-    return lanes.find((lane) => branchNameFromRef(lane.branchRef) === baseBranch)?.id ?? null;
-  }, [lanes, selectedNeed]);
+    // The base lane must be on the same machine: its commits are read there.
+    const sameMachine = (lane: LaneSummary) =>
+      !machineForLane || machineForLane(lane.id)?.machineId === selectedMachine?.machineId;
+    return lanes.find((lane) => branchNameFromRef(lane.branchRef) === baseBranch && sameMachine(lane))?.id ?? null;
+  }, [lanes, machineForLane, selectedMachine?.machineId, selectedNeed]);
 
+  const selectedNeedBehindBy = selectedNeed?.behindBy ?? 0;
   React.useEffect(() => {
-    if (!selectedNeed || selectedNeed.behindBy === 0) {
+    if (selectedNeedBehindBy === 0) {
       setDriftCommits([]);
       setCommitFilesMap({});
       setExpandedCommitSha(null);
@@ -333,7 +406,12 @@ export function RebaseTab({
 
     let cancelled = false;
     setDriftCommitsLoading(true);
-    window.ade.git.listRecentCommits({ laneId: driftSourceLaneId, limit: selectedNeed.behindBy })
+    if (selectedBlocked) {
+      setDriftCommits([]);
+      setDriftCommitsLoading(false);
+      return;
+    }
+    window.ade.git.listRecentCommits({ laneId: realLaneId(driftSourceLaneId), limit: selectedNeedBehindBy }, ...onPin)
       .then((commits) => {
         if (!cancelled) setDriftCommits(commits);
       })
@@ -345,24 +423,25 @@ export function RebaseTab({
       });
 
     return () => { cancelled = true; };
-  }, [driftSourceLaneId, selectedNeed?.behindBy, selectedNeed?.laneId, selectedNeedIsPrTarget]);
+  }, [driftSourceLaneId, onPin, realLaneId, selectedBlocked, selectedNeedBehindBy, selectedNeed?.laneId, selectedNeedIsPrTarget]);
 
   // Load files for expanded commit
   const parentLaneId = driftSourceLaneId;
   React.useEffect(() => {
     if (!expandedCommitSha || commitFilesMap[expandedCommitSha] || !parentLaneId) return;
-    window.ade.git.listCommitFiles({ laneId: parentLaneId, commitSha: expandedCommitSha })
+    window.ade.git.listCommitFiles({ laneId: realLaneId(parentLaneId), commitSha: expandedCommitSha }, ...onPin)
       .then((files) => {
         setCommitFilesMap((prev) => ({ ...prev, [expandedCommitSha]: files }));
       })
       .catch(() => {
         setCommitFilesMap((prev) => ({ ...prev, [expandedCommitSha]: [] }));
       });
-  }, [expandedCommitSha, commitFilesMap, parentLaneId]);
+  }, [expandedCommitSha, commitFilesMap, onPin, parentLaneId, realLaneId]);
 
   const handleRebase = async (aiAssisted: boolean, pushMode: "none" | "review_then_push" = "none") => {
     if (!selectedNeed) return;
     setRebaseError(null);
+    if (!guardAction()) return;
     const requestedNeedRunKey = selectedNeedRunKey;
 
     if (selectedNeedIsPrTarget && selectedLane?.parentLaneId) {
@@ -378,19 +457,19 @@ export function RebaseTab({
       setResolverLaunching(true);
       try {
         const result = await window.ade.rebase.execute({
-          laneId: selectedNeed.laneId,
+          laneId: realLaneId(selectedNeed.laneId),
           aiAssisted: true,
           provider: providerForModel(resolverModel),
           modelId: resolverModel,
           reasoningEffort: resolverReasoningLevel || null,
           permissionMode: resolverPermissionMode,
-        });
+        }, ...onPin);
         if (!result.success) {
           setRebaseError(result.error ?? "AI-assisted rebase failed.");
           return;
         }
         if (forcePushAfterRebase) {
-          await window.ade.git.push({ laneId: selectedNeed.laneId, forceWithLease: true });
+          await window.ade.git.push({ laneId: realLaneId(selectedNeed.laneId), forceWithLease: true }, ...onPin);
         }
         await onRefresh();
       } catch (err: unknown) {
@@ -404,12 +483,13 @@ export function RebaseTab({
     setRebaseBusy(true);
     try {
       const started = await window.ade.lanes.rebaseStart({
-        laneId: selectedNeed.laneId,
+        laneId: realLaneId(selectedNeed.laneId),
         scope: runScope,
         pushMode,
         actor: "user",
         ...(selectedNeedIsPrTarget ? { baseBranchOverride: selectedNeed.baseBranch } : {}),
-      });
+      }, ...onPin);
+      setActiveRunMachine(selectedMachine);
       activeRunKeyRef.current = requestedNeedRunKey;
       setActiveRun(started.run);
       setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Started run ${started.runId}`].slice(-80));
@@ -420,7 +500,7 @@ export function RebaseTab({
       } else if (pushMode === "review_then_push" && pushable.length > 0) {
         // Auto-push all succeeded lanes when "Rebase and Push" was clicked
         setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Auto-pushing ${pushable.length} lane(s)...`].slice(-80));
-        const pushed = await window.ade.lanes.rebasePush({ runId: started.runId, laneIds: pushable });
+        const pushed = await window.ade.lanes.rebasePush({ runId: started.runId, laneIds: pushable }, ...onPin);
         setActiveRun(pushed);
         setRunLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] Push complete`].slice(-80));
       }
@@ -440,8 +520,8 @@ export function RebaseTab({
   const activeRunForSelectedNeed = activeRunMatchesSelectedNeed ? activeRun : null;
   const selectedRunIsActive = activeRunMatchesSelectedNeed && activeRun?.state === "running";
   const selectedRunLane = React.useMemo(
-    () => (activeRunMatchesSelectedNeed && selectedNeed ? activeRun?.lanes.find((lane) => lane.laneId === selectedNeed.laneId) ?? null : null),
-    [activeRun, activeRunMatchesSelectedNeed, selectedNeed],
+    () => (activeRunMatchesSelectedNeed && selectedNeed ? activeRun?.lanes.find((lane) => lane.laneId === realLaneId(selectedNeed.laneId)) ?? null : null),
+    [activeRun, activeRunMatchesSelectedNeed, realLaneId, selectedNeed],
   );
   const selectedNeedResolvedByRun = Boolean(
     selectedRunLane
@@ -455,7 +535,7 @@ export function RebaseTab({
     setRebaseBusy(true);
     setRebaseError(null);
     try {
-      const next = await window.ade.lanes.rebaseAbort({ runId: activeRun.runId });
+      const next = await window.ade.lanes.rebaseAbort({ runId: activeRun.runId }, ...runPin);
       setActiveRun(next);
       await refreshRebaseNeeds();
       await onRefresh();
@@ -471,7 +551,7 @@ export function RebaseTab({
     setRebaseBusy(true);
     setRebaseError(null);
     try {
-      const next = await window.ade.lanes.rebaseRollback({ runId: activeRun.runId });
+      const next = await window.ade.lanes.rebaseRollback({ runId: activeRun.runId }, ...runPin);
       setActiveRun(next);
       await refreshRebaseNeeds();
       await onRefresh();
@@ -487,7 +567,7 @@ export function RebaseTab({
     setRebaseBusy(true);
     setRebaseError(null);
     try {
-      const next = await window.ade.lanes.rebasePush({ runId: activeRun.runId, laneIds: selectedPushLaneIds });
+      const next = await window.ade.lanes.rebasePush({ runId: activeRun.runId, laneIds: selectedPushLaneIds }, ...runPin);
       setActiveRun(next);
       await refreshRebaseNeeds();
       await onRefresh();
@@ -501,8 +581,9 @@ export function RebaseTab({
   const handleDismiss = async () => {
     if (!selectedNeed) return;
     setRebaseError(null);
+    if (!guardAction()) return;
     try {
-      await window.ade.lanes.dismissRebaseSuggestion({ laneId: selectedNeed.laneId });
+      await window.ade.lanes.dismissRebaseSuggestion({ laneId: realLaneId(selectedNeed.laneId) }, ...onPin);
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -512,8 +593,9 @@ export function RebaseTab({
   const handleDefer = async () => {
     if (!selectedNeed) return;
     setRebaseError(null);
+    if (!guardAction()) return;
     try {
-      await window.ade.lanes.deferRebaseSuggestion({ laneId: selectedNeed.laneId, minutes: 4 * 60 });
+      await window.ade.lanes.deferRebaseSuggestion({ laneId: realLaneId(selectedNeed.laneId), minutes: 4 * 60 }, ...onPin);
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -546,12 +628,12 @@ export function RebaseTab({
         }}
         onClick={() => onSelectItem(itemKey)}
       >
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <StatusDot
             color={need.conflictPredicted ? S.warning : need.behindBy > 0 ? S.info : S.success}
             pulse={need.conflictPredicted}
           />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="font-mono font-bold truncate" style={{ fontSize: 11, color: S.textPrimary }}>
               {laneName}
             </div>
@@ -566,6 +648,11 @@ export function RebaseTab({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {/* Icon-only in this dense row; the machine is named on hover. */}
+          {(() => {
+            const chip = machineForLane?.(need.laneId)?.chip;
+            return chip ? <MachineChip machine={chip} subject="This lane" compact /> : null;
+          })()}
           {need.behindBy > 0 && (
             <span
               className="font-mono font-bold uppercase"
@@ -628,9 +715,9 @@ export function RebaseTab({
         }}
         onClick={() => onSelectItem(item.key)}
       >
-        <div className="flex items-center gap-2 min-w-0">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <StatusDot color={stateColor} pulse={item.state === "rebaseConflict"} />
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <div className="font-mono font-bold truncate" style={{ fontSize: 11, color: S.textPrimary }}>
               {lane?.name ?? item.laneName}
             </div>
@@ -640,6 +727,10 @@ export function RebaseTab({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
+          {(() => {
+            const chip = machineForLane?.(item.laneId)?.chip;
+            return chip ? <MachineChip machine={chip} subject="This lane" compact /> : null;
+          })()}
           <span
             className="font-mono font-bold uppercase"
             style={{
@@ -1682,6 +1773,7 @@ export function RebaseTab({
 
             {/* ── Error Banner ── */}
             {rebaseError && <ErrorBanner message={rebaseError} />}
+            {!rebaseError && selectedBlocked ? <ErrorBanner message={selectedBlocked} /> : null}
 
           </div>
         ) : selectedAttentionStatus ? (
@@ -1770,6 +1862,7 @@ export function RebaseTab({
             </div>
 
             {rebaseError ? <ErrorBanner message={rebaseError} /> : null}
+            {!rebaseError && selectedBlocked ? <ErrorBanner message={selectedBlocked} /> : null}
           </div>
         ) : inListColumn ? (
           <div className="flex h-full"><PrsQuietLine fill>Select a lane</PrsQuietLine></div>
@@ -1820,6 +1913,11 @@ export function RebaseTab({
       onRefresh,
       onResolverChange,
       onResolverPermissionChange,
+      // Handlers above capture these pins; a machine change must rebuild them.
+      onPin,
+      runPin,
+      selectedBlocked,
+      machineForLane,
     ],
   );
 

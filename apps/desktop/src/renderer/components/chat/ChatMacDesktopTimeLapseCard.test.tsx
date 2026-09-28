@@ -111,7 +111,7 @@ describe("resolveMacDesktopTimeLapseSrc", () => {
       mediaBaseUrl: async () => BASE,
       readArtifactPreview,
     });
-    expect(src).toBe(`${BASE}/project/.ade/artifacts/computer-use/mac-desktop-turn-t1.mp4`);
+    expect(src).toBe(`${BASE}/project/.ade/artifacts/computer-use/mac-desktop-turn-t1.mp4?root=${encodeURIComponent(ROOT)}`);
     expect(readArtifactPreview).not.toHaveBeenCalled();
   });
 

@@ -1,23 +1,31 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type MutableRefObject,
 } from "react";
-import { PictureInPicture } from "@phosphor-icons/react";
+import { PictureInPicture, type Icon } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { PaneTooltip } from "../ui/PaneTooltip";
+import { MakingDemoPill, RecordingPill } from "./RecordingReceipt";
 import {
   enterCanvasPictureInPicture,
   WORK_LIVE_PIP_UNSUPPORTED_LABEL,
   type WorkLivePipSession,
 } from "../work/workLiveIosPictureInPicture";
 import {
+  floatingPlayerFramesBefore,
+  setFloatingPlayerSlot,
+  useFloatingPlayerSlotsVersion,
+} from "./floatingPlayerSlots";
+import {
   clampFloatingPlayerPosition,
   FLOATING_PLAYER_CORNER_RADIUS,
+  placeFloatingPlayerClear,
   resizeFloatingPlayer,
   resolveFloatingPlayerFrame,
   type FloatingPlayerFrame,
@@ -64,6 +72,17 @@ const PIP_CONCEALED_STYLE = {
 
 const FALLBACK_CONTAINER: FloatingPlayerSize = { width: 960, height: 640 };
 
+/**
+ * The Work column's title rail (chat title, its buttons). A player never sits
+ * on it: a fresh one opens below it and a drag stops at it. Read from the
+ * shared CSS variable; 0 where it is not defined.
+ */
+function readTopInset(node: HTMLElement): number {
+  if (typeof window === "undefined" || typeof window.getComputedStyle !== "function") return 0;
+  const value = Number.parseFloat(window.getComputedStyle(node).getPropertyValue("--ade-work-chrome-rail-h"));
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
 /** What the user chose for the box: a width and a place, each null for "never moved". */
 export type FloatingPlayerChoice = {
   width: number | null;
@@ -81,6 +100,11 @@ export function useFloatingPlayerFrame(args: {
   source: FloatingPlayerSize;
   initial?: FloatingPlayerChoice | null;
   onCommit?: (choice: FloatingPlayerChoice) => void;
+  /**
+   * This player's place among the floating players on screen. A player that
+   * was never moved opens clear of the ones placed before it.
+   */
+  slot?: { id: string; shown: boolean } | null;
 }): {
   hostRef: MutableRefObject<HTMLDivElement | null>;
   frame: FloatingPlayerFrame;
@@ -95,7 +119,7 @@ export function useFloatingPlayerFrame(args: {
    * `setPosition`/`setWidth` on an unmounted component against a stale box.
    */
   const gestureCleanupRef = useRef<(() => void) | null>(null);
-  const [container, setContainer] = useState({ width: 0, height: 0 });
+  const [container, setContainer] = useState({ width: 0, height: 0, topInset: 0 });
   /**
    * Viewport pixels per CSS pixel of the column. The hosted web client zooms
    * `<body>` with CSS `zoom`, so the pointer moves in one unit and `left`/`top`
@@ -121,7 +145,12 @@ export function useFloatingPlayerFrame(args: {
       const width = node.clientWidth || rect.width;
       const height = node.clientHeight || rect.height;
       scaleRef.current = width > 0 && rect.width > 0 ? rect.width / width : 1;
-      setContainer({ width, height });
+      const topInset = readTopInset(node);
+      setContainer((current) => (
+        current.width === width && current.height === height && current.topInset === topInset
+          ? current
+          : { width, height, topInset }
+      ));
     };
     read();
     if (typeof ResizeObserver === "undefined") return undefined;
@@ -138,8 +167,41 @@ export function useFloatingPlayerFrame(args: {
 
   // An unmeasured column (not laid out yet) stands in as a common one, for the
   // frame and for the gestures alike, so a drag clamps to the box it sees.
-  const box = container.width > 0 ? container : FALLBACK_CONTAINER;
-  const frame = resolveFloatingPlayerFrame({ width, position, source, container: box });
+  // The box starts under the title rail: layout runs in the box's own
+  // coordinates, and the stored place is in the column's.
+  const inset = container.width > 0 ? container.topInset : 0;
+  const box = useMemo<FloatingPlayerSize>(() => (
+    container.width > 0
+      ? { width: container.width, height: Math.max(0, container.height - container.topInset) }
+      : FALLBACK_CONTAINER
+  ), [container]);
+  useFloatingPlayerSlotsVersion();
+  const slotId = args.slot?.id ?? null;
+  const slotShown = args.slot?.shown ?? false;
+  let inBox = resolveFloatingPlayerFrame({
+    width,
+    position: position ? { x: position.x, y: position.y - inset } : null,
+    source,
+    container: box,
+  });
+  if (!position && slotId) {
+    const clear = placeFloatingPlayerClear({
+      size: { width: inBox.width, height: inBox.height },
+      container: box,
+      others: floatingPlayerFramesBefore(slotId).map((other) => ({ ...other, y: other.y - inset })),
+    });
+    inBox = resolveFloatingPlayerFrame({ width, position: clear, source, container: box });
+  }
+  const frame: FloatingPlayerFrame = { ...inBox, y: inBox.y + inset };
+
+  useEffect(() => {
+    if (!slotId) return undefined;
+    setFloatingPlayerSlot(slotId, slotShown ? frame : null);
+    return undefined;
+  }, [frame.height, frame.width, frame.x, frame.y, slotId, slotShown]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => {
+    if (slotId) setFloatingPlayerSlot(slotId, null);
+  }, [slotId]);
 
   /** Listens on the window until the pointer comes up, then reports the choice. */
   const track = useCallback((move: (event: PointerEvent) => void) => {
@@ -167,15 +229,16 @@ export function useFloatingPlayerFrame(args: {
     const size = { width: frame.width, height: frame.height };
     const scale = scaleRef.current;
     track((moveEvent) => {
-      const next = clampFloatingPlayerPosition(
-        { x: start.x + (moveEvent.clientX - origin.x) / scale, y: start.y + (moveEvent.clientY - origin.y) / scale },
+      const clamped = clampFloatingPlayerPosition(
+        { x: start.x + (moveEvent.clientX - origin.x) / scale, y: start.y - inset + (moveEvent.clientY - origin.y) / scale },
         box,
         size,
       );
+      const next = { x: clamped.x, y: clamped.y + inset };
       choiceRef.current = { ...choiceRef.current, position: next };
       setPosition(next);
     });
-  }, [box, frame.height, frame.width, frame.x, frame.y, track]);
+  }, [box, frame.height, frame.width, frame.x, frame.y, inset, track]);
 
   const startResize = useCallback((
     event: ReactPointerEvent<HTMLElement>,
@@ -185,7 +248,7 @@ export function useFloatingPlayerFrame(args: {
     event.preventDefault();
     event.stopPropagation();
     const origin = { x: event.clientX, y: event.clientY };
-    const start: FloatingPlayerFrame = { ...frame };
+    const start: FloatingPlayerFrame = { ...frame, y: frame.y - inset };
     const scale = scaleRef.current;
     track((moveEvent) => {
       const next = resizeFloatingPlayer({
@@ -195,11 +258,12 @@ export function useFloatingPlayerFrame(args: {
         source,
         container: box,
       });
-      choiceRef.current = { width: next.width, position: { x: next.x, y: next.y } };
+      const nextPosition = { x: next.x, y: next.y + inset };
+      choiceRef.current = { width: next.width, position: nextPosition };
       setWidth(next.width);
-      setPosition({ x: next.x, y: next.y });
+      setPosition(nextPosition);
     });
-  }, [box, frame, source, track]);
+  }, [box, frame, inset, source, track]);
 
   return { hostRef, frame, startDrag, startResize };
 }
@@ -262,6 +326,108 @@ export function useCanvasPictureInPicture(getCanvas: () => HTMLCanvasElement | n
 const BAR_TEXT_BUTTON =
   "shrink-0 whitespace-nowrap rounded-full px-2 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-white/[0.07] hover:text-fg";
 
+/**
+ * A recording of the picture, as the player shows it: the live pill with its
+ * Stop while it runs, then "Making demo…" until the demo is filed.
+ *
+ * The player's red dot alone could not say how long a recording had run or
+ * offer a way to end it, so a recording an agent started kept running behind a
+ * floating preview with no control on it (the owner's 2026-09-27 report).
+ */
+export type FloatingPlayerCapture = {
+  /** When the running recording started; null once it has stopped. */
+  startedAt: string | null;
+  /** Between the stop and the demo being filed, including a stop in flight. */
+  makingDemo: boolean;
+  onStop: () => void;
+};
+
+/**
+ * Stop through the tool's own API, and "Making demo…" for as long as the stop
+ * takes. A stop now renders the demo before it answers — seconds, not a frame —
+ * and a pill that vanished on click read as a Stop that did nothing.
+ */
+export function useFloatingPlayerStop(stop: (() => Promise<unknown>) | null): {
+  stopping: boolean;
+  onStop: () => void;
+} {
+  const [stopping, setStopping] = useState(false);
+  const stoppingRef = useRef(false);
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+  }, []);
+  const onStop = useCallback(() => {
+    const run = stopRef.current;
+    if (!run || stoppingRef.current) return;
+    stoppingRef.current = true;
+    setStopping(true);
+    void run()
+      .catch(() => {})
+      .finally(() => {
+        stoppingRef.current = false;
+        if (mountedRef.current) setStopping(false);
+      });
+  }, []);
+  return { stopping, onStop };
+}
+
+/**
+ * A player's recording pill state: running from `startedAt`, "Making demo…"
+ * while the surface says so or a stop is in flight, and the stop itself. Null
+ * when there is nothing to show.
+ */
+export function useFloatingPlayerCapture(args: {
+  startedAt: string | null;
+  makingDemo: boolean;
+  stop: (() => Promise<unknown>) | null;
+}): FloatingPlayerCapture | null {
+  const { stopping, onStop } = useFloatingPlayerStop(args.stop);
+  const { startedAt, makingDemo } = args;
+  return useMemo(() => (
+    startedAt || makingDemo || stopping
+      ? { startedAt, makingDemo: makingDemo || stopping, onStop }
+      : null
+  ), [makingDemo, onStop, startedAt, stopping]);
+}
+
+/** The pill over the picture, ticking once a second only while it runs. */
+export function FloatingPlayerCapturePill({ capture, attrPrefix, marker }: {
+  capture: FloatingPlayerCapture;
+  attrPrefix: string;
+  /** Extra attributes on the pill, e.g. a card's "inert to my click" marker. */
+  marker?: Record<string, string>;
+}) {
+  const running = Boolean(capture.startedAt) && !capture.makingDemo;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return undefined;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+  if (capture.makingDemo) {
+    return (
+      <MakingDemoPill
+        marker={{ ...marker, [`data-${attrPrefix}-making-demo`]: "" }}
+        className="bottom-2 z-[3] px-2 text-[11px]"
+      />
+    );
+  }
+  if (!capture.startedAt) return null;
+  const startedAt = Date.parse(capture.startedAt);
+  return (
+    <RecordingPill
+      marker={{ ...marker, [`data-${attrPrefix}-recording-pill`]: "" }}
+      elapsedMs={Number.isFinite(startedAt) ? Math.max(0, now - startedAt) : 0}
+      onStop={capture.onStop}
+      className="bottom-2 z-[3] px-2 text-[11px]"
+    />
+  );
+}
+
 export function FloatingPlayerShell({
   hostRef,
   frame,
@@ -277,6 +443,8 @@ export function FloatingPlayerShell({
   onClose,
   pip,
   barLeading = null,
+  icon = null,
+  capture = null,
   children,
 }: {
   hostRef: MutableRefObject<HTMLDivElement | null>;
@@ -303,6 +471,10 @@ export function FloatingPlayerShell({
   };
   /** Extra facts at the start of the hover bar (who drives the picture). */
   barLeading?: ReactNode;
+  /** The tool's own glyph, the one its Work tab and the chat header show. */
+  icon?: { Icon: Icon; color: string } | null;
+  /** A recording of the picture in progress, or null when none is. */
+  capture?: FloatingPlayerCapture | null;
   /** The picture, and anything drawn over it. The shell's chrome sits above. */
   children: ReactNode;
 }) {
@@ -344,6 +516,17 @@ export function FloatingPlayerShell({
       {children}
 
       {/*
+        The frame's hairline, drawn over the picture. On the box itself it sat
+        under the picture and vanished wherever the picture reached the edge,
+        so a dark app over a dark chat had no visible frame at all.
+      */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-[1] ring-1 ring-inset ring-border"
+        style={{ borderRadius: FLOATING_PLAYER_CORNER_RADIUS }}
+      />
+
+      {/*
         Moving the box lives on one invisible strip under the top edge (inside
         the north resize zone). A picture that takes input must not also grab
         the player; one that does not may add its own drag surface.
@@ -363,6 +546,18 @@ export function FloatingPlayerShell({
           onPointerDown={(event) => onStartResize(event, zone.direction)}
         />
       ))}
+
+      {icon ? (
+        <span
+          aria-hidden="true"
+          {...{ [data("icon")]: "" }}
+          className="pointer-events-none absolute left-2 top-2 z-[3] inline-flex h-5 w-5 items-center justify-center rounded-md bg-black/55 shadow-[0_0_0_1px_rgba(255,255,255,0.08)]"
+        >
+          <icon.Icon size={12} weight="duotone" style={{ color: icon.color }} />
+        </span>
+      ) : null}
+
+      {capture ? <FloatingPlayerCapturePill capture={capture} attrPrefix={attrPrefix} /> : null}
 
       <div className="absolute right-2 top-2 z-[3]">
         {hovered ? (
@@ -400,10 +595,10 @@ export function FloatingPlayerShell({
         ) : (
           <span
             aria-hidden="true"
-            {...{ [data("dot")]: recording ? "recording" : "idle" }}
+            {...{ [data("dot")]: recording || capture?.startedAt ? "recording" : "idle" }}
             className={cn(
               "block h-2 w-2 rounded-full",
-              recording ? "bg-[var(--color-error)] motion-safe:animate-pulse" : "bg-fg/45",
+              recording || capture?.startedAt ? "bg-[var(--color-error)] motion-safe:animate-pulse" : "bg-fg/45",
             )}
           />
         )}

@@ -51,6 +51,16 @@ const PRICING_CACHE_FORMAT_VERSION = 2;
 
 export const WEB_SEARCH_COST_USD = 0.01;
 export const ONE_HOUR_CACHE_WRITE_MULTIPLIER = 1.6;
+/**
+ * What Claude Code's fast mode bills relative to the model's standard rate.
+ *
+ * Fast mode is a 2× multiple on Opus 5.5, Opus 5, and Opus 4.8 — Opus 5.5's
+ * $4/$20 per MTok becomes $8/$40. Claude Code records the request as
+ * `usage.speed: "fast"`, and models.dev (ADE's one price list) carries no fast
+ * rate, so the multiple is a constant rather than a table lookup. It is the
+ * same number t3code reads from LiteLLM's `provider_specific_entry.fast`.
+ */
+export const FAST_MODE_PRICE_MULTIPLIER = 2;
 
 const ZERO_PRICE: TokenPrice = Object.freeze({ input: 0, output: 0, cacheWrite: 0, cacheRead: 0 });
 
@@ -628,12 +638,13 @@ function scaleRates(rates: TokenRates, factor: number): TokenRates {
  * The rates that bill ONE model request: the long-context tier its context
  * lands in (only when the caller knows the request's own context size — a
  * turn or session total must not be passed here, or it would be billed at the
- * long rate), then DeepSeek's peak-hour doubling when a timestamp is given.
+ * long rate), then DeepSeek's peak-hour doubling when a timestamp is given,
+ * then Claude Code's fast-mode multiple when the request says it was fast.
  */
 export function ratesForRequest(
   model: string,
   price: TokenPrice,
-  request: { contextTokens?: number | null; timestampMs?: number | null } = {},
+  request: { contextTokens?: number | null; timestampMs?: number | null; fast?: boolean } = {},
 ): TokenRates {
   let rates: TokenRates = { input: price.input, output: price.output, cacheWrite: price.cacheWrite, cacheRead: price.cacheRead };
   const context = request.contextTokens;
@@ -647,6 +658,9 @@ export function ratesForRequest(
   const at = request.timestampMs;
   if (typeof at === "number" && Number.isFinite(at) && at > 0 && isFirstPartyDeepSeekModel(model) && isDeepSeekPeak(at)) {
     rates = scaleRates(rates, 2);
+  }
+  if (request.fast) {
+    rates = scaleRates(rates, FAST_MODE_PRICE_MULTIPLIER);
   }
   return rates;
 }

@@ -672,9 +672,9 @@ relay payload E2E encryption is planned security work. See the trust boundary in
     even on a machine that already carries the `portForward` grant, because the
     *agent* picks the port — "Always for this lane" decisions live in
     `browserTunnelAlwaysKeys` on the lane's persisted Work view state.
-    Per-chat origin approvals key on the (machine, remote port) a local origin
-    currently stands for (`remoteTunnelOrigins`), so one tunnel's approval
-    cannot be inherited by the next forward handed the same local port.
+    Which agents may use the ADE browser at all is a separate, machine-wide
+    setting that does not depend on the site (see computer-use docs, "Who can
+    use the ADE browser").
 
     Because the browser is this desktop's, the Browser tool is **available on
     remote lanes** — `workToolAvailability` gates only the iOS simulator and App

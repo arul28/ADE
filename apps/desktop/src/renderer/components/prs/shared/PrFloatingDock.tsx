@@ -242,6 +242,7 @@ export function PrMergeCard({
   actionBusy,
   actions,
   onMerge,
+  mergeBlockedReason = null,
   notice,
   onClose,
 }: {
@@ -253,6 +254,8 @@ export function PrMergeCard({
   actionBusy: boolean;
   actions: PrMergeCardActions;
   onMerge: (result: PrMergeDialogResult) => void;
+  /** Merge buttons disable with this reason (e.g. "<Machine> is offline"). */
+  mergeBlockedReason?: string | null;
   notice?: { tone: "success" | "error"; text: string } | null;
   onClose: () => void;
 }) {
@@ -346,7 +349,8 @@ export function PrMergeCard({
             <button
               type="button"
               onClick={() => runAction(primary.action)}
-              disabled={primary.busy || (primaryIsMerge && actionBusy)}
+              disabled={primary.busy || (primaryIsMerge && (actionBusy || Boolean(mergeBlockedReason)))}
+              title={primaryIsMerge && mergeBlockedReason ? mergeBlockedReason : undefined}
               data-testid="pr-merge-card-primary"
               className="inline-flex h-8 flex-1 items-center justify-center gap-1.5 rounded-lg px-3 text-[12.5px] font-semibold transition-opacity disabled:opacity-60"
               style={{
@@ -379,8 +383,8 @@ export function PrMergeCard({
             <button
               type="button"
               onClick={() => openMergeDialog(anyway.bypass)}
-              disabled={anyway.blocked || actionBusy}
-              title={anyway.blockedReason ?? (anyway.skips.length ? `Skips: ${anyway.skips.join(", ")}` : undefined)}
+              disabled={anyway.blocked || actionBusy || Boolean(mergeBlockedReason)}
+              title={mergeBlockedReason ?? anyway.blockedReason ?? (anyway.skips.length ? `Skips: ${anyway.skips.join(", ")}` : undefined)}
               data-testid="pr-merge-anyway"
               data-bypass={anyway.bypass || undefined}
               className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3 text-[12px] font-medium transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40${primary ? "" : " flex-1"}`}
@@ -396,6 +400,12 @@ export function PrMergeCard({
               {anyway.bypass ? "Bypass & merge" : "Merge anyway"}
             </button>
           ) : null}
+        </div>
+      ) : null}
+
+      {mergeBlockedReason ? (
+        <div className="text-[11.5px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }} data-testid="pr-merge-offline-reason">
+          {mergeBlockedReason}
         </div>
       ) : null}
 

@@ -122,3 +122,20 @@ export function bareSimulatorPowerOff(run: RunCommand): (udid: string) => Promis
   });
   return (udid) => power.powerOffDevice(udid, "delete");
 }
+
+/**
+ * Power a simulator off, then delete it with all its data.
+ *
+ * The power-off first: `simctl delete` on a booted device can leave
+ * CoreSimulator holding the data directory and report success having removed
+ * nothing. A failed power-off does not stop the delete; a failed delete throws.
+ */
+export async function deleteAppleSimulator(
+  udid: string,
+  deps: { run: RunCommand; powerOff: (udid: string) => Promise<unknown>; stillFree?: () => boolean },
+): Promise<boolean> {
+  await deps.powerOff(udid).catch(() => undefined);
+  if (deps.stillFree && !deps.stillFree()) return false;
+  await deps.run("xcrun", ["simctl", "delete", udid], { timeoutMs: 120_000 });
+  return true;
+}

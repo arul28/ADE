@@ -189,8 +189,6 @@ export function createTurnUsageAccountResolvers<Session>(deps: {
   sessionInstanceId: (session: Session) => string | null | undefined;
   /** The endpoint ADE hands OpenCode for a local server, or null for any other provider. */
   openCodeLocalEndpoint: (providerID: string) => string | null;
-  /** The data dirs of the OpenCode server this session runs on, when it is not the user's own. */
-  openCodeDataDirs: (session: Session) => readonly string[] | undefined;
   env?: () => NodeJS.ProcessEnv;
   now?: () => number;
 }) {
@@ -239,10 +237,14 @@ export function createTurnUsageAccountResolvers<Session>(deps: {
       return buildInstanceUsageAccount({ provider: "codex", kind, instance, routedAway, plan: planType });
     },
 
-    /** OpenCode account for the upstream provider that served the turn. */
-    openCode(session: Session, providerID: string): AgentChatUsageAccount {
-      const dataDirs = deps.openCodeDataDirs(session);
-      return resolveOpenCode({ providerID, ...(dataDirs ? { dataDirs } : {}) });
+    /**
+     * OpenCode account for the upstream provider that served the turn. The
+     * shared lookup order leads with ADE's owned store and keeps the user's
+     * behind it for a legacy session re-opened on its original home, so one
+     * reader covers both.
+     */
+    openCode(_session: Session, providerID: string): AgentChatUsageAccount {
+      return resolveOpenCode({ providerID });
     },
   };
 }

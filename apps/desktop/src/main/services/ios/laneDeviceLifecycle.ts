@@ -8,7 +8,8 @@ import type {
   IosSimulatorShutdownResult,
 } from "../../../shared/types";
 import type { IosDeviceHub } from "./iosDeviceHub";
-import { AppleDeviceAttachedNotDeletableError, type LaneDeviceRegistry } from "./laneDeviceRegistry";
+import { AppleDeviceAttachedNotDeletableError } from "./appleDeviceErrors";
+import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
 
 /**
  * A lane giving up its device: detach, delete, a takeover, and the picker's
@@ -144,9 +145,10 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
    * Give up the lane's device and keep the simulator installed.
    *
    * The off card's "Choose another device": the lane goes back to the picker
-   * and nothing is deleted, clone or attached. The simulator keeps its power
+   * and nothing is deleted now. The simulator keeps its power
    * state and shows up in the picker as a free device. `deviceDelete` is the
-   * verb that removes a clone.
+   * verb that removes an ADE device. An ADE device that no lane picks again is
+   * a leftover, and the cleanup pass deletes it after its grace period.
    *
    * Same single-owner rule as `deviceStop`: a chat cannot detach a device
    * another chat is driving unless it passes `force` or `ignoreOwnership`.
@@ -166,7 +168,7 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
   };
 
   /**
-   * Give up the lane's device for good. A clone is deleted (the registry
+   * Give up the lane's device for good. An ADE device is deleted (the registry
    * powers it off first); an attached device is only detached, and only with
    * `force`, because ADE never deletes a simulator it did not create.
    *
@@ -259,5 +261,5 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
     deps.invalidateStatus(runtime);
   };
 
-  return { releaseLaneHold, deviceDetach, deviceDelete, deviceDeleteInstalled };
+  return { releaseLaneHold, releaseUnlanedHolds, deviceDetach, deviceDelete, deviceDeleteInstalled };
 }

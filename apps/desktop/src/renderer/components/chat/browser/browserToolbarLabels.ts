@@ -100,6 +100,12 @@ export function recordingEndedByLabel(value: unknown): string | null {
     const minutes = Math.round(BUILT_IN_BROWSER_MAX_RECORDING_MS / 60_000);
     return `${minutes}-minute limit reached. The clip was saved.`;
   }
+  if (value === "idle") {
+    return "Nothing happened for 2 minutes. The clip was saved.";
+  }
+  if (value === "disk") {
+    return "The disk is almost full or the recording got too large. The clip was saved.";
+  }
   if (value === "handoff") {
     return "Sign-in took the tab. The partial clip was discarded and recording does not resume.";
   }

@@ -13,10 +13,20 @@ import {
 import { EXTERNAL_SESSION_PROVIDERS as EXTERNAL_SESSION_PROVIDER_LIST } from "../../../../desktop/src/shared/types/externalSessions";
 import { isAgentChatStopMode } from "../../../../desktop/src/shared/chatStopModes";
 import { runWithAbortSignal } from "./abortSignal";
+import {
+  buildSyncResultTooLargeError,
+  SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES,
+  SYNC_RESULT_TOO_LARGE_ERROR_CODE,
+  type SyncResultTooLargeError,
+} from "./syncProtocol";
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/cursorCloudNaming";
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
+import type { SyncPairingRecord } from "./syncPairingStore";
+import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import type {
+  PrSnapshotHydration,
+  PrSummary,
   AgentChatCreateArgs,
   AgentChatCreateScheduledWorkArgs,
   AgentChatAcceptCrossMachineHandoffArgs,
@@ -188,6 +198,7 @@ import type {
   SyncListExternalSessionsArgs,
   SyncListExternalSessionsResult,
   SyncCommandPayload,
+  SyncCommandResultPayload,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
@@ -262,6 +273,7 @@ import type { PushPublisherService } from "../push/pushPublisherService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
 import type { createMacDesktopService } from "../../../../desktop/src/main/services/macDesktop/macDesktopService";
 import type { MacDesktopSyncStream, MacDesktopSyncStreamSink } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
+import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
 import {
   createAppleRemoteCommandHandlers,
   type AppleDeviceRemoteService,
@@ -367,7 +379,148 @@ export type ExternalSessionsRemoteService = {
 
 const EXTERNAL_SESSION_PROVIDERS = new Set<ExternalSessionProvider>(EXTERNAL_SESSION_PROVIDER_LIST);
 
+/** Thrown when a command's serialized result is over the sync reply limit. */
+export class SyncRemoteCommandResultTooLargeError extends Error {
+  readonly code = SYNC_RESULT_TOO_LARGE_ERROR_CODE;
+  readonly details: SyncResultTooLargeError;
+
+  constructor(details: SyncResultTooLargeError) {
+    super(details.message);
+    this.name = "SyncRemoteCommandResultTooLargeError";
+    this.details = details;
+  }
+}
+
+// --- Shared `command` policy (every sync ingress) ----------------------------
+//
+// The project sync host and the brain's projectless ingress run the same gate,
+// the same args identity and the same error mapping for a `command` envelope,
+// so a phone sees one contract whichever of them answers.
+
+/**
+ * Cursor Cloud lifecycle writes are available to the interactive mobile/web
+ * clients, but not to another desktop or VPS peer acting as a read-only
+ * viewer. Bootstrap metadata is caller-controlled, so only the server-recorded
+ * pairing identity can grant this authority.
+ */
+export function isInteractiveControllerPeer(
+  peer: { pairingRecord: SyncPairingRecord | null },
+): boolean {
+  return peer.pairingRecord?.peerPlatform === "iOS"
+    || peer.pairingRecord?.peerDeviceType === "phone"
+    || peer.pairingRecord?.peerDeviceType === "browser";
+}
+
+function stableJsonValue(value: unknown): unknown {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(input).sort()) {
+    output[key] = stableJsonValue(input[key]);
+  }
+  return output;
+}
+
+/** Key-order-independent JSON of a command's args. */
+export function stableJsonKey(value: unknown): string {
+  return JSON.stringify(stableJsonValue(value)) ?? "null";
+}
+
+/**
+ * The identity of a command's args in an idempotency ledger: a retried command
+ * id with a different fingerprint is a different command, not a replay.
+ */
+export function remoteCommandArgsFingerprint(args: unknown): string {
+  return createHash("sha256").update(stableJsonKey(args)).digest("hex");
+}
+
+/** Why the policy gate refused a command: the ack message and the result error. */
+export type RemoteCommandRejection = { code: string; message: string };
+
+/**
+ * The policy gate a `command` passes before it runs. `hostProjectId` is the
+ * project this ingress resolved the command to (null when it has none);
+ * `requestedProjectId` is the project the command named by id.
+ */
+export function evaluateRemoteCommandPolicy(args: {
+  action: string;
+  descriptor: Pick<SyncRemoteCommandDescriptor, "scope" | "policy"> | null | undefined;
+  peer: { pairingRecord: SyncPairingRecord | null };
+  requestedProjectId: string | null;
+  hostProjectId: string | null;
+}): RemoteCommandRejection | null {
+  const { action, descriptor } = args;
+  const policy = descriptor?.policy ?? null;
+  if (!policy) {
+    return { code: "unsupported_command", message: `Unsupported remote command: ${action}.` };
+  }
+  if (descriptor?.scope === "project") {
+    if (args.hostProjectId && !args.requestedProjectId) {
+      return {
+        code: "missing_project",
+        message: `Remote command ${action} requires projectId. Select the project again and retry.`,
+      };
+    }
+    if (args.requestedProjectId && !args.hostProjectId) {
+      return {
+        code: "project_not_open",
+        message: `Remote command ${action} requires an open project on this ADE machine.`,
+      };
+    }
+  }
+  if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(args.peer))) {
+    return {
+      code: "forbidden_command",
+      message: `Remote command ${action} is not available to paired controller devices.`,
+    };
+  }
+  if (policy.localOnly || policy.requiresApproval) {
+    return { code: "approval_required", message: `Remote command ${action} requires approval on this machine.` };
+  }
+  return null;
+}
+
+/**
+ * The `command_result` for a command that threw. Coded errors (e.g. laneService
+ * attach's lane_already_linked) embed the code in the message so it survives
+ * IPC transports; the command runs in-process here, so the gate is the Error's
+ * real `code` property — parsing the message alone would also mangle legit
+ * prefixes like git's "fatal:".
+ */
+export function commandErrorResult(commandId: string, error: unknown): SyncCommandResultPayload {
+  if (error instanceof SyncRemoteCommandResultTooLargeError) {
+    return { commandId, ok: false, error: error.details };
+  }
+  const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
+  const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
+  return {
+    commandId,
+    ok: false,
+    error: directCode
+      ? { code: directCode, message: parseCodedErrorMessage(error).message }
+      : { code: "command_failed", message: error instanceof Error ? error.message : String(error) },
+  };
+}
+
+/** UTF-8 size of the JSON a result serializes to; 0 when it cannot be measured. */
+export function measureSyncRemoteCommandResultBytes(result: unknown): number {
+  if (result === undefined || result === null) return 0;
+  if (typeof result !== "object" && typeof result !== "string") return 0;
+  try {
+    const json = JSON.stringify(result);
+    return typeof json === "string" ? Buffer.byteLength(json, "utf8") : 0;
+  } catch {
+    // Unserializable results fail later in the envelope encoder with their own
+    // error; the size guard is not the place to report them.
+    return 0;
+  }
+}
+
 type SyncRemoteCommandServiceArgs = {
+  /** Overrides the result size limit. Tests only. */
+  remoteCommandResultMaxBytes?: number;
   /**
    * Per-project cr-sqlite DB. Source of truth for the model-picker store
    * (favorites + recents) when no explicit `getModelPickerStore` accessor is
@@ -436,6 +589,12 @@ type SyncRemoteCommandServiceArgs = {
    * that built no Mac Desktop service — register no stream methods.
    */
   macDesktopSyncStream?: MacDesktopSyncStream | null;
+  /**
+   * App Control live frames for remote viewers. Absent on a runtime without an
+   * App Control service (chat-only), in which case `appControl.*` is not
+   * registered.
+   */
+  appControlSyncStream?: AppControlSyncStream | null;
   /**
    * The Apple device environment. Absent on Windows/Linux and on a chat-only
    * runtime, in which case `apple.*` is simply not registered and the phone /
@@ -514,6 +673,11 @@ export type SyncRemoteCommandExecutionContext = {
    * the stream over the command reply.
    */
   macDesktopStream?: MacDesktopSyncStreamSink;
+  /**
+   * The invoking peer's transport for `appControl.streamSubscribe`, for the
+   * same reason as `macDesktopStream`.
+   */
+  appControlStream?: AppControlSyncStreamSink;
   /**
    * The invoking socket's stable id. Every `macDesktop.*` command receives it
    * (the host sets it for that action prefix alone), because the takeover
@@ -1342,7 +1506,7 @@ function parseProjectConfigSaveArgs(value: Record<string, unknown>): { candidate
 }
 
 // `ai.apiKeys` holds live provider API keys (spent by aiIntegrationService and
-// openCodeRuntime), and the top-level `providers` bag is an unvalidated
+// the OpenCode server config, `buildOpenCodeConfig`), and the top-level `providers` bag is an unvalidated
 // passthrough that historically carried the same. Neither is reachable from a
 // paired peer: reads drop them, and writes keep whatever is already on disk.
 // The write side matters as much as the read side — every Settings section
@@ -4646,10 +4810,12 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   // to public HTTPS hosts; see chat/sourceFaviconService.ts.
   register("chat.resolveSourceFavicons", { viewerAllowed: true }, async (payload) =>
     getSourceFaviconService().resolve(payload), "runtime");
+  // Bound the registry sent to a phone: a project can discover hundreds of
+  // skill/command files, and the composer only ever renders a prefix list.
   register("chat.getSlashCommands", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSlashCommands(
       parseAgentChatSlashCommandsArgs(payload),
-    ));
+    ).slice(0, 200));
   register("chat.getParallelLaunchState", { viewerAllowed: true }, async (payload) => {
     const db = requireService(args.db, "Database not available.");
     const parsed = parseAgentChatParallelLaunchStateArgs(payload);
@@ -4956,8 +5122,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes) && payload.maxBytes > 0
       ? payload.maxBytes
       : undefined;
+    // chatLogV2 durable cursor, same meaning as `chat_history.beforeSequence`:
+    // rows with `sequence < beforeSequence`, taking precedence over the byte
+    // cursor. Advertised as the `chatHistoryPageBySequence` hello feature.
+    const beforeSequence = historyPageBeforeSequence(payload.beforeSequence);
     return await agentChatService.getChatEventHistoryPage(sessionId, {
       beforeOffset,
+      ...(beforeSequence != null ? { beforeSequence } : {}),
       ...(maxBytes != null ? { maxBytes } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     });
@@ -5110,6 +5281,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog(parseChatModelCatalogArgs(payload)));
 
+}
+
+/** A `beforeSequence` history cursor: a non-negative integer, else absent. */
+export function historyPageBeforeSequence(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -5678,11 +5854,53 @@ function registerMacDesktopRemoteCommands({
         sink,
       });
     });
-    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload) =>
+    // Only the connection that subscribed may end its stream.
+    register("macDesktop.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
       macDesktopSyncStream.unsubscribe(
         requireString(payload.subscriptionId, "macDesktop.streamUnsubscribe requires subscriptionId."),
+        context.macDesktopStream?.connectionId ?? null,
       ));
   }
+}
+
+/**
+ * App Control live view over the sync socket.
+ *
+ * All three are read-only and viewer-allowed, like the rest of the Work tools
+ * mirror: the phone and the web client watch the lane's app, they do not drive
+ * it. `status` answers for one lane (or project-wide without a lane);
+ * `streamSubscribe` forwards the lane's throttled JPEG frames as
+ * `appControl.streamFrame` pushes until `streamUnsubscribe` or the socket
+ * closes.
+ */
+function registerAppControlRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const stream = args.appControlSyncStream;
+  if (!stream) return;
+  register("appControl.status", { viewerAllowed: true }, async (payload) =>
+    await stream.getStatus({
+      laneId: asTrimmedString(payload.laneId) ?? null,
+      chatSessionId: asTrimmedString(payload.chatSessionId) ?? null,
+    }));
+  register("appControl.streamSubscribe", { viewerAllowed: true }, async (payload, context) => {
+    const sink = context.appControlStream;
+    if (!sink) throw new Error("appControl.streamSubscribe requires a live sync connection.");
+    const viewerLabel = asTrimmedString(payload.viewerLabel);
+    const maxFps = typeof payload.maxFps === "number" && Number.isFinite(payload.maxFps) ? payload.maxFps : null;
+    return await stream.subscribe({
+      laneId: requireString(payload.laneId, "appControl.streamSubscribe requires laneId."),
+      subscriptionId: requireString(payload.subscriptionId, "appControl.streamSubscribe requires subscriptionId."),
+      connectionId: sink.connectionId,
+      ...(viewerLabel ? { viewerLabel } : {}),
+      ...(maxFps != null ? { maxFps } : {}),
+      sink,
+    });
+  });
+  // Only the connection that subscribed may end its stream.
+  register("appControl.streamUnsubscribe", { viewerAllowed: true }, async (payload, context) =>
+    stream.unsubscribe(
+      requireString(payload.subscriptionId, "appControl.streamUnsubscribe requires subscriptionId."),
+      context.appControlStream?.connectionId ?? null,
+    ));
 }
 
 /**
@@ -5933,7 +6151,9 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
   });
   register("cto.updateIdentity", { viewerAllowed: true, queueable: true }, async (payload) => {
     const ctoStateService = requireService(args.ctoStateService, "CTO state service not available.");
-    const patch = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
+    const raw = isRecord(payload.patch) ? (payload.patch as Partial<CtoIdentity>) : {};
+    // The cross-machine switch is the desktop's alone (see `CtoIdentity`).
+    const { crossMachineEnabled: _enabled, ...patch } = raw;
     return ctoStateService.updateIdentity(patch);
   });
 }
@@ -6402,6 +6622,135 @@ function requireCloudAgentId(value: unknown, action: string): string {
   return id;
 }
 
+export type PrRefreshSnapshotScope = "all" | "active" | "none";
+
+type PrRefreshSyncArgs = {
+  prId: string | null;
+  prIds: string[];
+  includeSnapshots: PrRefreshSnapshotScope;
+};
+
+/**
+ * Serialized snapshot bytes one `prs.refresh` reply may carry. Snapshots past
+ * it are listed in `omittedSnapshotPrIds`; the client fetches those one PR at
+ * a time (`prs.refresh { prId }`) when the PR is opened.
+ */
+export const PR_REFRESH_SNAPSHOT_BUDGET_BYTES = 6 * 1024 * 1024;
+
+function parsePrRefreshSyncArgs(payload: Record<string, unknown>): PrRefreshSyncArgs {
+  const raw = payload.includeSnapshots;
+  // Old phones send no args; they get the bounded default.
+  const includeSnapshots: PrRefreshSnapshotScope = raw === "all" || raw === "none" ? raw : "active";
+  return {
+    prId: asTrimmedString(payload.prId),
+    prIds: asStringArray(payload.prIds),
+    includeSnapshots,
+  };
+}
+
+function isOpenPrState(state: string | null | undefined): boolean {
+  return state === "open" || state === "draft";
+}
+
+async function listLiveLaneIdsForPrRefresh(args: SyncRemoteCommandServiceArgs): Promise<Set<string> | null> {
+  try {
+    const lanes = await args.laneService.list({ includeArchived: false, includeStatus: false });
+    return new Set(lanes.map((lane) => lane.id));
+  } catch (error) {
+    args.logger.warn("sync.prs_refresh.live_lanes_failed", {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * `prs.refresh` for sync clients. Without `prId`/`prIds` it returns the whole
+ * PR list (small) but only the snapshots that matter now: PRs that are open or
+ * whose lane is still live. Snapshots for merged PRs on archived lanes load on
+ * demand. Every reply is capped at `PR_REFRESH_SNAPSHOT_BUDGET_BYTES` of
+ * snapshots, so the reply can never grow with the project's PR history.
+ */
+export async function refreshPullRequestsForSync(
+  args: Pick<SyncRemoteCommandServiceArgs, "prService" | "laneService" | "logger">,
+  input: PrRefreshSyncArgs,
+  budgetBytes: number = PR_REFRESH_SNAPSHOT_BUDGET_BYTES,
+): Promise<{
+  refreshedCount: number;
+  prs: PrSummary[];
+  snapshots: PrSnapshotHydration[];
+  snapshotScope: PrRefreshSnapshotScope | "requested";
+  omittedSnapshotPrIds: string[];
+}> {
+  const { prId, prIds } = input;
+  let refreshArgs: { prId?: string; prIds?: string[] } = {};
+  if (prId) refreshArgs = { prId };
+  else if (prIds.length > 0) refreshArgs = { prIds };
+  await args.prService.refresh(refreshArgs);
+  const allPrs = await args.prService.listAll();
+  const requestedPrIds = new Set(prId ? [prId] : prIds);
+  const isRequested = requestedPrIds.size > 0;
+  const prs = isRequested ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
+  let refreshedCount = prs.length;
+  if (prId) refreshedCount = 1;
+  else if (prIds.length > 0) refreshedCount = prIds.length;
+
+  let snapshotScope: PrRefreshSnapshotScope | "requested" = isRequested ? "requested" : input.includeSnapshots;
+  if (input.includeSnapshots === "none") snapshotScope = "none";
+  let snapshotPrIds: string[] | null;
+  if (snapshotScope === "none") {
+    snapshotPrIds = [];
+  } else if (snapshotScope === "requested") {
+    snapshotPrIds = [...requestedPrIds];
+  } else if (snapshotScope === "all") {
+    snapshotPrIds = null;
+  } else {
+    const liveLaneIds = await listLiveLaneIdsForPrRefresh(args as SyncRemoteCommandServiceArgs);
+    snapshotPrIds = allPrs
+      .filter((pr) => isOpenPrState(pr.state) || (liveLaneIds?.has(pr.laneId) ?? false))
+      .map((pr) => pr.id);
+  }
+  const wantedPrIds = snapshotPrIds === null ? null : new Set(snapshotPrIds);
+  const candidates = (snapshotPrIds === null
+    ? args.prService.listSnapshots()
+    : snapshotPrIds.length === 0
+      ? []
+      : prId
+        ? args.prService.listSnapshots({ prId })
+        : args.prService.listSnapshots({ prIds: snapshotPrIds }))
+    // The service narrows in SQL; this keeps the reply exact regardless.
+    .filter((snapshot) => wantedPrIds === null || wantedPrIds.has(snapshot.prId));
+
+  // Open PRs first, so a budget cut drops history rather than live work.
+  const stateByPrId = new Map(allPrs.map((pr) => [pr.id, pr.state] as const));
+  const ordered = [...candidates].sort((left, right) =>
+    Number(isOpenPrState(stateByPrId.get(right.prId))) - Number(isOpenPrState(stateByPrId.get(left.prId))));
+  const snapshots: PrSnapshotHydration[] = [];
+  const omittedSnapshotPrIds: string[] = [];
+  let usedBytes = 0;
+  for (const snapshot of ordered) {
+    const bytes = measureSyncRemoteCommandResultBytes(snapshot);
+    // A single requested PR always goes out; the command-level guard still
+    // refuses it if it alone is over the sync limit.
+    if (usedBytes + bytes > budgetBytes && !(prId && snapshots.length === 0)) {
+      omittedSnapshotPrIds.push(snapshot.prId);
+      continue;
+    }
+    usedBytes += bytes;
+    snapshots.push(snapshot);
+  }
+  if (omittedSnapshotPrIds.length > 0) {
+    args.logger.info("sync.prs_refresh.snapshots_over_budget", {
+      snapshotScope,
+      includedCount: snapshots.length,
+      omittedCount: omittedSnapshotPrIds.length,
+      usedBytes,
+      budgetBytes,
+    });
+  }
+  return { refreshedCount, prs, snapshots, snapshotScope, omittedSnapshotPrIds };
+}
+
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("prs.list", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listAll());
   register("prs.listOpenForRepo", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listOpenPullRequests());
@@ -6413,30 +6762,8 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.syncLanePr(parseLaneIdArgs(payload, "prs.syncLanePr").laneId));
   register("prs.reconcileOnFocus", { viewerAllowed: true }, async (payload) =>
     args.prService.reconcileOnFocus({ force: payload?.force === true }));
-  register("prs.refresh", { viewerAllowed: true, observesAbort: true }, async (payload) => {
-    const prId = asTrimmedString(payload.prId);
-    const prIds = asStringArray(payload.prIds);
-    let refreshArgs: { prId?: string; prIds?: string[] } = {};
-    if (prId) refreshArgs = { prId };
-    else if (prIds.length > 0) refreshArgs = { prIds };
-    await args.prService.refresh(refreshArgs);
-    const allPrs = await args.prService.listAll();
-    const requestedPrIds = new Set(prId ? [prId] : prIds);
-    const prs = requestedPrIds.size > 0 ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
-    let refreshedCount = prs.length;
-    if (prId) refreshedCount = 1;
-    else if (prIds.length > 0) refreshedCount = prIds.length;
-    const snapshots = prId
-      ? args.prService.listSnapshots({ prId }).filter((snapshot) => requestedPrIds.has(snapshot.prId))
-      : requestedPrIds.size > 0
-        ? args.prService.listSnapshots().filter((snapshot) => requestedPrIds.has(snapshot.prId))
-        : args.prService.listSnapshots();
-    return {
-      refreshedCount,
-      prs,
-      snapshots,
-    };
-  });
+  register("prs.refresh", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    refreshPullRequestsForSync(args, parsePrRefreshSyncArgs(payload)));
   // iOS "Send to your Mac" deeplink bounce. Mobile cannot natively open a
   // lane / repo-branch / cross-repo PR deeplink, so it forwards the URL to
   // the paired desktop via this command. Desktop main.ts wires up
@@ -6486,10 +6813,13 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getMergeContexts(asStringArray(payload.prIds)));
   register("prs.listWithConflicts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listWithConflicts({ includeConflictAnalysis: payload.includeConflictAnalysis === true }));
-  register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prService.listSnapshots({
+  register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) => {
+    const prIds = asStringArray(payload.prIds);
+    return args.prService.listSnapshots({
       ...(asTrimmedString(payload.prId) ? { prId: asTrimmedString(payload.prId)! } : {}),
-    }));
+      ...(Array.isArray(payload.prIds) ? { prIds } : {}),
+    });
+  });
   register("prs.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getStatus(requirePrId(payload, "prs.getStatus")));
   register("prs.getChecks", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getChecks(requirePrId(payload, "prs.getChecks")));
   register("prs.getReviews", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviews(requirePrId(payload, "prs.getReviews")));
@@ -6651,12 +6981,32 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getMobileSnapshot", { viewerAllowed: true, observesAbort: true }, async () => args.prService.getMobileSnapshot());
 }
 
+let projectRemoteCommandDescriptors: SyncRemoteCommandDescriptor[] | null = null;
+
+/**
+ * The descriptors a full project runtime registers, without booting one.
+ * Registration is pure — every handler reads its services when it runs — so a
+ * registry built over absent services records exactly the action, scope and
+ * policy table. The brain's projectless ingress advertises its routable
+ * project commands from this. Families a runtime registers only when a
+ * service exists follow it: `workTools.*` is in (every project runtime the
+ * brain boots builds one); `macDesktop.*` and `personalChats.*` are out, and
+ * neither is routable to a project anyway.
+ */
+export function listProjectRemoteCommandDescriptors(): SyncRemoteCommandDescriptor[] {
+  projectRemoteCommandDescriptors ??= createSyncRemoteCommandService({
+    workToolsStateService: {},
+  } as unknown as SyncRemoteCommandServiceArgs).getDescriptors();
+  return projectRemoteCommandDescriptors;
+}
+
 export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {
   const registry = new Map<SyncRemoteCommandAction, RegisteredRemoteCommand>();
   // Mac Desktop leases per sync connection. See `MacDesktopConnectionLeases`:
   // a socket close must return control immediately, and this is the only place
   // that knows which derived holder ids a given socket took.
   const macDesktopConnectionLeases: MacDesktopConnectionLeases = new Map();
+  const remoteCommandResultMaxBytes = args.remoteCommandResultMaxBytes ?? SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES;
 
   const register = (
     action: SyncRemoteCommandAction,
@@ -6803,6 +7153,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerModelPickerRemoteCommands({ args, register });
   registerWorkToolsRemoteCommands({ args, register });
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
+  registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
   registerPushRemoteCommands({ args, register });
   registerSyncRemoteCommands({ args, register });
@@ -6868,13 +7219,28 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
         policy: handler.descriptor.policy,
       });
       const run = () => handler.handler(commandArgs, context);
-      return handler.observesAbort
+      const result = handler.observesAbort
         ? await runWithAbortSignal(
             run,
             context.signal,
             "Remote command aborted.",
           )
         : await run();
+      // Every command is bounded here, so no handler can build a reply that
+      // the transport would refuse (which used to close the connection and
+      // make the client reconnect into the same command forever).
+      const bytes = measureSyncRemoteCommandResultBytes(result);
+      const limitBytes = remoteCommandResultMaxBytes;
+      if (bytes > limitBytes) {
+        const details = buildSyncResultTooLargeError({ label: payload.action, bytes, limitBytes });
+        args.logger.warn("sync.remote_command.result_too_large", {
+          action: payload.action,
+          bytes,
+          limitBytes,
+        });
+        throw new SyncRemoteCommandResultTooLargeError(details);
+      }
+      return result;
     },
   };
 }

@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
@@ -193,18 +192,8 @@ describe("terminalSessionSignals", () => {
       permissionMode: "plan",
       droidPermissionMode: "agi",
     });
-    expect(parseTrackedCliLaunchConfig("OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"ask\",\"edit\":\"allow\"}}' opencode", "opencode")).toEqual({
-      permissionMode: "edit",
-    });
-    expect(parseTrackedCliLaunchConfig("opencode run --interactive --model openai/gpt-5.4 --variant fast", "opencode")).toEqual({
+    expect(parseTrackedCliLaunchConfig("ADE_OPENCODE_LAUNCH='{\"permissionMode\":\"config-toml\"}' opencode --server http://127.0.0.1:4310 --session ses_1", "opencode")).toEqual({
       permissionMode: "config-toml",
-      model: "openai/gpt-5.4",
-      fastMode: true,
-    });
-    expect(parseTrackedCliLaunchConfig("opencode run --interactive --model openai/gpt-5.4 --variant high", "opencode")).toEqual({
-      permissionMode: "config-toml",
-      model: "openai/gpt-5.4",
-      reasoningEffort: "high",
     });
   });
 
@@ -251,12 +240,6 @@ describe("terminalSessionSignals", () => {
       launch: { permissionMode: "full-auto", model: "cursor/composer-2.5" },
     })).toBe("cursor-agent --force --model composer-2.5 --resume chat-2");
 
-    expect(buildTrackedCliResumeCommand({
-      provider: "opencode",
-      targetKind: "session",
-      targetId: "ses_1",
-      launch: { permissionMode: "full-auto", fastMode: true },
-    })).toBe("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode --session ses_1");
   });
 
   it("applies resume-time model, reasoning, and permission overrides", () => {
@@ -463,29 +446,6 @@ describe("terminalSessionSignals", () => {
       provider: "codex",
       targetId: "thread_computer_use_123",
     });
-  });
-
-  it("builds OpenCode run replay resume commands with question tool enabled", () => {
-    const command = buildOpenCodeReplayResumeCommand({
-      permissionMode: "edit",
-      targetId: "ses_abc",
-      model: "openai/gpt-5.4",
-      prompt: "continue from here",
-    });
-
-    expect(command).toContain("opencode --mini --model \"openai/gpt-5.4\" --session ses_abc --replay-limit 40 --prompt \"continue from here\"");
-    expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
-  });
-
-  it("normalizes ADE OpenCode registry IDs in replay resume commands", () => {
-    const command = buildOpenCodeReplayResumeCommand({
-      permissionMode: "plan",
-      targetId: "ses_abc",
-      model: "opencode/lmstudio/openai%2Fgpt-oss-20b",
-      prompt: "continue from here",
-    });
-
-    expect(command).toContain("--model \"lmstudio/openai/gpt-oss-20b\"");
   });
 
   it("extracts Cursor resume commands printed by ADE launch wrappers", () => {

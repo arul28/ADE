@@ -50,6 +50,7 @@ vi.mock("../settings/PrChatTranscriptsSection", () => ({ PrChatTranscriptsSectio
 vi.mock("../settings/KeepAwakeSection", () => ({ KeepAwakeSection: stubSection(["keep-awake"]) }));
 vi.mock("../settings/CaptureGestureSection", () => ({ CaptureGestureSection: stubSection(["capture-gesture"]) }));
 vi.mock("../settings/BrowserLinksSection", () => ({ BrowserLinksSection: stubSection(["link-open-mode"]) }));
+vi.mock("../settings/BrowserAgentAccessSection", () => ({ BrowserAgentAccessSection: stubSection(["browser-agent-access"]) }));
 vi.mock("../settings/GitHubIntegrationSection", () => ({ GitHubIntegrationSection: stubSection(["github-connection"]) }));
 vi.mock("../settings/LinearIntegrationSection", () => ({ LinearIntegrationSection: stubSection(["linear-connection"]) }));
 vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }));
@@ -180,7 +181,10 @@ describe("SettingsPage", () => {
     expect(screen.getByText("account embedded")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    expect(rows.slice(0, 3)).toEqual(["Account", "Secrets", "Usage"]);
+    // Nav rows are grouped (Account/Project/Machines) now, so the first
+    // entries are the rest of the Account group, not a flat alphabetical or
+    // registration-order list.
+    expect(rows.slice(0, 3)).toEqual(["Account", "Appearance", "Chat"]);
   });
 
   it("carries feedback, help, zoom, and the identity row above the sections", async () => {

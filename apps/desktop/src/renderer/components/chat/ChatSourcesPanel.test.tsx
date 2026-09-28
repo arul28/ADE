@@ -139,7 +139,7 @@ describe("ChatSourcesPanel", () => {
     expect(within(web()).getByRole("button", { name: "Show 7 more" })).toBeTruthy();
   });
 
-  it("lists a cited page once, in Cited with a cited mark, never again under Web", () => {
+  it("lists a cited page once, under Cited, never again under Web", () => {
     const events = [
       webResults("turn-1", ["https://zed.dev/docs", "https://acp.dev"], 1),
       envelope({ type: "text", text: "See [Zed](http://www.zed.dev/docs/).", itemId: "answer", turnId: "turn-1" }, 2),
@@ -149,7 +149,6 @@ describe("ChatSourcesPanel", () => {
     expect(rows).toHaveLength(2);
     const cited = within(screen.getByTestId("chat-sources-group-cited"));
     expect(cited.getByText("Result 1")).toBeTruthy();
-    expect(cited.getByTestId("chat-source-cited")).toBeTruthy();
     expect(within(screen.getByTestId("chat-sources-group-web")).queryByText("Result 1")).toBeNull();
   });
 

@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { ArrowSquareOut, DotsThree, Eject, Play } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
+import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { showToast } from "../app/toast/toastStore";
 import { Button } from "../ui/Button";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../ui/paneMenuTokens";
@@ -26,7 +27,7 @@ import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
  *   installed with everything on it. This is what "how do I unclaim?" was
  *   missing. While a session is live it confirms first: releasing ends that
  *   session, which the pane's own running path also gates behind a confirm.
- * - **Delete device…** — only ever offered for an ADE CLONE. It is the one
+ * - **Delete device…** — only ever offered for a device ADE MADE. It is the one
  *   action that frees disk and destroys data, so it lives behind the same
  *   two-step inline confirmation the device picker uses. An attached simulator
  *   never gets the row at all (ADE only detaches what it did not create).
@@ -59,7 +60,7 @@ export function AppleToolCardMenu({
   // `starting` counts as "already coming up": offering Boot mid-boot would
   // queue a second start. The one useful action then is to watch it.
   const comingUp = device.state !== "off";
-  const isClone = device.origin === "clone";
+  const isAdeDevice = isAdeOwnedLaneDevice(device.origin);
 
   const run = useCallback((action: string, task: () => Promise<unknown>, after?: () => void) => {
     if (pending) return;
@@ -174,7 +175,7 @@ export function AppleToolCardMenu({
               Release device
             </DropdownMenu.Item>
           )}
-          {isClone ? (
+          {isAdeDevice ? (
             <>
               <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
               <DangerConfirmMenuItem

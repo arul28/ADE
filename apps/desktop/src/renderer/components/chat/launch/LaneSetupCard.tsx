@@ -43,6 +43,7 @@ import {
   chatLaunchStageLabel,
   formatChatLaunchDuration,
   isChatLaunchPending,
+  isChatLaunchTerminal,
   laneSetupLaunchIdFromCardId,
 } from "../../../../shared/chatLaunch";
 import { cn } from "../../ui/cn";
@@ -50,7 +51,7 @@ import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { confirmDialog } from "../../ui/dialog";
 import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
 import { STANDARD_EASE } from "../../../lib/motion";
-import { getChatLaunchEntry, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
+import { getChatLaunchEntry, refreshChatLaunch, useChatLaunchHostReady, useChatLaunchSnapshot } from "../../../state/chatLaunchStore";
 import { extractError } from "../../../lib/format";
 import { stripElectronErrorWrapper } from "../../../../shared/codedError";
 import { showToast } from "../../app/toast/toastStore";
@@ -422,7 +423,7 @@ const StageRow = React.memo(function StageRow({
         compact={compact}
         trailing={<StageDuration stage={stage} className="min-w-[3rem] shrink-0 text-right text-fg/35" />}
       />
-      {stage.status === "failed" && stage.error ? (
+      {(stage.status === "failed" || stage.status === "warning") && stage.error ? (
         <p
           className={cn(
             "mb-1.5 ml-[30px] rounded-md border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 leading-snug text-amber-200/85",
@@ -871,8 +872,18 @@ function CollapsedSummary({
 
 export function LaneSetupTranscriptCard({ card }: { card: AdeCardPayload }) {
   const launchId = laneSetupLaunchIdFromCardId(card.cardId);
-  const live = useChatLaunchSnapshot(launchId);
+  const storeSnapshot = useChatLaunchSnapshot(launchId);
   const [expanded, setExpanded] = useState(false);
+  // The host writes the finished card into the transcript. When the store
+  // still holds a running snapshot, a live update was lost: trust the
+  // transcript and re-read the launch so the Work row and slide-out catch up.
+  const storeBehindTranscript = card.state === "terminal"
+    && storeSnapshot != null
+    && !isChatLaunchTerminal(storeSnapshot.phase);
+  useEffect(() => {
+    if (storeBehindTranscript) refreshChatLaunch(launchId);
+  }, [storeBehindTranscript, launchId]);
+  const live = storeBehindTranscript ? null : storeSnapshot;
 
   if (live && (isChatLaunchPending(live) || live.phase === "running")) {
     return <LaneSetupCard snapshot={live} variant="thread" />;

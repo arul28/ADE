@@ -48,8 +48,8 @@ test("node-pty keeps only its own prebuild subtree, directory entries included",
 });
 
 test("the OpenCode Windows shim stays out of non-Windows archives", () => {
-  assert.equal(keeps("opencode-ai", "/pkg/opencode-ai", "bin/opencode.exe", "linux-x64"), false);
-  assert.equal(keeps("opencode-ai", "/pkg/opencode-ai", "bin/opencode.exe", "win32-x64"), true);
+  assert.equal(keeps("@opencode/cli", "/pkg/@opencode/cli", "bin/opencode.exe", "linux-x64"), false);
+  assert.equal(keeps("@opencode/cli", "/pkg/@opencode/cli", "bin/opencode.exe", "win32-x64"), true);
 });
 
 // Codex, Claude and OpenCode are fetched at runtime into the pinned tools cache,
@@ -72,18 +72,18 @@ test("the runtime-fetched agent CLI platform packages are excluded in their enti
     "@anthropic-ai/claude-agent-sdk-linux-x64-musl",
     "@anthropic-ai/claude-agent-sdk-win32-arm64",
     "@anthropic-ai/claude-agent-sdk-win32-x64",
-    "opencode-darwin-arm64",
-    "opencode-darwin-x64",
-    "opencode-darwin-x64-baseline",
-    "opencode-linux-arm64",
-    "opencode-linux-arm64-musl",
-    "opencode-linux-x64",
-    "opencode-linux-x64-baseline",
-    "opencode-linux-x64-baseline-musl",
-    "opencode-linux-x64-musl",
-    "opencode-windows-arm64",
-    "opencode-windows-x64",
-    "opencode-windows-x64-baseline",
+    "@opencode/cli-darwin-arm64",
+    "@opencode/cli-darwin-x64",
+    "@opencode/cli-darwin-x64-baseline",
+    "@opencode/cli-linux-arm64",
+    "@opencode/cli-linux-arm64-musl",
+    "@opencode/cli-linux-x64",
+    "@opencode/cli-linux-x64-baseline",
+    "@opencode/cli-linux-x64-baseline-musl",
+    "@opencode/cli-linux-x64-musl",
+    "@opencode/cli-windows-arm64",
+    "@opencode/cli-windows-x64",
+    "@opencode/cli-windows-x64-baseline",
   ];
   for (const packageName of platformPackages) {
     const root = `/pkg/${packageName}`;
@@ -102,8 +102,7 @@ test("the JS launcher and SDK packages still ship", () => {
   for (const packageName of [
     "@anthropic-ai/claude-agent-sdk",
     "@openai/codex",
-    "opencode-ai",
-    "@opencode-ai/sdk",
+    "@opencode/cli",
   ]) {
     const root = `/pkg/${packageName}`;
     assert.equal(keeps(packageName, root, "package.json", "darwin-arm64"), true, packageName);
@@ -122,7 +121,7 @@ test("the agent CLI exclusion is target-independent", () => {
       false,
       target,
     );
-    assert.equal(keeps("opencode-windows-x64", "/pkg/opencode-windows-x64", "bin/opencode.exe", target), false, target);
+    assert.equal(keeps("@opencode/cli-windows-x64", "/pkg/@opencode/cli-windows-x64", "bin/opencode.exe", target), false, target);
     assert.equal(keeps("@anthropic-ai/claude-agent-sdk", "/pkg/claude-agent-sdk", "sdk.mjs", target), true, target);
   }
 });
@@ -135,7 +134,7 @@ test("the agent CLI exclusion is target-independent", () => {
 test("every agent CLI platform package in the lockfile is excluded", async () => {
   const lockfile = JSON.parse(await fs.readFile(lockfilePath, "utf8"));
   const platformPattern =
-    /^(?:@openai\/codex-(?:darwin|linux|win32)-|@anthropic-ai\/claude-agent-sdk-(?:darwin|linux|win32)-|opencode-(?:darwin|linux|windows)-)/;
+    /^(?:@openai\/codex-(?:darwin|linux|win32)-|@anthropic-ai\/claude-agent-sdk-(?:darwin|linux|win32)-|@opencode\/cli-(?:darwin|linux|windows)-)/;
   const found = new Set();
   for (const entry of Object.keys(lockfile.packages ?? {})) {
     const name = entry.replace(/^.*node_modules\//, "");

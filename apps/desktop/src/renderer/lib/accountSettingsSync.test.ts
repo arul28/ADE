@@ -140,6 +140,8 @@ describe("accountSettingsSync (renderer)", () => {
   it("registers exactly the account-scoped persisted preferences", () => {
     expect(ACCOUNT_SYNCED_SETTINGS.map((entry) => entry.key)).toEqual([
       "theme",
+      "themeId",
+      "customThemes",
       "terminalPreferences",
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",

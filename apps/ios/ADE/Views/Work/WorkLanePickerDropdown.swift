@@ -20,6 +20,9 @@ struct WorkLanePickerDropdown: View {
   /// composer use it to park and restore keyboard focus around the sheet.
   /// Declared last with a default so existing call sites compile unchanged.
   var onMenuPresentationChange: ((Bool) -> Void)? = nil
+  /// Floating glass bubble (new-chat page): one line — lane mark, name,
+  /// branch, chevron — sized to its content instead of a wide slab.
+  var floatingGlass: Bool = false
 
   @State private var menuPresented = false
   @State private var searchQuery = ""
@@ -62,7 +65,11 @@ struct WorkLanePickerDropdown: View {
       Button {
         menuPresented = true
       } label: {
-        triggerLabel
+        if floatingGlass {
+          floatingTriggerLabel
+        } else {
+          triggerLabel
+        }
       }
       .buttonStyle(.plain)
       .accessibilityLabel("Select lane")
@@ -145,6 +152,48 @@ struct WorkLanePickerDropdown: View {
     .frame(minWidth: 180, maxWidth: 320)
   }
 
+  private var floatingTriggerLabel: some View {
+    let accent = isAutoCreateSelected ? ADEColor.accent : (triggerLaneColor ?? ADEColor.textSecondary)
+    return HStack(spacing: 6) {
+      if isAutoCreateSelected {
+        Image(systemName: "sparkles")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(ADEColor.accent)
+      } else if let triggerLaneColor {
+        WorkLaneLogoMark(color: triggerLaneColor, laneIcon: selectedLane?.icon, size: 11)
+      }
+      Text(triggerTitle)
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+        .layoutPriority(1)
+      if let branch = triggerBranchLabel {
+        HStack(spacing: 3) {
+          Image(systemName: "arrow.branch")
+            .font(.system(size: 9, weight: .semibold))
+          Text(branch)
+            .font(.system(size: 12))
+            .lineLimit(1)
+            .truncationMode(.middle)
+        }
+        .foregroundStyle(ADEColor.textMuted)
+      }
+      Image(systemName: "chevron.down")
+        .font(.system(size: 9, weight: .bold))
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .padding(.horizontal, 12)
+    .frame(height: 32)
+    .workChatGlass(in: Capsule(style: .continuous), interactive: true)
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(accent.opacity(0.4), lineWidth: 0.75)
+    )
+    .frame(maxWidth: 300)
+    .fixedSize(horizontal: false, vertical: true)
+    .contentShape(Capsule(style: .continuous))
+  }
+
   @ViewBuilder
   private var centeredTriggerContent: some View {
     if let branch = triggerBranchLabel {
@@ -180,7 +229,7 @@ struct WorkLanePickerDropdown: View {
       }
       Text(triggerTitle)
         .font(.system(size: 14, weight: .semibold))
-        .foregroundStyle(Color.white.opacity(0.9))
+        .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
     }
   }

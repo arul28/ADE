@@ -113,6 +113,12 @@ export type AcpConnection = {
    */
   initializeResult: AcpInitializeResponse | null;
   isAlive(): boolean;
+  /**
+   * The agent's captured stderr so far. Readable even when the connection is
+   * already dead, which is the only way a handshake crash (before any exit
+   * handler is registered) can still hand its diagnostics to the caller.
+   */
+  readStderrTail(): string;
   request<TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }): Promise<TResult>;
   notify(method: string, params?: unknown): void;
   /** Register a handler for `session/update`. Returns an unsubscribe function. */
@@ -417,6 +423,7 @@ export function createAcpConnection(args: CreateAcpConnectionArgs): AcpConnectio
       initializeResult = value;
     },
     isAlive: () => !disposed && !exited,
+    readStderrTail: () => stderrTail,
     request: <TResult>(method: string, params?: unknown, options?: { timeoutMs?: number }) => {
       return new Promise<TResult>((resolve, reject) => {
         if (exited) {
@@ -529,25 +536,48 @@ export type InitializeAcpConnectionResult = {
  * The client capabilities come from the dialect, and they are honest: ADE
  * claims only what it actually serves.
  */
+/** Error shape `initializeAcpConnection` augments with the agent's last stderr. */
+export type AcpStderrCarryingError = { acpStderrTail?: string };
+
+/**
+ * Recover the stderr tail `initializeAcpConnection` attached to a handshake
+ * failure. Returns `""` for any error that carries none.
+ */
+export function readAcpStderrTailFromError(error: unknown): string {
+  if (!error || typeof error !== "object") return "";
+  const tail = (error as AcpStderrCarryingError).acpStderrTail;
+  return typeof tail === "string" ? tail : "";
+}
+
 export async function initializeAcpConnection(args: {
   connection: AcpConnection;
   dialect: AcpDialect;
   timeoutMs?: number;
 }): Promise<InitializeAcpConnectionResult> {
   const { connection, dialect } = args;
-  const response = await connection.request<AcpInitializeResponse>(
-    ACP_METHOD.initialize,
-    {
-      protocolVersion: ACP_PROTOCOL_VERSION,
-      clientCapabilities: buildClientCapabilities(dialect),
-      clientInfo: dialect.clientInfo,
-      ...(dialect.initializeMeta ? { _meta: { ...dialect.initializeMeta } } : {}),
-    },
-    { timeoutMs: args.timeoutMs ?? ACP_HANDSHAKE_TIMEOUT_MS },
-  );
-  connection.initializeResult = response;
-  return {
-    response,
-    protocolVersionAccepted: response.protocolVersion <= ACP_PROTOCOL_VERSION,
-  };
+  try {
+    const response = await connection.request<AcpInitializeResponse>(
+      ACP_METHOD.initialize,
+      {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientCapabilities: buildClientCapabilities(dialect),
+        clientInfo: dialect.clientInfo,
+        ...(dialect.initializeMeta ? { _meta: { ...dialect.initializeMeta } } : {}),
+      },
+      { timeoutMs: args.timeoutMs ?? ACP_HANDSHAKE_TIMEOUT_MS },
+    );
+    connection.initializeResult = response;
+    return {
+      response,
+      protocolVersionAccepted: response.protocolVersion <= ACP_PROTOCOL_VERSION,
+    };
+  } catch (error) {
+    // A crash during the handshake precedes every exit handler, so the pool's
+    // rethrow is the only chance to pass the agent's stderr to the caller.
+    const tail = connection.readStderrTail();
+    if (tail.trim() && error && typeof error === "object") {
+      (error as AcpStderrCarryingError).acpStderrTail = tail;
+    }
+    throw error;
+  }
 }

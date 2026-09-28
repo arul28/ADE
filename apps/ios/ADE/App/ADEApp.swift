@@ -5,6 +5,8 @@ struct ADEApp: App {
   @UIApplicationDelegateAdaptor(ADEAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var syncService = SyncService()
+  /// Roster connections to every paired machine other than the focused one.
+  @StateObject private var machineFleet = MachineFleet()
   /// App-level dictation singleton. Owning the single `SpeechDictationService`
   /// here (rather than per-composer) lets recording survive navigation and
   /// drive the global in-app recording pill.
@@ -40,6 +42,7 @@ struct ADEApp: App {
       if let previewScreen = ADEPreviewScreen.requested {
         ADEPreviewScreenHost(screen: previewScreen)
           .environmentObject(syncService)
+          .environmentObject(machineFleet)
           .environmentObject(dictationController)
           .environmentObject(accountService)
       } else {
@@ -55,6 +58,7 @@ struct ADEApp: App {
   private var mainContent: some View {
     ContentView()
         .environmentObject(syncService)
+        .environmentObject(machineFleet)
         .environmentObject(dictationController)
         .environmentObject(accountService)
         .environmentObject(appUpdateAdvisor)
@@ -76,6 +80,12 @@ struct ADEApp: App {
           // credentials before the first connect so a fresh install lands
           // already paired.
           await syncService.adoptClipPairingHandoffIfPresent()
+          // Fold the most recently opened chats from disk while the socket
+          // comes up, so reopening any of them paints on the first frame.
+          syncService.warmRecentChatThreads()
+          // Every other paired machine gets its light roster connection.
+          machineFleet.attach(syncService)
+          machineFleet.setAppActive(scenePhase == .active)
           await syncService.handleForegroundTransition()
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -86,6 +96,9 @@ struct ADEApp: App {
             // sockets without a close event, so the gap is the only evidence
             // available about whether the connection is still real.
             syncService.handleBackgroundTransition()
+            // Roster connections to other machines close in the background;
+            // push and Activity cover "needs you" meanwhile.
+            machineFleet.setAppActive(false)
             accountService.stopAttentionPolling()
             ProductAnalytics.shared.flush()
             // Reclaim draft-attachment directories no live key names. Preview
@@ -99,6 +112,7 @@ struct ADEApp: App {
             return
           }
           guard newPhase == .active else { return }
+          if didBootstrapSync { machineFleet.setAppActive(true) }
           accountService.startAttentionPolling()
           if didEnterBackground {
             didEnterBackground = false

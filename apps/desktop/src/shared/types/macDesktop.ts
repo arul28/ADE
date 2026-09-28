@@ -20,7 +20,7 @@
  * it cannot host a display by *reading*, and a read that throws cannot tell it.
  */
 
-import type { AgentActionTraceEntry, AgentFrame } from "./agentObservation";
+import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 
 // ---------------------------------------------------------------------------
 // Error codes
@@ -255,6 +255,21 @@ export type MacDesktopReleaseArgs = {
   laneId: string;
   /** Omit to release every window this lane holds. */
   windowId?: number | null;
+};
+
+/**
+ * Quits apps the lane opened, when the user asks: the ones it still holds and
+ * the ones it opened and then released to the user. `stop` and the idle close
+ * never quit a released app; this does.
+ */
+export type MacDesktopQuitAppArgs = {
+  laneId: string;
+  /** An app name, bundle id or pid. Omit to quit every app the lane opened. */
+  app?: string | null;
+};
+
+export type MacDesktopQuitAppResult = {
+  quit: Array<{ pid: number; appName: string; bundleId: string | null; released: boolean }>;
 };
 
 // ---------------------------------------------------------------------------
@@ -525,6 +540,11 @@ export type MacDesktopActionResult = {
   resolved: MacDesktopElement | null;
   observation: MacDesktopObservation;
   trace: AgentActionTraceEntry;
+  /**
+   * Whether the accessibility tree changed between the observation the target
+   * was resolved against and the one taken after the action.
+   */
+  effect: ComputerUseActionEffect;
 };
 
 /**
@@ -722,9 +742,13 @@ export type MacDesktopRecordingStatus = {
   maxDurationMs?: number | null;
   /** Why it stopped. `cap` means the cap above ran out. */
   stopReason?: MacDesktopRecordingStopReason | null;
+  /** True between the stop and the demo being filed: the demo is being made. */
+  makingDemo?: boolean;
+  /** Set on a recording started with `plain`. */
+  plain?: boolean;
 };
 
-export type MacDesktopRecordingStopReason = "requested" | "cap";
+export type MacDesktopRecordingStopReason = "requested" | "cap" | "idle" | "disk";
 
 /**
  * The caption the pane gives what a person captures from it.
@@ -748,9 +772,14 @@ export type MacDesktopRecordStartArgs = {
   caption?: string | null;
   fps?: number | null;
   chatSessionId?: string | null;
-  /** Keep still stretches at wall-clock length (`record start --keep-idle`). */
+  /**
+   * The recording as it was recorded: no cuts, speed-ups, zoom, pointer or
+   * captions (`record start --plain`). Still sized under 10 MB.
+   */
+  plain?: boolean | null;
+  /** Older name for `plain`. */
   keepIdle?: boolean | null;
-  /** Wall-clock cap in seconds. Default: ten minutes for a chat's recording. */
+  /** Wall-clock cap in seconds, at most five minutes (the default). */
   maxSeconds?: number | null;
 };
 
@@ -1147,6 +1176,8 @@ export type DesktopSeatProvider = {
    */
   unpark(args: { windowId: number; laneId?: string }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null }>;
   launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
+  /** `app.quit`: apps the lane opened, released ones included. */
+  quitApp(args: { laneId: string; app?: string | null }): Promise<DesktopSeatReply>;
   present(args: { laneId: string; destination: "main" | "display" }): Promise<DesktopSeatReply>;
   observe(args: {
     laneId: string;
@@ -1306,6 +1337,8 @@ export type MacDesktopServiceApi = {
   open(args: MacDesktopOpenArgs): Promise<MacDesktopOpenResult>;
   claimWindow(args: MacDesktopClaimArgs): Promise<MacDesktopWindow>;
   releaseWindow(args: MacDesktopReleaseArgs): Promise<{ released: number }>;
+  /** Quits apps the lane opened, released ones included. Only on the user's request. */
+  quitApp(args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult>;
 
   observe(args: MacDesktopObserveArgs): Promise<MacDesktopObservation>;
   click(args: MacDesktopClickArgs): Promise<MacDesktopInputResult>;

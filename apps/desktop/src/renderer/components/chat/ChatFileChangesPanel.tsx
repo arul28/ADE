@@ -151,7 +151,7 @@ function renderDiffPane({
   if (activeDiff) {
     return (
       <div className="h-full min-h-[200px]" style={{ maxHeight: 400 }}>
-        <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact showToolbar={false} className="h-full rounded-none border-0" />
+        <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact persistKey="chat-turn-diff" className="h-full rounded-none border-0" />
       </div>
     );
   }

@@ -65,7 +65,6 @@ function props(): WorkToolPanelProps {
     toolContext: {} as WorkToolPanelProps["toolContext"],
     pinnedMachineOffline: false,
     pinnedMachineName: null,
-    warningReason: null,
     canInsertContext: false,
     shouldPersistPanelAttachment: false,
     resumingSession: false,
@@ -176,7 +175,7 @@ describe("the Apple tool panel's handover", () => {
 
   it("takes no photograph of a decoder that has never drawn a frame", async () => {
     /*
-     * `IosSimH264Video` only sizes its canvas on the first decode, so before
+     * `H264StreamView` only sizes its canvas on the first decode, so before
      * one it is the HTML default 300×150 — and, drawn with `alpha: false`,
      * solid black. The poster is painted full-bleed over the floating player,
      * so photographing that placeholder would stretch a black rectangle across

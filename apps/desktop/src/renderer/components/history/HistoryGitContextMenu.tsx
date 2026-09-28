@@ -8,12 +8,15 @@ import {
   type HistoryGitActionId,
 } from "./historyGitActions";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 
 type HistoryGitContextMenuProps = {
   laneId: string;
   commit: GitCommitSummary;
   isHead: boolean;
   hasWorktree: boolean;
+  /** The lane's machine when it is not this tab's; see `buildCommitContextActions`. */
+  remoteMachineName?: string | null;
   children: React.ReactNode;
   onNotice?: (message: string) => void;
   onError?: (message: string) => void;
@@ -25,12 +28,13 @@ export function HistoryGitContextMenu({
   commit,
   isHead,
   hasWorktree,
+  remoteMachineName = null,
   children,
   onNotice,
   onError,
   navigate,
 }: HistoryGitContextMenuProps) {
-  const actions = buildCommitContextActions({ commit, isHead, hasWorktree });
+  const actions = buildCommitContextActions({ commit, isHead, hasWorktree, remoteMachineName });
   const groups = groupCommitContextActions(actions);
 
   const run = (actionId: HistoryGitActionId) => {
@@ -49,7 +53,8 @@ export function HistoryGitContextMenu({
       <ContextMenu.Trigger asChild>{children}</ContextMenu.Trigger>
       <ContextMenu.Portal>
         <ContextMenu.Content
-          className="z-50 min-w-[220px] rounded-md border border-white/10 bg-[var(--color-card)] p-1 shadow-xl"
+          className="min-w-[220px] rounded-md border border-white/10 bg-[var(--color-card)] p-1 shadow-xl"
+          style={{ zIndex: Z_LAYERS.contextMenu }}
         >
           {groups.map((group, groupIndex) => (
             <React.Fragment key={group.id}>

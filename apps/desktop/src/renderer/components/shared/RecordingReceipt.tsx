@@ -51,6 +51,34 @@ export function RecordingPill({
 }
 
 /**
+ * "Making demo…" — between a recording's stop and its demo being filed. The
+ * raw file is being cut, zoomed and sized; the receipt follows when it is done.
+ */
+export function MakingDemoPill({
+  marker,
+  className,
+  style,
+}: {
+  marker?: Marker;
+  className?: string;
+  style?: CSSProperties;
+}) {
+  return (
+    <div
+      {...marker}
+      style={style}
+      className={cn(
+        "absolute bottom-3 left-1/2 z-10 flex -translate-x-1/2 items-center gap-2 whitespace-nowrap rounded-full border border-border bg-surface px-3 py-1 font-sans text-xs text-fg shadow-sm",
+        className,
+      )}
+    >
+      <span className="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] motion-safe:animate-pulse" />
+      <span>Making demo…</span>
+    </div>
+  );
+}
+
+/**
  * "Saved to proof · 0:23 · 8.5 MB · [Open]" — the receipt after a capture.
  *
  * It states what exists, where it went, and how to get at it, then the caller

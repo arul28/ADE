@@ -352,6 +352,35 @@ describe("buildRosterSnapshot", () => {
     expect(byId.get("cli-end")!.chatSessionId).toBe("chat-run");
   });
 
+  it("carries chat log freshness: sidecar when unbooted, live counter when booted, none for CLI rows", async () => {
+    fs.writeFileSync(
+      path.join(projectRoot, ".ade", "cache", "chat-sessions", "chat-run.json"),
+      JSON.stringify({ provider: "claude", eventSequence: 42, historyGeneration: 3 }),
+    );
+    const fromDisk = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const diskById = new Map(fromDisk[0]!.chats.map((chat) => [chat.id, chat]));
+    expect(diskById.get("chat-run")).toMatchObject({ maxSequence: 42, historyGeneration: 3 });
+    // A sidecar that predates the fields reads as generation 1.
+    expect(diskById.get("chat-await")).toMatchObject({ maxSequence: 0, historyGeneration: 1 });
+    expect(diskById.get("cli-end")?.maxSequence).toBeUndefined();
+
+    const scope: RosterBootedScope = {
+      runtime: {
+        agentChatService: {
+          listSessions: async () => [{ sessionId: "chat-run", status: "active" }],
+          getChatLogState: (sessionId) => (sessionId === "chat-run" ? { maxSequence: 57, historyGeneration: 3 } : null),
+        },
+        ptyService: { hasLivePty: () => false },
+      },
+    };
+    const live = await buildRosterSnapshot({
+      projectRegistry,
+      scopeRegistry: { getIfBooted: (id) => (id === PROJECT_ID ? Promise.resolve(scope) : null) },
+      hostProjectId: PROJECT_ID,
+    });
+    expect(live[0]!.chats.find((chat) => chat.id === "chat-run")).toMatchObject({ maxSequence: 57, historyGeneration: 3 });
+  });
+
   it("overlays live running/awaiting fidelity for a booted scope", async () => {
     const scopeRegistry = bootedScopes([
       { sessionId: "chat-run", status: "active", awaitingInput: false, provider: "claude", model: "opus" },
@@ -444,6 +473,13 @@ describe("buildRosterSnapshot", () => {
     // Resolvable by rootPath too.
     expect(resolver.resolveTranscriptPath({ projectRootPath: projectRoot, sessionId: "chat-run" }))
       .toBe(path.join(expectedDir, "chat-run.jsonl"));
+    // Supplying both selectors is a hard boundary: a valid project id cannot
+    // make the brain serve transcripts from a different requested root.
+    expect(resolver.resolveTranscriptPath({
+      projectId: PROJECT_ID,
+      projectRootPath: path.join(projectRoot, "different-project"),
+      sessionId: "chat-run",
+    })).toBeNull();
 
     // Unknown project → null (not registered).
     expect(resolver.resolveTranscriptPath({ projectId: "project_unknown", sessionId: "chat-run" })).toBeNull();

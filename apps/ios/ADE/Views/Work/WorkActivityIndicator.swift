@@ -10,6 +10,9 @@ import SwiftUI
 /// payloads. Respects Reduce Motion by falling back to a static dot.
 struct WorkActivityIndicator: View {
   let transcript: [WorkChatEnvelope]
+  /// Derived by the thread engine off the main actor. When present the view
+  /// skips its own transcript scan.
+  var precomputedPresentation: Presentation? = nil
   let isStreaming: Bool
   var toolCount: Int = 0
   var onOpenActivity: (() -> Void)? = nil
@@ -31,7 +34,7 @@ struct WorkActivityIndicator: View {
 
   @ViewBuilder
   var body: some View {
-    if isStreaming, let presentation = Self.derivePresentation(from: transcript) {
+    if isStreaming, let presentation = precomputedPresentation ?? Self.derivePresentation(from: transcript) {
 
       // Re-rendering only this leaf view once a second; the elapsed value is a
       // pure function of `context.date`, so no @State is mutated on tick.
@@ -73,9 +76,11 @@ struct WorkActivityIndicator: View {
             row
           }
         }
+        // Tight: this is the last row of a live turn and sits right on top of
+        // the chips/composer band, so any padding here reads as a dead gap.
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(activityAccessibilityLabel(presentation: presentation, elapsed: elapsed))
       }

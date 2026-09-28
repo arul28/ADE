@@ -27,6 +27,7 @@ import {
   readTurnEndSnapshots,
   sameTurnFolds,
   summarizeDiffStats,
+  stripInlineMarkdown,
   summarizeInlineText,
   summarizeTurnDetails,
   type ChatTranscriptGroupedEnvelope,
@@ -1208,6 +1209,39 @@ describe("summarizeInlineText", () => {
 
   it("does not truncate text shorter than maxChars", () => {
     expect(summarizeInlineText("short", 100)).toBe("short");
+  });
+
+  it("strips inline Markdown from the collapsed preview", () => {
+    expect(summarizeInlineText("**bold** and `code` and [link](https://x)")).toBe(
+      "bold and code and link",
+    );
+  });
+});
+
+describe("stripInlineMarkdown", () => {
+  it.each([
+    ["**bold**", "bold"],
+    ["__bold__", "bold"],
+    ["*italic*", "italic"],
+    ["_italic_", "italic"],
+    ["`inline code`", "inline code"],
+    ["[label](https://example.com)", "label"],
+    ["![alt](https://example.com/a.png)", "alt"],
+    ["~~struck~~", "struck"],
+    ["- list item", "list item"],
+    ["* list item", "list item"],
+    ["+ list item", "list item"],
+    ["1. ordered item", "ordered item"],
+    ["# heading", "heading"],
+    ["## heading", "heading"],
+    ["> quoted", "quoted"],
+    ["plain text", "plain text"],
+    ["snake_case_name stays", "snake_case_name stays"],
+    ["rm **/*.log", "rm **/*.log"],
+    ["a * b * c", "a * b * c"],
+    ["2 * 3 = 6", "2 * 3 = 6"],
+  ])("strips %j to %j", (input, expected) => {
+    expect(stripInlineMarkdown(input)).toBe(expected);
   });
 });
 
@@ -5266,5 +5300,35 @@ describe("row keys are position-independent", () => {
     const events = turn(10);
     const rowKeys = collapseChatTranscriptEvents(events).map((row) => row.key);
     expectContainsAll(buildTranscriptEventRowKeys(events), rowKeys);
+  });
+});
+
+describe("command row identity", () => {
+  it("keeps a refined command and its terminal update in one row", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "session-command-identity",
+        timestamp: "2026-09-25T10:00:00.000Z",
+        event: { type: "command", command: "npm", cwd: "/repo", output: "", itemId: "exec-1", turnId: "turn-1", status: "running" },
+      },
+      {
+        sessionId: "session-command-identity",
+        timestamp: "2026-09-25T10:00:01.000Z",
+        event: { type: "command", command: "npm test", cwd: "/repo", output: "passed", itemId: "exec-1", turnId: "turn-1", status: "completed" },
+      },
+    ];
+
+    const { rows } = collapseChatTranscriptEventsWithContext(events);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.event).toMatchObject({
+      type: "work_log_entry",
+      entry: {
+        command: "npm test",
+        output: "passed",
+        status: "completed",
+        itemId: "exec-1",
+      },
+    });
   });
 });

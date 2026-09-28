@@ -1,3 +1,5 @@
+import type { ComputerUseActionEffect } from "./agentObservation";
+
 export type IosSimulatorDevice = {
   udid: string;
   name: string;
@@ -153,6 +155,12 @@ export const APPLE_AGENT_ACTIONS = [
   "deviceStop",
   "deviceDetach",
   "deviceDelete",
+  /* Remove this project's leftover ADE devices and power off idle ones. It
+     only ever deletes a device ADE made; the user's own are listed, not touched. */
+  "deviceCleanup",
+
+  /* Tests, on the lane's own device, with DerivedData in the lane's cache. */
+  "runTests",
 
   /* Video. */
   "startStream",
@@ -1301,6 +1309,15 @@ export type IosSimulatorElementMatch = {
 
 export type IosSimulatorElementActionKind = "tap" | "fill" | "wait" | "assert";
 
+/**
+ * Why an Apple device action answers `effect: not_checked`. Comparing the
+ * screen would cost a second accessibility snapshot (hundreds of
+ * milliseconds) on every tap, so the answer names the check to run instead.
+ * The CLI prints the same sentence for coordinate taps, drags and typing.
+ */
+export const IOS_SIMULATOR_ACTION_NOT_COMPARED_REASON =
+  "Apple device actions do not compare the screen; run `ade apple find` or `ade apple screenshot` to check";
+
 export type IosSimulatorElementActionResult = {
   ok: boolean;
   action: IosSimulatorElementActionKind;
@@ -1308,6 +1325,11 @@ export type IosSimulatorElementActionResult = {
   matchCount: number;
   message: string | null;
   waitedMs: number | null;
+  /**
+   * Always `not_checked` today: comparing the screen would cost a second
+   * accessibility snapshot per tap, so the reason names the command to run.
+   */
+  effect: ComputerUseActionEffect;
 };
 
 export type IosSimulatorFindElementArgs = IosSimulatorDeviceArgs & {
@@ -1390,10 +1412,19 @@ export const APPLE_DEVICE_EXISTS_CODE = "APPLE_DEVICE_EXISTS" as const;
  */
 export const APPLE_DEVICE_OWNED_BY_LANE_CODE = "APPLE_DEVICE_OWNED_BY_LANE" as const;
 /**
- * The chosen clone template is running, and `simctl` cannot clone a booted
- * device (error 405, "Unable to clone device in current state: Booted").
+ * An agent asked to attach a simulator that is not its lane's own device.
+ *
+ * Agents only ever use a device ADE made for their lane. A simulator they did
+ * not create may be another lane's, a running test's, or the user's own.
  */
-export const APPLE_TEMPLATE_BOOTED_CODE = "APPLE_TEMPLATE_BOOTED" as const;
+export const APPLE_DEVICE_NOT_LANE_OWNED_CODE = "APPLE_DEVICE_NOT_LANE_OWNED" as const;
+/**
+ * The runtime or device type asked for is not installed on this Mac. ADE
+ * never downloads one; the message names what is installed.
+ */
+export const APPLE_RUNTIME_NOT_INSTALLED_CODE = "APPLE_RUNTIME_NOT_INSTALLED" as const;
+/** A test run is already going on this Mac; `xcodebuild test` runs one at a time. */
+export const APPLE_TEST_RUN_BUSY_CODE = "APPLE_TEST_RUN_BUSY" as const;
 /** No simulator runtime is installed, and ADE never downloads one. */
 export const APPLE_NO_INSTALLED_SIMULATORS_CODE = "APPLE_NO_INSTALLED_SIMULATORS" as const;
 /** The vendored Swift helper is missing, not running, or not answering. */
@@ -1436,29 +1467,179 @@ export type AppleInstalledSimulator = {
 };
 
 /**
+ * Where a lane's device came from.
+ *
+ * - `created`: ADE made a new, empty device for the lane from an installed
+ *   runtime. ADE deletes it, and all its data, when the lane is archived or
+ *   deleted.
+ * - `clone`: the same, for a device made before ADE stopped cloning. Older
+ *   rows carry it; ADE treats it exactly like `created`.
+ * - `attached`: the user's own simulator, bound by name. ADE never deletes it.
+ *   When the lane ends, ADE powers it off and uninstalls only the apps ADE put
+ *   on it.
+ */
+export type AppleLaneDeviceOrigin = "created" | "clone" | "attached";
+
+/** True for a device ADE made, which ADE deletes when its lane ends. */
+export function isAdeOwnedLaneDevice(origin: AppleLaneDeviceOrigin): boolean {
+  return origin !== "attached";
+}
+
+/** Narrow an untyped value (a sync payload, a row) to a lane-device origin. */
+export function isAppleLaneDeviceOrigin(value: unknown): value is AppleLaneDeviceOrigin {
+  return value === "created" || value === "clone" || value === "attached";
+}
+
+/** A runtime and a device type, by identifier: what a new lane device is made from. */
+export type AppleNewDeviceSpec = { runtime: string; deviceType: string };
+
+/**
  * The one device a lane owns.
  *
  * `origin` is the whole reason this record exists rather than a bare udid:
- * `clone` is ADE's to delete on lane archive, `attached` is the user's and is
- * only ever detached.
+ * see {@link AppleLaneDeviceOrigin}.
  */
 export type AppleLaneDevice = {
   laneId: string;
   udid: string;
   name: string;
-  origin: "clone" | "attached";
+  origin: AppleLaneDeviceOrigin;
   family: AppleLaneDeviceFamily;
   runtime: string;
   createdAt: string;
-  templateUdid: string | null;
 };
 
+/**
+ * `deviceCreate`: a new, empty device for the lane.
+ *
+ * Nothing is copied. `runtime` and `deviceType` choose what the device runs;
+ * `from` is a short way to say "the same model and runtime as this installed
+ * simulator". Defaults: the newest installed iOS runtime, and the device type
+ * this project used last, else the newest iPhone that runtime supports.
+ */
 export type AppleDeviceCreateArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
-  /** udid or name of an installed simulator to clone. Defaults per the spec. */
+  /** Runtime identifier (`com.apple.CoreSimulator.SimRuntime.iOS-26-3`) or name (`iOS 26.3`). */
+  runtime?: string | null;
+  /** Device type identifier (`…SimDeviceType.iPhone-17-Pro`) or name (`iPhone 17 Pro`). */
+  deviceType?: string | null;
+  /** udid or name of an installed simulator whose model and runtime to copy. Its data is not copied. */
   from?: string | null;
   name?: string | null;
+};
+
+/** A device model an installed runtime can run. */
+export type AppleSimulatorDeviceType = {
+  identifier: string;
+  name: string;
+  family: AppleLaneDeviceFamily;
+};
+
+/** A simulator runtime this Mac has installed. ADE never downloads one. */
+export type AppleInstalledRuntime = {
+  identifier: string;
+  /** `iOS 26.3`. */
+  name: string;
+  version: string;
+  platform: string;
+  /** Newest first, as CoreSimulator lists them. */
+  deviceTypes: AppleSimulatorDeviceType[];
+};
+
+/**
+ * Who ADE thinks a simulator belongs to, for the storage view.
+ *
+ * - `lane`: a lane of this project holds it.
+ * - `ade-orphan`: ADE made it (it carries ADE's marker) and no live lane holds
+ *   it. `deviceCleanup` deletes it.
+ * - `ade-other-project`: ADE made it for another project. That project's
+ *   cleanup owns it.
+ * - `unknown`: no marker and no lane. It may be the user's, Xcode's, or an ADE
+ *   device made before markers existed. Only the user deletes it.
+ */
+export type AppleSimulatorOwnership = "lane" | "ade-orphan" | "ade-other-project" | "unknown";
+
+export type AppleSimulatorOwnershipInfo = {
+  udid: string;
+  ownership: AppleSimulatorOwnership;
+  /** The lane named in ADE's marker, when there is one. */
+  markerLaneId: string | null;
+  /** The name looks like an ADE device (`ADE · …`, `ADE …`) but it has no marker. */
+  looksLikeAde: boolean;
+};
+
+/** `deviceCleanup`: what one pass found and did. */
+export type AppleDeviceCleanupResult = {
+  /** ADE devices deleted because no live lane held them. */
+  deleted: Array<{ udid: string; name: string | null; reason: string }>;
+  /** Idle ADE devices powered off. */
+  poweredOff: Array<{ udid: string; name: string | null }>;
+  /** Lane rows dropped because their simulator no longer exists. */
+  forgottenRows: Array<{ laneId: string; udid: string }>;
+  /** Devices of lanes that ended, released (attached devices: powered off, ADE's apps uninstalled). */
+  released: Array<{ laneId: string; udid: string }>;
+  /** Anything that went wrong; a failed step never stops the pass. `udid: null` means the device list could not be read. */
+  errors: Array<{ udid: string | null; message: string }>;
+  /** Why the requested power-off did nothing, when it was skipped as a whole. */
+  powerOffSkipped?: "simulator-app-open" | "process-list-unavailable" | null;
+};
+
+export type AppleDeviceCleanupArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** Set by the RPC server for agent callers: `powerOffIdle` then reaches the caller's lane device only. */
+  agentCaller?: boolean | null;
+  /** Also power off idle ADE devices now, instead of waiting for the timer. */
+  powerOffIdle?: boolean | null;
+};
+
+/**
+ * `runTests`: `xcodebuild test` on the lane's own device.
+ *
+ * DerivedData goes to the lane's cache (`<build root>/.ade/cache/ios-simulator/DerivedData`),
+ * which ADE deletes when the lane is archived or deleted. Parallel testing is
+ * off, and only one test run goes at a time on this Mac.
+ */
+export type AppleRunTestsArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  projectRoot?: string | null;
+  /** A launch target id from `apps`; its project and scheme are tested. */
+  targetId?: string | null;
+  /** The scheme, when no target id is given. */
+  scheme?: string | null;
+  /** `.xcodeproj` or `.xcworkspace`, relative to the build root. */
+  projectPath?: string | null;
+  testPlan?: string | null;
+  /** `-only-testing:` identifiers (`ADETests/SyncTests`). */
+  onlyTesting?: string[] | null;
+  skipTesting?: string[] | null;
+  /** Build the tests only (`build-for-testing`). */
+  buildOnly?: boolean | null;
+  /** Default 30 minutes, at most 2 hours. */
+  timeoutMs?: number | null;
+  agentCaller?: boolean | null;
+};
+
+export type AppleRunTestsResult = {
+  passed: boolean;
+  exitCode: number | null;
+  timedOut: boolean;
+  deviceUdid: string;
+  deviceName: string;
+  scheme: string;
+  projectPath: string;
+  derivedDataPath: string;
+  resultBundlePath: string | null;
+  /** The whole `xcodebuild` output. */
+  logPath: string;
+  /** `Executed N tests, with M failures`, when xcodebuild printed it. */
+  testsExecuted: number | null;
+  testsFailed: number | null;
+  /** The failing test names and the last lines that matter. */
+  summary: string;
+  durationMs: number;
 };
 
 export type AppleDeviceAttachArgs = {
@@ -1466,6 +1647,12 @@ export type AppleDeviceAttachArgs = {
   chatSessionId?: string | null;
   /** udid or name of an installed simulator to bind without cloning. */
   simulator: string;
+  /**
+   * Set by the RPC server for agent callers, never trusted from one. An agent
+   * may attach only the device its lane already holds; see
+   * `APPLE_DEVICE_NOT_LANE_OWNED_CODE`. User clients leave it unset.
+   */
+  agentCaller?: boolean | null;
 };
 
 export type AppleDeviceListArgs = {
@@ -1481,6 +1668,8 @@ export type AppleDeviceListArgs = {
    * a second, disk-only call after the first paint.
    */
   disk?: boolean | null;
+  /** Also list the installed runtimes and the device types each one runs. */
+  runtimes?: boolean | null;
 };
 
 /**
@@ -1489,14 +1678,26 @@ export type AppleDeviceListArgs = {
  * the picker's Start/Open/Create actions and for `ade apple start`.
  *
  * `udid` names an installed simulator to attach when the lane owns nothing.
- * `create.sourceUdid` clones that simulator for the lane instead. Neither is
- * consulted when the lane already owns a device: that device is started.
+ * `create` makes a new device for the lane instead (see `AppleDeviceCreateArgs`;
+ * `sourceUdid` copies a simulator's model and runtime, never its data). Neither
+ * is consulted when the lane already owns a device: that device is started.
+ *
+ * For an agent caller (`agentCaller`), `udid` may name a simulator no lane
+ * holds (the user named it) but never another lane's, and a lane with no
+ * device and no `udid` gets a new one, the same one `deviceCreate` makes.
  */
 export type AppleDeviceStartArgs = {
   laneId?: string | null;
   chatSessionId?: string | null;
   udid?: string | null;
-  create?: { sourceUdid: string } | null;
+  /**
+   * Make a new device for the lane. `sourceUdid` copies an installed
+   * simulator's model and runtime, not its data; `runtime` and `deviceType`
+   * name them directly. See `AppleDeviceCreateArgs`.
+   */
+  create?: { sourceUdid?: string | null; runtime?: string | null; deviceType?: string | null } | null;
+  /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
+  agentCaller?: boolean | null;
 };
 
 /**
@@ -1515,7 +1716,7 @@ export type AppleSimulatorOwner = {
   laneId: string;
   /** The lane's display name, or null when the lane row is gone or unnamed. */
   laneName: string | null;
-  origin: "clone" | "attached";
+  origin: AppleLaneDeviceOrigin;
   /** True when the owning lane is the lane this list was computed for. */
   mine: boolean;
 };
@@ -1559,6 +1760,15 @@ export type AppleDeviceListResult = {
   laneId: string | null;
   /** Present only when `disk` was asked for. */
   disk?: AppleDeviceDiskUsage | null;
+  /** Present only when `runtimes` was asked for. */
+  runtimes?: AppleInstalledRuntime[] | null;
+  /** Where the Create control starts: the service's own default runtime and model. With `runtimes`. */
+  defaultNewDevice?: AppleNewDeviceSpec | null;
+  /**
+   * Who each installed simulator belongs to, from lane rows and ADE's marker
+   * files. Present with `disk`, because the storage view is what reads it.
+   */
+  ownership?: AppleSimulatorOwnershipInfo[] | null;
 };
 
 /**
@@ -1876,9 +2086,13 @@ export type AppleRecordStartArgs = AppleRecordScopeArgs & {
    * still screen longer than 2 s down to 0.75 s (`record-start --keep-idle`).
    */
   keepIdle?: boolean | null;
+  /** File it as recorded, with no demo treatment (`record start --plain`). */
+  plain?: boolean | null;
+  /** Zoom in on each tap in the demo. Off by default on a phone (`record start --zoom`). */
+  zoom?: boolean | null;
   /**
    * Wall-clock seconds after which the recording stops and files itself.
-   * Defaults to ten minutes for a recording a chat owns.
+   * Defaults to five minutes.
    */
   maxSeconds?: number | null;
 };

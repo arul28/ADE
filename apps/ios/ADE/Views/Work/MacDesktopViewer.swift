@@ -52,9 +52,11 @@ struct MacDesktopViewer: View {
       // the picture on rotation and drop the control lease it holds.
       VStack(spacing: 0) {
         controls
-        Spacer(minLength: 0)
+        // The stage fills the space between the controls and the footer, and
+        // a zoomed picture may use all of it.
         stage
-        Spacer(minLength: 0)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .livePictureViewport()
         if !compactHeight {
           footer
         }
@@ -341,7 +343,9 @@ struct MacDesktopViewer: View {
   }
 }
 
-private func macDesktopViewerControlLabel(systemName: String) -> some View {
+/// A round white-on-dark button face for the top bar of every full-screen
+/// live viewer (macOS, App Control).
+func macDesktopViewerControlLabel(systemName: String) -> some View {
   Image(systemName: systemName)
     .font(.system(size: 15, weight: .semibold))
     .foregroundStyle(.white)

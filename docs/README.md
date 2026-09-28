@@ -32,7 +32,8 @@ docs/
 ├── logging.md                             # logging + PostHog ground truth
 ├── OPTIMIZATION_OPPORTUNITIES.md          # codebase-wide optimization backlog
 ├── design/
-│   └── notices.md                         # banners, toasts, dialogs, Z_LAYERS + ade-ui lint ratchet
+│   ├── notices.md                         # banners, toasts, dialogs, Z_LAYERS + ade-ui lint ratchet
+│   └── theming.md                         # theme format, engine, token seam
 ├── playbooks/
 │   ├── ship-lane.md                       # autonomous PR-to-merge driver
 │   └── windows-signed-release.md          # signed Windows publication

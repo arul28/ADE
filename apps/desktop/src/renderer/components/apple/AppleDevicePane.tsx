@@ -8,8 +8,11 @@ import React, {
 } from "react";
 import { AppleLogo } from "../ui/appleIcons";
 import type {
+  AppleDeviceCleanupResult,
+  AppleNewDeviceSpec,
   AppleDeviceOrientation,
   AppleDeviceStartArgs,
+  AppleHardwareButtonName,
   AppleLaneDevice,
   IosElementContextItem,
   IosSimulatorStatus,
@@ -18,9 +21,16 @@ import type {
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { AppleDeviceStage, isWebCodecsAvailable } from "./AppleDeviceStage";
-import type { AppleDevice3DFailure } from "./AppleDevice3DView";
+import type { AppleDevice3DFailure, AppleDeviceDuoProps } from "./AppleDevice3DView";
+import {
+  appleDeviceSupportsDuo,
+  createAppleDuoState,
+  nearestAppleDuoStance,
+  reduceAppleDuoState,
+} from "./appleDuo";
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
+import { showToast } from "../app/toast/toastStore";
 import { AppleDeviceRail } from "./AppleDeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
@@ -100,6 +110,31 @@ function helperAvailable(status: IosSimulatorStatus | null): boolean {
   return helper ? helper.available : true;
 }
 
+/** The Clean up toast's tone and words: what happened, per docs/design/notices.md. */
+function cleanupNotice(input: { listUnreadable: boolean; deviceErrors: number; summary: string | null }): {
+  tone: "success" | "warning" | "error";
+  title: string;
+  message?: string;
+} {
+  if (input.listUnreadable) {
+    return { tone: "error", title: "Could not read the simulator list", message: "Nothing was cleaned up. The ADE log has the details." };
+  }
+  if (input.deviceErrors) {
+    return {
+      tone: input.summary ? "warning" : "error",
+      title: input.summary ?? "Simulators were not cleaned up",
+      message: `${input.deviceErrors} could not be cleaned up yet. The ADE log has the details.`,
+    };
+  }
+  return { tone: "success", title: input.summary ?? "No simulators to clean up" };
+}
+
+/** Why Clean up powered nothing off, in the words the toast uses. */
+const CLEANUP_SKIP_REASON: Record<NonNullable<AppleDeviceCleanupResult["powerOffSkipped"]>, string> = {
+  "simulator-app-open": "Simulator.app is open, so nothing was powered off.",
+  "process-list-unavailable": "ADE could not check what uses the devices, so nothing was powered off.",
+};
+
 export function AppleDevicePane({
   sessionId,
   laneId,
@@ -139,6 +174,12 @@ export function AppleDevicePane({
    * described as portrait until something rotates it.
    */
   const [orientation, setOrientation] = useState<AppleDeviceOrientation>("portrait");
+  /**
+   * The foldable body's posture. It only ever reaches the 3D view for a device
+   * the simulator record reports as foldable; the state exists for every device
+   * but does nothing when `duoCapable` is false.
+   */
+  const [duoState, setDuoState] = useState(() => createAppleDuoState());
   const [rotating, setRotating] = useState(false);
   const [preview, setPreview] = useState<AppleRenderedPreview | null>(null);
   const [confirmSwitch, setConfirmSwitch] = useState(false);
@@ -153,7 +194,10 @@ export function AppleDevicePane({
     laneDevice,
     owners,
     disk,
+    ownership,
     measuringDisk,
+    runtimes,
+    defaultNewDevice,
     refreshing,
     bootedRead,
     refreshList,
@@ -465,9 +509,49 @@ export function AppleDevicePane({
     start({ laneId, chatSessionId: sessionId, udid }, udid);
   }, [laneId, sessionId, start]);
 
-  const createDevice = useCallback((sourceUdid: string) => {
-    start({ laneId, chatSessionId: sessionId, create: { sourceUdid } }, "create");
+  // What Create asked for, so the loading card can name it before it exists.
+  const creatingSpecRef = useRef<AppleNewDeviceSpec | null>(null);
+  const createDevice = useCallback((spec: AppleNewDeviceSpec) => {
+    creatingSpecRef.current = spec;
+    start({ laneId, chatSessionId: sessionId, create: { runtime: spec.runtime, deviceType: spec.deviceType } }, "create");
   }, [laneId, sessionId, start]);
+
+  /**
+   * The storage section's Clean up: the cleanup pass, plus powering off every
+   * idle ADE device. The toast says what it did; the list is re-read after.
+   */
+  const [cleaning, setCleaning] = useState(false);
+  const cleanupDevices = useCallback(() => {
+    setCleaning(true);
+    void window.ade.iosSimulator
+      .deviceCleanup({ ...(laneId ? { laneId } : {}), powerOffIdle: true }, runtimePinRef.current)
+      .then((result) => {
+        const parts = [
+          result.deleted.length ? `deleted ${result.deleted.length}` : null,
+          result.poweredOff.length ? `powered off ${result.poweredOff.length}` : null,
+          result.released.length ? `released ${result.released.length}` : null,
+        ].filter(Boolean);
+        const listUnreadable = result.errors.some((entry) => entry.udid === null);
+        const deviceErrors = result.errors.filter((entry) => entry.udid !== null).length;
+        const skippedWhy = result.powerOffSkipped ? CLEANUP_SKIP_REASON[result.powerOffSkipped] : null;
+        // Counts only. The raw simctl errors are in the log, not in the toast.
+        const summary = parts.length ? `Cleaned up simulators: ${parts.join(", ")}` : null;
+        const notice = cleanupNotice({ listUnreadable, deviceErrors, summary });
+        const message = [notice.message, skippedWhy].filter(Boolean).join(" ");
+        showToast({
+          id: "apple-device-cleanup",
+          tone: notice.tone,
+          title: notice.title,
+          ...(message ? { message } : {}),
+          ...(notice.tone === "success" ? {} : { durationMs: 18_000 }),
+        });
+      })
+      .catch((cause: unknown) => setError(cause))
+      .finally(() => {
+        setCleaning(false);
+        refreshList();
+      });
+  }, [laneId, refreshList]);
 
   /**
    * Delete a simulator from the picker's per-device menu.
@@ -558,6 +642,18 @@ export function AppleDevicePane({
     if (!appleInputAllowed(state)) return;
     void window.ade.iosSimulator
       .pressButton({ name: "home", laneId, deviceUdid }, runtimePinRef.current)
+      .catch((cause: unknown) => setError(cause));
+  }, [deviceUdid, laneId, state]);
+
+  /**
+   * The device's other physical buttons. Same guard and same service call as
+   * Home — `pressButton` dispatches by name, so this is one callback rather
+   * than one per key.
+   */
+  const pressHardwareButton = useCallback((name: AppleHardwareButtonName) => {
+    if (!appleInputAllowed(state)) return;
+    void window.ade.iosSimulator
+      .pressButton({ name, laneId, deviceUdid }, runtimePinRef.current)
       .catch((cause: unknown) => setError(cause));
   }, [deviceUdid, laneId, state]);
 
@@ -653,11 +749,34 @@ export function AppleDevicePane({
   /*
    * The lane device row carries no CoreSimulator type, so read it off the
    * installed entry with the same udid. That entry is Apple's own record; the
-   * lane device's NAME is whatever ADE or a person called the clone.
+   * lane device's NAME is whatever ADE or a person called the device.
    */
   const deviceTypeIdentifier = laneDevice
     ? installed.find((entry) => entry.udid === laneDevice.udid)?.deviceTypeIdentifier ?? null
     : null;
+  /*
+   * The Duo mode is capability-gated on the CoreSimulator type identifier only.
+   * Only a device whose simulator record reports foldable gets the procedural
+   * two-panel body and the fold controls; every other device — and every host
+   * with no Duo runtime — keeps the unchanged single-display path and does no
+   * Duo work.
+   *
+   * `deviceName` is deliberately NOT passed to the matcher: it is the lane
+   * device's display name ("ADE · <lane>" for an ADE device), not Apple's device-type
+   * name, so a lane called "duo-hinge" would otherwise mark an iPhone 17 as
+   * foldable and render the Duo body on a rigid device.
+   */
+  const duoCapable = appleDeviceSupportsDuo({ deviceTypeIdentifier });
+  const duoControlsEnabled = duoCapable && canUse3d;
+  const duoProps: AppleDeviceDuoProps | undefined = duoControlsEnabled
+    ? {
+        enabled: true,
+        angle: duoState.pose.angle,
+        lowerFlat: duoState.pose.lowerFlat,
+        onHingeChange: (angle) =>
+          setDuoState((current) => reduceAppleDuoState(current, { type: "angle", angle })),
+      }
+    : undefined;
   const inputConnected = state === "live";
 
   const viewport = renderViewport();
@@ -686,11 +805,15 @@ export function AppleDevicePane({
             laneDevice={laneDevice}
             disk={disk}
             measuringDisk={measuringDisk}
+            runtimes={runtimes}
+            defaultNewDevice={defaultNewDevice}
+            ownership={ownership}
             pending={pendingStart}
-            lastUsedUdid={laneDevice?.templateUdid ?? null}
             refreshing={refreshing}
             onStart={startInstalled}
             onCreate={createDevice}
+            onCleanup={cleanupDevices}
+            cleaning={cleaning}
             onDelete={deleteInstalled}
             onRefresh={refreshList}
             playing={!hidden}
@@ -699,10 +822,11 @@ export function AppleDevicePane({
       case "starting":
         return (
           <AppleDeviceLoadingCard
-            name={pendingStart === "create" ? "New simulator" : startingName()}
+            name={startingName()}
             runtime={startingRuntime()}
             model={startingIdentity().model}
             family={startingIdentity().family}
+            isNew={pendingStart === "create"}
             /* Without a start in flight the device is already up and only the
                video is connecting; "Booting device" there read as ADE powering
                the simulator on by itself. */
@@ -751,6 +875,7 @@ export function AppleDevicePane({
               orientation={orientation}
               devicePointSize={stream.devicePointSize}
               interactive={appleInputAllowed(state)}
+              duo={duoProps}
               onDeviceInput={input.send}
               onDeviceScroll={input.scroll}
               onDeviceKey={input.key}
@@ -786,13 +911,26 @@ export function AppleDevicePane({
     }
   }
 
+  /** The runtime and model Create asked for, by name, while that device is being made. */
+  function creatingNames(): { runtime: string | null; model: string | null; family: AppleDeviceFamilyId } | null {
+    const spec = pendingStart === "create" ? creatingSpecRef.current : null;
+    if (!spec) return null;
+    const runtime = runtimes.find((entry) => entry.identifier === spec.runtime) ?? null;
+    const type = runtime?.deviceTypes.find((entry) => entry.identifier === spec.deviceType) ?? null;
+    return { runtime: runtime?.name ?? null, model: type?.name ?? null, family: type?.family ?? "iphone" };
+  }
+
   function startingName(): string {
+    const creating = creatingNames();
+    if (creating) return creating.model ? `new ${creating.model}` : "new simulator";
     if (laneDevice) return laneDevice.name;
     const match = installed.find((entry) => entry.udid === pendingStart);
     return match?.name ?? "Simulator";
   }
 
   function startingRuntime(): string | null {
+    const creating = creatingNames();
+    if (creating) return creating.runtime;
     if (laneDevice) return laneDevice.runtime;
     return installed.find((entry) => entry.udid === pendingStart)?.runtime ?? null;
   }
@@ -804,6 +942,9 @@ export function AppleDevicePane({
    * fixed.
    */
   function startingIdentity(): { family: AppleDeviceFamilyId; model: string | null } {
+    const creating = creatingNames();
+    // The name already says the model.
+    if (creating) return { family: creating.family, model: null };
     const record = installed.find(
       (entry) => entry.udid === (laneDevice?.udid ?? pendingStart),
     );
@@ -883,6 +1024,18 @@ export function AppleDevicePane({
               recording={Boolean(recordingActive)}
               screenshotPending={screenshotPending}
               onHome={pressHome}
+              onHardwareButton={pressHardwareButton}
+              duo={duoControlsEnabled
+                ? {
+                    capable: true,
+                    angle: duoState.pose.angle,
+                    stance: nearestAppleDuoStance(duoState.pose.angle),
+                  }
+                : undefined}
+              onDuoStance={(stance) =>
+                setDuoState((current) => reduceAppleDuoState(current, { type: "stance", stance }))}
+              onDuoNudge={(delta) =>
+                setDuoState((current) => reduceAppleDuoState(current, { type: "nudge", delta }))}
               orientation={orientation}
               orientationPending={rotating}
               onOrientation={rotateTo}

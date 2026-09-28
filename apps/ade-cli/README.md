@@ -656,6 +656,9 @@ ade code --embedded
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade proof attach shots/result.png --caption "Checkout complete"
+                                                      # every filing command prints a `cite:` snippet for the agent's answer
+ade proof publish --pr 123 --heading "Proof" --note "Checkout flow" artifact-id [artifact-id ...]
+                                                      # one PR comment; gh 2.99+ --attach uploads the chosen proof, then a github_pr link is added
 ade proof rm artifact-id
 ade proof broken --text                              # list missing/unimported proof records
 ade proof recover artifact-id                       # re-import when the original capture still exists
@@ -740,7 +743,7 @@ ade --socket app-control terminal write --data "y\n"               # answer a pr
 ade --socket app-control proof --caption "Settings saved"          # observe and file a proof artifact
 ade --socket app-control actions --text                            # full app_control action inventory
 ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
-ade --socket browser authorize --tab tab-id --text                # native human grant for the current agent + origin
+ade --socket browser authorize --text                             # ask the user to let this chat use the ADE browser (only when the setting asks)
 ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
 ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
 ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel

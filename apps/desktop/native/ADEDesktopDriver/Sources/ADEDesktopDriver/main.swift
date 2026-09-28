@@ -423,6 +423,7 @@ final class DriverRuntime: NSObject {
         case .parkWindow: return try parkWindow(request)
         case .unparkWindow: return try unparkWindow(request)
         case .launch: return try launch(request)
+        case .quitApp: return try quitApp(request)
         case .present: return try present(request)
         case .observe: return try observe(request)
         case .input: return try input(request)
@@ -698,6 +699,21 @@ final class DriverRuntime: NSObject {
         ]
     }
 
+    private func quitApp(_ request: DriverRequest) throws -> [String: JSONValue] {
+        let laneId = try request.requireString("laneId")
+        let quit = try windows.quitApps(laneId: laneId, match: request.string("app"))
+        return [
+            "quit": .array(quit.map { entry in
+                .object([
+                    "pid": .int(Int(entry.app.pid)),
+                    "appName": .string(entry.app.appName),
+                    "bundleId": entry.app.bundleId.map(JSONValue.string) ?? .null,
+                    "released": .bool(entry.released),
+                ])
+            }),
+        ]
+    }
+
     private func present(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
         let destination = request.string("destination") ?? "main"
@@ -931,8 +947,17 @@ final class DriverRuntime: NSObject {
     private func startRecording(_ request: DriverRequest) throws -> [String: JSONValue] {
         let laneId = try request.requireString("laneId")
         if let refusal = windows.stopGate.refusal(laneId: laneId, action: "start a recording") { throw refusal }
-        guard let handle = displays.handle(forLane: laneId) else {
-            throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
+        // `windowId` records one window and needs no lane display: App Control
+        // records the app it drives. `laneId` is then only the recording's key.
+        let windowId = request.int("windowId").flatMap { $0 > 0 ? CGWindowID($0) : nil }
+        let displayId: CGDirectDisplayID
+        if windowId != nil {
+            displayId = 0
+        } else {
+            guard let handle = displays.handle(forLane: laneId) else {
+                throw DriverError(code: DriverErrorCode.noDisplay, message: "Lane \(laneId) has no display.")
+            }
+            displayId = handle.displayId
         }
         let fps = max(1, min(60, request.int("fps") ?? 30))
         let filePath = request.string("filePath")
@@ -941,7 +966,8 @@ final class DriverRuntime: NSObject {
         // mostly a still display. `keepIdle: true` keeps wall-clock time.
         let startedAt = try capture.startRecording(
             laneId: laneId,
-            displayId: handle.displayId,
+            displayId: displayId,
+            windowId: windowId,
             fps: fps,
             filePath: filePath,
             keepIdle: request.bool("keepIdle") ?? false

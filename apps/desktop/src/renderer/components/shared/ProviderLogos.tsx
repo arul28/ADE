@@ -213,6 +213,7 @@ export function ProviderLogo({
     case "devin":
       return <DevinLogo size={size} className={className} />;
     case "opencode":
+    case "opencode-go":
       return <OpenCode.Avatar size={size} className={c} />;
     case "xai":
       return <XAI.Avatar size={size} className={c} />;

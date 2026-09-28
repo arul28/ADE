@@ -45,6 +45,7 @@ import { resolveCodexExecutable } from "../ai/codexExecutable";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { getErrorMessage, quoteIfNeeded, resolvePathWithinRoot } from "../shared/utils";
 
 /** How a handoff step's lane target reads in the simulation list. */
@@ -498,7 +499,7 @@ async function runCodexExec(args: {
   const commandPreview = [quoteIfNeeded(codexExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
   const env = {
-    ...process.env,
+    ...userProcessEnv(),
     // Keep output parseable.
     NO_COLOR: "1",
     TERM: "dumb"
@@ -591,7 +592,7 @@ async function runClaudeHeadless(args: {
   const commandPreview = [quoteIfNeeded(claudeExecutable), ...cliArgs.map(quoteIfNeeded)].join(" ");
 
   const env = {
-    ...process.env,
+    ...userProcessEnv(),
     NO_COLOR: "1",
     TERM: "dumb"
   };

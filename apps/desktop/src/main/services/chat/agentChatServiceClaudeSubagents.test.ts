@@ -20,7 +20,6 @@ import {
   query,
   readPersistedChatState,
   spawn,
-  startOpenCodeSession,
   streamText,
   tmpHomeRoot,
   tmpRoot,
@@ -3046,82 +3045,6 @@ describe("createAgentChatService", () => {
       expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
-    it.each([
-      ["opencode", "", "opencode/anthropic/claude-sonnet-5"],
-      ["cursor", "composer-2", "cursor/composer-2"],
-      ["droid", "custom:claude-sonnet-5-thinking-32000", "droid/custom:claude-sonnet-5-thinking-32000"],
-    ] as const)(
-      "clears lifecycle markers when an idle %s user steer is dispatched",
-      async (provider, model, modelId) => {
-        let finishTurn = () => {};
-        const turnGate = new Promise<void>((resolve) => {
-          finishTurn = resolve;
-        });
-        if (provider === "opencode") {
-          vi.mocked(streamText).mockReturnValue({
-            fullStream: (async function* () {
-              yield { type: "text-delta", textDelta: "working" };
-              await turnGate;
-              yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-            })(),
-          } as any);
-        } else if (provider === "cursor") {
-          process.env.CURSOR_API_KEY = "cursor-test-key";
-          mockState.cursorSendPromptGate = turnGate;
-        } else {
-          mockState.droidPromptGate = turnGate;
-        }
-
-        const { service, sessionService } = createService();
-        const session = await service.createSession({
-          laneId: "lane-1",
-          provider,
-          model,
-          modelId,
-        });
-        sessionService.clearTurnStartMarkers.mockClear();
-        sessionService.clearSessionActivity.mockClear();
-
-        let turnSettled = false;
-        const steerPromise = service.steerUserMessage({
-          sessionId: session.id,
-          text: "Continue from my answer.",
-        }).finally(() => {
-          turnSettled = true;
-        });
-
-        try {
-          if (provider === "cursor") {
-            await vi.waitFor(() => {
-              expect(mockState.cursorSdkSendCalls.length).toBeGreaterThan(0);
-            });
-            mockState.cursorSdkPooled.bridge.onRunStarted({
-              agentId: "cursor-sdk-agent-1",
-              runId: "cursor-sdk-run-1",
-              modelSdkId: "composer-2",
-            }, { runtime: "local" });
-          } else if (provider === "droid") {
-            await vi.waitFor(() => {
-              expect(mockState.droidPromptCalls.length).toBeGreaterThan(0);
-            });
-            mockState.droidPooled.bridge.onEvent({
-              type: "assistant",
-              message: { content: [] },
-            });
-          }
-          await vi.waitFor(() => {
-            expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
-          });
-          expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledTimes(1);
-          expect(sessionService.clearSessionActivity).toHaveBeenCalledWith(session.id);
-          expect(sessionService.clearSessionActivity).toHaveBeenCalledTimes(1);
-          expect(turnSettled).toBe(false);
-        } finally {
-          finishTurn();
-        }
-        await expect(steerPromise).resolves.toMatchObject({ queued: false });
-      },
-    );
 
     it("preserves lifecycle markers when an idle Cursor user steer is rejected before dispatch", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";
@@ -3146,41 +3069,6 @@ describe("createAgentChatService", () => {
       expect(sessionService.clearSessionActivity).not.toHaveBeenCalled();
     });
 
-    it("preserves lifecycle markers when an idle OpenCode prompt is rejected before dispatch", async () => {
-      const { service, sessionService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-      vi.mocked(streamText).mockReturnValueOnce({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      } as any);
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Start the reusable OpenCode runtime.",
-      });
-      const handle = await vi.mocked(startOpenCodeSession).mock.results.at(-1)!.value as {
-        client: {
-          session: {
-            promptAsync: ReturnType<typeof vi.fn>;
-          };
-        };
-      };
-      handle.client.session.promptAsync.mockRejectedValueOnce(
-        new Error("OpenCode rejected the prompt."),
-      );
-      sessionService.clearTurnStartMarkers.mockClear();
-
-      await expect(service.steerUserMessage({
-        sessionId: session.id,
-        text: "Continue from my answer.",
-      })).resolves.toMatchObject({ queued: false });
-      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
-    });
 
     it("preserves lifecycle markers when a Cursor user steer is rejected by a full queue", async () => {
       process.env.CURSOR_API_KEY = "cursor-test-key";

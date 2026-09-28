@@ -7,6 +7,7 @@ import {
   isAgentChatDroidPermissionMode,
   legacyPermissionModeFromDroidPermissionMode,
   activeTurnDispatchModes,
+  activeTurnInlineAttachmentBlock,
   activeTurnInterruptContinues,
   cursorSessionRunsInCloud,
   defaultActiveTurnDispatchMode,
@@ -37,19 +38,38 @@ describe("Droid permission vocabulary", () => {
 });
 
 describe("active-turn dispatch modes", () => {
-  it("is the one table every surface reads: Claude, Cursor and OpenCode inline, Codex inline-only, ACP queue-only", () => {
+  it("is the one table every surface reads: OpenCode supports inline and queued turns", () => {
     expect(activeTurnDispatchModes("claude")).toEqual(["inline", "queue", "interrupt"]);
     // Codex's app-server takes `turn/steer` into the running turn — the service
     // has always sent it; the table was the thing that never said so.
     expect(activeTurnDispatchModes("codex")).toEqual(["inline", "queue"]);
     // Cursor gained inline with `Run.steer()` in @cursor/sdk 1.0.31.
     expect(activeTurnDispatchModes("cursor")).toEqual(["inline", "queue", "interrupt"]);
-    // OpenCode's v2 session prompt admits `delivery: "steer"` into the live
-    // agent loop.
     expect(activeTurnDispatchModes("opencode")).toEqual(["inline", "queue"]);
     for (const provider of ["droid", "pi", "qwen", "unknown-provider", undefined]) {
       expect(activeTurnDispatchModes(provider)).toEqual(["queue"]);
     }
+  });
+
+  it("keeps an attachment-bearing Cursor steer off the running turn", () => {
+    const image = activeTurnInlineAttachmentBlock("cursor", {
+      attachments: [{ path: "shot.png", type: "image" }],
+      contextAttachmentCount: 0,
+    });
+    const file = activeTurnInlineAttachmentBlock("cursor", {
+      attachments: [{ path: "notes.txt", type: "file" }],
+      contextAttachmentCount: 0,
+    });
+    expect(image).toMatch(/^Images can't join a running /);
+    expect(file).toMatch(/^Attachments can't join a running /);
+    expect(activeTurnInlineAttachmentBlock("claude", {
+      attachments: [{ path: "shot.png", type: "image" }],
+      contextAttachmentCount: 0,
+    })).toBeNull();
+    expect(activeTurnInlineAttachmentBlock("cursor", {
+      attachments: [],
+      contextAttachmentCount: 0,
+    })).toBeNull();
   });
 
   it("defaults to the first mode in menu order", () => {

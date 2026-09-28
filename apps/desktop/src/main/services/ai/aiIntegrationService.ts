@@ -67,7 +67,7 @@ import {
   peekOpenCodeInventoryCache,
   probeOpenCodeProviderInventory,
 } from "../opencode/openCodeInventory";
-import type { DiscoveredLocalModelEntry } from "../opencode/openCodeRuntime";
+import type { DiscoveredLocalModelEntry } from "../opencode/openCodeConfig";
 import {
   clearOpenCodeBinaryCache,
   resolveOpenCodeBinary,

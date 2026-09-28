@@ -77,11 +77,14 @@ into the Work list:
 - `ade chat note "testing desktop auth fallback"` updates the row's quiet
   status line, trimmed to at most 72 characters (agents aim for 6 words or fewer);
   an empty note clears it.
-- `ade chat activity planning|implementing|testing|reviewing|debugging|monitoring`
-  sets one fixed activity detail on the session card; `clear` removes it. It
-  never changes the parent board phase, **Needs you** takes priority, and a new
-  user turn clears the old report. Provider guidance exposes this only when ADE
-  can make a session-scoped CLI call reliably.
+- `ade chat activity planning|exploring|implementing|testing|debugging|reviewing|shipping|monitoring`
+  names the session card's activity detail; `clear` removes it. ADE detects the
+  activity of a chat turn from its tool calls on its own, so agents use this to
+  correct or refine it (for example **Debugging**, which detection cannot tell
+  from testing). The report stands until the detected activity moves somewhere
+  it does not cover. It never changes the parent board phase, **Needs you**
+  takes priority, and a new user turn clears it. Provider guidance exposes this
+  only when ADE can make a session-scoped CLI call reliably.
 - `ade chat ask "Which account should I use?"` creates a loud, persisted
   `Needs you` state, clears settle, and sends a time-sensitive push. The next
   user turn clears the ask.
@@ -126,9 +129,9 @@ Each ADE-launched session receives the canonical root through
   `.claude-plugin/plugin.json`; tracked Claude CLI launches and background
   `claude --bg` launches receive the same validated root through
   `--plugin-dir`.
-- OpenCode receives the roots through its own `skills.paths` config key, which
-  ADE sets inside `OPENCODE_CONFIG_CONTENT`. No file is written into the
-  user's OpenCode config home.
+- OpenCode receives the roots through its own top-level `skills` config key,
+  which ADE sets inside the generated `OPENCODE_CONFIG` file. No file is
+  written into the user's OpenCode config home.
 - Pi has its native discovery replaced outright: ADE passes `noSkills: true`
   plus `additionalSkillPaths`, so a Pi session sees exactly ADE's catalog.
 - Qwen Code receives the roots through its own `skills.directories` settings

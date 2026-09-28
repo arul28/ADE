@@ -26,6 +26,7 @@ import { TerminalImagePasteNotice } from "./TerminalImagePasteNotice";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { TerminalToolType } from "../../../shared/types";
+import { resolveTheme, resolveThemeById } from "../../../shared/theme";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
 import {
   readDismissedScrollHints,
@@ -3254,6 +3255,8 @@ export function TerminalView({
   toolType?: TerminalToolType | null;
 }) {
   const appTheme = useAppStore((s) => s.theme);
+  const themeId = useAppStore((s) => s.themeId);
+  const customThemes = useAppStore((s) => s.customThemes);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
   // Keyboard-scroll hint: web only, and only for a session whose provider we
   // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
@@ -3299,7 +3302,16 @@ export function TerminalView({
   const [exited, setExited] = useState<number | null>(null);
   const [imagePasteNotice, setImagePasteNotice] = useState<string | null>(null);
 
-  const termTheme = useMemo(() => terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"], [appTheme]);
+  const termTheme = useMemo(() => {
+    // The two stylesheet themes keep the hand-tuned terminal colours they have
+    // always shipped. Every other theme — shipped extras, custom, imported —
+    // paints the terminal from its own resolved ANSI palette, so a theme that
+    // changes the app also changes the terminal inside it.
+    if (themeId === "dark" || themeId === "light") {
+      return terminalThemes[isDarkTheme(appTheme) ? "dark" : "light"];
+    }
+    return resolveTheme(resolveThemeById(themeId, customThemes)).terminal as XtermTheme;
+  }, [appTheme, themeId, customThemes]);
   const resolvedPreferences = useMemo<TerminalRenderPreferences>(() => ({
     fontFamily: terminalPreferences?.fontFamily ?? DEFAULT_TERMINAL_PREFERENCES.fontFamily,
     fontSize: terminalPreferences?.fontSize ?? DEFAULT_TERMINAL_PREFERENCES.fontSize,

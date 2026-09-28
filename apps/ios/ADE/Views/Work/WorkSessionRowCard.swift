@@ -270,7 +270,9 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.statusLabel = row.status?.label
     self.statusGlyph = row.status?.glyph
     self.statusElapsedSince = row.status?.showsElapsed == true
-      ? (chatSummary?.currentTurnStartedAt ?? row.status?.activityReportUpdatedAt ?? self.activityTimestamp)
+      // An activity ("Testing") counts from when the session entered it, not
+      // from the turn start; mirrors `sessionElapsedAnchor` on desktop.
+      ? (row.status?.activityReportUpdatedAt ?? chatSummary?.currentTurnStartedAt ?? self.activityTimestamp)
       : nil
     self.showsElapsed = row.status?.showsElapsed ?? false
     // Settled resolves to a nil presentation, so it is not prominent and recedes.
@@ -384,6 +386,7 @@ struct WorkSessionRow: View, Equatable {
   }
 
   var body: some View {
+    let _ = ScrollDiagnostics.shared.count(.workRowBody)
     if compact {
       compactBody
     } else {
@@ -415,12 +418,14 @@ struct WorkSessionRow: View, Equatable {
         quietCompactContents
       }
     }
-    .padding(.horizontal, 10)
+    .padding(.horizontal, 4)
     .padding(.vertical, 8)
     .frame(maxWidth: .infinity, alignment: .leading)
-    // Neutral, like the standard card: the provider tint survives only on the
-    // logo, which is the one place it is identity rather than state.
+    // No surface of its own: rows sit flush on the page, like the standard
+    // row. The only fill is the transient open-transition highlight.
     .background(surfaceFill, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+    // With no fill, the whole row still has to take the tap.
+    .contentShape(Rectangle())
     .overlay {
       if isSelectedTransitionSource {
         RoundedRectangle(cornerRadius: 11, style: .continuous)
@@ -685,7 +690,9 @@ struct WorkSessionRow: View, Equatable {
   }
 
   /// Interaction owns the surface. Background, border and shadow are reserved
-  /// for selection and press; state never spends them.
+  /// for selection and press; state never spends them — and at rest there is
+  /// no surface at all: rows sit flush on the page, separated by the list's
+  /// hairlines, not by card edges.
   ///
   /// This card used to paint its whole body in the provider's brand hue
   /// (`providerTintColor.opacity(0.12)` fill, a 0.25 stroke), and `providerTint`
@@ -694,10 +701,11 @@ struct WorkSessionRow: View, Equatable {
   /// Status now lives in exactly one place: the right-anchored slot on line 1.
   private func sessionCardSurface<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
     content()
-      .padding(.horizontal, 12)
-      .padding(.vertical, 9)
+      .padding(.horizontal, 4)
+      .padding(.vertical, 10)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(surfaceFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .contentShape(Rectangle())
       .overlay {
         if isSelectedTransitionSource {
           RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -723,9 +731,7 @@ struct WorkSessionRow: View, Equatable {
   }
 
   private var surfaceFill: Color {
-    isSelectedTransitionSource
-      ? ADEColor.accent.opacity(0.12)
-      : ADEColor.surfaceBackground.opacity(0.6)
+    isSelectedTransitionSource ? ADEColor.accent.opacity(0.12) : .clear
   }
 
   /// Non-prominent states recede to 70%, which is how the few rows that want a
@@ -1118,10 +1124,11 @@ struct WorkSessionRowStatusSlot: View {
   let tone: ActivityTone
   let glyph: ActivityGlyph?
   let showsElapsed: Bool
-  /// Elapsed time uses the chat summary's `currentTurnStartedAt` when present,
-  /// matching desktop. When that anchor is absent, iOS falls back to the
-  /// activity report's update time and then the row's activity timestamp;
-  /// desktop and CLI fall back directly to last activity.
+  /// Elapsed counts from when the session entered its activity ("Testing")
+  /// when the row shows one, else from the chat summary's
+  /// `currentTurnStartedAt`, matching desktop's `sessionElapsedAnchor`. Without
+  /// either, iOS falls back to the row's activity timestamp; desktop and CLI
+  /// fall back directly to last activity.
   let elapsedSince: Date?
   /// Accessibility sizes let the slot wrap instead of holding one line.
   var wraps: Bool = false

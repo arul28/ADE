@@ -383,13 +383,14 @@ struct SettingsUsagePage: View {
       if let snapshot = store.snapshot {
         VStack(alignment: .leading, spacing: 20) {
           ForEach(quotaProviders(snapshot), id: \.self) { provider in
-            SettingsUsagePaceProvider(
+            ADEUsageLimitsProviderSection(
               provider: provider,
               windows: snapshot.windows.filter { $0.provider == provider },
               accounts: pooledAccounts(snapshot),
               status: snapshot.providerStatus?[provider],
               spendControlReached: provider == "codex" && snapshot.spendControlReached == true,
-              resetCredits: resetCreditAccounts(in: snapshot, provider: provider)
+              resetCredits: resetCreditAccounts(in: snapshot, provider: provider),
+              density: .regular
             )
           }
         }

@@ -367,6 +367,25 @@ export function appControlCardLabel(session: Pick<AppControlSession, "label" | "
   return "Desktop app";
 }
 
+/**
+ * A name for the app worth showing as a title, or null when there is none.
+ *
+ * The page's own title (from CDP) wins. The session label counts only when
+ * someone named it: a launch without `--label` stores the raw command
+ * ("npm start") there, and a command is never a title.
+ */
+export function appControlAppName(
+  session: Pick<AppControlSession, "label" | "command"> | null | undefined,
+  pageTitle?: string | null,
+): string | null {
+  const title = pageTitle?.trim();
+  if (title) return title;
+  const label = session?.label?.trim();
+  if (!label) return null;
+  if (label === session?.command?.trim() || looksLikeLaunchCommand(label)) return null;
+  return label;
+}
+
 function looksLikeLaunchCommand(text: string): boolean {
   return /(?:^|[\s'"=])(?:sh|bash|zsh|cmd(?:\.exe)?|powershell)\b/i.test(text)
     || /\bADE_[A-Z0-9_]+=/.test(text)

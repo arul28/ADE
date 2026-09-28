@@ -28,7 +28,8 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
-import { ensureOpenCodeAdeInstructionsFile } from "../opencode/openCodeAdeInstructions";
+import { attachOpenCodeTerminal, listAdeOpenCodeSessions } from "../opencode/openCodeTerminal";
+import type { OpenCodeServerLease } from "../opencode/openCodeServer";
 import { SESSION_ACTIVITY_SESSION_ID_ENV } from "../../../shared/sessionActivity";
 import {
   acquirePiSessionLease,
@@ -55,6 +56,7 @@ import {
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
+import { stripHostRuntimeEnv } from "../shared/hostRuntimeEnv";
 import { detectDevServersInChunk, devServerRegistry } from "../devServers/devServerRegistry";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import {
@@ -113,7 +115,6 @@ import {
 } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
-  buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliSessionActivityGuidance,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
@@ -135,7 +136,6 @@ import {
   trackedCliResumeInstanceId,
   trackedCliResumePresetId,
   trackedCliTitleFromPromptSeed,
-  withOpenCodeAdeInstructions,
   type ProviderInstanceLaunchTarget,
   type TrackedCliLaunchCommand,
   type TrackedCliPresetLaunch,
@@ -168,7 +168,6 @@ import { derivePreviewFromChunk, type PreviewCursorState } from "../../utils/ter
 import { claudeConfigHome, codexConfigHome, factoryConfigHome, kimiCodeConfigHome } from "../shared/providerConfigHomes";
 import { checkKimiWindowsPrerequisites } from "../ai/acpExecutables";
 import {
-  buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
@@ -306,7 +305,6 @@ const TERMINAL_SNAPSHOT_SCROLLBACK = 2_000;
 const TERMINAL_SNAPSHOT_TRANSCRIPT_FALLBACK_BYTES = 220_000;
 const PTY_SEND_DEFAULT_COLS = 100;
 const PTY_SEND_DEFAULT_ROWS = 30;
-const OPENCODE_REPLAY_RESUME_ENV = "ADE_OPENCODE_REPLAY_RESUME";
 const AGENT_CLI_INPUT_CLEAR_TO_END_KEY = "\x05";
 const AGENT_CLI_INPUT_CLEAR_TO_START_KEY = "\x15";
 const AGENT_CLI_BRACKETED_PASTE_START = "\x1b[200~";
@@ -331,8 +329,6 @@ const PTY_PROCESS_TREE_KILL_DELAY_MS = 1500;
 const PTY_PROCESS_SCAN_SIGNAL_DELAY_MS = 100;
 const PTY_PROCESS_SCAN_TIMEOUT_MS = 250;
 const PTY_PROCESS_SCAN_MAX_BYTES = 512 * 1024;
-
-let cachedOpenCodeReplayResumeSupport: boolean | null = null;
 
 function killPidBestEffort(pid: number, signal: NodeJS.Signals): void {
   if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return;
@@ -495,38 +491,6 @@ type ClaudeStorageSessionLookupArgs = {
 
 function hasEnvValue(env: NodeJS.ProcessEnv, key: string): boolean {
   return typeof env[key] === "string" && env[key]!.trim().length > 0;
-}
-
-function openCodeSupportsReplayResume(): boolean {
-  const override = process.env[OPENCODE_REPLAY_RESUME_ENV]?.trim().toLowerCase();
-  if (override === "1" || override === "true" || override === "yes") return true;
-  if (override === "0" || override === "false" || override === "no") return false;
-  if (cachedOpenCodeReplayResumeSupport != null) return cachedOpenCodeReplayResumeSupport;
-  try {
-    const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-    delete env.FORCE_COLOR;
-    const executable = resolveOpenCodeBinaryPath() ?? "opencode";
-    // Replay resume is a root `--mini` feature: `--replay-limit` requires
-    // --mini, and an explicit `--replay` flag is rejected outright on current
-    // OpenCode. Probe the root help, not `run --help`.
-    const result = spawnSync(executable, ["--help"], {
-      encoding: "utf8",
-      timeout: 3000,
-      maxBuffer: 512 * 1024,
-      env,
-      windowsHide: true,
-    });
-    const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
-    // Flag tokens start with "-", a non-word character, so \b can never match
-    // before them; anchor on whitespace/string edges instead.
-    cachedOpenCodeReplayResumeSupport = result.status === 0
-      && /(^|\s)--mini(\s|$)/.test(output)
-      && /(^|\s)--replay-limit(\s|$)/.test(output);
-    return cachedOpenCodeReplayResumeSupport;
-  } catch {
-    cachedOpenCodeReplayResumeSupport = false;
-    return false;
-  }
 }
 
 function delay(ms: number): Promise<void> {
@@ -832,6 +796,8 @@ type PtyEntry = {
     endedAt: string | null;
   } | null;
   piSessionLease: PiSessionLease | null;
+  /** Lease on ADE's OpenCode server that the tracked OpenCode TUI is attached to. */
+  openCodeLease: OpenCodeServerLease | null;
   piSessionDir: string | null;
   piLaunchEnv: NodeJS.ProcessEnv | null;
   piSessionLeaseIsCreation: boolean;
@@ -3784,29 +3750,15 @@ export function createPtyService({
     }
   };
 
-  const resolveOpenCodeSessionIdFromCli = (args: {
+  const resolveOpenCodeSessionIdFromStore = (args: {
     cwd: string;
     startedAt?: string | null;
     maxStartDeltaMs?: number;
   }): string | null => {
     try {
-      const env: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
-      delete env.FORCE_COLOR;
-      const executable = resolveOpenCodeBinaryPath() ?? "opencode";
-      const result = spawnSync(executable, ["session", "list", "--format", "json", "--max-count", "80"], {
-        cwd: args.cwd,
-        encoding: "utf8",
-        timeout: 4000,
-        maxBuffer: 1024 * 1024,
-        env,
-        windowsHide: true,
-      });
-      if (result.error || result.status !== 0) return null;
-      const stdout = String(result.stdout ?? "");
-      const jsonStart = stdout.indexOf("[");
-      if (jsonStart < 0) return null;
-      const rows = JSON.parse(stdout.slice(jsonStart)) as unknown;
-      if (!Array.isArray(rows)) return null;
+      // ADE's own store, read-only. `opencode session list` would reach
+      // OpenCode's background service and the user's personal store instead.
+      const rows = listAdeOpenCodeSessions(80);
       // macOS hands back /var/... while the session row records the resolved
       // /private/var/... spelling (and Windows adds case drift). Compare
       // realpath-resolved, platform-folded keys or every lane under a symlinked
@@ -3825,12 +3777,11 @@ export function createPtyService({
       const hasStartedAt = Number.isFinite(requestedStartedAtMs);
       let bestMatch: { id: string; score: number; updatedMs: number } | null = null;
       for (const row of rows) {
-        const record = row && typeof row === "object" ? row as Record<string, unknown> : null;
-        const id = typeof record?.id === "string" ? record.id.trim() : "";
-        const directory = typeof record?.directory === "string" ? record.directory.trim() : "";
+        const id = row.id.trim();
+        const directory = row.directory.trim();
         if (!id || !directory || canonicalKey(directory) !== requestedKey) continue;
-        const createdMs = Number(record?.created);
-        const updatedMs = Number(record?.updated);
+        const createdMs = Number(row.createdAt);
+        const updatedMs = Number(row.updatedAt);
         let referenceMs: number;
         if (Number.isFinite(createdMs)) {
           referenceMs = createdMs;
@@ -4087,7 +4038,7 @@ export function createPtyService({
     }
 
     if ((effectiveToolType === "opencode" || effectiveToolType === "opencode-orchestrated") && cwd && reason !== "resume-launch" && hasStorageBackfillEvidence) {
-      const opencodeSessionId = resolveOpenCodeSessionIdFromCli({
+      const opencodeSessionId = resolveOpenCodeSessionIdFromStore({
         cwd,
         startedAt: session.startedAt,
         maxStartDeltaMs: 10 * 60_000,
@@ -4096,7 +4047,7 @@ export function createPtyService({
         const resumeCmd = `opencode --session ${opencodeSessionId}`;
         missingResumeTargetBackfillFailures.delete(sessionId);
         sessionService.setResumeCommand(sessionId, resumeCmd);
-        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "opencode-session-list", opencodeSessionId });
+        logger.info("pty.resume_target_backfilled", { sessionId, toolType: effectiveToolType, reason, source: "opencode-store", opencodeSessionId });
         return true;
       }
     }
@@ -4536,6 +4487,8 @@ export function createPtyService({
     }
     entry.piSessionLease?.release();
     entry.piSessionLease = null;
+    entry.openCodeLease?.release();
+    entry.openCodeLease = null;
     entry.disposed = true;
     entry.attentionRequested = false;
     // The process that was serving those ports is gone, so the launchpad chips
@@ -6122,6 +6075,7 @@ export function createPtyService({
       let startupCommand = withBundledOpenCodeCommandLine(requestedStartupCommand.trim(), toolTypeHint);
       const cleanupPaths: string[] = [];
       let piSessionLease: PiSessionLease | null = null;
+      let openCodeLease: OpenCodeServerLease | null = null;
       let piSessionDirForEntry: string | null = null;
       let piLaunchEnvForEntry: NodeJS.ProcessEnv | null = null;
       let piSessionLeaseIsCreation = false;
@@ -6260,17 +6214,16 @@ export function createPtyService({
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
       const explicitNoColor = hasEnvKey(effectiveArgs.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
       const explicitForceColor = hasEnvKey(effectiveArgs.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
-      const inheritedProcessEnv = { ...process.env };
-      // The desktop/runtime itself may be launched from an agent shell. Do not
-      // leak that host role into an ordinary terminal; tracked agent CLIs set
-      // their role explicitly below.
-      delete inheritedProcessEnv.ADE_DEFAULT_ROLE;
-      const baseLaunchEnv = {
-        ...inheritedProcessEnv,
+      // Host-only keys (the brain's ELECTRON_RUN_AS_NODE, its role, its
+      // lifecycle keys) never reach a terminal, even when a caller such as App
+      // Control passes a copy of process.env. Tracked agent CLIs set their
+      // role explicitly below.
+      const baseLaunchEnv = stripHostRuntimeEnv({
+        ...process.env,
         ...laneRuntimeEnv,
         ...sessionLinearEnv,
         ...(effectiveArgs.env ?? {})
-      };
+      });
       if (explicitNoColor && !explicitForceColor) {
         delete baseLaunchEnv.FORCE_COLOR;
       }
@@ -6529,12 +6482,8 @@ export function createPtyService({
         }
         // Applied here, not earlier, because `startupCommand` is still being
         // rewritten above this point — resume-target backfill in particular
-        // replaces it wholesale with the session's persisted `resumeCommand`,
-        // which carries its own inline OPENCODE_CONFIG_CONTENT assignment and
-        // no instructions. Since a command-line assignment overrides the
-        // process environment, merging any earlier meant the restored
-        // assignment silently dropped the ADE contract on exactly the resume
-        // path this exists to cover.
+        // replaces it wholesale with the session's persisted `resumeCommand`.
+        // Attaching rewrites the final command to point at ADE's server.
         if (isOpenCodeToolType(toolTypeHint)) {
           const openCodePermissionMode = args.runtimeCliLaunch?.permissionMode
             ?? initialResumeMetadata?.launch?.permissionMode
@@ -6549,19 +6498,36 @@ export function createPtyService({
                 permissionMode: openCodePermissionMode,
               })
             : null;
-          const instructionsPath = ensureOpenCodeAdeInstructionsFile({
-            projectRoot,
+          const attached = await attachOpenCodeTerminal({
+            directCommand: directCommand || null,
+            directArgs,
+            startupCommand,
+            env: launchEnv,
+            cwd,
             laneWorktreePath: worktreePath,
             permissionMode: openCodePermissionMode,
+            model: args.runtimeCliLaunch?.model?.trim() || initialResumeMetadata?.launch?.model?.trim() || null,
+            reasoningEffort: args.runtimeCliLaunch?.reasoningEffort?.trim()
+              || initialResumeMetadata?.launch?.reasoningEffort?.trim()
+              || null,
             sessionActivityGuidance,
+            projectConfig: projectConfigService?.get().effective ?? {},
+            ownerId: ptyId,
+            logger,
           });
-          const withInstructions = withOpenCodeAdeInstructions(
-            { env: launchEnv as Record<string, string>, startupCommand },
-            instructionsPath,
-          );
-          if (withInstructions?.env) launchEnv = withInstructions.env;
-          if (typeof withInstructions?.startupCommand === "string") {
-            startupCommand = withInstructions.startupCommand;
+          if (attached) {
+            openCodeLease = attached.lease;
+            directArgs = attached.directArgs;
+            startupCommand = attached.startupCommand;
+            launchEnv = attached.env;
+            // ADE created or chose the session, so the resume target is known
+            // now rather than inferred from storage after the fact.
+            if (tracked && sanitizeResumeTargetId(initialResumeMetadata?.targetId ?? null) !== attached.sessionId) {
+              sessionService.setResumeCommand(sessionId, `opencode --session ${attached.sessionId}`);
+              const updated = sessionService.get(sessionId);
+              initialResumeCommand = updated?.resumeCommand ?? initialResumeCommand;
+              initialResumeMetadata = updated?.resumeMetadata ?? initialResumeMetadata;
+            }
           }
         }
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
@@ -6650,6 +6616,8 @@ export function createPtyService({
         });
         piSessionLease?.release();
         piSessionLease = null;
+        openCodeLease?.release();
+        openCodeLease = null;
         piSessionDirForEntry = null;
         piLaunchEnvForEntry = null;
         piSessionLeaseIsCreation = false;
@@ -6758,6 +6726,7 @@ export function createPtyService({
         cliUserTitleCommitted: false,
         priorEndState,
         piSessionLease,
+        openCodeLease,
         piSessionDir: piSessionDirForEntry,
         piLaunchEnv: piLaunchEnvForEntry,
         piSessionLeaseIsCreation,
@@ -7461,31 +7430,6 @@ export function createPtyService({
           },
         }) ?? resumableSession;
       }
-      const launchMetadata = resumableSession.resumeMetadata?.launch;
-      const openCodeReplayLaunch = provider === "opencode"
-        && resumableSession.resumeMetadata?.provider === "opencode"
-        && openCodeSupportsReplayResume()
-        ? (() => {
-            const targetId = sanitizeResumeTargetId(resumableSession.resumeMetadata?.targetId ?? null);
-            const replayArgs = {
-              permissionMode: overrides.permissionMode
-                ?? resumableSession.resumeMetadata?.launch.permissionMode
-                ?? null,
-              model: overrides.model ?? launchMetadata?.model ?? null,
-              prompt: text,
-            };
-            return process.platform === "win32"
-              ? buildOpenCodeReplayResumeLaunchCommand({
-                  ...replayArgs,
-                  resumeTarget: targetId,
-                  continueLast: !targetId,
-                })
-              : legacyResumeLaunch(buildOpenCodeReplayResumeCommand({
-                  ...replayArgs,
-                  targetId,
-                }));
-          })()
-        : null;
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
@@ -7499,14 +7443,13 @@ export function createPtyService({
         provider,
         {
           ...overrides,
-          ...(!openCodeReplayLaunch && !resumeFlightAlreadyInProgress ? { prompt: text } : {}),
+          ...(!resumeFlightAlreadyInProgress ? { prompt: text } : {}),
         },
         codexComputerUse,
       );
-      const promptAtLaunch = !openCodeReplayLaunch
-        && !resumeFlightAlreadyInProgress
+      const promptAtLaunch = !resumeFlightAlreadyInProgress
         && builtResume.promptAtLaunch;
-      const resumeLaunch = openCodeReplayLaunch ?? builtResume.launch;
+      const resumeLaunch = builtResume.launch;
       if (!resumeLaunch) {
         throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resume command.`);
       }
@@ -7521,7 +7464,7 @@ export function createPtyService({
       // so there is not always a later PTY write that can mark the new turn.
       // Wait until launch succeeds before clearing the previous turn's state.
       clearTrackedCliTurnStartMarkers(sessionId);
-      if ((resumeFlightCreated && Boolean(openCodeReplayLaunch)) || promptAtLaunch) {
+      if (promptAtLaunch) {
         // This prompt was accepted as part of the launched command, so there
         // will be no Enter write to clear its prior activity report.
         sessionService.clearSessionActivity(sessionId);
@@ -8495,6 +8438,8 @@ export function createPtyService({
       }
       entry.piSessionLease?.release();
       entry.piSessionLease = null;
+      entry.openCodeLease?.release();
+      entry.openCodeLease = null;
       entry.disposed = true;
       entry.attentionRequested = false;
       // Same rule as closeEntry: the process serving those ports is going away.

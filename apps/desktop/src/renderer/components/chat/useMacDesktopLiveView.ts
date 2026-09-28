@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
-import type { H264VideoStatus } from "./H264VideoCanvas";
+import type { H264StreamStatus } from "./h264StreamPlayer";
 import { setMacDesktopFrame } from "./macDesktopFrameStore";
 import {
   MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,
@@ -93,7 +93,7 @@ export type MacDesktopLiveView = {
   streamStatus: MacDesktopStreamStatus | null;
   /** Pixel size of the decoded picture, once a frame has arrived. */
   dimensions: { width: number; height: number } | null;
-  onStatus: (status: H264VideoStatus, error: string | null) => void;
+  onStatus: (status: H264StreamStatus, error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onCanvas: (canvas: HTMLCanvasElement | null) => void;
   /**
@@ -271,7 +271,7 @@ export function useMacDesktopLiveView(args: {
     ));
   }, []);
 
-  const onStatus = useCallback((next: H264VideoStatus, nextError: string | null) => {
+  const onStatus = useCallback((next: H264StreamStatus, nextError: string | null) => {
     if (next === "stopped") {
       // With no address the reader has nothing to stop: it says "stopped"
       // just for mounting, and taken as news it would overwrite a start's

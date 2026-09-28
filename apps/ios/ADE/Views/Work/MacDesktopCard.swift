@@ -49,10 +49,10 @@ struct MacDesktopCard: View {
   /// display, because a card that only ever says "not available here" is worse
   /// than no card on every phone whose Mac will never grow one.
   ///
-  /// Shaped like `AppleDeviceCard` — chips, stage, error line, who is driving,
-  /// Watch — but the stage is the live picture itself, and takeover, when the
-  /// host advertises it, still lives on that picture. Watch opens the same
-  /// picture full screen in `MacDesktopViewer`.
+  /// Chips, stage, error line, who is driving, Watch. The stage is the live
+  /// picture itself, and takeover, when the host advertises it, still lives on
+  /// that picture. Watch opens the same picture full screen in
+  /// `MacDesktopViewer`.
   @ViewBuilder
   private var card: some View {
     if let macDesktop = macDesktop, macDesktop.supported {

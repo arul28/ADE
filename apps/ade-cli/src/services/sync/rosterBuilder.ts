@@ -3,10 +3,13 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
+import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
 import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
 import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type {
+  AgentChatLogState,
   SyncRosterChat,
   SyncRosterChatStatus,
   SyncRosterLane,
@@ -45,6 +48,11 @@ export type RosterProjectRecord = {
   projectId: string;
   rootPath: string;
   displayName: string;
+  /**
+   * Raw `origin` URL the project registry captured when the project was
+   * registered (it re-reads only while unset), so the roster never spawns git.
+   */
+  gitOriginUrl?: string | null;
   lastOpenedAt: number;
   catalogVisibility: "recent" | "system";
 };
@@ -82,6 +90,8 @@ export type RosterAgentChatService = {
     laneId?: string,
     options?: { includeArchived?: boolean; includeIdentity?: boolean },
   ): Promise<RosterLiveSession[]>;
+  /** chatLogV2 freshness for a chat; live counter for loaded sessions. */
+  getChatLogState?(sessionId: string): AgentChatLogState | null;
 };
 
 export type RosterPtyService = {
@@ -345,7 +355,13 @@ type Sidecar = {
   awaitingInput?: boolean;
   /** Persisted CTO/identity marker; see `RosterLiveSession.identityKey`. */
   identityKey?: string | null;
+  /** Persisted chat log freshness (chatLogV2): sequence high-water + generation. */
+  eventSequence?: number | null;
+  historyGeneration?: number | null;
 };
+
+const positiveInteger = (value: unknown): number | null =>
+  typeof value === "number" && Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
 
 // Best-effort read of a chat's persisted sidecar for provider/model/awaiting.
 // A missing or unparsable sidecar leaves those fields null — never throws.
@@ -358,6 +374,8 @@ function readChatSidecar(chatSessionsDir: string, sessionId: string): Sidecar | 
       model: typeof parsed.model === "string" ? parsed.model : null,
       awaitingInput: parsed.awaitingInput === true,
       identityKey: typeof parsed.identityKey === "string" ? parsed.identityKey.trim() || null : null,
+      eventSequence: positiveInteger(parsed.eventSequence),
+      historyGeneration: positiveInteger(parsed.historyGeneration),
     };
   } catch {
     return null;
@@ -404,6 +422,15 @@ function liveChatStatus(live: RosterLiveSession): SyncRosterChatStatus {
   return "ended";
 }
 
+/**
+ * The same normalization the desktop's cross-machine repo match applies
+ * (`normalizeGitRemoteIdentity`), so the phone can compare roster rows from
+ * different machines directly. It also drops any user/token in the URL.
+ */
+function rosterRepoOriginUrl(record: RosterProjectRecord): string | null {
+  return normalizeGitRemoteIdentity(record.gitOriginUrl ?? null);
+}
+
 function mapLane(row: LaneRow): SyncRosterLane {
   return {
     id: row.id,
@@ -440,6 +467,7 @@ async function buildRosterProject(
   const liveBySessionId = new Map<string, RosterLiveSession>();
   let booted = false;
   let livePtyService: RosterPtyService | null = null;
+  let liveChatLogState: ((sessionId: string) => AgentChatLogState | null) | null = null;
   try {
     const bootedPromise = scopeRegistry.getIfBooted(record.projectId);
     const scope = bootedPromise
@@ -454,6 +482,9 @@ async function buildRosterProject(
     livePtyService = scope?.runtime.ptyService ?? null;
     if (agentChatService) {
       booted = true;
+      if (typeof agentChatService.getChatLogState === "function") {
+        liveChatLogState = (sessionId) => agentChatService.getChatLogState?.(sessionId) ?? null;
+      }
       const liveSessions = await agentChatService
         .listSessions(undefined, { includeArchived: false, includeIdentity: true })
         .catch(() => [] as RosterLiveSession[]);
@@ -543,6 +574,20 @@ async function buildRosterProject(
       row.started_at,
     );
     const lastActivityAt = latestActivityTimestamp(lifecycleUpdatedAt, activityStatusChangedAt);
+    // chatLogV2 freshness: live counter when the project is booted, else the
+    // persisted sidecar. Agent chats only — CLI rows have neither.
+    let chatLog: AgentChatLogState | null = null;
+    try {
+      chatLog = liveChatLogState?.(row.id) ?? null;
+    } catch {
+      chatLog = null;
+    }
+    if (!chatLog && sidecar) {
+      chatLog = {
+        maxSequence: sidecar.eventSequence ?? 0,
+        historyGeneration: sidecar.historyGeneration ?? 1,
+      };
+    }
     chats.push({
       id: row.id,
       laneId: row.lane_id,
@@ -568,6 +613,9 @@ async function buildRosterProject(
       exitCode: row.exit_code,
       snoozedUntil: row.snoozed_until,
       snoozedAt: row.snoozed_at,
+      ...(chatLog
+        ? { maxSequence: chatLog.maxSequence, historyGeneration: chatLog.historyGeneration }
+        : {}),
     });
   }
 
@@ -577,6 +625,7 @@ async function buildRosterProject(
     projectId: record.projectId,
     rootPath: record.rootPath,
     displayName: record.displayName,
+    repoOriginUrl: rosterRepoOriginUrl(record),
     lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
     booted,
     runningCount,
@@ -615,11 +664,19 @@ export function createForeignChatTranscriptResolver(args: {
       const requestedProjectId = typeof projectId === "string" ? projectId.trim() : "";
       const requestedRootPath = normalizePath(projectRootPath);
       const records = args.projectRegistry.list();
-      const record = records.find((entry) => {
-        if (requestedProjectId && entry.projectId === requestedProjectId) return true;
-        if (requestedRootPath && normalizePath(entry.rootPath) === requestedRootPath) return true;
-        return false;
-      });
+      const byId = requestedProjectId
+        ? records.find((entry) => entry.projectId === requestedProjectId)
+        : undefined;
+      // Platform path identity: case-folded on Windows and macOS, so a root
+      // spelled with different casing still names the registered project.
+      const byRoot = requestedRootPath
+        ? records.find((entry) => pathsEqual(entry.rootPath, requestedRootPath))
+        : undefined;
+      // Both selectors given: the project the id names must live at that
+      // root, or a request for one project could be answered from another's
+      // transcripts.
+      if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
+      const record = byId ?? byRoot;
       if (!record) return null;
 
       const layout = resolveAdeLayout(record.rootPath);
@@ -670,6 +727,7 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           projectId: record.projectId,
           rootPath: record.rootPath,
           displayName: record.displayName,
+          repoOriginUrl: rosterRepoOriginUrl(record),
           lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
           booted: false,
           runningCount: 0,

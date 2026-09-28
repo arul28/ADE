@@ -600,137 +600,132 @@ struct HubInlineComposer: View {
 
   // MARK: Composer card
 
-  /// One card that morphs between two densities: minimized it reads as the old
-  /// "type to vibecode" capsule (sparkles + field + send), expanded it grows the
-  /// controls row (model/mode/fast/dictation) beneath the field.
+  /// The app's shared glass prompt box (`ADEGlassComposerCard`): folded to
+  /// [⋯][field][send] while the drawer is closed, the full composer with the
+  /// model/mode controls once it opens. The drawer owns the fold (`isExpanded`
+  /// also covers pickers and dictation), so the card never folds under a sheet.
   private var composerCard: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      WorkChatInputAttachmentTray(attachments: $attachments)
-        .fixedSize(horizontal: false, vertical: true)
-        .layoutPriority(2)
-
-      VStack(alignment: .leading, spacing: 12) {
-        HStack(alignment: .center, spacing: 10) {
-          if !isExpanded {
-            Image(systemName: "sparkles")
-              .font(.system(size: 14, weight: .semibold))
-              .foregroundStyle(ADEColor.accent)
-              .transition(.opacity)
-          }
-
-          WorkPlainComposerTextView(
-            text: $draft,
-            isFocused: Binding(
-              get: { composerFocused },
-              set: { composerFocused = $0 }
-            ),
-            measuredHeight: $composerTextHeight,
-            placeholder: "Type to vibecode…",
-            acceptsPastedImages: attachmentsAvailable,
-            onPasteImages: { images in
-              workChatInputPasteImages(images, into: $attachments)
+    let collapsed = !isExpanded
+    return ADEGlassComposerCard(
+      collapsed: collapsed,
+      isDictating: isDictating,
+      onFold: { intent in
+        switch intent {
+        case .collapse: collapse()
+        case .expand, .focusChanged:
+          composerFocused = true
+          withAnimation(hubComposerSpring) { expanded = true }
+        }
+      },
+      accessory: {
+        if !attachments.isEmpty {
+          WorkChatInputAttachmentTray(
+            attachments: $attachments,
+            compact: collapsed,
+            onExpand: {
+              composerFocused = true
+              withAnimation(hubComposerSpring) { expanded = true }
             }
           )
-          .frame(maxWidth: .infinity, minHeight: 28, idealHeight: composerTextHeight, maxHeight: composerTextHeight, alignment: .leading)
-
-          if !isExpanded {
-            ADEComposerSendButton(
-              enabled: canSend && !busy,
-              sending: busy,
-              accessibilityLabelText: "Start chat",
-              disabledAccessibilityLabel: "Enter a message to start"
-            ) {
-              dispatch()
-            }
-            .transition(.opacity)
+          .fixedSize(horizontal: false, vertical: true)
+        }
+      },
+      field: {
+        WorkPlainComposerTextView(
+          text: $draft,
+          isFocused: Binding(
+            get: { composerFocused },
+            set: { composerFocused = $0 }
+          ),
+          measuredHeight: $composerTextHeight,
+          placeholder: "Type to vibecode…",
+          acceptsPastedImages: attachmentsAvailable,
+          onPasteImages: { images in
+            workChatInputPasteImages(images, into: $attachments)
           }
+        )
+        .frame(height: composerTextHeight)
+        .frame(
+          height: collapsed
+            ? min(composerTextHeight, workComposerFoldedFieldHeight(lineHeight: UIFont.preferredFont(forTextStyle: .body).lineHeight))
+            : composerTextHeight,
+          alignment: .top
+        )
+        .clipped()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: 44)
+      },
+      menu: {
+        WorkComposerOverflowButton(
+          presentedPicker: $presentedPicker,
+          draft: $draft,
+          attachments: $attachments,
+          canCompose: !busy,
+          attachmentsAvailable: attachmentsAvailable,
+          onDictate: { dictationCoordinator.requestStart() },
+          stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
+          scope: WorkPromptStashScope(
+            projectId: pickedProjectId.isEmpty ? nil : pickedProjectId
+          ),
+          provider: provider,
+          modelId: modelId,
+          extraMenuContent: AnyView(
+            Section {
+              Button {
+                modelPickerPresented = true
+              } label: {
+                Label("Model · \(hubPrettyModelName(modelId))", systemImage: "cpu")
+              }
+            }
+          )
+        )
+      },
+      controls: {
+        ScrollView(.horizontal, showsIndicators: false) {
+          WorkComposerControlsRow(
+            provider: provider,
+            modelDisplayName: hubPrettyModelName(modelId),
+            reasoningEffort: reasoningEffort,
+            currentMode: runtimeMode,
+            modeOptions: workRuntimeModeOptions(provider: provider),
+            modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
+            isCollapsed: isControlsCollapsed,
+            fastModeEnabled: codexFastMode,
+            onOpenModelPicker: { modelPickerPresented = true },
+            onSelectMode: { runtimeMode = $0 }
+          )
+          .padding(.trailing, 4)
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+          proxy.size.width
+        } action: { width in
+          controlsWidth = width
         }
 
-        if isExpanded {
-          HStack(alignment: .center, spacing: 8) {
-            if !isDictating {
-              WorkComposerOverflowButton(
-                presentedPicker: $presentedPicker,
-                draft: $draft,
-                attachments: $attachments,
-                canCompose: !busy,
-                attachmentsAvailable: attachmentsAvailable,
-                onDictate: { dictationCoordinator.requestStart() },
-                stashAvailable: syncService.canInvokeRemoteAction("chat.listPromptStashes"),
-                scope: WorkPromptStashScope(
-                  projectId: pickedProjectId.isEmpty ? nil : pickedProjectId
-                ),
-                provider: provider,
-                modelId: modelId
-              )
+        DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
+      },
+      trailing: {
+        DictationMicButton(
+          draft: $draft,
+          coordinator: dictationCoordinator,
+          targetId: dictationTargetId,
+          showsIdleButton: false,
+          onRecordingChange: { isDictating = $0 }
+        )
+        .frame(maxWidth: isDictating ? .infinity : nil)
 
-              ScrollView(.horizontal, showsIndicators: false) {
-                WorkComposerControlsRow(
-                  provider: provider,
-                  modelDisplayName: hubPrettyModelName(modelId),
-                  reasoningEffort: reasoningEffort,
-                  currentMode: runtimeMode,
-                  modeOptions: workRuntimeModeOptions(provider: provider),
-                  modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
-                  isCollapsed: isControlsCollapsed,
-                  fastModeEnabled: codexFastMode,
-                  onOpenModelPicker: { modelPickerPresented = true },
-                  onSelectMode: { runtimeMode = $0 }
-                )
-                .padding(.trailing, 4)
-              }
-              .background(
-                GeometryReader { proxy in
-                  Color.clear
-                    .onAppear { controlsWidth = proxy.size.width }
-                    .onChange(of: proxy.size.width) { _, newValue in
-                      controlsWidth = newValue
-                    }
-                }
-              )
-
-              DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
-            }
-
-            DictationMicButton(
-              draft: $draft,
-              coordinator: dictationCoordinator,
-              targetId: dictationTargetId,
-              showsIdleButton: false,
-              onRecordingChange: { isDictating = $0 }
-            )
-            .frame(maxWidth: isDictating ? .infinity : nil)
-
-            if !isDictating {
-              ADEComposerSendButton(
-                enabled: canSend && !busy,
-                sending: busy,
-                accessibilityLabelText: "Start chat",
-                disabledAccessibilityLabel: "Enter a message to start"
-              ) {
-                dispatch()
-              }
-            }
+        if !isDictating {
+          ADEComposerSendButton(
+            enabled: canSend && !busy,
+            sending: busy,
+            accessibilityLabelText: "Start chat",
+            disabledAccessibilityLabel: "Enter a message to start"
+          ) {
+            dispatch()
           }
-          .transition(.move(edge: .top).combined(with: .opacity))
         }
       }
-      .fixedSize(horizontal: false, vertical: true)
-      .layoutPriority(1)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, isExpanded ? 14 : 10)
-    .background {
-      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
-        .fill(ADEColor.pageBackground)
-      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
-        .fill(ADEColor.composerBackground)
-    }
-    .overlay(
-      RoundedRectangle(cornerRadius: isExpanded ? 22 : 26, style: .continuous)
-        .stroke(isExpanded ? ADEColor.glassBorder : ADEColor.border.opacity(0.8), lineWidth: 1)
     )
-    .shadow(color: Color.black.opacity(isExpanded ? 0.16 : 0), radius: 8, y: 3)
   }
 
   // MARK: Actions

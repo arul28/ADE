@@ -61,9 +61,19 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
   }
 }
 
-/// A current, agent-reported detail that refines a running Work row's one
-/// status slot. Foreground chat reports must belong to the current turn; a
-/// tracked CLI row has no chat turn marker, so its explicit report is the best
+/// Mirrors `SESSION_ACTIVITY_VALUES` plus `SESSION_SYSTEM_ACTIVITY_VALUES` in
+/// `apps/desktop/src/shared/types/sessions.ts`.
+let workSessionActivityValues: Set<String> = [
+  "planning", "exploring", "implementing", "testing", "debugging", "reviewing", "shipping", "monitoring",
+  "recording",
+]
+
+/// The activity detail that refines a running Work row's one status slot:
+/// detected by the host from the turn's tool calls, or reported by the agent.
+/// Mirrors `currentActivityReport` in `sessionStatusPresentation.ts`: an agent
+/// report must belong to the current turn, a detected one may carry across a
+/// continuation turn (the host clears it whenever the user engages). A tracked
+/// CLI row has no chat turn marker, so its explicit report is the best
 /// available signal.
 func workSessionActivityDetailPresentation(
   session: TerminalSessionSummary,
@@ -76,20 +86,22 @@ func workSessionActivityDetailPresentation(
     || currentTurnStartedAt.flatMap(workParsedDate) != nil
   guard hasLiveChatTurn,
         let activityStatus = session.activityStatus,
-        activityStatus.source == "agent",
-        ["planning", "implementing", "testing", "reviewing", "debugging", "monitoring"].contains(activityStatus.value),
+        activityStatus.source == "agent" || activityStatus.source == "detected",
+        workSessionActivityValues.contains(activityStatus.value),
         let updatedAt = workParsedDate(activityStatus.updatedAt)
   else { return nil }
 
-  let isStaleForTurn = currentTurnStartedAt
+  let reportAt = activityStatus.reportedAt ?? activityStatus.updatedAt
+  let isStaleForTurn = activityStatus.source == "agent" && (currentTurnStartedAt
     .flatMap(workParsedDate)
-    .map { updatedAt < $0 } ?? false
+    .map { (workParsedDate(reportAt) ?? updatedAt) < $0 } ?? false)
   guard !isStaleForTurn else { return nil }
 
   let isPlanning = activityStatus.value == "planning"
+  let isRecording = activityStatus.value == "recording"
   return WorkSessionStatusPresentation(
     label: activityStatus.value.capitalized,
-    tone: isPlanning ? .violet : .blue,
+    tone: isRecording ? .red : isPlanning ? .violet : .blue,
     glyph: ActivityGlyph(rawValue: activityStatus.value) ?? .working,
     showsElapsed: true,
     prominent: false,

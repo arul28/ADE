@@ -5,10 +5,8 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { createPortal } from "react-dom";
 import {
   ArrowSquareOut,
-  CaretDown,
   ChatCircleDots,
   CircleNotch,
   DesktopTower,
@@ -46,19 +44,16 @@ import {
 import {
   activeMachineForGroup,
   groupProjectTabs,
-  isMultiMachine,
-  type ProjectTabGroup,
-  type ProjectTabMachine,
 } from "./projectTabGrouping";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import { confirmDialog } from "../ui/dialog/confirm";
 import { isMac } from "../../lib/platform";
 import type {
   ProjectIcon,
   OpenProjectBinding,
   RecentProjectSummary,
+  GitHubStatus,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
   RemoteRuntimeTarget,
@@ -78,6 +73,7 @@ import {
 } from "../../lib/connectionsPanel";
 import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
+import { useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
@@ -87,6 +83,8 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { AccountAvatar } from "../account/AccountAvatar";
+import { useAccountStatus } from "../../lib/account";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -228,6 +226,38 @@ function connectedWebClients(snapshot: SyncRoleSnapshot | null) {
   return snapshot.connectedPeers.filter((peer) => peer.deviceType === "browser");
 }
 
+function HeaderAccountAvatar() {
+  const { status } = useAccountStatus();
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+
+  useEffect(() => {
+    if (!status.signedIn || status.imageUrl) {
+      setGithubStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const apply = (next: GitHubStatus) => {
+      if (cancelled) return;
+      setGithubStatus(next);
+    };
+    void window.ade.github?.getStatus?.().then(apply).catch(() => {});
+    const unsubscribe = window.ade.github?.onStatusChanged?.(apply);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [status.imageUrl, status.signedIn]);
+
+  return (
+    <AccountAvatar
+      status={status}
+      githubLogin={githubStatus?.userLogin ?? null}
+      githubConnected={Boolean(githubStatus?.connected)}
+      size={15}
+    />
+  );
+}
+
 function isWebSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
   return connectedWebClients(snapshot).length > 0;
 }
@@ -351,6 +381,7 @@ function ShellConnectionChip({
   title,
   ariaExpanded,
   onClick,
+  trailing,
   layout = "chip",
 }: {
   label: string;
@@ -359,6 +390,7 @@ function ShellConnectionChip({
   title: string;
   ariaExpanded?: boolean;
   onClick: () => void;
+  trailing?: React.ReactNode;
   layout?: "chip" | "menu-row";
 }) {
   return (
@@ -390,6 +422,7 @@ function ShellConnectionChip({
         )}
         aria-hidden
       />
+      {trailing}
     </button>
   );
 }
@@ -483,121 +516,6 @@ function HeaderStatusMenu({
         </div>
       </HeaderSheet>
     </>
-  );
-}
-
-/**
- * The machine dimension of a repo tab.
- *
- * A group renders exactly one tab, so every machine in it other than the active
- * one would be unreachable without this menu — that is the whole reason it
- * exists, and why it also offers the way to add a machine to the group.
- */
-function MachineSwitcherMenu({
-  anchor,
-  group,
-  machineStatus,
-  onSelect,
-  onConnectAnother,
-  onClose,
-}: {
-  anchor: { left: number; top: number };
-  group: ProjectTabGroup;
-  machineStatus: (machine: ProjectTabMachine) => string | null;
-  onSelect: (machine: ProjectTabMachine) => void;
-  onConnectAnother: () => void;
-  onClose: () => void;
-}) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    menuRef.current?.querySelector<HTMLElement>('[role^="menuitem"]')?.focus();
-  }, []);
-  useEffect(() => {
-    const onPointerDown = (event: MouseEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
-      onClose();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        onClose();
-        return;
-      }
-      if (event.key !== "ArrowDown" && event.key !== "ArrowUp") return;
-      const items = Array.from(
-        menuRef.current?.querySelectorAll<HTMLElement>('[role^="menuitem"]') ?? [],
-      );
-      if (items.length === 0) return;
-      event.preventDefault();
-      const current = items.indexOf(document.activeElement as HTMLElement);
-      const delta = event.key === "ArrowDown" ? 1 : -1;
-      items[(current + delta + items.length) % items.length]?.focus();
-    };
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  return createPortal(
-    <ViewportOverlayHost layer="tabMenu">
-      <div
-        ref={menuRef}
-        role="menu"
-        aria-label={`Machines for ${group.displayName}`}
-        className="absolute min-w-[220px] overflow-hidden rounded-xl border border-white/10 bg-[color:var(--ade-shell-surface,#121019)] p-1.5 shadow-2xl shadow-black/45"
-        style={
-          {
-            left: anchor.left,
-            top: anchor.top,
-            pointerEvents: "auto",
-            WebkitAppRegion: "no-drag",
-          } as React.CSSProperties
-        }
-      >
-        {group.machines.map((machine) => {
-          const isActive = machine.bindingKey === group.activeBindingKey;
-          const status = machineStatus(machine);
-          return (
-            <button
-              key={machine.bindingKey}
-              type="button"
-              role="menuitemradio"
-              aria-checked={isActive}
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px]",
-                "hover:bg-white/8",
-                isActive && "bg-white/6 font-semibold",
-              )}
-              onClick={() => {
-                onClose();
-                onSelect(machine);
-              }}
-            >
-              <span className="min-w-0 flex-1 truncate">{machine.machineName}</span>
-              {status ? (
-                <span className="shrink-0 text-[10px] opacity-60">{status}</span>
-              ) : null}
-            </button>
-          );
-        })}
-        <div className="my-1 h-px bg-white/8" />
-        <button
-          type="button"
-          role="menuitem"
-          className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] opacity-80 hover:bg-white/8 hover:opacity-100"
-          onClick={() => {
-            onClose();
-            onConnectAnother();
-          }}
-        >
-          <Plus size={11} weight="regular" className="shrink-0" />
-          <span className="truncate">Connect another machine…</span>
-        </button>
-      </div>
-    </ViewportOverlayHost>,
-    document.body,
   );
 }
 
@@ -918,6 +836,7 @@ export function TopBar({
 } = {}) {
   const project = useAppStore((s) => s.project);
   const theme = useAppStore((s) => s.theme);
+  const usageHeaderPreferences = useUsageHeaderPreferences();
   const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
@@ -1059,8 +978,11 @@ export function TopBar({
   }, [openProjectTabRoots]);
 
   useEffect(() => {
+    // The first paint has an empty tab list. Sending it before the window
+    // session is read would replace the tabs the main process restored.
+    if (!windowSessionRestored) return;
     window.ade.app.setWindowProjectTabs(openProjectTabRoots).catch(() => {});
-  }, [openProjectTabRoots]);
+  }, [openProjectTabRoots, windowSessionRestored]);
 
   useEffect(() => {
     if (!windowSessionRestored) return;
@@ -1284,7 +1206,8 @@ export function TopBar({
   }, [recentProjects, remoteSnapshot]);
 
   // One tab per repository. Local and remote checkouts of the same repo collapse
-  // into a single group whose machines are switchable from the tab's menu.
+  // into a single group. The tab is the repo: its machines are not picked here,
+  // every tab shows all of them (see docs/plans/unified-machines.md).
   const tabGroups = useMemo(
     () =>
       groupProjectTabs({
@@ -1317,39 +1240,6 @@ export function TopBar({
         ? current
         : { ...current, [activeGroup.id]: activeTabBindingKey });
   }, [activeTabBindingKey, tabGroups]);
-
-  const [machineMenu, setMachineMenu] = useState<{
-    groupId: string;
-    left: number;
-    top: number;
-  } | null>(null);
-  const closeMachineMenu = useCallback(() => setMachineMenu(null), []);
-  const openMachineMenuGroup = useMemo(
-    () =>
-      machineMenu
-        ? (tabGroups.find((group) => group.id === machineMenu.groupId) ?? null)
-        : null,
-    [machineMenu, tabGroups],
-  );
-  const machineStatusLabel = useCallback(
-    (machine: ProjectTabMachine): string | null => {
-      if (!machine.isLocal) {
-        const binding = machine.binding?.kind === "remote"
-          ? machine.binding
-          : openRemoteProjectTabs.find((entry) => entry.key === machine.bindingKey);
-        const state = binding ? remoteConnectionState(binding.targetId) : "idle";
-        if (state === "connecting") return "Reconnecting";
-        if (state === "parked") return "Parked";
-        if (state !== "connected") return "Offline";
-      }
-      const laneCount = machine.laneCount;
-      if (typeof laneCount === "number" && laneCount > 0) {
-        return `${laneCount} lane${laneCount === 1 ? "" : "s"}`;
-      }
-      return null;
-    },
-    [openRemoteProjectTabs, remoteConnectionState],
-  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1662,64 +1552,6 @@ export function TopBar({
       leaveMachineRoute,
       remoteBinding?.key,
       switchRemoteProject,
-    ],
-  );
-
-  // Only the active machine of a group gets a tab, so this is the only way to
-  // reach the others. Both branches go through the existing switch paths.
-  const handleSelectGroupMachine = useCallback(
-    (machine: ProjectTabMachine) => {
-      const group = tabGroups.find((candidate) =>
-        candidate.machines.some((entry) => entry.bindingKey === machine.bindingKey));
-      if (group) {
-        setPreferredBindingKeyByGroup((current) => ({
-          ...current,
-          [group.id]: machine.bindingKey,
-        }));
-      }
-      // Switching a tab's machine REBINDS THIS TAB — it is not a request to open
-      // a second one. Both switch paths only ever ADD the destination to the
-      // open-tab lists, and `groupProjectTabs` deliberately refuses to merge two
-      // OPEN checkouts that share an origin, so leaving the outgoing checkout
-      // open split the group in two and pushed a second tab onto the end of the
-      // strip. Releasing the machine we just left keeps the group — and the tab
-      // — singular. Platform-neutral: nothing here branches on the OS.
-      const outgoing = group?.machines.find(
-        (entry) => entry.bindingKey === activeTabBindingKey,
-      ) ?? null;
-      const releaseOutgoing = () => {
-        if (!outgoing || outgoing.bindingKey === machine.bindingKey) return;
-        if (outgoing.isLocal) {
-          setOpenProjectTabRoots((prev) =>
-            prev.filter((rootPath) => rootPath !== outgoing.rootPath));
-        } else {
-          setOpenRemoteProjectTabs((prev) =>
-            prev.filter((entry) => entry.key !== outgoing.bindingKey));
-        }
-      };
-      if (machine.isLocal) {
-        // The gate exists to catch opening an unknown path that turns out to be
-        // a linked worktree. A machine in this group is a checkout the tab has
-        // already been bound to, so re-gating it on the way back would prompt
-        // about a decision the user already made.
-        void handleSwitchProject(machine.rootPath, { skipWorktreeGate: true })
-          .then(releaseOutgoing);
-        return;
-      }
-      const binding = machine.binding?.kind === "remote"
-        ? machine.binding
-        : openRemoteProjectTabsRef.current.find(
-          (entry) => entry.key === machine.bindingKey,
-        );
-      if (binding) void handleSwitchRemoteProject(binding).then(releaseOutgoing);
-    },
-    [
-      activeTabBindingKey,
-      handleSwitchProject,
-      handleSwitchRemoteProject,
-      setOpenProjectTabRoots,
-      setOpenRemoteProjectTabs,
-      tabGroups,
     ],
   );
 
@@ -2155,76 +1987,84 @@ export function TopBar({
 
   const anyConnectionActive = remoteConnected || syncConnected || webConnected;
 
-  const renderHeaderStatusControls = useCallback(
-    (options?: { menuLayout?: boolean; onActivate?: () => void }) => {
-      const menuLayout = options?.menuLayout === true;
-      const wrapActivate = (handler: () => void) => () => {
-        handler();
-        options?.onActivate?.();
-      };
+  const renderDesktopIntegrationControls = () => (
+    <>
+      <CloudAgentsQuickViewButton provider="devin" showTrigger={projectSurfaceVisible} />
+      <CloudAgentsQuickViewButton provider="cursor" showTrigger={projectSurfaceVisible} />
+      <LinearQuickViewButton
+        onOpenHarnessSettings={openHarnessSettings}
+        showTrigger={projectSurfaceVisible}
+      />
+    </>
+  );
 
-      // On the hosted client the machine IS the connection: the chip names it,
-      // and its popover is where machines are managed now that the Hub is gone.
-      const connectionsChip = webMode ? (
-        <React.Suspense fallback={null}>
-          <WebConnectionsChip />
-        </React.Suspense>
-      ) : (
+  const renderDesktopUsageControl = () => usageHeaderPreferences.showInHeader
+    ? <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
+    : null;
+
+  const renderWebConnectionsControl = () => (
+    <React.Suspense fallback={null}>
+      <WebConnectionsChip />
+    </React.Suspense>
+  );
+
+  const renderDesktopConnectionsControl = () => webMode
+    ? renderWebConnectionsControl()
+    : (
+      <ShellConnectionChip
+        label="Connections"
+        connected={anyConnectionActive}
+        title="Machines, mobile, and web clients"
+        ariaExpanded={connectionsOpen}
+        onClick={() => (connectionsOpen ? closeConnections() : openConnections("machines"))}
+        icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+        trailing={<HeaderAccountAvatar />}
+      />
+    );
+
+  const renderCompactStatusMenu = (onActivate: () => void) => (
+    <div className="flex flex-col gap-0.5">
+      <CloudAgentsQuickViewButton
+        provider="devin"
+        variant="menu-row"
+        onMenuActivate={onActivate}
+        showTrigger={projectSurfaceVisible}
+      />
+      <CloudAgentsQuickViewButton
+        provider="cursor"
+        variant="menu-row"
+        onMenuActivate={onActivate}
+        showTrigger={projectSurfaceVisible}
+      />
+      <LinearQuickViewButton
+        variant="menu-row"
+        onMenuActivate={onActivate}
+        onOpenHarnessSettings={openHarnessSettings}
+        showTrigger={projectSurfaceVisible}
+      />
+      {usageHeaderPreferences.showInHeader ? (
+        <HeaderUsageControl
+          variant="menu-row"
+          onMenuActivate={onActivate}
+          deferInitialRead={Boolean(remoteBinding)}
+        />
+      ) : null}
+      {webMode ? renderWebConnectionsControl() : (
         <ShellConnectionChip
-          layout={menuLayout ? "menu-row" : "chip"}
+          layout="menu-row"
           label="Connections"
           connected={anyConnectionActive}
           title="Machines, mobile, and web clients"
           ariaExpanded={connectionsOpen}
-          onClick={
-            menuLayout
-              ? wrapActivate(() => openConnections("machines"))
-              : () => (connectionsOpen ? closeConnections() : openConnections("machines"))
-          }
-          icon={(
-            <Plugs
-              size={12}
-              weight="regular"
-              className="shrink-0 opacity-85"
-            />
-          )}
+          onClick={() => {
+            openConnections("machines");
+            onActivate();
+          }}
+          icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+          trailing={<HeaderAccountAvatar />}
         />
-      );
-
-      if (menuLayout) {
-        return (
-          <div className="flex flex-col gap-0.5">
-            <CloudAgentsQuickViewButton provider="devin" variant="menu-row" onMenuActivate={options?.onActivate} />
-            <CloudAgentsQuickViewButton provider="cursor" variant="menu-row" onMenuActivate={options?.onActivate} />
-            <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} onOpenHarnessSettings={openHarnessSettings} />
-            <HeaderUsageControl
-              variant="menu-row"
-              onMenuActivate={options?.onActivate}
-              deferInitialRead={Boolean(remoteBinding)}
-            />
-            {connectionsChip}
-          </div>
-        );
-      }
-
-      return (
-        <>
-          <CloudAgentsQuickViewButton provider="devin" />
-          <CloudAgentsQuickViewButton provider="cursor" />
-          <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
-          {connectionsChip}
-          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
-        </>
-      );
-    },
-    [
-      anyConnectionActive,
-      closeConnections,
-      connectionsOpen,
-      openConnections,
-      remoteBinding,
-      webMode,
-    ],
+      )}
+    </div>
   );
 
   const transitionTargetName = projectTransition?.rootPath
@@ -2295,49 +2135,6 @@ export function TopBar({
             {tabGroups.map((group) => {
               const machine = activeMachineForGroup(group);
               if (!machine) return null;
-              const multiMachine = isMultiMachine(group);
-              const machineMenuOpen = machineMenu?.groupId === group.id;
-              // The machine is a dimension inside the repo's tab, so it only
-              // earns inline space when it is ambiguous: more than one machine
-              // in the group, or a checkout that is not on This computer.
-              const machineLabel =
-                multiMachine || !machine.isLocal ? (
-                  <span
-                    className="max-w-[84px] shrink-0 truncate text-[10px] font-normal opacity-70"
-                    title={machine.machineName}
-                  >
-                    {machine.machineName}
-                  </span>
-                ) : null;
-              const machineCaret = (
-                <button
-                  type="button"
-                  className="ade-shell-control inline-flex h-4 w-4 shrink-0 items-center justify-center text-current"
-                  data-variant="ghost"
-                  aria-haspopup="menu"
-                  aria-expanded={machineMenuOpen}
-                  aria-label={`Machines for ${group.displayName}`}
-                  title={`Machines for ${group.displayName}`}
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    setMachineMenu((current) =>
-                      current?.groupId === group.id
-                        ? null
-                        : {
-                            groupId: group.id,
-                            left: rect.left,
-                            top: rect.bottom + 6,
-                          },
-                    );
-                  }}
-                  onKeyDown={(event) => event.stopPropagation()}
-                >
-                  <CaretDown size={10} weight="bold" />
-                </button>
-              );
-
               if (!machine.isLocal) {
                 const remoteTab =
                   openRemoteProjectTabs.find(
@@ -2368,7 +2165,7 @@ export function TopBar({
                     data-remote-state={remoteTabState}
                     aria-current={isCurrentRemote ? "true" : undefined}
                     className={cn(
-                      "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
+                      "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
                       "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                       "cursor-pointer border",
                       remoteTabConnected
@@ -2402,7 +2199,6 @@ export function TopBar({
                     <span className="min-w-0 flex-1 truncate text-center text-[12px]">
                       {remoteTab.displayName}
                     </span>
-                    {machineLabel}
                     {remoteTabConnecting ? (
                       <CircleNotch
                         size={11}
@@ -2432,7 +2228,6 @@ export function TopBar({
                         aria-label={`Machine: ${remoteTab.runtimeName}`}
                       />
                     )}
-                    {machineCaret}
                     <button
                       type="button"
                       className={cn(
@@ -2506,7 +2301,7 @@ export function TopBar({
                   onDrop={(e) => handleDrop(e, idx)}
                   onDragEnd={(e) => handleDragEnd(e, rp.rootPath)}
                   className={cn(
-                    "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
+                    "ade-shell-project-tab group inline-flex w-auto min-w-[104px] max-w-[180px] shrink-0 items-center gap-1.5 px-2.5",
                     "transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
                     !isMissing && "cursor-pointer",
                     isCurrent && "font-semibold",
@@ -2566,8 +2361,6 @@ export function TopBar({
                   >
                     {rp.displayName}
                   </span>
-                  {machineLabel}
-                  {machineCaret}
                   {isMissing ? (
                     <span className="inline-flex shrink-0 items-center gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity duration-150">
                       <button
@@ -2626,16 +2419,6 @@ export function TopBar({
                 </div>
               );
             })}
-            {openMachineMenuGroup && machineMenu ? (
-              <MachineSwitcherMenu
-                anchor={{ left: machineMenu.left, top: machineMenu.top }}
-                group={openMachineMenuGroup}
-                machineStatus={machineStatusLabel}
-                onSelect={handleSelectGroupMachine}
-                onConnectAnother={() => openConnections("machines")}
-                onClose={closeMachineMenu}
-              />
-            ) : null}
             {personalChatsTabOpen ? (
               <ShellNavTab
                 active={personalChatsRouteActive}
@@ -2748,6 +2531,21 @@ export function TopBar({
         ) : null}
       </div>
 
+      {projectTransitionLabel ? (
+        <div
+          aria-live="polite"
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "text-[11px] font-medium",
+          )}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title={projectTransitionLabel}
+        >
+          <CircleNotch size={12} weight="bold" className="animate-spin" />
+          <span className="max-w-[240px] truncate">{projectTransitionLabel}</span>
+        </div>
+      ) : null}
+
       {showPublishPill ? (
         <SmartTooltip
           content={{
@@ -2785,23 +2583,8 @@ export function TopBar({
         </SmartTooltip>
       ) : null}
 
-      {projectTransitionLabel ? (
-        <div
-          className={cn(
-            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "text-[11px] font-medium",
-          )}
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title={projectTransitionLabel}
-        >
-          <CircleNotch size={12} weight="bold" className="animate-spin" />
-          <span className="max-w-[240px] truncate">
-            {projectTransitionLabel}
-          </span>
-        </div>
-      ) : null}
-
-      {/* Trailing controls: activity · status · updates.
+      {/* Trailing controls follow the user's visual priority: update and
+          diagnostics first, then provider controls, activity, and connections.
           The group must be able to shrink: the header reserves room for the
           native window controls (macOS traffic lights at the start, Windows
           caption buttons at the end) with padding, and a shrink-0 group would
@@ -2809,18 +2592,24 @@ export function TopBar({
           them, so it clips instead. Feedback, help, and zoom live in the
           settings sidebar. */}
       <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-        {/* Account-wide Activity — the one place every machine's work surfaces,
-            reachable from every tab and project without a nav detour. */}
-        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+        {!webMode ? <AutoUpdateControl /> : null}
+        <ResourcePressureIndicator usage={resourceUsage} />
+        <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 
-        <ResourcePressureIndicator usage={resourceUsage} />
-        <StoragePressureIndicator enabled={workspaceProjectOpen} />
+        <div className="hidden md:flex items-center gap-1.5">
+          {renderDesktopIntegrationControls()}
+          {renderDesktopUsageControl()}
+        </div>
+
+        {/* Account-wide Activity — the one place every machine's work surfaces,
+            reachable from every tab and project without a nav detour. */}
+        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
         <div className="hidden md:flex items-center gap-1.5">
-          {renderHeaderStatusControls()}
+          {renderDesktopConnectionsControl()}
         </div>
 
         <HeaderStatusMenu
@@ -2828,10 +2617,8 @@ export function TopBar({
           syncConnected={syncConnected || (!webMode && webConnected)}
           showSyncControl={showSyncControl}
         >
-          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+          {renderCompactStatusMenu}
         </HeaderStatusMenu>
-
-        {!webMode ? <AutoUpdateControl /> : null}
       </div>
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they

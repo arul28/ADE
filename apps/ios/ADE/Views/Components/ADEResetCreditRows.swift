@@ -11,9 +11,10 @@ import SwiftUI
 
 /// The accounts on `provider` that have a credit banked.
 ///
-/// Codex is the only provider that grants reset credits today, so every other
-/// provider gets an empty list and renders nothing — which is also what a host
-/// that predates the `resetCredits` field reports.
+/// Codex and Claude both grant banked reset credits; a provider that does not,
+/// or a host that predates the `resetCredits` field, gets an empty list and
+/// renders nothing. A macOS host withholds Claude's control because its OAuth
+/// token lives in the Keychain, which ADE will not read unattended.
 func resetCreditAccounts(
   in snapshot: MobileUsageQuotaSnapshot,
   provider: String

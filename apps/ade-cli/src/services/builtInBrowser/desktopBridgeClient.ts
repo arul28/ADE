@@ -4,6 +4,7 @@ import { JsonRpcClient } from "../../tuiClient/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { BrowserActorCapabilityIssuer } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
+import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../../desktop/src/shared/demoVideo/demoContract";
 import {
   BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM,
   isBuiltInBrowserBridgeServedMethod,
@@ -267,9 +268,11 @@ export function createBuiltInBrowserDesktopBridgeClient(args: {
  * Everything the browser does is a page interaction and fits the flat budget —
  * except `waitForHandoff`, which is *supposed* to sit there while a human signs
  * in. Its budget is the handoff window the caller asked for plus slack, so the
- * transport cannot report a timeout for a handoff that is still open.
+ * transport cannot report a timeout for a handoff that is still open. And
+ * `stopRecording`, which answers only after the demo video is made.
  */
 function bridgeCallTimeoutMs(method: string, params: unknown): number {
+  if (method === "stopRecording") return DEMO_RECORDING_STOP_TIMEOUT_MS + REQUEST_TIMEOUT_MS;
   if (method !== "waitForHandoff") return REQUEST_TIMEOUT_MS;
   const requested = params && typeof params === "object" && !Array.isArray(params)
     ? (params as { timeoutMs?: unknown }).timeoutMs

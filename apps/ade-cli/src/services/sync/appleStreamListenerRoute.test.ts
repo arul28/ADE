@@ -18,6 +18,7 @@ function router(attach = vi.fn(async (..._args: AttachArgs) => true)) {
       typeof url === "string" && url.startsWith(APPLE_STREAM_PATH_PREFIX)
         ? (url.split("?")[0] ?? "").slice(APPLE_STREAM_PATH_PREFIX.length)
         : null,
+    hasTicket: undefined as ((ticket: string) => boolean) | undefined,
   };
 }
 
@@ -76,14 +77,47 @@ describe("tryRouteAppleStreamSocket", () => {
     expect(ws.sent[0]!.compress).toBe(false);
   });
 
-  it("uses the registered router by default and lets a detach clear it", () => {
+  it("routes through the registered forwarder by default and lets a detach clear it", () => {
     const registered = router();
     const detach = setActiveAppleStreamRouter(registered);
-    expect(getActiveAppleStreamRouter()).toBe(registered);
+    const active = getActiveAppleStreamRouter();
+    expect(active).not.toBeNull();
+    expect(active?.ticketFromUrl("/apple/stream/abc")).toBe("abc");
     expect(tryRouteAppleStreamSocket(socket() as never, { url: "/apple/stream/abc" })).toBe(true);
+    expect(registered.attach).toHaveBeenCalledWith(expect.anything(), { ticket: "abc", token: null });
     detach();
     expect(getActiveAppleStreamRouter()).toBeNull();
     expect(tryRouteAppleStreamSocket(socket() as never, { url: "/apple/stream/abc" })).toBe(false);
+  });
+
+  it("sends a ticket to the forwarder that issued it, not the newest one", () => {
+    // One brain opens several projects, each with its own forwarder and
+    // tickets. The last one used to take every socket, so an older project's
+    // ticket was unknown and the viewer was closed with 4401.
+    const older = router();
+    const newer = router();
+    older.hasTicket = (ticket) => ticket === "old-ticket";
+    newer.hasTicket = (ticket) => ticket === "new-ticket";
+    setActiveAppleStreamRouter(older);
+    setActiveAppleStreamRouter(newer);
+
+    expect(tryRouteAppleStreamSocket(socket() as never, { url: "/apple/stream/old-ticket?token=tok" })).toBe(true);
+    expect(older.attach).toHaveBeenCalledWith(expect.anything(), { ticket: "old-ticket", token: "tok" });
+    expect(newer.attach).not.toHaveBeenCalled();
+
+    expect(tryRouteAppleStreamSocket(socket() as never, { url: "/apple/stream/new-ticket" })).toBe(true);
+    expect(newer.attach).toHaveBeenCalledWith(expect.anything(), { ticket: "new-ticket", token: null });
+  });
+
+  it("falls back to the newest forwarder when none claims the ticket", () => {
+    const older = router();
+    const newer = router();
+    setActiveAppleStreamRouter(older);
+    setActiveAppleStreamRouter(newer);
+
+    expect(tryRouteAppleStreamSocket(socket() as never, { url: "/apple/stream/unknown" })).toBe(true);
+    expect(newer.attach).toHaveBeenCalledWith(expect.anything(), { ticket: "unknown", token: null });
+    expect(older.attach).not.toHaveBeenCalled();
   });
 });
 

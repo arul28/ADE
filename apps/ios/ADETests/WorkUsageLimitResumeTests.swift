@@ -636,14 +636,15 @@ final class WorkUsageLimitResumeTests: XCTestCase {
       failedResultEntry("a", "Alpha", summary: "Claude usage limit reached", rank: 0),
       failedResultEntry("b", "Bravo", summary: "Claude usage limit reached", rank: 1),
       failedResultEntry("c", "Charlie", summary: "rate limit (429)", rank: 2),
+      failedResultEntry("d", "Delta", summary: "quota exceeded", rank: 3),
     ], causeOf: workSubagentStoppedGroupCause)
     XCTAssertEqual(folded.count, 1)
     guard case .subagentStoppedGroup(let model) = folded[0].payload else {
       return XCTFail("expected a usage-limit group")
     }
-    XCTAssertEqual(model.count, 3)
+    XCTAssertEqual(model.count, 4)
     XCTAssertEqual(model.reason, .usageLimit)
-    XCTAssertEqual(model.headline, "3 agents stopped · usage limit")
+    XCTAssertEqual(model.headline, "4 agents stopped · usage limit")
     // The group id carries the fold key desktop uses — cause, stop source,
     // stop reason, first agent — so a failed usage-limit row with no wire
     // reason folds under `unknown` rather than inheriting a neighbour's.
@@ -654,15 +655,17 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     let folded = collapseSameCauseSubagentEntries([
       failedResultEntry("a", "Alpha", summary: "usage limit reached", rank: 0),
       failedResultEntry("b", "Bravo", summary: "usage limit reached", rank: 1),
-      failedResultEntry("x", "Interloper", summary: "compile error in main.swift", rank: 2),
-      failedResultEntry("c", "Charlie", summary: "usage limit reached", rank: 3),
+      failedResultEntry("a2", "Alpha 2", summary: "usage limit reached", rank: 2),
+      failedResultEntry("a3", "Alpha 3", summary: "usage limit reached", rank: 3),
+      failedResultEntry("x", "Interloper", summary: "compile error in main.swift", rank: 4),
+      failedResultEntry("c", "Charlie", summary: "usage limit reached", rank: 5),
     ], causeOf: workSubagentStoppedGroupCause)
-    // group(a,b) · failed(x) · failed(c)
+    // group(a..) · failed(x) · failed(c)
     XCTAssertEqual(folded.count, 3)
     guard case .subagentStoppedGroup(let group) = folded[0].payload else {
-      return XCTFail("expected the leading pair to group")
+      return XCTFail("expected the leading run to group")
     }
-    XCTAssertEqual(group.count, 2)
+    XCTAssertEqual(group.count, 4)
     if case .subagentStoppedGroup = folded[1].payload { XCTFail("an unrelated failure must not group") }
     if case .subagentStoppedGroup = folded[2].payload { XCTFail("a lone failure stays an ordinary row") }
   }
@@ -674,6 +677,8 @@ final class WorkUsageLimitResumeTests: XCTestCase {
       [
         failedResultEntry("a", "Alpha", summary: "stopped", rank: 0, status: .stopped, stopSource: "user"),
         failedResultEntry("b", "Bravo", summary: "stopped", rank: 1, status: .stopped, stopSource: "user"),
+        failedResultEntry("c", "Charlie", summary: "stopped", rank: 2, status: .stopped, stopSource: "user"),
+        failedResultEntry("d", "Delta", summary: "stopped", rank: 3, status: .stopped, stopSource: "user"),
       ],
       causeOf: workSubagentStoppedGroupCause
     )
@@ -682,7 +687,7 @@ final class WorkUsageLimitResumeTests: XCTestCase {
       return XCTFail("expected an interrupt group")
     }
     XCTAssertEqual(model.reason, .interrupted)
-    XCTAssertEqual(model.headline, "2 agents stopped when you interrupted")
+    XCTAssertEqual(model.headline, "4 agents stopped when you interrupted")
   }
 
   // MARK: - Quiet turn footer
@@ -938,35 +943,6 @@ final class WorkUsageLimitResumeTests: XCTestCase {
     XCTAssertFalse(
       workTurnEndMarkers(from: transcript, usageLimitTurnId: "turn-other")[0].usageLimitPaused,
       "the anchor is a turn id, not a wildcard"
-    )
-  }
-
-  func testUsageRowMovesOffTheTimelineForALimitedTurn() {
-    let transcript = [doneEnvelope(turnId: "turn-1", apiErrorStatus: 429, sequence: 1)]
-    let snapshot = buildWorkChatTimelineSnapshot(
-      transcript: transcript,
-      fallbackEntries: [],
-      artifacts: [],
-      localEchoMessages: []
-    )
-    let standaloneUsageRows = snapshot.timeline.filter {
-      if case .usageSummary = $0.payload { return true }
-      return false
-    }
-    XCTAssertTrue(standaloneUsageRows.isEmpty, "the USAGE row folds into the footer's details")
-
-    let plain = buildWorkChatTimelineSnapshot(
-      transcript: [doneEnvelope(turnId: "turn-1", apiErrorStatus: nil, sequence: 1)],
-      fallbackEntries: [],
-      artifacts: [],
-      localEchoMessages: []
-    )
-    XCTAssertFalse(
-      plain.timeline.filter {
-        if case .usageSummary = $0.payload { return true }
-        return false
-      }.isEmpty,
-      "an ordinary turn keeps its usage row exactly where it was"
     )
   }
 

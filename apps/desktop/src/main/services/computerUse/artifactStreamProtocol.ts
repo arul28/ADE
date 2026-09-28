@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { artifactUrlProjectRoot } from "../../../shared/artifactStreamUrl";
 import { isPathInside } from "../shared/pathCompare";
 
 /**
@@ -188,15 +189,90 @@ function fileWebStream(filePath: string, start?: number, end?: number): Readable
 }
 
 /**
+ * The project a request is served from: its root and its `.ade/artifacts` dir.
+ * `refusal` says why no project can serve it (a `root` that names no project
+ * open here), so the rejection log can say so.
+ */
+export type ArtifactServeScope = {
+  projectRoot: string | null;
+  allowedDir: string | null;
+  refusal?: "unknown-project";
+};
+
+/**
+ * Picks the serving project for a request. `requestedRoot` is the `root` the
+ * URL names, or null for an older URL that names none.
+ */
+export type ArtifactScopeResolver = (requestedRoot: string | null) => ArtifactServeScope;
+
+/** One refused proof read, as the machine log records it. */
+export type ArtifactServeRefusal = {
+  surface: "ade-artifact" | "artifact-media";
+  reason: "unknown-project" | ContainedArtifactRefusalReason;
+  /** The root the URL named, or null when it named none. */
+  requestedRoot: string | null;
+  /** The project the request resolved against, when there was one. */
+  projectRoot: string | null;
+  requestedPath: string;
+  resolvedPath?: string;
+};
+
+export type ArtifactServeRefusalLogger = (refusal: ArtifactServeRefusal) => void;
+
+type ContainedArtifactRefusalReason = Extract<ContainedArtifactFile, { ok: false }>["reason"];
+
+/**
+ * Resolves `requestedPath` inside the project a request names, or says why it
+ * cannot. The one path both the `ade-artifact://` handler and the media server
+ * take, so a refusal is logged the same way from both.
+ */
+export function resolveScopedArtifactFile(args: {
+  surface: ArtifactServeRefusal["surface"];
+  requestedPath: string;
+  projectRelative: boolean;
+  requestedRoot: string | null;
+  resolveScope: ArtifactScopeResolver;
+  onRefused?: ArtifactServeRefusalLogger;
+}): ContainedArtifactFile {
+  const scope = args.resolveScope(args.requestedRoot);
+  const refuse = (
+    reason: ArtifactServeRefusal["reason"],
+    resolvedPath?: string,
+  ): void => {
+    args.onRefused?.({
+      surface: args.surface,
+      reason,
+      requestedRoot: args.requestedRoot,
+      projectRoot: scope.projectRoot,
+      requestedPath: args.requestedPath,
+      ...(resolvedPath ? { resolvedPath } : {}),
+    });
+  };
+  if (scope.refusal) {
+    refuse(scope.refusal);
+    return { ok: false, reason: "no-project" };
+  }
+  const file = resolveContainedArtifactFile({
+    requestedPath: args.requestedPath,
+    projectRelative: args.projectRelative,
+    projectRoot: scope.projectRoot,
+    allowedDir: scope.allowedDir,
+  });
+  if (!file.ok) refuse(file.reason, file.filePath);
+  return file;
+}
+
+/**
  * The `ade-artifact://` answer. The path is in the URL:
  * `ade-artifact:///absolute/path/to/file.png` or
- * `ade-artifact://project/<relative path>`. Proof images use it; videos use
- * the media server, which reads the same Range header the same way.
+ * `ade-artifact://project/<relative path>?root=<project root>`. Proof images
+ * use it; videos use the media server, which reads the same Range header the
+ * same way.
  */
 export function respondToArtifactProtocolRequest(
   request: Request,
-  scope: { projectRoot: string | null; allowedDir: string | null },
-  warn?: (message: string, details: Record<string, unknown>) => void,
+  scope: ArtifactServeScope | ArtifactScopeResolver,
+  onRefused?: ArtifactServeRefusalLogger,
 ): Response {
   const notFound = () => new Response("Not found", { status: 404 });
   const url = new URL(request.url);
@@ -206,23 +282,15 @@ export function respondToArtifactProtocolRequest(
   } catch {
     return notFound();
   }
-  const file = resolveContainedArtifactFile({
+  const file = resolveScopedArtifactFile({
+    surface: "ade-artifact",
     requestedPath,
     projectRelative: url.hostname === "project",
-    projectRoot: scope.projectRoot,
-    allowedDir: scope.allowedDir,
+    requestedRoot: artifactUrlProjectRoot(url.search),
+    resolveScope: typeof scope === "function" ? scope : () => scope,
+    onRefused,
   });
-  if (!file.ok) {
-    if (file.reason === "missing") {
-      warn?.("[ade-artifact] realpath failed", { filePath: file.filePath });
-    } else if (file.reason === "outside") {
-      warn?.("[ade-artifact] rejected path outside artifacts dir", {
-        resolvedFile: file.filePath,
-        allowedDir: scope.allowedDir,
-      });
-    }
-    return notFound();
-  }
+  if (!file.ok) return notFound();
   const headers: Record<string, string> = {
     "Content-Type": artifactStreamMimeType(file.filePath),
     "Accept-Ranges": "bytes",

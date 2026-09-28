@@ -1045,17 +1045,17 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
-  it("does not warm a view the panel has already shown", async () => {
-    // A view that has been on screen already has the surface, and warming it
-    // again would flash a pixel of the page for no reason on every tool switch.
+  it("uses the parked preview floor when the last panel size is too small", async () => {
+    // A preview below the usable capture size is parked at the floor so the
+    // page does not render as a narrow strip.
     fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
     const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
     const parked = view.boundsCalls.at(-1)!;
     expect(parked).toMatchObject({
       x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
       y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      width: 640,
-      height: 360,
+      width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+      height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
     });
 
     service.stopPreviewStream({ tabId });
@@ -1382,17 +1382,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps the size the panel last showed a parked tab at", async () => {
-    // Parking used to floor every hidden tab at 960x600, firing a real window
-    // resize inside the page each way round.
+    // A usable remembered size survives parking without a page resize.
     const { service, view, tabId } = await parkedTabFixture(collector, { width: 1100, height: 700 });
     expect(view.boundsCalls.at(-1)).toMatchObject({ width: 1100, height: 700 });
     service.stopPreviewStream({ tabId });
 
-    // The case that matters: the Work pane is clamped to 26-55% of the window,
-    // so EVERY realistic pane is narrower than the 960px floor. Flooring here
-    // is what fired a real `window` resize inside the page each way round.
+    // An undersized pane has no usable page area, so the floor applies.
     const narrow = await parkedTabFixture(collector, { width: 480, height: 640 });
-    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 480, height: 640 });
+    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 960, height: 600 });
     narrow.service.stopPreviewStream({ tabId: narrow.tabId });
 
     // A tab the panel never showed has no rect to reuse, so the floor applies.
@@ -2690,14 +2687,38 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     });
   });
 
-  it("blocks agent-triggered high-risk popups until the origin is human-approved", async () => {
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+  /**
+   * A service in "Chats I approve" whose open prompts are answered with
+   * whatever `answer.next` holds when they appear.
+   */
+  function createChatApprovingService() {
+    const answer: { next: "chat" | "block" } = { next: "chat" };
+    const asked: string[] = [];
+    let service: ReturnType<typeof createBuiltInBrowserService> | null = null;
+    service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      agentAccessInitialMode: "chats",
+      onAgentAccessChange: (snapshot) => {
+        for (const prompt of snapshot.prompts) {
+          if (asked.includes(prompt.id)) continue;
+          asked.push(prompt.id);
+          const reply = answer.next;
+          queueMicrotask(() => service?.answerAgentAccessPrompt(prompt.id, reply));
+        }
+      },
+    });
+    return { service, answer, asked };
+  }
+
+  it("blocks agent-triggered popups once the chat is no longer allowed", async () => {
+    const { service } = createChatApprovingService();
     await service.createTab({
       url: "https://example.test",
       activate: true,
       laneId: "lane-1",
       chatSessionId: "chat-1",
     });
+    service.revokeAgentAccess({ kind: "chat", chatSessionId: "chat-1" });
 
     const response = fakes.webContentsInstances[0]?.openWindow(
       "https://accounts.google.com/gsi/select",
@@ -2706,13 +2727,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(response?.action).toBe("deny");
     expect(collector.events.at(-1)).toMatchObject({
       type: "error",
-      message: expect.stringContaining("Navigate to that origin explicitly"),
+      message: expect.stringContaining("has not allowed this agent to use the ADE browser"),
     });
   });
 
-  it("requires chat-scoped human approval before agent navigation uses a high-risk origin", async () => {
-    fakes.permissionPrompt.mockResolvedValue({ response: 0, checkboxChecked: false });
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+  it("asks once per chat before an agent navigates, and keeps the tab leased to it", async () => {
+    const { service, asked } = createChatApprovingService();
 
     await service.navigate({
       url: "https://github.com/settings/tokens",
@@ -2721,22 +2741,21 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       chatSessionId: "chat-1",
     });
     const tabId = service.getStatus().activeTabId ?? "";
-    expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1);
+    expect(asked).toHaveLength(1);
     expect(service.getStatus({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).url)
       .toBe("https://github.com/settings/tokens");
     expect(() => service.getStatus({ tabId, laneId: "lane-2", chatSessionId: "chat-2" }))
       .toThrow(/leased by chat chat-1/);
   });
 
-  it("blocks a high-risk redirect triggered by an agent page action", async () => {
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+  it("holds and then blocks an agent-triggered redirect once the chat is no longer allowed", async () => {
+    const { service, answer, asked } = createChatApprovingService();
     await service.createTab({
       url: "http://localhost:5173",
       activate: true,
       laneId: "lane-1",
       chatSessionId: "chat-1",
     });
-    fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
     const tabId = service.getStatus().activeTabId ?? "";
     await service.click({
       tabId,
@@ -2746,13 +2765,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       chatSessionId: "chat-1",
       observe: false,
     });
+    service.revokeAgentAccess({ kind: "chat", chatSessionId: "chat-1" });
+    answer.next = "block";
 
     const wc = fakes.webContentsInstances[0];
     const loadCountBeforeRedirect = wc?.loadURLCalls.length ?? 0;
     const redirectEvent = { preventDefault: vi.fn() };
     wc?.emit("will-redirect", redirectEvent, "https://console.aws.amazon.com/");
     expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
-    await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(asked).toHaveLength(2));
     expect(wc?.getURL()).toBe("http://localhost:5173/");
     expect(wc?.loadURLCalls).toHaveLength(loadCountBeforeRedirect);
     await vi.waitFor(() => expect(collector.events.at(-1)).toMatchObject({
@@ -2761,18 +2782,17 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }));
   });
 
-  it("keeps delayed agent redirects behind the human approval boundary", async () => {
+  it("keeps delayed agent redirects and popups behind the approval boundary", async () => {
     const realDateNow = Date.now.bind(Date);
     let dateNow: { mockRestore(): void } | null = null;
     try {
-      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      const { service, answer, asked } = createChatApprovingService();
       await service.createTab({
         url: "http://localhost:5173",
         activate: true,
         laneId: "lane-1",
         chatSessionId: "chat-1",
       });
-      fakes.permissionPrompt.mockResolvedValue({ response: 1, checkboxChecked: false });
       const tabId = service.getStatus().activeTabId ?? "";
       await service.click({
         tabId,
@@ -2782,8 +2802,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         chatSessionId: "chat-1",
         observe: false,
       });
+      service.revokeAgentAccess({ kind: "chat", chatSessionId: "chat-1" });
+      answer.next = "block";
       dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
 
+      expect(fakes.webContentsInstances[0]?.openWindow("https://accounts.google.com/gsi/select")?.action)
+        .toBe("deny");
       const redirectEvent = { preventDefault: vi.fn() };
       fakes.webContentsInstances[0]?.emit(
         "will-redirect",
@@ -2792,39 +2816,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       );
 
       expect(redirectEvent.preventDefault).toHaveBeenCalledTimes(1);
-      await vi.waitFor(() => expect(fakes.permissionPrompt).toHaveBeenCalledTimes(1));
-    } finally {
-      dateNow?.mockRestore();
-    }
-  });
-
-  it("keeps delayed agent popups behind the human approval boundary", async () => {
-    const realDateNow = Date.now.bind(Date);
-    let dateNow: { mockRestore(): void } | null = null;
-    try {
-      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
-      await service.createTab({
-        url: "http://localhost:5173",
-        activate: true,
-        laneId: "lane-1",
-        chatSessionId: "chat-1",
-      });
-      const tabId = service.getStatus().activeTabId ?? "";
-      await service.click({
-        tabId,
-        x: 10,
-        y: 20,
-        laneId: "lane-1",
-        chatSessionId: "chat-1",
-        observe: false,
-      });
-      dateNow = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + 60_000);
-
-      const response = fakes.webContentsInstances[0]?.openWindow(
-        "https://accounts.google.com/gsi/select",
-      );
-
-      expect(response?.action).toBe("deny");
+      await vi.waitFor(() => expect(asked).toHaveLength(2));
     } finally {
       dateNow?.mockRestore();
     }
@@ -3425,12 +3417,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         observation = await service.observe({ keepCount: 3 }, browserWin);
       }
 
-      expect(fs.existsSync(observation.filePath)).toBe(true);
+      expect(fs.existsSync(observation.filePath!)).toBe(true);
       expect(observation.relativePath).toMatch(/^\.ade\/cache\/browser-observations\//);
       expect(observation.cleanup.keepCount).toBe(3);
       expect(observation.cleanup.keptCount).toBe(3);
       expect(observation.cleanup.deletedCount).toBe(1);
-      const observationDir = path.dirname(observation.filePath);
+      const observationDir = path.dirname(observation.filePath!);
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".png"))).toHaveLength(3);
       expect(fs.readdirSync(observationDir).filter((entry) => entry.endsWith(".json"))).toHaveLength(3);
     } finally {
@@ -3470,7 +3462,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
       const observation = result.observation;
       expect(observation).not.toBeNull();
-      expect(observation?.filePath.startsWith(path.join(userDataPath, "browser-observations", "personal")))
+      expect(observation?.filePath?.startsWith(path.join(userDataPath, "browser-observations", "personal")))
         .toBe(true);
       expect(observation?.relativePath).toMatch(/^personal\//);
       expect(fs.existsSync(observation?.filePath ?? "")).toBe(true);
@@ -3617,7 +3609,21 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
       const observation = await service.observe({ tabId, maxElements: 5, includeElementMap: true }, browserWin);
       await service.click({ tabId, selector: "button#save", observe: false }, browserWin);
-      await service.click({ tabId, handle: observation.dom?.elements[0]?.handle ?? "", observe: false }, browserWin);
+      const byHandle = await service.click(
+        { tabId, handle: observation.dom?.elements[0]?.handle ?? "", observe: false },
+        browserWin,
+      );
+      // The answer names the element the locate found, under the caller's handle.
+      expect(byHandle.resolved).toMatchObject({
+        selector: "button#save",
+        label: "Save",
+        handle: observation.dom?.elements[0]?.handle,
+      });
+      expect(byHandle.effect.status).toBe("not_checked");
+      // With an observation after the click, the locate's snapshot is the
+      // "before"; this fake page never changes, so the click is unconfirmed.
+      const observed = await service.click({ tabId, selector: "button#save", waitAfterMs: 0 }, browserWin);
+      expect(observed.effect).toEqual({ status: "unconfirmed", reason: "nothing on screen changed" });
       await expect(service.click({
         tabId,
         handle: "obs-x/../../outside:e:1",
