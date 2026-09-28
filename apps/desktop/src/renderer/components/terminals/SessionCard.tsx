@@ -757,8 +757,14 @@ export const SessionCard = React.memo(function SessionCard({
      component wraps itself in its own SmartTooltip with a focusable trigger, and
      this row already owns a hover card and a click target. The visual identity
      is identical — amber tower, amber pill — and the name is carried by the
-     hover card's machine row rather than inline, per the glyph-only rule. */
-  const machineGlyph = machineMarker && !suppressMachineChip ? (
+     hover card's machine row rather than inline, per the glyph-only rule.
+
+     Offline only. An online machine's session just works wherever it lives —
+     the connection dot in the top bar already says the machines are linked —
+     so badging every other machine's row was noise, and relative to the tab's
+     binding it even badged this computer's own sessions. The glyph survives
+     only where it explains something: rows that went quiet and can't act. */
+  const machineGlyph = machineMarker && !machineMarker.online && !suppressMachineChip ? (
     <span
       data-session-machine={machineMarker.machineName}
       data-machine-id={machineMarker.machineId}
@@ -768,24 +774,10 @@ export const SessionCard = React.memo(function SessionCard({
          badged" must be a single selector rather than two that drift. */
       data-machine-marker-mode="glyph"
       role="img"
-      aria-label={
-        machineMarker.online
-          ? `On ${machineMarker.machineName}`
-          : `On ${machineMarker.machineName}, offline`
-      }
-      className={cn(
-        "inline-flex shrink-0 items-center rounded-full border px-1 py-px leading-none",
-        machineMarker.online
-          ? "border-amber-400/20 bg-amber-400/[0.06]"
-          : "border-white/[0.08] bg-white/[0.03]",
-      )}
+      aria-label={`On ${machineMarker.machineName}, offline`}
+      className="inline-flex shrink-0 items-center rounded-full border border-white/[0.08] bg-white/[0.03] px-1 py-px leading-none"
     >
-      <DesktopTower
-        size={10}
-        weight="duotone"
-        className={cn("shrink-0", machineMarker.online ? "text-amber-400/85" : "text-muted-fg/45")}
-        aria-hidden
-      />
+      <DesktopTower size={10} weight="duotone" className="shrink-0 text-muted-fg/45" aria-hidden />
     </span>
   ) : null;
 

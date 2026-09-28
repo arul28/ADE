@@ -1742,20 +1742,19 @@ export function FilesWorkbench({
       onDragOver={handleNativeDragOver}
       onDrop={handleNativeDrop}
     >
-      {pinnedMachineMarker ? (
-        /* Whose disk am I looking at. Amber is machine identity everywhere else
-           in ADE, so the same marker is reused rather than inventing a second
-           visual language for the same fact. Files here are fully editable —
-           the machine is connected and saves go straight to it — so this says
-           where you are, not that you are limited. */
+      {pinnedMachineMarker && (!pinnedMachineMarker.online || embedded) ? (
+        /* Only when it changes something. An online machine's files just work —
+           edits save straight to it — so the routed tab says nothing; the bar
+           stays for an offline machine (why nothing opens) and for the embedded
+           pane, whose only way back to this computer is the button below. */
         <div
           className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5"
-          style={{ borderColor: COLORS.border, background: "rgba(251, 191, 36, 0.04)" }}
+          style={{ borderColor: COLORS.border }}
         >
           <LaneMachineMarker marker={pinnedMachineMarker} />
           <span className="min-w-0 flex-1 truncate text-[11px]" style={{ color: COLORS.textSecondary }}>
             {pinnedMachineMarker.online
-              ? "Files on this machine. Edits save there."
+              ? `Files on ${pinnedMachineMarker.machineName}. Edits save there.`
               : "This machine is offline, so its files can't be opened."}
           </span>
           {/* The routed tab changes machine by picking a lane in the picker;

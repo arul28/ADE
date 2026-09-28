@@ -676,6 +676,17 @@ export function createBuiltInBrowserService(args: {
   demoEngine?: DemoEngine | null;
   getProjectRootForWindow?: (win: BrowserWindow) => string | null | undefined;
   getWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
+  /**
+   * The window that hosts a project's browser when no window is bound to it.
+   *
+   * Tabs show every machine's sessions, so this computer's chat routinely sits
+   * in a window whose project tab is bound to another machine. Its browser is
+   * still this desktop's, and the window showing the chat is where it belongs;
+   * refusing ("No ADE browser window is open") left local agents with no
+   * browser at all. Consulted only after the bound window and the caller's own
+   * window; the collection stays keyed by `projectRoot` either way.
+   */
+  getFallbackWindowForProjectRoot?: (projectRoot: string) => BrowserWindow | null | undefined;
   onEvent?: ((payload: BuiltInBrowserEventPayload, targetWindow?: BrowserWindow | null) => void) | null;
   stateFilePath?: string | null;
   permissionFilePath?: string | null;
@@ -885,7 +896,10 @@ export function createBuiltInBrowserService(args: {
   const requestsPersonalCollection = (input: unknown): boolean =>
     isRecord(input) && input.tabCollection === "personal";
 
-  const liveWindowForProjectRoot = (projectRoot: string): BrowserWindow | null => {
+  const liveWindowForProjectRoot = (
+    projectRoot: string,
+    sourceWindow?: BrowserWindow | null,
+  ): BrowserWindow | null => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return null;
     const resolved = args.getWindowForProjectRoot?.(normalized) ?? null;
@@ -896,7 +910,10 @@ export function createBuiltInBrowserService(args: {
       if (!isLiveWindow(win)) continue;
       if (projectRootsMatch(projectRootForWindow(win), normalized)) return win;
     }
-    return null;
+    // No window is bound to the project: host it where its session is shown.
+    if (isLiveWindow(sourceWindow)) return sourceWindow;
+    const fallback = args.getFallbackWindowForProjectRoot?.(normalized) ?? null;
+    return isLiveWindow(fallback) ? fallback : null;
   };
 
   const detachInactiveWindowServices = (win: BrowserWindow, activeKey: string): void => {
@@ -1005,15 +1022,21 @@ export function createBuiltInBrowserService(args: {
       && !(value as { isDestroyed: () => boolean }).isDestroyed()
     );
 
-  const serviceForProjectRoot = (projectRoot: string): WindowBrowserService => {
+  const serviceForProjectRoot = (
+    projectRoot: string,
+    sourceWindow?: BrowserWindow | null,
+  ): WindowBrowserService => {
     const normalized = normalizedProjectRoot(projectRoot);
     if (!normalized) return activeService();
-    const win = liveWindowForProjectRoot(normalized);
+    const win = liveWindowForProjectRoot(normalized, sourceWindow);
     if (!win) {
       throw new Error(`No ADE browser window is open for project: ${normalized}`);
     }
     const service = serviceForWindowCollection(win, collectionForProjectRoot(normalized), {
-      markActive: projectRootsMatch(projectRootForWindow(win), normalized),
+      // The window's own project, or the pane in this very window asking for it
+      // (a session from another binding): either way it is what is on screen.
+      markActive: projectRootsMatch(projectRootForWindow(win), normalized)
+        || (isLiveWindow(sourceWindow) && sourceWindow.id === win.id),
     });
     service.attachToWindow(win);
     return service;
@@ -1061,7 +1084,7 @@ export function createBuiltInBrowserService(args: {
   ): WindowBrowserService => {
     if (requestsPersonalCollection(input)) return serviceForPersonalCollection(sourceWindow);
     const projectRoot = projectRootFromInput(input);
-    if (projectRoot) return serviceForProjectRoot(projectRoot);
+    if (projectRoot) return serviceForProjectRoot(projectRoot, sourceWindow);
     if (isLiveWindow(sourceWindow)) return serviceForWindow(sourceWindow);
     return activeService();
   };
