@@ -7,7 +7,7 @@
  * they are inside OpenCode, not peers of it.
  */
 import React from "react";
-import { ArrowsClockwise, Cpu } from "@phosphor-icons/react";
+import { ArrowsClockwise, CheckCircle, Cpu } from "@phosphor-icons/react";
 import {
   COLORS,
   MONO_FONT,
@@ -25,7 +25,11 @@ import {
   parseLocalProviderFromModelId,
 } from "../../../../../shared/modelRegistry";
 import {
-  ConnectedTag,
+  isOpenCodeHouseProvider,
+  OPENCODE_HOUSE_PROVIDER_IDS,
+  type OpenCodeHouseProviderId,
+} from "../../../../../shared/opencodeProviders";
+import {
   ProviderGrid,
   ProviderSearchField,
   ProviderTile,
@@ -63,18 +67,77 @@ function OpenCodeProviderCard({
       : provider.methods.some((m) => m.type === "oauth")
         ? "OAuth"
         : "Add";
+  // A connected tile says so in its footer: a chip beside the name leaves a
+  // narrow card no room for names like "DeepSeek" or "OpenCode Zen".
   return (
     <ProviderTile
       id={provider.id}
       name={provider.name}
       ariaLabel={provider.connected || provider.hasKey ? `Open ${provider.name}` : `Connect ${provider.name}`}
-      badge={provider.connected ? <ConnectedTag /> : <ProviderTileBadge>{badge}</ProviderTileBadge>}
+      badge={provider.connected ? null : <ProviderTileBadge>{badge}</ProviderTileBadge>}
       onOpen={onOpen}
-      footer={typeof provider.modelCount === "number" ? (
-        <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-          {provider.modelCount} model{provider.modelCount === 1 ? "" : "s"}
+      footer={<TileStatusLine connected={provider.connected} modelCount={provider.modelCount} />}
+    />
+  );
+}
+
+function TileStatusLine({ connected, modelCount }: { connected: boolean; modelCount?: number }) {
+  const models = typeof modelCount === "number"
+    ? `${modelCount} model${modelCount === 1 ? "" : "s"}`
+    : null;
+  if (!connected && !models) return null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+      {connected ? (
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.success }}>
+          <CheckCircle size={11} weight="fill" /> Connected
+        </span>
+      ) : null}
+      {connected && models ? <span>·</span> : null}
+      {models ? <span>{models}</span> : null}
+    </div>
+  );
+}
+
+/** OpenCode's own services are pinned above the catalog instead of found by search. */
+const OPENCODE_HOUSE_BLURB: Record<OpenCodeHouseProviderId, string> = {
+  opencode: "Free models now. Sign in with your opencode.ai account for the paid ones.",
+  "opencode-go": "$10/month subscription for open coding models. Comes with your opencode.ai sign-in.",
+};
+
+function OpenCodeHouseCard({
+  id,
+  provider,
+  onOpen,
+}: {
+  id: OpenCodeHouseProviderId;
+  provider: OpenCodeProviderDetail;
+  onOpen: () => void;
+}) {
+  const signedIn = provider.signedIn === true || provider.hasKey;
+  // Zen serves free models to anyone, so "connected" alone is not a sign-in.
+  const connected = id === "opencode" ? signedIn : provider.connected;
+  const badge = connected
+    ? null
+    : <ProviderTileBadge>{id === "opencode" ? (provider.connected ? "Free" : "Sign in") : provider.hasKey ? "Key" : "Sign in"}</ProviderTileBadge>;
+  return (
+    <ProviderTile
+      id={provider.id}
+      name={provider.name}
+      ariaLabel={`Open ${provider.name}`}
+      badge={badge}
+      onOpen={onOpen}
+      footer={(
+        <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textSecondary, lineHeight: 1.4 }}>
+            {OPENCODE_HOUSE_BLURB[id]}
+          </div>
+          <TileStatusLine
+            connected={connected}
+            modelCount={typeof provider.modelCount === "number" && provider.modelCount > 0 ? provider.modelCount : undefined}
+          />
         </div>
-      ) : undefined}
+      )}
     />
   );
 }
@@ -292,6 +355,11 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
     );
   }
 
+  const houseRows = OPENCODE_HOUSE_PROVIDER_IDS.flatMap((id) => (
+    ctx.openCodeCatalog.filter((row) => row.id === id).map((row) => ({ id, row }))
+  ));
+  const connectedRows = ctx.connectedOpenCodeProviders.filter((row) => !isOpenCodeHouseProvider(row.id));
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 22 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12, flexWrap: "wrap" }}>
@@ -312,15 +380,26 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
         </button>
       </div>
 
+      {houseRows.length ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={SECTION_LABEL_STYLE}>OpenCode</div>
+          <ProviderGrid>
+            {houseRows.map(({ id, row }) => (
+              <OpenCodeHouseCard key={id} id={id} provider={row} onOpen={() => ctx.actions.openOpenCodeProviderDetail(id)} />
+            ))}
+          </ProviderGrid>
+        </div>
+      ) : null}
+
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={SECTION_LABEL_STYLE}>Connected</div>
-        {ctx.connectedOpenCodeProviders.length === 0 ? (
+        {connectedRows.length === 0 ? (
           <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-            No providers connected yet. Pick one below to sign in or add a key.
+            No other providers connected yet. Pick one below to sign in or add a key.
           </div>
         ) : (
           <ProviderGrid>
-            {ctx.connectedOpenCodeProviders.map((row) => (
+            {connectedRows.map((row) => (
               <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => ctx.actions.openOpenCodeProviderDetail(row.id)} />
             ))}
           </ProviderGrid>
@@ -341,7 +420,7 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
           <>
             <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>Popular</div>
             <ProviderGrid>
-              {ctx.popularOpenCodeProviders.map((row) => (
+              {ctx.popularOpenCodeProviders.filter((row) => !isOpenCodeHouseProvider(row.id)).map((row) => (
                 <OpenCodeProviderCard key={row.id} provider={row} onOpen={() => ctx.actions.openOpenCodeProviderDetail(row.id)} />
               ))}
             </ProviderGrid>

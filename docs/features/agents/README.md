@@ -129,9 +129,9 @@ Each ADE-launched session receives the canonical root through
   `.claude-plugin/plugin.json`; tracked Claude CLI launches and background
   `claude --bg` launches receive the same validated root through
   `--plugin-dir`.
-- OpenCode receives the roots through its own `skills.paths` config key, which
-  ADE sets inside `OPENCODE_CONFIG_CONTENT`. No file is written into the
-  user's OpenCode config home.
+- OpenCode receives the roots through its own top-level `skills` config key,
+  which ADE sets inside the generated `OPENCODE_CONFIG` file. No file is
+  written into the user's OpenCode config home.
 - Pi has its native discovery replaced outright: ADE passes `noSkills: true`
   plus `additionalSkillPaths`, so a Pi session sees exactly ADE's catalog.
 - Qwen Code receives the roots through its own `skills.directories` settings

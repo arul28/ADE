@@ -1474,7 +1474,8 @@ private enum WorkQueuedSteerPreviewData {
 
   static let capability = workChatActiveSendCapability(
     provider: "claude",
-    liveRedirectOnly: false
+    liveRedirectOnly: false,
+    hostSupportsOpenCodeSteer: true
   )
 }
 

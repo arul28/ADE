@@ -691,12 +691,12 @@ export function callerMcpServersToInlineRecord(
 }
 
 /**
- * OpenCode config shape: an HTTP/SSE server is "remote", a stdio server is
- * "local" with `command` as a single argv array.
+ * OpenCode 2.0 config shape (`mcp.servers.<name>`): an HTTP/SSE server is
+ * "remote", a stdio server is "local" with `command` as a single argv array.
  */
 export type OpenCodeMcpServerConfig =
-  | { type: "local"; command: string[]; environment?: Record<string, string>; enabled: true }
-  | { type: "remote"; url: string; headers?: Record<string, string>; enabled: true };
+  | { type: "local"; command: string[]; environment?: Record<string, string>; disabled: false; codemode?: boolean }
+  | { type: "remote"; url: string; headers?: Record<string, string>; disabled: false; codemode?: boolean };
 
 export function callerMcpServersToOpenCodeConfig(
   servers: CallerMcpServers,
@@ -708,13 +708,13 @@ export function callerMcpServersToOpenCodeConfig(
         type: "local",
         command: [config.command, ...(config.args ?? [])],
         ...(config.env ? { environment: config.env } : {}),
-        enabled: true,
+        disabled: false,
       }
       : {
         type: "remote",
         url: config.url,
         ...(config.headers ? { headers: config.headers } : {}),
-        enabled: true,
+        disabled: false,
       };
   }
   return out;

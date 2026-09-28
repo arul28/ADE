@@ -683,7 +683,8 @@ struct WorkChatSessionView: View {
         provider: chatSummaryContext.provider,
         cursorRuntime: chatSummaryContext.cursorRuntime,
         cursorCloudAgentId: chatSummaryContext.cursorCloudAgentId
-      )
+      ),
+      hostSupportsOpenCodeSteer: syncServiceReference.service?.supportsOpenCodeInboxSteer ?? false
     )
   }
 
@@ -2215,10 +2216,14 @@ func mergeWorkPendingSteers(
 func workChatActiveSendCapability(
   provider: String,
   liveRedirectOnly: Bool,
-  runsInCloud: Bool = false
+  runsInCloud: Bool = false,
+  hostSupportsOpenCodeSteer: Bool
 ) -> WorkActiveSendCapability {
-  let capability = WorkActiveSendCapability.forProvider(provider)
-    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
+  let capability = WorkActiveSendCapability.forSession(
+    provider: provider,
+    runsInCloud: runsInCloud,
+    hostSupportsOpenCodeSteer: hostSupportsOpenCodeSteer
+  )
   guard liveRedirectOnly else { return capability }
   let liveRedirectModes = capability.modes.filter { $0 != .queue }
   guard !liveRedirectModes.isEmpty else { return capability }
@@ -2378,7 +2383,8 @@ private struct WorkChatComposerDraftInput: View {
         provider: chatSummary.provider,
         cursorRuntime: chatSummary.cursorRuntime,
         cursorCloudAgentId: chatSummary.cursorCloudAgentId
-      )
+      ),
+      hostSupportsOpenCodeSteer: syncService.supportsOpenCodeInboxSteer
     )
     // A draft the live turn cannot carry (Cursor with attachments) is not
     // offered "Send during turn"; the default falls to "Send after turn".

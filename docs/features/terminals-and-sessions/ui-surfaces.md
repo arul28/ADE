@@ -1511,7 +1511,7 @@ for context insertions. Contains:
   `buildTrackedCliLaunchCommand` (`{ command?, args, startupCommand,
   env? }`). `onLaunchPtySession` forwards `command` + `args` for direct
   argv spawn (Claude / Codex), passes `env` through to the PTY when set
-  (OpenCode's `OPENCODE_CONFIG_CONTENT`), and ships `startupCommand` as
+  (OpenCode's `ADE_OPENCODE_LAUNCH` intent), and ships `startupCommand` as
   the shell fallback the multi-line Cursor / Droid / OpenCode preambles
   always rely on. The recorded `toolType` and tab title come from the
   shared `LAUNCH_PROFILE_TOOL_TYPE` / `LAUNCH_PROFILE_TITLE` maps in
@@ -1550,15 +1550,16 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
   - **Droid** → an autonomy-tiered settings JSON written to a temp file
     that `droid --settings $ADE_DROID_SETTINGS` consumes; `spec`
     autonomy is the plan/read-only fallback.
-  - **OpenCode** → an inline JSON permission policy passed via the
-    `OPENCODE_CONFIG_CONTENT` env var (`config-toml` mode skips the env
-    so OpenCode reads `opencode.json` instead). Plan mode adds `--agent
-    plan`. Fresh launches always start the full root TUI —
-    `opencode [-m model] [--agent plan] [--prompt <initial prompt>]`.
-    There is deliberately no `run --interactive` branch and no
-    reasoning/fast `--variant`: the root command silently drops unknown
-    args, so variants remain a chat-runtime feature and tracked launches
-    carry only the model and permission agent.
+  - **OpenCode** → permission mode, model, and effort ride as JSON in the
+    `ADE_OPENCODE_LAUNCH` env var (`config-toml` mode omits it, so ADE sets
+    no agent and OpenCode's own configuration decides). The 2.0 TUI takes
+    only a session selector and `--prompt`; `attachOpenCodeTerminal`
+    (`services/opencode/openCodeTerminal.ts`) reads the intent, creates the
+    session with the matching ADE agent and model on ADE's shared server,
+    and rewrites the launch to `opencode --server <lease url> --session <id>`.
+    There is deliberately no reasoning/fast `--variant` flag: the TUI takes
+    no such flag, so variants remain a chat-runtime feature and tracked launches
+    set the model and permission agent on the session instead.
   Every provider also receives ADE CLI guidance — Claude through
   `--append-system-prompt`, Codex/Droid/OpenCode as a leading prompt
   argument, and Cursor through PTY `initialInput` only when there is an
@@ -1801,7 +1802,7 @@ produces the same argv-based spawn with ADE CLI guidance baked in.
 `apps/desktop/src/shared/cliLaunch.ts`.
 The runtime strips leading `ENV=value` assignments before sniffing the
 provider, so continuation commands the OpenCode preamble emits
-(`OPENCODE_CONFIG_CONTENT=… opencode --session …`) round-trip
+(`ADE_OPENCODE_LAUNCH=… opencode --session …`) round-trip
 correctly. `startupDelayMs` is forwarded into the `ade.pty.create`
 payload only when the caller passes it (so non-Work callers don't
 inherit a non-zero default); the Work CLI launch path in

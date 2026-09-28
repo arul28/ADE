@@ -2,7 +2,6 @@ import {
   SCHEDULED_WORK_STATE_KEY,
   beginIdentityConfirmHold,
   buildCodingAgentSystemPrompt,
-  buildOpenCodePromptParts,
   claudeSdkCreateSessionCompat,
   claudeSdkResumeSessionCompat,
   createAgentChatService,
@@ -21,7 +20,6 @@ import {
   resolveBuiltInBrowserActorCapability,
   runGit,
   spawn,
-  startOpenCodeSession,
   storedWakeup,
   streamText,
   tmpRoot,
@@ -33,139 +31,8 @@ import { beforeEach, describe, expect, it, test, vi } from "vitest";
 
 describe("createAgentChatService", () => {
   describe("lane launch directives", () => {
-    it("injects the selected lane worktree into the first opencode user turn only", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
 
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
 
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Inspect the repo and fix the launch bug.",
-      });
-      await service.runSessionTurn({
-        sessionId: session.id,
-        text: "Now add tests.",
-      });
-
-      const promptCalls = vi.mocked(buildOpenCodePromptParts).mock.calls;
-      const firstUserContent = String(promptCalls[0]?.[0]?.prompt ?? "");
-      const secondUserContent = String(promptCalls[1]?.[0]?.prompt ?? "");
-      const openCodeStartCalls = vi.mocked(startOpenCodeSession).mock.calls;
-      const systemPromptCalls = vi.mocked(buildCodingAgentSystemPrompt).mock.calls;
-
-      expect(openCodeStartCalls.length).toBeGreaterThan(0);
-      expect(openCodeStartCalls[0]?.[0]).toEqual(expect.objectContaining({
-        leaseKind: "shared",
-      }));
-      expect(firstUserContent).toContain("[ADE launch directive]");
-      expect(firstUserContent).toContain(tmpRoot);
-      expect(firstUserContent).toContain("Read-only inspection outside that worktree is allowed");
-      expect(firstUserContent).toContain("mutating commands only inside that worktree");
-      expect(systemPromptCalls.at(-1)?.[0]).toEqual(expect.objectContaining({
-        runtime: "opencode",
-      }));
-      expect(secondUserContent).not.toContain("[ADE launch directive]");
-      expect(secondUserContent).not.toContain("CLI controls ADE state");
-    });
-
-    it("gives OpenCode activity guidance an explicit per-chat CLI and runtime target", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
-      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
-      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
-      fs.chmodSync(cliPath, 0o755);
-      const runtimeSocketPath = "/Users/admin/.ade-beta/sock/ade.sock";
-      const staleRuntimeSocketPath = "/Users/admin/.ade/sock/ade.sock";
-      const { service } = createService({
-        runtimeSocketPath,
-        getAdeCliAgentEnv: () => ({
-          PATH: path.dirname(cliPath),
-          ADE_CLI_PATH: cliPath,
-          ADE_RUNTIME_SOCKET_PATH: staleRuntimeSocketPath,
-          ADE_RPC_SOCKET_PATH: staleRuntimeSocketPath,
-          ADE_RPC_URL: staleRuntimeSocketPath,
-        }),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
-
-      let promptBody: Record<string, unknown> | undefined;
-      await vi.waitFor(() => {
-        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
-        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
-        expect(promptBody).toBeDefined();
-      });
-      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
-      for (const selector of ["ADE_RPC_URL", "ADE_RPC_SOCKET_PATH", "ADE_RUNTIME_SOCKET_PATH"]) {
-        expect(systemPromptArgs?.sessionActivityGuidance)
-          .toContain(`${selector}='${runtimeSocketPath}'`);
-      }
-      expect(systemPromptArgs?.sessionActivityGuidance).toContain("ADE_DEFAULT_ROLE='agent'");
-      expect(systemPromptArgs?.sessionActivityGuidance).toContain(`ADE_CHAT_SESSION_ID='${session.id}'`);
-      expect(systemPromptArgs?.sessionActivityGuidance)
-        .toContain(`'${cliPath}' chat activity debugging --session '${session.id}'`);
-      expect(systemPromptArgs?.sessionActivityGuidance).not.toContain(staleRuntimeSocketPath);
-      await service.dispose({ sessionId: session.id });
-    });
-
-    it("withholds SDK activity guidance for an embedded runtime without RPC", async () => {
-      vi.mocked(streamText).mockImplementation(() => ({
-        fullStream: (async function* () {
-          yield { type: "finish", usage: {} };
-        })(),
-      } as any));
-      const cliPath = path.join(tmpRoot, "activity-cli", "ade");
-      fs.mkdirSync(path.dirname(cliPath), { recursive: true });
-      fs.writeFileSync(cliPath, "#!/bin/sh\nexit 0\n");
-      fs.chmodSync(cliPath, 0o755);
-      const { service } = createService({
-        runtimeSocketPath: "/runtime/unserved.sock",
-        sessionActivityReportingEnabled: false,
-        getAdeCliAgentEnv: () => ({
-          PATH: path.dirname(cliPath),
-          ADE_CLI_PATH: cliPath,
-          ADE_RUNTIME_SOCKET_PATH: "/runtime/stable.sock",
-        }),
-      });
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/openai/gpt-5.4",
-      });
-
-      await service.runSessionTurn({ sessionId: session.id, text: "Check the test state." });
-
-      let promptBody: Record<string, unknown> | undefined;
-      await vi.waitFor(() => {
-        const openCodeState = [...mockState.openCodeSessions.values()].at(-1);
-        promptBody = openCodeState?.promptBodies.at(-1) as Record<string, unknown> | undefined;
-        expect(promptBody).toBeDefined();
-      });
-      const systemPromptArgs = vi.mocked(buildCodingAgentSystemPrompt).mock.calls.at(-1)?.[0];
-      expect(systemPromptArgs?.sessionActivityGuidance).toBeNull();
-      await service.dispose({ sessionId: session.id });
-    });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
       const laneRootPath = path.join(tmpRoot, "lane-2");

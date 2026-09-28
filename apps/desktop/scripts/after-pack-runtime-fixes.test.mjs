@@ -45,10 +45,10 @@ function run(resourcesRoot, runtimeRoot) {
 test("a clean packaged tree passes the gate", async (t) => {
   const { root, resourcesRoot, runtimeRoot } = makeResources(t);
   fs.mkdirSync(path.join(runtimeRoot, "node_modules", "@openai", "codex"), { recursive: true });
-  fs.mkdirSync(path.join(runtimeRoot, "node_modules", "opencode-ai"), { recursive: true });
+  fs.mkdirSync(path.join(runtimeRoot, "node_modules", "@opencode", "cli"), { recursive: true });
   await writeAsar(root, resourcesRoot, {
     "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs": "export const query = () => {};\n",
-    "node_modules/@opencode-ai/sdk/index.js": "module.exports = {};\n",
+    "node_modules/@opencode/cli/package.json": "{}\n",
   });
 
   assert.doesNotThrow(() => run(resourcesRoot, runtimeRoot));
@@ -80,14 +80,14 @@ test("a native tool package left in the unpacked tree fails the build", async (t
 test("a native tool package packed inside app.asar fails the build", async (t) => {
   const { root, resourcesRoot, runtimeRoot } = makeResources(t);
   await writeAsar(root, resourcesRoot, {
-    "node_modules/opencode-windows-x64-baseline/bin/opencode.exe": "MZ\n",
-    "node_modules/opencode-ai/package.json": "{}\n",
+    "node_modules/@opencode/cli-windows-x64-baseline/bin/opencode.exe": "MZ\n",
+    "node_modules/@opencode/cli/package.json": "{}\n",
   });
 
   assert.throws(
     () => run(resourcesRoot, runtimeRoot),
     (error) => {
-      assert.match(error.message, /app\.asar!\/node_modules\/opencode-windows-x64-baseline/);
+      assert.match(error.message, /app\.asar!\/node_modules\/@opencode\/cli-windows-x64-baseline/);
       return true;
     },
   );
@@ -99,7 +99,7 @@ test("a native tool package packed inside app.asar fails the build", async (t) =
 test("the gate scans per-arch sidecars a universal build leaves behind", async (t) => {
   const { root, resourcesRoot, runtimeRoot } = makeResources(t);
   fs.mkdirSync(
-    path.join(resourcesRoot, "app-x64.asar.unpacked", "node_modules", "opencode-darwin-x64"),
+    path.join(resourcesRoot, "app-x64.asar.unpacked", "node_modules", "@opencode", "cli-darwin-x64"),
     { recursive: true },
   );
   await writeAsar(root, resourcesRoot, { "package.json": "{}\n" });
@@ -107,7 +107,7 @@ test("the gate scans per-arch sidecars a universal build leaves behind", async (
   assert.throws(
     () => run(resourcesRoot, runtimeRoot),
     (error) => {
-      assert.match(error.message, /app-x64\.asar\.unpacked.*opencode-darwin-x64/s);
+      assert.match(error.message, /app-x64\.asar\.unpacked.*@opencode\/cli-darwin-x64/s);
       return true;
     },
   );
@@ -148,8 +148,7 @@ test("build.files drops exactly the native tool packages and nothing else", () =
   for (const relativePath of [
     "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
     "node_modules/@openai/codex/bin/codex.js",
-    "node_modules/opencode-ai/package.json",
-    "node_modules/@opencode-ai/sdk/index.js",
+    "node_modules/@opencode/cli/package.json",
     "node_modules/@cursor/sdk-darwin-arm64/bin/rg",
     "node_modules/cpu-features/build/Release/cpufeatures.node",
     "node_modules/node-pty/lib/index.js",

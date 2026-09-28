@@ -14099,36 +14099,46 @@ final class ADETests: XCTestCase {
     // interrupts. `atomicDispatchModes` drops `.queue`, which is staging, not a
     // promotion target.
     let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
-    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary), [.inline, .interrupt])
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary, hostSupportsOpenCodeSteer: true), [.inline, .interrupt])
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil),
+      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil, hostSupportsOpenCodeSteer: true),
       [.inline, .interrupt]
     )
-    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary), [.inline])
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary, hostSupportsOpenCodeSteer: true), [.inline])
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "codex-chat"), summary: nil),
+      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "codex-chat"), summary: nil, hostSupportsOpenCodeSteer: true),
       [.inline]
     )
     XCTAssertEqual(
       workChatManualSteerDispatchModes(
         session: makeTerminalSessionSummary(toolType: "cursor"),
-        summary: nil
+        summary: nil,
+        hostSupportsOpenCodeSteer: true
       ),
       [.inline, .interrupt]
+    )
+    let openCodeSummary = makeAgentChatSessionSummary(provider: "opencode", status: "active")
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: openCodeSummary, hostSupportsOpenCodeSteer: true),
+      [.inline]
+    )
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: openCodeSummary, hostSupportsOpenCodeSteer: false),
+      []
     )
     var cursorCloudSummary = makeAgentChatSessionSummary(provider: "cursor", status: "active")
     cursorCloudSummary.cursorCloudAgentId = "cloud-agent-1"
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary, hostSupportsOpenCodeSteer: true),
       [.interrupt]
     )
     // Host pin wins: leftover agent id on a local session must keep inline.
     cursorCloudSummary.cursorRuntime = "local"
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary, hostSupportsOpenCodeSteer: true),
       [.inline, .interrupt]
     )
-    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil, hostSupportsOpenCodeSteer: true), [])
   }
 
   /// The mode the user picked has to ride `chat.steer` itself. When it did not,
@@ -14230,12 +14240,11 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(codex.agentLabel, "Codex")
     XCTAssertEqual(WorkActiveSendCapability.forProvider("openai").modes, [.inline, .queue])
 
-    // OpenCode is queue-only: its turns run on the legacy prompt loop, which
-    // does not drain a mid-turn input, so an inline mode would promise a
-    // delivery the transport cannot honor. No interrupt either.
+    // OpenCode admits inline steer and queue delivery through its session inbox.
+    // It has no interrupt mode.
     let opencode = WorkActiveSendCapability.forProvider("opencode")
-    XCTAssertEqual(opencode.modes, [.queue])
-    XCTAssertEqual(opencode.defaultMode, .queue)
+    XCTAssertEqual(opencode.modes, [.inline, .queue])
+    XCTAssertEqual(opencode.defaultMode, .inline)
     XCTAssertFalse(opencode.interruptContinues)
     XCTAssertEqual(opencode.agentLabel, "OpenCode")
 

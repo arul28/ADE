@@ -854,6 +854,12 @@ export type SyncFeatureFlags = {
    */
   macDesktopStream?: true;
   /**
+   * OpenCode chats accept a mid-turn message as an inbox steer (the "inline"
+   * send mode). Older hosts omit it and only queue, so a client offers inline
+   * for OpenCode only when this is present.
+   */
+  openCodeInboxSteer?: true;
+  /**
    * The host serves `macDesktop.takeControl` and its siblings, so the hosted
    * web client may take the lane's input lease over the sync socket. Advertised
    * only when the control commands are registered, exactly like

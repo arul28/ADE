@@ -11,7 +11,7 @@ import type { ExternalSessionDiscoveryRecord } from "../discoveryUtils";
 import { CURSOR_STORE_MAX_MESSAGE_BYTES } from "../discoverCursor";
 import { loadCursorStorePage } from "./cursor";
 import { decodeEventsCursor, loadExternalSessionEvents } from "./index";
-import { openCodeExportToEvents } from "./opencode";
+import { openCodeV1MessagesToEvents } from "./opencode";
 import { readJsonlWindow } from "./paging";
 
 // Loaded at run time: Vite cannot resolve a static `node:sqlite` import.
@@ -456,7 +456,15 @@ describe("loadExternalSessionEvents — other providers", () => {
         },
       ],
     };
-    const events = openCodeExportToEvents(exported, { sessionId: "p", provider: "opencode", externalSessionId: "ses_1" }, 0);
+    const messages = exported.messages.map((message, index) => ({
+      id: `msg_${index}`,
+      data: JSON.stringify(message.info),
+      parts: message.parts.map((part, partIndex) => ({
+        id: "id" in part && typeof part.id === "string" ? part.id : `part_${index}_${partIndex}`,
+        data: JSON.stringify(part),
+      })),
+    }));
+    const events = openCodeV1MessagesToEvents(messages, { sessionId: "p", provider: "opencode", externalSessionId: "ses_1" }, 0);
     expect(shape(events ?? [])).toEqual([
       "user_message:Remove the banner",
       "reasoning:Find the view",
@@ -467,7 +475,9 @@ describe("loadExternalSessionEvents — other providers", () => {
       "tool_result:failed#call_2",
     ]);
     expect(toolResult(events ?? [], "call_2")).toBe("dismissed");
-    expect(openCodeExportToEvents({ nope: true }, { sessionId: "p", provider: "opencode", externalSessionId: "x" }, 0)).toBeNull();
+    expect(openCodeV1MessagesToEvents([
+      { id: "bad", data: "{", parts: [] },
+    ], { sessionId: "p", provider: "opencode", externalSessionId: "x" }, 0)).toEqual([]);
   });
 
   it("falls back to the sampled messages when the store yields nothing", async () => {

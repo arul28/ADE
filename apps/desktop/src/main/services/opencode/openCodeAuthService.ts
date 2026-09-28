@@ -1,17 +1,18 @@
 // ---------------------------------------------------------------------------
-// OpenCode subscription/OAuth auth service
+// OpenCode sign-in and provider credentials (OpenCode 2.0)
 //
-// Drives the OpenCode server's auth API to (a) enumerate the auth methods each
-// provider supports, (b) run a subscription OAuth flow (return the URL, then
-// poll provider.list() until the provider reports connected), and (c) seed a
-// plain API key (PUT /auth) while mirroring it into ADE's key store so the key
-// is re-injected on future server launches.
+// Sign-in methods and OAuth logins go through OpenCode's integration API on the
+// shared ADE server (`integration.*`, `credential.*`); the credential lands in
+// ADE's owned store, where every ADE chat reads it.
 //
-// All server access reuses the shared managed OpenCode server lease (the same
-// server the inventory probe uses) — we never spawn our own process.
+// API keys are different: ADE's encrypted key store is their one source of
+// truth. `buildOpenCodeConfig` puts every stored key into the server config,
+// which OpenCode hot-reloads, so saving a key never writes a second copy into
+// OpenCode's credential table. Removing a provider clears both: ADE's key and
+// any OpenCode credential (an OAuth login) for that integration.
 // ---------------------------------------------------------------------------
 
-import { createOpencodeClient } from "@opencode-ai/sdk/v2/client";
+import type { OpenCodeClient } from "@opencode/client";
 import type { Logger } from "../logging/logger";
 import type { EffectiveProjectConfig, ProjectConfigFile } from "../../../shared/types";
 import type {
@@ -20,22 +21,28 @@ import type {
   OpenCodeProviderAuthMethods,
 } from "../../../shared/types/config";
 import { isAllowedOpenCodeOAuthUrl } from "../../../shared/opencodeOAuth";
-import { buildOpenCodeMergedConfig, buildSharedOpenCodeServerKey } from "./openCodeRuntime";
-import { acquireSharedOpenCodeServer } from "./openCodeServerManager";
-import { probeOpenCodeProviderInventory } from "./openCodeInventory";
+import { deleteApiKey as deleteStoredApiKey, storeApiKey as storeStoredApiKey } from "../ai/apiKeyStore";
 import {
-  deleteApiKey as deleteStoredApiKey,
-  storeApiKey as storeStoredApiKey,
-} from "../ai/apiKeyStore";
+  mapOpenCodeIntegrationAuthMethods,
+  openCodeAuthMethodsFromIntegrations,
+  openCodeMethodFormAnswer,
+} from "./openCodeAuthMethods";
+import { buildOpenCodeConfig, sharedOpenCodeProfileFor } from "./openCodeConfig";
+import { readOpenCodeCredentials } from "./openCodeCredentials";
+import {
+  clearOpenCodeInventoryCache,
+  lastOpenCodeDiscoveredLocalModels,
+  peekOpenCodeAuthMethods,
+  probeOpenCodeProviderInventory,
+} from "./openCodeInventory";
+import { acquireOpenCodeServer, peekOpenCodeServerUrl, type OpenCodeServerLease } from "./openCodeServer";
 
-/** How long an OAuth flow's shared lease stays alive between poll ticks. */
-const OAUTH_LEASE_IDLE_TTL_MS = 10_000;
 /** OAuth completion poll cadence. */
 const POLL_INTERVAL_MS = 2_000;
-/** Bound each provider-list request so a stalled server cannot wedge polling. */
+/** Bound each status request so a stalled server cannot wedge polling. */
 const POLL_REQUEST_TIMEOUT_MS = 10_000;
-/** Give up on an OAuth flow after this long without the provider connecting. */
-const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
+/** Used only when OpenCode does not say when its attempt expires. */
+const DEFAULT_OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
 
 export type OpenCodeAuthDeps = {
   projectRoot: string;
@@ -43,78 +50,55 @@ export type OpenCodeAuthDeps = {
   logger: Logger;
 };
 
-type SharedLease = { url: string; release: () => void };
-
-type HttpJsonResult = { ok: boolean; status: number; body: unknown };
-
-type OpenCodeAuthHooks = {
-  acquireLease(deps: OpenCodeAuthDeps): Promise<SharedLease>;
-  httpJson(url: string, init?: RequestInit): Promise<HttpJsonResult>;
-  listConnectedProviders(baseUrl: string, directory: string, signal?: AbortSignal): Promise<string[]>;
-  probeInventory(deps: OpenCodeAuthDeps): Promise<void>;
-  storeApiKey(providerId: string, key: string): void;
-  deleteApiKey(providerId: string): void;
-  now(): number;
-};
-
 function errorMessage(error: unknown): string {
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    if (typeof record.message === "string" && record.message.trim()) return record.message.trim();
+    if (typeof record._tag === "string") return record._tag;
+  }
   return error instanceof Error ? error.message : String(error);
 }
 
-const defaultHooks: OpenCodeAuthHooks = {
-  async acquireLease(deps) {
-    const config = buildOpenCodeMergedConfig({ projectConfig: deps.projectConfig });
-    const lease = await acquireSharedOpenCodeServer({
-      config,
-      key: buildSharedOpenCodeServerKey(config),
-      ownerKind: "inventory",
-      ownerId: deps.projectRoot,
-      idleTtlMs: OAUTH_LEASE_IDLE_TTL_MS,
-      logger: deps.logger,
-    });
-    return { url: lease.url, release: () => lease.release("handle_close") };
-  },
-  async httpJson(url, init) {
-    const res = await fetch(url, init);
-    let body: unknown = null;
-    try {
-      body = await res.json();
-    } catch {
-      body = null;
-    }
-    return { ok: res.ok, status: res.status, body };
-  },
-  async listConnectedProviders(baseUrl, directory, signal) {
-    const client = createOpencodeClient({ baseUrl, directory });
-    const listed = await client.provider.list({ directory }, { throwOnError: true, signal });
-    const data = listed.data as { connected?: string[] } | undefined;
-    return Array.isArray(data?.connected) ? data.connected : [];
-  },
-  async probeInventory(deps) {
-    await probeOpenCodeProviderInventory({
-      projectRoot: deps.projectRoot,
+/**
+ * A lease on the shared server. By default its config only seeds a server that
+ * is starting, so taking it never rewrites the config a running chat uses.
+ */
+async function acquireAuthLease(
+  deps: OpenCodeAuthDeps,
+  configMode: "if-starting" | "providers" = "if-starting",
+): Promise<OpenCodeServerLease> {
+  return await acquireOpenCodeServer({
+    profile: sharedOpenCodeProfileFor(deps.projectConfig),
+    configMode,
+    config: buildOpenCodeConfig({
       projectConfig: deps.projectConfig,
-      logger: deps.logger,
-      force: true,
-    });
-  },
-  storeApiKey(providerId, key) {
-    storeStoredApiKey(providerId, key);
-  },
-  deleteApiKey(providerId) {
-    deleteStoredApiKey(providerId);
-  },
-  now() {
-    return Date.now();
-  },
-};
+      discoveredLocalModels: lastOpenCodeDiscoveredLocalModels(),
+    }),
+    ownerKind: "auth",
+    ownerId: deps.projectRoot,
+    logger: deps.logger,
+  });
+}
 
-let hooks: OpenCodeAuthHooks = { ...defaultHooks };
+/**
+ * Rewrite the running shared server's config after a key change, so the key
+ * applies without a restart. This is the one lease that replaces the config.
+ * No server is started for it: the next one reads the key store when it starts.
+ */
+async function refreshRunningServerConfig(deps: OpenCodeAuthDeps): Promise<void> {
+  if (!peekOpenCodeServerUrl(sharedOpenCodeProfileFor(deps.projectConfig))) return;
+  const lease = await acquireAuthLease(deps, "providers");
+  lease.release();
+}
+
 type StatusListener = (event: OpenCodeOAuthStatusEvent) => void;
 const statusListeners = new Set<StatusListener>();
 
 type ActiveFlow = {
-  release: () => void;
+  lease: OpenCodeServerLease;
+  location: { directory: string };
+  integrationId: string;
+  attemptId: string;
   timer: ReturnType<typeof setTimeout> | null;
   requestController: AbortController | null;
 };
@@ -142,131 +126,170 @@ function emit(event: OpenCodeOAuthStatusEvent): void {
   }
 }
 
-/** Tear down an active flow (clear/abort polling, release the lease) and emit `state`. */
+/**
+ * Tear down an active flow (stop polling, cancel the attempt unless it
+ * finished, release the lease) and emit `state`.
+ */
 function finishFlow(providerId: string, state: OpenCodeOAuthStatusEvent["state"], error?: string): void {
   const flow = activeFlows.get(providerId);
   if (!flow) return;
   activeFlows.delete(providerId);
   if (flow.timer) clearTimeout(flow.timer);
   flow.requestController?.abort(new Error("OpenCode OAuth polling stopped."));
-  flow.release();
+  const release = () => flow.lease.release();
+  if (state === "connected") {
+    release();
+  } else {
+    // The attempt may hold a local callback listener (ChatGPT browser login);
+    // cancelling frees it. Release only after, so the server stays up for it.
+    void flow.lease.client.integration.oauth
+      .cancel({ integrationID: flow.integrationId, attemptID: flow.attemptId, location: flow.location })
+      .catch(() => {})
+      .finally(release);
+  }
   emit({ providerId, state, ...(error ? { error } : {}) });
 }
 
-/** List the auth methods each provider supports (GET /provider/auth). */
+/**
+ * The sign-in methods per provider. A list the last inventory probe saw is
+ * answered without any server; otherwise the shared server is asked.
+ */
 export async function listAuthMethods(deps: OpenCodeAuthDeps): Promise<{ methods: OpenCodeProviderAuthMethods }> {
-  const lease = await hooks.acquireLease(deps);
+  const cached = peekOpenCodeAuthMethods(deps.projectRoot);
+  if (cached) return { methods: cached };
+  const lease = await acquireAuthLease(deps);
   try {
-    const res = await hooks.httpJson(`${lease.url}/provider/auth`, { method: "GET" });
-    if (!res.ok) {
-      throw new Error(`OpenCode GET /provider/auth failed (${res.status}).`);
-    }
-    const methods = (res.body ?? {}) as OpenCodeProviderAuthMethods;
-    return { methods };
+    const listed = await lease.client.integration.list({ location: { directory: deps.projectRoot } });
+    return { methods: openCodeAuthMethodsFromIntegrations(listed.data) };
   } finally {
     lease.release();
   }
 }
 
+async function pollStatus(
+  providerId: string,
+  flow: ActiveFlow,
+  deps: OpenCodeAuthDeps,
+  deadline: number,
+): Promise<void> {
+  if (activeFlows.get(providerId) !== flow) return;
+  if (Date.now() >= deadline) {
+    finishFlow(providerId, "timeout");
+    return;
+  }
+  const controller = new AbortController();
+  flow.requestController = controller;
+  const requestTimeout = setTimeout(
+    () => controller.abort(new Error("OpenCode sign-in status request timed out.")),
+    Math.min(POLL_REQUEST_TIMEOUT_MS, Math.max(1, deadline - Date.now())),
+  );
+  if (requestTimeout.unref) requestTimeout.unref();
+  try {
+    const status = await flow.lease.client.integration.oauth.status(
+      { integrationID: flow.integrationId, attemptID: flow.attemptId, location: flow.location },
+      { signal: controller.signal },
+    );
+    if (activeFlows.get(providerId) !== flow) return;
+    const state = status.data;
+    if (state.status === "complete") {
+      finishFlow(providerId, "connected");
+      void probeOpenCodeProviderInventory({
+        projectRoot: deps.projectRoot,
+        projectConfig: deps.projectConfig,
+        logger: deps.logger,
+        force: true,
+        discoveredLocalModels: lastOpenCodeDiscoveredLocalModels(),
+      }).catch((err) => {
+        deps.logger.warn("opencode.oauth_post_connect_probe_failed", { providerId, error: errorMessage(err) });
+      });
+      return;
+    }
+    if (state.status === "failed") {
+      finishFlow(providerId, "failed", state.message || "Sign-in failed.");
+      return;
+    }
+    if (state.status === "expired") {
+      finishFlow(providerId, "timeout");
+      return;
+    }
+  } catch (err) {
+    if (activeFlows.get(providerId) !== flow) return;
+    deps.logger.warn("opencode.oauth_poll_failed", { providerId, error: errorMessage(err) });
+  } finally {
+    clearTimeout(requestTimeout);
+    if (activeFlows.get(providerId) === flow) flow.requestController = null;
+  }
+  if (activeFlows.get(providerId) !== flow) return;
+  flow.timer = setTimeout(() => void pollStatus(providerId, flow, deps, deadline), POLL_INTERVAL_MS);
+  if (flow.timer.unref) flow.timer.unref();
+}
+
 /**
- * Start an OAuth flow: authorize, return the safe URL to the caller, then poll
- * until the provider reports connected (or timeout). Only one flow per
- * providerId is active at a time — starting a new one cancels the prior flow.
+ * Start an OAuth login: create the attempt, return its safe URL, then poll
+ * until OpenCode reports it complete, failed, or expired. Only one flow per
+ * provider is active at a time — starting a new one cancels the prior flow.
  */
 export async function startOAuth(
   deps: OpenCodeAuthDeps,
   args: { providerId: string; methodIndex: number; inputs?: Record<string, string> },
 ): Promise<OpenCodeOAuthStartResult> {
   const { providerId, methodIndex, inputs } = args;
-  // Supersede any in-flight flow for this provider.
   cancelOAuth({ providerId });
 
-  const lease = await hooks.acquireLease(deps);
+  const lease = await acquireAuthLease(deps);
+  const location = { directory: deps.projectRoot };
   let handedOff = false;
   try {
-    const res = await hooks.httpJson(
-      `${lease.url}/provider/${encodeURIComponent(providerId)}/oauth/authorize`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ method: methodIndex, ...(inputs ? { inputs } : {}) }),
-      },
-    );
-    if (!res.ok) {
-      throw new Error(`OpenCode oauth/authorize failed (${res.status}).`);
+    // `integration.list` waits until this location's catalog has loaded;
+    // `integration.get` does not, and just after a start it reports a real
+    // provider as missing.
+    const listed = await lease.client.integration.list({ location });
+    const integration = listed.data.find((entry) => entry.id === providerId);
+    if (!integration) throw new Error(`OpenCode does not offer a sign-in for ${providerId}.`);
+    const selected = mapOpenCodeIntegrationAuthMethods(integration)[methodIndex];
+    if (!selected || selected.source.type !== "oauth") {
+      throw new Error("That sign-in method is no longer offered by OpenCode. Reopen the provider and try again.");
     }
-    const body = (res.body ?? {}) as { url?: unknown; method?: unknown; instructions?: unknown };
-    const url = typeof body.url === "string" ? body.url : "";
-    const method: OpenCodeOAuthStartResult["method"] = body.method === "code" ? "code" : "auto";
-    const instructions = typeof body.instructions === "string" ? body.instructions : "";
-
-    if (url && !isAllowedOpenCodeOAuthUrl(url)) {
+    const answer = openCodeMethodFormAnswer(selected.source, inputs);
+    const attempt = (await lease.client.integration.oauth.connect({
+      integrationID: providerId,
+      methodID: selected.source.id,
+      location,
+      ...(answer ? { answer } : {}),
+    })).data;
+    const cancelAttempt = () =>
+      lease.client.integration.oauth.cancel({ integrationID: providerId, attemptID: attempt.attemptID, location }).catch(() => {});
+    if (attempt.url && !isAllowedOpenCodeOAuthUrl(attempt.url)) {
+      await cancelAttempt();
       throw new Error("OpenCode returned an unsafe OAuth URL.");
+    }
+    if (attempt.mode === "code") {
+      // Completing this mode needs a pasted authorization code, and the
+      // sign-in dialog has no field for one.
+      await cancelAttempt();
+      throw new Error("This sign-in method needs a pasted authorization code, which ADE does not support. Use another method or an API key.");
     }
 
     emit({ providerId, state: "pending" });
-    const startedAt = hooks.now();
+    const expires = attempt.time?.expires;
+    const deadline = typeof expires === "number" && expires > Date.now() ? expires : Date.now() + DEFAULT_OAUTH_TIMEOUT_MS;
     const flow: ActiveFlow = {
-      release: () => lease.release(),
+      lease,
+      location,
+      integrationId: providerId,
+      attemptId: attempt.attemptID,
       timer: null,
       requestController: null,
     };
-    const scheduleNextPoll = () => {
-      flow.timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
-      if (flow.timer.unref) flow.timer.unref();
-    };
-    const poll = async (): Promise<void> => {
-      if (activeFlows.get(providerId) !== flow) return;
-      const elapsed = hooks.now() - startedAt;
-      if (elapsed >= OAUTH_TIMEOUT_MS) {
-        finishFlow(providerId, "timeout");
-        return;
-      }
-
-      const controller = new AbortController();
-      flow.requestController = controller;
-      const requestTimeout = setTimeout(
-        () => controller.abort(new Error("OpenCode provider list request timed out.")),
-        Math.min(POLL_REQUEST_TIMEOUT_MS, OAUTH_TIMEOUT_MS - elapsed),
-      );
-      if (requestTimeout.unref) requestTimeout.unref();
-      try {
-        const connected = await hooks.listConnectedProviders(lease.url, deps.projectRoot, controller.signal);
-        if (activeFlows.get(providerId) !== flow) return;
-        if (connected.includes(providerId)) {
-          finishFlow(providerId, "connected");
-          void hooks.probeInventory(deps).catch((err) => {
-            deps.logger.warn("opencode.oauth_post_connect_probe_failed", {
-              providerId,
-              error: errorMessage(err),
-            });
-          });
-          return;
-        }
-      } catch (err) {
-        if (activeFlows.get(providerId) !== flow) return;
-        deps.logger.warn("opencode.oauth_poll_failed", { providerId, error: errorMessage(err) });
-      } finally {
-        clearTimeout(requestTimeout);
-        if (activeFlows.get(providerId) === flow) flow.requestController = null;
-      }
-
-      if (hooks.now() - startedAt >= OAUTH_TIMEOUT_MS) {
-        finishFlow(providerId, "timeout");
-        return;
-      }
-      scheduleNextPoll();
-    };
-
     activeFlows.set(providerId, flow);
-    scheduleNextPoll();
+    flow.timer = setTimeout(() => void pollStatus(providerId, flow, deps, deadline), POLL_INTERVAL_MS);
+    if (flow.timer.unref) flow.timer.unref();
     handedOff = true;
-    return { url, method, instructions };
+    return { url: attempt.url, method: "auto", instructions: attempt.instructions ?? "" };
   } catch (err) {
     emit({ providerId, state: "failed", error: errorMessage(err) });
-    throw err;
+    throw err instanceof Error ? err : new Error(errorMessage(err));
   } finally {
-    // If we never handed the lease to an active flow, release it now.
     if (!handedOff) lease.release();
   }
 }
@@ -277,8 +300,8 @@ export function cancelOAuth(args: { providerId: string }): void {
 }
 
 /**
- * Seed a plain API key for a provider: PUT /auth/{id} on the OpenCode server and
- * mirror the key into ADE's key store so it is re-injected on future launches.
+ * Save a provider API key in ADE's key store, the one place ADE keeps keys.
+ * The shared server, when running, reloads its config with the key.
  */
 export async function setProviderKey(
   deps: OpenCodeAuthDeps,
@@ -288,93 +311,64 @@ export async function setProviderKey(
   const key = args.key.trim();
   if (!providerId) return { ok: false, error: "Provider ID is required." };
   if (!key) return { ok: false, error: "Provider key is required." };
-
-  const lease = await hooks.acquireLease(deps);
   try {
-    const res = await hooks.httpJson(`${lease.url}/auth/${encodeURIComponent(providerId)}`, {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "api", key }),
-    });
-    if (!res.ok) {
-      return { ok: false, error: `OpenCode PUT /auth failed (${res.status}).` };
-    }
-    try {
-      hooks.storeApiKey(providerId, key);
-    } catch (err) {
-      const error = errorMessage(err);
-      deps.logger.warn("opencode.oauth_key_mirror_failed", { providerId, error });
-      return {
-        ok: false,
-        error: `OpenCode accepted the key, but ADE could not store it durably: ${error}`,
-      };
-    }
-    return { ok: true };
+    storeStoredApiKey(providerId, key);
   } catch (err) {
-    return { ok: false, error: errorMessage(err) };
-  } finally {
-    lease.release();
+    const error = errorMessage(err);
+    deps.logger.warn("opencode.provider_key_store_failed", { providerId, error });
+    return { ok: false, error: `ADE could not store the key: ${error}` };
+  }
+  clearOpenCodeInventoryCache();
+  try {
+    await refreshRunningServerConfig(deps);
+  } catch (err) {
+    // The key is saved; the next server start reads it.
+    deps.logger.warn("opencode.provider_key_config_refresh_failed", { providerId, error: errorMessage(err) });
+  }
+  return { ok: true };
+}
+
+async function removeCredentials(client: OpenCodeClient, credentialIds: readonly string[]): Promise<void> {
+  for (const credentialID of credentialIds) {
+    await client.credential.remove({ credentialID });
   }
 }
 
-/** Remove a provider credential from the managed OpenCode server. */
+/**
+ * Disconnect a provider: remove ADE's stored key and every OpenCode credential
+ * for the integration. The store is read first, so a provider with no
+ * OpenCode credential never starts a server.
+ */
 export async function clearProviderKey(
   deps: OpenCodeAuthDeps,
   args: { providerId: string },
 ): Promise<{ ok: boolean; error?: string }> {
   const providerId = args.providerId.trim();
   if (!providerId) return { ok: false, error: "Provider ID is required." };
-
-  const lease = await hooks.acquireLease(deps);
   try {
-    const res = await hooks.httpJson(`${lease.url}/auth/${encodeURIComponent(providerId)}`, {
-      method: "DELETE",
-    });
-    if (!res.ok) {
-      return { ok: false, error: `OpenCode DELETE /auth failed (${res.status}).` };
+    deleteStoredApiKey(providerId);
+  } catch (err) {
+    const error = errorMessage(err);
+    deps.logger.warn("opencode.provider_key_delete_failed", { providerId, error });
+    return { ok: false, error: `ADE could not delete its stored key: ${error}` };
+  }
+  clearOpenCodeInventoryCache();
+  const credentialIds = readOpenCodeCredentials()
+    .filter((credential) => credential.integrationId === providerId)
+    .map((credential) => credential.id);
+  try {
+    if (credentialIds.length) {
+      const lease = await acquireAuthLease(deps);
+      try {
+        await removeCredentials(lease.client, credentialIds);
+      } finally {
+        lease.release();
+      }
     }
-    try {
-      hooks.deleteApiKey(providerId);
-    } catch (err) {
-      const error = errorMessage(err);
-      deps.logger.warn("opencode.oauth_key_delete_failed", { providerId, error });
-      return {
-        ok: false,
-        error: `OpenCode removed the key, but ADE could not delete its durable copy: ${error}`,
-      };
-    }
+    // The deleted ADE key must also leave a running server's config.
+    await refreshRunningServerConfig(deps);
     return { ok: true };
   } catch (err) {
-    return { ok: false, error: errorMessage(err) };
-  } finally {
-    lease.release();
+    return { ok: false, error: `OpenCode could not remove the ${providerId} sign-in: ${errorMessage(err)}` };
   }
-}
-
-// --- Test hooks ------------------------------------------------------------
-
-export function __setOpenCodeAuthHooksForTests(partial: Partial<OpenCodeAuthHooks>): void {
-  hooks = { ...hooks, ...partial };
-}
-
-export function __resetOpenCodeAuthServiceForTests(): void {
-  for (const providerId of [...activeFlows.keys()]) {
-    const flow = activeFlows.get(providerId);
-    if (flow) {
-      if (flow.timer) clearTimeout(flow.timer);
-      flow.requestController?.abort(new Error("OpenCode OAuth service reset."));
-      flow.release();
-    }
-    activeFlows.delete(providerId);
-  }
-  hooks = { ...defaultHooks };
-  statusListeners.clear();
-}
-
-export function __getActiveOAuthProviderIdsForTests(): string[] {
-  return [...activeFlows.keys()];
-}
-
-export function __isAllowedOAuthExternalUrlForTests(url: string): boolean {
-  return isAllowedOpenCodeOAuthUrl(url);
 }

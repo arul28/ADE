@@ -175,6 +175,7 @@ export function ProviderLogo({
     case "pi":
       return <PiLogo size={size} className={className} />;
     case "opencode":
+    case "opencode-go":
       return <OpenCode.Avatar size={size} className={c} />;
     case "xai":
       return <XAI.Avatar size={size} className={c} />;

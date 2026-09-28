@@ -12,7 +12,6 @@ import {
   query,
   readPersistedChatState,
   renameSession,
-  startOpenCodeSession,
   streamText,
   tmpRoot,
   waitFor,
@@ -121,40 +120,6 @@ describe("createAgentChatService", () => {
       expect(names).not.toContain("/apps");
     });
 
-    it("returns local and filesystem-backed skill commands for an opencode session", async () => {
-      const skillDir = path.join(tmpRoot, ".agents", "skills", "deploy-helper");
-      fs.mkdirSync(skillDir, { recursive: true });
-      fs.writeFileSync(path.join(skillDir, "SKILL.md"), [
-        "---",
-        "name: deploy-helper",
-        "description: Use this skill for deployment help",
-        "---",
-        "",
-        "Deploy safely.",
-        "",
-      ].join("\n"));
-      const { service } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      const commands = service.getSlashCommands({ sessionId: session.id });
-      expect(commands.length).toBeGreaterThanOrEqual(1);
-
-      const clearCmd = commands.find((c: any) => c.name === "/clear");
-      expect(clearCmd).toBeDefined();
-      expect(clearCmd!.source).toBe("local");
-      expect(commands).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          name: "/deploy-helper",
-          description: "Use this skill for deployment help",
-          source: "sdk",
-        }),
-      ]));
-    });
 
     it("returns Claude and Codex prompt commands plus /clear for a droid lane", async () => {
       const claudeCommandsDir = path.join(tmpRoot, ".claude", "commands");
@@ -1303,31 +1268,6 @@ describe("createAgentChatService", () => {
       await waitForSessionTitle(sessionService, session.id, "Manual Title");
     });
 
-    it("lets OpenCode session.updated titles beat ADE AI fallback", async () => {
-      streamText.mockReturnValue({
-        fullStream: (async function* () {
-          yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
-        })(),
-      });
-      mockState.openCodeTitleForNextPrompt = "OpenCode Native Title";
-      const { service, sessionService, aiIntegrationService } = createService();
-      const session = await service.createSession({
-        laneId: "lane-1",
-        provider: "opencode",
-        model: "",
-        modelId: "opencode/anthropic/claude-sonnet-5",
-      });
-
-      await service.sendMessage({ sessionId: session.id, text: "Use runtime title." }, { awaitDispatch: true });
-
-      await waitForSessionTitle(sessionService, session.id, "OpenCode Native Title");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(
-        expect.objectContaining({ taskType: "handoff_summary" }),
-      );
-      expect(vi.mocked(startOpenCodeSession).mock.calls.at(-1)?.[0]).toEqual(
-        expect.objectContaining({ title: null }),
-      );
-    });
 
     it("adopts Droid SDK session_title_updated titles", async () => {
       const { service, sessionService } = createService();

@@ -278,8 +278,8 @@ function validatePreflight() {
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
     fail("package.json build.asarUnpack must unpack vendor/crsqlite/**");
   }
-  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-ai/**")) {
-    fail("package.json build.asarUnpack must unpack node_modules/opencode-ai/** for the bundled OpenCode CLI");
+  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/@opencode/cli/**")) {
+    fail("package.json build.asarUnpack must unpack node_modules/@opencode/cli/** for the bundled OpenCode CLI");
   }
   // Codex, Claude Code and OpenCode native platform packages are fetched into
   // the machine tools cache at runtime. Unpacking one would ship it: nothing
@@ -578,10 +578,10 @@ async function validatePackageHygiene(resourcesPath) {
     path.join(unpackedPath, "node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
     "node-pty Windows arm64 conpty payload in Windows x64 package",
   );
-  // `opencode-ai` still ships (the resolver and the ADE CLI both load the JS
-  // launcher), but the 107 MB Windows executable it carries in its own bin/ is
-  // pruned: OpenCode comes from the tools cache now.
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "runtime-fetched OpenCode install shim");
+  // `@opencode/cli` still ships (the resolver and the ADE CLI both look for the
+  // launcher), but the native binary its postinstall copies into its own bin/
+  // is pruned: OpenCode comes from the tools cache now.
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "@opencode", "cli", "bin", "opencode.exe"), "runtime-fetched OpenCode install shim");
   // The JS entry points must survive the exclusions above.
   await assertRuntimeToolJsEntryPointsPresent({
     nodeModulesPath: path.join(unpackedPath, "node_modules"),

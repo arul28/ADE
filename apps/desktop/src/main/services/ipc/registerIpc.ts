@@ -5097,8 +5097,10 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.aiGetOpenCodeRuntimeDiagnostics, async (): Promise<OpenCodeRuntimeSnapshot> => {
-    const { getOpenCodeRuntimeSnapshot } = await import("../opencode/openCodeRuntime");
-    return getOpenCodeRuntimeSnapshot();
+    const { getOpenCodeRuntimeDiagnostics } = await import("../opencode/openCodeServer");
+    const { servers } = getOpenCodeRuntimeDiagnostics();
+    const sharedCount = servers.filter((server) => server.shared).length;
+    return { sharedCount, dedicatedCount: servers.length - sharedCount, entries: servers };
   });
 
   // Cheap binary-only check (no probe, no server boot). Used by the renderer

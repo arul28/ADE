@@ -42,7 +42,7 @@ export { BUNDLED_AGENT_SKILLS };
 
 /** The JS entry points that must survive the runtime-fetched exclusions. */
 const RUNTIME_TOOL_JS_ENTRY_POINTS = Object.freeze([
-  { segments: ["opencode-ai"], label: "bundled OpenCode JS launcher" },
+  { segments: ["@opencode", "cli"], label: "bundled OpenCode JS launcher" },
   { segments: ["@openai", "codex"], label: "bundled Codex JS launcher" },
   { segments: ["@anthropic-ai", "claude-agent-sdk"], label: "bundled Claude Agent SDK" },
 ]);
@@ -179,8 +179,8 @@ export function createPackagedTreeAssertions({ fail }) {
     const embedded = [];
     collectAsarEmbeddedFiles(header, "", embedded);
     // Exact package prefixes, never a wildcard: the JS entry points
-    // (@anthropic-ai/claude-agent-sdk, @openai/codex, opencode-ai,
-    // @opencode-ai/sdk) legitimately live in the archive and a prefix test on the
+    // (@anthropic-ai/claude-agent-sdk, @openai/codex, @opencode/cli)
+    // legitimately live in the archive and a prefix test on the
     // parent name would swallow them.
     const prefixes = runtimeFetchedToolPackageNames.map((name) => `/node_modules/${name}/`);
     const offenders = embedded.filter((entry) => prefixes.some((prefix) => entry.path.startsWith(prefix)));

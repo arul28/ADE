@@ -35,6 +35,13 @@ const TOOL_LABEL_OVERRIDES: Record<string, string> = {
   editFile: "Edit",
   writeFile: "Write",
   bash: "Shell",
+  // OpenCode 2.0 built-in tool names.
+  read: "Read",
+  edit: "Edit",
+  write: "Write",
+  shell: "Shell",
+  subagent: "Subagent",
+  question: "Ask user",
   askUser: "Ask user",
   spawn_worker: "Spawn worker",
   request_specialist: "Request specialist",

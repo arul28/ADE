@@ -1,9 +1,10 @@
 // OpenCode binary resolution with bundled fallback
-import { execFileSync } from "node:child_process";
-import { accessSync, constants } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
+import { quoteWindowsCmdArg, resolveWindowsCmdLineInvocation, shouldUseWindowsCmdWrapper } from "../shared/processExecution";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   resolveExecutableFromKnownLocations,
@@ -26,16 +27,16 @@ const moduleDir =
 
 const OPENCODE_PLATFORM_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Architecture, string>>>> = {
   darwin: {
-    arm64: "opencode-darwin-arm64",
-    x64: "opencode-darwin-x64",
+    arm64: "@opencode/cli-darwin-arm64",
+    x64: "@opencode/cli-darwin-x64",
   },
   linux: {
-    arm64: "opencode-linux-arm64",
-    x64: "opencode-linux-x64",
+    arm64: "@opencode/cli-linux-arm64",
+    x64: "@opencode/cli-linux-x64",
   },
   win32: {
-    arm64: "opencode-windows-arm64",
-    // Windows x64 ships the `-baseline` build only. `opencode-windows-x64`
+    arm64: "@opencode/cli-windows-arm64",
+    // Windows x64 ships the `-baseline` build only. `@opencode/cli-windows-x64`
     // requires AVX2 and dies with an illegal instruction on older/VM x64 CPUs,
     // while `-baseline` targets the lower instruction set and therefore runs
     // everywhere. The two binaries are byte-for-byte the same size, and the
@@ -43,7 +44,7 @@ const OPENCODE_PLATFORM_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record
     // OpenCode (a local HTTP server), so shipping baseline alone replaces the
     // AVX2 build rather than adding to the installer. Keep this in sync with
     // `asarUnpack` in apps/desktop/package.json.
-    x64: "opencode-windows-x64-baseline",
+    x64: "@opencode/cli-windows-x64-baseline",
   },
 };
 
@@ -128,7 +129,9 @@ function bundledBinaryCandidatePaths(args?: {
         join(nodeModulesRoot, platformPackage, "bin", fileName)
       )));
     }
-    candidates.push(...executableNames.map((fileName) => join(nodeModulesRoot, "opencode-ai", "bin", fileName)));
+    // `@opencode/cli` is the launcher package: its postinstall copies the
+    // platform binary to bin/opencode.exe on every OS.
+    candidates.push(...executableNames.map((fileName) => join(nodeModulesRoot, "@opencode", "cli", "bin", fileName)));
     candidates.push(...executableNames.map((fileName) => join(nodeModulesRoot, ".bin", fileName)));
   }
 
@@ -142,6 +145,48 @@ function canRunBinaryCandidate(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+const openCode2BinaryCache = new Map<string, boolean>();
+
+/**
+ * The cache key names the file as it is now: an upgrade in place (1.x to 2 at
+ * the same path) changes its size or time and is probed again.
+ */
+function binaryIdentity(binaryPath: string): string {
+  try {
+    const stat = statSync(binaryPath);
+    return `${binaryPath}\0${stat.size}\0${stat.mtimeMs}`;
+  } catch {
+    return binaryPath;
+  }
+}
+
+/** Whether `opencode --version` reports major version 2 (`opencode v2.0.18`). */
+function isOpenCode2Binary(binaryPath: string): boolean {
+  const cacheKey = binaryIdentity(binaryPath);
+  const cached = openCode2BinaryCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+  let isV2 = false;
+  try {
+    // A `.cmd` shim cannot be spawned directly on Windows; the shared helper
+    // quotes it through cmd.exe the same way every other ADE launch does.
+    const invocation = process.platform === "win32" && shouldUseWindowsCmdWrapper(binaryPath)
+      ? resolveWindowsCmdLineInvocation(`${quoteWindowsCmdArg(binaryPath)} --version`, process.env)
+      : { command: binaryPath, args: ["--version"] };
+    const result = spawnSync(invocation.command, invocation.args, {
+      encoding: "utf8",
+      timeout: 5_000,
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.command !== binaryPath,
+    });
+    const version = `${result.stdout ?? ""}${result.stderr ?? ""}`.match(/\bv?(\d+)\.\d+\.\d+/);
+    isV2 = result.status === 0 && version?.[1] === "2";
+  } catch {
+    isV2 = false;
+  }
+  openCode2BinaryCache.set(cacheKey, isV2);
+  return isV2;
 }
 
 export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
@@ -162,7 +207,7 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   if (process.env.ADE_DISABLE_BUNDLED_OPENCODE !== "1") {
     // The machine tools cache first: in a packaged build the platform package
     // is fetched there rather than bundled. The manifest already encodes the
-    // win32-x64 -> opencode-windows-x64-baseline substitution, so the AVX2
+    // win32-x64 -> @opencode/cli-windows-x64-baseline substitution, so the AVX2
     // avoidance documented on OPENCODE_PLATFORM_PACKAGES holds here too.
     if (!explicitBundleRoot) {
       const cachedPath = cachedToolEntryPath("opencode");
@@ -184,7 +229,9 @@ export function resolveOpenCodeBinary(): OpenCodeBinaryInfo {
   // cache or user installation from a different runtime when it is incomplete.
   if (!explicitBundleRoot) {
     const userInstalled = resolveExecutableFromKnownLocations("opencode");
-    if (userInstalled?.path) {
+    // ADE speaks only the OpenCode 2 API; a 1.x install on PATH would start a
+    // server ADE cannot drive.
+    if (userInstalled?.path && isOpenCode2Binary(userInstalled.path)) {
       cachedInfo = { path: userInstalled.path, source: "user-installed" };
       return cachedInfo;
     }

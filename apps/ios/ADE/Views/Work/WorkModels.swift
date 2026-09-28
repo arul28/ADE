@@ -579,9 +579,9 @@ enum WorkActiveSendMode: String, Equatable {
 /// during turn" — but no cancel-and-resend, so it stops there. Cursor has all
 /// three too since `@cursor/sdk` 1.0.31 added `Run.steer()`, but its interrupt
 /// keeps its own meaning — it cancels the run and resends on the same agent
-/// thread — so its button still says "continue". OpenCode's v2 session prompt
-/// admits `delivery: "steer"` into the live agent loop, so it also has "send
-/// during turn" and no interrupt. Everything else is queue-only,
+/// thread — so its button still says "continue". OpenCode 2.0 admits
+/// `delivery: "steer"` into the live agent loop, so it also has "send during
+/// turn" and no interrupt. Everything else is queue-only,
 /// which leaves nothing to pick between, so the picker stays hidden.
 struct WorkActiveSendCapability: Equatable {
   let modes: [WorkActiveSendMode]
@@ -624,19 +624,27 @@ struct WorkActiveSendCapability: Equatable {
   /// the staged-message strip can offer as buttons.
   var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
 
-  /// Drops `.inline` for a Cursor run that executes in cloud.
-  ///
-  /// `Run.steer()` is a local-run API: a cloud run implements it and refuses
-  /// every call, so offering "Send during turn" there names an action the host
-  /// will not perform. The desktop pane withholds the same handler for the same
-  /// reason; this is the mobile half of that rule.
-  func withholdingInlineIfNeeded(runsInCloud: Bool, provider: String) -> WorkActiveSendCapability {
-    guard runsInCloud, providerFamilyKey(provider) == "cursor", modes.contains(.inline) else { return self }
+  /// The provider's modes, minus `.inline` where this session or host cannot
+  /// take it:
+  /// - A Cursor run in cloud: `Run.steer()` is a local-run API, and a cloud
+  ///   run refuses every call. The desktop pane withholds the same handler.
+  /// - OpenCode on a host without the `openCodeInboxSteer` feature: an older
+  ///   host only queues, and an inline send would fail.
+  static func forSession(
+    provider: String,
+    runsInCloud: Bool,
+    hostSupportsOpenCodeSteer: Bool
+  ) -> WorkActiveSendCapability {
+    let capability = forProvider(provider)
+    let family = providerFamilyKey(provider)
+    let withholdInline = (runsInCloud && family == "cursor")
+      || (!hostSupportsOpenCodeSteer && family == "opencode")
+    guard withholdInline, capability.modes.contains(.inline) else { return capability }
     return WorkActiveSendCapability(
-      modes: modes.filter { $0 != .inline },
-      agentLabel: agentLabel,
-      interruptContinues: interruptContinues,
-      inlineCarriesAttachments: inlineCarriesAttachments
+      modes: capability.modes.filter { $0 != .inline },
+      agentLabel: capability.agentLabel,
+      interruptContinues: capability.interruptContinues,
+      inlineCarriesAttachments: capability.inlineCarriesAttachments
     )
   }
 
@@ -655,9 +663,8 @@ struct WorkActiveSendCapability: Equatable {
       // resends on the same thread, which Claude's does not.
       //
       // This arm is provider-keyed, matching desktop's table. The cloud
-      // carve-out is a SESSION fact, so it lives in
-      // `withholdingInlineIfNeeded` and is applied by the caller that knows the
-      // session.
+      // carve-out is a SESSION fact, so it lives in `forSession` and is
+      // applied by the caller that knows the session.
       return WorkActiveSendCapability(
         modes: [.inline, .queue, .interrupt],
         agentLabel: "Cursor",
@@ -665,12 +672,11 @@ struct WorkActiveSendCapability: Equatable {
         inlineCarriesAttachments: false
       )
     case "opencode":
-      // Queue-only, matching desktop's `ACTIVE_TURN_DISPATCH_MODES`: OpenCode
-      // turns still run on the legacy `prompt_async` loop, which does not drain
-      // a mid-turn input, so a `delivery: "steer"` admission was never promoted
-      // and the row claimed "Steered" for a message the model never read. No
-      // interrupt either: like Codex there is no cancel-and-resend.
-      return WorkActiveSendCapability(modes: [.queue], agentLabel: "OpenCode", interruptContinues: false)
+      // Matches desktop's `ACTIVE_TURN_DISPATCH_MODES`: OpenCode 2.0 admits a
+      // mid-turn message to its session inbox, delivered at the next step
+      // boundary ("send during turn") or after the current reply (queue). No
+      // interrupt: like Codex there is no cancel-and-resend.
+      return WorkActiveSendCapability(modes: [.inline, .queue], agentLabel: "OpenCode", interruptContinues: false)
     // The four ACP providers are queue-only in `ACTIVE_TURN_DISPATCH_MODES`,
     // which is what the default arm already gives them. They are listed anyway
     // so the label reads with the provider's name instead of "the agent", and

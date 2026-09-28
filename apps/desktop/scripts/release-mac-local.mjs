@@ -212,7 +212,8 @@ try {
       path.join(
         appDir,
         "node_modules",
-        "opencode-darwin-x64",
+        "@opencode",
+        "cli-darwin-x64",
         "bin",
         "opencode",
       ),

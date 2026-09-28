@@ -310,15 +310,15 @@ describe("commands", () => {
 
   it("offers each /steer dispatch command exactly where the provider accepts that mode", () => {
     // Gating is derived from ACTIVE_TURN_DISPATCH_MODES, not restated: Claude
-    // takes inline + interrupt, Cursor both too, Codex only inline (OpenCode is
-    // queue-only until turns move to the v2 runner), and everything else stages.
+    // takes inline + interrupt, Cursor both too, Codex and OpenCode inline,
+    // and everything else stages.
     const steerRows = (provider: string) => paletteCommands("/steer", [], { provider })
       .map((row) => row.name);
     expect(steerRows("claude")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
     expect(steerRows("cursor")).toEqual(expect.arrayContaining(["/steer send", "/steer interrupt"]));
     expect(steerRows("codex")).toContain("/steer send");
     expect(steerRows("codex")).not.toContain("/steer interrupt");
-    expect(steerRows("opencode")).not.toContain("/steer send");
+    expect(steerRows("opencode")).toContain("/steer send");
     expect(steerRows("opencode")).not.toContain("/steer interrupt");
     // Queue-only still means the provider-agnostic staging commands show.
     expect(steerRows("opencode")).toEqual(expect.arrayContaining(["/steer edit", "/steer cancel"]));

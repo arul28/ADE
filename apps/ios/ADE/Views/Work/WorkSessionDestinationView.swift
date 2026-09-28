@@ -90,7 +90,8 @@ func workChatBlocksManualCompactSend(
 /// staged row.
 func workChatManualSteerDispatchModes(
   session: TerminalSessionSummary?,
-  summary: AgentChatSessionSummary?
+  summary: AgentChatSessionSummary?,
+  hostSupportsOpenCodeSteer: Bool
 ) -> [WorkActiveSendMode] {
   let provider = summary?.provider ?? workChatProviderFamilyFromToolType(session?.toolType)
   guard let provider else { return [] }
@@ -99,9 +100,11 @@ func workChatManualSteerDispatchModes(
     cursorRuntime: summary?.cursorRuntime ?? session?.cursorRuntime,
     cursorCloudAgentId: summary?.cursorCloudAgentId ?? session?.cursorCloudAgentId
   )
-  return WorkActiveSendCapability.forProvider(provider)
-    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
-    .atomicDispatchModes
+  return WorkActiveSendCapability.forSession(
+    provider: provider,
+    runsInCloud: runsInCloud,
+    hostSupportsOpenCodeSteer: hostSupportsOpenCodeSteer
+  ).atomicDispatchModes
 }
 
 /// iOS half of desktop `cursorSessionRunsInCloud`.
@@ -605,7 +608,11 @@ struct WorkSessionDestinationView: View {
     guard syncService.supportsChatRemoteAction("chat.dispatchSteer", sessionId: sessionId) else {
       return []
     }
-    return workChatManualSteerDispatchModes(session: session, summary: composerChatSummary ?? chatSummary)
+    return workChatManualSteerDispatchModes(
+      session: session,
+      summary: composerChatSummary ?? chatSummary,
+      hostSupportsOpenCodeSteer: syncService.supportsOpenCodeInboxSteer
+    )
   }
 
   /// Lane id the header menu acts on. Resolved against the loaded lane list so

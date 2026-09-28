@@ -1388,7 +1388,7 @@ function parseProjectConfigSaveArgs(value: Record<string, unknown>): { candidate
 }
 
 // `ai.apiKeys` holds live provider API keys (spent by aiIntegrationService and
-// openCodeRuntime), and the top-level `providers` bag is an unvalidated
+// the OpenCode server config, `buildOpenCodeConfig`), and the top-level `providers` bag is an unvalidated
 // passthrough that historically carried the same. Neither is reachable from a
 // paired peer: reads drop them, and writes keep whatever is already on disk.
 // The write side matters as much as the read side — every Settings section

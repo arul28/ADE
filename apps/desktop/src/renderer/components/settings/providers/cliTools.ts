@@ -207,24 +207,20 @@ export function shortCredentialSource(
 }
 
 /**
- * OpenCode's own documented install methods, per platform. Windows has neither
- * Homebrew nor a POSIX shell to pipe the install script into, so it gets the
- * package managers OpenCode actually documents for Windows (npm, Scoop,
- * Chocolatey) instead of commands that cannot run there.
+ * OpenCode 2's documented install methods, per platform. Windows has neither
+ * Homebrew nor a POSIX shell to pipe the install script into, and OpenCode 2
+ * documents only its npm package there. The 1.x formula and script install 1.x,
+ * which ADE no longer drives.
  */
 export function openCodeInstallCommands(
   platform: ReturnType<typeof rendererPlatformAttribute> = rendererPlatformAttribute(),
 ): string[] {
   if (platform === "win32") {
-    return [
-      "npm i -g opencode-ai",
-      "scoop install opencode",
-      "choco install opencode",
-    ];
+    return ["npm i -g @opencode/cli"];
   }
   return [
-    "brew install anomalyco/tap/opencode",
-    "npm i -g opencode-ai",
-    "curl -fsSL https://opencode.ai/install | bash",
+    "brew install anomalyco/tap/opencode-v2",
+    "npm i -g @opencode/cli",
+    "curl -fsSL https://opencode.ai/v2/install | bash",
   ];
 }

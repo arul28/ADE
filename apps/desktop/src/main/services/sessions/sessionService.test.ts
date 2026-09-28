@@ -413,11 +413,11 @@ describe("sessionService resume metadata", () => {
       provider: "opencode",
       targetKind: "session",
       targetId: "ses_legacy",
-      permissionMode: "full-auto",
-      launch: { permissionMode: "full-auto" },
+      permissionMode: "config-toml",
+      launch: { permissionMode: "config-toml" },
     });
     expect(resumed?.resumeCommand).toBe(
-      "OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode --session ses_legacy",
+      "ADE_OPENCODE_LAUNCH=\"{\\\"permissionMode\\\":\\\"config-toml\\\"}\" opencode --session ses_legacy",
     );
 
     activeDisposers.push(async () => db.close());

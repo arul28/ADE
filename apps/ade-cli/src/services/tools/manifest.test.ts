@@ -161,12 +161,12 @@ describe("generated tools manifest", () => {
   });
 
   it("maps win32-x64 opencode to the baseline build the desktop bundle actually ships", () => {
-    // apps/desktop/package.json excludes node_modules/opencode-windows-x64/**
+    // apps/desktop/package.json excludes node_modules/@opencode/cli-windows-x64/**
     // and openCodeBinaryManager.ts resolves win32/x64 to the baseline build,
     // which does not require AVX2. Regressing this ships a binary that crashes
     // on pre-Haswell CPUs.
     const pin = findToolTargetPin(manifest, "opencode", "win32-x64");
-    expect(pin.package).toBe("opencode-windows-x64-baseline");
+    expect(pin.package).toBe("@opencode/cli-windows-x64-baseline");
   });
 
   it("keeps the codex alias version, which is not plain semver", () => {

@@ -112,9 +112,10 @@ function collectDesktopRuntimeExecutableCandidates(rootPath) {
     });
   }
 
-  for (const packageDir of listDirectories(path.join(rootPath, "node_modules"))) {
+  // `@opencode/cli` (the launcher) and its `@opencode/cli-<platform>` binaries.
+  for (const packageDir of listDirectories(path.join(rootPath, "node_modules", "@opencode"))) {
     const packageName = path.basename(packageDir);
-    if (packageName !== "opencode-ai" && !packageName.startsWith("opencode-")) continue;
+    if (packageName !== "cli" && !packageName.startsWith("cli-")) continue;
     for (const binaryName of ["opencode", "opencode.exe"]) {
       candidates.push({
         filePath: path.join(packageDir, "bin", binaryName),
