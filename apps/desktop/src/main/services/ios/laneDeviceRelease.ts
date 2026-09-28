@@ -136,14 +136,19 @@ export async function endLaneDeviceOnDisk(input: {
   adeInstalledBundleIds: readonly string[];
   run: RunCommand;
   powerOff: (udid: string) => Promise<unknown>;
+  stillFree?: () => boolean;
   retry?: boolean;
   logger: ReleaseLogger;
 }): Promise<{ deleted: boolean; complete: boolean; remainingBundleIds: string[] }> {
   const { device, run, logger } = input;
   if (isAdeOwnedLaneDevice(device.origin)) {
     try {
-      await deleteAppleSimulator(device.udid, { run, powerOff: input.powerOff });
-      return { deleted: true, complete: true, remainingBundleIds: [] };
+      const deleted = await deleteAppleSimulator(device.udid, {
+        run,
+        powerOff: input.powerOff,
+        ...(input.stillFree ? { stillFree: input.stillFree } : {}),
+      });
+      return { deleted, complete: true, remainingBundleIds: [] };
     } catch (error) {
       logger.warn?.("lane.end.apple_device_delete_failed", {
         laneId: device.laneId,
@@ -153,15 +158,16 @@ export async function endLaneDeviceOnDisk(input: {
       return { deleted: false, complete: false, remainingBundleIds: [] };
     }
   }
-  const { remaining } = await uninstallAdeApps({
+  const { remaining, stopped } = await uninstallAdeApps({
     udid: device.udid,
     bundleIds: input.adeInstalledBundleIds,
     run,
     powerOff: input.powerOff,
     restorePower: input.retry === true,
+    ...(input.stillFree ? { stillFree: input.stillFree } : {}),
     logger,
   });
-  if (!input.retry) await input.powerOff(device.udid).catch(() => undefined);
+  if (!input.retry && !stopped) await input.powerOff(device.udid).catch(() => undefined);
   if (remaining.length) {
     logger.warn?.("lane.end.apple_ade_apps_left", { laneId: device.laneId, udid: device.udid, remaining, retry: input.retry === true });
   }
@@ -202,11 +208,20 @@ export async function endLaneDeviceRow(input: {
   const { device } = record;
   let ended = { deleted: false, complete: true, remainingBundleIds: [] as string[] };
   if (process.platform === "darwin" && !shared) {
+    const stillFree = () => {
+      try {
+        return !anotherLaneHoldsUdid(input.store, device.udid, input.laneId);
+      } catch {
+        // A failed read must not mutate a device another lane may now own.
+        return false;
+      }
+    };
     ended = await endLaneDeviceOnDisk({
       device,
       adeInstalledBundleIds: record.adeInstalledBundleIds,
       run: input.run,
       powerOff: input.powerOff,
+      stillFree,
       retry: input.retry,
       logger: input.logger,
     });

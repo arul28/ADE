@@ -1,27 +1,30 @@
 import { describe, it, expect, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { bareSimulatorPowerOff, createSimulatorPower } from "./simulatorPower";
 import {
+  appleLaneDeviceName,
+  createLaneDeviceRegistry,
+} from "./laneDeviceRegistry";
+import {
   appleDeviceDataRoot,
   appleDeviceFamily,
-  appleLaneDeviceName,
   appleRuntimeScore,
-  createLaneDeviceRegistry,
   parseAppleDeviceDiskUsage,
-  pickAppleTemplate,
-  releaseLaneAppleDevice,
-  type LaneDeviceStore,
-  AppleDeviceAttachedNotDeletableError,
-  type LaneDeviceRegistry,
-} from "./laneDeviceRegistry";
+  pickAppleDeviceSpec,
+} from "./appleSimulatorCatalog";
+import { endLaneDeviceRow, releaseLaneAppleDevice } from "./laneDeviceRelease";
+import { AppleDeviceAttachedNotDeletableError } from "./appleDeviceErrors";
+import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
   APPLE_DEVICE_ATTACHED_NOT_DELETABLE_CODE,
   APPLE_DEVICE_EXISTS_CODE,
   APPLE_DEVICE_NOT_LANE_OWNED_CODE,
   APPLE_DEVICE_OWNED_BY_LANE_CODE,
-  APPLE_TEMPLATE_BOOTED_CODE,
   APPLE_NO_INSTALLED_SIMULATORS_CODE,
   type AppleInstalledSimulator,
+  type AppleInstalledRuntime,
 } from "../../../shared/types/iosSimulator";
 import { type AppleLaneDevice } from "../../../shared/types";
 import { createLaneDeviceLifecycle, type LifecycleLaneRuntime } from "./laneDeviceLifecycle";
@@ -43,6 +46,17 @@ function simulator(overrides: Partial<AppleInstalledSimulator> & { udid: string;
   };
 }
 
+const RUNTIMES: AppleInstalledRuntime[] = [{
+  identifier: "com.apple.CoreSimulator.SimRuntime.iOS-26-3",
+  name: "iOS 26.3",
+  version: "26.3",
+  platform: "iOS",
+  deviceTypes: [
+    { identifier: "com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro", name: "iPhone 17 Pro", family: "iphone" },
+    { identifier: "com.apple.CoreSimulator.SimDeviceType.iPad-Pro-11", name: "iPad Pro", family: "ipad" },
+  ],
+}];
+
 /** An in-memory stand-in for the lanes DB, narrowed to what the registry uses. */
 function memoryStore(rows: Record<string, Record<string, unknown>> = {}): LaneDeviceStore & { rows: typeof rows } {
   const kv = new Map<string, unknown>();
@@ -56,6 +70,12 @@ function memoryStore(rows: Record<string, Record<string, unknown>> = {}): LaneDe
       if (/^insert into lane_apple_devices/i.test(sql.trim())) {
         const [lane_id, udid, name, origin, family, runtime, created_at, template_udid] = params;
         rows[String(lane_id)] = { lane_id, udid, name, origin, family, runtime, created_at, template_udid };
+        return;
+      }
+      if (/^update lane_apple_devices set ade_installed_bundle_ids/i.test(sql.trim())) {
+        const [bundleIds, laneId, udid] = params;
+        const current = rows[String(laneId)];
+        if (current?.udid === udid) current.ade_installed_bundle_ids = bundleIds;
         return;
       }
       // The takeover's one-statement move. `lane_id` is the table's primary
@@ -73,7 +93,12 @@ function memoryStore(rows: Record<string, Record<string, unknown>> = {}): LaneDe
       throw new Error(`unexpected sql: ${sql}`);
     },
     get: (sql, params = []) => {
-      if (/from lanes/i.test(sql)) return { name: `Lane ${String(params[0])}` } as never;
+      if (/select 1 as one from lane_apple_devices/i.test(sql)) {
+        return Object.values(rows).some((row) => row.udid === params[0] && row.lane_id !== params[1])
+          ? { one: 1 } as never
+          : null;
+      }
+      if (/from lanes/i.test(sql)) return { name: `Lane ${String(params[0])}`, status: "active" } as never;
       return (rows[String(params[0])] ?? null) as never;
     },
     all: () => Object.values(rows) as never,
@@ -97,24 +122,14 @@ describe("laneDeviceRegistry pure helpers", () => {
     expect(appleRuntimeScore("iOS 18.4")).toBeGreaterThan(appleRuntimeScore("iOS 18.1"));
   });
 
-  it("picks an explicit template, then the last used, then the newest iPhone", () => {
-    const installed = [
-      simulator({ udid: "pad", name: "iPad Pro", family: "ipad", runtime: "iOS 26.3" }),
-      simulator({ udid: "old", name: "iPhone 15", runtime: "iOS 18.4" }),
-      simulator({ udid: "new", name: "iPhone 17 Pro", runtime: "iOS 26.3" }),
-    ];
-
-    expect(pickAppleTemplate({ installed, from: "iPad Pro" })?.udid).toBe("pad");
-    expect(pickAppleTemplate({ installed, from: "old" })?.udid).toBe("old");
-    expect(pickAppleTemplate({ installed, lastUsedUdid: "old" })?.udid).toBe("old");
-    // A last-used template that has since been deleted must not strand the
-    // lane — it falls through to the default rather than failing.
-    expect(pickAppleTemplate({ installed, lastUsedUdid: "gone" })?.udid).toBe("new");
-    expect(pickAppleTemplate({ installed })?.udid).toBe("new");
-    expect(pickAppleTemplate({ installed: [] })).toBeNull();
+  it("uses an installed runtime and remembers the last model when it is supported", () => {
+    const selected = pickAppleDeviceSpec({ runtimes: RUNTIMES, lastDeviceType: RUNTIMES[0]!.deviceTypes[1]!.identifier });
+    expect(selected.runtime.identifier).toBe(RUNTIMES[0]!.identifier);
+    expect(selected.deviceType.identifier).toBe(RUNTIMES[0]!.deviceTypes[1]!.identifier);
+    expect(pickAppleDeviceSpec({ runtimes: RUNTIMES }).deviceType.family).toBe("iphone");
   });
 
-  it("names a clone for its lane and suffixes a collision", () => {
+  it("names a lane device and suffixes a collision", () => {
     expect(appleLaneDeviceName({ laneId: "abc12345def", laneName: "Apple env" })).toBe("ADE · Apple env");
     expect(appleLaneDeviceName({ laneId: "abc12345def" })).toBe("ADE · abc12345");
     expect(appleLaneDeviceName({ laneId: "x", laneName: "A", taken: ["ADE · A"] })).toBe("ADE · A (2)");
@@ -132,23 +147,23 @@ describe("laneDeviceRegistry device lifecycle", () => {
         run: run as never,
         powerOffDevice: bareSimulatorPowerOff(run as never),
         listInstalledSimulators: async () => installed,
+        listInstalledRuntimes: async () => RUNTIMES,
         store,
         logger: noopLogger,
       }),
     };
   }
 
-  it("clones the template, names it for the lane, and remembers the template", async () => {
-    const run = vi.fn(async () => ({ stdout: "clone-udid\n", stderr: "" }));
+  it("creates an empty device from an installed runtime and remembers its model", async () => {
+    const run = vi.fn(async () => ({ stdout: "created-udid\n", stderr: "" }));
     const { registry, store } = registryWith(run);
 
     const device = await registry.deviceCreate({ laneId: "lane-1" });
 
-    expect(run).toHaveBeenCalledWith("xcrun", ["simctl", "clone", "template-1", "ADE · Lane lane-1"], expect.anything());
-    expect(device).toMatchObject({ udid: "clone-udid", origin: "clone", family: "iphone", templateUdid: "template-1" });
-    expect(store.rows["lane-1"]).toMatchObject({ udid: "clone-udid" });
-    // Remembered so the next lane clones what this project actually uses.
-    expect(store.getJson("apple:last-template-udid")).toBe("template-1");
+    expect(run).toHaveBeenCalledWith("xcrun", ["simctl", "create", "ADE · Lane lane-1", RUNTIMES[0]!.deviceTypes[0]!.identifier, RUNTIMES[0]!.identifier], expect.anything());
+    expect(device).toMatchObject({ udid: "created-udid", origin: "created", family: "iphone", runtime: "iOS 26.3" });
+    expect(store.rows["lane-1"]).toMatchObject({ udid: "created-udid" });
+    expect(store.getJson("apple:last-device-type")).toBe(RUNTIMES[0]!.deviceTypes[0]!.identifier);
 
     await expect(registry.deviceCreate({ laneId: "lane-1" })).rejects.toMatchObject({
       code: APPLE_DEVICE_EXISTS_CODE,
@@ -163,6 +178,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
       run: run as never,
       powerOffDevice: bareSimulatorPowerOff(run as never),
       listInstalledSimulators: async () => [],
+      listInstalledRuntimes: async () => [],
       store: memoryStore(),
       logger: noopLogger,
     });
@@ -173,12 +189,133 @@ describe("laneDeviceRegistry device lifecycle", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("keeps existing bindings when simctl cannot provide a device list", async () => {
+    const run = vi.fn(async () => { throw new Error("CoreSimulator unavailable"); });
+    const store = memoryStore({
+      "lane-1": {
+        lane_id: "lane-1",
+        udid: "owned-device",
+        name: "ADE · Lane 1",
+        origin: "created",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: new Date().toISOString(),
+      },
+    });
+    const { registry } = registryWith(run, store);
+
+    const result = await registry.reconcile();
+
+    expect(result.errors).toHaveLength(1);
+    expect(result.deleted).toEqual([]);
+    expect(registry.get("lane-1")?.udid).toBe("owned-device");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps another project's held device, refuses attach, and removes a device whose project is gone", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-markers-"));
+    const dataRoot = path.join(root, "devices");
+    const currentProject = path.join(root, "current");
+    const foreignProject = path.join(root, "foreign");
+    const marker = (projectRoot: string, laneId: string) => ({
+      version: 1,
+      projectRoot,
+      laneId,
+      name: `ADE · ${laneId}`,
+      createdAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    });
+    const placeMarker = (udid: string, value: object) => {
+      const directory = path.join(dataRoot, udid);
+      fs.mkdirSync(directory, { recursive: true });
+      fs.writeFileSync(path.join(directory, "ade-lane-device.json"), JSON.stringify(value));
+    };
+    fs.mkdirSync(path.join(foreignProject, ".ade"), { recursive: true });
+    fs.writeFileSync(path.join(foreignProject, ".ade", "ade.db"), "");
+    const heldUdid = "00000000-0000-4000-8000-000000000001";
+    const goneUdid = "00000000-0000-4000-8000-000000000002";
+    placeMarker(heldUdid, marker(foreignProject, "foreign-lane"));
+    placeMarker(goneUdid, marker(path.join(root, "gone"), "old-lane"));
+    const devices = [heldUdid, goneUdid].map((udid) =>
+      simulator({ udid, name: `ADE · ${udid}` }),
+    );
+    const listJson = JSON.stringify({
+      devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-3": devices },
+    });
+    const run = vi.fn(async (_command: string, args: string[]) => ({
+      stdout: args.join(" ") === "simctl list devices --json" ? listJson : "",
+      stderr: "",
+    }));
+    const ownedRegistry = createLaneDeviceRegistry({
+      run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
+      listInstalledSimulators: async () => devices,
+      projectRoot: currentProject,
+      deviceDataRoot: dataRoot,
+      openProjectDatabase: () => ({ prepare: () => ({ get: () => ({ one: 1 }) }), close: () => {} }),
+      store: memoryStore(),
+      now: () => new Date(),
+      logger: noopLogger,
+    });
+
+    try {
+      const result = await ownedRegistry.reconcile();
+      await expect(ownedRegistry.deviceAttach({ laneId: "lane-current", simulator: heldUdid }))
+        .rejects.toMatchObject({ code: APPLE_DEVICE_NOT_LANE_OWNED_CODE });
+      expect(result.deleted.map((entry) => entry.udid)).toEqual([goneUdid]);
+      expect(run.mock.calls.some((call) => call[1].join(" ").includes(`delete ${heldUdid}`))).toBe(false);
+      expect(run.mock.calls.some((call) => call[1].join(" ").includes(`delete ${goneUdid}`))).toBe(true);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("takes over a free marked device from another project as an ADE-owned lane device", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-takeover-"));
+    const dataRoot = path.join(root, "devices");
+    const currentProject = path.join(root, "current");
+    const foreignProject = path.join(root, "foreign");
+    const udid = "free-foreign-device";
+    const deviceDir = path.join(dataRoot, udid);
+    fs.mkdirSync(deviceDir, { recursive: true });
+    fs.mkdirSync(path.join(foreignProject, ".ade"), { recursive: true });
+    fs.writeFileSync(path.join(foreignProject, ".ade", "ade.db"), "");
+    fs.writeFileSync(path.join(deviceDir, "ade-lane-device.json"), JSON.stringify({
+      version: 1,
+      projectRoot: foreignProject,
+      laneId: "old-lane",
+      name: "ADE · Old lane",
+      createdAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+    }));
+    const installed = [simulator({ udid, name: "ADE · Old lane" })];
+    const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const registry = createLaneDeviceRegistry({
+      run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
+      listInstalledSimulators: async () => installed,
+      projectRoot: currentProject,
+      deviceDataRoot: dataRoot,
+      openProjectDatabase: () => ({ prepare: () => ({ get: () => null }), close: () => {} }),
+      store: memoryStore(),
+      logger: noopLogger,
+    });
+
+    try {
+      const device = await registry.deviceAttach({ laneId: "lane-current", simulator: udid });
+      const transferredMarker = JSON.parse(fs.readFileSync(path.join(deviceDir, "ade-lane-device.json"), "utf8")) as { projectRoot: string; laneId: string };
+      expect(device).toMatchObject({ laneId: "lane-current", udid, origin: "created" });
+      expect(transferredMarker).toMatchObject({ projectRoot: currentProject, laneId: "lane-current" });
+      expect(registry.get("lane-current")?.origin).toBe("created");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("attaches without cloning and never deletes what it attached", async () => {
     const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
     const { registry, store } = registryWith(run);
 
     const device = await registry.deviceAttach({ laneId: "lane-1", simulator: "iPhone 17 Pro" });
-    expect(device).toMatchObject({ udid: "template-1", origin: "attached", templateUdid: null });
+    expect(device).toMatchObject({ udid: "template-1", origin: "attached" });
     expect(run).not.toHaveBeenCalled();
 
     await expect(registry.deviceDelete({ laneId: "lane-1" })).rejects.toMatchObject({
@@ -192,7 +329,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it("detaches a clone without deleting it or touching its power", async () => {
+  it("detaches a created device without deleting it or touching its power", async () => {
     const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
     const { registry, store } = registryWith(run);
     await registry.deviceCreate({ laneId: "lane-1" });
@@ -200,7 +337,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
 
     const detached = await registry.deviceDetach({ laneId: "lane-1" });
 
-    expect(detached).toMatchObject({ udid: "clone-udid", origin: "clone", laneId: "lane-1" });
+    expect(detached).toMatchObject({ udid: "clone-udid", origin: "created", laneId: "lane-1" });
     expect(store.rows["lane-1"]).toBeUndefined();
     expect(run).not.toHaveBeenCalled();
     await expect(registry.deviceDetach({ laneId: "lane-1" })).resolves.toBeNull();
@@ -243,40 +380,11 @@ describe("laneDeviceRegistry device lifecycle", () => {
     },
   );
 
-  it("never picks a booted device as the clone template", async () => {
-    // `simctl clone` fails on a booted device with error 405, "Unable to clone
-    // device in current state: Booted". Nothing looked at state, so on a Mac
-    // whose newest iPhone was running, the automatic pick chose the one device
-    // that could not be cloned. An agent hit it as a raw simctl error from
-    // `open-device`.
-    const booted = simulator({ udid: "hot", name: "iPhone 17 Pro", state: "Booted" });
-    const stopped = simulator({ udid: "cold", name: "iPhone 17", state: "Shutdown" });
-
-    expect(pickAppleTemplate({ installed: [booted, stopped] })?.udid).toBe("cold");
-    // Even when the booted one is the project's last used template.
-    expect(pickAppleTemplate({ installed: [booted, stopped], lastUsedUdid: "hot" })?.udid).toBe("cold");
-    // A template named outright is still the caller's choice.
-    expect(pickAppleTemplate({ installed: [booted, stopped], from: "hot" })?.udid).toBe("hot");
-  });
-
-  it("names the booted template instead of letting simctl error 405 escape", async () => {
-    const run = vi.fn(async (..._call: unknown[]) => ({ stdout: "clone-udid\n", stderr: "" }));
-    // Every installed simulator is booted, so there is no cloneable template.
-    const registry = createLaneDeviceRegistry({
-      run: run as never,
-      powerOffDevice: bareSimulatorPowerOff(run as never),
-      listInstalledSimulators: async () => [
-        simulator({ udid: "only", name: "iPhone 17 Pro", state: "Booted" }),
-      ],
-      store: memoryStore(),
-      logger: noopLogger,
-    });
-
-    await expect(registry.deviceCreate({ laneId: "lane-1" })).rejects.toMatchObject({
-      code: APPLE_TEMPLATE_BOOTED_CODE,
-    });
-    // Nothing was cloned, so nothing has to be cleaned up.
-    expect(run.mock.calls.some((call) => (call[1] as string[])?.[1] === "clone")).toBe(false);
+  it("refuses a requested runtime that is not installed", async () => {
+    const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const { registry } = registryWith(run);
+    await expect(registry.deviceCreate({ laneId: "lane-1", runtime: "iOS 19" })).rejects.toThrow(/not installed/i);
+    expect(run).not.toHaveBeenCalled();
   });
 
   it("a takeover ends EVERY stale binding, not just the first", async () => {
@@ -346,13 +454,158 @@ describe("laneDeviceRegistry device lifecycle", () => {
 });
 
 describe("releaseLaneAppleDevice", () => {
+  it("does not delete an ADE device if another lane binds it during power-off", async () => {
+    const store = memoryStore({
+      "lane-1": {
+        lane_id: "lane-1",
+        udid: "ade-device",
+        name: "ADE · Lane 1",
+        origin: "created",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: new Date().toISOString(),
+      },
+    });
+    const run = vi.fn(async () => ({ stdout: "", stderr: "" }));
+    const powerOff = vi.fn(async () => {
+      store.rows["lane-2"] = {
+        lane_id: "lane-2",
+        udid: "ade-device",
+        name: "ADE · Lane 1",
+        origin: "created",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: new Date().toISOString(),
+      };
+      return true;
+    });
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+
+    try {
+      const ended = await endLaneDeviceRow({ store, laneId: "lane-1", run: run as never, powerOff, logger: noopLogger });
+
+      expect(ended).toMatchObject({ deleted: false, complete: true });
+      expect(run.mock.calls.some((call) => call[1][1] === "delete")).toBe(false);
+      expect(store.rows["lane-1"]).toBeUndefined();
+      expect(store.rows["lane-2"]?.udid).toBe("ade-device");
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("stops an ended lane's app cleanup when another lane attaches the same device", async () => {
+    const store = memoryStore({
+      "lane-1": {
+        lane_id: "lane-1",
+        udid: "users-own",
+        name: "iPhone 17 Pro",
+        origin: "attached",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: new Date().toISOString(),
+        ade_installed_bundle_ids: JSON.stringify(["com.example.app"]),
+      },
+    });
+    const run = vi.fn(async (_command: string, commandArgs: string[]) => {
+      if (commandArgs[0] === "simctl" && commandArgs[1] === "list") {
+        store.rows["lane-2"] = {
+          lane_id: "lane-2",
+          udid: "users-own",
+          name: "iPhone 17 Pro",
+          origin: "attached",
+          family: "iphone",
+          runtime: "iOS 26.3",
+          created_at: new Date().toISOString(),
+        };
+        return {
+          stdout: JSON.stringify({
+            devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-3": [{ udid: "users-own", name: "iPhone 17 Pro", state: "Booted" }] },
+          }),
+          stderr: "",
+        };
+      }
+      return { stdout: "/sim/app", stderr: "" };
+    });
+    const powerOff = vi.fn(async () => true);
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+
+    try {
+      const ended = await endLaneDeviceRow({ store, laneId: "lane-1", run: run as never, powerOff, logger: noopLogger });
+
+      expect(ended).toMatchObject({ complete: false, device: { udid: "users-own" } });
+      expect(run.mock.calls.some((call) => call[1][1] === "uninstall")).toBe(false);
+      expect(powerOff).not.toHaveBeenCalled();
+      expect(store.rows["lane-1"]?.ade_installed_bundle_ids).toBe(JSON.stringify(["com.example.app"]));
+      expect(store.rows["lane-2"]?.udid).toBe("users-own");
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
+  it("retries an attached-device app uninstall once, then drops the ended lane row without changing power", async () => {
+    const store = memoryStore({
+      "lane-1": {
+        lane_id: "lane-1",
+        udid: "users-own",
+        name: "iPhone 17 Pro",
+        origin: "attached",
+        family: "iphone",
+        runtime: "iOS 26.3",
+        created_at: new Date().toISOString(),
+        ade_installed_bundle_ids: JSON.stringify(["com.example.app"]),
+      },
+    });
+    const run = vi.fn(async (_command: string, commandArgs: string[]) => {
+      if (commandArgs[0] === "simctl" && commandArgs[1] === "list") {
+        return {
+          stdout: JSON.stringify({
+            devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-3": [{ udid: "users-own", name: "iPhone 17 Pro", state: "Booted" }] },
+          }),
+          stderr: "",
+        };
+      }
+      if (commandArgs[0] === "simctl" && commandArgs[1] === "uninstall") throw new Error("uninstall did not finish");
+      if (commandArgs[0] === "simctl" && commandArgs[1] === "get_app_container") return { stdout: "/sim/app", stderr: "" };
+      return { stdout: "", stderr: "" };
+    });
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("darwin");
+
+    try {
+      const first = await endLaneDeviceRow({
+        store,
+        laneId: "lane-1",
+        run: run as never,
+        powerOff: async () => true,
+        logger: noopLogger,
+      });
+      expect(first).toMatchObject({ complete: false, device: { udid: "users-own" } });
+      expect(store.rows["lane-1"]?.ade_installed_bundle_ids).toBe(JSON.stringify(["com.example.app"]));
+
+      const retry = await endLaneDeviceRow({
+        store,
+        laneId: "lane-1",
+        run: run as never,
+        powerOff: async () => true,
+        retry: true,
+        logger: noopLogger,
+      });
+
+      expect(retry).toMatchObject({ complete: true, device: { udid: "users-own" } });
+      expect(store.rows["lane-1"]).toBeUndefined();
+      expect(run.mock.calls.filter((call) => call[1][1] === "uninstall")).toHaveLength(2);
+      expect(run.mock.calls.filter((call) => call[1][1] === "shutdown")).toHaveLength(0);
+    } finally {
+      platformSpy.mockRestore();
+    }
+  });
+
   it("deletes a clone, removes the recordings, and never throws", async () => {
     const store = memoryStore({
       "lane-1": {
         lane_id: "lane-1",
         udid: "clone-udid",
         name: "ADE · A",
-        origin: "clone",
+        origin: "created",
         family: "iphone",
         runtime: "iOS 26.3",
         created_at: new Date().toISOString(),
@@ -407,8 +660,8 @@ describe("releaseLaneAppleDevice", () => {
       logger: noopLogger,
     });
 
-    expect(result).toEqual({ deletedUdid: null, detachedUdid: "users-own", removedRecordings: false });
-    expect(run).not.toHaveBeenCalled();
+    expect(result).toEqual({ deletedUdid: null, detachedUdid: "users-own", removedRecordings: false, removedDerivedData: 0 });
+    expect(run.mock.calls.map((call) => (call[1] as string[]).slice(0, 2))).toEqual([["simctl", "shutdown"]]);
     expect(store.rows["lane-1"]).toBeUndefined();
   });
 });
@@ -426,7 +679,7 @@ describe("laneDeviceRegistry deviceList ownership and disk", () => {
         lane_id: "lane-mine",
         udid: "mine-1",
         name: "ADE · Mine",
-        origin: "clone",
+        origin: "created",
         family: "iphone",
         runtime: "iOS 26.3",
         created_at: "2026-09-21T00:00:00.000Z",
@@ -471,7 +724,7 @@ describe("laneDeviceRegistry deviceList ownership and disk", () => {
         udid: "mine-1",
         laneId: "lane-mine",
         laneName: "Lane lane-mine",
-        origin: "clone",
+        origin: "created",
         mine: true,
       },
       {
@@ -588,13 +841,12 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
         lane_id: "lane-a",
         udid: "repro",
         name: "ADE Repro",
-        // A clone ADE made: its provenance must survive the move, or the clone
-        // leaks when the new owner's lane is archived.
+    // Legacy rows keep their origin while ownership moves.
         origin: "clone",
         family: "iphone",
         runtime: "iOS 26.3",
         created_at: "2026-09-01T00:00:00.000Z",
-        template_udid: "free",
+        template_udid: null,
       },
     });
     const released: unknown[] = [];
@@ -636,9 +888,7 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
 
     const device = await registry.deviceAttach({ laneId: "lane-b", simulator: "ADE Repro" });
 
-    // `origin`/`templateUdid` describe the SIMULATOR and travel with it.
     expect(device.origin).toBe("clone");
-    expect(device.templateUdid).toBe("free");
     // `createdAt` dates the BINDING, which is new.
     expect(device.createdAt).toBe("2026-09-22T12:00:00.000Z");
   });
@@ -691,15 +941,13 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
 
     const device = await registry.deviceAttach({ laneId: "lane-b", simulator: "free" });
 
-    expect(device).toMatchObject({ laneId: "lane-b", udid: "free", origin: "attached", templateUdid: null });
+    expect(device).toMatchObject({ laneId: "lane-b", udid: "free", origin: "attached" });
     expect(released).toEqual([]);
     expect(Object.keys(store.rows).sort()).toEqual(["lane-a", "lane-b"]);
   });
 
   it.each([
     ["another lane's device", "repro", /ADE Repro \(repro\) belongs to lane Lane lane-a\./],
-    ["a booted device no lane holds", "busy", /iPhone 17 Pro \(busy\) is not this lane's device and it is already running/],
-    ["a stopped device no lane holds", "free", /iPhone Air \(free\) is not this lane's device/],
   ])("refuses an agent attach of %s, and binds and releases nothing", async (_label, wanted, message) => {
     const { registry, store, released } = takeoverRegistry();
 
@@ -712,6 +960,17 @@ describe("laneDeviceRegistry takeover: one lane owns a device at a time", () => 
     expect(store.rows["lane-a"]).toMatchObject({ udid: "repro" });
     expect(released).toEqual([]);
   });
+
+  it.each([["busy", "Booted"], ["free", "Shutdown"]] as const)(
+    "lets an agent attach a named simulator no lane holds, including %s",
+    async (udid) => {
+      const { registry, store } = takeoverRegistry();
+      const device = await registry.deviceAttach({ laneId: "lane-b", simulator: udid, agentCaller: true });
+      expect(device).toMatchObject({ laneId: "lane-b", udid, origin: "attached" });
+      expect(store.rows["lane-b"]).toMatchObject({ udid });
+      expect(registry.list().filter((row) => row.udid === udid)).toHaveLength(1);
+    },
+  );
 
   it("lets an agent attach the device its lane already holds", async () => {
     const { registry } = takeoverRegistry();

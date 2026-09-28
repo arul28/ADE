@@ -132,8 +132,10 @@ export function bareSimulatorPowerOff(run: RunCommand): (udid: string) => Promis
  */
 export async function deleteAppleSimulator(
   udid: string,
-  deps: { run: RunCommand; powerOff: (udid: string) => Promise<unknown> },
-): Promise<void> {
+  deps: { run: RunCommand; powerOff: (udid: string) => Promise<unknown>; stillFree?: () => boolean },
+): Promise<boolean> {
   await deps.powerOff(udid).catch(() => undefined);
+  if (deps.stillFree && !deps.stillFree()) return false;
   await deps.run("xcrun", ["simctl", "delete", udid], { timeoutMs: 120_000 });
+  return true;
 }
