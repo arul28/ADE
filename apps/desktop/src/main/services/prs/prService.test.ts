@@ -24,7 +24,8 @@ vi.mock("../git/git", () => ({
   runGitMergeTree: (...args: unknown[]) => mockGit.runGitMergeTree(...args),
 }));
 
-vi.mock("node:child_process", () => ({
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
   spawn: (...args: unknown[]) => mockChildProcess.spawn(...args),
 }));
 

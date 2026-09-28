@@ -13000,6 +13000,10 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
   }
 
   async function selectCursorCloudMachine() {
+    if (screen.queryByRole("button", { name: "Send to Cursor Cloud" })) {
+      await waitFor(() => expect((screen.getByRole("button", { name: "Send to Cursor Cloud" }) as HTMLButtonElement).disabled).toBe(false));
+      return;
+    }
     fireEvent.click(await screen.findByRole("button", { name: /Choose machine/ }));
     // Opening the picker refetches repos; the cloud row stays disabled until that
     // settles. Clicking it early is a no-op, which is what flakes "Advanced" /
@@ -13051,6 +13055,11 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     return renderAutoCreateDraftPane(paneArgs);
   }
 
+  const existingCloudLanes = [
+    { id: "lane-primary", name: "Primary", laneType: "primary", branchRef: "refs/heads/main", worktreePath: "/tmp/project-under-test" },
+    { id: "lane-1", name: "current-lane", laneType: "worktree", branchRef: "refs/heads/current-lane", worktreePath: "/tmp/project-under-test/current-lane", parentLaneId: "lane-primary", tags: ["ade:cloud:cursor"] },
+  ];
+
   beforeEach(() => {
     seedCursorChatCatalog();
   });
@@ -13086,22 +13095,22 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
 
   it("opens the all-agents Cursor Cloud panel from the composer overflow", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
-    const { listRepositories } = installCursorCloudMocks();
+    installCursorCloudMocks();
     renderCursorCloudDraft();
 
     await selectCursorCloudMachine();
+    const openPanel = vi.fn();
+    window.addEventListener("ade:open-cloud-agents", openPanel, { once: true });
     fireEvent.click(await screen.findByRole("button", { name: "More composer controls" }));
-    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: "Open Cursor Cloud agents" }));
+    fireEvent.click(await screen.findByRole("menuitemcheckbox", { name: /Cursor Cloud agents/ }));
 
-    expect(await screen.findByText("Cursor Cloud agents")).toBeTruthy();
-    expect(listRepositories).toHaveBeenCalled();
-    expect(window.ade.ai.cursorCloudListAgents).toHaveBeenCalled();
+    expect(openPanel).toHaveBeenCalledWith(expect.objectContaining({ detail: { provider: "cursor" } }));
   });
 
   it("keeps an existing lane's branch as the cloud agent's starting ref", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { createRun, openChat } = installCursorCloudMocks();
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Fix the flaky test." } });
@@ -13149,7 +13158,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /New cloud lane/i }));
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
@@ -13172,7 +13181,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /New cloud lane/i }));
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Start something new." } });
     fireEvent.click(await screen.findByRole("button", { name: "Send to Cursor Cloud" }));
@@ -13190,7 +13199,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
+    fireEvent.click(await screen.findByRole("option", { name: /New cloud lane/i }));
 
     // The readiness probe targets the primary lane; the synthetic auto-create id never
     // reaches the brain. Cloud mode survives the lane switch.
@@ -13212,7 +13221,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       recommendedAction: "pull",
     });
     Object.assign(window.ade.git, { getSyncStatus });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Use what origin has." } });
@@ -13239,7 +13248,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
         recommendedAction: "rebase",
       }),
     });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Try to launch anyway." } });
@@ -13269,7 +13278,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
         { name: "origin/current-lane", isRemote: true, isCurrent: false, upstream: null },
       ]),
     });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Ship the unpushed commits." } });
@@ -13677,7 +13686,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { createRun } = installCursorCloudMocks();
     createRun.mockRejectedValue(new Error("Cursor Cloud create failed"));
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.change(await screen.findByRole("textbox"), { target: { value: "Retry this draft." } });
@@ -13938,7 +13947,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
   it("sends without selected secrets and does not block on an empty picker", async () => {
     installAdeMocks({ sessions: [], cursorModels: [{ id: "composer-cloud" }], aiStatus: cursorAvailableAiStatus() });
     const { createRun, openChat } = installCursorCloudMocks();
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     expect(await screen.findByRole("button", { name: "Advanced" })).toBeTruthy();
@@ -14001,7 +14010,7 @@ describe("AgentChatPane Cursor Cloud composer mode", () => {
       title: "Fix flakes",
       headRefName: "current-lane",
     });
-    renderCursorCloudDraft();
+    renderCursorCloudDraft({ lanes: existingCloudLanes });
     await selectCursorCloudMachine();
 
     fireEvent.click(await screen.findByRole("button", { name: "Advanced" }));

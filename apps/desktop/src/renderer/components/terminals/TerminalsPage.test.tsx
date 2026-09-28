@@ -151,6 +151,7 @@ const workMocks = vi.hoisted(() => {
     openSessionTab: vi.fn(),
     upsertOptimisticChatSession: vi.fn(),
     refresh: vi.fn().mockResolvedValue(undefined),
+    refreshLanes: vi.fn().mockResolvedValue(undefined),
     switchRemoteProject: vi.fn().mockResolvedValue(undefined),
     switchProjectToPath: vi.fn().mockResolvedValue(undefined),
     setWorkViewState: vi.fn(),
@@ -336,6 +337,7 @@ vi.mock("../../state/appStore", () => ({
     projectBinding: typeof workMocks.projectBinding;
     laneDeleteProgressByLaneId: Record<string, never>;
     switchRemoteProject: typeof workMocks.fns.switchRemoteProject;
+    refreshLanes: typeof workMocks.fns.refreshLanes;
     switchProjectToPath: typeof workMocks.fns.switchProjectToPath;
     selectLane: typeof workMocks.fns.selectLane;
     focusSession: typeof workMocks.fns.focusSession;
@@ -357,6 +359,7 @@ vi.mock("../../state/appStore", () => ({
       openRemoteProjectTabs: workMocks.openRemoteProjectTabs,
       openProjectTabRoots: [],
       switchRemoteProject: workMocks.fns.switchRemoteProject,
+      refreshLanes: workMocks.fns.refreshLanes,
       switchProjectToPath: workMocks.fns.switchProjectToPath,
       selectLane: workMocks.fns.selectLane,
       focusSession: workMocks.fns.focusSession,

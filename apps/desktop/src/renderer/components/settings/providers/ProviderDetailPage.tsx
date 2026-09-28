@@ -216,11 +216,10 @@ export function ProviderDetailPage({
 
           <ModelsListBody descriptor={descriptor} ctx={ctx} />
 
-          {/* Sign-in only while disconnected — never a box that says "Sign in"
-              after a working login. */}
-          {AuthActions && !connected ? (
+          {/* Cursor also owns its OAuth sign-out action after connection. */}
+          {AuthActions && (!connected || descriptor.id === "cursor") ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: `1px solid ${COLORS.borderMuted}`, paddingTop: 10 }}>
-              <SubsectionTitle>Sign in</SubsectionTitle>
+              <SubsectionTitle>{connected ? "Cursor account" : "Sign in"}</SubsectionTitle>
               <AuthActions ctx={ctx} />
             </div>
           ) : null}

@@ -3926,8 +3926,13 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
       modelId: "cursor/composer-cloud",
       availableModelIds: ["cursor/composer-cloud"],
       draft: "Run this in the cloud.",
-      cursorCloudCanLaunch: true,
-      cursorCloudModeActive: true,
+      cloudLaunch: {
+        provider: "cursor" as const,
+        canLaunch: true,
+        active: true,
+        modelReady: true,
+        hasEligibleModels: true,
+      },
       ...overrides,
     };
   }
@@ -3937,8 +3942,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     const onSubmitToCloud = vi.fn();
     renderComposer(cloudProps({
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud,
@@ -3958,8 +3962,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     const onSubmitToCloud = vi.fn();
     renderComposer(cloudProps({
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: false,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false, hasEligibleModels: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud,
@@ -3977,8 +3980,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmitBlocked = vi.fn();
     renderComposer(cloudProps({
       modelId: "",
-      cursorCloudModelReady: false,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: { ...cloudProps().cloudLaunch!, modelReady: false },
       onSubmit,
       onSubmitBlocked,
       onSubmitToCloud: vi.fn(),
@@ -3994,8 +3996,7 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
     const onSubmit = vi.fn();
     const onSubmitToCloud = vi.fn().mockReturnValue(true);
     renderComposer(cloudProps({
-      cursorCloudModelReady: true,
-      cursorCloudHasEligibleModels: true,
+      cloudLaunch: cloudProps().cloudLaunch,
       onSubmit,
       onSubmitToCloud,
     }));

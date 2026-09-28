@@ -182,8 +182,14 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
         cwd: lane.worktreePath,
         timeoutMs: PUSH_TIMEOUT_MS,
       })
-        .then(async (fetched) => fetched.exitCode === 0
-          && (await runGit(["merge-base", "--is-ancestor", "HEAD", "FETCH_HEAD"], { cwd: lane.worktreePath, timeoutMs: 15_000 })).exitCode === 0)
+        .then(async (fetched) => {
+          if (fetched.exitCode !== 0) return false;
+          const fetchedHead = await runGit(["rev-parse", "FETCH_HEAD"], { cwd: lane.worktreePath, timeoutMs: 15_000 });
+          const remoteSha = fetchedHead.stdout.trim();
+          return fetchedHead.exitCode === 0
+            && /^[0-9a-f]{40}$/.test(remoteSha)
+            && (await runGit(["merge-base", "--is-ancestor", "HEAD", remoteSha], { cwd: lane.worktreePath, timeoutMs: 15_000 })).exitCode === 0;
+        })
         .catch(() => false);
       if (behindOnly) {
         logger.info("cloud_agents.lane_branch_behind_origin", { laneId: lane.id, branch: lane.branchRef });

@@ -845,12 +845,10 @@ Renderer — settings:
   confirms deletion, and a load/cancel failure renders explicitly rather than
   being mistaken for an empty list.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
-  — AI Connections settings, organized into two top-level groups. **Coding
-  Agents** renders four provider-CLI cards in fixed order — Claude Code,
-  Codex CLI, Cursor, and Droid — each showing readiness/auth tone, credential
-  source, and CLI path. Claude offers a `ClaudeLoginPromptButton` when the
-  binary is present but signed out; Cursor is the only card with an inline
-  `CURSOR_API_KEY` field (Add key stores then verifies). **OpenCode —
+  — AI Connections settings lists coding providers and opens a dedicated page
+  for each one. The Cursor page offers browser sign-in while disconnected and
+  keeps Sign out available after connecting; API keys live in the shared keys
+  panel. **OpenCode —
   Universal Model Access** is the managed universal-model surface with a
   models.dev "catalog synced … · refresh" freshness control (backed by
   `modelsDevLastFetchedAt` + `refreshModelsDev`) and five sub-sections:
