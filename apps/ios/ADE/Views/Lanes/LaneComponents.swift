@@ -522,6 +522,9 @@ struct LaneStackCard: View, Equatable {
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
   var machine: LaneMachineChip? = nil
+  /// The machine chip in the detail line. The machine still dims a row that
+  /// is not live when the chip is hidden.
+  var showsMachineChip = true
 
   static func == (lhs: LaneStackCard, rhs: LaneStackCard) -> Bool {
     lhs.renderSignature == rhs.renderSignature
@@ -540,111 +543,181 @@ struct LaneStackCard: View, Equatable {
       depth: depth,
       pullRequest: pullRequest,
       isSelectedTransitionSource: isSelectedTransitionSource,
-      machine: machine
+      machine: showsMachineChip ? machine : machine.map { LaneMachineChip(name: "", isLive: $0.isLive) }
     )
   }
 
+  /// Drawn like the Work list's rows (flat on the page, text first), with a
+  /// lane's own marks: the lane glyph tile in the lane's color, the lane name
+  /// in that color, the branch line below, and the lane's live chats as one
+  /// status mark on the trailing edge (the desktop lane sidebar row).
   var body: some View {
-    HStack(spacing: 0) {
-      VStack(alignment: .leading, spacing: 8) {
-        HStack(alignment: .center, spacing: 8) {
-          WorkLaneLogoMark(color: laneLabelColor, laneIcon: snapshot.lane.icon, size: 12)
-            .frame(width: 14, height: 14)
-            .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-
+    HStack(alignment: .center, spacing: 11) {
+      laneGlyphTile
+      VStack(alignment: .leading, spacing: 4) {
+        HStack(alignment: .center, spacing: 6) {
           Text(snapshot.lane.name)
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(laneLabelColor)
             .lineLimit(1)
+            .truncationMode(.tail)
             .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-title-\(snapshot.lane.id)" : nil, in: transitionNamespace)
-
           laneTypeBadge
-
-          if let pullRequest {
-            LanePrTagChip(tag: pullRequest)
+          if isPinned {
+            Image(systemName: "pin.fill")
+              .font(.system(size: 9, weight: .semibold))
+              .foregroundStyle(ADEColor.textMuted)
           }
-
           Spacer(minLength: 4)
-
           if let devices = snapshot.lane.devicesOpen, !devices.isEmpty {
             Image(systemName: devicePresenceSymbol(for: devices))
               .font(.caption2.weight(.semibold))
               .foregroundStyle(ADEColor.accent)
               .accessibilityLabel("Open on \(devices.count) other device\(devices.count == 1 ? "" : "s")")
           }
-
-          Image(systemName: "chevron.right")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
+          runtimeMark
         }
-
-        HStack(spacing: 5) {
-          if let machine {
-            Image(systemName: "desktopcomputer")
-              .font(.system(size: 10, weight: .regular))
-              .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-            Text(machine.isLive ? machine.name : "\(machine.name) · Not live")
-              .font(.caption2.weight(.medium))
-              .foregroundStyle(ADEColor.textSecondary)
-              .lineLimit(1)
-            Text("·")
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-          }
-          Image(systemName: "arrow.triangle.branch")
-            .font(.system(size: 10, weight: .regular))
-            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-          Text(normalizedPrBranchName(snapshot.lane.branchRef))
-            .font(.system(.caption2, design: .monospaced))
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-            .truncationMode(.middle)
-        }
-
-        if hasStatusChips {
-          ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-              if snapshot.lane.status.dirty {
-                LaneMicroChip(icon: "circle.fill", text: "dirty", tint: ADEColor.warning)
-              }
-              if snapshot.lane.status.ahead > 0 {
-                LaneMicroChip(icon: "arrow.up", text: "\(snapshot.lane.status.ahead)", tint: ADEColor.success)
-              }
-              if snapshot.lane.status.behind > 0 {
-                LaneMicroChip(icon: "arrow.down", text: "\(snapshot.lane.status.behind)", tint: ADEColor.warning)
-              }
-              if snapshot.lane.childCount > 0 {
-                LaneMicroChip(icon: "square.stack.3d.up", text: "\(snapshot.lane.childCount)", tint: ADEColor.textMuted)
-              }
-              if let issue = primaryLaneLinearIssue(for: snapshot.lane) {
-                LaneMicroChip(icon: "link", text: issue.identifier, tint: ADEColor.accent)
-              } else if laneLinearIssueLinkCount(for: snapshot.lane) > 0 {
-                LaneMicroChip(icon: "link", text: "\(laneLinearIssueLinkCount(for: snapshot.lane))", tint: ADEColor.accent)
-              }
-              if isPinned {
-                LaneMicroChip(icon: "pin.fill", text: nil, tint: ADEColor.accent)
-              }
-            }
-          }
-          .scrollClipDisabled()
-        }
+        detailLine
       }
-      .padding(.leading, 14)
-      .padding(.trailing, 14)
-      .padding(.vertical, 12)
     }
+    .padding(.leading, isOpen ? 9 : 6)
+    .padding(.trailing, 8)
+    .padding(.vertical, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(laneTint.background, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 14))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(cardStrokeTint, lineWidth: isOpen ? 1.25 : 0.75)
+    .background(
+      RoundedRectangle(cornerRadius: 13, style: .continuous)
+        .fill(isOpen ? laneTint.accentBar.opacity(0.07) : Color.clear)
     )
-    .shadow(color: isOpen ? laneTint.accentBar.opacity(0.14) : .clear, radius: 8, y: 2)
+    .overlay(alignment: .leading) {
+      // An open lane (in the tray above) keeps a thin bar in its color.
+      if isOpen {
+        Capsule()
+          .fill(laneTint.accentBar)
+          .frame(width: 3)
+          .padding(.vertical, 8)
+      }
+    }
+    .contentShape(Rectangle())
     .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "lane-container-\(snapshot.lane.id)" : nil, in: transitionNamespace)
     .opacity(machine?.isLive == false ? 0.5 : 1)
     .accessibilityElement(children: .combine)
     .accessibilityLabel(stackCardAccessibilityLabel)
+  }
+
+  private var laneGlyphTile: some View {
+    WorkLaneLogoMark(color: laneLabelColor, laneIcon: snapshot.lane.icon, size: 14)
+      .frame(width: 32, height: 32)
+      .background(laneLabelColor.opacity(0.13), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
+          .stroke(laneLabelColor.opacity(0.22), lineWidth: 0.6)
+      )
+      .adeMatchedGeometry(id: isSelectedTransitionSource ? "lane-icon-\(snapshot.lane.id)" : nil, in: transitionNamespace)
+  }
+
+  /// The lane's chats as one mark: amber when one waits for you, the working
+  /// ring with a count while chats run, nothing when the lane is quiet.
+  @ViewBuilder
+  private var runtimeMark: some View {
+    if snapshot.runtime.awaitingInputCount > 0 {
+      HStack(spacing: 3) {
+        Circle()
+          .fill(ADEColor.warning)
+          .frame(width: 7, height: 7)
+        Text("\(snapshot.runtime.awaitingInputCount)")
+          .font(.caption2.weight(.semibold).monospacedDigit())
+          .foregroundStyle(ADEColor.warning)
+      }
+      .accessibilityLabel("\(snapshot.runtime.awaitingInputCount) waiting for you")
+    } else if snapshot.runtime.runningCount > 0 {
+      HStack(spacing: 3) {
+        Image(systemName: "circle.dashed")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(Color.cyan)
+        Text("\(snapshot.runtime.runningCount)")
+          .font(.caption2.weight(.semibold).monospacedDigit())
+          .foregroundStyle(ADEColor.textSecondary)
+      }
+      .accessibilityLabel("\(snapshot.runtime.runningCount) running")
+    }
+  }
+
+  /// Muted facts about the lane: where it lives, its branch, its PR and git
+  /// state. Nothing is drawn for a clean, level lane.
+  private var detailLine: some View {
+    HStack(spacing: 6) {
+      if let machine, showsMachineChip {
+        HStack(spacing: 3) {
+          Image(systemName: settingsMachineSymbol(forName: machine.name))
+            .font(.system(size: 9, weight: .semibold))
+          Text(machine.isLive ? machine.name : "\(machine.name) · Not live")
+            .font(.caption2.weight(.semibold))
+            .lineLimit(1)
+        }
+        .foregroundStyle(ADEColor.textSecondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(ADEColor.textSecondary.opacity(0.1), in: Capsule(style: .continuous))
+        .fixedSize()
+      }
+      HStack(spacing: 3) {
+        Image(systemName: "arrow.triangle.branch")
+          .font(.system(size: 9, weight: .regular))
+          .foregroundStyle(ADEColor.textMuted.opacity(0.8))
+        Text(normalizedPrBranchName(snapshot.lane.branchRef))
+          .font(.system(.caption2, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      .frame(minWidth: 0, alignment: .leading)
+      .layoutPriority(-1)
+      if let pullRequest {
+        LanePrTagChip(tag: pullRequest)
+          .fixedSize()
+      }
+      gitState
+    }
+  }
+
+  @ViewBuilder
+  private var gitState: some View {
+    let status = snapshot.lane.status
+    let linkedIssue = primaryLaneLinearIssue(for: snapshot.lane)?.identifier
+    if status.dirty || status.ahead > 0 || status.behind > 0 || snapshot.lane.childCount > 0 || linkedIssue != nil {
+      HStack(spacing: 5) {
+        if status.dirty {
+          Circle()
+            .fill(ADEColor.warning.opacity(0.85))
+            .frame(width: 5, height: 5)
+        }
+        if status.ahead > 0 {
+          laneCount(symbol: "arrow.up", count: status.ahead)
+        }
+        if status.behind > 0 {
+          laneCount(symbol: "arrow.down", count: status.behind)
+        }
+        if snapshot.lane.childCount > 0 {
+          laneCount(symbol: "square.stack.3d.up", count: snapshot.lane.childCount)
+        }
+        if let linkedIssue {
+          Text(linkedIssue)
+            .font(.caption2.monospaced().weight(.semibold))
+            .foregroundStyle(ADEColor.accent)
+        }
+      }
+      .foregroundStyle(ADEColor.textMuted)
+      .fixedSize()
+    }
+  }
+
+  private func laneCount(symbol: String, count: Int) -> some View {
+    HStack(spacing: 1) {
+      Image(systemName: symbol)
+        .font(.caption2.weight(.bold))
+      Text("\(count)")
+        .font(.caption2.monospacedDigit())
+    }
   }
 
   private var laneTint: LaneSurfaceTint {
@@ -655,25 +728,14 @@ struct LaneStackCard: View, Equatable {
     laneTint.text ?? ADEColor.textPrimary
   }
 
-  private var cardStrokeTint: Color {
-    if isOpen { return laneTint.accentBar.opacity(0.55) }
-    return laneTint.border
-  }
-
-  private var hasStatusChips: Bool {
-    snapshot.lane.status.dirty
-      || snapshot.lane.status.ahead > 0
-      || snapshot.lane.status.behind > 0
-      || snapshot.lane.childCount > 0
-      || primaryLaneLinearIssue(for: snapshot.lane) != nil
-      || laneLinearIssueLinkCount(for: snapshot.lane) > 0
-      || isPinned
-  }
-
   @ViewBuilder
   private var laneTypeBadge: some View {
     if snapshot.lane.archivedAt != nil {
       LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
+    } else if snapshot.lane.laneType == "primary",
+              snapshot.lane.name.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare("primary") != .orderedSame {
+      // A primary lane named "Primary" already says so.
+      LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
     } else {
       EmptyView()
     }
@@ -718,6 +780,9 @@ func laneStackCardRenderSignature(
   hasher.combine(lane.status.ahead)
   hasher.combine(lane.status.behind)
   hasher.combine(lane.childCount)
+  // The trailing status mark reads the lane's live chats.
+  hasher.combine(snapshot.runtime.awaitingInputCount)
+  hasher.combine(snapshot.runtime.runningCount)
   // The card's presence icon derives from device PLATFORMS, not just how many
   // devices are open — hash the sorted platform list so swapping a mac peer
   // for an iPhone (same count) still re-renders the row.

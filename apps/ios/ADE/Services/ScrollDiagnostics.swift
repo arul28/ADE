@@ -1,4 +1,5 @@
 import Combine
+import Darwin
 import Foundation
 import QuartzCore
 import UIKit
@@ -92,6 +93,10 @@ final class ScrollDiagnostics {
   private var visibleJumps = 0
   private var visibleJumpPoints = 0.0
   private var windowSurface: Surface = .other
+  /// Resource samples (memory, CPU, heat) every `resourceSampleInterval`.
+  private static let resourceSampleInterval: CFTimeInterval = 2
+  private var lastResourceSampleAt: CFTimeInterval = 0
+  private var lastResourceCpuSeconds: Double = 0
   #if DEBUG
   private var benchPublishTimer: Timer?
   #endif
@@ -295,11 +300,62 @@ final class ScrollDiagnostics {
         }
       }
     }
+    if lastTimestamp > 0 {
+      // A long frame anywhere, scrolling or not: a main-thread stall the
+      // reader saw as a freeze (opening a chat, a connect, a big publish).
+      let stallMs = (now - lastTimestamp) * 1000
+      if stallMs >= 100 {
+        event("frame.stall", ["ms": Int(stallMs), "at": surface.rawValue, "scrolling": scrollingViews > 0])
+      }
+    }
+    if now - lastResourceSampleAt >= Self.resourceSampleInterval {
+      sampleResources(now: now)
+    }
     lastTimestamp = now
     if surface != windowSurface || now - windowStartedAt >= 1 {
       flushWindow(now: now)
       windowSurface = surface
     }
+  }
+
+  /// `res`: the app's memory footprint (what jetsam counts), its CPU use over
+  /// the last interval as a percent of one core, and the thermal state.
+  private func sampleResources(now: CFTimeInterval) {
+    var usage = rusage()
+    getrusage(RUSAGE_SELF, &usage)
+    let cpuSeconds = Double(usage.ru_utime.tv_sec) + Double(usage.ru_utime.tv_usec) / 1_000_000
+      + Double(usage.ru_stime.tv_sec) + Double(usage.ru_stime.tv_usec) / 1_000_000
+    defer {
+      lastResourceSampleAt = now
+      lastResourceCpuSeconds = cpuSeconds
+    }
+    guard lastResourceSampleAt > 0 else { return }
+    let wall = now - lastResourceSampleAt
+    let cpuPercent = wall > 0 ? (cpuSeconds - lastResourceCpuSeconds) / wall * 100 : 0
+    var info = task_vm_info_data_t()
+    var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+    let result = withUnsafeMutablePointer(to: &info) { pointer in
+      pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+        task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+      }
+    }
+    let footprintMB = result == KERN_SUCCESS ? Double(info.phys_footprint) / 1_048_576 : -1
+    let thermal: String
+    switch ProcessInfo.processInfo.thermalState {
+    case .nominal: thermal = "nominal"
+    case .fair: thermal = "fair"
+    case .serious: thermal = "serious"
+    case .critical: thermal = "critical"
+    @unknown default: thermal = "unknown"
+    }
+    write([
+      "event": "res",
+      "t": Date().timeIntervalSince1970,
+      "memMB": (footprintMB * 10).rounded() / 10,
+      "cpuPct": (cpuPercent * 10).rounded() / 10,
+      "thermal": thermal,
+      "surface": (surfaceStack.last ?? .other).rawValue,
+    ])
   }
 
   private func flushWindow(now: CFTimeInterval) {

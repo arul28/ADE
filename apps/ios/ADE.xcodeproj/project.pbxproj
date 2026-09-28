@@ -326,6 +326,7 @@
 		G10000000000000000000030 /* PrMergeChecklist.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000030 /* PrMergeChecklist.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
+		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LanesOfflineEmptyState.swift */; };
 		B1000000000000000000001A /* ADEHaptics.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000000000000000000001A /* ADEHaptics.swift */; };
@@ -763,6 +764,7 @@
 		G20000000000000000000030 /* PrMergeChecklist.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeChecklist.swift; path = ADE/Views/PRs/PrMergeChecklist.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
+		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* LanesOfflineEmptyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesOfflineEmptyState.swift; path = ADE/Views/Lanes/LanesOfflineEmptyState.swift; sourceTree = "<group>"; };
 		A1000000000000000000001A /* ADEHaptics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEHaptics.swift; path = ADE/Views/Components/ADEHaptics.swift; sourceTree = "<group>"; };
@@ -937,6 +939,7 @@
 				A10000000000000000000011 /* LaneStackGraphSheet.swift */,
 				A10000000000000000000017 /* LaneTreeView.swift */,
 				D20000000000000000000F11 /* LaneRemoteMachines.swift */,
+				D20000000000000000000F12 /* LaneMachinePreviews.swift */,
 				A10000000000000000000012 /* LaneTypes.swift */,
 				A10000000000000000000019 /* LanesOfflineEmptyState.swift */,
 				A10000000000000000000101 /* LaneDetailRebaseBanner.swift */,
@@ -1956,6 +1959,7 @@
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
 				B10000000000000000000017 /* LaneTreeView.swift in Sources */,
 				E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */,
+				E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */,
 				B10000000000000000000018 /* AddLaneSheet.swift in Sources */,
 				B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */,
 				B1000000000000000000001A /* ADEHaptics.swift in Sources */,

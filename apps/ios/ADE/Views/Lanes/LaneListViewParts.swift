@@ -215,24 +215,36 @@ extension LanesTabView {
   @ViewBuilder
   var laneMachineFilterChips: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
-        WorkFilterChip(title: "All", selected: machineFilter == .all, tint: ADEColor.accent) {
+      HStack(spacing: 7) {
+        LaneMachineFilterChip(
+          title: "All",
+          symbol: "square.stack.3d.up",
+          liveDot: nil,
+          selected: machineFilter == .all
+        ) {
           machineFilter = .all
         }
-        WorkFilterChip(title: focusedMachineName, selected: machineFilter == .focused, tint: ADEColor.accent) {
+        LaneMachineFilterChip(
+          title: focusedMachineName,
+          symbol: settingsMachineSymbol(forName: focusedMachineName),
+          liveDot: true,
+          selected: machineFilter == .focused
+        ) {
           machineFilter = machineFilter == .focused ? .all : .focused
         }
         ForEach(remoteLanes.machines) { machine in
-          WorkFilterChip(
+          LaneMachineFilterChip(
             title: machine.name,
-            selected: machineFilter == .machine(machine.machineKey),
-            tint: ADEColor.accent
+            symbol: settingsMachineSymbol(forName: machine.name),
+            liveDot: machine.isLive,
+            selected: machineFilter == .machine(machine.machineKey)
           ) {
             machineFilter = machineFilter == .machine(machine.machineKey) ? .all : .machine(machine.machineKey)
           }
         }
       }
       .padding(.horizontal, 2)
+      .padding(.vertical, 1)
     }
     .scrollClipDisabled()
     .accessibilityElement(children: .contain)
@@ -653,5 +665,49 @@ extension LanesTabView {
         refreshFeedbackToken += 1
       }
     }
+  }
+}
+
+/// One machine filter on the Lanes tab: the machine's symbol, its name, and a
+/// dot that says whether the phone has a live link to it.
+struct LaneMachineFilterChip: View {
+  let title: String
+  let symbol: String
+  /// Nil for "All"; true when the phone has a live link to the machine.
+  let liveDot: Bool?
+  let selected: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 6) {
+        Image(systemName: symbol)
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(selected ? ADEColor.accent : ADEColor.textSecondary)
+        Text(title)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(selected ? ADEColor.textPrimary : ADEColor.textSecondary)
+          .lineLimit(1)
+        if let liveDot {
+          Circle()
+            .fill(liveDot ? ADEColor.success : ADEColor.textMuted.opacity(0.6))
+            .frame(width: 6, height: 6)
+        }
+      }
+      .padding(.horizontal, 11)
+      .frame(height: 32)
+      .background(
+        Capsule(style: .continuous)
+          .fill(selected ? ADEColor.accent.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.5))
+      )
+      .glassEffect(in: .capsule)
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(selected ? ADEColor.accent.opacity(0.45) : ADEColor.glassBorder, lineWidth: 0.7)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(liveDot == false ? "\(title), not live" : title)
+    .accessibilityAddTraits(selected ? .isSelected : [])
   }
 }

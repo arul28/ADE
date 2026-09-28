@@ -1327,6 +1327,11 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// The Chat Info sheet built from a real transcript file
   /// (`-adeBenchTranscript <path>`). See `WorkChatInfoPreviewHost`.
   case chatInfo = "chat-info"
+  /// The Lanes list across machines. See `LanesAcrossMachinesPreviewHost`.
+  case lanesMachines = "lanes-machines"
+  /// The connected-machines card and MACHINES rows. See
+  /// `SettingsMachinesPreviewHost`.
+  case settingsMachines = "settings-machines"
 
   /// `-adePreviewScreen <value>`. Matches the shape `simctl launch` and the
   /// Xcode scheme editor both use for launch arguments.
@@ -1387,6 +1392,10 @@ struct ADEPreviewScreenHost: View {
         initialArtifactId: "proof-1",
         onLoadArtifact: { _, _ in }
       )
+    case .lanesMachines:
+      LanesAcrossMachinesPreviewHost()
+    case .settingsMachines:
+      SettingsMachinesPreviewHost()
     case .chatScroll:
       WorkChatScrollBenchScreen(options: .fromLaunchArguments())
     case .chatInfo:

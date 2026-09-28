@@ -51,7 +51,10 @@ struct LaneTreeView: View {
           onContextMenu: onContextMenu,
           onTogglePin: onTogglePin,
           onSelectLane: onSelectLane,
-          machine: machineChips.chip(forLaneId: snapshot.lane.id)
+          machine: machineChips.chip(forLaneId: snapshot.lane.id),
+          // A child sits indented under its parent's row, which names the
+          // machine; repeating it squeezed the branch name.
+          showsMachineChip: laneTreeDisplayDepth(for: snapshot.lane) == 0
         )
       }
     }
@@ -72,6 +75,7 @@ struct LaneTreeRow: View {
   let onTogglePin: (String) -> Void
   let onSelectLane: (String) -> Void
   var machine: LaneMachineChip? = nil
+  var showsMachineChip = true
 
   private var isChild: Bool { snapshot.lane.laneType != "primary" && depth > 0 }
 
@@ -135,7 +139,8 @@ struct LaneTreeRow: View {
       pullRequest: pullRequest,
       transitionNamespace: transitionNamespace,
       isSelectedTransitionSource: isSelectedTransitionSource,
-      machine: machine
+      machine: machine,
+      showsMachineChip: showsMachineChip
     )
     .equatable()
   }

@@ -78,7 +78,6 @@ struct LanesTabView: View {
     NavigationStack {
       ScrollView {
         LazyVStack(spacing: 14) {
-          addLaneActionButton
           if !syncService.connectionState.isHostUnreachable,
             !syncService.shouldSuppressDomainHydrationNotices,
             let hydrationNotice = laneStatus.inlineHydrationFailureNotice(for: .lanes)
@@ -311,39 +310,18 @@ struct LanesTabView: View {
 
   @ViewBuilder
   private var topBarActions: some View {
-    EmptyView()
+    addLaneActionButton
   }
 
-  @ViewBuilder
+  /// In the top bar, beside the hub back button and the activity bell.
   var addLaneActionButton: some View {
-    Button {
+    LaneAddButton(enabled: canRunLiveActions) {
       if canRunLiveActions {
         addLaneSheetPresented = true
       } else {
         handleBlockedLiveAction()
       }
-    } label: {
-      HStack(spacing: 8) {
-        Image(systemName: "plus")
-          .font(.system(size: 13, weight: .bold))
-        Text("Add lane")
-          .font(.subheadline.weight(.semibold))
-      }
-      .foregroundStyle(.white)
-      .frame(maxWidth: .infinity)
-      .padding(.vertical, 11)
-      .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-      .glassEffect(in: .rect(cornerRadius: 12))
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(.white.opacity(0.18), lineWidth: 0.6)
-      )
-      .shadow(color: ADEColor.accent.opacity(0.35), radius: 12, x: 0, y: 4)
     }
-    .buttonStyle(.plain)
-    .opacity(canRunLiveActions ? 1 : 0.55)
-    .accessibilityLabel("Add lane")
-    .accessibilityHint(canRunLiveActions ? "Opens lane creation options" : "Reconnect to machine before creating lanes")
   }
 
   @ViewBuilder
@@ -377,5 +355,33 @@ struct LanesTabView: View {
       }
       .accessibilityLabel("Primary branch")
     }
+  }
+}
+
+/// The Lanes tab's "+ Lane" button, in the root top bar.
+struct LaneAddButton: View {
+  let enabled: Bool
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 5) {
+        Image(systemName: "plus")
+          .font(.system(size: 13, weight: .bold))
+        Text("Lane")
+          .font(.subheadline.weight(.semibold))
+      }
+      .foregroundStyle(.white)
+      .padding(.horizontal, 12)
+      .frame(height: 36)
+      .background(ADEColor.accent, in: Capsule(style: .continuous))
+      .glassEffect(in: .capsule)
+      .overlay(Capsule(style: .continuous).stroke(.white.opacity(0.18), lineWidth: 0.6))
+      .shadow(color: ADEColor.accent.opacity(0.35), radius: 8, x: 0, y: 3)
+    }
+    .buttonStyle(.plain)
+    .opacity(enabled ? 1 : 0.55)
+    .accessibilityLabel("Add lane")
+    .accessibilityHint(enabled ? "Opens lane creation options" : "Reconnect to machine before creating lanes")
   }
 }
