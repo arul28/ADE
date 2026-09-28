@@ -23,6 +23,23 @@ import { normalizeSyncApplicationCompressionOffer } from "./syncProtocol";
  * release each time. There is no copy now: both ingress paths import this.
  */
 
+export const SYNC_PEER_ROLE_ROSTER = "roster" as const;
+
+/**
+ * A roster socket (`peer.syncRole === "roster"`): the phone keeps one per
+ * paired machine for the machine-wide roster, cross-project chats and routed
+ * commands, and holds its full replica on another socket (usually another
+ * machine). It never takes part in CRDT replication: no `changeset_batch` or
+ * reseed goes to it, its own `changeset_batch` is ignored, and it never reads
+ * or writes the device's delivered-cursor record, so it cannot disturb that
+ * device's replica state on this machine.
+ */
+export function isRosterSyncPeer(
+  metadata: Pick<SyncPeerMetadata, "syncRole"> | null | undefined,
+): boolean {
+  return metadata?.syncRole === SYNC_PEER_ROLE_ROSTER;
+}
+
 export const CONNECTION_ATTEMPT_ID_MAX_CHARS = 128;
 export const CONNECTION_ATTEMPT_MAX_FUTURE_MS = 5 * 60_000;
 
@@ -127,6 +144,9 @@ export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       ...(toOptionalString(peer.appVersion) ? { appVersion: toOptionalString(peer.appVersion)! } : {}),
       ...(toOptionalString(peer.appBuild) ? { appBuild: toOptionalString(peer.appBuild)! } : {}),
       ...(toOptionalString(peer.bundleIdentifier) ? { bundleIdentifier: toOptionalString(peer.bundleIdentifier)! } : {}),
+      // Only the one value this protocol defines survives; anything else is a
+      // full replica, exactly as when the field is absent.
+      ...(peer.syncRole === SYNC_PEER_ROLE_ROSTER ? { syncRole: SYNC_PEER_ROLE_ROSTER } : {}),
     },
     auth: normalizedAuth,
     compression: normalizeSyncApplicationCompressionOffer(value?.compression),

@@ -620,6 +620,7 @@ func workPreviewThreadModel(
     resumePoint: nil,
     cardExpansionSignature: 0,
     viewportWidth: 0,
+    usageRevision: 0,
     transcript: transcript
   ))
   return model

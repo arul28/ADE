@@ -3,6 +3,8 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { normalizeGitRemoteIdentity } from "../../../../desktop/src/shared/crossMachineHandoff";
+import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { normalizeSessionStatusNote } from "../../../../desktop/src/shared/sessionStatusNote";
 import { normalizeSessionActivityReport } from "../../../../desktop/src/shared/sessionActivity";
 import { isSessionSnoozed } from "../../../../desktop/src/shared/sessionCanonicalState";
@@ -46,6 +48,11 @@ export type RosterProjectRecord = {
   projectId: string;
   rootPath: string;
   displayName: string;
+  /**
+   * Raw `origin` URL the project registry captured when the project was
+   * registered (it re-reads only while unset), so the roster never spawns git.
+   */
+  gitOriginUrl?: string | null;
   lastOpenedAt: number;
   catalogVisibility: "recent" | "system";
 };
@@ -415,6 +422,15 @@ function liveChatStatus(live: RosterLiveSession): SyncRosterChatStatus {
   return "ended";
 }
 
+/**
+ * The same normalization the desktop's cross-machine repo match applies
+ * (`normalizeGitRemoteIdentity`), so the phone can compare roster rows from
+ * different machines directly. It also drops any user/token in the URL.
+ */
+function rosterRepoOriginUrl(record: RosterProjectRecord): string | null {
+  return normalizeGitRemoteIdentity(record.gitOriginUrl ?? null);
+}
+
 function mapLane(row: LaneRow): SyncRosterLane {
   return {
     id: row.id,
@@ -609,6 +625,7 @@ async function buildRosterProject(
     projectId: record.projectId,
     rootPath: record.rootPath,
     displayName: record.displayName,
+    repoOriginUrl: rosterRepoOriginUrl(record),
     lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
     booted,
     runningCount,
@@ -647,11 +664,19 @@ export function createForeignChatTranscriptResolver(args: {
       const requestedProjectId = typeof projectId === "string" ? projectId.trim() : "";
       const requestedRootPath = normalizePath(projectRootPath);
       const records = args.projectRegistry.list();
-      const record = records.find((entry) => {
-        if (requestedProjectId && entry.projectId === requestedProjectId) return true;
-        if (requestedRootPath && normalizePath(entry.rootPath) === requestedRootPath) return true;
-        return false;
-      });
+      const byId = requestedProjectId
+        ? records.find((entry) => entry.projectId === requestedProjectId)
+        : undefined;
+      // Platform path identity: case-folded on Windows and macOS, so a root
+      // spelled with different casing still names the registered project.
+      const byRoot = requestedRootPath
+        ? records.find((entry) => pathsEqual(entry.rootPath, requestedRootPath))
+        : undefined;
+      // Both selectors given: the project the id names must live at that
+      // root, or a request for one project could be answered from another's
+      // transcripts.
+      if (byId && requestedRootPath && !pathsEqual(byId.rootPath, requestedRootPath)) return null;
+      const record = byId ?? byRoot;
       if (!record) return null;
 
       const layout = resolveAdeLayout(record.rootPath);
@@ -702,6 +727,7 @@ export async function buildRosterSnapshot(args: BuildRosterSnapshotArgs): Promis
           projectId: record.projectId,
           rootPath: record.rootPath,
           displayName: record.displayName,
+          repoOriginUrl: rosterRepoOriginUrl(record),
           lastOpenedAt: record.lastOpenedAt > 0 ? new Date(record.lastOpenedAt).toISOString() : null,
           booted: false,
           runningCount: 0,

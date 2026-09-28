@@ -3,16 +3,14 @@ import path from "node:path";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { RawData, WebSocket } from "ws";
 import type {
-  AgentChatEventEnvelope,
-  AgentChatEventHistoryPage,
   CloneProjectInput,
   CreateProjectInput,
   ListMyGitHubReposInput,
   ProjectBrowseInput,
   PersonalChatScopeContract,
   SyncChatSubscribePayload,
-  SyncChatSubscribeSnapshotPayload,
   SyncChatHistoryRequestPayload,
+  SyncChatToolResultRequestPayload,
   SyncChatUnsubscribePayload,
   SyncCommandPayload,
   SyncApplicationCompressionCodec,
@@ -33,7 +31,6 @@ import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
-import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
 import { isPersonalChatActionQueueable } from "../../../../desktop/src/shared/types/personalChats";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
@@ -66,15 +63,34 @@ import {
   isPairedRuntimeEnvelopeType,
 } from "./syncPairedChannelService";
 import {
+  createSyncEnvelopeChunkAssembler,
   DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
-  encodeSyncEnvelope,
+  DEFAULT_SYNC_MAX_FRAME_BYTES,
+  encodeSyncEnvelopeFrames,
   mapPlatform,
   negotiateSyncApplicationCompression,
   parseSyncEnvelope,
+  parseSyncEnvelopeChunkPayload,
+  parseSyncEnvelopeFrame,
+  PEER_BACKPRESSURE_BYTES,
   sendSyncProtocolVersionMismatchAndClose,
+  SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   SyncProtocolVersionMismatchError,
-  wsDataToText,
 } from "./syncProtocol";
+import {
+  createBrainChatSubscriptions,
+  type BrainChatSubscription,
+} from "./brainChatSubscriptions";
+import {
+  createBrainRoutedCommandHandler,
+  type BrainProjectCommandRouter,
+} from "./brainRoutedCommands";
+import {
+  createSyncRosterFanout,
+  createSyncRosterPeerState,
+  type SyncRosterPeerState,
+  type SyncRosterProvider,
+} from "./syncRosterFanout";
 import {
   diagnoseSyncHostReadiness,
   hostUnavailableErrorPayload,
@@ -91,6 +107,7 @@ import type { AdeUsageClientSurface } from "../../../../desktop/src/shared/types
 // a signed-in web client's `account` hello was rejected as "Invalid hello
 // payload." on exactly the machines this handler exists to serve.
 import {
+  isRosterSyncPeer,
   parseHelloPayload,
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
@@ -100,6 +117,7 @@ import {
   buildSyncProjectCatalogMessages,
   isRuntimeHostPairingRecord,
   isSyncHostRecoveryPairingRecord,
+  type SyncForeignChatTranscriptResolver,
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
@@ -140,6 +158,20 @@ type BrainProjectActionsSyncHandlerArgs = {
   verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
   personalChatScope?: PersonalChatScopeContract;
   /**
+   * Machine-wide roster (the same provider the project host uses). With it,
+   * a phone's roster socket parked here gets `roster_snapshot`/`roster_delta`
+   * exactly as it would from a project host.
+   */
+  rosterProvider?: SyncRosterProvider;
+  /**
+   * Cross-project chat transcripts (the same resolver the project host uses —
+   * the security boundary for which files may be served). With no project
+   * host attached, every project-scoped chat is "foreign" here.
+   */
+  foreignChatProvider?: SyncForeignChatTranscriptResolver;
+  /** Runs `command` envelopes that name a registered project in that project. */
+  projectCommandRouter?: BrainProjectCommandRouter;
+  /**
    * One bounded product-analytics capture per completed host repair. The brain
    * is the durable owner boundary here: the tap happens on a phone or a
    * browser, but only this side knows whether the repair actually worked, and
@@ -151,17 +183,26 @@ type BrainProjectActionsSyncHandlerArgs = {
   }) => void;
 };
 
-type BrainPeerState = {
+export type { BrainProjectCommandRouter };
+
+type BrainPeerState = SyncRosterPeerState & {
   ws: WebSocket;
   lifecycleGeneration: number;
   authenticated: boolean;
   authKind: "bootstrap" | "paired" | null;
   authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
-  personalChatSubscriptions: Map<string, { transcriptPath: string; offset: number }>;
+  chatSubscriptions: Map<string, BrainChatSubscription>;
   pairingRecord: SyncPairingRecord | null;
   relayAuthorization: RelayAuthorizationLifecycle | null;
   messageQueue: Promise<void>;
+  /**
+   * Routed project commands run here, in order, off the message queue — the
+   * project host's write-queue split: a slow command (one that boots its
+   * project) must not stall this socket's chat and roster reads.
+   */
+  commandChain: Promise<void>;
+  envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
 };
 
 const WS_OPEN = 1;
@@ -203,6 +244,10 @@ function canManageSyncHost(peer: BrainPeerState): boolean {
 export const BOOTSTRAP_TOKEN_KEY = "sync.bootstrapToken.v1";
 const BRAIN_SYNC_AUTH_TIMEOUT_MS = 15_000;
 const brainPeerCompressionBySocket = new WeakMap<WebSocket, SyncApplicationCompressionCodec>();
+// Peers that declared `chunkedEnvelopes` get oversized envelopes split, like
+// the project host does, so a large roster snapshot never exceeds the phone's
+// ~1 MiB websocket receive limit.
+const brainPeerChunkedSockets = new WeakSet<WebSocket>();
 
 function ensureSecretFile(filePath: string, bytes: number): string {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -257,50 +302,8 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function unavailableChatHistoryPage(
-  sessionId: string,
-  beforeOffset: number,
-): AgentChatEventHistoryPage {
-  return {
-    sessionId,
-    events: [],
-    startOffset: beforeOffset,
-    hasMore: beforeOffset > 0,
-    sessionFound: false,
-    unavailable: true,
-  };
-}
-
-function normalizeChatHistoryPage(
-  value: unknown,
-  sessionId: string,
-  beforeOffset: number,
-): AgentChatEventHistoryPage {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return unavailableChatHistoryPage(sessionId, beforeOffset);
-  }
-  const record = value as Record<string, unknown>;
-  const startOffset = typeof record.startOffset === "number" && Number.isFinite(record.startOffset)
-    ? Math.max(0, Math.floor(record.startOffset))
-    : null;
-  if (
-    optionalString(record.sessionId) !== sessionId
-    || !Array.isArray(record.events)
-    || startOffset == null
-    || startOffset > beforeOffset
-    || typeof record.hasMore !== "boolean"
-    || typeof record.sessionFound !== "boolean"
-  ) {
-    return unavailableChatHistoryPage(sessionId, beforeOffset);
-  }
-  return {
-    sessionId,
-    events: record.events as AgentChatEventEnvelope[],
-    startOffset,
-    hasMore: record.hasMore,
-    sessionFound: record.sessionFound,
-    ...(record.unavailable === true ? { unavailable: true } : {}),
-  };
+function isPeerBackpressured(ws: WebSocket): boolean {
+  return ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES;
 }
 
 function send(
@@ -312,7 +315,7 @@ function send(
   if (ws.readyState !== WS_OPEN) return false;
   try {
     const compressionCodec = brainPeerCompressionBySocket.get(ws) ?? null;
-    ws.send(encodeSyncEnvelope({
+    for (const frame of encodeSyncEnvelopeFrames({
       type,
       requestId,
       payload,
@@ -320,7 +323,10 @@ function send(
         ? SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES
         : DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
       compressionCodec: compressionCodec ?? "gzip",
-    }));
+      maxFrameBytes: brainPeerChunkedSockets.has(ws) ? DEFAULT_SYNC_MAX_FRAME_BYTES : null,
+    })) {
+      ws.send(frame);
+    }
     return true;
   } catch {
     return false;
@@ -381,32 +387,6 @@ function personalChatCommandDescriptors(
     policy: { viewerAllowed: true, queueable: false },
   });
   return descriptors;
-}
-
-async function readPersonalChatEventsSince(
-  transcriptPath: string,
-  offset: number,
-): Promise<{ events: AgentChatEventEnvelope[]; nextOffset: number }> {
-  let file: fs.promises.FileHandle | null = null;
-  try {
-    file = await fs.promises.open(transcriptPath, "r");
-    const size = (await file.stat()).size;
-    const start = Math.max(0, Math.min(offset, size));
-    if (start >= size) return { events: [], nextOffset: size };
-    const bytes = Buffer.alloc(size - start);
-    await file.read(bytes, 0, bytes.length, start);
-    const lastNewline = bytes.lastIndexOf(0x0a);
-    if (lastNewline < 0) return { events: [], nextOffset: start };
-    const complete = bytes.subarray(0, lastNewline + 1);
-    return {
-      events: parseAgentChatTranscript(complete.toString("utf8")),
-      nextOffset: start + complete.length,
-    };
-  } catch {
-    return { events: [], nextOffset: Math.max(0, offset) };
-  } finally {
-    await file?.close().catch(() => {});
-  }
 }
 
 export function createBrainProjectActionsSyncHandler(
@@ -682,6 +662,41 @@ export function createBrainProjectActionsSyncHandler(
     }
   };
 
+  // --- Roster, file-backed chats and routed commands -------------------------
+  //
+  // Parity with the project sync host for a phone's roster socket: the same
+  // roster fan-out, the same transcript readers and response shapes, and the
+  // same command policy gate. What this ingress does NOT have is a project
+  // runtime of its own, so every project chat is served from its transcript
+  // file (as a project host serves a cross-project chat), and every project
+  // command is routed to its project's scope.
+
+  const peers = new Set<BrainPeerState>();
+  const rosterFanout = createSyncRosterFanout<BrainPeerState>({
+    provider: args.rosterProvider,
+    subscribers: () => [...peers].filter((peer) =>
+      peer.rosterSubscribed && peer.authenticated && peer.ws.readyState === WS_OPEN),
+    // Same drop rule as the project host: a backpressured socket skips this
+    // push and the fan-out re-snapshots it on the next flush.
+    send: (peer, type, payload, requestId) =>
+      !isPeerBackpressured(peer.ws) && send(peer.ws, type, payload, requestId),
+    isDisposed: () => false,
+    logger: args.logger,
+    buildFailedLogEvent: "sync_brain.roster_build_failed",
+  });
+  const chatSubscriptions = createBrainChatSubscriptions({
+    logger: args.logger,
+    personalChatScope: args.personalChatScope,
+    foreignChatProvider: args.foreignChatProvider,
+    send,
+    isPeerBackpressured,
+  });
+  const routedCommands = createBrainRoutedCommandHandler<BrainPeerState>({
+    router: args.projectCommandRouter,
+    send,
+    onRosterDirty: () => rosterFanout.markDirty(),
+  });
+
   const handleAuthenticatedEnvelope = async (
     peer: BrainPeerState,
     envelope: ReturnType<typeof parseSyncEnvelope>,
@@ -864,97 +879,42 @@ export function createBrainProjectActionsSyncHandler(
         break;
       }
       case "chat_subscribe": {
-        const payload = envelope.payload as SyncChatSubscribePayload | null;
-        const sessionId = optionalString(payload?.sessionId);
-        if (!sessionId || payload?.chatScope !== "personal" || !args.personalChatScope) break;
-        const transcriptPath = await args.personalChatScope.transcriptPath(sessionId);
-        if (!isCurrent()) return;
-        if (!transcriptPath) {
-          send(peer.ws, "chat_subscribe", {
-            sessionId,
-            capturedAt: nowIso(),
-            truncated: false,
-            events: [],
-            turnActive: false,
-          } satisfies SyncChatSubscribeSnapshotPayload, envelope.requestId);
-          break;
-        }
-        const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes)
-          ? Math.max(1_024, Math.min(2_000_000, Math.floor(payload.maxBytes)))
-          : 256 * 1_024;
-        // Capture the tail point before reading history. Events committed
-        // during the snapshot can then be replayed (and client-deduped), but
-        // can never fall into the gap between history collection and offset.
-        const offset = await fs.promises.stat(transcriptPath)
-          .then((stat) => stat.size)
-          .catch(() => 0);
-        if (!isCurrent()) return;
-        const history = (await args.personalChatScope.call("getEventHistory", {
-          sessionId,
-          maxBytes,
-        })).result as {
-          events?: AgentChatEventEnvelope[];
-          truncated?: boolean;
-          tailStartOffset?: number | null;
-          hasOlderHistory?: boolean;
-        };
-        if (!isCurrent()) return;
-        const turnActive = await args.personalChatScope.isTurnActive(sessionId);
-        if (!isCurrent()) return;
-        peer.personalChatSubscriptions.set(sessionId, { transcriptPath, offset });
-        send(peer.ws, "chat_subscribe", {
-          sessionId,
-          capturedAt: nowIso(),
-          truncated: history.truncated === true,
-          tailStartOffset: history.tailStartOffset ?? 0,
-          hasOlderHistory: history.hasOlderHistory
-            ?? (history.truncated === true && (history.tailStartOffset ?? 0) > 0),
-          cursorKind: "byte",
-          events: history.events ?? [],
-          turnActive,
-        } satisfies SyncChatSubscribeSnapshotPayload, envelope.requestId);
+        await chatSubscriptions.subscribe(
+          peer,
+          envelope.requestId,
+          envelope.payload as SyncChatSubscribePayload | null,
+          isCurrent,
+        );
         break;
       }
       case "chat_history": {
-        const payload = envelope.payload as SyncChatHistoryRequestPayload | null;
-        const sessionId = optionalString(payload?.sessionId) ?? "";
-        const beforeOffset = typeof payload?.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
-          ? Math.max(0, Math.floor(payload.beforeOffset))
-          : 0;
-        if (
-          !sessionId
-          || payload?.chatScope !== "personal"
-          || !args.personalChatScope
-          || !peer.personalChatSubscriptions.has(sessionId)
-        ) {
-          send(peer.ws, "chat_history", unavailableChatHistoryPage(sessionId, beforeOffset), envelope.requestId);
-          break;
-        }
-        let page = unavailableChatHistoryPage(sessionId, beforeOffset);
-        try {
-          const rawPage = (await args.personalChatScope.call("getEventHistoryPage", {
-            sessionId,
-            beforeOffset,
-            ...(typeof payload.maxBytes === "number" ? { maxBytes: payload.maxBytes } : {}),
-          })).result;
-          page = normalizeChatHistoryPage(rawPage, sessionId, beforeOffset);
-        } catch (error) {
-          args.logger.warn("sync_brain.chat_history_failed", {
-            sessionId,
-            beforeOffset,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        if (!isCurrent()) return;
-        send(peer.ws, "chat_history", page, envelope.requestId);
+        await chatSubscriptions.history(
+          peer,
+          envelope.requestId,
+          envelope.payload as SyncChatHistoryRequestPayload | null,
+          isCurrent,
+        );
+        break;
+      }
+      case "chat_tool_result": {
+        await chatSubscriptions.toolResult(
+          peer,
+          envelope.requestId,
+          envelope.payload as SyncChatToolResultRequestPayload | null,
+          isCurrent,
+        );
         break;
       }
       case "chat_unsubscribe": {
-        const payload = envelope.payload as SyncChatUnsubscribePayload | null;
-        if (payload?.chatScope === "personal") {
-          const sessionId = optionalString(payload.sessionId);
-          if (sessionId) peer.personalChatSubscriptions.delete(sessionId);
-        }
+        chatSubscriptions.unsubscribe(peer, envelope.payload as SyncChatUnsubscribePayload | null);
+        break;
+      }
+      case "roster_subscribe": {
+        await rosterFanout.subscribe(peer, envelope.requestId);
+        break;
+      }
+      case "roster_unsubscribe": {
+        rosterFanout.unsubscribe(peer);
         break;
       }
       case "heartbeat": {
@@ -1120,6 +1080,25 @@ export function createBrainProjectActionsSyncHandler(
           }
           break;
         }
+        const envelopeProjectId = optionalString(envelope.projectId);
+        if (routedCommands.wantsCommand(payload, envelopeProjectId)) {
+          const routedPayload = payload ?? { commandId, action, args: commandArgs };
+          const requestId = envelope.requestId;
+          peer.commandChain = peer.commandChain
+            .catch(() => {})
+            .then(async () => {
+              if (!isCurrent()) return;
+              await routedCommands.handle(peer, requestId, routedPayload, envelopeProjectId, isCurrent);
+            })
+            .catch((error) => {
+              args.logger.warn("sync_brain.routed_command_failed", {
+                action,
+                peerDeviceId: peer.metadata?.deviceId ?? null,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            });
+          break;
+        }
         args.logger.warn("sync_brain.command_without_project_host", {
           action: typeof payload?.action === "string" ? payload.action : null,
           peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -1138,6 +1117,16 @@ export function createBrainProjectActionsSyncHandler(
         }, envelope.requestId);
         break;
       }
+      case "changeset_batch":
+      case "changeset_ack":
+        // No project DB here: nothing to apply and nothing ever sent to ack.
+        // (A roster socket never replicates; a replica socket parked here is
+        // served by the project host once one attaches.)
+        args.logger.debug("sync_brain.changeset_ignored", {
+          type: envelope.type,
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+        });
+        break;
       default:
         args.logger.warn("sync_brain.unsupported_envelope", {
           type: envelope.type,
@@ -1155,11 +1144,15 @@ export function createBrainProjectActionsSyncHandler(
       authKind: null,
       authTimeout: null,
       metadata: null,
-      personalChatSubscriptions: new Map(),
+      chatSubscriptions: new Map(),
       pairingRecord: null,
       relayAuthorization: null,
       messageQueue: Promise.resolve(),
+      commandChain: Promise.resolve(),
+      envelopeChunks: createSyncEnvelopeChunkAssembler(),
+      ...createSyncRosterPeerState(),
     };
+    peers.add(peer);
     const isPeerCurrent = (generation: number): boolean =>
       peer.lifecycleGeneration === generation && peer.ws.readyState === WS_OPEN;
     const installRelayAuthorization = (initial: {
@@ -1207,11 +1200,13 @@ export function createBrainProjectActionsSyncHandler(
       lifecycle.initialize(initial);
       peer.relayAuthorization = lifecycle;
     };
-    let personalChatPumpRunning = false;
-    const personalChatPump = setInterval(() => {
-      if (!peer.authenticated || peer.ws.readyState !== WS_OPEN || personalChatPumpRunning) return;
+    // Tails every chat this socket subscribed to (personal and project), and
+    // re-checks the account owner on the same beat.
+    let chatSubscriptionPumpRunning = false;
+    const chatSubscriptionPump = setInterval(() => {
+      if (!peer.authenticated || peer.ws.readyState !== WS_OPEN || chatSubscriptionPumpRunning) return;
       const lifecycleGeneration = peer.lifecycleGeneration;
-      personalChatPumpRunning = true;
+      chatSubscriptionPumpRunning = true;
       void (async () => {
         const expectedOwner = optionalString(peer.pairingRecord?.accountOwnerUserId)
           ?? peer.relayAuthorization?.snapshot()?.ownerUserId
@@ -1237,18 +1232,12 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
         }
-        for (const [sessionId, subscription] of peer.personalChatSubscriptions) {
-          const next = await readPersonalChatEventsSince(subscription.transcriptPath, subscription.offset);
-          if (!isPeerCurrent(lifecycleGeneration)) return;
-          for (const event of next.events) send(peer.ws, "chat_event", event);
-          subscription.offset = next.nextOffset;
-          peer.personalChatSubscriptions.set(sessionId, subscription);
-        }
+        await chatSubscriptions.pump(peer, () => isPeerCurrent(lifecycleGeneration));
       })().finally(() => {
-        personalChatPumpRunning = false;
+        chatSubscriptionPumpRunning = false;
       });
     }, pollIntervalMs);
-    personalChatPump.unref?.();
+    chatSubscriptionPump.unref?.();
     const clearAuthTimeout = (): void => {
       if (!peer.authTimeout) return;
       clearTimeout(peer.authTimeout);
@@ -1270,7 +1259,29 @@ export function createBrainProjectActionsSyncHandler(
       const lifecycleGeneration = peer.lifecycleGeneration;
       let envelope: ReturnType<typeof parseSyncEnvelope>;
       try {
-        envelope = parseSyncEnvelope(wsDataToText(data));
+        envelope = parseSyncEnvelopeFrame(data);
+        // Same inbound framing as the project host, for peers that declared it.
+        if (
+          envelope.type === "envelope_chunk"
+          && peer.authenticated
+          && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
+        ) {
+          const binaryChunk = envelope.binaryChunk;
+          if (binaryChunk) {
+            const reassembled = peer.envelopeChunks.addBinary(binaryChunk, binaryChunk.body);
+            if (!reassembled) return;
+            envelope = parseSyncEnvelopeFrame(reassembled);
+          } else {
+            const chunk = parseSyncEnvelopeChunkPayload(envelope.payload);
+            if (!chunk) throw new Error("Invalid envelope_chunk payload.");
+            const reassembled = peer.envelopeChunks.add(chunk);
+            if (!reassembled) return;
+            envelope = parseSyncEnvelope(reassembled);
+          }
+          if (envelope.type === "envelope_chunk") {
+            throw new Error("Nested envelope_chunk frames are not allowed.");
+          }
+        }
       } catch (error) {
         if (error instanceof SyncProtocolVersionMismatchError) {
           const payload = sendSyncProtocolVersionMismatchAndClose(
@@ -1669,8 +1680,14 @@ export function createBrainProjectActionsSyncHandler(
           if (!isPeerCurrent(lifecycleGeneration)) return;
           const brain = brainMetadata();
           const personalDescriptors = personalChatCommandDescriptors(args.personalChatScope);
+          // Routed project actions are advertised only to roster sockets: the
+          // phone's roster connection to a machine with no project host. A
+          // replica socket parked here keeps today's limited hello.
+          const routedDescriptors = isRosterSyncPeer(hello.peer) ? await routedCommands.advertisedDescriptors() : [];
+          if (!isPeerCurrent(lifecycleGeneration)) return;
           const syncHostRecoveryAuthorized = canManageSyncHost(peer);
           const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);
+          const chunkedEnvelopes = hello.peer.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY) === true;
           const helloOkPayload = buildSyncHostHelloOkPayload({
             peer: hello.peer,
             brain,
@@ -1680,14 +1697,17 @@ export function createBrainProjectActionsSyncHandler(
             compression: negotiatedCompression,
             projectCatalog: catalog,
             projectCatalogEnabled: true,
-            crossProjectChatEnabled: false,
+            crossProjectChatEnabled: Boolean(args.foreignChatProvider),
+            rosterEnabled: rosterFanout.enabled,
+            chunkedEnvelopes,
             projectActionsEnabled: projectActionsEnabled(args.projectCatalogProvider),
             remoteCommandSupportedActions: [
               ...personalDescriptors.map((entry) => entry.action),
+              ...routedDescriptors.map((entry) => entry.action),
               SYNC_HOST_DIAGNOSE_ACTION,
               ...(syncHostRecoveryAuthorized ? [SYNC_HOST_RECOVER_ACTION] : []),
             ],
-            remoteCommandDescriptors: personalDescriptors,
+            remoteCommandDescriptors: [...personalDescriptors, ...routedDescriptors],
             localCommandDescriptors: [],
             compressionThresholdBytes: DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES,
             cloudRelayWssUrl: accountAuthService.getStatus().signedIn
@@ -1710,6 +1730,10 @@ export function createBrainProjectActionsSyncHandler(
               syncHostRecoveryAuthorized,
             ),
           });
+          // Framing follows the peer's declared capability from hello_ok on,
+          // exactly as on the project host.
+          if (chunkedEnvelopes) brainPeerChunkedSockets.add(ws);
+          else brainPeerChunkedSockets.delete(ws);
           // The selection frame itself must retain the legacy wire encoding.
           // Apply the selected codec only after it has been queued successfully.
           if (send(ws, "hello_ok", helloOkPayload, envelope.requestId)) {
@@ -1748,12 +1772,18 @@ export function createBrainProjectActionsSyncHandler(
       peer.relayAuthorization?.dispose();
       peer.relayAuthorization = null;
       brainPeerCompressionBySocket.delete(ws);
+      brainPeerChunkedSockets.delete(ws);
+      const wasRosterSubscribed = peer.rosterSubscribed;
+      peers.delete(peer);
+      peer.rosterSubscribed = false;
+      if (wasRosterSubscribed) rosterFanout.peerRemoved();
+      peer.envelopeChunks.reset();
       peer.authenticated = false;
       peer.authKind = null;
       peer.metadata = null;
       peer.pairingRecord = null;
-      clearInterval(personalChatPump);
-      peer.personalChatSubscriptions.clear();
+      clearInterval(chatSubscriptionPump);
+      peer.chatSubscriptions.clear();
       pairedChannelService.closePeer(ws, "Sync socket closed.", false);
       args.logger.info("sync_brain.peer_closed", {
         code,

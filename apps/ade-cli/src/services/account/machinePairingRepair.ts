@@ -53,6 +53,7 @@ export type MachinePairingRepairResult = {
   state:
     | AccountMachinePairingResult["state"]
     | "publisher_unavailable"
+    | "sync_host_not_running"
     | "not_revoked";
   reason: string | null;
   /**
@@ -84,6 +85,14 @@ export type MachinePairingRepairInput = {
    * leaves it off and always re-pairs.
    */
   onlyIfRevoked?: boolean;
+  /**
+   * Why there is no directory publisher, when the caller knows. The publisher
+   * exists only while this brain hosts phone sync, so "no publisher" almost
+   * always means "nothing on this computer hosts sync" -- and saying only "not
+   * publishing yet" turned Reconnect into a button that answered the same
+   * sentence 41 times in a row. Ignored when `directory` is present.
+   */
+  unavailable?: { state: "sync_host_not_running"; reason: string } | null;
   logger?: {
     info?: (event: string, meta?: Record<string, unknown>) => void;
     warn?: (event: string, meta?: Record<string, unknown>) => void;
@@ -122,14 +131,16 @@ export async function repairMachinePairing(
   }
 
   if (!input.directory) {
-    input.logger?.warn?.("account.machine_repair_unavailable", { wasRevoked });
+    const state = input.unavailable?.state ?? "publisher_unavailable";
+    input.logger?.warn?.("account.machine_repair_unavailable", { wasRevoked, state });
     return {
       repaired: false,
       wasRevoked,
       published: false,
       pushRestored: false,
-      state: "publisher_unavailable",
-      reason: "This ADE brain is not publishing this machine to your account yet.",
+      state,
+      reason: input.unavailable?.reason
+        ?? "This ADE brain is not publishing this machine to your account yet.",
     };
   }
 

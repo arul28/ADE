@@ -182,6 +182,10 @@ struct SettingsConnectionHeader: View {
   /// connect attempt as every other path, so the card always lands back on a
   /// definite state.
   var onWake: ((String) -> Void)?
+  /// List the other machines the phone holds a live roster link to, under the
+  /// focused one. Needs a `MachineFleet` in the environment; the pairing-only
+  /// screen leaves it off.
+  var showsLiveFleet = false
 
   @State private var pulsing = false
 
@@ -240,6 +244,10 @@ struct SettingsConnectionHeader: View {
           onReconnect: onReconnect
         )
         .layoutPriority(1)
+      }
+
+      if showsLiveFleet {
+        SettingsLiveFleetRows()
       }
 
       if let wakeMachineKey, let onWake {
@@ -612,5 +620,45 @@ private struct SettingsInlineErrorBanner: View {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .stroke(ADEColor.danger.opacity(0.25), lineWidth: 0.6)
     )
+  }
+}
+
+/// The other machines this phone is connected to right now: each machine the
+/// fleet holds a live roster link to, as one compact row under the focused
+/// machine. The focused machine keeps the card's title, route pill and
+/// Disconnect; these rows only say they are live.
+private struct SettingsLiveFleetRows: View {
+  @EnvironmentObject private var machineFleet: MachineFleet
+
+  var body: some View {
+    let live = machineFleet.machines.filter { $0.state == .live }
+    if !live.isEmpty {
+      VStack(alignment: .leading, spacing: 8) {
+        Rectangle()
+          .fill(ADEColor.border.opacity(0.5))
+          .frame(height: 0.5)
+        ForEach(live) { machine in
+          HStack(spacing: 10) {
+            Circle()
+              .fill(ADEColor.success)
+              .frame(width: 7, height: 7)
+            Text(machine.name)
+              .font(.subheadline.weight(.medium))
+              .foregroundStyle(ADEColor.textPrimary)
+              .lineLimit(1)
+              .truncationMode(.middle)
+            Spacer(minLength: 8)
+            Text("Live")
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(ADEColor.success)
+              .padding(.horizontal, 7)
+              .padding(.vertical, 3)
+              .background(ADEColor.success.opacity(0.12), in: Capsule())
+          }
+          .accessibilityElement(children: .combine)
+          .accessibilityLabel("\(machine.name), live")
+        }
+      }
+    }
   }
 }

@@ -387,7 +387,10 @@ describe("account machine publisher health", () => {
       await service.publishNow();
     }
 
-    expect(debug).toHaveBeenCalledTimes(9);
+    // The initial successful publish is logged at info so operators can
+    // distinguish a healthy first heartbeat from a publisher that never ran.
+    expect(debug).toHaveBeenCalledTimes(8);
+    expect(info).toHaveBeenCalledTimes(2);
     expect(info).toHaveBeenCalledWith("account.machine_publish_ok", {
       legDurationsMs: { snapshot: 1, token: 2, http: 3 },
     });

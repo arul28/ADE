@@ -190,6 +190,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "account",
     group: "Account",
   },
+  {
+    id: "account.computers",
+    label: "Your computers",
+    keywords: ["computers", "machines", "macs", "reconnect", "this computer", "account directory"],
+    tab: "account",
+    anchor: "account-computers",
+    scope: "account",
+    web: "account",
+    group: "Account",
+  },
 
   // ── General ──────────────────────────────────────────────────────────────
   {

@@ -267,6 +267,10 @@ struct ChatThreadFrame: @unchecked Sendable {
   let resumePoint: ChatThreadResumePoint?
   let cardExpansionSignature: Int
   let viewportWidth: CGFloat
+  /// Changes only when the transcript gains or loses a row the context meter
+  /// reads (`tokens`, `done`, compaction), so the composer's meter recomputes
+  /// on those and not on every streamed delta.
+  let usageRevision: Int
   /// Kept for existing consumers (steer reconcile, subagents). Read-only.
   let transcript: [WorkChatEnvelope]
 }

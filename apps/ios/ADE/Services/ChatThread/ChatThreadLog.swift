@@ -259,7 +259,8 @@ extension ChatThreadEngine {
     enqueuePersist(.updateMeta(
       generation: generation,
       hasOlder: hasOlderHistory,
-      olderCursor: hostSupportsChatLogV2 ? nil : olderByteCursor
+      olderCursor: hostSupportsChatLogV2 ? nil : olderByteCursor,
+      oldestKnownSequence: sequenced.first?.sequence
     ))
     // A page only ever adds rows above the window: never a tail append.
     if !outcomes.isEmpty { outcomes.append(.rewritten) }

@@ -31,12 +31,17 @@ func buildWorkChatTimelineSnapshot(
   let taskList = buildWorkChatTaskListSnapshot(from: transcript)
   let toolCards = buildWorkMobileTimelineToolCards(from: transcript, suppressedPendingItemIds: suppressedToolItemIds)
     .filter(workMobileShowsToolCardInTimeline)
-  let eventCards = buildWorkEventCards(
-    from: transcript,
-    suppressedItemIds: suppressedItemIds,
-    taskList: taskList
+  var reasoningTiming = WorkReasoningTimingFold()
+  for envelope in transcript { reasoningTiming.consume(envelope) }
+  let eventCards = workStampReasoningDurations(
+    buildWorkEventCards(
+      from: transcript,
+      suppressedItemIds: suppressedItemIds,
+      taskList: taskList
+    )
+      .filter { $0.kind != "toolUseSummary" },
+    timing: reasoningTiming
   )
-    .filter { $0.kind != "toolUseSummary" }
   let commandCards: [WorkCommandCardModel] = []
   let fileChangeCards: [WorkFileChangeCardModel] = []
   let subagentSnapshots = buildWorkSubagentSnapshots(from: transcript)
@@ -2028,19 +2033,19 @@ func assembleWorkTimeline(
 /// `N proof` chip on the turn-end line.
 private func workStampTurnProofCounts(_ entries: inout [WorkTimelineEntry]) {
   var turnStarted = false
-  var proofCount = 0
+  var proof: [ComputerUseArtifactSummary] = []
   for index in entries.indices {
     let entry = entries[index]
     switch entry.payload {
-    case .artifact:
-      if turnStarted { proofCount += 1 }
+    case .artifact(let artifact):
+      if turnStarted { proof.append(artifact) }
     case .turnEndMarker(var marker):
-      if proofCount > 0 {
-        marker.proofCount = proofCount
+      if !proof.isEmpty {
+        marker.proofArtifacts = proof
         entries[index] = WorkTimelineEntry(id: entry.id, timestamp: entry.timestamp, rank: entry.rank, payload: .turnEndMarker(marker), turnId: entry.turnId)
       }
       turnStarted = false
-      proofCount = 0
+      proof.removeAll()
     case .message(let message) where message.role.lowercased() == "user":
       turnStarted = true
     default:
@@ -3580,7 +3585,23 @@ func buildWorkEventCards(
   // to one question. Only permission / model-selection gates reach here at all;
   // the rest are folded inline above.
   var ribbonedResolutionItemIds = Set<String>()
+  // One error card per distinct error of a turn (desktop `errorKeysByTurn` in
+  // `chatTranscriptRows.ts`): a provider that reports the same failure twice
+  // draws it once. Errors with no turn are never merged.
+  var errorKeysByTurn = Set<String>()
   for envelope in transcript {
+    if case .error(let message, let detail, let category, let turnId, let title, let nextAction) = envelope.event,
+       let turnKey = normalizedWorkTurnId(turnId) {
+      let key = [
+        turnKey,
+        message.trimmingCharacters(in: .whitespacesAndNewlines),
+        detail?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "\u{0}",
+        category,
+        title,
+        nextAction,
+      ].joined(separator: "\u{1F}")
+      guard errorKeysByTurn.insert(key).inserted else { continue }
+    }
     if !suppressedItemIds.isEmpty {
       switch envelope.event {
       case .approvalRequest(_, _, let itemId, _) where suppressedItemIds.contains(itemId):
@@ -3779,6 +3800,133 @@ func workReasoningCardId(
     return ["reasoning", sessionId, "turn", turnId].joined(separator: ":")
   }
   return fallback
+}
+
+// MARK: - Reasoning duration
+
+/// Measured thinking time per reasoning card, the desktop `Thought for 12s`
+/// (`thoughtDurationSeconds` / `reasoningRowDurationSeconds` in
+/// `chatThoughtRuns.ts`), as a left fold over the transcript so the thread
+/// engine can checkpoint it like its other folds.
+///
+/// Desktop measures one Thought row from its first fragment to its last, and a
+/// row only grows while nothing else is drawn between fragments; rows that end
+/// up next to each other merge with their durations summed, and one member
+/// with no timing makes the whole run untimed. An iOS card collects every
+/// fragment of one card id, so it is the sum of its runs here: a run is the
+/// fragments of the card with no drawn row between them, and it counts
+/// `floor(last - first)` seconds when that is at least 1, else it makes the
+/// card untimed.
+struct WorkReasoningTimingFold: Equatable {
+  private struct Timing: Equatable {
+    var totalSeconds = 0
+    var untimed = false
+    var runStart: String?
+    var runEnd: String?
+  }
+
+  private var timings: [String: Timing] = [:]
+  /// Cards whose current run is still open (no drawn row since its last fragment).
+  private var openCardIds: [String] = []
+
+  mutating func consume(_ envelope: WorkChatEnvelope) {
+    if case .reasoning(let text, let turnId, let itemId, let summaryIndex) = envelope.event {
+      // The event-card builder drops these before any merge.
+      guard !isLowSignalWorkReasoning(text) else { return }
+      let cardId = workReasoningCardId(
+        sessionId: envelope.sessionId,
+        turnId: turnId,
+        itemId: itemId,
+        summaryIndex: summaryIndex,
+        fallback: envelope.id
+      )
+      var timing = timings[cardId] ?? Timing()
+      if timing.runStart == nil {
+        timing.runStart = envelope.timestamp
+        openCardIds.append(cardId)
+      }
+      timing.runEnd = envelope.timestamp
+      timings[cardId] = timing
+      return
+    }
+    guard !openCardIds.isEmpty, workReasoningRunEndsAt(envelope.event) else { return }
+    for cardId in openCardIds {
+      guard var timing = timings[cardId] else { continue }
+      Self.close(&timing)
+      timings[cardId] = timing
+    }
+    openCardIds.removeAll(keepingCapacity: true)
+  }
+
+  /// Whole seconds for the card, counting a run that is still open. Nil when
+  /// any run of it had no measurable span.
+  func seconds(forCardId cardId: String) -> Int? {
+    guard var timing = timings[cardId] else { return nil }
+    Self.close(&timing)
+    guard !timing.untimed, timing.totalSeconds >= 1 else { return nil }
+    return timing.totalSeconds
+  }
+
+  private static func close(_ timing: inout Timing) {
+    guard let start = timing.runStart else { return }
+    let end = timing.runEnd ?? start
+    timing.runStart = nil
+    timing.runEnd = nil
+    guard let startDate = workParsedDate(start), let endDate = workParsedDate(end) else {
+      timing.untimed = true
+      return
+    }
+    let seconds = Int((endDate.timeIntervalSince(startDate)).rounded(.down))
+    if seconds >= 1 {
+      timing.totalSeconds += seconds
+    } else {
+      timing.untimed = true
+    }
+  }
+}
+
+/// True when desktop draws a row for this event, which ends a Thought row's
+/// run of fragments. The events desktop skips while building rows
+/// (`chatTranscriptRows.ts`: activity, token usage, sources, input receipts,
+/// turn details, quiet status pings) and queued steers (they draw nothing in
+/// the thread) do not.
+private func workReasoningRunEndsAt(_ event: WorkChatEvent) -> Bool {
+  switch event {
+  case .reasoning, .activity, .sources, .tokens, .pendingInputResolved, .turnDiagnostics,
+       .userMessageResolution, .unknown:
+    return false
+  case .status(let turnStatus, let message, _):
+    let status = turnStatus.lowercased()
+    if status == "failed" || status == "interrupted" { return true }
+    let normalized = (message ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return !normalized.isEmpty && normalized != status && normalized != "started" && normalized != "completed"
+  case .userMessage(_, _, _, let steerId, let deliveryState, _):
+    return !(steerId != nil && deliveryState == "queued")
+  default:
+    return true
+  }
+}
+
+/// Stamp each reasoning card with its measured duration.
+func workStampReasoningDurations(
+  _ cards: [WorkEventCardModel],
+  timing: WorkReasoningTimingFold
+) -> [WorkEventCardModel] {
+  cards.map { card in
+    guard card.kind == "reasoning" else { return card }
+    let seconds = timing.seconds(forCardId: card.id)
+    guard seconds != card.thoughtSeconds else { return card }
+    var stamped = card
+    stamped.thoughtSeconds = seconds
+    return stamped
+  }
+}
+
+/// Desktop `formatThinkingElapsed`: `12s`, `1m 05s`.
+func workFormatThinkingElapsed(_ totalSeconds: Int) -> String {
+  let seconds = max(0, totalSeconds)
+  if seconds < 60 { return "\(seconds)s" }
+  return "\(seconds / 60)m \(String(format: "%02d", seconds % 60))s"
 }
 
 /// Stable identity for a context-compaction divider. Both the `started` and

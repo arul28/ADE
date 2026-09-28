@@ -1029,6 +1029,7 @@ export function createAccountMachinePublisherService(options: {
       "timeout",
       "transport_error",
     ]);
+    const previousState = health.state;
     health = {
       state,
       skipReason: args.skipReason,
@@ -1048,6 +1049,15 @@ export function createAccountMachinePublisherService(options: {
           : null,
     };
     if (state === "published") recoveryGaveUpAtMs = null;
+    // Most skips return without a log line (only some failures warn, once),
+    // so a publisher that never publishes looked exactly like one publishing
+    // quietly. Say each change of outcome once.
+    if (state !== previousState && state !== "published") {
+      options.logger?.info?.("account.machine_publish_skipped", {
+        state,
+        skipReason: args.skipReason,
+      });
+    }
     if (health.failingSinceMs == null) {
       publishFailureAnalytics.end();
       sustainedFailureReported = false;
@@ -1629,7 +1639,7 @@ export function createAccountMachinePublisherService(options: {
       );
       if (slow) {
         options.logger?.warn("account.machine_publish_ok", logMeta);
-      } else if (successfulPublishCount % PUBLISH_INFO_INTERVAL === 0) {
+      } else if (successfulPublishCount === 1 || successfulPublishCount % PUBLISH_INFO_INTERVAL === 0) {
         options.logger?.info?.("account.machine_publish_ok", logMeta);
       } else {
         options.logger?.debug?.("account.machine_publish_ok", logMeta);

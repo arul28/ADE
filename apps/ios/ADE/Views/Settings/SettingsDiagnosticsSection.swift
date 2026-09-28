@@ -81,6 +81,18 @@ struct SettingsDiagnosticsSection: View {
                 value: deviceId
               )
             }
+
+            // Performance logs from a diagnostics launch, to AirDrop to the
+            // Mac when the phone has no cable data link.
+            let logFiles = ScrollDiagnostics.logFileURLs
+            if !logFiles.isEmpty {
+              ShareLink(items: logFiles) {
+                Label("Share diagnostics log", systemImage: "square.and.arrow.up")
+                  .font(.subheadline.weight(.semibold))
+                  .foregroundStyle(ADEColor.accent)
+                  .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+              }
+            }
           }
         }
       }

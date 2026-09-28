@@ -303,6 +303,8 @@ struct WorkSessionDestinationView: View {
     compactComposer: Bool = false,
     liveRedirectOnlySends: Bool = false
   ) {
+    let initStart = CACurrentMediaTime()
+    defer { ScrollDiagnostics.shared.record(.destinationInit, since: initStart) }
     self.sessionId = sessionId
     self.initialOpeningPrompt = initialOpeningPrompt
     self.initialOpeningPromptDispatchHandled = initialOpeningPromptDispatchHandled
@@ -349,7 +351,10 @@ struct WorkSessionDestinationView: View {
   /// Becomes false once the background Hub activate commits, so Send/approve
   /// and history paging switch to the active-project path without remounting.
   var isCrossProject: Bool {
-    hubChatIsForeignProject(
+    // A chat on another machine never becomes "active": its project id can
+    // equal a project id on the focused machine (the id hashes the path).
+    if isRemoteMachineChat { return true }
+    return hubChatIsForeignProject(
       context: crossProjectContext,
       ownerIsActive: crossProjectContext.map {
         syncService.isActiveProject(id: $0.projectId, rootPath: $0.projectRootPath)
@@ -357,6 +362,11 @@ struct WorkSessionDestinationView: View {
     )
   }
   var isRemoteOnlyChat: Bool { isCrossProject || personalChat }
+  /// The chat lives on another paired machine (see `WorkChatCrossProjectContext.machineKey`).
+  var isRemoteMachineChat: Bool {
+    guard let machineKey = crossProjectContext?.machineKey else { return false }
+    return machineKey != syncService.focusedMachineKey
+  }
   /// Single gate for lane→PR work in this destination. See `WorkChatLanePrPolicy`.
   var resolvesLanePr: Bool {
     WorkChatLanePrPolicy(showsLaneActions: showsLaneActions).resolvesLanePr
@@ -508,7 +518,7 @@ struct WorkSessionDestinationView: View {
   /// connected to. The project is deliberately not repeated here.
   var sessionDestinationNavigationSubtitle: String? {
     workChatHeaderSubtitle(
-      machineName: syncService.hostName ?? syncService.activeHostProfile?.hostName
+      machineName: syncService.chatMachineName(sessionId: sessionId)
     )
   }
 
@@ -545,7 +555,7 @@ struct WorkSessionDestinationView: View {
 
 
   var hostReachable: Bool {
-    syncService.connectionState == .connected
+    syncService.chatHostIsReachable(sessionId: sessionId)
   }
 
   /// Live polling/load gates require BOTH the parent's "session is live" flag
@@ -834,7 +844,9 @@ struct WorkSessionDestinationView: View {
         subtitle: sessionDestinationNavigationSubtitle,
         trailingControls: { sessionHeaderTrailingControls }
       )
-      .adeNavigationZoomTransition(id: sessionDestinationZoomTransitionId, in: transitionNamespace)
+      // No zoom navigation transition here: a zoom-pushed screen closes on a
+      // downward swipe, so pulling down at the top of the thread (to load
+      // older messages) closed the chat. Back is the button or the edge swipe.
       .adeAnalyticsScreen(.workSession)
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
@@ -924,6 +936,7 @@ struct WorkSessionDestinationView: View {
         Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
       .onAppear {
+        ChatOpenCloseTiming.destinationAppeared(sessionId: sessionId)
         chatDestinationVisible = true
         // Install remote routing synchronously with presentation so the first
         // user interaction cannot race the async load task and accidentally
@@ -1209,8 +1222,14 @@ struct WorkSessionDestinationView: View {
     )
   }
 
-  @ViewBuilder
   var sessionDestinationRoot: some View {
+    let bodyStart = CACurrentMediaTime()
+    defer { ScrollDiagnostics.shared.record(.destinationBody, since: bodyStart) }
+    return sessionDestinationRootContent
+  }
+
+  @ViewBuilder
+  private var sessionDestinationRootContent: some View {
     if let session {
       if isChatSession(session) {
         chatSessionDestinationRoot(for: session)
@@ -1374,7 +1393,9 @@ struct WorkSessionDestinationView: View {
       sending: $sending,
       errorMessage: $errorMessage,
       isLive: isLiveAndReachable,
-      hostUnreachable: syncService.connectionState.isHostUnreachable,
+      hostUnreachable: isRemoteMachineChat
+        ? !syncService.chatHostIsReachable(sessionId: sessionId)
+        : syncService.connectionState.isHostUnreachable,
       suppressDomainHydrationNotices: syncService.shouldSuppressDomainHydrationNotices,
       canComposeMessages: canComposeChatMessages,
       canSendMessages: canSendChatMessages,
@@ -1405,7 +1426,16 @@ struct WorkSessionDestinationView: View {
       onRetryLoad: load,
       onOpenFile: openFileReference,
       onOpenPr: openPullRequestReference,
-      onLoadArtifact: loadArtifactContent,
+      onLoadArtifact: { artifact, intent in
+        // A chat on another machine reads its artifacts from that machine.
+        if let remote = syncService.remoteMachineChat(sessionId: sessionId) {
+          await SyncFleetTaskRoute.$chat.withValue(remote) {
+            await loadArtifactContent(artifact, intent)
+          }
+        } else {
+          await loadArtifactContent(artifact, intent)
+        }
+      },
       onRefreshArtifacts: {
         await refreshArtifacts(force: true)
       },
@@ -2087,6 +2117,17 @@ func workRegisterChatCommandScope(
     syncService.setPersonalChatScope(sessionId: sessionId)
     return
   }
+  if let crossProjectContext,
+     let machineKey = crossProjectContext.machineKey,
+     machineKey != syncService.focusedMachineKey {
+    syncService.setRemoteMachineChatScope(
+      sessionId: sessionId,
+      machineKey: machineKey,
+      projectId: crossProjectContext.projectId,
+      projectRootPath: crossProjectContext.projectRootPath
+    )
+    return
+  }
   guard let crossProjectContext,
         hubChatIsForeignProject(
           context: crossProjectContext,
@@ -2243,7 +2284,7 @@ extension WorkSessionDestinationView {
     threadSubscriptionOpened = true
     let engineWarm = threadKey.flatMap { syncService.chatThreadRegistry.resumePoint(for: $0) } != nil
     let streamLive = syncService.chatSubscriptionIsLive(sessionId: sessionId)
-    let requestSnapshot = !engineWarm || (!syncService.supportsChatLogV2 && !streamLive)
+    let requestSnapshot = !engineWarm || (!syncService.chatSupportsLogV2(sessionId: sessionId) && !streamLive)
     syncService.subscribeToChatEventsNow(sessionId: sessionId, requestSnapshot: requestSnapshot)
   }
 

@@ -17,6 +17,9 @@ extension WorkChatTranscriptController: UICollectionViewDelegate {
     let offsetFromViewportTop: CGFloat
   }
 
+  /// Rows the transcript keeps above the oldest message.
+  static let rowsAboveHistory: Set<String> = ["chat-overview", "chat-older-history"]
+
   /// The first row whose top edge the reader can actually see.
   ///
   /// The transcript runs under the floating header, so "first visible item"
@@ -37,6 +40,10 @@ extension WorkChatTranscriptController: UICollectionViewDelegate {
       guard indexPath.item < orderedRowIds.count,
             let attributes = collectionView.layoutAttributesForItem(at: indexPath)
       else { continue }
+      // Never anchor on the rows that sit ABOVE the history: older pages land
+      // below them, so holding them still is what threw the reader to the top
+      // of each new page. Anchor on the first message row instead.
+      if Self.rowsAboveHistory.contains(orderedRowIds[indexPath.item]) { continue }
       if fallback == nil { fallback = (indexPath, attributes) }
       if attributes.frame.minY >= visibleTop - 0.5 {
         return (indexPath, attributes)

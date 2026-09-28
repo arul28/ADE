@@ -207,6 +207,9 @@ struct RemoteRosterProject: Codable, Equatable, Identifiable {
   var attentionCount: Int
   var lanes: [RemoteRosterLane]
   var chats: [RemoteRosterChat]
+  /// Normalized git origin of the project's repository (newer hosts). The
+  /// Work tab matches the same repository across machines on it.
+  var repoOriginUrl: String? = nil
 
   var id: String { projectId }
 }

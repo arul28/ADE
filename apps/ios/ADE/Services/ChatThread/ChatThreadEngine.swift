@@ -98,6 +98,8 @@ actor ChatThreadEngine {
   var subagentFilter = WorkSubagentTranscriptFilter()
   var transcript: [WorkChatEnvelope] = []
   var transcriptRevision = 0
+  /// See `ChatThreadFrame.usageRevision`.
+  var usageRevision = 0
   var goalState: GoalState = .untouched
   var snapshot = WorkChatTimelineSnapshot.empty
   /// Resumable timeline fold: a rebuild re-folds only the envelopes after its
@@ -134,7 +136,10 @@ actor ChatThreadEngine {
     case append([ChatLogStoredEvent], generation: Int?)
     case replaceRange(from: Int, events: [ChatLogStoredEvent], generation: Int?, hasOlder: Bool, olderCursor: Int?)
     case dropBelow(Int)
-    case updateMeta(generation: Int?, hasOlder: Bool, olderCursor: Int?)
+    /// `oldestKnownSequence`: the oldest row the engine holds when it records
+    /// "no older history"; if the store has trimmed above it, the store keeps
+    /// "has older".
+    case updateMeta(generation: Int?, hasOlder: Bool, olderCursor: Int?, oldestKnownSequence: Int?)
     case drop
     case barrier(CheckedContinuation<Void, Never>)
   }
@@ -175,10 +180,17 @@ actor ChatThreadEngine {
           )
         case .dropBelow(let sequence):
           await store?.dropBelow(logKey, sequence: sequence)
-        case .updateMeta(let generation, let hasOlder, let olderCursor):
+        case .updateMeta(let generation, let hasOlder, let olderCursor, let oldestKnownSequence):
           await store?.updateMeta(logKey) { meta in
             if let generation { meta.generation = generation }
-            meta.hasOlder = hasOlder
+            // Rows below the store's oldest were trimmed away on disk: the
+            // cache does have older history, even though the host says the
+            // top was reached.
+            let trimmedBelowKnownTop: Bool = {
+              guard !hasOlder, let oldestKnownSequence else { return false }
+              return (meta.oldestSequence ?? Int.min) > oldestKnownSequence
+            }()
+            meta.hasOlder = hasOlder || trimmedBelowKnownTop
             meta.olderCursor = olderCursor
           }
         case .drop:
@@ -404,6 +416,7 @@ actor ChatThreadEngine {
           transcript = appended.transcript
           timelineFold.transcriptChanged(from: appended.firstChangedIndex)
           transcriptRevision &+= 1
+          if mapped.contains(where: chatThreadEnvelopeFeedsContextUsage) { usageRevision &+= 1 }
           for envelope in mapped { advanceGoalState(with: envelope) }
           timelineWork = .rebuild
         }
@@ -448,6 +461,7 @@ actor ChatThreadEngine {
     transcriptKeyIndex = nil
     timelineFold.invalidate(reason: "transcript rebuilt")
     transcriptRevision &+= 1
+    usageRevision &+= 1
     goalState = .untouched
     for envelope in transcript { advanceGoalState(with: envelope) }
   }
@@ -634,6 +648,7 @@ actor ChatThreadEngine {
       resumePoint: resumePoint,
       cardExpansionSignature: overlays.cardExpansionSignature,
       viewportWidth: overlays.viewportWidth,
+      usageRevision: usageRevision,
       transcript: transcript
     )
   }
@@ -648,6 +663,16 @@ func chatThreadEnvelopeIsTurnBoundary(_ envelope: AgentChatEventEnvelope) -> Boo
     return true
   case .status(let turnStatus, _, _):
     return turnStatus == .started
+  default:
+    return false
+  }
+}
+
+/// A row `workContextUsageViewModel` reads.
+func chatThreadEnvelopeFeedsContextUsage(_ envelope: WorkChatEnvelope) -> Bool {
+  switch envelope.event {
+  case .tokens, .done, .contextCompact:
+    return true
   default:
     return false
   }

@@ -287,6 +287,37 @@ describe("resolveSyncHostInboundProjectScope", () => {
 });
 
 describe("buildSyncHostHelloOkPayload", () => {
+  it("advertises rosterPeer only when the roster feed is enabled", () => {
+    const peer = {
+      deviceId: "ios-phone",
+      deviceName: "Phone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "ios-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+    const base = {
+      peer,
+      brain: peer,
+      serverDbVersion: 0,
+      heartbeatIntervalMs: 30_000,
+      pollIntervalMs: 400,
+      projectCatalog: { projects: [] },
+      projectCatalogEnabled: false,
+      projectActionsEnabled: false,
+      crossProjectChatEnabled: false,
+      remoteCommandSupportedActions: [],
+      remoteCommandDescriptors: [],
+      localCommandDescriptors: [],
+    };
+
+    const withoutRoster = buildSyncHostHelloOkPayload({ ...base, rosterEnabled: false });
+    const withRoster = buildSyncHostHelloOkPayload({ ...base, rosterEnabled: true });
+    expect(withoutRoster.features).not.toHaveProperty("rosterPeer");
+    expect(withRoster.features.rosterPeer).toEqual({ enabled: true });
+    expect(withRoster.features.roster).toEqual({ enabled: true });
+  });
+
   it("selects deflate only when the peer explicitly offers it", () => {
     expect(negotiateSyncApplicationCompression(undefined)).toBeNull();
     expect(negotiateSyncApplicationCompression([])).toBeNull();
@@ -1146,7 +1177,13 @@ describe("brain project actions fallback handler", () => {
     const secretsDir = path.join(projectRoot, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
     const transcriptPath = path.join(projectRoot, "personal-chat.jsonl");
-    fs.writeFileSync(transcriptPath, "");
+    const transcriptEvent: AgentChatEventEnvelope = {
+      sessionId: "personal-1",
+      timestamp: "2026-04-23T10:00:00.000Z",
+      sequence: 1,
+      event: { type: "text", text: "personal transcript history" },
+    };
+    fs.writeFileSync(transcriptPath, `${JSON.stringify(transcriptEvent)}\n`);
     const credentialStore = new EncryptedFileCredentialStore({
       secretsDir,
       keyMaterial: { read: () => null },
@@ -1184,6 +1221,12 @@ describe("brain project actions fallback handler", () => {
       transcriptPath: vi.fn(async () => transcriptPath),
       isTurnActive: vi.fn(async () => true),
     };
+    const executeRoutedCommand = vi.fn(async (payload: SyncCommandPayload & { projectId: string }) => {
+      if (payload.action === "chat.fail") {
+        throw Object.assign(new Error("coded route failure"), { code: "coded_failure" });
+      }
+      return { text: payload.args.text };
+    });
     const handler = createBrainProjectActionsSyncHandler({
       logger,
       projectCatalogProvider: {
@@ -1197,6 +1240,24 @@ describe("brain project actions fallback handler", () => {
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
       pollIntervalMs: 100,
       personalChatScope,
+      rosterProvider: { buildSnapshot: async () => [] },
+      projectCommandRouter: {
+        resolveProjectId: ({ projectId, projectRootPath }: { projectId?: string | null; projectRootPath?: string | null }) =>
+          projectId ?? (projectRootPath === "/registered/project" ? "project-1" : null),
+        listDescriptors: async () => [
+          { action: "chat.send", scope: "project", policy: { viewerAllowed: true } },
+          { action: "chat.fail", scope: "project", policy: { viewerAllowed: true } },
+          { action: "macDesktop.capture", scope: "project", policy: { viewerAllowed: true } },
+          { action: "appControl.launch", scope: "project", policy: { viewerAllowed: true } },
+          { action: "analytics.capture", scope: "project", policy: { viewerAllowed: true } },
+          { action: "chat.local", scope: "project", policy: { viewerAllowed: true, localOnly: true } },
+        ] satisfies SyncRemoteCommandDescriptor[],
+        getDescriptor: async (_projectId: string, action: string) =>
+          ["chat.send", "chat.fail"].includes(action)
+            ? { action, scope: "project", policy: { viewerAllowed: true } }
+            : null,
+        execute: executeRoutedCommand,
+      },
     });
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     server.on("connection", (ws, request) => handler({
@@ -1236,6 +1297,80 @@ describe("brain project actions fallback handler", () => {
           },
         },
       });
+      const rosterPeer = await connectPeer(port, "bootstrap-token", "descriptor-roster-peer", {
+        syncRole: "roster",
+      });
+      const rosterHello = rosterPeer.envelopes.find((envelope) => envelope.type === "hello_ok");
+      expect(rosterHello?.payload).toMatchObject({ projects: [] });
+      const advertisedActions = (rosterHello?.payload as {
+        features: { commandRouting: { actions: Array<{ action: string }> } };
+      }).features.commandRouting.actions.map(({ action }) => action);
+      expect(advertisedActions).toContain("chat.send");
+      expect(advertisedActions).not.toEqual(expect.arrayContaining([
+        "macDesktop.capture",
+        "appControl.launch",
+        "analytics.capture",
+        "chat.local",
+      ]));
+      rosterPeer.ws.close();
+
+      const routeCommand = (
+        requestId: string,
+        payload: Record<string, unknown>,
+      ) => client!.send(encodeSyncEnvelope({ type: "command", requestId, payload }));
+      routeCommand("route-first", {
+        commandId: "route-retry-1",
+        projectId: "project-1",
+        action: "chat.send",
+        args: { text: "send once" },
+      });
+      const firstRouteResult = await waitForEnvelope(envelopes, "command_result", "route-first");
+      expect(firstRouteResult.payload).toMatchObject({
+        commandId: "route-retry-1",
+        ok: true,
+        result: { text: "send once" },
+      });
+      routeCommand("route-retry", {
+        commandId: "route-retry-1",
+        projectId: "project-1",
+        action: "chat.send",
+        args: { text: "send once" },
+      });
+      await waitForEnvelope(envelopes, "command_result", "route-retry");
+      expect(executeRoutedCommand).toHaveBeenCalledTimes(1);
+      routeCommand("route-mismatch", {
+        commandId: "route-retry-1",
+        projectId: "project-1",
+        action: "chat.send",
+        args: { text: "different payload" },
+      });
+      const mismatch = await waitForEnvelope(envelopes, "command_result", "route-mismatch");
+      expect(mismatch.payload).toMatchObject({ error: { code: "duplicate_command_mismatch" } });
+      routeCommand("route-root-only", {
+        commandId: "route-root-only",
+        projectRootPath: "/registered/project",
+        action: "chat.send",
+        args: {},
+      });
+      const rootOnly = await waitForEnvelope(envelopes, "command_result", "route-root-only");
+      expect(rootOnly.payload).toMatchObject({ error: { code: "missing_project" } });
+      routeCommand("route-unsupported", {
+        commandId: "route-unsupported",
+        projectId: "project-1",
+        action: "unknown.action",
+        args: {},
+      });
+      const unsupported = await waitForEnvelope(envelopes, "command_result", "route-unsupported");
+      expect(unsupported.payload).toMatchObject({ error: { code: "unsupported_command" } });
+      routeCommand("route-coded-error", {
+        commandId: "route-coded-error",
+        projectId: "project-1",
+        action: "chat.fail",
+        args: {},
+      });
+      const codedError = await waitForEnvelope(envelopes, "command_result", "route-coded-error");
+      expect(codedError.payload).toMatchObject({ error: { code: "coded_failure" } });
+      expect(executeRoutedCommand).toHaveBeenCalledTimes(2);
 
       client.send(encodeSyncEnvelope({
         type: "command",
@@ -1261,7 +1396,7 @@ describe("brain project actions fallback handler", () => {
       const snapshot = await waitForEnvelope(envelopes, "chat_subscribe", "personal-subscribe");
       expect(snapshot.payload).toMatchObject({
         sessionId: "personal-1",
-        events: [],
+        events: [transcriptEvent],
         turnActive: true,
       });
 
@@ -1277,8 +1412,9 @@ describe("brain project actions fallback handler", () => {
       const historyPage = await waitForEnvelope(envelopes, "chat_history", "personal-history");
       expect(historyPage.payload).toMatchObject({
         sessionId: "personal-1",
-        startOffset: 1_024,
-        hasMore: true,
+        events: [transcriptEvent],
+        startOffset: 0,
+        hasMore: false,
         sessionFound: true,
       });
 
@@ -1298,14 +1434,11 @@ describe("brain project actions fallback handler", () => {
       );
       expect(failedHistoryPage.payload).toMatchObject({
         sessionId: "personal-1",
-        startOffset: 4_096,
-        unavailable: true,
+        events: [transcriptEvent],
+        hasMore: false,
+        sessionFound: true,
       });
-      expect(logger.warn).toHaveBeenCalledWith("sync_brain.chat_history_failed", {
-        sessionId: "personal-1",
-        beforeOffset: 4_096,
-        error: "personal history unavailable",
-      });
+      expect(personalChatScope.call).not.toHaveBeenCalledWith("getEventHistoryPage", expect.anything());
 
       client.send(encodeSyncEnvelope({
         type: "chat_history",
@@ -8581,6 +8714,79 @@ describe("inbound changeset_batch guards", () => {
     } as unknown as Parameters<typeof createSyncHostService>[0]);
   }
 
+  it("keeps roster sockets out of inbound and outbound replica sync", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const base = createHostArgs(projectRoot, []);
+    const upsertPeerMetadata = vi.fn();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      pollIntervalMs: 25,
+      db: {
+        sync: {
+          getSiteId: () => "site-host-roster-gate",
+          getDbVersion: () => 1,
+          exportChangesSince: (fromDbVersion: number) =>
+            fromDbVersion < 1 ? [makePeerChange("kv", 1, 0)] : [],
+          applyChanges,
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: { ...base.deviceRegistryService, upsertPeerMetadata },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let roster: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let replica: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      roster = await connectPeer(port, host.getBootstrapToken(), "roster-only", { syncRole: "roster" });
+      replica = await connectPeer(port, host.getBootstrapToken(), "replica-peer");
+      await waitForValue(
+        () => replica?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "replica catch-up batch",
+      );
+      expect(roster.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(upsertPeerMetadata.mock.calls.some(([metadata]) =>
+        (metadata as SyncPeerMetadata | undefined)?.deviceId === "roster-only"
+      )).toBe(false);
+
+      roster.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId: "roster-inbound-batch",
+        payload: {
+          batchId: "roster-inbound-batch",
+          fromDbVersion: 0,
+          toDbVersion: 1,
+          changes: [makePeerChange("kv", 1, 1)],
+        },
+      }));
+      await waitForValue(
+        () => base.logger.debug.mock.calls.find(([event]) => event === "sync_host.roster_peer_changeset_ignored"),
+        "roster changeset rejection",
+      );
+      expect(applyChanges).not.toHaveBeenCalled();
+
+      replica.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId: "replica-inbound-batch",
+        payload: {
+          batchId: "replica-inbound-batch",
+          fromDbVersion: 0,
+          toDbVersion: 1,
+          changes: [makePeerChange("kv", 1, 2)],
+        },
+      }));
+      const ack = await waitForEnvelope(replica.envelopes, "changeset_ack", "replica-inbound-batch");
+      expect(ack.payload).toMatchObject({ ok: true, appliedCount: 1 });
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+    } finally {
+      roster?.ws.close();
+      replica?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("rejects an oversized inbound batch with changeset_too_large and does not apply it (M6)", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const applyChanges = vi.fn(() => ({ appliedCount: 0 }));
@@ -9340,6 +9546,7 @@ describe("sync host handoff over a shared listener", () => {
       isTurnActive: vi.fn(async () => false),
     };
     let client: WebSocket | null = null;
+    let rosterPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     let hostA: ReturnType<typeof createSyncHostService> | null = null;
     let hostB: ReturnType<typeof createSyncHostService> | null = null;
     try {
@@ -9381,6 +9588,9 @@ describe("sync host handoff over a shared listener", () => {
         () => envelopes.find((envelope) => envelope.type === "hello_ok"),
         "hello_ok from host A",
       );
+      rosterPeer = await connectPeer(port, hostA.getBootstrapToken(), "roster-phone", {
+        syncRole: "roster",
+      });
 
       client.send(encodeSyncEnvelope({
         type: "chat_subscribe",
@@ -9445,6 +9655,15 @@ describe("sync host handoff over a shared listener", () => {
         },
       } as unknown as Parameters<typeof createSyncHostService>[0]);
       await hostB.waitUntilListening();
+
+      const rosterClosed = await waitForValue(
+        () => rosterPeer?.closeEvents[0],
+        "roster peer closed at project handoff",
+      );
+      expect(rosterClosed).toMatchObject({
+        code: 4002,
+        reason: "Sync host changed projects",
+      });
 
       const handedOffEnvelopes = () => envelopes.slice(envelopeCountAfterDispose);
       await waitForValue(

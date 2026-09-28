@@ -1397,8 +1397,10 @@ struct WorkTurnEndMarker: Hashable {
   /// The turn's token usage from its `done`. Drawn on the turn-end line; a
   /// usage-limit turn moves it behind the footer's details toggle instead.
   var usage: WorkUsageSummary? = nil
-  /// Proof artifacts captured while the turn ran (the `N proof` chip).
-  var proofCount: Int = 0
+  /// Proof artifacts captured while the turn ran: the `N proof` chip and the
+  /// filmstrip it opens (desktop `DoneTurnDivider` + `ChatProofFilmstrip`).
+  var proofArtifacts: [ComputerUseArtifactSummary] = []
+  var proofCount: Int { proofArtifacts.count }
   /// The turn folded: its tool and file counts moved up to the fold row, so
   /// the line keeps only time, usage, proof and sources. Set by presentation.
   var workSummaryInFold: Bool = false
@@ -1873,6 +1875,11 @@ struct WorkEventCardModel: Identifiable, Hashable {
   let technicalDetail: String?
   let nextAction: String?
   let taskList: WorkChatTaskListSnapshot?
+  /// `kind == "reasoning"`: measured thinking time in whole seconds, the
+  /// desktop `Thought for 12s`. Nil when unknown (one chunk, a sub-second
+  /// span, or a merged activity phase), which draws plain `Thought`. Stamped
+  /// after the cards are built (`workStampReasoningDurations`).
+  var thoughtSeconds: Int? = nil
 
   init(
     id: String,

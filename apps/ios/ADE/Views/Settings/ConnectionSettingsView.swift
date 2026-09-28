@@ -167,7 +167,8 @@ struct ConnectionSettingsView: View {
             pinPreset = .discover(host)
           }
         },
-        onWake: wakeAsleepMachine
+        onWake: wakeAsleepMachine,
+        showsLiveFleet: true
       )
     }
     .padding(.horizontal, 16)
@@ -756,6 +757,25 @@ func settingsMachineRowErrorsRetiring(
   return remaining
 }
 
+/// A paired machine's row subtitle while the fleet holds (or tries to hold) a
+/// roster link to it. One line, so the state never renders as loose text
+/// between rows.
+func settingsFleetMachineSubtitle(
+  _ state: MachineFleet.MachineState,
+  lastUpdateAt: Date?,
+  powerClause: String?,
+  now: Date = Date()
+) -> String {
+  switch state {
+  case .live:
+    return powerClause.map { "Live · \($0)" } ?? "Live"
+  case .paused:
+    return "Paused (\(MachineFleet.liveMachineLimit)-machine limit)"
+  default:
+    return machineFleetStateLabel(state, lastUpdateAt: lastUpdateAt, now: now)
+  }
+}
+
 /// The CONNECTIONS machine list: a unified, deduplicated roster of the computers a
 /// phone can reach — machines on the signed-in account plus previously-paired
 /// machines — ranked current → online → offline. Shows the top three inline
@@ -766,6 +786,12 @@ struct SettingsMachinesSection: View {
   let syncService: SyncService
   let onPairWithPin: (DiscoveredSyncHost) -> Void
   @ObservedObject private var account = AccountService.shared
+  /// Live state of every machine other than the focused one (the Hub shows
+  /// all machines' projects; this is where the user sees and manages them).
+  @EnvironmentObject private var machineFleet: MachineFleet
+  /// Machines removed from this phone's lists ("Remove from this list").
+  @ObservedObject private var hiddenMachines = HiddenMachineStore.shared
+  @State private var keepLivePrompt: MachineFleetKeepLivePrompt?
 
   @State private var seeAllPresented = false
   @State private var renamingMachine: AccountMachine?
@@ -789,11 +815,29 @@ struct SettingsMachinesSection: View {
     /// is why it is not what the row RENDERS.
     let isCurrent: Bool
     let kind: Kind
+    /// The fleet's roster connection to this machine, when it is paired and not
+    /// the focused one.
+    var fleet: MachineFleet.Machine? = nil
 
     /// What the row is allowed to show as connected. An announced sleep
     /// outranks the socket: a green CONNECTED pill on a Mac that told us it was
     /// going dark is the claim this whole pass exists to stop making.
-    var presentsAsConnected: Bool { isCurrent && !isAsleep }
+    var presentsAsConnected: Bool { (isCurrent || isFleetLive) && !isAsleep }
+
+    /// The phone holds a live roster link to this machine (not the focused
+    /// one). It reads as connected, and a tap must not move focus to it.
+    var isFleetLive: Bool { !isCurrent && fleet?.state == .live }
+
+    /// The key this row is hidden under: the machine's device identity, or its
+    /// name for a saved machine that never reported one.
+    var hiddenIdentity: String {
+      switch kind {
+      case .account(let machine):
+        return nonEmptyTrimmed(machine.deviceId) ?? "account:\(machine.machineKey)"
+      case .saved(let host):
+        return nonEmptyTrimmed(host.hostIdentity) ?? "name:\(host.hostName)"
+      }
+    }
   }
 
   private var isConnected: Bool {
@@ -840,14 +884,24 @@ struct SettingsMachinesSection: View {
         sleepStateAt: machineLastSeenDate(epochMilliseconds: machine.sleepStateAt),
         lastSeenAt: lastSeen
       ) == .asleep
+      let fleet = current ? nil : fleetMachine(identity: machine.deviceId)
+      let powerClause = syncMachinePowerReadingIsFresh(
+        directoryOnline: machine.online,
+        lastSeenAt: lastSeen
+      ) ? accountMachinePowerClause(machine.power) : nil
       return (
         key: (machine.deviceId ?? machine.machineKey).lowercased(),
         entry: Entry(
           id: "account-\(machine.id)",
           name: machine.rowLabel,
           // Route-neutral to match the saved rows below; the route kind stays
-          // in the Connection details section, never on the primary list.
-          routeHint: accountMachineDetailLine(
+          // in the Connection details section, never on the primary list. A
+          // machine the fleet holds (or tries to hold) a roster link to says
+          // that instead, in the same line, unless the machine announced
+          // sleep (the rule above: the announcement beats a socket).
+          routeHint: (asleep ? nil : fleet).map {
+            settingsFleetMachineSubtitle($0.state, lastUpdateAt: $0.lastUpdateAt, powerClause: powerClause)
+          } ?? accountMachineDetailLine(
             isConnected: current && !asleep,
             isAsleep: asleep,
             directoryOnline: machine.online,
@@ -857,7 +911,8 @@ struct SettingsMachinesSection: View {
           online: machine.online,
           isAsleep: asleep,
           isCurrent: current,
-          kind: .account(machine)
+          kind: .account(machine),
+          fleet: fleet
         )
       )
     }
@@ -885,10 +940,13 @@ struct SettingsMachinesSection: View {
         && identity == nil
         && currentHostName?.caseInsensitiveCompare(host.hostName) == .orderedSame
       let current = isConnected && (identityMatches || nameMatchesWithoutStableIdentity)
+      let fleet = current ? nil : fleetMachine(identity: identity)
       result.append(Entry(
         id: "saved-\(host.id)",
         name: host.hostName,
-        routeHint: machineReachabilityText(
+        routeHint: fleet.map {
+          settingsFleetMachineSubtitle($0.state, lastUpdateAt: $0.lastUpdateAt, powerClause: nil)
+        } ?? machineReachabilityText(
           isConnected: current,
           directoryOnline: online,
           lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt)
@@ -898,12 +956,20 @@ struct SettingsMachinesSection: View {
         // exactly the row it had before any of this existed.
         isAsleep: false,
         isCurrent: current,
-        kind: .saved(host)
+        kind: .saved(host),
+        fleet: fleet
       ))
     }
 
-    return result.sorted { lhs, rhs in
+    // A removed machine stays off this list until it comes back (see
+    // `HiddenMachineStore`). The attached machine is never hidden.
+    let visible = result.filter { entry in
+      entry.isCurrent || !hiddenMachines.isHidden(identity: entry.hiddenIdentity)
+    }
+
+    return visible.sorted { lhs, rhs in
       if lhs.isCurrent != rhs.isCurrent { return lhs.isCurrent }
+      if lhs.isFleetLive != rhs.isFleetLive { return lhs.isFleetLive }
       if lhs.online != rhs.online { return lhs.online }
       return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
     }
@@ -913,6 +979,14 @@ struct SettingsMachinesSection: View {
     let all = entries
     VStack(alignment: .leading, spacing: 12) {
       SettingsSectionHeader(label: "MACHINES")
+
+      // The phone keeps live updates for a limited number of machines.
+      if machineFleet.pairedMachineCount > MachineFleet.liveMachineLimit {
+        MachineFleetLimitNotice(
+          pairedMachineCount: machineFleet.pairedMachineCount,
+          pausedCount: machineFleet.machines.filter { $0.state == .paused }.count
+        )
+      }
 
       if all.isEmpty {
         Text("No machines yet. Add one below.")
@@ -957,6 +1031,20 @@ struct SettingsMachinesSection: View {
     }
     .sheet(isPresented: $seeAllPresented) {
       allMachinesSheet
+        .environmentObject(machineFleet)
+    }
+    .confirmationDialog(
+      keepLivePrompt.map { "Keep \($0.machineName) live?" } ?? "",
+      isPresented: Binding(get: { keepLivePrompt != nil }, set: { if !$0 { keepLivePrompt = nil } }),
+      titleVisibility: .visible,
+      presenting: keepLivePrompt
+    ) { prompt in
+      Button("Keep \(prompt.machineName) live") {
+        machineFleet.keepLive(machineKey: prompt.machineKey)
+      }
+      Button("Cancel", role: .cancel) {}
+    } message: { prompt in
+      Text("The phone keeps live updates for \(MachineFleet.liveMachineLimit) machines at a time. \(prompt.pausedName) will pause and show its last update.")
     }
     .sheet(item: $renamingMachine) { machine in
       SettingsMachineRenameSheet(machine: machine)
@@ -1018,8 +1106,37 @@ struct SettingsMachinesSection: View {
             Label("Rename", systemImage: "pencil")
           }
         }
+        if let fleetMachine = entry.fleet {
+          if fleetMachine.state == .paused {
+            Button {
+              requestKeepLive(fleetMachine)
+            } label: {
+              Label("Keep live", systemImage: "bolt.fill")
+            }
+          } else if fleetMachine.isPinned {
+            Button {
+              machineFleet.stopKeepingLive(machineKey: fleetMachine.machineKey)
+            } label: {
+              Label("Stop keeping live", systemImage: "bolt.slash")
+            }
+          }
+          if machineFleetCanRetry(fleetMachine.state) {
+            Button {
+              machineFleet.retry(machineKey: fleetMachine.machineKey)
+            } label: {
+              Label("Try again", systemImage: "arrow.clockwise")
+            }
+          }
+        }
+        if canRemove(entry) {
+          Button(role: .destructive) {
+            remove(entry)
+          } label: {
+            Label("Remove from this list", systemImage: "eye.slash")
+          }
+        }
       }
-      .opacity(tappable || entry.isCurrent ? 1 : 0.72)
+      .opacity(tappable || entry.presentsAsConnected ? 1 : 0.72)
 
       if let error = rowErrors[entry.id] {
         VStack(alignment: .leading, spacing: 7) {
@@ -1063,6 +1180,50 @@ struct SettingsMachinesSection: View {
     )
   }
 
+  /// The fleet's view of this machine (its roster connection), keyed like
+  /// saved profiles: `machine:<device id>`.
+  private func fleetMachine(identity: String?) -> MachineFleet.Machine? {
+    guard let identity = nonEmptyTrimmed(identity) else { return nil }
+    return machineFleet.machine(for: "machine:\(identity.lowercased())")
+  }
+
+  /// Any machine but the one this phone is attached to, or has in focus, can
+  /// leave the list. The focused one would come straight back: focusing a
+  /// machine is connecting to it.
+  private func canRemove(_ entry: Entry) -> Bool {
+    guard !entry.isCurrent else { return false }
+    if let focusedKey = syncService.focusedMachineKey,
+       let focusedIdentity = HiddenMachineStore.identity(fromFleetKey: focusedKey),
+       HiddenMachineStore.key(forIdentity: focusedIdentity) == HiddenMachineStore.key(forIdentity: entry.hiddenIdentity) {
+      return false
+    }
+    return true
+  }
+
+  /// Hides the machine on this phone. A saved pairing keeps its credential, so
+  /// connecting to the machine again (which also brings it back) needs no PIN;
+  /// the fleet drops its roster link and the Hub and Work stop merging it.
+  private func remove(_ entry: Entry) {
+    rowErrors.removeValue(forKey: entry.id)
+    hiddenMachines.hide(
+      identity: entry.hiddenIdentity,
+      isAvailableNow: entry.online || entry.isFleetLive
+    )
+    ADEHaptics.light()
+  }
+
+  private func requestKeepLive(_ machine: MachineFleet.Machine) {
+    if let wouldPause = machineFleet.machineThatWouldPause(forKeepingLive: machine.machineKey) {
+      keepLivePrompt = MachineFleetKeepLivePrompt(
+        machineKey: machine.machineKey,
+        machineName: machine.name,
+        pausedName: wouldPause.name
+      )
+    } else {
+      machineFleet.keepLive(machineKey: machine.machineKey)
+    }
+  }
+
   private func accountMachine(from entry: Entry) -> AccountMachine? {
     guard case .account(let machine) = entry.kind else { return nil }
     return machine
@@ -1074,7 +1235,7 @@ struct SettingsMachinesSection: View {
     // checkmark on a machine that announced a suspend tells the user the one
     // thing they cannot act on.
     if entry.isAsleep { return .wake }
-    if entry.isCurrent { return .connected }
+    if entry.isCurrent || entry.isFleetLive { return .connected }
     return .connect
   }
 

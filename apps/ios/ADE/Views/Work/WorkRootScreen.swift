@@ -35,6 +35,12 @@ final class WorkRootBookkeeping {
   /// Last set handed to `warmChatThreads`, so the prefetch fires only when the
   /// set of chats worth warming changes.
   var lastPrefetchSessionIds: [String] = []
+  /// Per-lane fingerprint of the session rows at the last chat-summary
+  /// refresh, and when every lane was last refreshed. A CRDT tick refreshes
+  /// only the lanes whose rows changed; a full sweep still runs every
+  /// `workChatSummaryFullSweepInterval`.
+  var summaryLaneSignatures: [String: Int] = [:]
+  var lastFullChatSummarySweep = Date.distantPast
 }
 
 /// Mirrors `terminalBufferRevision` into the list only while a search is
@@ -112,6 +118,9 @@ func workPendingChatCreationMatchesProject(
 struct WorkSessionRoute: Hashable {
   let openId: UUID = UUID()
   let sessionId: String
+  /// Set for a row from another machine: the chat opens through that
+  /// machine's roster connection.
+  var remoteChat: WorkChatCrossProjectContext? = nil
   var openingPrompt: String? = nil
   var openingPromptDispatchHandled = false
   var openingDeliveryState: String? = nil
@@ -188,11 +197,14 @@ struct WorkRootSyncInputs: Equatable {
   var spawnKindUpdateAvailable = false
   var deleteSessionAvailable = false
   var generateNamesAvailable = false
+  /// Other machines' checkouts of the focused repository (their chats join
+  /// the list). Tracked only while the list is visible.
+  var remoteMachineRepos: [WorkRemoteMachineRepo] = []
 
   init() {}
 
   @MainActor
-  init(_ sync: SyncService, listVisible: Bool) {
+  init(_ sync: SyncService, fleet: MachineFleet? = nil, listVisible: Bool) {
     self.listVisible = listVisible
     isAttached = sync.isAttached
     isLive = isAttached && sync.projectHostIsLive
@@ -227,6 +239,15 @@ struct WorkRootSyncInputs: Equatable {
     spawnKindUpdateAvailable = sync.supportsSpawnKindUpdate
     deleteSessionAvailable = sync.supportsWorkSessionDeletion
     generateNamesAvailable = sync.canInvokeRemoteAction("chat.regenerateSessionMetadata")
+    if let fleet, !fleet.machines.isEmpty, let activeProject {
+      let identity = workRepoIdentity(owner: activeProject.repoOwner, name: activeProject.repoName)
+        ?? workRepoIdentity(originUrl: sync.rosterProject(for: activeProject)?.repoOriginUrl)
+      remoteMachineRepos = workRemoteMachineRepos(
+        machines: fleet.machines,
+        identity: identity,
+        folderKey: hubProjectFolderKey(activeProject.rootPath, displayName: activeProject.displayName)
+      )
+    }
     #if DEBUG
     // The fixture has no machine to probe Cursor credentials on; show the entry
     // so the overflow menu can be screenshotted whole.
@@ -245,6 +266,7 @@ struct WorkRootSyncInputs: Equatable {
 /// nothing pushed) is known here, where the inputs are narrowed.
 struct WorkRootScreen: View {
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
   @EnvironmentObject private var dictationController: DictationController
   var isTabActive = true
   @State private var path = NavigationPath()
@@ -258,7 +280,7 @@ struct WorkRootScreen: View {
       syncService: syncService,
       dictationController: dictationController,
       isTabActive: isTabActive,
-      inputs: WorkRootSyncInputs(syncService, listVisible: isTabActive && path.isEmpty),
+      inputs: WorkRootSyncInputs(syncService, fleet: machineFleet, listVisible: isTabActive && path.isEmpty),
       path: $path
     )
     .equatable()
@@ -721,7 +743,9 @@ struct WorkRootListScreen: View, Equatable {
               ScrollDiagnostics.shared.scrollEnded("work-list")
             }
           }
-          .onAppear { ScrollDiagnostics.shared.enter(.workList) }
+          .onAppear {
+            ScrollDiagnostics.shared.enter(.workList)
+          }
           .onDisappear {
             ScrollDiagnostics.shared.scrollEnded("work-list")
             ScrollDiagnostics.shared.leave(.workList)
@@ -1020,7 +1044,8 @@ struct WorkRootListScreen: View, Equatable {
           // `sessionPresentationTaskKey` goes nil once a screen is pushed off the
           // root, so `workOrderedLanes` stops refreshing here — fall back to the
           // live `lanes` when the presentation-derived order isn't available.
-          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes
+          lanes: workOrderedLanes.isEmpty ? lanes : workOrderedLanes,
+          crossProjectContext: route.remoteChat
         )
         .equatable()
         }

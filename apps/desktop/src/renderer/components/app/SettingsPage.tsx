@@ -280,7 +280,7 @@ type TabSection = {
 const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   account: [
     {
-      entryIds: ["account.profile"],
+      entryIds: ["account.profile", "account.computers"],
       // The account page, without its own page chrome.
       render: () => (
         <div id="account-profile" data-settings-anchor="account-profile">

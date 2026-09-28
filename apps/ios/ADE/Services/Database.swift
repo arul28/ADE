@@ -1,5 +1,6 @@
 import Foundation
 import SQLite3
+import os
 
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let localDeleteColumnId = "-1"
@@ -248,8 +249,26 @@ final class DatabaseService {
   private let accessQueue = DispatchQueue(label: "com.ade.database", qos: .userInitiated)
 
   private func withLock<T>(_ body: () throws -> T) rethrows -> T {
-    try accessQueue.sync(execute: body)
+    guard Thread.isMainThread, DatabaseService.mainThreadWaitReporter != nil else {
+      return try accessQueue.sync(execute: body)
+    }
+    // Diagnostics: how long the main thread waited for the queue (a
+    // background changeset apply holds it for a whole batch).
+    let start = CFAbsoluteTimeGetCurrent()
+    var waitedMs = 0.0
+    let result = try accessQueue.sync { () throws -> T in
+      waitedMs = (CFAbsoluteTimeGetCurrent() - start) * 1000
+      return try body()
+    }
+    if waitedMs > 8 {
+      let caller = Thread.callStackSymbols.dropFirst(2).prefix(2).joined(separator: " | ")
+      DatabaseService.mainThreadWaitReporter?(waitedMs, String(caller.prefix(300)))
+    }
+    return result
   }
+
+  /// Set by scroll diagnostics; nil (the default) costs nothing.
+  nonisolated(unsafe) static var mainThreadWaitReporter: ((Double, String) -> Void)?
 
   private var db: OpaquePointer?
   private let encoder = JSONEncoder()
@@ -259,7 +278,14 @@ final class DatabaseService {
   private let dbURL: URL
   private let siteIdURL: URL
   private let bootstrapSQLOverride: String?
-  private var localDbVersion = 0
+  private var localDbVersion = 0 {
+    didSet { publishedDbVersion.withLock { $0 = localDbVersion } }
+  }
+  /// `localDbVersion`, readable without the access queue. A changeset apply
+  /// holds that queue for the whole batch, and the main actor reads the
+  /// version on every relay tick and heartbeat: through the queue it waited
+  /// for the apply (55-120 ms frames).
+  private let publishedDbVersion = OSAllocatedUnfairLock(initialState: 0)
   private var cachedSiteIdHex = ""
   private var cachedSiteIdBlob = Data()
   private var shouldCaptureLocalChanges = true
@@ -318,7 +344,7 @@ final class DatabaseService {
   }
 
   func currentDbVersion() -> Int {
-    withLock { localDbVersion }
+    publishedDbVersion.withLock { $0 }
   }
 
   func exportChangesSince(version: Int) -> [CrsqlChangeRow] {

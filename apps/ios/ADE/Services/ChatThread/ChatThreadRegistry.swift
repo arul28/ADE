@@ -32,6 +32,14 @@ final class ChatThreadRegistry {
   private var resumePoints: [ChatThreadKey: ChatThreadResumePoint] = [:]
   private var liveBatches: [ChatThreadKey: [ChatThreadLiveEvent]] = [:]
   private var liveFlushScheduled = false
+  /// Chats replaying missed events after a resumed subscribe. The host sends
+  /// that replay as individual live frames (866 of them in one round-4 open);
+  /// applied per run-loop turn they "stream in" and lose the bottom pin. They
+  /// are held and handed over in one ingest once the replay goes quiet.
+  private var catchUps: [ChatThreadKey: (startedAt: CFTimeInterval, lastEventAt: CFTimeInterval)] = [:]
+  private var catchUpFlushTasks: [ChatThreadKey: Task<Void, Never>] = [:]
+  static let catchUpQuietSeconds: CFTimeInterval = 0.15
+  static let catchUpMaxSeconds: CFTimeInterval = 1.5
   /// One ordered ingest queue per engine, so a snapshot and the live events
   /// that follow it reach the engine in socket order.
   private var ingestQueues: [ChatThreadKey: AsyncStream<ChatThreadIngest>.Continuation] = [:]
@@ -128,8 +136,14 @@ final class ChatThreadRegistry {
   func routeSnapshot(_ input: ChatThreadSnapshotInput, key: ChatThreadKey) {
     guard models[key] != nil else { return }
     // Anything batched before the ack belongs before it.
+    endCatchUp(key)
     flushLiveBatch(for: key)
     enqueue(.snapshot(input), key: key)
+    if input.resumed {
+      let now = CACurrentMediaTime()
+      catchUps[key] = (now, now)
+      scheduleCatchUpFlush(key)
+    }
   }
 
   /// Live events are batched per run-loop turn, then handed over in one ingest.
@@ -139,6 +153,11 @@ final class ChatThreadRegistry {
       ChatThreadSignposts.noteLiveIngest(sessionId: key.sessionId)
     }
     liveBatches[key, default: []].append(event)
+    if catchUps[key] != nil {
+      catchUps[key]?.lastEventAt = CACurrentMediaTime()
+      scheduleCatchUpFlush(key)
+      return
+    }
     guard !liveFlushScheduled else { return }
     liveFlushScheduled = true
     DispatchQueue.main.async { [weak self] in
@@ -154,6 +173,7 @@ final class ChatThreadRegistry {
 
   func invalidate(_ key: ChatThreadKey, reason: String) {
     guard models[key] != nil else { return }
+    endCatchUp(key)
     resumePoints.removeValue(forKey: key)
     liveBatches.removeValue(forKey: key)
     enqueue(.invalidate(reason: reason), key: key)
@@ -280,14 +300,43 @@ final class ChatThreadRegistry {
       await engine.ingest(.olderPage(.failed(sessionId: key.sessionId, message: "Not connected.")))
       return
     }
-    do {
-      let page = try await transport.chatThreadFetchOlderPage(key, request: request)
-      await engine.ingest(.olderPage(page))
-    } catch {
-      await engine.ingest(.olderPage(.failed(
-        sessionId: key.sessionId,
-        message: SyncUserFacingError.message(for: error)
-      )))
+    let started = CACurrentMediaTime()
+    let requestKind: String = {
+      switch request {
+      case .beforeSequence: return "sequence"
+      case .beforeOffset: return "offset"
+      }
+    }()
+    func record(_ result: String, attempt: Int) {
+      ScrollDiagnostics.shared.event("thread.olderPage", [
+        "machine": key.machineKey,
+        "scope": key.scope.storageKey,
+        "request": requestKind,
+        "attempt": attempt,
+        "ms": Int((CACurrentMediaTime() - started) * 1000),
+        "result": result,
+      ])
+    }
+    // One retry for a timeout: a slow host or a relay hiccup is common, and
+    // "reloading, failed" for one lost reply reads as a broken thread.
+    for attempt in 1...2 {
+      do {
+        let page = try await transport.chatThreadFetchOlderPage(key, request: request)
+        record(page.unavailable ? "unavailable" : "ok events=\(page.events.count)", attempt: attempt)
+        await engine.ingest(.olderPage(page))
+        return
+      } catch {
+        if attempt == 1, isSyncRequestTimeoutError(error) {
+          record("timeout", attempt: attempt)
+          continue
+        }
+        record("failed \(String(String(describing: error).prefix(160)))", attempt: attempt)
+        await engine.ingest(.olderPage(.failed(
+          sessionId: key.sessionId,
+          message: SyncUserFacingError.message(for: error)
+        )))
+        return
+      }
     }
   }
 
@@ -317,9 +366,45 @@ final class ChatThreadRegistry {
 
   private func flushLiveBatches() {
     liveFlushScheduled = false
-    for key in Array(liveBatches.keys) {
+    for key in Array(liveBatches.keys) where catchUps[key] == nil {
       flushLiveBatch(for: key)
     }
+  }
+
+  /// Flush a catch-up once the replay has been quiet for
+  /// `catchUpQuietSeconds`, or `catchUpMaxSeconds` after it began.
+  private func scheduleCatchUpFlush(_ key: ChatThreadKey) {
+    guard let catchUp = catchUps[key] else { return }
+    let now = CACurrentMediaTime()
+    let due = min(catchUp.lastEventAt + Self.catchUpQuietSeconds, catchUp.startedAt + Self.catchUpMaxSeconds)
+    catchUpFlushTasks.removeValue(forKey: key)?.cancel()
+    catchUpFlushTasks[key] = Task { @MainActor [weak self] in
+      let delay = max(0, due - now)
+      try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+      guard !Task.isCancelled, let self else { return }
+      self.catchUpFlushTasks.removeValue(forKey: key)
+      guard let current = self.catchUps[key] else { return }
+      let at = CACurrentMediaTime()
+      if at - current.lastEventAt < Self.catchUpQuietSeconds,
+         at - current.startedAt < Self.catchUpMaxSeconds {
+        self.scheduleCatchUpFlush(key)
+        return
+      }
+      let held = self.liveBatches[key]?.count ?? 0
+      if held > 0 {
+        ScrollDiagnostics.shared.event("thread.catchUp", [
+          "events": held,
+          "ms": Int((at - current.startedAt) * 1000),
+        ])
+      }
+      self.endCatchUp(key)
+      self.flushLiveBatch(for: key)
+    }
+  }
+
+  private func endCatchUp(_ key: ChatThreadKey) {
+    catchUps.removeValue(forKey: key)
+    catchUpFlushTasks.removeValue(forKey: key)?.cancel()
   }
 
   private func flushLiveBatch(for key: ChatThreadKey) {
@@ -348,6 +433,7 @@ final class ChatThreadRegistry {
   }
 
   private func evict(_ key: ChatThreadKey) {
+    endCatchUp(key)
     ingestQueues.removeValue(forKey: key)?.finish()
     models.removeValue(forKey: key)
     touchedAt.removeValue(forKey: key)

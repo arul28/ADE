@@ -31,10 +31,14 @@ private struct HubChatCoverModifier: ViewModifier {
 
 /// Identifies the foreign project a hub chat streams from in cross-project
 /// "quick look" mode. Passed to `WorkSessionDestinationView.crossProjectContext`.
-struct WorkChatCrossProjectContext: Equatable {
+struct WorkChatCrossProjectContext: Hashable {
   let projectId: String
   let projectRootPath: String?
   let displayName: String
+  /// Set when the chat lives on another paired machine (not the focused one).
+  /// Every read, write and stream then goes through that machine's roster
+  /// connection, and the project is never activated.
+  var machineKey: String? = nil
 }
 
 /// How the hub decided to open a chat: still switching/hydrating its project,
@@ -117,6 +121,30 @@ func hubChatCrossProjectContext(
     projectRootPath: project.rootPath,
     displayName: project.displayName
   )
+}
+
+/// The chat lives on a paired machine other than the focused one.
+func hubChatTargetIsOnOtherMachine(_ target: HubChatTarget, focusedMachineKey: String?) -> Bool {
+  guard let machineKey = target.machineKey else { return false }
+  return machineKey != focusedMachineKey
+}
+
+/// Cross-project context for a Hub chat cover, carrying the machine for a
+/// chat on another machine.
+func hubChatCoverCrossProjectContext(
+  target: HubChatTarget,
+  focusedMachineKey: String?,
+  isActiveProject: Bool
+) -> WorkChatCrossProjectContext? {
+  if hubChatTargetIsOnOtherMachine(target, focusedMachineKey: focusedMachineKey) {
+    return WorkChatCrossProjectContext(
+      projectId: target.project.id,
+      projectRootPath: target.project.rootPath,
+      displayName: target.project.displayName,
+      machineKey: target.machineKey
+    )
+  }
+  return hubChatCrossProjectContext(project: target.project, isActiveProject: isActiveProject)
 }
 
 func hubChatIsForeignProject(
@@ -211,6 +239,15 @@ private struct HubChatCover: View {
     self.syncService = syncService
     self.onClose = onClose
     let stub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
+    if hubChatTargetIsOnOtherMachine(target, focusedMachineKey: syncService.focusedMachineKey) {
+      // Another machine: paint from the roster stub and stream through that
+      // machine's roster connection. Never activate the project (that would
+      // tear down the focused socket for nothing).
+      _mode = State(initialValue: stub.map { .activated($0) } ?? .failed(
+        "Terminal sessions open from their machine's project. Open this project on its machine to see it."
+      ))
+      return
+    }
     let ownerIsActive = syncService.isActiveProject(target.project)
     let canPaint = hubChatCanPaintFromRosterStub(
       hasChatStub: stub != nil,
@@ -248,8 +285,9 @@ private struct HubChatCover: View {
             isLive: true,
             navigationChrome: .pushedDetail,
             lanes: target.lane.map { [$0.asLaneSummary()] } ?? [],
-            crossProjectContext: hubChatCrossProjectContext(
-              project: target.project,
+            crossProjectContext: hubChatCoverCrossProjectContext(
+              target: target,
+              focusedMachineKey: syncService.focusedMachineKey,
               isActiveProject: syncService.isActiveProject(target.project)
             )
           )
@@ -271,11 +309,14 @@ private struct HubChatCover: View {
       activationGeneration &+= 1
       activationWatchdog?.cancel()
       activationWatchdog = nil
-      syncService.abandonInFlightHubProjectActivation(for: target.project)
+      if !hubChatTargetIsOnOtherMachine(target, focusedMachineKey: syncService.focusedMachineKey) {
+        syncService.abandonInFlightHubProjectActivation(for: target.project)
+      }
     }
   }
 
   private func decideAndOpen() async {
+    guard !hubChatTargetIsOnOtherMachine(target, focusedMachineKey: syncService.focusedMachineKey) else { return }
     let generation = beginActivationAttempt()
     let sessionStub = makeRosterSessionStub(chat: target.chat, lane: target.lane)
     let ownerIsActive = syncService.isActiveProject(target.project)

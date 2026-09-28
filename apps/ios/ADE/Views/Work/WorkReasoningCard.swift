@@ -4,7 +4,8 @@ import SwiftUI
 ///
 /// Collapsed state mirrors desktop's compact "Thought" pill: caret + label only,
 /// with the reasoning body hidden until the user expands. While the turn is
-/// live the header reads "Thinking"; once finished it reads "Thought".
+/// live the header reads "Thinking"; once finished it reads "Thought", with
+/// " for 12s" when the card has a measured duration (desktop `MinimalThought`).
 struct WorkReasoningCard: View {
   let card: WorkEventCardModel
   let isLive: Bool
@@ -25,6 +26,12 @@ struct WorkReasoningCard: View {
 
   private var headerTitle: String {
     isLive ? "Thinking" : "Thought"
+  }
+
+  /// `for 12s` after a finished thought with a measured duration.
+  private var durationSuffix: String? {
+    guard !isLive, let seconds = card.thoughtSeconds else { return nil }
+    return "for \(workFormatThinkingElapsed(seconds))"
   }
 
   var body: some View {
@@ -91,12 +98,18 @@ struct WorkReasoningCard: View {
         Text(headerTitle)
           .font(.caption.weight(.medium))
           .foregroundStyle(isLive ? ADEColor.textSecondary : ADEColor.textMuted)
+        if let durationSuffix {
+          Text(durationSuffix)
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+        }
       }
       .padding(.vertical, 2)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(isLive ? "Reasoning in progress." : "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")
+    .accessibilityLabel("\(isLive ? "Reasoning in progress." : durationSuffix.map { "Thought \($0)." } ?? "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")
   }
 }
 

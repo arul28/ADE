@@ -22,6 +22,8 @@ import {
 import { projectAttachmentsDir } from "../../../../desktop/src/shared/chatAttachmentStagingFs";
 import { assertCursorCloudRenameAllowed } from "../../../../desktop/src/shared/cursorCloudNaming";
 import type { AttachmentUploadRegistry, AttachmentUploadTicket } from "./attachmentUploadService";
+import type { SyncPairingRecord } from "./syncPairingStore";
+import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import type {
   PrSnapshotHydration,
   PrSummary,
@@ -196,6 +198,7 @@ import type {
   SyncListExternalSessionsArgs,
   SyncListExternalSessionsResult,
   SyncCommandPayload,
+  SyncCommandResultPayload,
   SyncRemoteCommandAction,
   SyncRemoteCommandDescriptor,
   SyncRemoteCommandPolicy,
@@ -385,6 +388,119 @@ export class SyncRemoteCommandResultTooLargeError extends Error {
     this.name = "SyncRemoteCommandResultTooLargeError";
     this.details = details;
   }
+}
+
+// --- Shared `command` policy (every sync ingress) ----------------------------
+//
+// The project sync host and the brain's projectless ingress run the same gate,
+// the same args identity and the same error mapping for a `command` envelope,
+// so a phone sees one contract whichever of them answers.
+
+/**
+ * Cursor Cloud lifecycle writes are available to the interactive mobile/web
+ * clients, but not to another desktop or VPS peer acting as a read-only
+ * viewer. Bootstrap metadata is caller-controlled, so only the server-recorded
+ * pairing identity can grant this authority.
+ */
+export function isInteractiveControllerPeer(
+  peer: { pairingRecord: SyncPairingRecord | null },
+): boolean {
+  return peer.pairingRecord?.peerPlatform === "iOS"
+    || peer.pairingRecord?.peerDeviceType === "phone"
+    || peer.pairingRecord?.peerDeviceType === "browser";
+}
+
+function stableJsonValue(value: unknown): unknown {
+  if (value == null) return value;
+  if (Array.isArray(value)) return value.map(stableJsonValue);
+  if (typeof value !== "object") return value;
+  const input = value as Record<string, unknown>;
+  const output: Record<string, unknown> = {};
+  for (const key of Object.keys(input).sort()) {
+    output[key] = stableJsonValue(input[key]);
+  }
+  return output;
+}
+
+/** Key-order-independent JSON of a command's args. */
+export function stableJsonKey(value: unknown): string {
+  return JSON.stringify(stableJsonValue(value)) ?? "null";
+}
+
+/**
+ * The identity of a command's args in an idempotency ledger: a retried command
+ * id with a different fingerprint is a different command, not a replay.
+ */
+export function remoteCommandArgsFingerprint(args: unknown): string {
+  return createHash("sha256").update(stableJsonKey(args)).digest("hex");
+}
+
+/** Why the policy gate refused a command: the ack message and the result error. */
+export type RemoteCommandRejection = { code: string; message: string };
+
+/**
+ * The policy gate a `command` passes before it runs. `hostProjectId` is the
+ * project this ingress resolved the command to (null when it has none);
+ * `requestedProjectId` is the project the command named by id.
+ */
+export function evaluateRemoteCommandPolicy(args: {
+  action: string;
+  descriptor: Pick<SyncRemoteCommandDescriptor, "scope" | "policy"> | null | undefined;
+  peer: { pairingRecord: SyncPairingRecord | null };
+  requestedProjectId: string | null;
+  hostProjectId: string | null;
+}): RemoteCommandRejection | null {
+  const { action, descriptor } = args;
+  const policy = descriptor?.policy ?? null;
+  if (!policy) {
+    return { code: "unsupported_command", message: `Unsupported remote command: ${action}.` };
+  }
+  if (descriptor?.scope === "project") {
+    if (args.hostProjectId && !args.requestedProjectId) {
+      return {
+        code: "missing_project",
+        message: `Remote command ${action} requires projectId. Select the project again and retry.`,
+      };
+    }
+    if (args.requestedProjectId && !args.hostProjectId) {
+      return {
+        code: "project_not_open",
+        message: `Remote command ${action} requires an open project on this ADE machine.`,
+      };
+    }
+  }
+  if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(args.peer))) {
+    return {
+      code: "forbidden_command",
+      message: `Remote command ${action} is not available to paired controller devices.`,
+    };
+  }
+  if (policy.localOnly || policy.requiresApproval) {
+    return { code: "approval_required", message: `Remote command ${action} requires approval on this machine.` };
+  }
+  return null;
+}
+
+/**
+ * The `command_result` for a command that threw. Coded errors (e.g. laneService
+ * attach's lane_already_linked) embed the code in the message so it survives
+ * IPC transports; the command runs in-process here, so the gate is the Error's
+ * real `code` property — parsing the message alone would also mangle legit
+ * prefixes like git's "fatal:".
+ */
+export function commandErrorResult(commandId: string, error: unknown): SyncCommandResultPayload {
+  if (error instanceof SyncRemoteCommandResultTooLargeError) {
+    return { commandId, ok: false, error: error.details };
+  }
+  const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
+  const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
+  return {
+    commandId,
+    ok: false,
+    error: directCode
+      ? { code: directCode, message: parseCodedErrorMessage(error).message }
+      : { code: "command_failed", message: error instanceof Error ? error.message : String(error) },
+  };
 }
 
 /** UTF-8 size of the JSON a result serializes to; 0 when it cannot be measured. */
@@ -4970,8 +5086,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes) && payload.maxBytes > 0
       ? payload.maxBytes
       : undefined;
+    // chatLogV2 durable cursor, same meaning as `chat_history.beforeSequence`:
+    // rows with `sequence < beforeSequence`, taking precedence over the byte
+    // cursor. Advertised as the `chatHistoryPageBySequence` hello feature.
+    const beforeSequence = historyPageBeforeSequence(payload.beforeSequence);
     return await agentChatService.getChatEventHistoryPage(sessionId, {
       beforeOffset,
+      ...(beforeSequence != null ? { beforeSequence } : {}),
       ...(maxBytes != null ? { maxBytes } : {}),
       ...(context.signal ? { signal: context.signal } : {}),
     });
@@ -5124,6 +5245,11 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("chat.modelCatalog", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getModelCatalog(parseChatModelCatalogArgs(payload)));
 
+}
+
+/** A `beforeSequence` history cursor: a non-negative integer, else absent. */
+export function historyPageBeforeSequence(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
 }
 
 function registerPersonalChatRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
@@ -6760,6 +6886,25 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.recheckIntegrationStep", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.recheckIntegrationStep(parseRecheckIntegrationStepArgs(payload)));
   register("prs.getMobileSnapshot", { viewerAllowed: true, observesAbort: true }, async () => args.prService.getMobileSnapshot());
+}
+
+let projectRemoteCommandDescriptors: SyncRemoteCommandDescriptor[] | null = null;
+
+/**
+ * The descriptors a full project runtime registers, without booting one.
+ * Registration is pure — every handler reads its services when it runs — so a
+ * registry built over absent services records exactly the action, scope and
+ * policy table. The brain's projectless ingress advertises its routable
+ * project commands from this. Families a runtime registers only when a
+ * service exists follow it: `workTools.*` is in (every project runtime the
+ * brain boots builds one); `macDesktop.*` and `personalChats.*` are out, and
+ * neither is routable to a project anyway.
+ */
+export function listProjectRemoteCommandDescriptors(): SyncRemoteCommandDescriptor[] {
+  projectRemoteCommandDescriptors ??= createSyncRemoteCommandService({
+    workToolsStateService: {},
+  } as unknown as SyncRemoteCommandServiceArgs).getDescriptors();
+  return projectRemoteCommandDescriptors;
 }
 
 export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArgs) {

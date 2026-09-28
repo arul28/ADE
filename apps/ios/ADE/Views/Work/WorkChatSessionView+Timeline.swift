@@ -165,51 +165,26 @@ extension WorkChatSessionView {
     case .artifact(let artifact):
       timelineArtifact(artifact, entryId: entry.id)
     case .turnEndMarker(let marker):
-      let activity = turnToolActivity.completedByTurnId[marker.turnId]
-      let files = turnToolActivity.completedFilesByTurnId[marker.turnId]
-      let isLatestTurnEnd = marker.turnId == timelineSnapshot.latestTurnEndTurnId
-      let usageViewModel: WorkContextUsageViewModel? = isLatestTurnEnd
-        ? contextUsageViewModelCache.value(
-            sessionId: session.id,
-            transcript: transcript,
-            transcriptRenderSignature: frame?.revision ?? 0,
-            provider: chatSummaryContext.provider,
-            fallbackContextWindow: chatSummaryContext.contextWindowFallback
-          )
-        : nil
-      let compact = workResolveContextCompactControl(
-        provider: chatSummaryContext.provider,
-        usageState: usageViewModel?.state,
-        canSend: canSendMessages,
-        pendingInput: hasPendingInputGate,
-        turnBusy: sending || sendingSnapshot || actionInFlight || isStreamingTurn || sessionStatus == "active"
-      )
+      let proofId = workTurnProofExpansionId(turnId: marker.turnId)
+      let proofOpen = cardIsExpanded(proofId, entryId: entry.id)
       WorkTurnEndMarkerView(
         marker: marker,
-        toolCount: activity?.count ?? 0,
-        fileStat: workTurnFileStat(files),
-        onOpenActivity: (activity != nil || files != nil)
-          ? { toolActivitySheet = .completed(marker.turnId) }
-          : nil,
-        usageViewModel: usageViewModel,
-        modelLabel: chatSummaryContext.modelLabel,
-        compact: compact,
-        onCompact: compact == .hidden
-          ? nil
-          : {
-              Task { @MainActor in
-                _ = await onSend("/compact", [], .queue)
-              }
-        }
+        work: marker.workSummaryInFold ? .none : turnWorkDisclosure(turnKey: marker.turnId),
+        onToggleWork: { toggleTurnWork($0, turnKey: marker.turnId) },
+        onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: marker.turnId) },
+        proofOpen: proofOpen,
+        onToggleProof: { toggleNestedCard(proofId) },
+        proofContent: proofOpen ? artifactContent : [:],
+        onLoadProof: { artifact in Task { await onLoadArtifact(artifact, .preview) } },
+        onOpenProofDrawer: { artifactDrawerPresented = true }
       )
     case .turnFold(let model):
       let activityKey = model.turnEndTurnId ?? model.turnId
-      let hasActivity = turnToolActivity.completedByTurnId[activityKey] != nil
-        || turnToolActivity.completedFilesByTurnId[activityKey] != nil
       WorkTurnFoldRow(
         model: model,
-        fileStat: workTurnFileStat(turnToolActivity.completedFilesByTurnId[activityKey]),
-        onOpenActivity: hasActivity ? { toolActivitySheet = .completed(activityKey) } : nil
+        work: model.isExpanded ? turnWorkDisclosure(turnKey: activityKey) : .none,
+        onToggleWork: { toggleTurnWork($0, turnKey: activityKey) },
+        onToggleWorkItem: { toggleTurnWorkItem($0, turnKey: activityKey) }
       ) {
         toggleCard(model.id, entryId: entry.id)
       }

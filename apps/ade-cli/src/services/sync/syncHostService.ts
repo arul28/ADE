@@ -13,17 +13,11 @@ import {
   usageActionFromRpcDomain,
   usageClientSurfaceFromPeer,
 } from "../../../../desktop/src/main/services/usage/usageStatsStore";
-import {
-  readHistoryFileRange,
-  readHistoryFileSize,
-  resolveReadableHistoryPath,
-} from "../../../../desktop/src/main/services/storage/historyCompression";
+import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Bonjour, type Service as BonjourService } from "bonjour-service";
 import { WebSocketServer, WebSocket } from "ws";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
-import { compactChatEventForWire } from "../../../../desktop/src/shared/chatEventCompaction";
-import { parseCodedErrorMessage } from "../../../../desktop/src/shared/codedError";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
@@ -89,10 +83,6 @@ import type {
   SyncProjectForgetResultPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
-  SyncRosterProject,
-  SyncRosterSnapshotPayload,
-  SyncRosterDeltaPayload,
-  SyncRosterSubscribePayload,
   ListMyGitHubReposInput,
   ListMyGitHubReposResult,
   ProjectBrowseInput,
@@ -112,7 +102,6 @@ import type {
 import {
   SYNC_APPLICATION_COMPRESSION_THRESHOLD_BYTES,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
-  SYNC_FOLDED_REPLAY_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_BATCH_MAX_TABLES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -124,10 +113,7 @@ import {
   PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
   PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
 } from "../../../../desktop/src/shared/types/pairedRuntime";
-import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
-import { foldChatEventEnvelopesForReplay } from "../../../../desktop/src/shared/chatReplayFold";
 import {
-  compactChatEventForMobileWire,
   createSubagentProgressCoalescer,
   foldSubagentProgressForSnapshot,
   MOBILE_SUBAGENT_PROGRESS_INTERVAL_MS,
@@ -136,16 +122,31 @@ import {
   type SubagentProgressCoalescer,
 } from "../../../../desktop/src/shared/chatMobileSlim";
 import {
-  readTranscriptHistoryPage,
-  readTranscriptHistoryPageBeforeSequence,
-} from "../../../../desktop/src/main/services/chat/chatTranscriptHistoryPager";
-import {
   CHAT_SEQUENCE_RESUME_MAX_BYTES,
   readChatEventsAfterSequence,
-  readTurnAlignedTranscriptTail,
 } from "./chatLogResume";
+import {
+  createSyncRosterFanout,
+  ROSTER_DIRTYING_COMMAND_ACTIONS,
+  type SyncRosterProvider,
+} from "./syncRosterFanout";
+import {
+  readChatTranscriptEventsSince,
+  readSubscribedTranscriptHistoryPage,
+  readTranscriptLogicalSize,
+  clampChatSnapshotMaxBytes,
+  readFileBackedChatSnapshot,
+  SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
+  transcriptStorageKey,
+} from "./syncChatTranscriptReads";
 import { readArtifactByteRange } from "../../../../desktop/src/main/services/computerUse/artifactByteRange";
-import { findStoredToolResult } from "../../../../desktop/src/main/services/chat/chatToolResultLookup";
+import {
+  chatEventDeliveryKey,
+  compactChatEventEnvelopeForMobileSync,
+  compactChatEventEnvelopeForSync,
+  prepareChatSnapshotEventsForPeer,
+  readStoredToolResultResponse,
+} from "./syncChatWire";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import type { AccountAuthService } from "../account/accountAuthService";
@@ -261,13 +262,17 @@ import {
 // One parser for both ingress paths (this host and the brain's projectless
 // fallback handler). See syncHelloProtocol.ts for why the copy had to go.
 import {
+  isRosterSyncPeer,
   parseHelloPayload,
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import {
+  commandErrorResult,
   createSyncRemoteCommandService,
-  SyncRemoteCommandResultTooLargeError,
+  evaluateRemoteCommandPolicy,
+  remoteCommandArgsFingerprint,
+  stableJsonKey,
   type SyncRemoteCommandService,
 } from "./syncRemoteCommandService";
 import type { WorkToolsStateService } from "../workTools/workToolsStateService";
@@ -329,6 +334,8 @@ import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
 import { CURSOR_CLOUD_ARTIFACT_MAX_BYTES } from "../../../../desktop/src/shared/cursorCloudArtifactLimits";
 export { selectChangesetBatchChunk } from "./changesetPump";
+// Existing importers of the wire adapters keep this path.
+export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync } from "./syncChatWire";
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
 
@@ -583,30 +590,14 @@ const MAX_SYNC_ARTIFACT_BYTES = CURSOR_CLOUD_ARTIFACT_MAX_BYTES;
 export const SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES = 512 * 1024;
 export const SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES = 64 * 1024;
 export const SYNC_HOST_PRIORITY_MAX_CHANGESET_DEFER_MS = 2_000;
-export const SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES = 128 * 1024;
-export const SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES = 2 * 1024 * 1024;
+export {
+  SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
+  SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES,
+} from "./syncChatTranscriptReads";
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
 const SYNC_HOST_AUTH_TIMEOUT_MS = 15_000;
-// All-projects roster (mobile hub) push cadence: trailing-edge debounce, hard
-// max-wait cap so a steady event stream still flushes, and a slow safety poll
-// that runs only while ≥1 peer is subscribed.
-const ROSTER_DEBOUNCE_MS = 250;
-const ROSTER_MAX_WAIT_MS = 1_000;
-const ROSTER_SAFETY_POLL_MS = 15_000;
-// Remote commands that add/remove a roster-visible lane or chat row (possibly
-// in a non-active project via projectId routing). A successful one nudges the
-// coalesced roster flush; everything else relies on chat events + safety poll.
-const ROSTER_DIRTYING_COMMAND_ACTIONS = new Set<string>([
-  "chat.create",
-  "work.startCliSession",
-  "work.resumeCliSession",
-  "lanes.create",
-  "lanes.createChild",
-  "lanes.archive",
-  "lanes.delete",
-]);
 const MAX_CHANGESET_SEND_ATTEMPTS = 6;
 const MIN_RECOVERY_CHANGESET_BATCH_ROWS = 16;
 const MIN_RECOVERY_CHANGESET_BATCH_BYTES = 16 * 1024;
@@ -974,20 +965,6 @@ type PeerState = {
   productAnalyticsEnabled: boolean;
 };
 
-/**
- * Cursor Cloud lifecycle writes are available to the interactive mobile/web
- * clients, but not to another desktop or VPS peer acting as a read-only
- * viewer. Bootstrap metadata is caller-controlled, so only the server-recorded
- * pairing identity can grant this authority.
- */
-function isInteractiveControllerPeer(
-  peer: Pick<PeerState, "pairingRecord">,
-): boolean {
-  return peer.pairingRecord?.peerPlatform === "iOS"
-    || peer.pairingRecord?.peerDeviceType === "phone"
-    || peer.pairingRecord?.peerDeviceType === "browser";
-}
-
 type PendingChangesetBatch = {
   batchId: string;
   fromDbVersion: number;
@@ -1044,22 +1021,6 @@ const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "chat.unarchive",
   "chat.delete",
 ]);
-
-function stableJsonValue(value: unknown): unknown {
-  if (value == null) return value;
-  if (Array.isArray(value)) return value.map(stableJsonValue);
-  if (typeof value !== "object") return value;
-  const input = value as Record<string, unknown>;
-  const output: Record<string, unknown> = {};
-  for (const key of Object.keys(input).sort()) {
-    output[key] = stableJsonValue(input[key]);
-  }
-  return output;
-}
-
-function stableJsonKey(value: unknown): string {
-  return JSON.stringify(stableJsonValue(value)) ?? "null";
-}
 
 function mobileCommandArgsFingerprint(argsKey: string): string {
   return createHash("sha256").update(argsKey).digest("hex");
@@ -1131,16 +1092,7 @@ export type SyncProjectCatalogProvider = {
   forgetProject?: (args: SyncProjectForgetRequestPayload) => Promise<SyncProjectForgetResultPayload>;
 };
 
-/**
- * Builds the machine-wide all-projects chat roster (mobile hub). Lives where
- * the project registry + project scope registry are both in scope (ade-cli
- * brain). Optional: a host without a roster provider (e.g. single-project
- * desktop) simply never answers `roster_subscribe`, so the phone falls back to
- * the project catalog with no cross-project chats.
- */
-export type SyncRosterProvider = {
-  buildSnapshot: () => Promise<SyncRosterProject[]>;
-};
+export type { SyncRosterProvider } from "./syncRosterFanout";
 
 /**
  * Resolves the on-disk chat transcript path for a session in a REGISTERED
@@ -1391,6 +1343,17 @@ function createBlobFromBuffer(filePath: string, buf: Buffer): SyncFileBlob {
   };
 }
 
+/**
+ * Replica or roster, decided once from the hello: a roster socket
+ * (`syncRole: "roster"`) holds no CRDT replica. The replica paths — the
+ * changeset pump, the delivered-cursor row, inbound batches, the project
+ * hand-off — are entered only for replica peers, so none of them re-checks the
+ * role inside.
+ */
+function isReplicaSyncPeer(metadata: SyncPeerMetadata | null | undefined): boolean {
+  return !isRosterSyncPeer(metadata);
+}
+
 function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: number): SyncPeerConnectionState | null {
   if (!peer.metadata) return null;
   return {
@@ -1401,7 +1364,10 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
     remoteAddress: peer.remoteAddress,
     remotePort: peer.remotePort,
     latencyMs: peer.latencyMs,
-    syncLag: Math.max(0, currentServerDbVersion - peer.lastKnownServerDbVersion),
+    // A roster socket holds no replica, so it has no lag to report.
+    syncLag: isReplicaSyncPeer(peer.metadata)
+      ? Math.max(0, currentServerDbVersion - peer.lastKnownServerDbVersion)
+      : 0,
     isBrain: false,
     isHost: false,
     isAuthenticated: peer.authenticated,
@@ -1692,6 +1658,8 @@ export function buildSyncHostHelloOkPayload(args: {
   projectCatalogEnabled: boolean;
   projectActionsEnabled: boolean;
   crossProjectChatEnabled: boolean;
+  /** Advertise `roster` only when this ingress answers `roster_subscribe`. */
+  rosterEnabled?: boolean;
   remoteCommandSupportedActions: string[];
   remoteCommandDescriptors: SyncRemoteCommandDescriptor[];
   localCommandDescriptors: SyncRemoteCommandDescriptor[];
@@ -1776,6 +1744,11 @@ export function buildSyncHostHelloOkPayload(args: {
       chatHistoryPaging: {
         enabled: true,
       },
+      // `chat.getChatEventHistoryPage`, `agentChat.getEventHistoryPage` and
+      // `personalChats.getEventHistoryPage` honor `beforeSequence`.
+      chatHistoryPageBySequence: {
+        enabled: true,
+      },
       chatLogV2: {
         enabled: true,
         resumeMaxBytes: CHAT_SEQUENCE_RESUME_MAX_BYTES,
@@ -1826,6 +1799,13 @@ export function buildSyncHostHelloOkPayload(args: {
       changesetAck: {
         enabled: true,
       },
+      roster: {
+        enabled: args.rosterEnabled === true,
+      },
+      // Every ingress built on this payload honors `syncRole: "roster"`, but a
+      // roster socket is only useful where the roster feed is served: without
+      // it the phone would show a live link that never gets a roster.
+      ...(args.rosterEnabled === true ? { rosterPeer: { enabled: true as const } } : {}),
       ...(args.chunkedEnvelopes
         ? {
             chunkedEnvelopes: {
@@ -2174,31 +2154,6 @@ function normalizeTerminalInputId(value: unknown): string | null {
   return inputId;
 }
 
-/**
- * Envelope adapter for the wire. The policy lives in
- * `shared/chatEventCompaction` — see its header for why the wire and the stored
- * transcript have to share one. Every outbound path (live push, replay ring,
- * snapshot backfill) funnels through here.
- */
-export function compactChatEventEnvelopeForSync(
-  envelope: AgentChatEventEnvelope,
-): AgentChatEventEnvelope {
-  const event = compactChatEventForWire(envelope.event);
-  return event === envelope.event ? envelope : { ...envelope, event };
-}
-
-/**
- * The same adapter for peers that announced `mobileChatSlimV1`. Everything the
- * shared wire policy does, plus the phone-only tool-result cap — see
- * `shared/chatMobileSlim`.
- */
-export function compactChatEventEnvelopeForMobileSync(
-  envelope: AgentChatEventEnvelope,
-): AgentChatEventEnvelope {
-  const event = compactChatEventForMobileWire(envelope.event);
-  return event === envelope.event ? envelope : { ...envelope, event };
-}
-
 export type ChatEventReplayBufferEntry = {
   seq: number;
   bytes: number;
@@ -2261,10 +2216,6 @@ function lifecycleAgentKey(event: AgentChatEventEnvelope["event"]): string | nul
     : event.agentId ?? event.taskId;
   const value = typeof candidate === "string" ? candidate.trim() : "";
   return value || null;
-}
-
-function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
-  return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
 }
 
 /**
@@ -3231,16 +3182,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   // burst cannot monopolize the event loop or outbound socket budget.
   let mobileReplicaReseedLaunchPollGeneration = -1;
   let pollPumpGeneration = 0;
-  // All-projects roster (mobile hub) coalescing state. Each subscribed peer
-  // carries its own monotonic seq (PeerState.rosterSeq); clients re-snapshot on
-  // any seq discontinuity.
+  // All-projects roster (mobile hub): the shared snapshot/delta fan-out. Each
+  // subscribed peer carries its own monotonic seq (PeerState.rosterSeq);
+  // clients re-snapshot on a gap. Lambdas only run after construction.
+  const rosterFanout = createSyncRosterFanout<PeerState>({
+    provider: args.rosterProvider,
+    subscribers: () => rosterSubscriberPeers(),
+    send: (peer, type, payload, requestId) => send(peer.ws, type, payload, requestId),
+    isDisposed: () => disposed,
+    logger: args.logger,
+    buildFailedLogEvent: "sync_host.roster_build_failed",
+  });
   // Chat replay entries are intentionally bounded, but sequence high-water
   // marks must already exist when shared-listener peers are adopted below.
   const chatEventSequenceHighWaterBySession = new Map<string, number>();
-  let rosterFlushTimer: ReturnType<typeof setTimeout> | null = null;
-  let rosterMaxWaitTimer: ReturnType<typeof setTimeout> | null = null;
-  let rosterSafetyPollTimer: ReturnType<typeof setInterval> | null = null;
-  let rosterFlushInFlight = false;
   let tailnetDiscoveryStatus: SyncTailnetDiscoveryStatus = {
     state: !discoveryEnabled
       ? "disabled"
@@ -3290,7 +3245,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
         }
         try {
-          await pumpChanges(peer, generation);
+          // A roster socket never replicates: no batch, no reseed, no ack wait.
+          if (isReplicaSyncPeer(peer.metadata)) await pumpChanges(peer, generation);
         } catch (error) {
           args.logger.warn("sync_host.poll_failed", {
             peerDeviceId: peer.metadata?.deviceId ?? null,
@@ -3833,7 +3789,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     ws.on("close", (code, reason) => {
       peer.lifecycleGeneration += 1;
-      flushPeerDeliveredWatermark(peer);
+      // A roster socket delivered nothing; the device's cursor row and its
+      // throttle state belong to its replica, which may connect here later.
+      if (isReplicaSyncPeer(peer.metadata)) flushPeerDeliveredWatermark(peer);
       abortPeerOperations(peer, "Sync peer closed.");
       peer.pendingTerminalSnapshots.clear();
       peer.envelopeChunks.reset();
@@ -3891,10 +3849,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // Optional call because an embedding may inject a service built before
       // this method existed; the TTL still covers that host.
       remoteCommandService.releaseMacDesktopConnection?.(peer.macDesktopConnectionId);
-      if (peer.rosterSubscribed && rosterSubscriberPeers().length === 0) {
-        stopRosterSafetyPoll();
-        clearRosterFlushTimers();
-      }
+      if (peer.rosterSubscribed) rosterFanout.peerRemoved();
       for (const sessionId of peer.subscribedSessionIds) {
         restoreDesktopTerminalSizeIfUnwatched(sessionId);
       }
@@ -4015,6 +3970,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         terminalInputDedupeLedger.restore(snapshot.terminalInputDedupe ?? []);
         peer.connectedAt = snapshot.connectedAt;
         const serverDbSiteId = args.db.sync.getSiteId();
+        // Only replica peers are handed off (the depositing host closes roster
+        // sockets), so this cursor always belongs to a replica.
         peer.lastKnownServerDbVersion = adoptedSyncHostCursorForPeer({
           peer: snapshot.metadata,
           serverDbSiteId,
@@ -4111,12 +4068,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // Re-prime any roster subscription carried across the host switch: a fresh
     // snapshot (new seq epoch) re-seeds the peer's baseline on this host.
     if (args.rosterProvider && adopted.some((peer) => peer.rosterSubscribed)) {
-      ensureRosterSafetyPoll();
-      const projects = await buildRosterProjects();
+      rosterFanout.ensureSafetyPoll();
+      const projects = await rosterFanout.buildProjects();
       if (projects != null) {
         for (const peer of adopted) {
           if (!peer.rosterSubscribed || peer.ws.readyState !== WebSocket.OPEN) continue;
-          sendRosterSnapshotToPeer(peer, projects);
+          rosterFanout.sendSnapshot(peer, projects);
         }
       }
     }
@@ -5335,167 +5292,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return subscribers;
   }
 
-  function ensureRosterSafetyPoll(): void {
-    if (rosterSafetyPollTimer || disposed) return;
-    // While ≥1 peer is subscribed, a slow poll catches out-of-band on-disk
-    // changes in un-booted projects (e.g. a direct `ade` CLI run elsewhere)
-    // that emit no in-process event.
-    rosterSafetyPollTimer = setInterval(() => {
-      if (rosterSubscriberPeers().length === 0) {
-        stopRosterSafetyPoll();
-        return;
-      }
-      markRosterDirty();
-    }, ROSTER_SAFETY_POLL_MS);
-    rosterSafetyPollTimer.unref?.();
-  }
-
-  function stopRosterSafetyPoll(): void {
-    if (!rosterSafetyPollTimer) return;
-    clearInterval(rosterSafetyPollTimer);
-    rosterSafetyPollTimer = null;
-  }
-
-  function clearRosterFlushTimers(): void {
-    if (rosterFlushTimer) {
-      clearTimeout(rosterFlushTimer);
-      rosterFlushTimer = null;
-    }
-    if (rosterMaxWaitTimer) {
-      clearTimeout(rosterMaxWaitTimer);
-      rosterMaxWaitTimer = null;
-    }
-  }
-
-  // Coalesced recompute+push: trailing-edge debounce with a hard max-wait cap
-  // so a steady stream of events still flushes at least once per cap.
   function markRosterDirty(): void {
-    if (disposed || !args.rosterProvider) return;
-    if (rosterSubscriberPeers().length === 0) return;
-    if (rosterFlushTimer) clearTimeout(rosterFlushTimer);
-    rosterFlushTimer = setTimeout(() => {
-      void flushRoster();
-    }, ROSTER_DEBOUNCE_MS);
-    rosterFlushTimer.unref?.();
-    if (!rosterMaxWaitTimer) {
-      rosterMaxWaitTimer = setTimeout(() => {
-        void flushRoster();
-      }, ROSTER_MAX_WAIT_MS);
-      rosterMaxWaitTimer.unref?.();
-    }
-  }
-
-  async function buildRosterProjects(): Promise<SyncRosterProject[] | null> {
-    if (!args.rosterProvider) return null;
-    try {
-      return await args.rosterProvider.buildSnapshot();
-    } catch (error) {
-      args.logger.warn("sync_host.roster_build_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return null;
-    }
-  }
-
-  // Send a full snapshot and (re)seed the peer's per-project baseline so the
-  // next flush can diff against it. A snapshot resets the peer's seq epoch (the
-  // client adopts snapshot.seq as its new watermark), so it is always safe.
-  function sendRosterSnapshotToPeer(
-    peer: PeerState,
-    projects: SyncRosterProject[],
-    requestId?: string | null,
-  ): void {
-    const seq = ++peer.rosterSeq;
-    const sent = send(peer.ws, "roster_snapshot", { seq, projects } satisfies SyncRosterSnapshotPayload, requestId);
-    if (!sent) {
-      // Backpressured/closed: drop the baseline so the next flush re-snapshots.
-      peer.rosterBaseline.clear();
-      return;
-    }
-    peer.rosterBaseline = new Map(projects.map((project) => [project.projectId, JSON.stringify(project)]));
-  }
-
-  async function flushRoster(): Promise<void> {
-    clearRosterFlushTimers();
-    if (disposed || rosterFlushInFlight) return;
-    const subscribers = rosterSubscriberPeers();
-    if (subscribers.length === 0) {
-      stopRosterSafetyPoll();
-      return;
-    }
-    rosterFlushInFlight = true;
-    try {
-      const projects = await buildRosterProjects();
-      if (projects == null) return;
-      const subscribersNow = rosterSubscriberPeers();
-      if (subscribersNow.length === 0) return;
-      const serialized = new Map(projects.map((project) => [project.projectId, JSON.stringify(project)]));
-      for (const peer of subscribersNow) {
-        if (peer.rosterBaseline.size === 0) {
-          // No baseline (fresh subscribe / prior drop) → full snapshot.
-          sendRosterSnapshotToPeer(peer, projects);
-          continue;
-        }
-        const changed: SyncRosterProject[] = [];
-        for (const project of projects) {
-          if (peer.rosterBaseline.get(project.projectId) !== serialized.get(project.projectId)) {
-            changed.push(project);
-          }
-        }
-        const removed: string[] = [];
-        for (const projectId of peer.rosterBaseline.keys()) {
-          if (!serialized.has(projectId)) removed.push(projectId);
-        }
-        if (changed.length === 0 && removed.length === 0) {
-          // Nothing changed for this peer: skip the send WITHOUT advancing its
-          // seq, so its next delta still arrives as lastSeq+1 (no false gap).
-          continue;
-        }
-        const seq = ++peer.rosterSeq;
-        const delta: SyncRosterDeltaPayload = {
-          seq,
-          ...(changed.length > 0 ? { changed } : {}),
-          ...(removed.length > 0 ? { removed } : {}),
-        };
-        const sent = send(peer.ws, "roster_delta", delta);
-        if (!sent) {
-          // Backpressured: roll back the seq + force a fresh snapshot next flush.
-          peer.rosterSeq -= 1;
-          peer.rosterBaseline.clear();
-          continue;
-        }
-        peer.rosterBaseline = new Map(serialized);
-      }
-    } finally {
-      rosterFlushInFlight = false;
-    }
-  }
-
-  async function handleRosterSubscribe(
-    peer: PeerState,
-    requestId: string | null | undefined,
-    _payload: SyncRosterSubscribePayload | null,
-  ): Promise<void> {
-    if (!args.rosterProvider) {
-      // No roster on this host — stay silent so the phone falls back to the
-      // project catalog (the contract treats a non-answering host gracefully).
-      return;
-    }
-    peer.rosterSubscribed = true;
-    peer.rosterBaseline.clear();
-    ensureRosterSafetyPoll();
-    const projects = await buildRosterProjects();
-    if (projects == null) return;
-    sendRosterSnapshotToPeer(peer, projects, requestId ?? null);
-  }
-
-  function handleRosterUnsubscribe(peer: PeerState): void {
-    peer.rosterSubscribed = false;
-    peer.rosterBaseline.clear();
-    if (rosterSubscriberPeers().length === 0) {
-      stopRosterSafetyPoll();
-      clearRosterFlushTimers();
-    }
+    rosterFanout.markDirty();
   }
 
   async function handleProjectBrowseRequest(
@@ -5664,222 +5462,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  async function readChatTranscriptEventsSince(
-    transcriptPath: string,
-    startOffset: number,
-    scanOffset: number | null,
-  ): Promise<{
-    events: AgentChatEventEnvelope[];
-    nextOffset: number;
-    nextScanOffset: number | null;
-    droppedOversizedRecordBytes: number | null;
-  }> {
-    let fh: fs.promises.FileHandle | null = null;
-    try {
-      fh = await fs.promises.open(transcriptPath, "r");
-      const stat = await fh.stat();
-      const size = stat.size;
-      const durableStart = Math.max(0, Math.floor(startOffset));
-      // A truncation/rotation invalidates both cursors. Restart from the new
-      // EOF (the same recovery behavior as the old unbounded reader).
-      if (size < durableStart || (scanOffset != null && size < scanOffset)) {
-        return {
-          events: [],
-          nextOffset: size,
-          nextScanOffset: null,
-          droppedOversizedRecordBytes: null,
-        };
-      }
-      const normalizedScanOffset = scanOffset == null
-        ? null
-        : Math.max(durableStart, Math.floor(scanOffset));
-      const readStart = normalizedScanOffset ?? durableStart;
-      if (size <= readStart) {
-        return {
-          events: [],
-          nextOffset: durableStart,
-          nextScanOffset: normalizedScanOffset,
-          droppedOversizedRecordBytes: null,
-        };
-      }
-
-      const readLength = Math.min(
-        size - readStart,
-        SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES,
-      );
-      const out = Buffer.alloc(readLength);
-      const { bytesRead } = await fh.read(out, 0, out.length, readStart);
-      const readSlice = out.subarray(0, bytesRead);
-      if (normalizedScanOffset != null) {
-        const firstNewline = readSlice.indexOf(0x0a);
-        if (firstNewline < 0) {
-          return {
-            events: [],
-            nextOffset: durableStart,
-            nextScanOffset: readStart + bytesRead,
-            droppedOversizedRecordBytes: null,
-          };
-        }
-        const firstRecordEnd = readStart + firstNewline + 1;
-        const firstRecordBytes = firstRecordEnd - durableStart;
-        const lastNewline = readSlice.lastIndexOf(0x0a);
-        if (firstRecordBytes <= SYNC_HOST_CHAT_TRANSCRIPT_MAX_RECORD_BYTES) {
-          // The long record is still deliverable. Re-read it once, now that a
-          // complete boundary is known, together with any later complete rows
-          // already present in this bounded scan chunk.
-          const completeEnd = readStart + lastNewline + 1;
-          const completeBytes = completeEnd - durableStart;
-          const completeSlice = Buffer.alloc(completeBytes);
-          let rereadBytes = 0;
-          while (rereadBytes < completeBytes) {
-            const reread = await fh.read(
-              completeSlice,
-              rereadBytes,
-              completeBytes - rereadBytes,
-              durableStart + rereadBytes,
-            );
-            if (reread.bytesRead <= 0) break;
-            rereadBytes += reread.bytesRead;
-          }
-          if (rereadBytes < completeBytes) {
-            return {
-              events: [],
-              nextOffset: durableStart,
-              nextScanOffset: normalizedScanOffset,
-              droppedOversizedRecordBytes: null,
-            };
-          }
-          return {
-            events: parseAgentChatTranscript(completeSlice.toString("utf8")),
-            nextOffset: durableStart + completeSlice.length,
-            nextScanOffset: null,
-            droppedOversizedRecordBytes: null,
-          };
-        }
-
-        // A single record beyond the explicit one-record ceiling is not safe
-        // to materialize. Drop exactly that complete row, surface a structured
-        // warning, and recover at its newline; later complete rows still flow.
-        const firstCompleteOffset = firstNewline + 1;
-        const completeSlice = readSlice.subarray(firstCompleteOffset, lastNewline + 1);
-        return {
-          events: completeSlice.length > 0
-            ? parseAgentChatTranscript(completeSlice.toString("utf8"))
-            : [],
-          nextOffset: readStart + lastNewline + 1,
-          nextScanOffset: null,
-          droppedOversizedRecordBytes: firstRecordBytes,
-        };
-      }
-
-      const lastNewline = readSlice.lastIndexOf(0x0a);
-      if (lastNewline < 0) {
-        const hitReadBound = bytesRead === SYNC_HOST_CHAT_TRANSCRIPT_DELTA_MAX_BYTES;
-        return {
-          events: [],
-          nextOffset: durableStart,
-          // A short trailing record may still be mid-write, so retain and
-          // retry it. Once one record fills the normal cap, scan for its
-          // newline in bounded chunks; a record within the separate hard
-          // ceiling is then re-read and delivered intact.
-          nextScanOffset: hitReadBound ? readStart + bytesRead : null,
-          droppedOversizedRecordBytes: null,
-        };
-      }
-
-      const completeSlice = readSlice.subarray(0, lastNewline + 1);
-      const raw = completeSlice.toString("utf8");
-      return {
-        events: parseAgentChatTranscript(raw),
-        nextOffset: durableStart + completeSlice.length,
-        nextScanOffset: null,
-        droppedOversizedRecordBytes: null,
-      };
-    } catch {
-      return {
-        events: [],
-        nextOffset: Math.max(0, startOffset),
-        nextScanOffset: scanOffset,
-        droppedOversizedRecordBytes: null,
-      };
-    } finally {
-      await fh?.close().catch(() => {});
-    }
-  }
-
-  // Reads a byte-capped TAIL snapshot of a chat transcript straight off disk —
-  // the cross-project analogue of agentChatService.getChatEventHistory, used
-  // when the session lives in a foreign project this host has no runtime for.
-  // Reuses the same tail-truncation semantics as a local snapshot (a leading
-  // partial line at the cut point is dropped by the JSONL parser).
-  async function readForeignChatSnapshot(
-    transcriptPath: string,
-    maxBytes: number,
-    signal?: AbortSignal,
-  ): Promise<{
-    events: AgentChatEventEnvelope[];
-    transcriptSize: number;
-    truncated: boolean;
-    tailStartOffset: number;
-  }> {
-    try {
-      const size = await readHistoryFileSize(transcriptPath);
-      const start = Math.max(0, size - Math.max(1_024, maxBytes));
-      if (size <= start) {
-        return { events: [], transcriptSize: size, truncated: false, tailStartOffset: 0 };
-      }
-      const out = await readHistoryFileRange(
-        transcriptPath,
-        start,
-        size - start,
-        signal,
-      );
-      // Drop a leading partial line when starting mid-file so the parser never
-      // sees a truncated JSON object as the first record. The first complete
-      // line's logical offset becomes the paging seam; a page ending there can
-      // recover the dropped straddling record without a gap.
-      let sliceStart = 0;
-      if (start > 0) {
-        const firstNewline = out.indexOf(0x0a);
-        sliceStart = firstNewline >= 0 ? firstNewline + 1 : out.length;
-      }
-      const raw = out.subarray(sliceStart).toString("utf8");
-      const tailStartOffset = start + sliceStart;
-      return {
-        events: parseAgentChatTranscript(raw),
-        transcriptSize: size,
-        truncated: tailStartOffset > 0,
-        tailStartOffset,
-      };
-    } catch (error) {
-      signal?.throwIfAborted();
-      const code = (error as NodeJS.ErrnoException | null)?.code;
-      if (code === "ENOENT" || code === "ENOTDIR") {
-        // The provider already authorized and sandboxed this path. A session
-        // may be registered just before its transcript is created (or rotate
-        // between stat/read), so keep the subscription live and let the pump
-        // discover the file when it appears.
-        return { events: [], transcriptSize: 0, truncated: false, tailStartOffset: 0 };
-      }
-      throw error;
-    }
-  }
-
-  async function readTranscriptLogicalSize(transcriptPath: string | null): Promise<number> {
-    if (!transcriptPath) return 0;
-    const candidates = transcriptPath.endsWith(".gz")
-      ? [transcriptPath]
-      : [transcriptPath, `${transcriptPath}.gz`];
-    for (const candidate of candidates) {
-      try {
-        return await readHistoryFileSize(candidate);
-      } catch {
-        // A session row normally points at the plain append target even after
-        // storage compression. Try its transparent gzip sibling next.
-      }
-    }
-    return 0;
-  }
 
   function requestedProjectChatScope(
     payload: ChatScopeRequest | null,
@@ -5917,9 +5499,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     // canonical transcript target rather than raw selector fields so project
     // id and root aliases for the same registered project remain equivalent,
     // while colliding session ids from different projects stay isolated.
+    // Compare storage keys, not raw paths: the resolver returns `.jsonl.gz`
+    // for a compressed transcript and `.jsonl` once a new turn reinflates it,
+    // and that swap must not orphan a live subscription's paging.
     const requestedForeignScope = resolveForeignChatScope(payload, sessionId);
     return requestedForeignScope.kind === "foreign"
-      && path.resolve(requestedForeignScope.transcriptPath) === binding.transcriptPath;
+      && transcriptStorageKey(requestedForeignScope.transcriptPath) === binding.transcriptPath;
   }
 
   function hasExplicitChatSubscriptionScope(
@@ -6271,6 +5856,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       if (resolvedTranscriptPath && transcriptPath !== resolvedTranscriptPath) {
         peer.resolvedChatTranscriptPaths.set(sessionId, transcriptPath);
       }
+      // A compressed transcript is never appended to (a new turn reinflates it
+      // first), and its raw bytes are not the logical offsets this cursor
+      // counts. Tailing it would reset the cursor to the compressed size.
+      if (transcriptPath.endsWith(".gz")) continue;
 
       const startOffset = peer.chatTranscriptOffsets.get(sessionId) ?? 0;
       const scanOffset = peer.chatTranscriptScanOffsets.get(sessionId) ?? null;
@@ -6951,7 +6540,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       : requestedProjectId ?? hostProjectId ?? args.projectRoot;
     const commandCacheKey = mobileCommandCacheKey(commandScopeKey, peer, commandId);
     const commandArgsKey = stableJsonKey(payload.args ?? {});
-    const commandArgsFingerprint = mobileCommandArgsFingerprint(commandArgsKey);
+    const commandArgsFingerprint = remoteCommandArgsFingerprint(payload.args ?? {});
     pruneMobileCommandResultCache();
 
     const sendResult = (record: CachedMobileCommand | null, result: SyncCommandResultPayload) => {
@@ -7042,7 +6631,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
 
     const descriptor = remoteCommandService.getDescriptor(payload.action);
-    const policy = descriptor?.policy ?? null;
     const shouldRouteToProject =
       Boolean(args.remoteCommandExecutor)
       && Boolean(requestedProjectId)
@@ -7092,26 +6680,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       return;
     }
-    if (!policy) {
-      reject(`Unsupported remote command: ${payload.action}.`);
-      return;
-    }
-    if (descriptor?.scope === "project") {
-      if (hostProjectId && !requestedProjectId) {
-        reject(`Remote command ${payload.action} requires projectId. Select the project again and retry.`, "missing_project");
-        return;
-      }
-      if (requestedProjectId && !hostProjectId) {
-        reject(`Remote command ${payload.action} requires an open project on this ADE machine.`, "project_not_open");
-        return;
-      }
-    }
-    if (!policy.viewerAllowed && !(policy.controllerAllowed && isInteractiveControllerPeer(peer))) {
-      reject(`Remote command ${payload.action} is not available to paired controller devices.`, "forbidden_command");
-      return;
-    }
-    if (policy.localOnly || policy.requiresApproval) {
-      reject(`Remote command ${payload.action} requires approval on this machine.`, "approval_required");
+    const policyRejection = evaluateRemoteCommandPolicy({
+      action: payload.action,
+      descriptor,
+      peer,
+      requestedProjectId,
+      hostProjectId,
+    });
+    if (policyRejection) {
+      reject(policyRejection.message, policyRejection.code);
       return;
     }
 
@@ -7245,26 +6822,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         result: decorateCommandResult(payload.action, created),
       });
     } catch (error) {
-      // Coded errors (e.g. laneService attach's lane_already_linked) embed the
-      // code in the message so it survives IPC transports. The service runs
-      // in-process here, so gate on the Error's real `code` property — parsing
-      // the message alone would also mangle legit prefixes like git's "fatal:".
-      const rawCode = error instanceof Error ? (error as { code?: unknown }).code : null;
-      const directCode = typeof rawCode === "string" && rawCode.length > 0 ? rawCode : null;
-      if (error instanceof SyncRemoteCommandResultTooLargeError) {
-        sendResult(acceptedRecord, { commandId, ok: false, error: error.details });
-        return;
-      }
-      sendResult(acceptedRecord, {
-        commandId,
-        ok: false,
-        error: directCode
-          ? { code: directCode, message: parseCodedErrorMessage(error).message }
-          : {
-            code: "command_failed",
-            message: error instanceof Error ? error.message : String(error),
-          },
-      });
+      sendResult(acceptedRecord, commandErrorResult(commandId, error));
     }
   }
 
@@ -8409,18 +7967,28 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // version sequence and silently skips (or replays) the entire backlog.
       const ownSiteId = args.db.sync.getSiteId();
       const serverDbVersion = args.db.sync.getDbVersion();
-      peer.lastKnownServerDbVersion = initialSyncHostCursorForPeer({
-        peer: hello.peer,
-        serverDbSiteId: ownSiteId,
-        serverDbVersion,
-        hostWatermark: readPeerDeliveredWatermark(hello.peer.deviceId, ownSiteId),
-        onCursorResolved: (info) => notePeerCursorResolved(hello.peer.deviceId ?? null, info),
-      });
-      args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
-        lastSeenAt: nowIso(),
-        lastHost: peer.remoteAddress,
-        lastPort: peer.remotePort,
-      });
+      const rosterPeer = !isReplicaSyncPeer(hello.peer);
+      // A roster socket neither reads nor seeds the device's delivered-cursor
+      // row: that row is the device's full replica's, and the phone's
+      // replica for this machine may connect here later on its own socket.
+      peer.lastKnownServerDbVersion = rosterPeer
+        ? serverDbVersion
+        : initialSyncHostCursorForPeer({
+          peer: hello.peer,
+          serverDbSiteId: ownSiteId,
+          serverDbVersion,
+          hostWatermark: readPeerDeliveredWatermark(hello.peer.deviceId, ownSiteId),
+          onCursorResolved: (info) => notePeerCursorResolved(hello.peer.deviceId ?? null, info),
+        });
+      // The device row carries the replica's claimed dbVersion; a roster
+      // hello's value is not that, and writing it is replicated state churn.
+      if (!rosterPeer) {
+        args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
+          lastSeenAt: nowIso(),
+          lastHost: peer.remoteAddress,
+          lastPort: peer.remotePort,
+        });
+      }
       const projectCatalog = await buildProjectCatalogPayload();
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
       const projectActionsEnabled = Boolean(
@@ -8444,6 +8012,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         projectCatalogEnabled: Boolean(args.projectCatalogProvider),
         projectActionsEnabled,
         crossProjectChatEnabled: Boolean(args.foreignChatProvider),
+        rosterEnabled: rosterFanout.enabled,
         remoteCommandSupportedActions: remoteCommandService.getSupportedActions(),
         remoteCommandDescriptors: remoteCommandService.getDescriptors(),
         localCommandDescriptors: localPresenceCommandDescriptors,
@@ -8643,6 +8212,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "changeset_batch": {
+        // A roster socket is not a replica: its batches are dropped unapplied
+        // and unacknowledged (the roster client never expects an ack).
+        if (!isReplicaSyncPeer(peer.metadata)) {
+          args.logger.debug("sync_host.roster_peer_changeset_ignored", {
+            peerDeviceId: peer.metadata?.deviceId ?? null,
+          });
+          break;
+        }
         const payload = (envelope.payload ?? {}) as SyncChangesetBatchPayload;
         const batchId = payload.batchId || envelope.requestId || "";
         const changes = Array.isArray(payload.changes) ? payload.changes as CrsqlChangeRow[] : [];
@@ -9031,36 +8608,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           let page: AgentChatEventHistoryPage;
           const subscribedTranscriptPath = peer.resolvedChatTranscriptPaths.get(sessionId);
           if (subscribedTranscriptPath) {
-            const read = await runWithAbortSignal(
-              () => beforeSequence != null
-                ? readTranscriptHistoryPageBeforeSequence({
-                  transcriptPath: subscribedTranscriptPath,
-                  sessionId,
-                  beforeSequence,
-                  maxBytes: payload?.maxBytes,
-                  signal,
-                })
-                : readTranscriptHistoryPage({
-                  transcriptPath: subscribedTranscriptPath,
-                  sessionId,
-                  beforeOffset,
-                  maxBytes: payload?.maxBytes,
-                  signal,
-                }),
+            page = await runWithAbortSignal(
+              () => readSubscribedTranscriptHistoryPage({
+                transcriptPath: subscribedTranscriptPath,
+                sessionId,
+                beforeOffset,
+                beforeSequence: beforeSequence ?? null,
+                maxBytes: payload?.maxBytes,
+                ...(signal ? { signal } : {}),
+              }),
               signal,
               "Sync operation aborted.",
             );
-            page = {
-              sessionId,
-              events: read.envelopes,
-              startOffset: read.startOffset,
-              // Per-row locations, so a later `chat_tool_result` for a row on
-              // this page can be answered by an exact read instead of a scan
-              // that may not reach back this far.
-              envelopeStartOffsets: read.envelopeStartOffsets,
-              hasMore: read.hasMore,
-              sessionFound: true,
-            };
           } else if (args.agentChatService) {
             const generationBefore = projectChatLogState(sessionId)?.historyGeneration ?? null;
             page = await args.agentChatService.getChatEventHistoryPage(sessionId, {
@@ -9156,47 +8715,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             sendRequired(peer, "chat_tool_result", unavailable(), envelope.requestId);
             break;
           }
-          const hit = await runWithAbortSignal(
-            () => findStoredToolResult({
+          const response = await runWithAbortSignal(
+            () => readStoredToolResultResponse({
               transcriptPath,
               sessionId,
               itemId,
-              ...(requestedResultSequence !== null ? { resultSequence: requestedResultSequence } : {}),
-              ...(requestedResultTimestamp ? { resultTimestamp: requestedResultTimestamp } : {}),
-              ...(requestedSourceOffset !== null ? { sourceOffset: requestedSourceOffset } : {}),
+              resultSequence: requestedResultSequence,
+              resultTimestamp: requestedResultTimestamp,
+              sourceOffset: requestedSourceOffset,
               ...(signal ? { signal } : {}),
             }),
             signal,
             "Sync operation aborted.",
           );
-          if (!hit) {
-            // Found nothing is not the same as could not look: the phone shows
-            // "no longer available" rather than an error it could retry.
-            sendRequired(peer, "chat_tool_result", {
-              sessionId,
-              itemId,
-              found: false,
-            } satisfies SyncChatToolResultResponsePayload, envelope.requestId);
-            break;
-          }
-          // The stored event, with the shared storage caps already applied to
-          // it — never the raw provider payload. The phone-only cap is the one
-          // thing this response deliberately does not apply.
-          const stored = compactChatEventForWire(hit.event);
-          sendRequired(peer, "chat_tool_result", {
-            sessionId,
-            itemId,
-            found: true,
-            result: stored.type === "tool_result" ? stored.result : undefined,
-            ...(stored.type === "tool_result" && typeof stored.resultOriginalBytes === "number"
-              ? { resultOriginalBytes: stored.resultOriginalBytes }
-              : {}),
-            ...(stored.type === "tool_result" && typeof stored.resultOmittedBytes === "number"
-              ? { resultOmittedBytes: stored.resultOmittedBytes }
-              : {}),
-            ...(stored.type === "tool_result" && stored.status ? { status: stored.status } : {}),
-            ...(stored.type === "tool_result" && stored.tool ? { tool: stored.tool } : {}),
-          } satisfies SyncChatToolResultResponsePayload, envelope.requestId);
+          sendRequired(peer, "chat_tool_result", response, envelope.requestId);
         } catch (error) {
           args.logger.warn("sync.chat_tool_result_failed", {
             sessionId,
@@ -9256,7 +8788,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           if (foreignScope.kind === "foreign" && requestedScope === "foreign-project") {
             peer.chatSubscriptionBindings.set(sessionId, {
               scope: "foreign-project",
-              transcriptPath: path.resolve(foreignScope.transcriptPath),
+              transcriptPath: transcriptStorageKey(foreignScope.transcriptPath),
             });
           } else if (requestedScope === "personal") {
             peer.chatSubscriptionBindings.set(sessionId, { scope: "personal" });
@@ -9473,56 +9005,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           });
           break;
         }
-        const maxBytes = Math.max(
-          1_024,
-          Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),
-        );
+        const maxBytes = clampChatSnapshotMaxBytes(payload?.maxBytes);
         let events: AgentChatEventEnvelope[];
         let pinnedEvents: AgentChatEventEnvelope[] = [];
         let truncated: boolean;
         let transcriptSize: number;
         let tailStartOffset = 0;
         let hasOlderHistory = false;
-        let alignedForeignSnapshot: Awaited<ReturnType<typeof readTurnAlignedTranscriptTail>> | null = null;
-        if (foreignTranscriptPath && chatLogV2Requested) {
-          try {
-            alignedForeignSnapshot = await runWithAbortSignal(
-              () => readTurnAlignedTranscriptTail({
-                transcriptPath: foreignTranscriptPath,
-                sessionId,
-                maxBytes,
-                ...(signal ? { signal } : {}),
-              }),
-              signal,
-              "Sync operation aborted.",
-            );
-          } catch (error) {
-            signal?.throwIfAborted();
-            // Fall back to the plain tail below.
-            args.logger.warn("sync_host.chat_aligned_tail_failed", {
-              sessionId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-        if (alignedForeignSnapshot) {
-          events = alignedForeignSnapshot.events;
-          pinnedEvents = alignedForeignSnapshot.pinnedEvents;
-          truncated = alignedForeignSnapshot.truncated;
-          transcriptSize = alignedForeignSnapshot.transcriptSize;
-          tailStartOffset = alignedForeignSnapshot.tailStartOffset;
-          hasOlderHistory = alignedForeignSnapshot.tailStartOffset > 0;
-        } else if (foreignTranscriptPath) {
-          const foreignSnapshot = await runWithAbortSignal(
-            () => readForeignChatSnapshot(foreignTranscriptPath, maxBytes, signal),
-            signal,
-            "Sync operation aborted.",
-          );
-          events = foreignSnapshot.events;
-          truncated = foreignSnapshot.truncated;
-          transcriptSize = foreignSnapshot.transcriptSize;
-          tailStartOffset = foreignSnapshot.tailStartOffset;
-          hasOlderHistory = foreignSnapshot.tailStartOffset > 0;
+        if (foreignTranscriptPath) {
+          const foreignSnapshot = await readFileBackedChatSnapshot({
+            transcriptPath: foreignTranscriptPath,
+            sessionId,
+            maxBytes,
+            chatLogV2: chatLogV2Requested,
+            ...(signal ? { signal } : {}),
+            logger: args.logger,
+            logPrefix: "sync_host",
+          });
+          ({ events, pinnedEvents, truncated, transcriptSize, tailStartOffset, hasOlderHistory } = foreignSnapshot);
         } else if (foreignScope.kind === "rejected") {
           // Unresolvable explicit-foreign scope: serve an empty snapshot, never
           // this host's local history for the same session id.
@@ -9546,53 +9046,20 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           hasOlderHistory = history?.hasOlderHistory
             ?? (history?.truncated === true && tailStartOffset > 0);
         }
-        const slimChatPeer = peerWantsSlimChat(peer);
-        const compactForPeer = slimChatPeer ? compactChatEventEnvelopeForMobileSync : compactChatEventEnvelopeForSync;
-        events = events.map(compactForPeer);
-        pinnedEvents = pinnedEvents.map(compactForPeer);
-        // Fold streaming deltas into the message they belong to. Snapshot-only
-        // and capability-gated: the replay-buffer resume path below stays
-        // unfolded because its per-event `seq` monotonicity is load-bearing for
-        // the client's `seq <= lastSeq` drop rule, and it carries only a small
-        // recent gap. `sourceEvents` keeps the pre-fold envelopes so delivery
-        // bookkeeping still marks every collapsed delta as sent.
-        let sourceEvents: AgentChatEventEnvelope[] = events;
-        if (slimChatPeer) {
-          // A snapshot is a byte-capped tail; on a subagent-heavy thread most
-          // of it is superseded progress for agents whose card the phone will
-          // draw exactly once. Keep the latest per agent — started and result
-          // are untouched, so every card and every outcome still arrives.
-          const progressFolded = foldSubagentProgressForSnapshot(events);
-          if (progressFolded.foldedAwayCount > 0) {
-            args.logger.debug("sync_host.chat_replay_subagent_progress_folded", {
-              sessionId,
-              beforeCount: events.length,
-              afterCount: progressFolded.events.length,
-              foldedAwayCount: progressFolded.foldedAwayCount,
-            });
-          }
-          events = progressFolded.events;
+        const prepared = prepareChatSnapshotEventsForPeer({
+          events,
+          pinnedEvents,
+          capabilities: peer.metadata?.capabilities,
+          sessionId,
+          logger: args.logger,
+        });
+        events = prepared.events;
+        pinnedEvents = prepared.pinnedEvents;
+        const sourceEvents = prepared.sourceEvents;
+        if (peerWantsSlimChat(peer)) {
           // The snapshot is the phone's new baseline: anything the live
           // coalescer was holding for this session predates it.
           discardChatEventCoalescer(peer, sessionId);
-        }
-        if (peer.metadata?.capabilities?.includes(SYNC_FOLDED_REPLAY_CAPABILITY)) {
-          const folded = foldChatEventEnvelopesForReplay(events);
-          if (folded.foldedAwayCount > 0) {
-            args.logger.debug("sync_host.chat_replay_folded", {
-              sessionId,
-              beforeCount: events.length,
-              afterCount: folded.events.length,
-              foldedAwayCount: folded.foldedAwayCount,
-            });
-          }
-          // `sourceEvents` deliberately keeps the FULL pre-fold list assigned
-          // above rather than `folded.sources`: on the slim wire the subagent
-          // progress fold has already removed envelopes from `events`, and
-          // every one of them still needs its delivery key marked or the
-          // transcript pump re-sends it as live traffic. For every other peer
-          // the two are the same array.
-          events = folded.events;
         }
         peer.chatTranscriptOffsets.set(sessionId, hydrationStartOffset);
         peer.chatTranscriptScanOffsets.delete(sessionId);
@@ -9689,11 +9156,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "roster_subscribe": {
-        await handleRosterSubscribe(peer, envelope.requestId, envelope.payload as SyncRosterSubscribePayload | null);
+        await rosterFanout.subscribe(peer, envelope.requestId);
         break;
       }
       case "roster_unsubscribe": {
-        handleRosterUnsubscribe(peer);
+        rosterFanout.unsubscribe(peer);
         break;
       }
       case "command":
@@ -10056,8 +9523,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(heartbeatTimer);
       clearInterval(brainStatusTimer);
       clearInterval(accountLeaseTimer);
-      stopRosterSafetyPoll();
-      clearRosterFlushTimers();
+      rosterFanout.dispose();
       unpublishLanDiscovery();
       try {
         await unpublishTailnetDiscovery();
@@ -10098,6 +9564,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             } catch {
               // ignore close failures
             }
+            continue;
+          }
+          if (!isReplicaSyncPeer(peer.metadata)) {
+            // A roster socket is closed, not handed off. Its chats are
+            // cross-project subscriptions the handoff cannot carry (a bare
+            // session id would bind to the next host's same-id local chat),
+            // and the phone rebuilds all of it on reconnect: hello,
+            // roster_subscribe, and chat_subscribe with its resume point. A
+            // phone holds either a roster or a full socket to one machine,
+            // never both, so this close cannot supersede its replica socket;
+            // replica peers are handed off below as before.
+            peer.ws.on("error", () => {});
+            try {
+              peer.ws.close(4002, "Sync host changed projects");
+            } catch {
+              // ignore close failures
+            }
+            args.logger.info("sync_host.roster_peer_closed_on_handoff", {
+              peerDeviceId: peer.metadata?.deviceId ?? null,
+            });
             continue;
           }
           // Anything the coalescer is still holding was already marked

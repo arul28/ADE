@@ -207,6 +207,14 @@ export type SyncPeerMetadata = {
   appVersion?: string;
   appBuild?: string;
   bundleIdentifier?: string;
+  /**
+   * `"roster"` marks a light socket that carries only the machine-wide roster,
+   * cross-project chats and routed commands. Hosts never replicate CRDT
+   * changesets to it, ignore any it sends, and never record a delivered
+   * cursor for it. Absent (or any other value) means a full replica, as
+   * before. Hosts that honor it say so with the `rosterPeer` hello feature.
+   */
+  syncRole?: "roster";
 };
 
 export type SyncPeerConnectionState = SyncPeerMetadata & {
@@ -806,6 +814,14 @@ export type SyncRouteHealth = {
 export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
+  /**
+   * Why a viewer is a viewer. `saved_connection`: the user connected this
+   * runtime to another host on purpose, which is intended and never goes
+   * stale. `cluster_record`: the project database still names another,
+   * recently seen device as host; once that device counts as gone, this
+   * runtime takes hosting back. Absent on a host and on older runtimes.
+   */
+  viewerReason?: "saved_connection" | "cluster_record";
   runtimeMode?: SyncRuntimeMode;
   runtimeRole?: SyncRuntimeRole;
   localDevice: SyncDeviceRecord;
@@ -908,6 +924,17 @@ export type SyncFeatureFlags = {
     enabled: true;
   };
   /**
+   * The history-page commands (`chat.getChatEventHistoryPage`,
+   * `agentChat.getEventHistoryPage`, `personalChats.getEventHistoryPage`)
+   * accept `beforeSequence` (chatLogV2 durable sequence; rows with
+   * `sequence < beforeSequence`, precedence over `beforeOffset`). An older
+   * host ignores the field and returns the newest page, so clients send it
+   * only when this is present.
+   */
+  chatHistoryPageBySequence?: {
+    enabled: true;
+  };
+  /**
    * Durable chat log protocol: `chat_subscribe` accepts `sinceSequence` +
    * `generation` (durable resume) and `chatLogV2` (turn-aligned snapshot with
    * `pinnedEvents`); acks, `chat_history` pages and roster chat rows carry
@@ -941,6 +968,25 @@ export type SyncFeatureFlags = {
   };
   changesetAck: {
     enabled: boolean;
+  };
+  /**
+   * The host answers `roster_subscribe` with the machine-wide roster
+   * (`roster_snapshot` / `roster_delta`). Older hosts omit it; a host that
+   * advertises `enabled: false` stays silent on `roster_subscribe`.
+   */
+  roster?: {
+    enabled: boolean;
+  };
+  /**
+   * The host honors `peer.syncRole: "roster"` on hello (see SyncPeerMetadata):
+   * no changeset replication, no cursor bookkeeping for that socket. A client
+   * that opens a roster socket must close it on a host without this feature,
+   * or the host would replicate the whole project DB to it. Advertised only
+   * alongside an enabled `roster` feed, since a roster socket without one
+   * would look live and never receive a roster.
+   */
+  rosterPeer?: {
+    enabled: true;
   };
   /**
    * Bidirectional oversized-envelope framing. The host returns this only to a
@@ -1113,6 +1159,14 @@ export type SyncRosterProject = {
   projectId: string;
   rootPath?: string | null;
   displayName: string;
+  /**
+   * The repo's `origin` remote as a normalized identity
+   * (`normalizeGitRemoteIdentity`: lowercase, host + path, no scheme, user,
+   * port, query or `.git`, so the SSH and HTTPS forms of one repo are equal),
+   * or null when the project has no origin. Clients match one repo across
+   * machines by it. Optional: older hosts omit it and older phones ignore it.
+   */
+  repoOriginUrl?: string | null;
   iconDataUrl?: string | null;
   lastOpenedAt?: string | null;
   /** true ⇒ live running/awaiting fidelity; false ⇒ disk-derived status only. */

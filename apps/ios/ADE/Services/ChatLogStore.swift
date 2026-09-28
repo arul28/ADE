@@ -628,6 +628,9 @@ actor ChatLogStore {
     }
   }
 
+  /// Hosts number a chat's events from 1.
+  private static let firstChatEventSequence = 1
+
   private func readMeta(_ key: ChatLogKey) -> ChatLogSessionMeta? {
     guard db != nil else { return nil }
     var meta: ChatLogSessionMeta?
@@ -651,6 +654,18 @@ actor ChatLogStore {
         return false
       }
     )
+    // A chat near its byte budget can have had its oldest rows trimmed while
+    // its meta still says "no older history" (a trim once did not keep the
+    // flag), and then the chat stops paging at its cached rows. Report "may
+    // have older" when the cached top is not the chat's first event, so the
+    // next scroll-back asks the host. A chat whose first event is cached
+    // really is at the top and is left alone.
+    if var trimmedCandidate = meta, !trimmedCandidate.hasOlder,
+       (trimmedCandidate.oldestSequence ?? 0) > Self.firstChatEventSequence,
+       trimmedCandidate.bytes * 10 >= perChatByteBudget * 9 {
+      trimmedCandidate.hasOlder = true
+      meta = trimmedCandidate
+    }
     return meta
   }
 

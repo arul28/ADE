@@ -42,11 +42,13 @@ struct WorkToolStatusGlyph: View {
 /// `TurnFoldRow`): a plain inline caption, no box —
 /// `Worked for 4m 12s · 🔧 18 tools · ± 3 files · 🤖 2 subagents · $ 5 jobs (1 failed) · 🌐 4 sources ›`.
 /// Opening it reveals the folded rows below in their original order and a
-/// `🔧 18 tools ›  ± 3 files ›` line that opens the turn's activity sheet.
+/// `🔧 18 tools ›  ± 3 files changed ›` line whose toggles open the turn's
+/// tools or files list inline, as on desktop.
 struct WorkTurnFoldRow: View {
   let model: WorkTurnFoldModel
-  var fileStat: (count: Int, additions: Int, deletions: Int)? = nil
-  var onOpenActivity: (() -> Void)? = nil
+  var work: WorkTurnWorkDisclosure = .none
+  var onToggleWork: (WorkTurnWorkSection) -> Void = { _ in }
+  var onToggleWorkItem: (String) -> Void = { _ in }
   let onToggle: () -> Void
 
   private struct Count: Identifiable {
@@ -85,7 +87,7 @@ struct WorkTurnFoldRow: View {
   }
 
   private var showsWorkLine: Bool {
-    model.isExpanded && onOpenActivity != nil && (model.toolCount > 0 || (fileStat?.count ?? 0) > 0)
+    model.isExpanded && work.hasToggles
   }
 
   var body: some View {
@@ -117,43 +119,16 @@ struct WorkTurnFoldRow: View {
       .buttonStyle(.plain)
       .accessibilityLabel(model.label)
       .accessibilityHint(model.isExpanded ? "Hides the work from this turn." : "Shows the work from this turn.")
-      if showsWorkLine, let onOpenActivity {
-        HStack(spacing: 12) {
-          if model.toolCount > 0 {
-            workToggle(onOpenActivity) {
-              Image(systemName: "wrench.fill").font(.system(size: 9, weight: .bold))
-              Text("\(model.toolCount)").monospacedDigit()
-              Text(model.toolCount == 1 ? "tool" : "tools")
-            }
-          }
-          if let fileStat, fileStat.count > 0 {
-            workToggle(onOpenActivity) {
-              Image(systemName: "plusminus").font(.system(size: 9, weight: .bold))
-              Text("\(fileStat.count) \(fileStat.count == 1 ? "file" : "files") changed")
-              if fileStat.additions > 0 { Text("+\(fileStat.additions)").monospacedDigit().foregroundStyle(ADEColor.success.opacity(0.85)) }
-              if fileStat.deletions > 0 { Text("−\(fileStat.deletions)").monospacedDigit().foregroundStyle(ADEColor.danger.opacity(0.85)) }
-            }
-          }
+      if showsWorkLine {
+        WorkTurnWorkToggles(disclosure: work, onToggle: onToggleWork)
+          .padding(.leading, 4)
+        if work.open != nil {
+          WorkTurnWorkInlineDetails(disclosure: work, onToggleItem: onToggleWorkItem)
+            .padding(.leading, 4)
         }
-        .padding(.leading, 4)
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-  }
-
-  private func workToggle<Label: View>(_ action: @escaping () -> Void, @ViewBuilder label: () -> Label) -> some View {
-    Button(action: action) {
-      HStack(spacing: 3) {
-        label()
-        Image(systemName: "chevron.right").font(.system(size: 7, weight: .bold)).opacity(0.7)
-      }
-      .font(.caption2)
-      .foregroundStyle(ADEColor.textSecondary)
-      .lineLimit(1)
-      .frame(minHeight: 44)
-      .contentShape(Rectangle())
-    }
-    .buttonStyle(.plain)
   }
 }
 
@@ -671,18 +646,21 @@ struct WorkToolCallsPanelView: View {
   /// survives recycling and is swept when its turn ends.
   var expandedMemberIds: Set<String> = []
   var onToggleMember: (String) -> Void = { _ in }
+  /// False when a turn-line toggle already names the list (it expands inline
+  /// under that toggle, the way desktop `ChatTurnWorkSummary` does).
+  var showsHeader = true
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      header
+      if showsHeader { header }
       if isExpanded {
         VStack(alignment: .leading, spacing: 2) {
           ForEach(group.members) { member in
             memberRow(member)
           }
         }
-        .padding(.leading, 16)
-        .padding(.top, 6)
+        .padding(.leading, showsHeader ? 16 : 0)
+        .padding(.top, showsHeader ? 6 : 0)
       }
     }
     .accessibilityElement(children: .contain)
@@ -913,18 +891,20 @@ struct WorkChangedFilesPanelView: View {
   var expandedFileIds: Set<String> = []
   var onToggleFile: (String) -> Void = { _ in }
   let onUndo: (() -> Void)?
+  /// See `WorkToolCallsPanelView.showsHeader`.
+  var showsHeader = true
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      header
+      if showsHeader { header }
       if isExpanded {
         VStack(alignment: .leading, spacing: 0) {
           ForEach(group.files) { file in
             fileRow(file)
           }
         }
-        .padding(.leading, 16)
-        .padding(.top, 6)
+        .padding(.leading, showsHeader ? 16 : 0)
+        .padding(.top, showsHeader ? 6 : 0)
       }
     }
     .accessibilityElement(children: .contain)

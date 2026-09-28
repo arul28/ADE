@@ -1221,8 +1221,7 @@ extension ChatThreadEngineTests {
       liveTurnEntryIds: [],
       latestReasoningCardId: nil,
       latestTurnEndTurnId: nil,
-      viewportHeightBucket: 640,
-      turnEndState: 0
+      viewportHeightBucket: 640
     )
     func revisions(_ inputs: WorkChatTranscriptRowInputs) -> [String: Int] {
       Dictionary(uniqueKeysWithValues: entries.map { entry in

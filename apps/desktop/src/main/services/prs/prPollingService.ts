@@ -215,7 +215,16 @@ export function createPrPollingService({
     return DEFAULT_INTERVAL_MS;
   };
 
+  // The per-PR poll cursor lives in memory, not in the replicated
+  // `pull_requests.last_polled_at` column: nothing reads it remotely, and
+  // cr-sqlite would ship a write per PR per tick to every synced peer (most of
+  // a phone's idle sync traffic on a large project). The column stays; a value
+  // already there still seeds the cursor.
+  const lastPolledAtByPrId = new Map<string, string>();
+
   const getLastPolledAt = (prId: string): string | null => {
+    const inMemory = lastPolledAtByPrId.get(prId);
+    if (inMemory) return inMemory;
     if (!db) return null;
     const row = db.get<{ last_polled_at: string | null }>(
       "select last_polled_at from pull_requests where id = ? limit 1",
@@ -225,15 +234,7 @@ export function createPrPollingService({
   };
 
   const setLastPolledAt = (prId: string, iso: string): void => {
-    if (!db) return;
-    try {
-      db.run("update pull_requests set last_polled_at = ? where id = ?", [iso, prId]);
-    } catch (err) {
-      logger.warn("prs.last_polled_at_update_failed", {
-        prId,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
+    lastPolledAtByPrId.set(prId, iso);
   };
 
   let stopped = false;
@@ -524,6 +525,7 @@ export function createPrPollingService({
         if (!seen.has(prId)) {
           lastByPrId.delete(prId);
           lastFingerprintByPrId.delete(prId);
+          lastPolledAtByPrId.delete(prId);
         }
       }
 

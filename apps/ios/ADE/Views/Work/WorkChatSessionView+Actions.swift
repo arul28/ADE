@@ -21,6 +21,8 @@ extension WorkChatSessionView {
     olderHistoryLoadError = nil
     olderHistoryTriggerArmed = true
     olderHistoryAutomaticContinuationPending = false
+    olderRevealRequestedCount = nil
+    olderHistoryEmptyPageChain = 0
     transcriptScroller.resetForNewSession()
   }
 
@@ -57,6 +59,41 @@ extension WorkChatSessionView {
     cardExpansion.toggle(id: id, defaultsOpen: false)
   }
 
+  /// The tools/files lists behind a turn line's toggles, and which one the
+  /// reader opened. State lives in the central set so it survives recycling.
+  func turnWorkDisclosure(turnKey: String) -> WorkTurnWorkDisclosure {
+    let activity = turnToolActivity.completedByTurnId[turnKey]
+    let files = turnToolActivity.completedFilesByTurnId[turnKey]
+    let open: WorkTurnWorkSection? = cardExpansion.isExpanded(
+      id: workTurnWorkExpansionId(.tools, turnKey: turnKey), defaultsOpen: false
+    ) ? .tools : cardExpansion.isExpanded(
+      id: workTurnWorkExpansionId(.files, turnKey: turnKey), defaultsOpen: false
+    ) ? .files : nil
+    var itemIds = Set<String>()
+    if open != nil {
+      let prefix = workTurnWorkItemExpansionPrefix(turnKey: turnKey)
+      for id in cardExpansion.expandedIds where id.hasPrefix(prefix) {
+        itemIds.insert(String(id.dropFirst(prefix.count)))
+      }
+    }
+    return WorkTurnWorkDisclosure(activity: activity, files: files, open: open, expandedItemIds: itemIds)
+  }
+
+  /// Open one list, closing the other (desktop keeps one open at a time).
+  @MainActor
+  func toggleTurnWork(_ section: WorkTurnWorkSection, turnKey: String) {
+    let id = workTurnWorkExpansionId(section, turnKey: turnKey)
+    let other = workTurnWorkExpansionId(section == .tools ? .files : .tools, turnKey: turnKey)
+    let opening = !cardExpansion.isExpanded(id: id, defaultsOpen: false)
+    cardExpansion.set(id: other, expanded: false, defaultsOpen: false)
+    cardExpansion.set(id: id, expanded: opening, defaultsOpen: false)
+  }
+
+  @MainActor
+  func toggleTurnWorkItem(_ itemId: String, turnKey: String) {
+    toggleNestedCard(workTurnWorkItemExpansionPrefix(turnKey: turnKey) + itemId)
+  }
+
   @MainActor
   func requestEarlierTimelineEntries(automatically: Bool = false) {
     guard !olderHistoryLoadInFlight else { return }
@@ -68,6 +105,8 @@ extension WorkChatSessionView {
       // revealed rows, and they land above the viewport where the collection
       // view's anchor keeps the reader's row still.
       let nextVisibleCount = (frame?.visibleTimelineCount ?? workTimelinePageSize) + workTimelinePageSize
+      // Re-armed in `handleFrameApplied` once the revealed rows are on screen.
+      olderRevealRequestedCount = nextVisibleCount
       thread.updateOverlays { $0.visibleTimelineCount = nextVisibleCount }
     }
     // Once the locally-buffered timeline is nearly exhausted, pull the next
@@ -83,11 +122,37 @@ extension WorkChatSessionView {
         guard !Task.isCancelled, session.id == requestedSessionId else { return }
         olderHistoryLoadTask = nil
         olderHistoryLoadInFlight = false
+        let geometry = transcriptScroller.currentGeometry
+        ScrollDiagnostics.shared.event("thread.olderTrigger", [
+          "succeeded": result.succeeded,
+          "hasMore": result.hasMoreHistory,
+          "added": result.addedTimelineEntries,
+          "automatic": automatically,
+          "hidden": hiddenTimelineCount,
+          "fromTop": Int(geometry?.distanceFromTop ?? -1),
+        ])
         if !result.succeeded {
           olderHistoryAutomaticContinuationPending = automatically
           olderHistoryLoadError = "The connected machine did not return this history page. Your cursor was preserved."
           return
         }
+        // The request that disarmed the trigger is done: arm it again, so the
+        // reader still at the top can keep scrolling back.
+        olderHistoryTriggerArmed = true
+        // A page that added no rows (its events all joined the oldest turn's
+        // existing row) leaves the reader parked at the top with nothing new
+        // to scroll to: the round-4 "ceiling". Fetch the next page at once,
+        // but only then. After a page that DID add rows the geometry is read
+        // before layout (it says 0 from the top), so chaining there loaded
+        // every page in a burst and threw the reader to the very top.
+        if !result.addedTimelineEntries, !revealedBufferedEntries, result.hasMoreHistory,
+           olderHistoryEmptyPageChain < workChatOlderHistoryEmptyPageChainLimit {
+          olderHistoryEmptyPageChain += 1
+          olderHistoryTriggerArmed = false
+          requestEarlierTimelineEntries(automatically: true)
+          return
+        }
+        olderHistoryEmptyPageChain = 0
         guard automatically,
               hiddenTimelineCount > 0 || result.hasMoreHistory
         else { return }

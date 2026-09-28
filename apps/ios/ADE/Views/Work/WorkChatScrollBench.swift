@@ -1,6 +1,7 @@
 import Foundation
 import OSLog
 import SwiftUI
+import UIKit
 
 // MARK: - Harness
 //
@@ -225,6 +226,13 @@ struct WorkChatScrollBenchOptions {
   var chips: Bool = false
   /// Render the composer the way the CTO session does (`compactComposer`).
   var compactComposer: Bool = false
+  /// Synthetic proof: one screenshot artifact inside each of the last N
+  /// finished turns, with a generated thumbnail, so the turn-end proof chip
+  /// and its filmstrip can be seen without a brain.
+  var proofTurns: Int = 0
+  /// Open the last finished turn's fold and one of its disclosures
+  /// (`tools`, `files` or `proof`), as if the reader had tapped them.
+  var openLastTurn: String?
 
   static func fromLaunchArguments(_ arguments: [String] = ProcessInfo.processInfo.arguments)
     -> WorkChatScrollBenchOptions
@@ -241,6 +249,8 @@ struct WorkChatScrollBenchOptions {
     options.streamIntervalMs = value("-adeBenchStreamIntervalMs").flatMap(Int.init) ?? 120
     options.chips = value("-adeBenchChips") == "1"
     options.compactComposer = arguments.contains("-adeBenchCompactComposer")
+    options.proofTurns = value("-adeBenchProof").flatMap(Int.init) ?? 0
+    options.openLastTurn = value("-adeBenchOpenLastTurn")
     return options
   }
 }
@@ -300,6 +310,7 @@ struct WorkChatScrollBenchScreen: View {
   @State private var sending = false
   @State private var errorMessage: String?
   @State private var didLoad = false
+  @State private var benchArtifacts: [ComputerUseArtifactSummary] = []
 
   private var key: ChatThreadKey {
     ChatThreadKey(machineKey: "bench", sessionId: sessionId, scope: .project("bench"))
@@ -339,7 +350,7 @@ struct WorkChatScrollBenchScreen: View {
       session: WorkChatSessionRenderContext(benchTerminalSession(sessionId: sessionId)),
       chatSummaryContext: WorkChatSummaryRenderContext(benchChatSummary(sessionId: sessionId)),
       thread: thread,
-      artifacts: [],
+      artifacts: benchArtifacts,
       cardExpansionSnapshot: cardExpansion,
       cardExpansionRenderSignature: workCardExpansionRenderSignature(cardExpansion),
       artifactContentRenderSignature: workLoadedArtifactContentRenderSignature([:]),
@@ -462,6 +473,31 @@ struct WorkChatScrollBenchScreen: View {
     ChatThreadSignposts.beginOpen(sessionId: key.sessionId)
     let model = registry.attach(key)
     thread = model
+    if options.proofTurns > 0 {
+      let proof = benchProofArtifacts(events: events, turns: options.proofTurns)
+      benchArtifacts = proof.artifacts
+      artifactContent = proof.content
+      let artifacts = proof.artifacts
+      model.updateOverlays { $0.artifacts = artifacts }
+    }
+    if let open = options.openLastTurn,
+       let turnId = events.last(where: {
+         if case .done = $0.envelope.event { return true }
+         return false
+       }).flatMap({ event -> String? in
+         guard case .done(let turnId, _, _, _, _, _, _) = event.envelope.event else { return nil }
+         return turnId
+       }) {
+      var ids: Set<String> = ["turn-fold:\(turnId)"]
+      switch open {
+      case "tools": ids.insert(workTurnWorkExpansionId(.tools, turnKey: turnId))
+      case "files": ids.insert(workTurnWorkExpansionId(.files, turnKey: turnId))
+      case "proof": ids.insert(workTurnProofExpansionId(turnId: turnId))
+      default: break
+      }
+      cardExpansion = WorkCardExpansionState(expandedIds: ids)
+      model.updateOverlays { $0.expandedTurnIds = [turnId] }
+    }
     registry.routeSnapshot(
       ChatThreadSnapshotInput(
         sessionId: key.sessionId,
@@ -506,6 +542,50 @@ struct WorkChatScrollBenchScreen: View {
       )
     }
   }
+}
+
+/// `-adeBenchProof N`: a screenshot artifact two seconds before each of the
+/// last N `done` rows, with a generated image as its loaded preview.
+@MainActor
+private func benchProofArtifacts(
+  events: [ChatThreadLiveEvent],
+  turns: Int
+) -> (artifacts: [ComputerUseArtifactSummary], content: [String: WorkLoadedArtifactContent]) {
+  let doneTimes: [Date] = events.compactMap { event in
+    guard case .done = event.envelope.event else { return nil }
+    return workParsedDate(event.envelope.timestamp)
+  }
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  var artifacts: [ComputerUseArtifactSummary] = []
+  var content: [String: WorkLoadedArtifactContent] = [:]
+  let colors: [UIColor] = [.systemTeal, .systemIndigo, .systemOrange, .systemPink]
+  for (index, doneAt) in doneTimes.suffix(turns).enumerated() {
+    for shot in 0..<2 {
+      let id = "bench-proof-\(index)-\(shot)"
+      artifacts.append(ComputerUseArtifactSummary(
+        id: id,
+        artifactKind: "screenshot",
+        backendStyle: "local",
+        backendName: "bench",
+        title: "Bench proof \(index + 1).\(shot + 1)",
+        uri: "bench://\(id)",
+        storageKind: "file",
+        mimeType: "image/png",
+        createdAt: formatter.string(from: doneAt.addingTimeInterval(Double(shot) - 3)),
+        ownerKind: "chat_session",
+        ownerId: "bench",
+        relation: "attached"
+      ))
+      let size = CGSize(width: 320, height: 200)
+      let image = UIGraphicsImageRenderer(size: size).image { context in
+        colors[(index + shot) % colors.count].setFill()
+        context.fill(CGRect(origin: .zero, size: size))
+      }
+      content[id] = .image(image)
+    }
+  }
+  return (artifacts, content)
 }
 
 /// Session-row fixture. Duplicated rather than shared with `WorkPreviewData`

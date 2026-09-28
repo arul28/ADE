@@ -979,6 +979,12 @@ extension WorkSessionDestinationView {
       errorMessage = "Files are not attached to projectless chats."
       return
     }
+    guard !isRemoteMachineChat else {
+      // The Files tab shows the focused machine only.
+      let machine = syncService.chatMachineName(sessionId: sessionId) ?? "that machine"
+      errorMessage = "Open \(machine)'s projects from the Hub to browse its files."
+      return
+    }
     guard let session else { return }
 
     do {

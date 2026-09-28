@@ -1432,6 +1432,12 @@ export function createSyncService(args: SyncServiceArgs) {
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected());
       const role = isLocalBrain ? "brain" : "viewer";
+      // A saved draft makes this runtime a viewer on purpose; without one, a
+      // viewer is following the cluster record `refreshRoleState` reclaims
+      // once its brain goes stale.
+      const viewerReason: SyncRoleSnapshot["viewerReason"] = isLocalBrain
+        ? undefined
+        : cluster && !savedDraft ? "cluster_record" : "saved_connection";
       const runtimeRole = isLocalBrain ? "host" : "viewer";
       const crdtSyncAvailable = isCrdtSyncAvailable();
       const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
@@ -1539,6 +1545,7 @@ export function createSyncService(args: SyncServiceArgs) {
       return {
         mode,
         role,
+        ...(viewerReason ? { viewerReason } : {}),
         runtimeMode,
         runtimeRole,
         localDevice,
@@ -1866,8 +1873,28 @@ export function createSyncService(args: SyncServiceArgs) {
       return hostService;
     },
 
+    /**
+     * Run the host/viewer decision again now.
+     *
+     * The decision is otherwise re-made only on events (a host-startup toggle,
+     * remote changes applied). A scope that decided "viewer" because another
+     * device was brain a moment ago -- a brain force-killed seconds before this
+     * one started still looks fresh for `STALE_BRAIN_LAST_SEEN_MS` -- and whose
+     * viewer connect then failed never received another event, so it stayed a
+     * viewer of a dead brain and nobody hosted sync until a restart. The brain's
+     * sync-host startup loop calls this on every retry.
+     */
+    async reevaluateHostRole(): Promise<void> {
+      await refreshRoleState();
+    },
+
     getRemoteCommandDescriptor(action: string) {
       return remoteCommandService.getDescriptor(action);
+    },
+
+    /** Every registered remote-command descriptor, for a routing ingress to advertise. */
+    getRemoteCommandDescriptors() {
+      return remoteCommandService.getDescriptors();
     },
 
     /**
