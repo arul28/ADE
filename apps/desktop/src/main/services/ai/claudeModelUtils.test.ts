@@ -26,6 +26,13 @@ describe("resolveClaudeCliModel", () => {
     expect(resolveClaudeCliModel("sonnet")).toBe("claude-sonnet-5-5");
   });
 
+  it("keeps generation-qualified Sonnet ids on the generation they name", () => {
+    expect(resolveClaudeCliModel("claude-sonnet-5")).toBe("claude-sonnet-5");
+    expect(resolveClaudeCliModel("claude-sonnet-5-20260501")).toBe("claude-sonnet-5");
+    expect(resolveClaudeCliModel("claude-sonnet-5.5")).toBe("claude-sonnet-5-5");
+    expect(resolveClaudeCliModel("claude-sonnet-5-5")).toBe("claude-sonnet-5-5");
+  });
+
   it("maps retired Opus 4.7 1M and Fable 5 aliases onto current CLI ids", () => {
     expect(resolveClaudeCliModel("claude-opus-4-7-1m")).toBe("claude-opus-5");
     expect(resolveClaudeCliModel("claude-opus-4-7[1m]")).toBe("claude-opus-5");
