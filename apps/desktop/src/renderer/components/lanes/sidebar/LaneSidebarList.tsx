@@ -8,7 +8,7 @@ import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import { SmartTooltip } from "../../ui/SmartTooltip";
 import { LaneSidebarGroupHeader, LaneSidebarGroupMenu, laneGroupHasActions } from "./LaneSidebarGroupHeader";
-import { LaneSidebarCreatingRow, LaneSidebarRow } from "./LaneSidebarRow";
+import { LaneSidebarCreatingRow, LaneSidebarRow, type LaneMachineChip } from "./LaneSidebarRow";
 import {
   laneStateGroupSectionId,
   type LaneGroupBulkAction,
@@ -62,6 +62,14 @@ export type LaneSidebarListProps = {
   onOpenPr: (pr: LaneTabPrTag) => void;
   onOpenAgent: (agent: LaneAgent) => void;
   onClearMultiSelection: () => void;
+  /** Machine chip per row key; absent on a single-machine project. */
+  machineChipByLaneId?: ReadonlyMap<string, LaneMachineChip>;
+  /** Why a row cannot be acted on (its machine is offline), per row key. */
+  disabledReasonByLaneId?: ReadonlyMap<string, string>;
+  /** Row keys of lanes on machines other than the tab's. */
+  foreignLaneIds?: ReadonlySet<string>;
+  /** Rendered between the filter row and the list (the machine filter). */
+  toolbar?: React.ReactNode;
 };
 
 /**
@@ -103,6 +111,10 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     onOpenPr,
     onOpenAgent,
     onClearMultiSelection,
+    machineChipByLaneId,
+    disabledReasonByLaneId,
+    foreignLaneIds,
+    toolbar,
   } = props;
   const listRef = useRef<HTMLDivElement>(null);
   const [groupMenu, setGroupMenu] = useState<{ groupId: LaneStateGroupId; laneIds: string[]; x: number; y: number } | null>(null);
@@ -155,6 +167,9 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         creating={!deleting && creatingLaneIds.has(laneId)}
         parentHint={row.parentHint ?? null}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
+        machineChip={machineChipByLaneId?.get(laneId) ?? null}
+        disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
+        foreign={foreignLaneIds?.has(laneId) ?? false}
         onSelect={onSelectRow}
         onContextMenu={onContextMenu}
         onOpenPr={onOpenPr}
@@ -242,6 +257,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         </button>
       </div>
 
+      {toolbar}
       <div
         ref={listRef}
         role="listbox"

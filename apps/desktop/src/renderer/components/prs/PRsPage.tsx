@@ -511,6 +511,7 @@ function PRsPageInner({ active }: { active: boolean }) {
               selectedSort={githubSort}
               onSortChange={handleGithubSortChange}
               onRefreshAll={handleRefresh}
+              active={active}
               onOpenRebaseTab={(laneId) => {
                 if (laneId) setSelectedRebaseItemId(laneId);
                 setActiveTab("rebase");
@@ -528,6 +529,7 @@ function PRsPageInner({ active }: { active: boolean }) {
                 setActiveTab("normal");
               }}
               integrationRefreshNonce={integrationRefreshNonce}
+              active={active}
             />
           ))}
         </PrsListHostProvider>

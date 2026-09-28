@@ -40,6 +40,7 @@ import {
 import { HarnessLogoCropper } from "./HarnessLogoCropper";
 import { StepModel } from "./HarnessWizardStepModel";
 import { StepIdentity } from "./HarnessWizardStepIdentity";
+import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 /**
  * Building a custom provider: pick the harness, pick the model provider and
@@ -125,6 +126,9 @@ export function HarnessWizard({
   onSave: (draft: HarnessPresetDraft) => void;
 }) {
   const reducedMotion = usePrefersReducedMotion();
+  // Accounts are the page's machine's. The proxy sign-in call is not pin-aware,
+  // so it is only offered where it would reach the tab's own machine.
+  const { pin } = useSettingsMachineScope();
   const [step, setStep] = useState<Step>(1);
   const [draft, setDraft] = useState<HarnessPresetDraft>(() => initialDraft ?? emptyHarnessDraft());
   const [inventory, setInventory] = useState<HarnessSourceInventory>(EMPTY_HARNESS_SOURCE_INVENTORY);
@@ -141,19 +145,19 @@ export function HarnessWizard({
 
   useEffect(() => {
     let cancelled = false;
-    void loadHarnessAccounts().then((accounts) => {
+    void loadHarnessAccounts(pin).then((accounts) => {
       if (cancelled) return;
       setInventory({
         accounts,
         keys: [],
         subscriptions: subscriptionSources(),
-        proxySignInAvailable: proxySignInAvailable(),
+        proxySignInAvailable: pin == null && proxySignInAvailable(),
       });
     });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pin]);
 
   // Object URLs outlive the component unless we revoke them, and the cropper
   // holds one for as long as it is open.

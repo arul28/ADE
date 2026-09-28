@@ -6,6 +6,7 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import { navigateToAppTarget } from "../../lib/openExternal";
+import { subscribeUsagePopoverRequests } from "../../lib/usagePopover";
 import { cn } from "../ui/cn";
 import { HeaderSheet } from "../app/HeaderSheet";
 import { headerUsageProviders } from "./usageLimitModel";
@@ -224,6 +225,12 @@ export function HeaderUsageControl({
   deferInitialRead?: boolean;
 } = {}) {
   const [open, setOpen] = useState(false);
+  // Other surfaces (the welcome page's usage summary) ask the chip to open.
+  // Only the chip answers: the menu-row copy lives inside a closed menu.
+  useEffect(() => {
+    if (variant !== "chip") return undefined;
+    return subscribeUsagePopoverRequests(() => setOpen(true));
+  }, [variant]);
   const [providerConnections, setProviderConnections] =
     useState<AiProviderConnections | null | undefined>(undefined);
   const panelRef = useRef<HTMLDivElement | null>(null);

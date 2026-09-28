@@ -155,8 +155,15 @@ export async function openPairedCandidate<T>(args: {
   getAccountRelayProof: AccountRelayProofResolver;
   routePreference: RemoteRoutePreference;
   acceptTransport: (transport: SyncRuntimeTransport) => Promise<T>;
+  /**
+   * Whose pairing to connect with. Defaults to the machine's shared desktop
+   * store. The brain's CTO passes its own store: a host lets one connection
+   * per paired device live, so borrowing the desktop's pairing would close the
+   * desktop's own connection to that machine.
+   */
+  pairedStore?: DesktopPairedMachineStore;
 }): Promise<OpenedPairedCandidate<T>> {
-  const pairedStore = new DesktopPairedMachineStore();
+  const pairedStore = args.pairedStore ?? new DesktopPairedMachineStore();
   const credentials = args.target.pairedMachine
     ? pairedStore.getForReference(args.target.pairedMachine)
     : null;

@@ -2,7 +2,8 @@ import React, { Suspense, useEffect, useCallback, useRef, useMemo, useState } fr
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { Clock } from "@phosphor-icons/react";
 import { LaneIcon } from "../ui/vcsIcons";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectStateKey, useAppStore } from "../../state/appStore";
+import { cachedCtoHomeResolution } from "../cto/ctoHomeMachine";
 import { EmptyState } from "../ui/EmptyState";
 import { Group, Panel } from "react-resizable-panels";
 import { ResizeGutter } from "../ui/ResizeGutter";
@@ -20,6 +21,13 @@ import {
 import { shouldHydrateCommitShaFromUrl } from "./historyUrlHydration";
 import type { TimelineEvent } from "./timelineTypes";
 import type { GitCommitSummary } from "../../../shared/types";
+import { useProjectMachineTargets } from "./projectMachines";
+import {
+  createLaneMachineRouter,
+  foreignLaneKey,
+  useAllMachineLanes,
+} from "../../state/laneMachineRouting";
+import type { HistoryMachineLoad, HistoryMachineSource } from "./useTimelineStore";
 
 const TimelineGraph = React.lazy(async () => {
   const mod = await import("./TimelineGraph");
@@ -67,6 +75,8 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const viewMode = useTimelineStore((s) => s.viewMode);
   const surface = useTimelineStore((s) => s.surface);
   const focusLaneId = useTimelineStore((s) => s.focusLaneId);
+  const focusLaneMachineId = useTimelineStore((s) => s.focusLaneMachineId);
+  const setFocusLane = useTimelineStore((s) => s.setFocusLane);
   const selectedCommitSha = useTimelineStore((s) => s.selectedCommitSha);
   const selectedCommit = useTimelineStore((s) => s.selectedCommit);
   const selectedEventId = useTimelineStore((s) => s.selectedEventId);
@@ -81,9 +91,57 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   const setFocusLaneId = useTimelineStore((s) => s.setFocusLaneId);
   const setSurface = useTimelineStore((s) => s.setSurface);
   const setHoveredLaneId = useTimelineStore((s) => s.setHoveredLaneId);
+  const setMachines = useTimelineStore((s) => s.setMachines);
+  const setCtoRoute = useTimelineStore((s) => s.setCtoRoute);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const machineLoads = useTimelineStore((s) => s.machineLoads);
+
+  // One timeline across every machine that holds this project. The union is
+  // joined only while the activity timeline is on screen.
+  const machineTargets = useProjectMachineTargets(active && surface === "activity");
+  const machineSources = useMemo<HistoryMachineSource[]>(
+    () => machineTargets.map((target) => ({
+      key: target.key,
+      machineId: target.machineId,
+      machineName: target.machineName,
+      pin: target.pin,
+      online: target.online,
+      isThisMachine: target.isThisMachine,
+      isActive: target.isActive,
+    })),
+    [machineTargets],
+  );
+  // Lane lists churn the target objects; only membership, naming and
+  // reachability matter to the timeline.
+  const machineSignature = machineSources
+    .map((machine) => `${machine.key}\u0000${machine.machineName}\u0000${machine.online ? 1 : 0}\u0000${machine.isActive ? 1 : 0}`)
+    .join("\u0001");
+  const machineSourcesRef = useRef(machineSources);
+  machineSourcesRef.current = machineSources;
+  useEffect(() => {
+    setMachines(machineSourcesRef.current);
+  }, [machineSignature, setMachines]);
 
   const lanes = useAppStore((s) => s.lanes ?? []);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
+
+  // A lane on another machine is read through that machine's pin. Writes
+  // (lane git actions, commit actions) stay with lanes on this tab's machine:
+  // `laneHasWorktree` is false for the others, which is what gates them.
+  const allMachineLanes = useAllMachineLanes(active && surface === "commits");
+  const laneRouter = useMemo(() => createLaneMachineRouter(allMachineLanes), [allMachineLanes]);
+  const focusRoute = focusLaneMachineId ? laneRouter.route(focusLaneId, focusLaneMachineId) : null;
+  // Held by key: the lane union re-derives on every sync tick, and a fresh
+  // pin object each time would refetch the commit list with it.
+  const livePin = focusRoute?.kind === "pinned" ? focusRoute.pin : null;
+  const livePinRef = useRef(livePin);
+  livePinRef.current = livePin;
+  const livePinKey = livePin?.key ?? null;
+  const commitPin = useMemo(() => livePinRef.current, [livePinKey]);
+  const focusLaneReadable = !focusLaneMachineId || focusRoute?.kind === "pinned";
+  const focusRemoteMachineName = focusLaneMachineId
+    ? laneRouter.machine(focusLaneMachineId)?.machineName ?? "another machine"
+    : null;
 
   // Hydrate store from URL (single effect to avoid sync loops)
   useEffect(() => {
@@ -110,17 +168,30 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
 
     const laneFromUrl = searchParams.get("laneId");
-    const laneIsKnown = laneFromUrl != null && lanes.some((l) => l.id === laneFromUrl);
+    const machineFromUrl = searchParams.get("machineId") || null;
+    // A lane on another machine waits until that machine has reported in:
+    // until then "unknown" is not "gone".
+    const machinePending = machineFromUrl != null && laneRouter.machine(machineFromUrl) == null;
+    const foreignFromUrl = machineFromUrl != null && laneRouter.machine(machineFromUrl)?.isActiveBinding !== true;
+    const laneIsKnown = laneFromUrl != null && (
+      foreignFromUrl
+        ? laneRouter.route(laneFromUrl, machineFromUrl).kind !== "unknown"
+        : lanes.some((l) => l.id === laneFromUrl)
+    );
     let focusLaneChanged = false;
-    if (laneFromUrl && laneIsKnown) {
-      if (focusLaneId !== laneFromUrl) {
-        setFocusLaneId(laneFromUrl);
+    if (machinePending) {
+      // Leave the focus alone; this effect re-runs when the machine arrives.
+    } else if (laneFromUrl && laneIsKnown) {
+      const nextMachineId = foreignFromUrl ? machineFromUrl : null;
+      if (focusLaneId !== laneFromUrl || focusLaneMachineId !== nextMachineId) {
+        setFocusLane(laneFromUrl, nextMachineId);
         focusLaneChanged = true;
       }
     } else {
       if (laneFromUrl && !laneIsKnown && lanes.length > 0) {
         // Lane referenced in URL no longer exists — strip it and the dependent commit hash.
         cleanedParams.delete("laneId");
+        cleanedParams.delete("machineId");
         cleanedParams.delete("commitSha");
         cleanedUrl = true;
       }
@@ -133,6 +204,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       // actions would run against the wrong worktree.
       if (
         !needsLaneForCommit &&
+        !focusLaneMachineId &&
         (!focusLaneId || !lanes.some((l) => l.id === focusLaneId))
       ) {
         const fallback =
@@ -179,13 +251,16 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [
     active,
     lanes,
+    laneRouter,
     selectedLaneId,
     focusLaneId,
+    focusLaneMachineId,
     surface,
     searchParams,
     selectedEventId,
     selectedCommitSha,
     setFocusLaneId,
+    setFocusLane,
     setSurface,
     setSelectedEventId,
     setSelectedCommitSha,
@@ -199,17 +274,41 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     if (syncingFromUrlRef.current) return;
     if (searchParams.get("laneId")) return;
     if (searchParams.get("commitSha") && !searchParams.get("laneId")) return;
+    // A lane picked on another machine is not overridden by this machine's selection.
+    if (focusLaneMachineId) return;
     const selected =
       selectedLaneId && lanes.some((lane) => lane.id === selectedLaneId) ? selectedLaneId : null;
     if (selected && focusLaneId !== selected) {
       setFocusLaneId(selected);
     }
-  }, [active, focusLaneId, lanes, searchParams, selectedLaneId, setFocusLaneId]);
+  }, [active, focusLaneId, focusLaneMachineId, lanes, searchParams, selectedLaneId, setFocusLaneId]);
 
   useEffect(() => {
     if (!active || surface === "commits") return;
+    // CTO sessions come from the CTO's home machine. Unknown (the CTO page
+    // hasn't resolved it yet) keeps the tab machine, as before.
+    const home = cachedCtoHomeResolution(projectStateKey);
+    setCtoRoute(
+      home?.status === "unreachable"
+        ? { skip: true, pin: null }
+        : { skip: false, pin: home?.status === "resolved" ? home.pin : null },
+    );
     void fetchEvents();
-  }, [active, surface, fetchEvents]);
+  }, [active, surface, fetchEvents, projectStateKey, setCtoRoute]);
+
+  // A machine that joins, returns, or comes back online is read right away;
+  // the bound machine's own list is never held for it.
+  const foreignMachineSignature = machineSources
+    .filter((machine) => !machine.isActive && machine.online)
+    .map((machine) => machine.key)
+    .join("\u0001");
+  const lastForeignSignatureRef = useRef(foreignMachineSignature);
+  useEffect(() => {
+    if (lastForeignSignatureRef.current === foreignMachineSignature) return;
+    lastForeignSignatureRef.current = foreignMachineSignature;
+    if (!active || surface === "commits" || !foreignMachineSignature) return;
+    void fetchEvents({ silent: true, skipSupplemental: true });
+  }, [active, fetchEvents, foreignMachineSignature, surface]);
 
   useEffect(() => {
     if (!active || surface !== "activity") return;
@@ -217,7 +316,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     // Supplemental sources refresh on focus/visibility change instead.
     const tightRefresh = () => {
       if (document.visibilityState !== "visible") return;
-      void fetchEvents({ silent: true, skipSupplemental: true });
+      void fetchEvents({ silent: true, skipSupplemental: true, skipForeign: true });
     };
     const fullRefresh = () => {
       if (document.visibilityState !== "visible") return;
@@ -238,7 +337,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     const selectedCommitIsCurrentLane =
       selectedCommit?.sha === selectedCommitSha &&
       selectedCommitLaneId === focusLaneId;
-    if (!active || !focusLaneId || !selectedCommitSha || selectedCommitIsCurrentLane) {
+    if (!active || !focusLaneId || !focusLaneReadable || !selectedCommitSha || selectedCommitIsCurrentLane) {
       if (!selectedCommitSha) {
         setCommitOnLaneHistory(true);
         setSelectedCommitLaneId(null);
@@ -247,7 +346,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     }
     let cancelled = false;
     void window.ade.git
-      .listRecentCommits({ laneId: focusLaneId, limit: 500 })
+      .listRecentCommits({ laneId: focusLaneId, limit: 500 }, commitPin)
       .then(async (rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === selectedCommitSha);
@@ -266,13 +365,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           const targeted = await window.ade.git.getCommit({
             laneId: focusLaneId,
             commitSha: selectedCommitSha,
-          });
+          }, commitPin);
           if (!cancelled) {
             const isOnLane = targeted
               ? await window.ade.git.isCommitInLaneHistory({
                 laneId: focusLaneId,
                 commitSha: selectedCommitSha,
-              }).catch(() => false)
+              }, commitPin).catch(() => false)
               : false;
             if (cancelled) return;
             setCommitOnLaneHistory(isOnLane);
@@ -295,7 +394,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [active, focusLaneId, selectedCommitLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
+  }, [active, commitPin, focusLaneId, focusLaneReadable, selectedCommitLaneId, selectedCommitSha, selectedCommit?.sha, setSelectedCommit]);
 
   useEffect(() => {
     if (!active || syncingFromUrlRef.current) return;
@@ -310,6 +409,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       if ((next.get("laneId") ?? "") !== laneParam) {
         if (laneParam) next.set("laneId", laneParam);
         else next.delete("laneId");
+        changed = true;
+      }
+      const machineParam = focusLaneId ? focusLaneMachineId ?? "" : "";
+      if ((next.get("machineId") ?? "") !== machineParam) {
+        if (machineParam) next.set("machineId", machineParam);
+        else next.delete("machineId");
         changed = true;
       }
       const commitParam = selectedCommitSha ?? "";
@@ -342,7 +447,7 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       lastWrittenUrlRef.current = next.toString();
       return next;
     }, { replace: true });
-  }, [active, surface, focusLaneId, selectedCommitSha, selectedEventId, setSearchParams]);
+  }, [active, surface, focusLaneId, focusLaneMachineId, selectedCommitSha, selectedEventId, setSearchParams]);
 
   const handleSelectEvent = useCallback(
     (id: string) => {
@@ -370,11 +475,13 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
         next.delete("eventId");
         next.set("surface", "commits");
         if (focusLaneId) next.set("laneId", focusLaneId);
+        if (focusLaneId && focusLaneMachineId) next.set("machineId", focusLaneMachineId);
+        else next.delete("machineId");
         lastWrittenUrlRef.current = next.toString();
         return next;
       });
     },
-    [setSelectedCommit, setSelectedEventId, setSearchParams, focusLaneId],
+    [setSelectedCommit, setSelectedEventId, setSearchParams, focusLaneId, focusLaneMachineId],
   );
 
   const handleCloseDetail = useCallback(() => {
@@ -390,8 +497,11 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
   }, [setSelectedEventId, setSelectedCommit, setSearchParams]);
 
   const handleNavigateToLane = useCallback(
-    (laneId: string) => {
-      navigate(`/lanes?laneId=${laneId}`);
+    (laneId: string, machineId?: string | null) => {
+      // A lane on another machine opens there: its id is only unique on it.
+      const params = new URLSearchParams({ laneId });
+      if (machineId) params.set("machineId", machineId);
+      navigate(`/lanes?${params.toString()}`);
     },
     [navigate],
   );
@@ -415,8 +525,10 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
       .filter((e): e is TimelineEvent => e != null);
   }, [selectedCommitSha, rawEvents, events]);
 
-  const focusLane = lanes.find((l) => l.id === focusLaneId) ?? null;
-  const focusLaneHasWorktree = Boolean(focusLane?.worktreePath?.trim());
+  const focusLane = focusLaneMachineId
+    ? (focusLaneId ? allMachineLanes.lanesByKey.get(foreignLaneKey(focusLaneMachineId, focusLaneId))?.lane ?? null : null)
+    : lanes.find((l) => l.id === focusLaneId) ?? null;
+  const focusLaneHasWorktree = !focusLaneMachineId && Boolean(focusLane?.worktreePath?.trim());
 
   const laneData = useMemo(
     () =>
@@ -438,10 +550,20 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
 
   let timelineBody: React.ReactNode;
 
-  if (surface === "commits") {
+  if (surface === "commits" && focusLaneMachineId && !focusLaneReadable) {
+    timelineBody = (
+      <EmptyState
+        icon={Clock}
+        title={`${focusRemoteMachineName ?? "That machine"} is unavailable`}
+        description="Its lanes' commits load once it is back online"
+      />
+    );
+  } else if (surface === "commits") {
     timelineBody = (
       <CommitHistoryView
-        laneId={focusLaneId}
+        laneId={focusLaneReadable ? focusLaneId : null}
+        pin={commitPin}
+        remoteMachineName={focusRemoteMachineName}
         laneName={focusLane?.name ?? null}
         laneHasWorktree={focusLaneHasWorktree}
         selectedSha={selectedCommitSha}
@@ -518,7 +640,10 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
     surface === "commits" ? (
       <Suspense fallback={panelFallback}>
         <CommitDetailPanel
-          laneId={focusLaneId}
+          laneId={focusLaneReadable ? focusLaneId : null}
+          pin={commitPin}
+          remoteMachineName={focusRemoteMachineName}
+          laneMachineId={focusLaneMachineId}
           laneHasWorktree={focusLaneHasWorktree}
           commit={selectedCommit}
           commitOnLaneHistory={commitOnLaneHistory}
@@ -570,8 +695,12 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
               <span className="truncate font-mono text-[12px] text-fg">
                 {focusLane?.name ?? (focusLaneId ? focusLaneId : "Select a lane")}
               </span>
+              {focusRemoteMachineName ? (
+                <span className="shrink-0 font-sans text-[11px] text-muted-fg">on {focusRemoteMachineName}</span>
+              ) : null}
             </div>
           ) : null}
+          {surface === "activity" ? <MachineLoadNotes loads={machineLoads} /> : null}
           {timelineBody}
         </Panel>
         <ResizeGutter orientation="vertical" thin />
@@ -584,6 +713,31 @@ function HistoryPageContent({ active = true }: { active?: boolean } = {}) {
           {detailBody}
         </Panel>
       </Group>
+    </div>
+  );
+}
+
+/**
+ * One quiet line per machine that is still loading, offline, or unreachable.
+ * The rest of the timeline is already on screen; this only says what's missing.
+ */
+function MachineLoadNotes({ loads }: { loads: Record<string, HistoryMachineLoad> }) {
+  const entries = Object.entries(loads);
+  if (entries.length === 0) return null;
+  return (
+    <div
+      className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-0.5 border-b border-white/[0.04] px-3 py-1 font-mono text-[10px] text-muted-fg/50"
+      data-testid="history-machine-notes"
+    >
+      {entries.map(([key, load]) => (
+        <span key={key} title={load.message ?? undefined}>
+          {load.status === "loading"
+            ? `Loading ${load.machineName}…`
+            : load.status === "offline"
+              ? `${load.machineName} is offline · showing last reported`
+              : `Couldn't reach ${load.machineName}`}
+        </span>
+      ))}
     </div>
   );
 }

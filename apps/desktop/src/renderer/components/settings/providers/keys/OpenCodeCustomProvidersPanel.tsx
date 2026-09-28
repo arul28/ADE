@@ -28,6 +28,8 @@ import {
   withoutCustomProvider,
 } from "./openCodeCustomProviders";
 import { providerActionMessage } from "../providerErrorMessage";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { useApiCredentialsPin } from "./useApiCredentials";
 
 /** A config entry, shaped as the key sheet's "already saved" prefill. */
 function asCredential(entry: AiCustomProviderConfig): ApiCredentialSummary {
@@ -50,6 +52,10 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
   const entries = useMemo(() => ctx.status?.customProviders ?? [], [ctx.status?.customProviders]);
   const [sheet, setSheet] = useState<{ existing: ApiCredentialSummary | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Config goes to the page's machine; the key store follows the same rule as
+  // every other key read on this page (This computer stays on desktop IPC).
+  const { pin } = useSettingsMachineScope();
+  const credentialPin = useApiCredentialsPin();
 
   const save = useCallback(async (draft: ApiKeyDraft) => {
     const id = draft.providerId.trim();
@@ -68,14 +74,14 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
         baseUrl: draft.baseUrl,
         ...(draft.protocol ? { protocol: draft.protocol } : {}),
         models: draft.models,
-      });
+      }, credentialPin);
     }
-    await persistOpenCodeProviderBlock(entries, draft);
+    await persistOpenCodeProviderBlock(entries, draft, pin);
     invalidateAiDiscoveryCache();
     setSheet(null);
     setError(null);
     await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });
-  }, [ctx.actions, entries]);
+  }, [credentialPin, ctx.actions, entries, pin]);
 
   const remove = useCallback(async (entry: AiCustomProviderConfig) => {
     const ok = await confirmDialog({
@@ -86,15 +92,15 @@ export function OpenCodeCustomProvidersPanel({ ctx }: { ctx: ProvidersViewContex
     });
     if (!ok) return;
     try {
-      await saveCustomProviders(withoutCustomProvider(entries, entry.id));
-      await window.ade.apiCredentials.remove({ provider: entry.id, credentialId: "default" });
+      await saveCustomProviders(withoutCustomProvider(entries, entry.id), pin);
+      await window.ade.apiCredentials.remove({ provider: entry.id, credentialId: "default" }, credentialPin);
       invalidateAiDiscoveryCache();
       setError(null);
       await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });
     } catch (err) {
       setError(providerActionMessage(err, "That custom provider change did not go through."));
     }
-  }, [ctx.actions, entries]);
+  }, [credentialPin, ctx.actions, entries, pin]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

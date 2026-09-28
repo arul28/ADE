@@ -12,6 +12,7 @@
  */
 import type { AiCustomProviderConfig } from "../../../../../shared/types/config";
 import type { ProviderKeyProtocol } from "./providerKeySpecs";
+import type { OpenProjectBinding } from "../../../../../shared/types";
 
 type CustomProviderNpm = NonNullable<AiCustomProviderConfig["npm"]>;
 
@@ -51,8 +52,12 @@ export function withoutCustomProvider(
   return existing.filter((row) => row.id !== id);
 }
 
-export async function saveCustomProviders(next: AiCustomProviderConfig[]): Promise<void> {
-  await window.ade.ai.updateConfig({ customProviders: next });
+/** `pin` is the machine the Settings page shows; null = the tab's binding. */
+export async function saveCustomProviders(
+  next: AiCustomProviderConfig[],
+  pin: OpenProjectBinding | null = null,
+): Promise<void> {
+  await window.ade.ai.updateConfig({ customProviders: next }, pin);
 }
 
 /**
@@ -71,6 +76,7 @@ export async function persistOpenCodeProviderBlock(
     protocol: ProviderKeyProtocol | null;
     models: string[];
   },
+  pin: OpenProjectBinding | null = null,
 ): Promise<void> {
   const id = draft.providerId.trim();
   if (!id) return;
@@ -80,5 +86,5 @@ export async function persistOpenCodeProviderBlock(
     baseURL: draft.baseUrl.trim(),
     npm: npmForProtocol(draft.protocol),
     models: draft.models,
-  }));
+  }), pin);
 }

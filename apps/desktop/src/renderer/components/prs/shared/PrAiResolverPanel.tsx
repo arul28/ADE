@@ -1,4 +1,5 @@
 import React from "react";
+import { pinArg, usePrRuntimePin } from "../state/prMachines";
 import { CaretDown, CaretRight, CircleNotch, Sparkle, X } from "@phosphor-icons/react";
 import type {
   PrAgentPermissionMode,
@@ -96,6 +97,9 @@ export function PrAiResolverPanel({
   showResolverInstructions = false,
 }: PrAiResolverPanelProps) {
   const { resolverSessionsByContextKey, upsertResolverSession } = usePrs();
+  // The resolver runs where the lane lives (see PrRuntimePinProvider).
+  const runtimePin = usePrRuntimePin();
+  const onPin = React.useMemo(() => pinArg(runtimePin), [runtimePin]);
   const [launching, setLaunching] = React.useState(false);
   const [status, setStatus] = React.useState<"idle" | "starting" | "running" | "completed" | "failed" | "cancelled">("idle");
   const [message, setMessage] = React.useState<string | null>(null);
@@ -128,7 +132,7 @@ export function PrAiResolverPanel({
   React.useEffect(() => {
     if (!context || !contextKey || activeSession) return;
     let cancelled = false;
-    void window.ade.prs.aiResolutionGetSession({ context })
+    void window.ade.prs.aiResolutionGetSession({ context }, ...onPin)
       .then((result) => {
         if (!cancelled && result) {
           upsertResolverSession(result);
@@ -140,7 +144,7 @@ export function PrAiResolverPanel({
     return () => {
       cancelled = true;
     };
-  }, [activeSession, context, contextKey, upsertResolverSession]);
+  }, [activeSession, context, contextKey, onPin, upsertResolverSession]);
 
   React.useEffect(() => {
     const unsubscribe = window.ade.prs.onAiResolutionEvent((event: PrAiResolutionEventPayload) => {
@@ -170,9 +174,9 @@ export function PrAiResolverPanel({
         message: event.message ?? null,
         context,
       });
-    });
+    }, ...onPin);
     return unsubscribe;
-  }, [activeSession?.provider, context, displayModelId, displayPermissionMode, displayReasoning, onCompleted, sessionId, upsertResolverSession]);
+  }, [activeSession?.provider, context, displayModelId, displayPermissionMode, displayReasoning, onCompleted, onPin, sessionId, upsertResolverSession]);
 
   const handleStart = React.useCallback(async () => {
     if (!context || launching || !displayModelId.trim()) return;
@@ -188,7 +192,7 @@ export function PrAiResolverPanel({
         permissionMode: displayPermissionMode,
         context,
         ...(trimmedInstructions ? { additionalInstructions: trimmedInstructions } : {}),
-      });
+      }, ...onPin);
       if (result.status !== "started") {
         setStatus("failed");
         setMessage(result.error ?? "Unable to start AI resolution.");
@@ -217,6 +221,7 @@ export function PrAiResolverPanel({
     displayPermissionMode,
     displayReasoning,
     launching,
+    onPin,
     onStarted,
     resolverInstructions,
     upsertResolverSession,

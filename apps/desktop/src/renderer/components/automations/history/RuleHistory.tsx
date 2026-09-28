@@ -1,14 +1,34 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowClockwise } from "@phosphor-icons/react";
-import type { AutomationRun, AutomationRunDetail } from "../../../../shared/types";
+import type { AutomationRun, AutomationRunDetail, OpenProjectBinding } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
 import { extractError } from "../shared";
 import { RunRow } from "./RunRow";
 import { RunDetail } from "./RunDetail";
+import { withMachineTimeout } from "../../history/projectMachines";
 
-export function RuleHistory({ automationId, ruleName }: { automationId: string; ruleName: string }) {
+/** Pinned reads are timed out; the bound machine keeps its existing path. */
+function readOn<T>(promise: Promise<T>, pin: OpenProjectBinding | null, machineName: string | null): Promise<T> {
+  return pin ? withMachineTimeout(promise, machineName ?? "That machine") : promise;
+}
+
+export function RuleHistory({
+  automationId,
+  ruleName,
+  pin = null,
+  machineName = null,
+  offlineMessage = null,
+}: {
+  automationId: string;
+  ruleName: string;
+  /** The machine that owns the rule; null = the tab's machine. */
+  pin?: OpenProjectBinding | null;
+  machineName?: string | null;
+  /** Set while the owning machine is unreachable; nothing is read. */
+  offlineMessage?: string | null;
+}) {
   const [runs, setRuns] = useState<AutomationRun[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
@@ -18,10 +38,18 @@ export function RuleHistory({ automationId, ruleName }: { automationId: string; 
   const detailRequestId = useRef(0);
 
   const load = useCallback(async () => {
+    if (offlineMessage) {
+      setError(offlineMessage);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
-      const next = await window.ade.automations.listRuns({ automationId, limit: 80 });
+      const next = await readOn(
+        window.ade.automations.listRuns({ automationId, limit: 80 }, pin),
+        pin,
+        machineName,
+      );
       setRuns(next);
       setSelectedRunId((current) => current ?? next[0]?.id ?? null);
     } catch (err) {
@@ -29,7 +57,7 @@ export function RuleHistory({ automationId, ruleName }: { automationId: string; 
     } finally {
       setLoading(false);
     }
-  }, [automationId]);
+  }, [automationId, machineName, offlineMessage, pin]);
 
   const loadDetail = useCallback(async (runId: string) => {
     const requestId = detailRequestId.current + 1;
@@ -38,7 +66,7 @@ export function RuleHistory({ automationId, ruleName }: { automationId: string; 
     setDetailLoading(true);
     setError(null);
     try {
-      const next = await window.ade.automations.getRunDetail(runId);
+      const next = await readOn(window.ade.automations.getRunDetail(runId, pin), pin, machineName);
       if (detailRequestId.current !== requestId) return;
       setDetail(next);
     } catch (err) {
@@ -47,7 +75,7 @@ export function RuleHistory({ automationId, ruleName }: { automationId: string; 
     } finally {
       if (detailRequestId.current === requestId) setDetailLoading(false);
     }
-  }, []);
+  }, [machineName, pin]);
 
   useEffect(() => {
     detailRequestId.current += 1;
@@ -58,12 +86,15 @@ export function RuleHistory({ automationId, ruleName }: { automationId: string; 
   }, [automationId, load]);
 
   useEffect(() => {
+    // The event feed is the tab machine's own; another machine's runs refresh
+    // on the Refresh button instead.
+    if (pin) return undefined;
     const unsubscribe = window.ade.automations.onEvent(() => {
       void load();
       if (selectedRunId) void loadDetail(selectedRunId);
     });
     return () => unsubscribe();
-  }, [load, loadDetail, selectedRunId]);
+  }, [load, loadDetail, pin, selectedRunId]);
 
   useEffect(() => {
     if (selectedRunId && !detail) void loadDetail(selectedRunId);

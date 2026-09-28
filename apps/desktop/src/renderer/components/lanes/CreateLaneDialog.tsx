@@ -139,6 +139,7 @@ export function CreateLaneDialog({
   selectedMachineId,
   onSelectMachine,
   onConnectMachine,
+  machineRequired = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -193,9 +194,15 @@ export function CreateLaneDialog({
    * one machine to choose from — a single-machine setup looks exactly as before.
    */
   machines?: LaneMachineOption[];
+  /** "" (or omitted) while no machine is chosen. Never defaulted here. */
   selectedMachineId?: string;
   onSelectMachine?: (machineId: string) => void;
   onConnectMachine?: () => void;
+  /**
+   * The lane is really created, so the machine must be chosen before submit.
+   * The host pre-selects the only eligible machine; otherwise the user picks.
+   */
+  machineRequired?: boolean;
 }) {
   const baseBranchOptions = React.useMemo(
     () => listNewLaneBaseOptions(createBranches, createBaseSource),
@@ -306,9 +313,16 @@ export function CreateLaneDialog({
     }
   }, [open, lanes, selectedColor, setSelectedColor]);
 
+  const machineMissing = Boolean(machineRequired) && !laneCreated && !selectedMachineId;
+  const machineHint = !machineMissing
+    ? null
+    : showMachineSelector
+      ? "Choose the machine this lane will live on."
+      : "No connected machine has this repository open.";
   const isSubmitDisabled = laneCreated
     ? !!busy
     : (busy
+      || machineMissing
       || !createLaneName.trim()
       || (createMode === "child" && !createParentLaneId)
       || (createMode === "primary" && (!selectedBaseBranchValid || loadingBranches))
@@ -338,6 +352,11 @@ export function CreateLaneDialog({
         <div className="space-y-3">
           {error ? (
             <Banner model={{ id: "create-lane-error", tone: "error", title: error }} layout="inline" />
+          ) : null}
+          {machineHint && !error ? (
+            <div className="text-right text-[11px] text-muted-fg/70" data-testid="create-lane-machine-hint">
+              {machineHint}
+            </div>
           ) : null}
           <div className="flex items-center justify-end gap-2">
             <Button
@@ -401,7 +420,7 @@ export function CreateLaneDialog({
         {showMachineSelector && onSelectMachine ? (
           <LaneMachineSelector
             machines={machineOptions}
-            selectedMachineId={selectedMachineId ?? machineOptions[0]?.id ?? ""}
+            selectedMachineId={selectedMachineId ?? ""}
             onSelectMachine={onSelectMachine}
             onConnectMachine={onConnectMachine}
             disabled={busy || laneCreated}

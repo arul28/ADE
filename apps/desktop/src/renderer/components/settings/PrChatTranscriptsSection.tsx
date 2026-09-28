@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import { GithubLogo } from "@phosphor-icons/react";
 import { Banner } from "../ui/notice";
 import { SettingsCard, SettingsGroup, SettingsToggle } from "./primitives";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 export function PrChatTranscriptsSection() {
+  // A per-checkout switch in `.ade/local.yaml`, on the machine the page shows.
+  const { pin } = useSettingsMachineScope();
   const [configBusy, setConfigBusy] = useState(false);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -12,7 +15,7 @@ export function PrChatTranscriptsSection() {
   useEffect(() => {
     let cancelled = false;
     window.ade.projectConfig
-      .get()
+      .get(pin)
       .then((snapshot) => {
         if (cancelled) return;
         setTranscriptGistsEnabled(snapshot.effective.github?.prTranscriptGists?.enabled === true);
@@ -21,14 +24,14 @@ export function PrChatTranscriptsSection() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pin]);
 
   const handleToggleTranscriptGists = async (enabled: boolean) => {
     setConfigBusy(true);
     setActionError(null);
     setSaveNotice(null);
     try {
-      const snapshot = await window.ade.projectConfig.get();
+      const snapshot = await window.ade.projectConfig.get(pin);
       const next = await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: {
@@ -38,7 +41,7 @@ export function PrChatTranscriptsSection() {
             prTranscriptGists: { enabled },
           },
         },
-      });
+      }, pin);
       setTranscriptGistsEnabled(next.effective.github?.prTranscriptGists?.enabled === true);
       setSaveNotice(enabled ? "PR chat transcripts enabled." : "PR chat transcripts disabled.");
     } catch (error) {

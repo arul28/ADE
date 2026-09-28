@@ -451,7 +451,7 @@ describe("StorageSection", () => {
       laneId: "lane-old",
       confirmation: "RECLAIM",
       forceDirty: true,
-    }));
+    }, null));
   });
 
   it("keeps reclaim focus inside the dialog and closes it on Escape", async () => {
@@ -589,7 +589,7 @@ describe("StorageSection", () => {
     await waitFor(() => expect(runMaintenanceNow).toHaveBeenCalledTimes(1));
     expect(cleanupFn).toHaveBeenCalledWith(previewTargets, {
       preview: await cleanupPreview.mock.results[0]!.value,
-    });
+    }, null);
     expect(cleanupFn.mock.invocationCallOrder[0]).toBeLessThan(runMaintenanceNow.mock.invocationCallOrder[0]!);
     expect(await within(dialog).findByText(/Freed 2\.0 GB/)).toBeTruthy();
   });

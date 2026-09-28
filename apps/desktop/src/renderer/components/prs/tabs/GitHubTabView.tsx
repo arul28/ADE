@@ -157,6 +157,49 @@ export function GitHubTabView({ chrome, list, detail }: GitHubTabViewProps) {
  * The list side: search, the open/merged/closed filter, the rows, and the
  * repo sync line at the bottom.
  */
+/**
+ * True when the filter row cannot fit its full contents, measured on the row
+ * itself (the sidebar is user-resizable, so a window breakpoint says nothing).
+ * Collapsing is decided by overflow; expanding waits until the row is back to
+ * the width the full row needed, so it never flickers at the boundary.
+ */
+function useRowOverflowCollapse(): {
+  ref: React.RefObject<HTMLDivElement>;
+  collapsed: boolean;
+} {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const [collapsed, setCollapsed] = React.useState(false);
+  const collapsedRef = React.useRef(false);
+  const neededWidthRef = React.useRef(0);
+  const measure = React.useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const width = el.clientWidth;
+    if (!collapsedRef.current) {
+      if (el.scrollWidth > width + 1) {
+        neededWidthRef.current = el.scrollWidth;
+        collapsedRef.current = true;
+        setCollapsed(true);
+      }
+    } else if (width >= neededWidthRef.current) {
+      collapsedRef.current = false;
+      setCollapsed(false);
+    }
+  }, []);
+  // Counts and labels change the needed width too.
+  React.useLayoutEffect(() => {
+    measure();
+  });
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => measure());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [measure]);
+  return { ref, collapsed };
+}
+
 function GitHubTabListColumn({
   chrome,
   list,
@@ -164,12 +207,16 @@ function GitHubTabListColumn({
   chrome: GitHubTabViewChrome;
   list: GitHubTabViewList;
 }) {
+  // In a narrow sidebar the Blocked sort collapses to its hand icon.
+  const filterRow = useRowOverflowCollapse();
+  const blockedCompact = filterRow.collapsed;
   return (
     <div className={PRS_LIST_ROOT_CLASS}>
       <div style={{ display: "flex", padding: "0 10px 6px", flexShrink: 0 }}>
         <GitHubPrSearchInput value={chrome.searchQuery} onChange={chrome.onSearchQueryChange} />
       </div>
       <div
+        ref={filterRow.ref}
         role="group"
         aria-label="Pull request state"
         style={{
@@ -177,6 +224,7 @@ function GitHubTabListColumn({
           alignItems: "center",
           padding: "0 6px",
           flexShrink: 0,
+          overflow: "hidden",
           borderBottom: "1px solid rgba(255,255,255,0.06)",
         }}
       >
@@ -243,17 +291,18 @@ function GitHubTabListColumn({
         <button
           type="button"
           aria-pressed={list.sort === "blocked"}
-          aria-label="Sort pull requests by blocked on me"
+          aria-label="Blocked: sort pull requests by blocked on me"
           title={list.sort === "blocked"
-            ? "Sorted by what is blocked on you — click for recently updated"
-            : "Sort by what is blocked on you"}
+            ? "Blocked — sorted by what is blocked on you. Click for recently updated."
+            : "Blocked — sort by what is blocked on you"}
+          data-compact={blockedCompact ? "true" : undefined}
           onClick={() => list.onSortChange(list.sort === "blocked" ? "updated" : "blocked")}
           style={{
             display: "inline-flex",
             alignItems: "center",
             gap: 4,
             height: 22,
-            padding: "0 7px",
+            padding: blockedCompact ? "0 5px" : "0 7px",
             marginRight: 4,
             borderRadius: 6,
             border: `1px solid ${list.sort === "blocked" ? `color-mix(in srgb, ${COLORS.warning} 40%, transparent)` : "rgba(255,255,255,0.08)"}`,
@@ -268,7 +317,7 @@ function GitHubTabListColumn({
           }}
         >
           <HandPalm size={11} weight={list.sort === "blocked" ? "fill" : "regular"} aria-hidden />
-          Blocked
+          {blockedCompact ? null : "Blocked"}
         </button>
         {list.showLoadingIndicator ? (
           <span

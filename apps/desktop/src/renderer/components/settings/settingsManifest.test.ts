@@ -64,7 +64,6 @@ describe("settings manifest", () => {
     "appearance.preview": "chat",
     "agents.dictation": "chat",
     "agents.scheduled-work": "activity",
-    "agents.budget": "stats",
   };
 
   it("namespaces every entry id under its tab, except the rows that deliberately moved", () => {

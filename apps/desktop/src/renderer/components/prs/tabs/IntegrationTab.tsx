@@ -1,4 +1,7 @@
 import React from "react";
+import { workflowBlockedReason, workflowPinArg, type WorkflowMachines } from "../state/workflowMachines";
+import { PrRuntimePinProvider } from "../state/prMachines";
+import { MachineChip } from "../../history/EventMachineChip";
 import { useNavigate } from "react-router-dom";
 import { GitMerge, GitBranch, Lightning, Eye, Sparkle, Trash, ArrowRight, ArrowSquareOut, CheckCircle, Warning, XCircle, Clock, GithubLogo, CircleNotch, ArrowsClockwise, CaretDown, CaretRight, Robot, Gear } from "@phosphor-icons/react";
 import type {
@@ -495,19 +498,39 @@ type IntegrationTabProps = {
   onSelectPr: (id: string | null) => void;
   onRefresh: () => Promise<void>;
   refreshNonce?: number;
+  /** Every machine's proposals, each routed to the machine it was read from. */
+  workflowMachines?: WorkflowMachines;
 };
 
-export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0 }: IntegrationTabProps) {
+export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, selectedPrId, onSelectPr, onRefresh, refreshNonce = 0, workflowMachines }: IntegrationTabProps) {
   // Inside the PRs page the list goes to the list column; on its own it keeps
   // the tiled list and detail panes.
   const listHost = usePrsListHost();
   const inListColumn = listHost !== undefined;
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
-  const resolveTargetLaneId = React.useCallback((baseBranch: string): string | null => {
+  /** Lanes on one machine: `lanes` spans every machine, a lane picker must not. */
+  const lanesOnMachine = React.useCallback((machineId: string | null | undefined): LaneSummary[] => {
+    if (!workflowMachines || !machineId) return lanes;
+    return lanes.filter((lane) => workflowMachines.machineForLane(lane.id)?.machineId === machineId);
+  }, [lanes, workflowMachines]);
+  // The tab machine's own lanes, for its own (bound) PRs.
+  const boundLanes = React.useMemo(
+    () => lanesOnMachine(workflowMachines?.machineForLane(null)?.machineId),
+    [lanesOnMachine, workflowMachines],
+  );
+  /**
+   * The lane for a base branch, on the given machine. `lanes` spans every
+   * machine, and a base-branch lane on the wrong machine would hand another
+   * checkout's lane id to a call pinned elsewhere. Default: the tab's machine.
+   */
+  const resolveTargetLaneId = React.useCallback((baseBranch: string, ownerMachineId?: string | null): string | null => {
     const normalizedBase = normalizeBranchName(baseBranch);
     if (!normalizedBase) return null;
-    return lanes.find((lane) => normalizeBranchName(lane.branchRef) === normalizedBase)?.id ?? null;
-  }, [lanes]);
+    const owner = ownerMachineId ?? workflowMachines?.machineForLane(null)?.machineId ?? null;
+    return lanes.find((lane) =>
+      normalizeBranchName(lane.branchRef) === normalizedBase
+      && (!workflowMachines || !owner || workflowMachines.machineForLane(lane.id)?.machineId === owner))?.id ?? null;
+  }, [lanes, workflowMachines]);
   const {
     detailStatus,
     detailChecks,
@@ -540,7 +563,27 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const [deleteCloseGh, setDeleteCloseGh] = React.useState(false);
 
   // Proposals state
-  const [proposals, setProposals] = React.useState<IntegrationProposal[]>([]);
+  const [boundProposals, setProposals] = React.useState<IntegrationProposal[]>([]);
+  // The tab machine's proposals, then every other machine's.
+  const foreignProposals = workflowMachines?.foreignProposals;
+  const proposals = React.useMemo(
+    () => (foreignProposals?.length ? [...boundProposals, ...foreignProposals] : boundProposals),
+    [boundProposals, foreignProposals],
+  );
+  /** Where a proposal's calls go: nothing extra for the tab's machine, its pin otherwise. */
+  const machineForProposal = workflowMachines?.machineForProposal;
+  const proposalPin = React.useCallback(
+    (proposalId: string | null | undefined) => workflowPinArg(machineForProposal?.(proposalId) ?? null),
+    [machineForProposal],
+  );
+  const proposalBlocked = React.useCallback(
+    (proposalId: string | null | undefined) => workflowBlockedReason(machineForProposal?.(proposalId) ?? null),
+    [machineForProposal],
+  );
+  const refreshProposalMachine = React.useCallback((proposalId: string | null | undefined) => {
+    const machine = machineForProposal?.(proposalId);
+    if (machine?.pin) workflowMachines?.refreshMachine(machine.machineId);
+  }, [machineForProposal, workflowMachines]);
   const [proposalsLoaded, setProposalsLoaded] = React.useState(false);
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
   const [urlProposalId, setUrlProposalId] = React.useState<string | null>(() => readQueryParam("proposalId"));
@@ -676,7 +719,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       };
 
       try {
-        const result = await window.ade.prs.commitIntegration(commitArgs);
+        const result = await window.ade.prs.commitIntegration(commitArgs, ...proposalPin(proposal.proposalId));
         return result.pr.id;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -694,22 +737,33 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         const result = await window.ade.prs.commitIntegration({
           ...commitArgs,
           allowDirtyWorktree: true
-        });
+        }, ...proposalPin(proposal.proposalId));
         return result.pr.id;
       }
     },
-    []
+    [proposalPin]
   );
 
   const handleCommitProposal = async (p: IntegrationProposal) => {
+    const blocked = proposalBlocked(p.proposalId);
+    if (blocked) {
+      setCommitError(blocked);
+      return;
+    }
+    // A PR created on another machine has that machine's id; the GitHub list
+    // shows it through the union, so it is not selected by id here.
+    const foreign = Boolean(machineForProposal?.(p.proposalId)?.pin);
     setCommitBusy(true);
     setCommitError(null);
     try {
       const committedPrId = await commitProposalWithOptionalDirtyWorktree(p);
       setSelectedProposalId(null);
+      refreshProposalMachine(p.proposalId);
       await loadProposals();
       await onRefresh();
-      if (committedPrId) {
+      if (foreign) {
+        setActiveTab("normal");
+      } else if (committedPrId) {
         setActiveTab("normal");
         onSelectPr(committedPrId);
       }
@@ -723,6 +777,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   };
 
   const handleResimulate = async (p: IntegrationProposal) => {
+    const blocked = proposalBlocked(p.proposalId);
+    if (blocked) {
+      setCommitError(blocked);
+      return;
+    }
+    const pinArgs = proposalPin(p.proposalId);
     const deleteIntegrationLane = p.integrationLaneId && isAdeOwnedIntegrationLane(p)
       ? await confirmDialog({
           title: "Re-simulating will replace this proposal.",
@@ -742,7 +802,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         sourceLaneIds: p.sourceLaneIds,
         baseBranch: p.baseBranch,
         mergeIntoLaneId: p.preferredIntegrationLaneId?.trim() || null,
-      });
+      }, ...pinArgs);
 
       if (p.title || p.body || p.draft || p.integrationLaneName || p.preferredIntegrationLaneId || result.mergeIntoHeadSha) {
         await window.ade.prs.updateProposal({
@@ -753,7 +813,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           integrationLaneName: p.integrationLaneName,
           preferredIntegrationLaneId: p.preferredIntegrationLaneId?.trim() || null,
           mergeIntoHeadSha: result.mergeIntoHeadSha ?? null,
-        });
+        }, ...pinArgs);
       }
 
       let cleanupWarning: string | null = null;
@@ -761,11 +821,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         await window.ade.prs.deleteProposal({
           proposalId: p.proposalId,
           deleteIntegrationLane,
-        });
+        }, ...pinArgs);
       } catch (cleanupError) {
         cleanupWarning = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
       }
 
+      refreshProposalMachine(p.proposalId);
       await loadProposals();
       setSelectedProposalId(result.proposalId);
       if (cleanupWarning) {
@@ -779,13 +840,19 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   };
 
   const handleDeleteProposal = async (proposal: IntegrationProposal) => {
+    const blocked = proposalBlocked(proposal.proposalId);
+    if (blocked) {
+      setCommitError(blocked);
+      return;
+    }
     setDeleteProposalBusy(true);
     setCommitError(null);
     try {
       await window.ade.prs.deleteProposal({
         proposalId: proposal.proposalId,
         deleteIntegrationLane: deleteProposalLaneToo && Boolean(proposal.integrationLaneId) && isAdeOwnedIntegrationLane(proposal),
-      });
+      }, ...proposalPin(proposal.proposalId));
+      refreshProposalMachine(proposal.proposalId);
       setProposals((prev) => prev.filter((entry) => entry.proposalId !== proposal.proposalId));
       setDeleteProposalConfirm(false);
       setDeleteProposalLaneToo(false);
@@ -815,11 +882,12 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     }
     // Otherwise try to load from backend
     let cancelled = false;
-    window.ade.prs.getIntegrationResolutionState(selectedProposal.proposalId)
+    if (proposalBlocked(selectedProposal.proposalId)) return;
+    window.ade.prs.getIntegrationResolutionState(selectedProposal.proposalId, ...proposalPin(selectedProposal.proposalId))
       .then((state) => { if (!cancelled) setResolutionState(state); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [selectedProposal?.proposalId, selectedProposal?.resolutionState]);
+  }, [proposalBlocked, proposalPin, selectedProposal?.proposalId, selectedProposal?.resolutionState]);
 
   React.useEffect(() => {
     setDeleteProposalConfirm(false);
@@ -1082,7 +1150,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       return selectedProposal.resolutionState;
     }
     if (selectedProposal.integrationLaneId) {
-      const existingState = await window.ade.prs.getIntegrationResolutionState(selectedProposal.proposalId).catch(() => null);
+      const existingState = await window.ade.prs.getIntegrationResolutionState(
+        selectedProposal.proposalId,
+        ...proposalPin(selectedProposal.proposalId),
+      ).catch(() => null);
       if (existingState?.integrationLaneId) {
         setResolutionState(existingState);
         return existingState;
@@ -1094,7 +1165,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         window.ade.prs.createIntegrationLaneForProposal({
           proposalId: selectedProposal.proposalId,
           ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {}),
-        });
+        }, ...proposalPin(selectedProposal.proposalId));
       let result: Awaited<ReturnType<typeof window.ade.prs.createIntegrationLaneForProposal>>;
       try {
         result = await runCreate(false);
@@ -1136,7 +1207,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     } finally {
       setCreateLaneBusy(false);
     }
-  }, [onRefresh, resolutionState, selectedProposal]);
+  }, [onRefresh, proposalPin, resolutionState, selectedProposal]);
 
   const launchProposalResolver = React.useCallback(async (laneIds: string[]) => {
     if (!selectedProposal) return;
@@ -1146,7 +1217,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       return;
     }
 
-    const targetLaneId = resolveTargetLaneId(selectedProposal.baseBranch);
+    const targetLaneId = resolveTargetLaneId(
+      selectedProposal.baseBranch,
+      workflowMachines?.machineForProposal(selectedProposal.proposalId)?.machineId,
+    );
     if (!targetLaneId) {
       setCommitError(`Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`);
       return;
@@ -1172,7 +1246,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     } finally {
       setResolvingLaneId(null);
     }
-  }, [ensureIntegrationLaneForResolution, resolveTargetLaneId, selectedProposal]);
+  }, [ensureIntegrationLaneForResolution, resolveTargetLaneId, selectedProposal, workflowMachines]);
 
   const handleResolveWithAI = async (stepLaneId: string) => {
     await launchProposalResolver([stepLaneId]);
@@ -1210,7 +1284,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       const result = await window.ade.prs.recheckIntegrationStep({
         proposalId: selectedProposal.proposalId,
         laneId: stepLaneId,
-      });
+      }, ...proposalPin(selectedProposal.proposalId));
       // Update resolution state
       setResolutionState((prev) => prev ? {
         ...prev,
@@ -1309,20 +1383,27 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
 
   const selectedProposalTargetLaneId = React.useMemo(() => {
     if (!selectedProposal) return null;
-    return resolveTargetLaneId(selectedProposal.baseBranch);
-  }, [resolveTargetLaneId, selectedProposal]);
+    return resolveTargetLaneId(
+      selectedProposal.baseBranch,
+      workflowMachines?.machineForProposal(selectedProposal.proposalId)?.machineId,
+    );
+  }, [resolveTargetLaneId, selectedProposal, workflowMachines]);
 
   const mergeIntoLaneSelectOptions = React.useMemo(() => {
     const out: { id: string; name: string }[] = [];
     const sourceSet = new Set(selectedProposal?.sourceLaneIds ?? []);
-    for (const lane of lanes) {
+    // Merge-into lanes come from the proposal's own machine only.
+    const proposalMachineId = selectedProposal
+      ? workflowMachines?.machineForProposal(selectedProposal.proposalId)?.machineId
+      : workflowMachines?.machineForLane(null)?.machineId;
+    for (const lane of lanesOnMachine(proposalMachineId)) {
       if (lane.laneType === "primary") continue;
       if (sourceSet.has(lane.id)) continue;
       out.push({ id: lane.id, name: lane.name });
     }
     out.sort((a, b) => a.name.localeCompare(b.name));
     return out;
-  }, [lanes, selectedProposal?.sourceLaneIds]);
+  }, [lanesOnMachine, selectedProposal, workflowMachines]);
 
   React.useEffect(() => {
     const fromProposal = selectedProposal?.preferredIntegrationLaneId?.trim() ?? "";
@@ -1355,11 +1436,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     setCommitError(null);
     try {
       const oldId = selectedProposal.proposalId;
+      const blocked = proposalBlocked(oldId);
+      if (blocked) throw new Error(blocked);
+      const pinArgs = proposalPin(oldId);
       const persisted = await window.ade.prs.simulateIntegration({
         sourceLaneIds: selectedProposal.sourceLaneIds,
         baseBranch: selectedProposal.baseBranch,
         mergeIntoLaneId: nextPreferredIntegrationLaneId,
-      });
+      }, ...pinArgs);
       await window.ade.prs.updateProposal({
         proposalId: persisted.proposalId,
         preferredIntegrationLaneId: nextPreferredIntegrationLaneId,
@@ -1368,10 +1452,10 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         ...(selectedProposal.body !== undefined ? { body: selectedProposal.body } : {}),
         ...(selectedProposal.draft !== undefined ? { draft: selectedProposal.draft } : {}),
         ...(selectedProposal.integrationLaneName ? { integrationLaneName: selectedProposal.integrationLaneName } : {}),
-      });
+      }, ...pinArgs);
       let cleanupWarning: string | null = null;
       try {
-        await window.ade.prs.deleteProposal({ proposalId: oldId, deleteIntegrationLane: false });
+        await window.ade.prs.deleteProposal({ proposalId: oldId, deleteIntegrationLane: false }, ...pinArgs);
       } catch (cleanupError) {
         cleanupWarning = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
       }
@@ -1387,7 +1471,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     } finally {
       setMergeIntoLaneBusy(false);
     }
-  }, [loadProposals, mergeIntoLaneDraft, selectedProposal]);
+  }, [loadProposals, mergeIntoLaneDraft, proposalBlocked, proposalPin, selectedProposal]);
 
   const selectedProposalRebaseLaneIds = React.useMemo(
     () => (selectedProposal?.sourceLaneIds ?? []).filter((laneId) => rebaseNeedByLaneId.has(laneId)),
@@ -1572,9 +1656,14 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                         {p.sourceLaneIds.length} sources
                       </span>
                       <ArrowRight size={9} weight="bold" style={{ color: "#52525B" }} />
-                      <span className="font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
+                      <span className="min-w-0 truncate font-mono" style={{ fontSize: 10, color: "#A1A1AA" }}>
                         {p.baseBranch}
                       </span>
+                      {/* On the secondary line, icon-only: the title keeps the width. */}
+                      {(() => {
+                        const chip = machineForProposal?.(p.proposalId)?.chip;
+                        return chip ? <MachineChip machine={chip} subject="This proposal" compact /> : null;
+                      })()}
                     </div>
                   </div>
                   <div className="flex items-center shrink-0" style={{ gap: 6 }}>
@@ -1707,7 +1796,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         {selectedPrLiveModel?.isCommittedIntegration ? (
           <IntegrationPrContextPanel
             pr={selectedPr}
-            lanes={lanes}
+            lanes={boundLanes}
             mergeContext={selectedMergeContext}
             messages={simulateAdvisories}
             statusNode={simulateResult
@@ -2041,7 +2130,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               snapshotHydrationOwnedByContext
               liveDetailReady={detailLiveDataPrId === selectedPr.id}
               detailBusy={detailBusy}
-              lanes={lanes}
+              lanes={boundLanes}
               mergeMethod={mergeMethod}
               onRefresh={onRefresh}
               onNavigate={(path) => {
@@ -3213,18 +3302,24 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId, machineForProposal, proposalPin, proposalBlocked, boundLanes]);
 
+  // A selected proposal's resolver and menus reach the proposal's machine.
+  const runtimePin = selectedProposal ? machineForProposal?.(selectedProposal.proposalId)?.pin ?? null : null;
   if (inListColumn) {
     return (
-      <>
+      <PrRuntimePinProvider value={runtimePin}>
         <PrsListPortal>
           <div className={PRS_LIST_ROOT_CLASS}>{listPane}</div>
         </PrsListPortal>
         <div className="flex min-h-0 flex-1 flex-col">{detailPane}</div>
-      </>
+      </PrRuntimePinProvider>
     );
   }
 
-  return <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />;
+  return (
+    <PrRuntimePinProvider value={runtimePin}>
+      <PaneTilingLayout layoutId="prs:integration:v1" tree={PR_TAB_TILING_TREE} panes={paneConfigs} className="flex-1 min-h-0" />
+    </PrRuntimePinProvider>
+  );
 }

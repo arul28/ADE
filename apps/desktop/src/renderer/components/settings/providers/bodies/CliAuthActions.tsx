@@ -9,10 +9,24 @@ import { ClaudeLoginPromptButton } from "../../../work/ClaudeLoginPromptButton";
 import { CopyableCommand } from "../providerUi";
 import { cliTool, installHintFor } from "../cliTools";
 import type { ProvidersViewContext } from "../types";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 
 export function ClaudeAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
+  // The login terminal button opens its shell on the tab's own machine. For
+  // any other machine, say where to run it instead of opening it in the wrong place.
+  const { pin, machineName } = useSettingsMachineScope();
   const availability = ctx.status?.availableProviders?.claude ?? null;
   if (ctx.isInitialCheckInFlight) return null;
+  if (availability?.binary.present && !availability.auth.ready && pin) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+          Run this in a terminal on {machineName} to sign in:
+        </span>
+        <CopyableCommand command="claude" />
+      </div>
+    );
+  }
   if (availability?.binary.present && !availability.auth.ready) {
     return (
       <div style={{ display: "flex" }}>

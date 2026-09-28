@@ -1,0 +1,701 @@
+/*
+ * Welcome / New Tab surface.
+ *
+ * The window gradient is the page. Content sits on two soft "planes" — a
+ * theme-tinted, blurred wash with no border or drop shadow — so text keeps its
+ * contrast on the brightest part of the gradient without boxing the page into
+ * cards. Every colour is a theme token, so built-in, custom and imported
+ * themes all follow.
+ *
+ * The page never scrolls. It is a size container: the header compacts on short
+ * windows, and the project list and side column scroll inside themselves.
+ */
+
+.ade-welcome {
+  --welcome-plane: color-mix(in srgb, var(--color-bg) 62%, transparent);
+  --welcome-plane-quiet: color-mix(in srgb, var(--color-bg) 46%, transparent);
+  --welcome-plane-edge: color-mix(in srgb, var(--color-fg) 4.5%, transparent);
+  --welcome-hover: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  --welcome-active: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  --welcome-rule: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  --welcome-dot-online: var(--color-success);
+  --welcome-dot-busy: var(--color-warning);
+  --welcome-dot-offline: color-mix(in srgb, var(--color-muted-fg) 60%, transparent);
+  --welcome-text-2: color-mix(in srgb, var(--color-fg) 72%, var(--color-muted-fg));
+
+  container: welcome / size;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  isolation: isolate;
+  font-family: var(--font-sans);
+}
+
+[data-theme="light"] .ade-welcome {
+  --welcome-plane: color-mix(in srgb, var(--color-bg) 70%, transparent);
+  --welcome-plane-quiet: color-mix(in srgb, var(--color-bg) 56%, transparent);
+  --welcome-plane-edge: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  --welcome-text-2: color-mix(in srgb, var(--color-fg) 78%, var(--color-muted-fg));
+}
+
+/* ── header ───────────────────────────────────────────────────────── */
+
+.ade-welcome-head {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: clamp(24px, 7cqh, 72px) 24px clamp(20px, 4cqh, 40px);
+}
+
+.ade-welcome-logo {
+  display: block;
+  width: 224px;
+  height: 112px;
+  object-fit: contain;
+  filter: drop-shadow(0 0 18px color-mix(in srgb, var(--color-accent) 35%, transparent));
+}
+
+@container welcome (max-height: 720px) {
+  .ade-welcome-head { gap: 14px; padding: 18px 24px 22px; }
+  .ade-welcome-logo { width: 176px; height: 84px; }
+}
+
+@container welcome (max-height: 600px) {
+  .ade-welcome-head { gap: 12px; padding: 12px 24px 16px; }
+  .ade-welcome-logo { width: 128px; height: 60px; }
+}
+
+@container welcome (max-height: 480px) {
+  .ade-welcome-head { padding: 12px 24px 14px; }
+  .ade-welcome-logo { display: none; }
+}
+
+.ade-welcome-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ade-welcome-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 34px;
+  padding: 0 15px;
+  border-radius: 8px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.ade-welcome-button:disabled { opacity: 0.5; cursor: default; }
+.ade-welcome-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+
+.ade-welcome-button[data-variant="primary"] {
+  color: var(--color-accent-fg);
+  background: var(--color-accent);
+  border: 1px solid transparent;
+}
+.ade-welcome-button[data-variant="primary"]:not(:disabled):hover {
+  background: color-mix(in srgb, var(--color-accent) 88%, var(--color-fg) 12%);
+}
+/* A reachable remote machine: projects can be added there too. */
+.ade-welcome-button[data-variant="primary"][data-remote-ready="true"] {
+  border-color: var(--color-warning);
+}
+
+.ade-welcome-button[data-variant="secondary"] {
+  color: var(--color-fg);
+  background: var(--welcome-plane);
+  border: 1px solid var(--welcome-plane-edge);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+.ade-welcome-button[data-variant="secondary"]:not(:disabled):hover {
+  background: color-mix(in srgb, var(--color-bg) 50%, color-mix(in srgb, var(--color-fg) 12%, transparent));
+}
+
+/* ── body layout ──────────────────────────────────────────────────── */
+
+.ade-welcome-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(400px, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  gap: 20px;
+  width: 100%;
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 24px 24px;
+  box-sizing: border-box;
+}
+.ade-welcome-body[data-single="true"] {
+  grid-template-columns: minmax(0, 1fr);
+  max-width: 680px;
+}
+/* One column: the list takes the height, side info is a capped strip below. */
+.ade-welcome-body[data-narrow="true"] {
+  display: flex;
+  flex-direction: column;
+  max-width: 680px;
+  gap: 12px;
+  padding: 0 14px 14px;
+}
+
+.ade-welcome-plane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: var(--welcome-plane);
+  box-shadow: inset 0 0 0 1px var(--welcome-plane-edge);
+  -webkit-backdrop-filter: blur(22px) saturate(1.15);
+  backdrop-filter: blur(22px) saturate(1.15);
+}
+.ade-welcome-plane[data-quiet="true"] { background: var(--welcome-plane-quiet); }
+
+/* Size to content, but never taller than the space the grid gives. */
+.ade-welcome-main { align-self: start; max-height: 100%; }
+.ade-welcome-side { align-self: start; max-height: 100%; overflow-y: auto; overscroll-behavior: contain; }
+.ade-welcome-body[data-narrow="true"] .ade-welcome-main { flex: 0 1 auto; align-self: stretch; }
+.ade-welcome-body[data-narrow="true"] .ade-welcome-side {
+  flex: none;
+  align-self: stretch;
+  max-height: min(240px, 36cqh);
+  overflow: hidden;
+}
+
+/* ── section heads ────────────────────────────────────────────────── */
+
+.ade-welcome-section-head {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 30px;
+  padding: 10px 16px 4px;
+}
+.ade-welcome-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--welcome-text-2);
+  white-space: nowrap;
+}
+.ade-welcome-section-count {
+  font-size: 12px;
+  color: var(--color-muted-fg);
+  font-variant-numeric: tabular-nums;
+}
+.ade-welcome-section-head > .ade-welcome-link { margin-left: auto; }
+
+.ade-welcome-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+  margin-right: -4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ade-welcome-link:hover { color: var(--color-fg); }
+.ade-welcome-link:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+.ade-welcome-empty {
+  padding: 4px 16px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-muted-fg);
+}
+.ade-welcome-empty strong {
+  display: block;
+  margin-bottom: 2px;
+  font-weight: 500;
+  color: var(--welcome-text-2);
+}
+.ade-welcome-empty .ade-welcome-link { margin: 6px 0 0 -4px; color: var(--color-accent); }
+.ade-welcome-empty .ade-welcome-link:hover { color: var(--color-fg); }
+
+/* ── project filter (lives in the list head) ──────────────────────── */
+
+.ade-welcome-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 220px;
+  min-width: 120px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0 9px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  color: var(--color-muted-fg);
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+.ade-welcome-filter:focus-within {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent);
+  color: var(--color-fg);
+}
+.ade-welcome-filter input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+}
+.ade-welcome-filter input:focus,
+.ade-welcome-filter input:focus-visible { outline: none; box-shadow: none; }
+.ade-welcome-filter input::placeholder { color: var(--color-muted-fg); }
+
+.ade-welcome-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px 6px 6px;
+}
+
+/* ── project row ──────────────────────────────────────────────────── */
+
+.ade-welcome-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 100ms ease;
+}
+.ade-welcome-row:hover { background: var(--welcome-hover); }
+.ade-welcome-row[data-active="true"] { background: var(--welcome-active); }
+.ade-welcome-row:has(.ade-welcome-row-main:focus-visible) {
+  background: var(--welcome-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+.ade-welcome-row[data-open="true"] {
+  background: color-mix(in srgb, var(--color-accent) 11%, transparent);
+}
+.ade-welcome-row[data-open="true"]:hover { background: color-mix(in srgb, var(--color-accent) 15%, transparent); }
+.ade-welcome-row[data-dim="true"] > * { opacity: 0.62; }
+.ade-welcome-row[data-busy="true"] { cursor: default; }
+.ade-welcome-row[data-busy="true"] > * { opacity: 0.45; }
+
+.ade-welcome-row-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 8px 9px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: inherit;
+}
+.ade-welcome-row-main:focus-visible { outline: none; }
+
+.ade-welcome-row-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+}
+.ade-welcome-row-icon[data-fallback="true"] {
+  background: color-mix(in srgb, var(--row-tint, var(--color-accent)) 16%, transparent);
+  color: var(--row-tint, var(--color-accent));
+}
+
+.ade-welcome-row-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+
+.ade-welcome-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  line-height: 18px;
+}
+.ade-welcome-row-name > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-welcome-row-pin { flex-shrink: 0; color: var(--color-muted-fg); }
+
+.ade-welcome-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  line-height: 16px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-muted-fg);
+}
+.ade-welcome-row-sub[data-tone="busy"] { font-family: var(--font-sans); color: var(--color-warning); }
+
+/* The parent path gives way long before the folder name does. */
+.ade-welcome-path { display: flex; min-width: 0; white-space: nowrap; }
+.ade-welcome-path > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ade-welcome-path > span:first-child { flex: 0 1000 auto; }
+.ade-welcome-path > span:last-child { flex: 0 1 auto; }
+
+.ade-welcome-row-aside {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 300px;
+  padding: 9px 10px 9px 0;
+}
+
+.ade-welcome-row-top {
+  display: grid;
+  justify-items: end;
+  align-items: center;
+  min-height: 18px;
+}
+.ade-welcome-row-top > * { grid-area: 1 / 1; }
+
+.ade-welcome-row-time {
+  font-size: 11.5px;
+  color: var(--color-muted-fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ade-welcome-row-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-accent);
+  white-space: nowrap;
+}
+.ade-welcome-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--color-muted-fg);
+  white-space: nowrap;
+}
+
+.ade-welcome-row-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease;
+}
+.ade-welcome-row:hover .ade-welcome-row-actions,
+.ade-welcome-row:focus-within .ade-welcome-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ade-welcome-row[data-has-actions="true"]:hover .ade-welcome-row-top > :not(.ade-welcome-row-actions),
+.ade-welcome-row[data-has-actions="true"]:focus-within .ade-welcome-row-top > :not(.ade-welcome-row-actions) {
+  visibility: hidden;
+}
+
+.ade-welcome-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+}
+.ade-welcome-icon-button:hover { background: var(--welcome-active); color: var(--color-fg); }
+.ade-welcome-icon-button[aria-pressed="true"] { color: var(--color-accent); }
+.ade-welcome-icon-button[data-danger="true"]:hover {
+  color: var(--color-error);
+  background: color-mix(in srgb, var(--color-error) 12%, transparent);
+}
+.ade-welcome-icon-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -1px; }
+.ade-welcome-icon-button:disabled { opacity: 0.5; cursor: default; }
+
+/* ── machine chips ────────────────────────────────────────────────── */
+
+.ade-welcome-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ade-welcome-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 150px;
+  height: 18px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--welcome-text-2);
+  font: inherit;
+  font-size: 10.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  cursor: inherit;
+}
+.ade-welcome-chip > span:last-child { overflow: hidden; text-overflow: ellipsis; }
+button.ade-welcome-chip { cursor: pointer; color: var(--color-muted-fg); }
+button.ade-welcome-chip:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 11%, transparent); }
+button.ade-welcome-chip:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+button.ade-welcome-chip:disabled { cursor: default; }
+
+.ade-welcome-dot {
+  flex-shrink: 0;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--welcome-dot-offline);
+}
+.ade-welcome-dot[data-state="online"] { background: var(--welcome-dot-online); }
+.ade-welcome-dot[data-state="busy"] { background: var(--welcome-dot-busy); }
+.ade-welcome-dot[data-state="open"] { background: var(--color-accent); }
+
+/* ── side column ──────────────────────────────────────────────────── */
+
+.ade-welcome-side-section + .ade-welcome-side-section {
+  border-top: 1px solid var(--welcome-rule);
+  margin-top: 4px;
+}
+/* Usage | Machines, evenly split under the running chats. */
+.ade-welcome-side-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  border-top: 1px solid var(--welcome-rule);
+  margin-top: 4px;
+}
+.ade-welcome-side-cell { min-width: 0; }
+/* Running chats scroll inside a cap so the usage/machines row stays in view. */
+.ade-welcome-side-running .ade-welcome-side-body {
+  max-height: min(228px, 30cqh);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.ade-welcome-side-cell + .ade-welcome-side-cell { border-left: 1px solid var(--welcome-rule); }
+.ade-welcome-side-cell .ade-welcome-section-head { padding-left: 14px; padding-right: 12px; }
+.ade-welcome-side-cell .ade-welcome-item { gap: 8px; padding: 6px 8px; }
+.ade-welcome-side-cell .ade-welcome-meter { width: 36px; }
+.ade-welcome-side-cell .ade-welcome-usage-value { min-width: 0; }
+.ade-welcome-side-body { padding: 0 6px 8px; }
+
+.ade-welcome-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+}
+button.ade-welcome-item { cursor: pointer; }
+button.ade-welcome-item:hover { background: var(--welcome-hover); }
+button.ade-welcome-item:focus-visible {
+  outline: none;
+  background: var(--welcome-active);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-accent) 70%, transparent);
+}
+
+.ade-welcome-item-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.ade-welcome-item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--color-fg);
+}
+.ade-welcome-item-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--color-muted-fg);
+}
+.ade-welcome-item-trail {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-muted-fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ade-welcome-item-glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  color: var(--tone-color, var(--color-muted-fg));
+}
+.ade-welcome-item > .ade-welcome-dot { margin: 0 4px; }
+.ade-welcome-item-state {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tone-color, var(--color-muted-fg));
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Compact usage: one line per account, tightest limit only. */
+.ade-welcome-usage-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--welcome-text-2);
+}
+.ade-welcome-meter {
+  flex: none;
+  width: 56px;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--color-fg) 10%, transparent);
+}
+.ade-welcome-meter > span { display: block; height: 100%; border-radius: 2px; }
+.ade-welcome-usage-value {
+  flex: none;
+  min-width: 64px;
+  text-align: right;
+  font-size: 11.5px;
+  color: var(--color-muted-fg);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.ade-welcome-usage-value strong { font-weight: 600; color: var(--color-fg); }
+
+/* Narrow: the side column becomes one tabbed strip. */
+.ade-welcome-tabs {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--welcome-rule);
+}
+.ade-welcome-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  margin-bottom: -1px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-muted-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.ade-welcome-tab:hover { color: var(--color-fg); }
+.ade-welcome-tab[aria-selected="true"] { color: var(--color-fg); border-bottom-color: var(--color-accent); }
+.ade-welcome-tab:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; border-radius: 5px; }
+.ade-welcome-tab > .ade-welcome-link { margin: 0; }
+.ade-welcome-tabs > .ade-welcome-link { margin-left: auto; margin-right: 4px; }
+.ade-welcome-tabpanel {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 6px 6px 8px;
+}
+
+/* ── motion and touch ─────────────────────────────────────────────── */
+
+@keyframes ade-recent-spin { to { transform: rotate(360deg); } }
+@keyframes ade-recent-shimmer {
+  from { transform: translateX(-60%); }
+  to { transform: translateX(160%); }
+}
+/* A cached row says so by shimmering until live data replaces it. */
+.ade-welcome [data-ade-stale="true"] { overflow: hidden; }
+.ade-welcome [data-ade-stale="true"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 45%;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--color-accent) 9%, transparent),
+    transparent
+  );
+  animation: ade-recent-shimmer 2.4s ease-in-out infinite;
+}
+.ade-welcome-spin { animation: ade-recent-spin 0.9s linear infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-welcome [data-ade-stale="true"]::after { animation: none; opacity: 0.35; }
+  .ade-welcome-spin { animation: none; }
+  .ade-welcome * { transition: none !important; }
+}
+
+@media (prefers-contrast: more) {
+  .ade-welcome {
+    --welcome-plane: color-mix(in srgb, var(--color-bg) 92%, transparent);
+    --welcome-plane-quiet: color-mix(in srgb, var(--color-bg) 88%, transparent);
+    --welcome-plane-edge: var(--color-border);
+  }
+}
+
+@media (pointer: coarse) {
+  .ade-welcome-row-main,
+  .ade-welcome-item { min-height: 44px; }
+  .ade-welcome-row-actions { opacity: 1; pointer-events: auto; }
+  .ade-welcome-row[data-has-actions="true"] .ade-welcome-row-top > :not(.ade-welcome-row-actions) { visibility: hidden; }
+}
+
+.ade-welcome-side-body > .ade-welcome-empty,
+.ade-welcome-tabpanel > .ade-welcome-empty { padding: 2px 10px 6px; }

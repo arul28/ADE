@@ -18,9 +18,34 @@ import {
   type ProviderInstanceSettings,
 } from "../../../../../shared/types/providerInstances";
 import { providerActionMessage } from "../providerErrorMessage";
+import type { OpenProjectBinding } from "../../../../../shared/types";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 
-function bridge() {
-  return window.ade?.providerInstances ?? null;
+type ProviderInstancesBridge = NonNullable<Window["ade"]["providerInstances"]>;
+
+/**
+ * The provider-accounts bridge, bound to one machine.
+ *
+ * Every method takes the pin as its trailing argument, so binding it here means
+ * no call site can forget it: a Settings page for another machine reads and
+ * writes that machine's accounts, never the tab's. A null pin is the tab's own
+ * binding, and returns the bridge unchanged.
+ */
+export function pinnedProviderInstances(pin: OpenProjectBinding | null): ProviderInstancesBridge | null {
+  const api = typeof window === "undefined" ? null : (window.ade?.providerInstances ?? null);
+  if (!api || !pin) return api;
+  return {
+    list: (args) => api.list(args, pin),
+    create: (args) => api.create(args, pin),
+    remove: (args) => api.remove(args, pin),
+    rename: (args) => api.rename(args, pin),
+    setDefault: (args) => api.setDefault(args, pin),
+    setAccent: (args) => api.setAccent(args, pin),
+    getSettings: (args) => api.getSettings(args, pin),
+    setSettings: (args) => api.setSettings(args, pin),
+    loginCommand: (args) => api.loginCommand(args, pin),
+    refresh: (args) => api.refresh(args, pin),
+  };
 }
 
 export type ProviderInstancesState = {
@@ -37,6 +62,7 @@ export type ProviderInstancesState = {
 };
 
 export function useProviderInstances(provider: ProviderInstanceProvider): ProviderInstancesState {
+  const { pin } = useSettingsMachineScope();
   const [instances, setInstances] = useState<ProviderInstance[]>([]);
   const [settings, setSettings] = useState<ProviderInstanceSettings>(DEFAULT_PROVIDER_INSTANCE_SETTINGS);
   const [loading, setLoading] = useState(true);
@@ -52,7 +78,7 @@ export function useProviderInstances(provider: ProviderInstanceProvider): Provid
   }, []);
 
   const reload = useCallback(async () => {
-    const api = bridge();
+    const api = pinnedProviderInstances(pin);
     if (!api) {
       setBridgeMissing(true);
       setLoading(false);
@@ -73,7 +99,7 @@ export function useProviderInstances(provider: ProviderInstanceProvider): Provid
     } finally {
       if (aliveRef.current) setLoading(false);
     }
-  }, [provider]);
+  }, [pin, provider]);
 
   useEffect(() => {
     setLoading(true);
@@ -82,7 +108,7 @@ export function useProviderInstances(provider: ProviderInstanceProvider): Provid
 
   const saveSettings = useCallback(
     async (patch: Partial<ProviderInstanceSettings>) => {
-      const api = bridge();
+      const api = pinnedProviderInstances(pin);
       if (!api) return;
       const previous = settings;
       setSettings({ ...previous, ...patch });
@@ -98,7 +124,7 @@ export function useProviderInstances(provider: ProviderInstanceProvider): Provid
         setError(providerActionMessage(err, "That switch could not be saved."));
       }
     },
-    [provider, settings],
+    [pin, provider, settings],
   );
 
   return { instances, settings, loading, bridgeMissing, error, reload, saveSettings };
@@ -111,10 +137,11 @@ export function useProviderInstances(provider: ProviderInstanceProvider): Provid
  * and a per-row read would be ten round trips for two answers.
  */
 export function useProviderAccountCounts(): Partial<Record<ProviderInstanceProvider, number>> {
+  const { pin } = useSettingsMachineScope();
   const [counts, setCounts] = useState<Partial<Record<ProviderInstanceProvider, number>>>({});
 
   useEffect(() => {
-    const api = bridge();
+    const api = pinnedProviderInstances(pin);
     if (!api) return;
     let cancelled = false;
     void (async () => {
@@ -133,7 +160,7 @@ export function useProviderAccountCounts(): Partial<Record<ProviderInstanceProvi
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pin]);
 
   return counts;
 }
@@ -148,7 +175,9 @@ export function useSmartBalanceProviders(): ReadonlySet<ProviderInstanceProvider
   const [enabled, setEnabled] = useState<ProviderInstanceProvider[]>([]);
 
   useEffect(() => {
-    const api = bridge();
+    // Outside Settings (the chat picker) there is no machine scope, so this is
+    // the tab's own binding, as before.
+    const api = pinnedProviderInstances(null);
     if (!api) return;
     let cancelled = false;
     void (async () => {

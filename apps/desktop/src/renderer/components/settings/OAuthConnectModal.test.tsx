@@ -210,6 +210,6 @@ describe("OAuthConnectModal", () => {
     );
     expect(window.ade.builtInBrowser.navigate).not.toHaveBeenCalled();
     expect(window.ade.app.openExternal).not.toHaveBeenCalled();
-    expect(window.ade.ai.opencodeOAuthCancel).toHaveBeenCalledWith({ providerId: "openai" });
+    expect(window.ade.ai.opencodeOAuthCancel).toHaveBeenCalledWith({ providerId: "openai" }, null);
   });
 });

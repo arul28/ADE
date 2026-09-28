@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenProjectBinding } from "../../../shared/types";
 
 /* ---------------------------------------------------------------------------
- * The dialog host rebinds the whole app when a machine is picked. These tests
- * pin the part of that contract that has no UI of its own: closing the dialog
- * without creating a lane must put the binding back.
+ * Picking a machine in the create-lane dialog only chooses where the lane
+ * goes (every lane API call after that carries that machine's pin); it no
+ * longer rebinds the whole app/window the way it used to. These tests cover
+ * what is left with no UI of its own: the configure-for-chat path, which
+ * hands a validated recipe back instead of creating, and offers no machine
+ * picker at all.
  * ------------------------------------------------------------------------- */
 
 const localBinding: OpenProjectBinding = {
@@ -16,19 +19,6 @@ const localBinding: OpenProjectBinding = {
   rootPath: "/Users/admin/Projects/ADE",
   displayName: "ADE",
 };
-
-const remoteBinding: OpenProjectBinding = {
-  kind: "remote",
-  key: "remote:target-1:project-ade",
-  targetId: "target-1",
-  runtimeName: "MacBook Pro (97)",
-  projectId: "project-ade",
-  rootPath: "/Users/other/Projects/ADE",
-  displayName: "ADE",
-};
-
-const switchRemoteProject = vi.fn(async () => ({}) as never);
-const switchProjectToPath = vi.fn(async () => {});
 
 const storeState: Record<string, unknown> = {};
 
@@ -39,8 +29,6 @@ function resetStore() {
     project: { rootPath: localBinding.rootPath, displayName: "ADE" },
     projectBinding: localBinding,
     openProjectTabRoots: [localBinding.rootPath],
-    switchRemoteProject,
-    switchProjectToPath,
   });
 }
 
@@ -51,6 +39,11 @@ vi.mock("../../state/appStore", () => ({
   ),
   selectActiveProjectRoot: (state: Record<string, unknown>) =>
     (state.project as { rootPath?: string } | null)?.rootPath ?? null,
+  // useLaneMachineChoice reads the cross-machine lane union off the root
+  // store. Nothing here pins a machine ahead of the picker, so the empty map
+  // is the honest fixture.
+  useRootAppStore: (selector: (state: { crossMachineLanesByMachineId: Record<string, unknown> }) => unknown) =>
+    selector({ crossMachineLanesByMachineId: {} }),
 }));
 
 vi.mock("./CreateLaneDialog", () => ({
@@ -83,8 +76,6 @@ import { CreateLaneDialogHost } from "./CreateLaneDialogHost";
 
 beforeEach(() => {
   resetStore();
-  switchRemoteProject.mockClear();
-  switchProjectToPath.mockClear();
   (globalThis as { window: Window & { ade?: unknown } }).window.ade = {
     lanes: {
       onEnvEvent: () => () => {},
@@ -116,68 +107,6 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
-
-describe("CreateLaneDialogHost machine binding", () => {
-  it("restores the binding when the dialog is closed without creating a lane", async () => {
-    const view = render(
-      <CreateLaneDialogHost open onOpenChange={vi.fn()} behavior="close-on-create" />,
-    );
-
-    fireEvent.click(await screen.findByText("pick:MacBook Pro (97)"));
-    await waitFor(() =>
-      expect(switchRemoteProject).toHaveBeenCalledWith("target-1", "project-ade"),
-    );
-
-    // The rebind landed: the app is now on the other machine.
-    storeState.projectBinding = remoteBinding;
-    view.rerender(
-      <CreateLaneDialogHost open={false} onOpenChange={vi.fn()} behavior="close-on-create" />,
-    );
-
-    await waitFor(() =>
-      expect(switchProjectToPath).toHaveBeenCalledWith(localBinding.rootPath),
-    );
-  });
-
-  it("leaves the binding alone when the dialog is closed without switching machines", async () => {
-    const view = render(
-      <CreateLaneDialogHost open onOpenChange={vi.fn()} behavior="close-on-create" />,
-    );
-    await screen.findByText("pick:This computer");
-
-    view.rerender(
-      <CreateLaneDialogHost open={false} onOpenChange={vi.fn()} behavior="close-on-create" />,
-    );
-
-    expect(switchProjectToPath).not.toHaveBeenCalled();
-    expect(switchRemoteProject).not.toHaveBeenCalled();
-  });
-
-  it("restores after an in-flight machine switch settles after close", async () => {
-    let resolveSwitch!: () => void;
-    switchRemoteProject.mockImplementationOnce(
-      () => new Promise<void>((resolve) => { resolveSwitch = resolve; }) as never,
-    );
-    const view = render(
-      <CreateLaneDialogHost open onOpenChange={vi.fn()} behavior="close-on-create" />,
-    );
-    fireEvent.click(await screen.findByText("pick:MacBook Pro (97)"));
-    view.rerender(
-      <CreateLaneDialogHost open={false} onOpenChange={vi.fn()} behavior="close-on-create" />,
-    );
-    expect(switchProjectToPath).not.toHaveBeenCalled();
-
-    storeState.projectBinding = remoteBinding;
-    view.rerender(
-      <CreateLaneDialogHost open={false} onOpenChange={vi.fn()} behavior="close-on-create" />,
-    );
-    resolveSwitch();
-
-    await waitFor(() =>
-      expect(switchProjectToPath).toHaveBeenCalledWith(localBinding.rootPath),
-    );
-  });
-});
 
 describe("CreateLaneDialogHost configure-for-chat", () => {
   it("hands the validated recipe back instead of creating a lane", async () => {

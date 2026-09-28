@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { GithubLogo } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import type {
+  OpenProjectBinding,
   AutomationIngressDelivery,
   AutomationIngressStatus,
   AutomationTrigger,
@@ -59,10 +60,12 @@ function TriggerDeliveryCallout({
   deliveryKey,
   status,
   onIngressChanged,
+  runtimePin = null,
 }: {
   deliveryKey: keyof AutomationIngressDelivery;
   status: AutomationTriggerDeliveryStatus;
   onIngressChanged?: () => void;
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
   const [linearPending, setLinearPending] = useState(false);
@@ -72,7 +75,8 @@ function TriggerDeliveryCallout({
     if (!linearApi?.setup) return;
     setLinearPending(true);
     try {
-      await linearApi.setup();
+      // Set up on the machine the draft runs on, not the tab's machine.
+      await (runtimePin ? linearApi.setup(runtimePin) : linearApi.setup());
     } catch {
       // The ingress service records the setup error for the next refresh.
     } finally {
@@ -202,11 +206,14 @@ export function TriggerCard({
   onChange,
   onIngressChanged,
   cursorCloudConnected = false,
+  runtimePin = null,
 }: {
   trigger: AutomationTrigger;
   ingressStatus: AutomationIngressStatus | null;
   onChange: (next: AutomationTrigger) => void;
   onIngressChanged?: () => void;
+  /** The machine the rule runs on; null = the tab's machine. */
+  runtimePin?: OpenProjectBinding | null;
   /** The Cursor source is an integration surface, so hide it until auth is confirmed. */
   cursorCloudConnected?: boolean;
 }) {
@@ -270,7 +277,7 @@ export function TriggerCard({
       )}
 
       {deliveryKey && delivery && !delivery.ready ? (
-        <TriggerDeliveryCallout deliveryKey={deliveryKey} status={delivery} onIngressChanged={onIngressChanged} />
+        <TriggerDeliveryCallout deliveryKey={deliveryKey} status={delivery} onIngressChanged={onIngressChanged} runtimePin={runtimePin} />
       ) : null}
 
       {/* Filters */}

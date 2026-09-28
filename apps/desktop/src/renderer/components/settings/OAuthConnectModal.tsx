@@ -13,6 +13,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../ui/dialog";
 import { Banner } from "../ui/notice";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 const CODE_PATTERN = /[A-Z0-9]{4,}-[A-Z0-9]{4,}/;
 const OPEN_TARGET_STORAGE_KEY = "ade.opencode.oauthOpenTarget";
@@ -121,6 +122,9 @@ export function OAuthConnectModal({
   onClose: () => void;
   onConnected: () => void;
 }) {
+  // The OAuth flow runs in the page's machine's runtime; start, cancel and the
+  // status feed must all name that machine.
+  const { pin } = useSettingsMachineScope();
   const oauthMethods = useMemo(
     () => methods.map((method, index) => ({ method, index })).filter((entry) => entry.method.type === "oauth"),
     [methods],
@@ -156,10 +160,10 @@ export function OAuthConnectModal({
     () => () => {
       cancelRequestedRef.current = true;
       if (startPendingRef.current || flowActiveRef.current) {
-        void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        void window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
       }
     },
-    [providerId],
+    [pin, providerId],
   );
 
   // Subscribe to backend OAuth status pushes for this provider.
@@ -181,11 +185,11 @@ export function OAuthConnectModal({
                 : "Sign-in failed."),
         );
       }
-    });
+    }, pin);
     return () => {
       unsubscribe();
     };
-  }, [providerId, onClose, onConnected]);
+  }, [pin, providerId, onClose, onConnected]);
 
   const startFlow = async () => {
     cancelRequestedRef.current = false;
@@ -203,14 +207,14 @@ export function OAuthConnectModal({
         providerId,
         methodIndex,
         inputs: Object.keys(filteredInputs).length ? filteredInputs : undefined,
-      });
+      }, pin);
       startPendingRef.current = false;
       if (cancelRequestedRef.current) {
-        void window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        void window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
         return;
       }
       if (result.url && !isAllowedOpenCodeOAuthUrl(result.url)) {
-        await window.ade.ai.opencodeOAuthCancel({ providerId }).catch(() => undefined);
+        await window.ade.ai.opencodeOAuthCancel({ providerId }, pin).catch(() => undefined);
         throw new Error("OpenCode returned an unsafe OAuth URL.");
       }
       if (result.url) {
@@ -233,7 +237,7 @@ export function OAuthConnectModal({
     cancelRequestedRef.current = true;
     flowActiveRef.current = false;
     try {
-      await window.ade.ai.opencodeOAuthCancel({ providerId });
+      await window.ade.ai.opencodeOAuthCancel({ providerId }, pin);
     } catch {
       // Best-effort — closing regardless.
     }

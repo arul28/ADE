@@ -3,6 +3,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import type { CtoIdentity, CtoSystemPromptPreview, CtoSystemPromptPreviewSection } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { CopyButton, ctoButtonStyle } from "./ctoSettingsUi";
+import { useCtoHomeScope } from "./useCtoHome";
 
 /**
  * Everything the CTO is sent, shown as the document it is.
@@ -35,6 +36,7 @@ export function CtoPromptPreview({
   identityOverride?: Partial<CtoIdentity>;
   accent?: string;
 } = {}) {
+  const { pin: ctoPin } = useCtoHomeScope();
   const [preview, setPreview] = useState<CtoSystemPromptPreview | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +56,7 @@ export function CtoPromptPreview({
     }
     setLoading(true);
     setError(null);
-    void bridge.previewSystemPrompt({ identityOverride })
+    void bridge.previewSystemPrompt({ identityOverride }, ctoPin)
       .then((result) => { if (!cancelled) setPreview(result); })
       .catch((err) => {
         if (cancelled) return;
@@ -64,7 +66,7 @@ export function CtoPromptPreview({
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- overrideKey serializes identityOverride
-  }, [overrideKey]);
+  }, [overrideKey, ctoPin]);
 
   const sections = preview?.sections ?? [];
   const showToc = sections.length > 3;

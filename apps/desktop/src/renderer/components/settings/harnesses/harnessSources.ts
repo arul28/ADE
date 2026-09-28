@@ -20,6 +20,7 @@ import {
   type ApiCredentialSummary,
 } from "../../../../shared/types/apiCredentials";
 import type { ProviderInstance } from "../../../../shared/types/providerInstances";
+import type { OpenProjectBinding } from "../../../../shared/types";
 import { providerLabel } from "../../../../shared/modelCatalog";
 import {
   HARNESS_PRESET_ACCOUNT_PROVIDERS,
@@ -117,13 +118,20 @@ function accountFromInstance(instance: ProviderInstance): HarnessAccountSource {
  * for the default instance, so a preset saved here keeps working once the real
  * registry arrives.
  */
-export async function loadHarnessAccounts(): Promise<HarnessAccountSource[]> {
+export async function loadHarnessAccounts(
+  /** The machine whose accounts to list; null = the tab's binding. */
+  pin: OpenProjectBinding | null = null,
+): Promise<HarnessAccountSource[]> {
   const bridge = (window as unknown as {
-    ade?: { providerInstances?: { list?: () => Promise<ProviderInstance[]> } };
+    ade?: {
+      providerInstances?: {
+        list?: (args?: undefined, pin?: OpenProjectBinding | null) => Promise<ProviderInstance[]>;
+      };
+    };
   }).ade?.providerInstances;
   if (typeof bridge?.list === "function") {
     try {
-      const instances = await bridge.list();
+      const instances = await bridge.list(undefined, pin);
       if (Array.isArray(instances) && instances.length > 0) {
         return instances
           .filter((instance) => instance && typeof instance.id === "string")

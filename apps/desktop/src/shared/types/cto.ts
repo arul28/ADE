@@ -101,9 +101,20 @@ export type CtoSessionLogEntry = {
   createdAt: string;
 };
 
+/**
+ * What the runtime hosting this CTO can do. Absent on runtimes built before the
+ * field existed, and a missing key means "no": a renderer reads
+ * `capabilities?.crossMachine === true`, never the inverse.
+ */
+export type CtoRuntimeCapabilities = {
+  /** The CTO's tools can reach the account's other machines (`listMachines`, `machine` args, `runMachineAction`). */
+  crossMachine?: boolean;
+};
+
 export type CtoSnapshot = {
   identity: CtoIdentity;
   recentSessions: CtoSessionLogEntry[];
+  capabilities?: CtoRuntimeCapabilities;
 };
 
 export type CtoGetStateArgs = {

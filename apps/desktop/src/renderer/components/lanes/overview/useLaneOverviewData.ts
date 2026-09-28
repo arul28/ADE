@@ -5,6 +5,7 @@ import type {
   GitHubPrListItem,
   GitUpstreamSyncStatus,
   LaneSummary,
+  OpenProjectBinding,
   OperationRecord,
   PrCheck,
   PrFile,
@@ -76,18 +77,31 @@ function githubOnlyHistoryPr(item: GitHubPrListItem): LaneHistoryPr {
   };
 }
 
+const NO_GITHUB_PRS: GitHubPrListItem[] = [];
+
 /**
  * The lane's PRs from the same coalesced reads the lane badges use.
  * `current` is what the lane shows today (current branch); `all` adds the
  * lane's earlier PRs for the PR card and the activity feed.
+ *
+ * `foreignPrs` is set for a lane on another machine: that machine's own mapped
+ * PR rows (from the cross-machine union). The tab machine's PR list and GitHub
+ * snapshot are not read then — their lane links name the tab machine's lanes,
+ * and a lane id can exist on both machines.
  */
-export function useLaneOverviewPrs(lane: LaneSummary | null): { current: LaneHistoryPr[]; all: LaneHistoryPr[] } {
+export function useLaneOverviewPrs(
+  lane: LaneSummary | null,
+  foreignPrs: PrSummary[] | null = null,
+): { current: LaneHistoryPr[]; all: LaneHistoryPr[] } {
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const [prs, setPrs] = useState<PrSummary[]>([]);
-  const [githubPrs, setGithubPrs] = useState<GitHubPrListItem[]>([]);
+  const [boundPrs, setPrs] = useState<PrSummary[]>([]);
+  const [boundGithubPrs, setGithubPrs] = useState<GitHubPrListItem[]>([]);
+  const isForeign = foreignPrs != null;
+  const prs = foreignPrs ?? boundPrs;
+  const githubPrs = isForeign ? NO_GITHUB_PRS : boundGithubPrs;
 
   useEffect(() => {
-    if (!window.ade?.prs) return;
+    if (isForeign || !window.ade?.prs) return;
     let cancelled = false;
     const readSnapshot = () => getGitHubSnapshotCoalesced({}, { projectRoot })
       .then((snapshot) => {
@@ -109,7 +123,7 @@ export function useLaneOverviewPrs(lane: LaneSummary | null): { current: LaneHis
       cancelled = true;
       unsubscribe?.();
     };
-  }, [projectRoot]);
+  }, [isForeign, projectRoot]);
 
   return useMemo(() => {
     if (!lane) return { current: [], all: [] };
@@ -156,6 +170,8 @@ export function clearTrailerProviderCacheForTest(): void {
 export function useLaneCommits(
   lane: LaneSummary | null,
   primaryLimit: number,
+  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
+  pin: OpenProjectBinding | null = null,
 ): { commits: GitCommitSummary[]; trailerProviderBySha: ReadonlyMap<string, string | null>; loaded: boolean } {
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -167,6 +183,7 @@ export function useLaneCommits(
     ? Math.min(MAX_LANE_COMMITS, Math.max(PRIMARY_COMMIT_PAGE, primaryLimit))
     : Math.min(MAX_LANE_COMMITS, ahead);
   const branchKey = [
+    pin?.key ?? "",
     laneId,
     lane?.branchRef ?? "",
     lane?.status?.headBranchRef ?? "",
@@ -176,10 +193,11 @@ export function useLaneCommits(
   ].join("|");
 
   // Declared first so a lane switch clears the old rows before the new read.
+  const pinKey = pin?.key ?? null;
   useEffect(() => {
     setLoaded(false);
     setCommits([]);
-  }, [laneId]);
+  }, [laneId, pinKey]);
 
   useEffect(() => {
     if (!laneId) return;
@@ -189,7 +207,10 @@ export function useLaneCommits(
       return;
     }
     let cancelled = false;
-    void window.ade.git.listRecentCommits({ laneId, limit })
+    // Unpinned calls keep their exact pre-pin shape (the tab's machine).
+    void (pin
+      ? window.ade.git.listRecentCommits({ laneId, limit }, pin)
+      : window.ade.git.listRecentCommits({ laneId, limit }))
       .then((rows) => {
         if (cancelled) return;
         setCommits(rows);
@@ -219,8 +240,9 @@ export function useLaneCommits(
     void (async () => {
       for (const commit of pending) {
         if (cancelled) return;
-        const message = await window.ade.git
-          .getCommitMessage({ laneId, commitSha: commit.sha })
+        const message = await (pin
+          ? window.ade.git.getCommitMessage({ laneId, commitSha: commit.sha }, pin)
+          : window.ade.git.getCommitMessage({ laneId, commitSha: commit.sha }))
           .catch(() => null);
         if (message == null) continue;
         trailerProviderCache.set(commit.sha, parseCoAuthorProvider(message));
@@ -232,7 +254,7 @@ export function useLaneCommits(
     };
     // `lane` is read only for its type and ahead count, both part of `commits`' key.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commits, laneId]);
+  }, [commits, laneId, pinKey]);
 
   const trailerProviderBySha = useMemo(() => {
     void trailerVersion;
@@ -304,28 +326,41 @@ export function laneHistorySessionsFrom(
 export function useLaneSessions(
   laneId: string | null,
   refreshKey: string,
+  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
+  pin: OpenProjectBinding | null = null,
 ): { chats: AgentChatSessionSummary[]; terminals: TerminalSessionSummary[]; loaded: boolean } {
   const [state, setState] = useState<{
     laneId: string | null;
+    pinKey: string | null;
     chats: AgentChatSessionSummary[];
     terminals: TerminalSessionSummary[];
-  }>({ laneId: null, chats: [], terminals: [] });
+  }>({ laneId: null, pinKey: null, chats: [], terminals: [] });
   const requestRef = useRef(0);
+  const pinKey = pin?.key ?? null;
 
   useEffect(() => {
     if (!laneId) return;
     const requestId = ++requestRef.current;
     void Promise.all([
-      window.ade.agentChat.list({ laneId, includeArchived: true }).catch(() => []),
-      listSessionsCached({ laneId, limit: SESSION_HISTORY_LIMIT }).catch(() => []),
+      (pin
+        ? window.ade.agentChat.list({ laneId, includeArchived: true }, pin)
+        : window.ade.agentChat.list({ laneId, includeArchived: true })
+      ).catch(() => []),
+      // The session cache is keyed for the tab's machine only.
+      (pin
+        ? window.ade.sessions.list({ laneId, limit: SESSION_HISTORY_LIMIT }, pin)
+        : listSessionsCached({ laneId, limit: SESSION_HISTORY_LIMIT })
+      ).catch(() => []),
     ]).then(([chats, terminals]) => {
       if (requestId !== requestRef.current) return;
-      setState({ laneId, chats, terminals });
+      setState({ laneId, pinKey, chats, terminals });
     });
-  }, [laneId, refreshKey]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey, refreshKey]);
 
   // Rows of the lane shown before are never shown for the next one.
-  if (state.laneId !== laneId) return { chats: [], terminals: [], loaded: false };
+  if (state.laneId !== laneId || state.pinKey !== pinKey) return { chats: [], terminals: [], loaded: false };
   return { chats: state.chats, terminals: state.terminals, loaded: true };
 }
 
@@ -336,9 +371,16 @@ export function useLaneSessions(
  * status moves, so the status line can say what is waiting to push and pull.
  * The Git pane keeps its own, richer reads; this is a single cheap one.
  */
-export function useLaneUpstream(lane: LaneSummary | null, active: boolean): GitUpstreamSyncStatus | null {
-  const [state, setState] = useState<{ laneId: string | null; status: GitUpstreamSyncStatus | null }>({ laneId: null, status: null });
+export function useLaneUpstream(
+  lane: LaneSummary | null,
+  active: boolean,
+  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
+  pin: OpenProjectBinding | null = null,
+): GitUpstreamSyncStatus | null {
+  const [state, setState] = useState<{ laneKey: string | null; status: GitUpstreamSyncStatus | null }>({ laneKey: null, status: null });
   const laneId = lane?.id ?? null;
+  const pinKey = pin?.key ?? null;
+  const laneKey = laneId ? `${pinKey ?? ""}::${laneId}` : null;
   const statusKey = lane
     ? `${lane.id}:${lane.branchRef}:${lane.status.ahead}:${lane.status.behind}:${lane.status.remoteBehind}:${lane.status.dirty}:${lane.status.lastCommitAt ?? ""}`
     : "";
@@ -346,15 +388,16 @@ export function useLaneUpstream(lane: LaneSummary | null, active: boolean): GitU
   useEffect(() => {
     if (!active || !laneId) return;
     let cancelled = false;
-    window.ade.git.getSyncStatus({ laneId })
-      .then((next) => { if (!cancelled) setState({ laneId, status: next }); })
-      .catch(() => { if (!cancelled) setState({ laneId, status: null }); });
+    (pin ? window.ade.git.getSyncStatus({ laneId }, pin) : window.ade.git.getSyncStatus({ laneId }))
+      .then((next) => { if (!cancelled) setState({ laneKey, status: next }); })
+      .catch(() => { if (!cancelled) setState({ laneKey, status: null }); });
     return () => { cancelled = true; };
-    // `statusKey` re-reads after a commit, pull or push changed the lane.
+    // `statusKey` re-reads after a commit, pull or push changed the lane;
+    // `laneKey` carries the pin's identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, laneId, statusKey]);
+  }, [active, laneKey, statusKey]);
 
-  return state.laneId === laneId ? state.status : null;
+  return state.laneKey === laneKey ? state.status : null;
 }
 
 /* ───────────────────────── PR detail ───────────────────────── */
@@ -377,8 +420,11 @@ export function clearLanePrDetailCacheForTest(): void {
   prDetailCache.clear();
 }
 
-function prDetailKey(pr: LaneHistoryPr): string {
-  return pr.linkedPrId ?? pr.key;
+function prDetailKey(pr: LaneHistoryPr, pin: OpenProjectBinding | null): string {
+  // A linked PR id is a row in one machine's database, so it is only unique
+  // together with that machine.
+  const id = pr.linkedPrId ?? pr.key;
+  return pin && pr.linkedPrId ? `${pin.key}::${id}` : id;
 }
 
 /** Changes whenever the PR list says something about this PR moved. */
@@ -396,15 +442,22 @@ function rememberPrDetail(key: string, entry: PrDetailCacheEntry): void {
   }
 }
 
-async function readPrDetail(pr: LaneHistoryPr, previous: LanePrDetail | null): Promise<LanePrDetail> {
+async function readPrDetail(
+  pr: LaneHistoryPr,
+  previous: LanePrDetail | null,
+  pin: OpenProjectBinding | null,
+): Promise<LanePrDetail> {
   const api = window.ade.prs;
   const coords = { repoOwner: pr.repoOwner, repoName: pr.repoName, githubPrNumber: pr.number };
+  // A linked id names a row on the lane's machine, so it is read there. The
+  // GitHub-coordinate reads are repo-wide and stay on the tab's machine.
   const id = pr.linkedPrId;
+  // Unpinned reads keep their exact pre-pin call shape (the tab's machine).
   const [status, checks, reviews, files] = await Promise.allSettled([
-    id ? api.getStatus(id) : api.getStatusByGithub(coords),
-    id ? api.getChecks(id) : api.getChecksByGithub(coords),
-    id ? api.getReviews(id) : api.getReviewsByGithub(coords),
-    id ? api.getFiles(id) : api.getFilesByGithub(coords),
+    id ? (pin ? api.getStatus(id, pin) : api.getStatus(id)) : api.getStatusByGithub(coords),
+    id ? (pin ? api.getChecks(id, pin) : api.getChecks(id)) : api.getChecksByGithub(coords),
+    id ? (pin ? api.getReviews(id, pin) : api.getReviews(id)) : api.getReviewsByGithub(coords),
+    id ? (pin ? api.getFiles(id, pin) : api.getFiles(id)) : api.getFilesByGithub(coords),
   ]);
   // A read that failed keeps what was already on screen.
   return {
@@ -421,8 +474,13 @@ async function readPrDetail(pr: LaneHistoryPr, previous: LanePrDetail | null): P
  * changed. No polling: the PR list is already kept fresh by the PR service.
  * Switching back to a lane within a minute reuses the last read.
  */
-export function useLanePrDetail(pr: LaneHistoryPr | null, active: boolean): { detail: LanePrDetail | null; loaded: boolean } {
-  const key = pr ? prDetailKey(pr) : null;
+export function useLanePrDetail(
+  pr: LaneHistoryPr | null,
+  active: boolean,
+  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
+  pin: OpenProjectBinding | null = null,
+): { detail: LanePrDetail | null; loaded: boolean } {
+  const key = pr ? prDetailKey(pr, pin) : null;
   const token = pr ? prDetailToken(pr) : "";
   const [state, setState] = useState<{ key: string | null; detail: LanePrDetail | null; loaded: boolean }>(() => {
     const cached = key ? prDetailCache.get(key) ?? null : null;
@@ -430,6 +488,8 @@ export function useLanePrDetail(pr: LaneHistoryPr | null, active: boolean): { de
   });
   const prRef = useRef(pr);
   prRef.current = pr;
+  const pinRef = useRef(pin);
+  pinRef.current = pin;
 
   useEffect(() => {
     if (!key || !active || !window.ade?.prs) return;
@@ -439,7 +499,8 @@ export function useLanePrDetail(pr: LaneHistoryPr | null, active: boolean): { de
     if (cached) setState({ key, detail: cached, loaded: true });
     if (cached && cached.token === token && Date.now() - cached.at < PR_DETAIL_FRESH_MS) return;
     let cancelled = false;
-    void readPrDetail(current, cached).then((detail) => {
+    // `key` already carries the pin, so the ref is current for this key.
+    void readPrDetail(current, cached, pinRef.current).then((detail) => {
       rememberPrDetail(key, { ...detail, token, at: Date.now() });
       if (!cancelled) setState({ key, detail, loaded: true });
     });
@@ -460,15 +521,23 @@ export function useLanePrDetail(pr: LaneHistoryPr | null, active: boolean): { de
 const OPERATION_LIMIT = 200;
 
 /** Push, pull, rebase and similar records for the lane, re-read when the branch moves. */
-export function useLaneOperations(laneId: string | null, refreshKey: string): OperationRecord[] {
+export function useLaneOperations(
+  laneId: string | null,
+  refreshKey: string,
+  /** The lane's machine when it is not the tab's; null reads the tab's machine. */
+  pin: OpenProjectBinding | null = null,
+): OperationRecord[] {
   const [operations, setOperations] = useState<OperationRecord[]>([]);
+  const pinKey = pin?.key ?? null;
   useEffect(() => {
     if (!laneId || !window.ade?.history?.listOperations) {
       setOperations([]);
       return;
     }
     let cancelled = false;
-    void window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT })
+    void (pin
+      ? window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT }, pin)
+      : window.ade.history.listOperations({ laneId, limit: OPERATION_LIMIT }))
       .then((rows) => {
         if (!cancelled) setOperations(rows);
       })
@@ -478,6 +547,8 @@ export function useLaneOperations(laneId: string | null, refreshKey: string): Op
     return () => {
       cancelled = true;
     };
-  }, [laneId, refreshKey]);
+    // `pinKey` carries the pin's identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, pinKey, refreshKey]);
   return operations;
 }

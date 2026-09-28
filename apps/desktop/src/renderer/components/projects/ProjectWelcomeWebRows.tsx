@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import {
   ArrowsClockwise,
   Folder,
@@ -6,7 +6,6 @@ import {
   PushPin,
   X,
 } from "@phosphor-icons/react";
-import { COLORS, MONO_FONT } from "../lanes/laneDesignTokens";
 import {
   welcomeProjectMachineName,
   type RecentProjectLocation,
@@ -17,7 +16,6 @@ import {
 import { WorktreeBadge } from "./WorktreeBadge";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { abbreviateHome } from "../../lib/pathUtils";
-import { toRelativeTime } from "../../lib/relativeTime";
 import type {
   ProjectIcon,
   RecentProjectSummary,
@@ -25,11 +23,12 @@ import type {
 } from "../../../shared/types";
 
 // ---------------------------------------------------------------------------
-// The recents-row chrome, and the hosted client's empty/notice states.
+// The recents-row chrome for the welcome page.
 //
 // Split out of ProjectWelcomePage because none of it reads that page's state:
 // every export here is driven entirely by its props, which is what makes the
 // welcome page's own body readable as page logic rather than row markup.
+// Styling lives in `ProjectWelcomePage.css` (theme tokens only).
 // ---------------------------------------------------------------------------
 
 export function ProjectIconArtwork({
@@ -79,7 +78,7 @@ export function ProjectIconArtwork({
         style={{
           width: 28,
           height: 28,
-          borderRadius: 5,
+          borderRadius: 6,
           objectFit: "contain",
         }}
       />
@@ -92,9 +91,11 @@ export function ProjectIconArtwork({
 function RecentProjectIcon({
   rootPath,
   onAccentColor,
+  onResolved,
 }: {
   rootPath: string;
   onAccentColor?: (color: string | null) => void;
+  onResolved?: (hasArtwork: boolean) => void;
 }) {
   const [icon, setIcon] = useState<ProjectIcon | null>(null);
 
@@ -114,6 +115,10 @@ function RecentProjectIcon({
     };
   }, [rootPath]);
 
+  useEffect(() => {
+    onResolved?.(Boolean(icon?.dataUrl));
+  }, [icon?.dataUrl, onResolved]);
+
   return (
     <ProjectIconArtwork
       dataUrl={icon?.dataUrl}
@@ -130,80 +135,110 @@ export type WebRowChrome = {
   stale: boolean;
 };
 
-export function WebRowTrailing({
-  web,
-  lastActiveAt,
-}: {
-  web: WebRowChrome;
-  lastActiveAt: string | null;
-}) {
-  return (
-    <>
-      {web.connectStage ? (
-        <span
-          style={{
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 4,
-            fontSize: 9,
-            fontWeight: 700,
-            letterSpacing: "0.03em",
-            color: "#FBBF24",
-            textAlign: "right",
-          }}
-        >
-          <ArrowsClockwise
-            size={11}
-            weight="bold"
-            style={{ animation: "ade-recent-spin 0.9s linear infinite" }}
-          />
-          {web.connectStage}
-        </span>
-      ) : (
-        <ProjectActivity lastActiveAt={lastActiveAt} />
-      )}
-    </>
-  );
+// ---------------------------------------------------------------------------
+// Formatting
+// ---------------------------------------------------------------------------
+
+/**
+ * A path as a person reads it: home folders become `~`, on this machine and on
+ * others. `abbreviateHome` only knows this process's HOME (and the renderer
+ * often has none), and a remote machine's home is never ours, so a user-home
+ * prefix is recognised by shape as a fallback. Display only — the full path
+ * stays in the tooltip.
+ */
+function welcomeDisplayPath(rootPath: string): string {
+  const abbreviated = abbreviateHome(rootPath);
+  if (abbreviated !== rootPath) return abbreviated;
+  const normalized = rootPath.replace(/\\/g, "/");
+  const home = normalized.match(/^(?:\/Users|\/home)\/[^/]+(\/.*)?$/)
+    ?? normalized.match(/^[A-Za-z]:\/Users\/[^/]+(\/.*)?$/);
+  if (home) return `~${home[1] ?? ""}`;
+  return rootPath;
 }
 
-function ProjectActivity({ lastActiveAt }: { lastActiveAt: string | null }) {
-  if (!lastActiveAt) return null;
-  const activity = toRelativeTime(lastActiveAt);
-  const activityLabel = activity.startsWith("active ")
-    ? activity.slice("active ".length)
-    : activity;
+/** Middle truncation: the folder name survives, the parent path gives way. */
+function MiddleTruncatedPath({ path, title }: { path: string; title: string }) {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  // The separator leads the tail, so a clipped head reads "~/Projects/…/ADE".
+  const head = cut > 0 ? trimmed.slice(0, cut) : "";
+  const tail = cut > 0 ? trimmed.slice(cut) : trimmed;
   return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "flex-end",
-        fontSize: 9,
-        color: COLORS.textDim,
-        textAlign: "right",
-        whiteSpace: "nowrap",
-      }}
-    >
-      {activityLabel}
+    <span className="ade-welcome-path" title={title}>
+      <span>{head}</span>
+      <span>{tail}</span>
     </span>
   );
 }
+
+/** "just now", "12m ago", "3h ago", "5d ago", then a calendar date. */
+export function welcomeRelativeTime(iso: string | null, nowMs = Date.now()): string | null {
+  if (!iso) return null;
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return null;
+  const delta = Math.max(0, nowMs - ts);
+  const minutes = Math.floor(delta / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const date = new Date(ts);
+  const sameYear = date.getFullYear() === new Date(nowMs).getFullYear();
+  return date.toLocaleDateString(undefined, sameYear
+    ? { month: "short", day: "numeric" }
+    : { month: "short", day: "numeric", year: "numeric" });
+}
+
+// ---------------------------------------------------------------------------
+// Machine chips
+// ---------------------------------------------------------------------------
+
+type DotState = "online" | "busy" | "available" | "offline";
+
+function locationDotState(
+  location: RecentProjectLocation,
+  isPrimary: boolean,
+  web: WebRowChrome | null,
+): DotState {
+  if (location.summary.kind !== "remote") {
+    return location.summary.exists === false ? "offline" : "online";
+  }
+  if (web && isPrimary) {
+    if (web.status === "live") return "online";
+    if (web.status === "connecting") return "busy";
+    if (web.status === "available") return "available";
+    return "offline";
+  }
+  if (location.connectionState === "connected") return "online";
+  if (location.connectionState === "connecting") return "busy";
+  return "offline";
+}
+
+const DOT_LABEL: Record<DotState, string> = {
+  online: "online",
+  busy: "connecting",
+  available: "available",
+  offline: "offline",
+};
 
 function machineLocationKey(location: RecentProjectLocation): string {
   return `${location.machineId}:${location.recentKey ?? location.summary.rootPath}`;
 }
 
-/** A compact, explicit roster for every machine that has this project. */
-function ProjectMachineList({
+/** One chip per machine that has this project; the others open it there. */
+function ProjectMachineChips({
   locations,
   primary,
   busy,
-  isOpen,
+  web,
   onSelectMachine,
 }: {
   locations: readonly RecentProjectLocation[];
   primary: RecentProjectLocation;
   busy: boolean;
-  isOpen: boolean;
+  web: WebRowChrome | null;
   onSelectMachine?: (location: RecentProjectLocation) => void;
 }) {
   if (locations.length === 0) return null;
@@ -213,124 +248,55 @@ function ProjectMachineList({
   ];
   return (
     <div
+      className="ade-welcome-chips"
       data-ade-project-machines="true"
       aria-label="Project machines"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        justifyContent: "flex-start",
-        padding: "2px 16px 8px",
-        color: COLORS.textMuted,
-      }}
     >
-      <span
-        style={{
-          fontSize: 8,
-          fontWeight: 700,
-          letterSpacing: "0.08em",
-          textTransform: "uppercase",
-          color: COLORS.textDim,
-          flexShrink: 0,
-        }}
-      >
-        On
-      </span>
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          flexWrap: "wrap",
-          minWidth: 0,
-          flex: "1 1 auto",
-        }}
-      >
-        {orderedLocations.map((location) => {
-          const locationIndex = orderedLocations.indexOf(location);
-          const isPrimary = location === primary;
-          const canSelect = !isPrimary && Boolean(onSelectMachine) && !busy;
-          const machineName = welcomeProjectMachineName(location);
-          const content = (
-            <span
-              style={{
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {machineName}
-            </span>
-          );
-          const sharedStyle = {
-            display: "inline-flex",
-            alignItems: "center",
-            maxWidth: 190,
-            padding: 0,
-            border: 0,
-            background: "transparent",
-            color: isPrimary ? COLORS.textSecondary : COLORS.textMuted,
-            fontFamily: MONO_FONT,
-            fontSize: 9,
-            cursor: canSelect ? "pointer" : "default",
-          } as const;
-          return (
-            <span key={machineLocationKey(location)} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
-              {locationIndex > 0 ? (
-                <span aria-hidden style={{ color: COLORS.textDim }}>
-                  ·
-                </span>
-              ) : null}
-              {canSelect ? (
-                <button
-                  type="button"
-                  title={`Open on ${machineName}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onSelectMachine?.(location);
-                  }}
-                  style={{
-                    ...sharedStyle,
-                    appearance: "none",
-                  }}
-                >
-                  {content}
-                </button>
-              ) : (
-                <span
-                  title={isPrimary ? "Current project machine" : machineName}
-                  style={sharedStyle}
-                >
-                  {content}
-                </span>
-              )}
-            </span>
-          );
-        })}
-      </div>
-      {isOpen ? (
-        <span
-          aria-hidden
-          style={{
-            flexShrink: 0,
-            marginLeft: "auto",
-            fontSize: 8,
-            fontWeight: 700,
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            color: COLORS.accent,
-          }}
-        >
-          Open
-        </span>
-      ) : null}
+      {orderedLocations.map((location) => {
+        const isPrimary = location === primary;
+        const canSelect = !isPrimary && Boolean(onSelectMachine) && !busy;
+        const machineName = welcomeProjectMachineName(location);
+        const dot = locationDotState(location, isPrimary, web);
+        const content = (
+          <>
+            <span aria-hidden className="ade-welcome-dot" data-state={dot} />
+            <span>{machineName}</span>
+          </>
+        );
+        return canSelect ? (
+          <button
+            key={machineLocationKey(location)}
+            type="button"
+            className="ade-welcome-chip"
+            title={`Open on ${machineName} (${DOT_LABEL[dot]})`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectMachine?.(location);
+            }}
+          >
+            {content}
+          </button>
+        ) : (
+          <span
+            key={machineLocationKey(location)}
+            className="ade-welcome-chip"
+            title={`${machineName} (${DOT_LABEL[dot]})`}
+          >
+            {content}
+          </span>
+        );
+      })}
     </div>
   );
 }
 
-// A single recents row. The project is the visual anchor; machine locations
-// are listed below it, so a computer icon never competes with a real project
-// logo. Offline remote rows are dimmed with a Reconnect affordance.
+// ---------------------------------------------------------------------------
+// Row
+// ---------------------------------------------------------------------------
+
+// A single recents row: project icon, name and path on the left (the open
+// button), time and machine chips on the right. Offline remote rows are dimmed
+// with a Reconnect affordance; an in-flight connect replaces the path line.
 export function RecentProjectRow({
   rp,
   connectionState,
@@ -365,6 +331,7 @@ export function RecentProjectRow({
   web?: WebRowChrome | null;
 }) {
   const [accentColor, setAccentColor] = useState<string | null>(null);
+  const [localArtwork, setLocalArtwork] = useState(false);
   const isRemote = rp.kind === "remote" && Boolean(rp.remote);
   const connecting = connectionState === "connecting";
   const parked = connectionState === "parked";
@@ -377,297 +344,163 @@ export function RecentProjectRow({
   const localIconRootPath = locations.find(
     (location) => location.summary.kind !== "remote",
   )?.summary.rootPath ?? null;
-  const hasProjectArtwork = Boolean(projectIconDataUrl || localIconRootPath);
-  const tileAccent = accentColor;
-  const tileBg = tileAccent
-    ? `color-mix(in srgb, ${tileAccent} 18%, transparent)`
-    : "color-mix(in srgb, var(--color-accent) 15%, transparent)";
-  const tileColor = tileAccent ?? COLORS.accent;
-  const edgeColor = tileAccent ?? COLORS.accent;
+  const hasArtwork = Boolean(projectIconDataUrl) || localArtwork;
   // Pin / forget / merge are desktop-recents operations; the hosted client's
   // list is the machines' own catalogs, which it does not own.
   const showRowActions = !connecting && !web;
-  const showMergeAction = Boolean(onMerge && rp.worktreeOf && showRowActions);
+  const displayPath = welcomeDisplayPath(rp.rootPath);
+  const relative = welcomeRelativeTime(lastActiveAt);
+  const busyLine = web?.connectStage ?? (connecting && !web ? "Reconnecting…" : null);
 
   return (
     <div
-      className="group"
-      style={{ position: "relative" }}
+      className="ade-welcome-row"
       data-ade-stale={web?.stale ? "true" : undefined}
+      data-open={isOpen ? "true" : undefined}
+      data-dim={!busy && offline ? "true" : undefined}
+      data-busy={busy ? "true" : undefined}
+      data-has-actions={showRowActions ? "true" : undefined}
+      // The time and machine column is part of the row's hit area; its own
+      // buttons (chips, row actions) stop propagation.
+      onClick={(event) => {
+        if (busy) return;
+        if ((event.target as HTMLElement).closest("button")) return;
+        onOpen();
+      }}
     >
-      <div
-        style={{
-          background: "rgba(255,255,255,0.02)",
-          border: `1px solid ${COLORS.border}`,
-          borderLeft: `3px solid color-mix(in srgb, ${edgeColor} 60%, transparent)`,
-          borderRadius: 12,
-          overflow: "hidden",
-          backdropFilter: "blur(10px)",
-          opacity: busy ? 0.45 : offline ? 0.6 : 1,
-        }}
+      <button
+        type="button"
+        className="ade-welcome-row-main"
+        data-tour="project.recentProject"
+        data-welcome-row="true"
+        onClick={onOpen}
+        disabled={busy}
+        aria-current={isOpen ? "page" : undefined}
       >
-        <button
-          type="button"
-          data-tour="project.recentProject"
-          onClick={onOpen}
-          disabled={busy}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 12,
-            padding: "10px 16px 2px",
-            paddingRight: showMergeAction ? 94 : 16,
-            width: "100%",
-            background: "transparent",
-            border: 0,
-            color: COLORS.textPrimary,
-            fontFamily: MONO_FONT,
-            fontSize: 12,
-            cursor: busy ? "default" : "pointer",
-            textAlign: "left",
-          }}
+        <span
+          className="ade-welcome-row-icon"
+          data-fallback={hasArtwork ? undefined : "true"}
+          style={accentColor ? ({ "--row-tint": accentColor } as CSSProperties) : undefined}
         >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              width: 32,
-              height: 32,
-              borderRadius: hasProjectArtwork ? 0 : 8,
-              background: hasProjectArtwork ? "transparent" : tileBg,
-              color: tileColor,
-              flexShrink: 0,
-              position: "relative",
-            }}
-          >
-            {projectIconDataUrl ? (
-              <ProjectIconArtwork
-                dataUrl={projectIconDataUrl}
-                fallback={<Folder size={16} weight="regular" />}
-                onAccentColor={setAccentColor}
+          {projectIconDataUrl ? (
+            <ProjectIconArtwork
+              dataUrl={projectIconDataUrl}
+              fallback={<Folder size={16} weight="regular" />}
+              onAccentColor={setAccentColor}
+            />
+          ) : localIconRootPath ? (
+            <RecentProjectIcon
+              rootPath={localIconRootPath}
+              onAccentColor={setAccentColor}
+              onResolved={setLocalArtwork}
+            />
+          ) : (
+            <Folder size={16} weight="regular" />
+          )}
+        </span>
+        <span className="ade-welcome-row-text">
+          <span className="ade-welcome-row-name">
+            <span>{rp.displayName}</span>
+            {!isRemote && rp.worktreeOf ? (
+              <WorktreeBadge worktreeOf={rp.worktreeOf} />
+            ) : null}
+            {rp.pinned ? (
+              <PushPin
+                className="ade-welcome-row-pin"
+                size={11}
+                weight="fill"
+                aria-label="Pinned"
               />
-            ) : localIconRootPath ? (
-              <RecentProjectIcon
-                rootPath={localIconRootPath}
-                onAccentColor={setAccentColor}
-              />
-            ) : (
-              <Folder size={16} weight="regular" />
-            )}
-          </div>
-          <div style={{ overflow: "hidden", flex: 1, minWidth: 0 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                marginBottom: 2,
-                minWidth: 0,
-              }}
-            >
-              <span
-                style={{
-                  fontWeight: 600,
-                  fontSize: 13,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {rp.displayName}
-              </span>
-              {!isRemote && rp.worktreeOf ? (
-                <WorktreeBadge worktreeOf={rp.worktreeOf} />
+            ) : null}
+          </span>
+          {busyLine ? (
+            <span className="ade-welcome-row-sub" data-tone="busy">
+              <ArrowsClockwise size={11} weight="bold" className="ade-welcome-spin" />
+              {busyLine}
+            </span>
+          ) : (
+            <span className="ade-welcome-row-sub">
+              <MiddleTruncatedPath path={displayPath} title={rp.rootPath} />
+            </span>
+          )}
+        </span>
+      </button>
+
+      <div className="ade-welcome-row-aside">
+        <div className="ade-welcome-row-top">
+          {isOpen ? (
+            <span className="ade-welcome-row-open">
+              <span aria-hidden className="ade-welcome-dot" data-state="open" />
+              Open
+            </span>
+          ) : !web && offline && !connecting ? (
+            <span className="ade-welcome-row-status">
+              <ArrowsClockwise size={11} weight="bold" />
+              {parked ? "Resume" : "Reconnect"}
+            </span>
+          ) : relative ? (
+            <span className="ade-welcome-row-time" title={lastActiveAt ?? undefined}>
+              {relative}
+            </span>
+          ) : <span />}
+          {showRowActions ? (
+            <div className="ade-welcome-row-actions">
+              {onMerge && rp.worktreeOf ? (
+                <button
+                  type="button"
+                  className="ade-welcome-icon-button"
+                  aria-label={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
+                  title={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onMerge();
+                  }}
+                >
+                  <GitMerge size={13} weight="bold" />
+                </button>
               ) : null}
-            </div>
-            <div
-              style={{
-                fontSize: 10,
-                color: COLORS.textDim,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {isRemote ? rp.rootPath : abbreviateHome(rp.rootPath)}
-            </div>
-          </div>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignSelf: "stretch",
-              alignItems: "flex-end",
-              justifyContent: "flex-start",
-              paddingTop: 1,
-              gap: 6,
-              flexShrink: 0,
-              minWidth: web?.connectStage ? 108 : connecting ? 96 : 68,
-              maxWidth: web?.connectStage ? 132 : connecting ? 116 : 96,
-            }}
-          >
-            {web ? (
-              <WebRowTrailing
-                web={web}
-                lastActiveAt={lastActiveAt}
-              />
-            ) : offline ? (
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  letterSpacing: "0.04em",
-                  textTransform: "uppercase",
-                  color: connecting ? "#FBBF24" : COLORS.textMuted,
+              <button
+                type="button"
+                className="ade-welcome-icon-button"
+                aria-label={
+                  rp.pinned
+                    ? `Unpin ${rp.displayName}`
+                    : `Pin ${rp.displayName} to top`
+                }
+                aria-pressed={rp.pinned ? true : false}
+                title={rp.pinned ? "Unpin" : "Pin to top"}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onTogglePin();
                 }}
               >
-                <ArrowsClockwise
-                  size={11}
-                  weight="bold"
-                  style={
-                    connecting
-                      ? { animation: "ade-recent-spin 0.9s linear infinite" }
-                      : undefined
-                  }
-                />
-                {connecting ? "Reconnecting" : parked ? "Resume" : "Reconnect"}
-              </span>
-            ) : !connecting ? <ProjectActivity lastActiveAt={lastActiveAt} /> : null}
-          </div>
-        </button>
-        <ProjectMachineList
+                <PushPin size={13} weight={rp.pinned ? "fill" : "regular"} />
+              </button>
+              <button
+                type="button"
+                className="ade-welcome-icon-button"
+                data-danger="true"
+                aria-label={`Remove ${rp.displayName} from recents`}
+                title="Remove from recents"
+                disabled={isForgetting}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onForget();
+                }}
+              >
+                <X size={13} weight="bold" />
+              </button>
+            </div>
+          ) : null}
+        </div>
+        <ProjectMachineChips
           locations={locations}
           primary={primary}
           busy={busy}
-          isOpen={isOpen}
+          web={web}
           onSelectMachine={onSelectMachine}
         />
       </div>
-      {showRowActions ? (
-        <div
-          className={
-            rp.pinned ? undefined : "opacity-0 group-hover:opacity-100"
-          }
-          style={{
-            position: "absolute",
-            top: 6,
-            right: 6,
-            display: "flex",
-            gap: 4,
-            transition: "opacity 0.15s ease",
-            zIndex: 2,
-          }}
-        >
-          {onMerge && rp.worktreeOf ? (
-            <button
-              type="button"
-              aria-label={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
-              title={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onMerge();
-              }}
-              style={{
-                width: 22,
-                height: 22,
-                borderRadius: 6,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                color: COLORS.textDim,
-                cursor: "pointer",
-                transition: "background 0.15s ease, color 0.15s ease",
-                padding: 0,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background =
-                  "color-mix(in srgb, var(--color-accent) 22%, transparent)";
-                e.currentTarget.style.color = COLORS.accent;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                e.currentTarget.style.color = COLORS.textDim;
-              }}
-            >
-              <GitMerge size={12} weight="bold" />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            aria-label={
-              rp.pinned
-                ? `Unpin ${rp.displayName}`
-                : `Pin ${rp.displayName} to top`
-            }
-            aria-pressed={rp.pinned ? true : false}
-            onClick={(e) => {
-              e.stopPropagation();
-              onTogglePin();
-            }}
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: 6,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: rp.pinned
-                ? "color-mix(in srgb, var(--color-accent) 26%, transparent)"
-                : "rgba(255,255,255,0.06)",
-              border: rp.pinned
-                ? "1px solid color-mix(in srgb, var(--color-accent) 45%, transparent)"
-                : "1px solid rgba(255,255,255,0.08)",
-              color: rp.pinned ? COLORS.accent : COLORS.textDim,
-              cursor: "pointer",
-              transition: "background 0.15s ease, color 0.15s ease",
-              padding: 0,
-            }}
-            title={rp.pinned ? "Unpin" : "Pin to top"}
-          >
-            <PushPin size={12} weight={rp.pinned ? "fill" : "regular"} />
-          </button>
-          <button
-            type="button"
-            aria-label={`Remove ${rp.displayName} from recents`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onForget();
-            }}
-            disabled={isForgetting}
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: 6,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              color: COLORS.textDim,
-              cursor: "pointer",
-              transition: "background 0.15s ease, color 0.15s ease",
-              padding: 0,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(239,68,68,0.18)";
-              e.currentTarget.style.color = "#EF4444";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-              e.currentTarget.style.color = COLORS.textDim;
-            }}
-            title="Remove from recents"
-          >
-            <X size={12} weight="bold" />
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -80,7 +80,7 @@ describe("OpenCodeCustomProvidersPanel", () => {
         ENTRIES[1],
         { id: "my-gateway", name: "My gateway", baseURL: "https://api.example.com/v1", npm: "@ai-sdk/anthropic", models: ["big", "small", "huge"] },
       ],
-    });
+    }, null);
     // The key was not re-typed, so it must not be overwritten with an empty one.
     expect(store).not.toHaveBeenCalled();
   });
@@ -94,8 +94,8 @@ describe("OpenCodeCustomProvidersPanel", () => {
     expect(updateConfig).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText("Delete provider"));
 
-    await waitFor(() => expect(updateConfig).toHaveBeenCalledWith({ customProviders: [ENTRIES[1]] }));
-    expect(remove).toHaveBeenCalledWith({ provider: "my-gateway", credentialId: "default" });
+    await waitFor(() => expect(updateConfig).toHaveBeenCalledWith({ customProviders: [ENTRIES[1]] }, null));
+    expect(remove).toHaveBeenCalledWith({ provider: "my-gateway", credentialId: "default" }, null);
   });
 
   it("writes the key into the slot the generated OpenCode config reads", async () => {
@@ -115,12 +115,12 @@ describe("OpenCodeCustomProvidersPanel", () => {
       credentialId: "default",
       key: "sk-fresh",
       models: ["m1"],
-    })));
+    }), null));
     expect(updateConfig).toHaveBeenCalledWith({
       customProviders: [
         { id: "fresh", name: "Fresh", baseURL: "https://fresh.example.com/v1", npm: "@ai-sdk/openai-compatible", models: ["m1"] },
       ],
-    });
+    }, null);
   });
 
   it("refuses a provider with no endpoint or no models rather than writing a dead block", async () => {

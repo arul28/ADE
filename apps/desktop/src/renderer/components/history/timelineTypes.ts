@@ -7,8 +7,28 @@ export type HistorySurface = "activity" | "commits";
 // ── View Modes ───────────────────────────────────────────────────
 export type ViewMode = "graph" | "list" | "compact";
 
+// ── Machine tag (which machine recorded an operation) ───────────
+/**
+ * History is one timeline across every machine that holds the project. A lane
+ * owns its machine, so an operation is tagged with the machine it was read
+ * from. Absent on records from sources that are not per-machine.
+ */
+export type TimelineMachineTag = {
+  /** `ProjectMachineTarget.key` of the machine the record was read from. */
+  machineKey?: string;
+  machineId?: string;
+  machineName?: string;
+  machineOnline?: boolean;
+  /** True when the record is from the physical Mac this app runs on. */
+  machineIsHere?: boolean;
+  /** True when the record is from the machine the project tab is bound to. */
+  machineIsBound?: boolean;
+};
+
+export type TimelineRecord = OperationRecord & TimelineMachineTag;
+
 // ── Timeline Event (enriched OperationRecord for rendering) ─────
-export type TimelineEvent = OperationRecord & {
+export type TimelineEvent = TimelineRecord & {
   /** Resolved display label */
   label: string;
   /** Event category for grouping/filtering */

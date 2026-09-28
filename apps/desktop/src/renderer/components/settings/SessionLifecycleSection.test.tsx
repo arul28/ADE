@@ -32,7 +32,7 @@ describe("SessionLifecycleSection", () => {
 
     await waitFor(() => expect(sessions.updateLifecycleSettings).toHaveBeenCalledWith({
       autoSettleLaneSessionsOnPrMerge: false,
-    }));
+    }, null));
     expect(toggle.getAttribute("aria-checked")).toBe("false");
   });
 });

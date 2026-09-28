@@ -9,7 +9,7 @@ import {
   Hash,
   X,
 } from "@phosphor-icons/react";
-import type { GitCommitSummary } from "../../../shared/types";
+import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import type { TimelineEvent } from "./timelineTypes";
 import { Button } from "../ui/Button";
 import { cn } from "../ui/cn";
@@ -33,18 +33,26 @@ function stripIpcError(err: unknown): string {
 
 type CommitDetailPanelProps = {
   laneId: string | null;
+  /** The lane's machine when it is not this tab's (null: the tab's machine). */
+  pin?: OpenProjectBinding | null;
+  remoteMachineName?: string | null;
+  /** The lane's machine id when it is not this tab's, so "go to lane" opens it there. */
+  laneMachineId?: string | null;
   laneHasWorktree?: boolean;
   commit: GitCommitSummary | null;
   /** When false, commit was resolved outside this lane's history — block lane git mutations. */
   commitOnLaneHistory?: boolean;
   relatedEvents: TimelineEvent[];
   onClose: () => void;
-  onNavigateToLane?: (laneId: string) => void;
+  onNavigateToLane?: (laneId: string, machineId?: string | null) => void;
   navigate?: (path: string) => void;
 };
 
 export function CommitDetailPanel({
   laneId,
+  pin = null,
+  remoteMachineName = null,
+  laneMachineId = null,
   laneHasWorktree = false,
   commit,
   commitOnLaneHistory = true,
@@ -71,7 +79,7 @@ export function CommitDetailPanel({
     if (!laneId || !commit?.sha || (commit.subject && commit.authorName)) return;
     let cancelled = false;
     void window.ade.git
-      .listRecentCommits({ laneId, limit: 500 })
+      .listRecentCommits({ laneId, limit: 500 }, pin)
       .then(async (rows) => {
         if (cancelled) return;
         const found = rows.find((r) => r.sha === commit.sha);
@@ -84,7 +92,7 @@ export function CommitDetailPanel({
           const targeted = await window.ade.git.getCommit({
             laneId,
             commitSha: commit.sha,
-          });
+          }, pin);
           if (!cancelled && targeted) setResolvedCommit(targeted);
         } catch {
           // Best-effort hydration; ignore failures.
@@ -94,7 +102,7 @@ export function CommitDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [laneId, commit]);
+  }, [laneId, commit, pin]);
 
   useEffect(() => {
     if (!laneId || !resolvedCommit?.sha) {
@@ -103,7 +111,7 @@ export function CommitDetailPanel({
     }
     let cancelled = false;
     void window.ade.git
-      .listRecentCommits({ laneId, limit: 1 })
+      .listRecentCommits({ laneId, limit: 1 }, pin)
       .then((rows) => {
         if (!cancelled) setHeadSha(rows[0]?.sha ?? null);
       })
@@ -113,7 +121,7 @@ export function CommitDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [laneId, resolvedCommit?.sha]);
+  }, [laneId, resolvedCommit?.sha, pin]);
 
   useEffect(() => {
     const activeCommit = resolvedCommit;
@@ -128,7 +136,7 @@ export function CommitDetailPanel({
     setFiles([]);
     setLoadingFiles(true);
     void window.ade.git
-      .getCommitMessage({ laneId, commitSha: activeCommit.sha })
+      .getCommitMessage({ laneId, commitSha: activeCommit.sha }, pin)
       .then((msg) => {
         if (!cancelled) setFullMessage(msg.trim() || activeCommit.subject);
       })
@@ -136,7 +144,7 @@ export function CommitDetailPanel({
         if (!cancelled) setFullMessage(activeCommit.subject);
       });
     void window.ade.git
-      .listCommitFiles({ laneId, commitSha: activeCommit.sha })
+      .listCommitFiles({ laneId, commitSha: activeCommit.sha }, pin)
       .then((rows) => {
         if (!cancelled) setFiles(rows);
       })
@@ -149,7 +157,7 @@ export function CommitDetailPanel({
     return () => {
       cancelled = true;
     };
-  }, [laneId, resolvedCommit]);
+  }, [laneId, resolvedCommit, pin]);
 
   const actions = useMemo(
     () =>
@@ -159,9 +167,10 @@ export function CommitDetailPanel({
             isHead: headSha === resolvedCommit.sha,
             hasWorktree: Boolean(laneId) && laneHasWorktree,
             commitOnLaneHistory,
+            remoteMachineName,
           })
         : [],
-    [headSha, laneHasWorktree, resolvedCommit, laneId, commitOnLaneHistory],
+    [headSha, laneHasWorktree, resolvedCommit, laneId, commitOnLaneHistory, remoteMachineName],
   );
   const actionDisabledReason = useMemo(() => {
     const reasons = actions
@@ -249,7 +258,7 @@ export function CommitDetailPanel({
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded border border-white/10 px-2 py-1 font-mono text-[10px] text-accent hover:bg-white/5"
-                  onClick={() => onNavigateToLane(laneId)}
+                  onClick={() => onNavigateToLane(laneId, laneMachineId)}
                 >
                   <ArrowSquareOut size={10} />
                   Open lane

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import type { OpenProjectBinding } from "../../../shared/types";
+import { useCtoHomeScope } from "./useCtoHome";
 
 import { OpenAiKeySheet } from "../settings/OpenAiKeySheet";
 import {
@@ -82,11 +84,11 @@ type SheetFailure = {
  * settings panes: it is a modal that owns its own recovery, not a presentation
  * component someone else feeds.
  */
-async function startFreshCtoSession(): Promise<boolean> {
+async function startFreshCtoSession(pin: OpenProjectBinding | null): Promise<boolean> {
   const startFresh = window.ade?.cto?.startFreshSession;
   if (!startFresh) return false;
   try {
-    await startFresh();
+    await startFresh(pin);
     return true;
   } catch (error) {
     // eslint-disable-next-line no-console
@@ -122,6 +124,7 @@ function SheetButton({
 }
 
 export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
+  const { pin: ctoPin } = useCtoHomeScope();
   const { state, start } = useCtoVoiceCall();
   const microphoneFailure = useCtoMicrophoneFailure();
   // A live phase is not a call the user can talk on; an open microphone is. The
@@ -301,7 +304,7 @@ export function CtoVoiceStartSheet({ onClose }: { onClose: () => void }) {
             onClick={() => {
               void (async () => {
                 setPhase("connecting");
-                if (await startFreshCtoSession()) {
+                if (await startFreshCtoSession(ctoPin)) {
                   await run();
                   return;
                 }

@@ -3,6 +3,7 @@ import { CaretUp, CaretDown } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import type { ColumnConfig, TimelineColumn, TimelineEvent } from "./timelineTypes";
 import { CATEGORY_META } from "./eventTaxonomy";
+import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
 import { relativeWhen, formatDate, formatDurationMs } from "../../lib/format";
 
 /* ------------------------------------------------------------------ */
@@ -197,6 +198,7 @@ export function TimelineCompactView({
                 selected
                   ? "border-l-accent bg-white/[0.05]"
                   : "hover:bg-white/[0.03]",
+                isEventMachineOffline(ev) && "opacity-50",
               )}
             >
               {activeColumns.map((col) => (
@@ -251,8 +253,9 @@ function CompactCell({
       );
     case "lane":
       return (
-        <span className="w-[90px] shrink-0 truncate px-1 font-mono text-[10px] text-muted-fg/60">
-          {event.laneName ?? "—"}
+        <span className="flex w-[90px] shrink-0 items-center gap-1 overflow-hidden px-1 font-mono text-[10px] text-muted-fg/60">
+          <span className="min-w-0 truncate">{event.laneName ?? "—"}</span>
+          <EventMachineChip event={event} compact />
         </span>
       );
     case "author":

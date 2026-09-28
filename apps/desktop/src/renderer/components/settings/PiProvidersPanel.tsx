@@ -43,6 +43,7 @@ import {
   runtimeConnectionForPiProvider,
   type PiProviderRow,
 } from "./piProviderRow";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 export function getPiTone(
   connection: AiProviderConnectionStatus | null | undefined,
@@ -578,6 +579,9 @@ export function PiProvidersPanel({
   /** Re-runs the AI status probe that feeds `installation` and `runtimeConnections`. */
   onRefreshStatus: () => void;
 }) {
+  // Pi signs in inside the page's machine's runtime; every call and the status
+  // feed name that machine.
+  const { pin } = useSettingsMachineScope();
   const [providers, setProviders] = useState<PiLoginProvider[] | null>(null);
   const [providersError, setProvidersError] = useState<string | null>(null);
   const [loadingProviders, setLoadingProviders] = useState(false);
@@ -601,7 +605,7 @@ export function PiProvidersPanel({
   const loadProviders = useCallback(async () => {
     setLoadingProviders(true);
     try {
-      const listed = await window.ade.ai.piLoginProviders();
+      const listed = await window.ade.ai.piLoginProviders(pin);
       setProviders(listed);
       setProvidersError(null);
     } catch (err) {
@@ -609,7 +613,7 @@ export function PiProvidersPanel({
     } finally {
       setLoadingProviders(false);
     }
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     if (!installation.sdkAvailable) return;
@@ -673,9 +677,9 @@ export function PiProvidersPanel({
         setPromptValue((current) => (lastPromptRequestIdRef.current === event.prompt!.requestId ? current : ""));
         lastPromptRequestIdRef.current = event.prompt.requestId;
       }
-    });
+    }, pin);
     return unsubscribe;
-  }, []);
+  }, [pin]);
 
   // A device-code or OAuth step cannot proceed until the page is open, and Pi
   // is already polling by the time the URL arrives. Open it once per URL and
@@ -747,7 +751,7 @@ export function PiProvidersPanel({
     // outcome or refresh providers on the newer one's behalf.
     const isCurrentAttempt = () => piSignInAttemptCounter.current === attemptId;
     try {
-      const result = await window.ade.ai.piLoginStart({ providerId, ...(method ? { method } : {}) });
+      const result = await window.ade.ai.piLoginStart({ providerId, ...(method ? { method } : {}) }, pin);
       if (!isCurrentAttempt()) return;
       settle(providerId, result.ok, result.error ?? null);
     } catch (err) {
@@ -777,7 +781,7 @@ export function PiProvidersPanel({
         providerId: flow.providerId,
         requestId: prompt.requestId,
         value,
-      });
+      }, pin);
       if (!result.ok) fail(result.error ?? "Pi did not accept that answer.");
     } catch (err) {
       fail(err instanceof Error ? err.message : String(err));
@@ -787,7 +791,7 @@ export function PiProvidersPanel({
   const cancel = () => {
     if (!flow) return;
     cancelledProviderRef.current = flow.providerId;
-    void window.ade.ai.piLoginCancel({ providerId: flow.providerId }).catch(() => undefined);
+    void window.ade.ai.piLoginCancel({ providerId: flow.providerId }, pin).catch(() => undefined);
   };
 
   const signableProviders = providers ?? [];

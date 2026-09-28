@@ -32,6 +32,7 @@ import { persistOpenCodeProviderBlock } from "./keys/openCodeCustomProviders";
 import { formatProviderDiagnosticsReport } from "./providerDiagnosticsReport";
 import type { AcpSettingsProviderId, ProviderDescriptor, ProvidersViewContext } from "./types";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
+import { useSettingsMachineScope } from "../SettingsMachineScope";
 
 /**
  * Eight rows, then scroll.
@@ -155,6 +156,7 @@ export function ProviderDetailPage({
   ctx: ProvidersViewContext;
   onBack: () => void;
 }) {
+  const { pin } = useSettingsMachineScope();
   const status = providerStatusFor(descriptor, ctx);
   const disabled = ctx.disabledProviders.has(descriptor.id);
   const version = normalizeProviderVersion(descriptor.version?.(ctx));
@@ -321,7 +323,7 @@ export function ProviderDetailPage({
                     // OpenCode needs a provider block as well as a key: the key
                     // alone gives its config nothing to attach the endpoint and
                     // the model ids to.
-                    await persistOpenCodeProviderBlock(ctx.status?.customProviders ?? [], draft);
+                    await persistOpenCodeProviderBlock(ctx.status?.customProviders ?? [], draft, pin);
                     await ctx.actions.refreshStatus({ force: true, refreshOpenCodeInventory: true });
                   }
                 : undefined

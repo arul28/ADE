@@ -1,6 +1,7 @@
 import path from "node:path";
 import { type ExecutableTool as Tool } from "./executableTool";
 import { CTO_TOOL_PACK_NAMES, CTO_TOOL_PACK_SCOPES, type CtoToolPack } from "./ctoToolPacks";
+import { isReadOnlyAdeActionName, type CtoCrossMachineDeps, type CtoMachineTarget } from "./ctoCrossMachine";
 import { z } from "zod";
 import { getModelById, resolveModelDescriptor, resolveChatProviderForDescriptor } from "../../../../shared/modelRegistry";
 import type {
@@ -252,7 +253,24 @@ export interface CtoOperatorToolDeps {
     listSessions: (args?: any) => Promise<any> | any;
     getTrace?: (args?: any) => Promise<any> | any;
   } | null;
+  /**
+   * The account's other machines. Only the brain wires it; absent, a tool that
+   * names another machine answers that other machines are not reachable here,
+   * and a tool that names none behaves exactly as before.
+   */
+  crossMachine?: CtoCrossMachineDeps | null;
 }
+
+/** The optional `machine` argument shared by every tool that can reach another machine. */
+const machineArgSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .optional()
+  .describe(
+    "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
+    + "Lane and chat ids belong to one machine: pass the same machine you created or listed them on.",
+  );
 
 /**
  * The closed tag vocabulary, mirrored from `ctoMemoryService`. Facts and
@@ -610,35 +628,151 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const config = inPack("config");
   const devices = inPack("devices");
 
+  /**
+   * Resolves a tool's `machine` argument. `null` means run here, on the home
+   * machine: the argument was omitted, or it names this machine. Throws a
+   * message the model can act on for anything else that cannot be reached.
+   */
+  const remoteMachine = async (machine: string | undefined): Promise<CtoMachineTarget | null> => {
+    const query = machine?.trim();
+    if (!query) return null;
+    if (!deps.crossMachine) {
+      throw new Error("Other machines are not reachable from this runtime. Omit machine to work on the home machine.");
+    }
+    const target = await deps.crossMachine.resolveMachine(query);
+    return target.isThisMachine ? null : target;
+  };
+  const onMachine = (target: CtoMachineTarget) => ({ machineId: target.machineId, machineName: target.name });
+  /** The home machine as a target, for the tools whose `machine` is optional and run through the bridge either way. */
+  const homeTarget = async (): Promise<CtoMachineTarget> => ({ machineId: "home", name: "this machine", isThisMachine: true });
+  const runRemote = async (
+    target: CtoMachineTarget,
+    call: { domain: string; action: string; args?: Record<string, unknown>; timeoutMs?: number },
+  ): Promise<unknown> => {
+    if (!deps.crossMachine) throw new Error("Other machines are not reachable from this runtime.");
+    return await deps.crossMachine.runAction(target, call);
+  };
+  const scheduleRemoteCheckIn = async (args: {
+    target: CtoMachineTarget;
+    sessionId: string;
+    title: string;
+    minutes: number;
+  }): Promise<{ scheduled: boolean; minutes: number; scheduleId?: string | null; reason?: string }> => {
+    if (args.minutes <= 0) return { scheduled: false, minutes: 0, reason: "checkBackMinutes was 0" };
+    if (!deps.scheduledWorkService) return { scheduled: false, minutes: args.minutes, reason: "scheduled work is not available here" };
+    try {
+      const created = await deps.scheduledWorkService.create({
+        sessionId: deps.currentSessionId,
+        delaySeconds: args.minutes * 60,
+        recurring: false,
+        reason: `Check on "${args.title.slice(0, 60)}" on ${args.target.name}`,
+        prompt: [
+          `Scheduled check-in: the chat ${args.sessionId} you started on ${args.target.name} ("${args.title.slice(0, 80)}").`,
+          `Call getChatStatus({ sessionId: "${args.sessionId}", machine: "${args.target.machineId}" }), and getChatTranscript with the same machine if you need detail.`,
+          "If it finished, tell the user the result. If it is still working, schedule another check with scheduleWork. If it is blocked on input, say what it needs.",
+        ].join(" "),
+      });
+      const scheduleId = created && typeof created === "object"
+        ? (created as { id?: unknown; scheduleId?: unknown }).scheduleId ?? (created as { id?: unknown }).id
+        : null;
+      return { scheduled: true, minutes: args.minutes, scheduleId: typeof scheduleId === "string" ? scheduleId : null };
+    } catch (error) {
+      return { scheduled: false, minutes: args.minutes, reason: getErrorMessage(error) };
+    }
+  };
+
+  tools.listMachines = core({
+    description:
+      "List the machines on this ADE account: which one is your home machine, which are online, and which have this "
+      + "project's repository. Call it before passing `machine` to any other tool. Set includeWork to also read each "
+      + "machine's lane count and running chats for this project (slower: it asks every online machine).",
+    inputSchema: z.object({
+      includeWork: z.boolean().optional().default(false),
+    }),
+    execute: async ({ includeWork }) => {
+      if (!deps.crossMachine) {
+        return { success: false, error: "Other machines are not reachable from this runtime." };
+      }
+      try {
+        const listed = await deps.crossMachine.listMachines({ includeWork });
+        if (listed.state !== "ok") return { success: false, state: listed.state, error: listed.message };
+        const machines = await Promise.all(listed.machines.map(async (machine) => {
+          if (!machine.isThisMachine || !includeWork) return machine;
+          // The home machine answers from its own services, not over the wire.
+          const [lanes, chats] = await Promise.all([
+            deps.laneService.list({ includeArchived: false }).catch(() => null),
+            deps.listChats(undefined, { includeIdentity: false, includeAutomation: false }).catch(() => null),
+          ]);
+          return {
+            ...machine,
+            laneCount: lanes ? lanes.length : null,
+            runningChatCount: chats ? chats.filter((chat) => chat.status === "active").length : null,
+          };
+        }));
+        return { success: true, projectOrigin: listed.projectOrigin, count: machines.length, machines };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  const summarizeLane = (lane: Record<string, any>) => ({
+    id: lane.id,
+    name: lane.name,
+    branchRef: lane.branchRef,
+    parentLaneId: lane.parentLaneId,
+    worktreePath: lane.worktreePath,
+    childCount: lane.childCount,
+    status: lane.status,
+  });
+
   tools.listLanes = core({
-    description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work.",
+    description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work. Pass machine to list another machine's lanes.",
     inputSchema: z.object({
       includeArchived: z.boolean().optional().default(false),
+      machine: machineArgSchema,
     }),
-    execute: async ({ includeArchived }) => {
-      const lanes = await deps.laneService.list({ includeArchived });
-      return {
-        success: true,
-        count: lanes.length,
-        lanes: lanes.map((lane) => ({
-          id: lane.id,
-          name: lane.name,
-          branchRef: lane.branchRef,
-          parentLaneId: lane.parentLaneId,
-          worktreePath: lane.worktreePath,
-          childCount: lane.childCount,
-          status: lane.status,
-        })),
-      };
+    execute: async ({ includeArchived, machine }) => {
+      try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const raw = await runRemote(target, { domain: "lane", action: "list", args: { includeArchived } });
+          const lanes = Array.isArray(raw) ? (raw as Array<Record<string, any>>) : [];
+          return { success: true, ...onMachine(target), count: lanes.length, lanes: lanes.map(summarizeLane) };
+        }
+        const lanes = await deps.laneService.list({ includeArchived });
+        return {
+          success: true,
+          count: lanes.length,
+          lanes: lanes.map((lane) => summarizeLane(lane)),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
     },
   });
 
   tools.inspectLane = core({
-    description: "Inspect one ADE lane by ID to understand its branch, worktree, and git state.",
+    description: "Inspect one ADE lane by ID to understand its branch, worktree, and git state. Pass machine for a lane on another machine.",
     inputSchema: z.object({
       laneId: z.string(),
+      machine: machineArgSchema,
     }),
-    execute: async ({ laneId }) => {
+    execute: async ({ laneId, machine }) => {
+      let target: CtoMachineTarget | null;
+      try {
+        target = await remoteMachine(machine);
+        if (target) {
+          const raw = await runRemote(target, { domain: "lane", action: "list", args: { includeArchived: true } });
+          const lane = Array.isArray(raw)
+            ? (raw as Array<Record<string, any>>).find((entry) => entry?.id === laneId.trim()) ?? null
+            : null;
+          if (!lane) return { success: false, error: `Lane not found on ${target.name}: ${laneId}` };
+          return { success: true, ...onMachine(target), lane };
+        }
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
       const lanes = await deps.laneService.list({ includeArchived: true });
       const lane = lanes.find((entry) => entry.id === laneId.trim()) ?? null;
       if (!lane) {
@@ -656,14 +790,30 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.createLane = core({
-    description: "Create a new ADE lane for isolated work.",
+    description: "Create a new ADE lane for isolated work. Pass machine to create it on another machine: the lane, its worktree and everything run in it then live on that machine.",
     inputSchema: z.object({
       name: z.string(),
       description: z.string().optional(),
-      parentLaneId: z.string().optional(),
+      parentLaneId: z.string().optional().describe("A lane on the same machine the new lane is created on."),
+      machine: machineArgSchema,
     }),
-    execute: async ({ name, description, parentLaneId }) => {
+    execute: async ({ name, description, parentLaneId, machine }) => {
       try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const lane = await runRemote(target, {
+            domain: "lane",
+            action: "create",
+            args: {
+              name,
+              ...(description !== undefined ? { description } : {}),
+              ...(parentLaneId !== undefined ? { parentLaneId } : {}),
+            },
+            // Creating a worktree on a large repository takes a while.
+            timeoutMs: 120_000,
+          });
+          return { success: true, ...onMachine(target), lane };
+        }
         const lane = await deps.laneService.create({ name, description, parentLaneId });
         return {
           success: true,
@@ -683,12 +833,33 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     description:
       "List ADE chat sessions so you can supervise active work and persistent identity threads. Each row carries " +
       "its settle/snooze lifecycle plus `wokeReason` when a snooze broke early, so you can triage what actually " +
-      "needs you versus what is deliberately quiet.",
+      "needs you versus what is deliberately quiet. Pass machine to list another machine's chats (those rows carry no lifecycle).",
     inputSchema: z.object({
       laneId: z.string().optional(),
       includeIdentity: z.boolean().optional().default(true),
+      machine: machineArgSchema,
     }),
-    execute: async ({ laneId, includeIdentity }) => {
+    execute: async ({ laneId, includeIdentity, machine }) => {
+      try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          // Settle/snooze lifecycle is read from the home machine's session
+          // store, so rows from another machine carry the summary alone.
+          const raw = await runRemote(target, {
+            domain: "chat",
+            action: "listSessions",
+            args: {
+              ...(laneId?.trim() ? { laneId: laneId.trim() } : {}),
+              includeIdentity,
+              includeAutomation: false,
+            },
+          });
+          const chats = Array.isArray(raw) ? raw : [];
+          return { success: true, ...onMachine(target), count: chats.length, chats };
+        }
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
       const chats = await deps.listChats(laneId?.trim() || undefined, {
         includeIdentity,
         includeAutomation: false,
@@ -713,9 +884,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       "own default, which is the safe choice. It accepts ADE's full permission contract, including auto and " +
       "config-toml; for Droid's finer-grained levels, pass droidPermissionMode. " +
       "This creates a full ADE chat with UI, streaming, tool approval, and service integration. " +
-      "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead.",
+      "Use this when the user asks for 'a chat' or 'an agent'. If they explicitly want a terminal or CLI tool, use createTerminal instead. " +
+      "It is for real work (code changes, long investigations) — NOT for answering questions: to find out what is on a machine " +
+      "(lanes, chats, status, files), call the read tools yourself (listLanes, listChats, getChatStatus, runMachineAction) with machine. " +
+      "Pass machine to start it on another of the account's machines (call listMachines first): the chat runs on the machine that owns its lane. " +
+      "A chat on another machine cannot wake you, so a one-time check-in on your own thread is scheduled for checkBackMinutes later.",
     inputSchema: z.object({
-      laneId: z.string().optional().describe("Existing lane to run in. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane — that is the primary lane."),
+      laneId: z.string().optional().describe("Existing lane to run in, on the machine the chat runs on. Omit this for new work: a dedicated lane is created automatically. Never pass the CTO's own lane — that is the primary lane."),
       modelId: z.string().optional().describe("Full model ID (e.g. 'anthropic/claude-sonnet-5'). MUST be set when user specifies a model."),
       reasoningEffort: z.string().nullable().optional().describe("Reasoning effort advertised by the model, including 'max' or Codex 'ultra' when supported."),
       title: z.string().optional().describe("Display title for the chat session."),
@@ -743,14 +918,116 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           + "recorded as quiet notes and never wake you.",
         ),
       openInUi: z.boolean().optional().default(true).describe("Whether to open the chat in the ADE UI."),
+      machine: machineArgSchema,
+      checkBackMinutes: z
+        .number()
+        .int()
+        .min(0)
+        .max(24 * 60)
+        .optional()
+        .describe("Another machine only: minutes until your scheduled check-in on this chat. Default 15; 0 schedules none."),
     }),
-    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi }) => {
+    execute: async ({ laneId, modelId, reasoningEffort, title, initialPrompt, permissionMode, droidPermissionMode, spawnKind, openInUi, machine, checkBackMinutes }) => {
       try {
         // Resolve model: supports full IDs (anthropic/claude-sonnet-5), short IDs (sonnet), and aliases (opus)
         const rawModelId = modelId?.trim() || null;
         const descriptor = rawModelId ? resolveModelDescriptor(rawModelId) : null;
         const selectedModelId = descriptor?.id ?? rawModelId ?? deps.defaultModelId ?? null;
         const resolved = deriveChatProvider({ modelId: selectedModelId });
+        const target = await remoteMachine(machine);
+        if (target) {
+          // Work runs on the machine that owns the lane: the lane is created
+          // there when none is named, and a named lane must already be there.
+          let remoteLaneId = laneId?.trim() || "";
+          if (!remoteLaneId) {
+            const lane = await runRemote(target, {
+              domain: "lane",
+              action: "create",
+              args: {
+                name: title?.trim() || "implementation chat",
+                description: "Dedicated implementation lane launched from the CTO coordinator chat.",
+              },
+              timeoutMs: 120_000,
+            });
+            remoteLaneId = typeof (lane as { id?: unknown } | null)?.id === "string" ? (lane as { id: string }).id : "";
+            if (!remoteLaneId) throw new Error(`${target.name} created a lane but did not return its id.`);
+          }
+          // No orchestration parent: lineage is a same-machine relationship, and
+          // the child's host has no CTO session to report to.
+          const created = await runRemote(target, {
+            domain: "chat",
+            action: "createSession",
+            args: {
+              laneId: remoteLaneId,
+              provider: resolved.provider,
+              model: resolved.model,
+              ...(selectedModelId ? { modelId: selectedModelId } : {}),
+              reasoningEffort: reasoningEffort ?? deps.defaultReasoningEffort ?? null,
+              ...(permissionMode !== undefined ? { permissionMode } : {}),
+              ...(droidPermissionMode !== undefined ? { droidPermissionMode } : {}),
+              surface: "work",
+              sessionProfile: "workflow",
+            },
+            timeoutMs: 60_000,
+          }) as Partial<AgentChatSession> | null;
+          const remoteSessionId = typeof created?.id === "string" ? created.id : "";
+          if (!remoteSessionId) throw new Error(`${target.name} did not return the new chat's id.`);
+          const warnings: string[] = [];
+          if (title?.trim()) {
+            await runRemote(target, {
+              domain: "chat",
+              action: "updateSession",
+              args: { sessionId: remoteSessionId, title: title.trim() },
+            }).catch((error) => warnings.push(`Title not set: ${getErrorMessage(error)}`));
+          }
+          if (initialPrompt?.trim()) {
+            try {
+              await runRemote(target, {
+                domain: "chat",
+                action: "sendMessage",
+                args: { sessionId: remoteSessionId, text: initialPrompt.trim() },
+              });
+            } catch (error) {
+              // The chat exists; say so, so the CTO sends the prompt again
+              // instead of starting a second chat.
+              return {
+                success: false,
+                ...onMachine(target),
+                sessionId: remoteSessionId,
+                laneId: remoteLaneId,
+                error: `The chat was created on ${target.name}, but its first message failed: ${getErrorMessage(error)}`,
+              };
+            }
+          }
+          // The remote chat cannot wake this thread, so the thread wakes itself:
+          // one durable check-in on the CTO's own session, which is the same
+          // scheduled-work path the CTO's scheduleWork tool uses.
+          const followUp = await scheduleRemoteCheckIn({
+            target,
+            sessionId: remoteSessionId,
+            title: title?.trim() || initialPrompt?.trim() || "remote chat",
+            minutes: checkBackMinutes ?? 15,
+          });
+          return {
+            success: true,
+            ...onMachine(target),
+            openInUi: false,
+            sessionId: remoteSessionId,
+            laneId: typeof created?.laneId === "string" ? created.laneId : remoteLaneId,
+            requestedTitle: title?.trim() || null,
+            provider: created?.provider ?? resolved.provider,
+            model: created?.model ?? resolved.model,
+            modelId: created?.modelId ?? selectedModelId ?? null,
+            permissionMode: created?.permissionMode ?? null,
+            droidPermissionMode: created?.droidPermissionMode ?? null,
+            spawnKind: null,
+            followUp,
+            note: followUp.scheduled
+              ? `Runs on ${target.name}. It cannot wake you; a check-in is scheduled on your thread in ${followUp.minutes} min. Check it sooner with getChatStatus({ sessionId, machine: "${target.machineId}" }).`
+              : `Runs on ${target.name}. It cannot wake you and no check-in was scheduled${followUp.reason ? ` (${followUp.reason})` : ""}: use scheduleWork to check back, or getChatStatus({ sessionId, machine: "${target.machineId}" }).`,
+            ...(warnings.length ? { warnings } : {}),
+          };
+        }
         const executionLaneId = await deps.resolveExecutionLane({
           requestedLaneId: laneId?.trim() || undefined,
           purpose: title?.trim() || "implementation chat",
@@ -861,11 +1138,26 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   tools.getChatStatus = core({
     description:
       "Get the current status for an ADE chat session, including its settle/snooze lifecycle " +
-      "and — when it recently came back from a snooze — the reason it woke.",
+      "and — when it recently came back from a snooze — the reason it woke. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId }) => {
+    execute: async ({ sessionId, machine }) => {
+      try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const session = await runRemote(target, {
+            domain: "chat",
+            action: "getSessionSummary",
+            args: { sessionId },
+          });
+          if (!session) return { success: false, error: `Chat not found on ${target.name}: ${sessionId}` };
+          return { success: true, ...onMachine(target), session };
+        }
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
       const session = await deps.getChatStatus(sessionId);
       if (!session) return { success: false, error: `Chat not found: ${sessionId}` };
       return { success: true, session, lifecycle: readSessionLifecycle(deps, sessionId) };
@@ -1001,14 +1293,34 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
 
   tools.getChatTranscript = core({
-    description: "Read recent user and assistant turns for an ADE chat session without focusing the UI.",
+    description: "Read recent user and assistant turns for an ADE chat session without focusing the UI. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string(),
       limit: z.number().int().positive().max(100).optional().default(20),
       maxChars: z.number().int().positive().max(40000).optional().default(8000),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId, limit, maxChars }) => {
+    execute: async ({ sessionId, limit, maxChars, machine }) => {
       try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          const raw = await runRemote(target, {
+            domain: "chat",
+            action: "readTranscript",
+            args: { sessionId, limit, maxChars },
+          });
+          const record = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : null;
+          const entries = Array.isArray(raw) ? raw : Array.isArray(record?.entries) ? record.entries as unknown[] : [];
+          return {
+            success: true,
+            ...onMachine(target),
+            sessionId,
+            entries,
+            truncated: record?.truncated === true,
+            totalEntries: typeof record?.totalEntries === "number" ? record.totalEntries : entries.length,
+            count: entries.length,
+          };
+        }
         const transcript = await deps.getChatTranscript({ sessionId, limit, maxChars });
         return {
           success: true,
@@ -2643,6 +2955,95 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       return { success: false, error: `Approval could not be requested: ${getErrorMessage(error)}` };
     }
   };
+
+  // ── Any ADE action, on any machine ─────────────────────────────────────────
+
+  tools.listMachineActions = core({
+    description:
+      "List the ADE actions a machine will run for you — the same surface as `ade actions run <domain>.<action>`, "
+      + "filtered by THAT machine's policy for your role. Pass domain (e.g. 'lane', 'chat', 'git', 'pr', 'files') to also get "
+      + "each action's input contract. Omit machine for your home machine. Use it before runMachineAction instead of guessing names.",
+    inputSchema: z.object({
+      machine: machineArgSchema,
+      domain: z.string().trim().min(1).optional().describe("One ADE action domain. Omit to list every domain's action names."),
+    }),
+    execute: async ({ machine, domain }) => {
+      if (!deps.crossMachine) return unavailable("ADE actions on account machines");
+      try {
+        const target = machine?.trim()
+          ? await deps.crossMachine.resolveMachine(machine)
+          : await homeTarget();
+        const listed = await deps.crossMachine.listActions(target, domain ?? null);
+        return {
+          success: true,
+          machineId: target.machineId,
+          machineName: target.name,
+          isThisMachine: target.isThisMachine,
+          ...listed,
+          ...(listed.actions.length < listed.count ? { truncated: true } : {}),
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
+
+  tools.runMachineAction = core({
+    description:
+      "Run one ADE action on any machine on the account (your full remote surface: everything `ade actions run` exposes), "
+      + "in this project's checkout on that machine. The machine's own policy decides what is allowed and its refusal is "
+      + "returned verbatim. Reads (get*/list*/read*/search*/preview*…) run straight away; anything else asks the user to "
+      + "confirm first. Use it to answer questions about another machine directly; prefer the typed tools (listLanes, "
+      + "spawnChat, …) when one fits. Call listMachineActions to find the action and its input.",
+    inputSchema: z.object({
+      machine: machineArgSchema,
+      domain: z.string().trim().min(1).describe("ADE action domain, e.g. 'lane', 'chat', 'git', 'pr'."),
+      action: z.string().trim().min(1).describe("Action name in that domain, e.g. 'list', 'getStatus'."),
+      args: z.record(z.string(), z.unknown()).optional().describe("Object arguments (what --input-json would carry)."),
+      arg: z.union([z.string(), z.number(), z.boolean()]).optional().describe("A single scalar argument, for actions that take one instead of args."),
+      timeoutSeconds: z.number().int().positive().max(180).optional().describe("Wait this long for the answer. Default 30."),
+    }),
+    execute: async ({ machine, domain, action, args, arg, timeoutSeconds }) => {
+      if (!deps.crossMachine) return unavailable("ADE actions on account machines");
+      try {
+        const target = machine?.trim()
+          ? await deps.crossMachine.resolveMachine(machine)
+          : await homeTarget();
+        const readOnly = isReadOnlyAdeActionName(action);
+        if (!readOnly) {
+          const declined = await confirmDestructive({
+            title: `Run ${domain}.${action} on ${target.name}`,
+            description: `The CTO wants to run ${domain}.${action} on ${target.name}${target.isThisMachine ? " (this machine)" : ""}. This can change things there.`,
+            detail: {
+              machine: target.name,
+              domain,
+              action,
+              ...(args ? { args } : {}),
+              ...(arg !== undefined ? { arg } : {}),
+            },
+          });
+          if (declined) return declined;
+        }
+        const result = await deps.crossMachine.runAction(target, {
+          domain,
+          action,
+          ...(args ? { args } : {}),
+          ...(arg !== undefined ? { arg } : {}),
+          ...(timeoutSeconds ? { timeoutMs: timeoutSeconds * 1000 } : {}),
+        });
+        return {
+          success: true,
+          machineId: target.machineId,
+          machineName: target.name,
+          isThisMachine: target.isThisMachine,
+          readOnly,
+          result: result ?? null,
+        };
+      } catch (error) {
+        return { success: false, error: getErrorMessage(error) };
+      }
+    },
+  });
 
   // ── Pack loading ───────────────────────────────────────────────────────────
 

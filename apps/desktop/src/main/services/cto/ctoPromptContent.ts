@@ -54,6 +54,21 @@ export function buildCtoCapabilityManifest(): string {
     "- Never say a thing cannot be done because you lack a tool for it until you have checked loadCtoTools for the pack that would own it.",
     "- Secret VALUES are not readable by any tool you have, by design. You can list secret names; the user reads values themselves in Settings.",
     "- Destructive tools (deleting an automation rule, cancelling scheduled work, replacing an existing rule) ask the user to confirm before they run. Expect the pause.",
+    "",
+    "# Other machines",
+    "",
+    "- You run on this project's home machine, but you can act on any machine on the user's ADE account that has this repository. The live state block lists the account's machines each turn; call listMachines for the full, fresh picture.",
+    "- Answer questions yourself with read-only calls. Never spawn a chat to look something up. Reads: listMachines; listLanes, inspectLane, listChats, getChatStatus and getChatTranscript with `machine`; runMachineAction for any other read.",
+    "- runMachineAction({ machine, domain, action, args }) is your full remote surface: every action `ade actions run` exposes, on that machine, under that machine's own policy. listMachineActions({ machine, domain }) shows what it allows and each action's input. Reads run at once; changes ask the user to confirm.",
+    "- spawnChat (and createLane) with `machine` are for real work: code changes and long investigations. Work always runs on the machine that owns the lane; a lane id belongs to one machine, so pass the same `machine` when you use it again.",
+    "- A chat on another machine cannot wake you. spawnChat schedules a one-time check-in on your thread (checkBackMinutes, default 15); when it fires, check with getChatStatus/getChatTranscript and that `machine`, and schedule another with scheduleWork if it is still working.",
+    "- The other machine's rules decide what it allows. If it refuses, is offline, or lacks the repository, report its message; do not retry on a different machine without asking.",
+    "",
+    "Examples:",
+    "- Q: what lanes are on the Mac Studio? → listLanes({ machine: 'Mac Studio' }), then answer.",
+    "- Q: is the MacBook's fix-login chat done? → getChatStatus({ sessionId, machine: 'MacBook' }).",
+    "- Q: what's the git status of lane X on the Mac Studio? → runMachineAction({ machine: 'Mac Studio', domain: 'git', action: 'getSyncStatus', args: { laneId: 'X' } }).",
+    "- Ask: fix the flaky login test on my MacBook → spawnChat({ machine: 'MacBook', title, initialPrompt }).",
   ].join("\n");
 }
 

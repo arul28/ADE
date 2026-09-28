@@ -390,7 +390,7 @@ describe("ProvidersSection", () => {
     expect(ade.ai.getStatus).toHaveBeenCalledWith({
       force: false,
       refreshOpenCodeInventory: false,
-    });
+    }, null);
 
     expect((await screen.findAllByText(/claude-agent-sdk-darwin-arm64\/claude/)).length).toBeGreaterThan(0);
 
@@ -644,7 +644,7 @@ describe("ProvidersSection", () => {
 
     await waitFor(() => {
       expect(window.ade.ai.cursorAuthLogin).toHaveBeenCalledTimes(1);
-      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor");
+      expect(window.ade.ai.verifyApiKey).toHaveBeenCalledWith("cursor", null);
     });
     expect(await screen.findByText("Signed in as ada@cursor.com")).toBeTruthy();
     expect(screen.getByLabelText("Sign out of Cursor")).toBeTruthy();
@@ -839,7 +839,7 @@ describe("ProvidersSection", () => {
     await act(async () => {
       signIn.click();
     });
-    expect(window.ade.ai.piLoginStart).toHaveBeenCalledWith({ providerId: "xai", method: "oauth" });
+    expect(window.ade.ai.piLoginStart).toHaveBeenCalledWith({ providerId: "xai", method: "oauth" }, null);
 
     await act(async () => {
       emitPiAuthStatus?.({
@@ -866,7 +866,7 @@ describe("ProvidersSection", () => {
       providerId: "xai",
       requestId: "req-1",
       value: "code-42",
-    });
+    }, null);
 
     await act(async () => {
       resolveLogin?.({ ok: true });
@@ -938,7 +938,7 @@ describe("ProvidersSection", () => {
       screen.getByRole("button", { name: "Try again" }).click();
     });
     expect(startMock).toHaveBeenCalledTimes(2);
-    expect(startMock).toHaveBeenLastCalledWith({ providerId: "xai", method: "oauth" });
+    expect(startMock).toHaveBeenLastCalledWith({ providerId: "xai", method: "oauth" }, null);
   });
 
   it("treats a cancelled Pi sign-in as a choice, not a failure", async () => {
@@ -1258,7 +1258,7 @@ describe("ProvidersSection", () => {
       within(localServers).getByRole("button", { name: /Refresh/ }).click();
     });
 
-    expect(getStatusMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }));
+    expect(getStatusMock).toHaveBeenCalledWith(expect.objectContaining({ force: true }), null);
   });
 
   it("filters Pi providers with the search box", async () => {
@@ -1502,7 +1502,7 @@ describe("ProvidersSection", () => {
     });
 
     expect(await screen.findByText("OpenCode rejected this key.")).toBeTruthy();
-    expect(setProviderKeyMock).toHaveBeenCalledWith({ providerId: "openai", key: "sk-test" });
+    expect(setProviderKeyMock).toHaveBeenCalledWith({ providerId: "openai", key: "sk-test" }, null);
     expect(window.ade.ai.storeApiKey).not.toHaveBeenCalled();
     expect(screen.getByLabelText("OpenAI API key")).toBeTruthy();
     expect(screen.queryByText("openai key saved.")).toBeNull();
@@ -1538,8 +1538,8 @@ describe("ProvidersSection", () => {
     });
 
     await waitFor(() => {
-      expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" });
-      expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai");
+      expect(window.ade.ai.clearOpencodeProviderKey).toHaveBeenCalledWith({ providerId: "openai" }, null);
+      expect(window.ade.ai.deleteApiKey).toHaveBeenCalledWith("openai", null);
     });
     expect(await screen.findByText("OpenAI disconnected.")).toBeTruthy();
   });
@@ -1580,7 +1580,7 @@ describe("ProvidersSection", () => {
         providerId: "openai",
         methodIndex: 0,
         inputs: undefined,
-      });
+      }, null);
       expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://auth.openai.com/device");
     });
 
@@ -1667,7 +1667,7 @@ describe("ProvidersSection", () => {
       await waitFor(() => {
         expect(current.getByText("everything is fine")).toBeTruthy();
       });
-      expect(runDiagnostics).toHaveBeenCalledWith({ provider: "grok", runDoctor: true });
+      expect(runDiagnostics).toHaveBeenCalledWith({ provider: "grok", runDoctor: true }, null);
 
       cleanup();
       // Qwen ships no `doctor`, so offering the button would run the word as a
@@ -1688,7 +1688,7 @@ describe("ProvidersSection", () => {
       await act(async () => {
         fireEvent.click(disable);
       });
-      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith({ disabledProviders: ["grok"] });
+      expect(window.ade.ai.updateConfig).toHaveBeenCalledWith({ disabledProviders: ["grok"] }, null);
     });
 
     it("shows Disabled on the tile and offers the way back on", async () => {

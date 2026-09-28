@@ -9,6 +9,7 @@ import type {
   CtoLegacyIdentityFields,
   CtoOnboardingState,
   CtoSessionLogEntry,
+  CtoRuntimeCapabilities,
   CtoSnapshot,
   CtoStaticContextSection,
   CtoSystemPromptPreview,
@@ -44,7 +45,10 @@ import type { CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
 export type CtoLiveStateSources = Pick<
   CtoOperatorToolDeps,
   "laneService" | "prService" | "automationService" | "listChats"
->;
+> & {
+  /** The account's machines, read from the bridge's cache. Never waits on the network. */
+  crossMachine?: Pick<NonNullable<CtoOperatorToolDeps["crossMachine"]>, "peekRoster"> | null;
+};
 
 type CtoStateServiceArgs = {
   db: AdeDb;
@@ -65,6 +69,8 @@ type CtoStateServiceArgs = {
    * exist — holding the values directly would pin whatever was null at boot.
    */
   getLiveStateSources?: (() => CtoLiveStateSources | null) | null;
+  /** Reported on the snapshot so a renderer can tell what this runtime's CTO can do. */
+  capabilities?: CtoRuntimeCapabilities | null;
 };
 
 type AppendCtoSessionLogArgs = {
@@ -702,6 +708,11 @@ export type CtoLiveStateSnapshot = {
    * more. Every other section counts its source whole and has no such doubt.
    */
   automationRunsTotalIsFloor: boolean;
+  /**
+   * The account's machines, when this runtime can reach them. Absent when it
+   * cannot, or before the first directory read finishes.
+   */
+  machines?: Array<{ name: string; machineId: string; isThisMachine: boolean; online: boolean; hasProject: boolean | null }>;
   /** Sources that threw while the snapshot was captured, by name. */
   unavailable: string[];
 };
@@ -735,6 +746,16 @@ export function renderCtoLiveStateBlock(
     lines.push(`- ${clipText(approval.title, 70)} [${approval.sessionId}]`);
   }
   lines.push(...liveStateOverflowLine(snapshot.approvals.length, snapshot.approvalsTotal, "chats"));
+
+  if (snapshot.machines?.length) {
+    lines.push("", `Account machines (${snapshot.machines.length}) — the lanes and chats below are this machine's; reach the others with \`machine\``);
+    for (const machine of snapshot.machines) {
+      const project = machine.hasProject === true
+        ? "has this project"
+        : machine.hasProject === false ? "no checkout of this project" : "project not checked";
+      lines.push(`- ${clipText(machine.name, 40)} [${machine.machineId}] — ${machine.isThisMachine ? "home (you run here)" : machine.online ? "online" : "offline"}, ${project}`);
+    }
+  }
 
   lines.push("", `Lanes (${snapshot.lanesTotal})`);
   if (!snapshot.lanes.length) lines.push("- none");
@@ -1067,6 +1088,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return {
       identity,
       recentSessions: getSessionLogs(recentLimit),
+      ...(args.capabilities ? { capabilities: { ...args.capabilities } } : {}),
     };
   };
 
@@ -1274,6 +1296,15 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
         }));
       } catch {
         unavailable.push("pull requests");
+      }
+    }
+
+    if (sources.crossMachine) {
+      try {
+        const roster = sources.crossMachine.peekRoster();
+        if (roster?.length) snapshot.machines = roster;
+      } catch {
+        unavailable.push("machines");
       }
     }
 

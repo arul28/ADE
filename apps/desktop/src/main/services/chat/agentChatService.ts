@@ -9414,6 +9414,11 @@ export function createAgentChatService(args: {
   > & Partial<Pick<MacDesktopRuntimeService, "supportsLaneDisplaySync">> | null;
   getAppControlService?: () => CtoOperatorToolDeps["appControlService"];
   getBuiltInBrowserService?: () => CtoOperatorToolDeps["builtInBrowserService"];
+  /**
+   * The CTO's reach onto the account's other machines. Only the brain wires
+   * it; every other host leaves it unset and the CTO stays on its own machine.
+   */
+  getCtoCrossMachine?: () => CtoOperatorToolDeps["crossMachine"];
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
   computerUseArtifactBrokerService?: ComputerUseArtifactBrokerService | null;
@@ -9557,6 +9562,7 @@ export function createAgentChatService(args: {
     macDesktopTurnRecorder,
     getAppControlService,
     getBuiltInBrowserService,
+    getCtoCrossMachine,
     getGitService,
     conflictService,
     computerUseArtifactBrokerService,
@@ -11616,6 +11622,7 @@ export function createAgentChatService(args: {
         iosSimulatorService: getIosSimulatorService?.() ?? null,
         appControlService: getAppControlService?.() ?? null,
         builtInBrowserService: getBuiltInBrowserService?.() ?? null,
+        crossMachine: getCtoCrossMachine?.() ?? null,
     };
   };
 

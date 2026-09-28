@@ -25,6 +25,7 @@ import {
 import type { SettingsProviderId } from "../types";
 import { AddApiKeySheet, type ApiKeyDraft } from "./AddApiKeySheet";
 import { useApiCredentials } from "./useApiCredentials";
+import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import {
   endpointHost,
   providerKeySpec,
@@ -167,6 +168,8 @@ export function ProviderApiKeysPanel({
   onAfterSave,
   onAfterRemove,
 }: ProviderApiKeysPanelProps) {
+  // Runtime-backed key calls (legacy default slot, verify) go to the page's machine.
+  const { pin } = useSettingsMachineScope();
   const spec = providerKeySpec(provider);
   const extraKey = (additionalProviders ?? []).join(",");
   const providers = useMemo(
@@ -197,7 +200,7 @@ export function ProviderApiKeysPanel({
     if (spec.legacyDefaultSlot) {
       // Cursor's SDK signs in from the legacy single slot, and writing anywhere
       // else leaves it signed out while this panel claims a key is saved.
-      await window.ade.ai.storeApiKey(spec.credentialProvider, draft.key);
+      await window.ade.ai.storeApiKey(spec.credentialProvider, draft.key, pin);
     } else {
       await store({
         provider: writeProvider,
@@ -214,7 +217,7 @@ export function ProviderApiKeysPanel({
     await reload();
     setSheet(null);
     setWriteError(null);
-  }, [hasDefaultStoreRow, onAfterSave, reload, sheet, spec, store]);
+  }, [hasDefaultStoreRow, onAfterSave, pin, reload, sheet, spec, store]);
 
   const onDelete = useCallback(async (credential: ApiCredentialSummary) => {
     const ok = await confirmDialog({
@@ -226,7 +229,7 @@ export function ProviderApiKeysPanel({
     if (!ok) return;
     try {
       if (spec.legacyDefaultSlot && credential.credentialId === DEFAULT_API_CREDENTIAL_ID) {
-        await window.ade.ai.deleteApiKey(credential.provider);
+        await window.ade.ai.deleteApiKey(credential.provider, pin);
       } else {
         await remove(credential.provider, credential.credentialId);
       }
@@ -236,13 +239,13 @@ export function ProviderApiKeysPanel({
     } catch (err) {
       setWriteError(providerActionMessage(err, "That key change did not go through."));
     }
-  }, [onAfterRemove, reload, remove, spec.legacyDefaultSlot]);
+  }, [onAfterRemove, pin, reload, remove, spec.legacyDefaultSlot]);
 
   const onVerify = useCallback(async (credential: ApiCredentialSummary) => {
     const id = `${credential.provider}#${credential.credentialId}`;
     setVerify((prev) => ({ ...prev, [id]: { busy: true, message: null, ok: null } }));
     try {
-      const result = await window.ade.ai.verifyApiKey(credential.provider);
+      const result = await window.ade.ai.verifyApiKey(credential.provider, pin);
       setVerify((prev) => ({ ...prev, [id]: { busy: false, message: result.message, ok: result.ok } }));
     } catch (err) {
       setVerify((prev) => ({
@@ -250,7 +253,7 @@ export function ProviderApiKeysPanel({
         [id]: { busy: false, message: providerActionMessage(err, "This key could not be checked."), ok: false },
       }));
     }
-  }, []);
+  }, [pin]);
 
   if (bridgeMissing) return null;
 

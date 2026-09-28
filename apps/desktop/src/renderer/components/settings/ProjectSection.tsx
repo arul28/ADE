@@ -10,6 +10,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { SettingsCard } from "./primitives";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { SettingsSectionShell } from "./settingsSectionUi";
 import { Banner } from "../ui/notice";
 
@@ -165,6 +166,9 @@ function IssueCard({ issue }: { issue: AdeHealthIssue }) {
 }
 
 export function ProjectSection() {
+  // This machine's checkout of the repo, read on the machine the Settings page
+  // is showing. Null pin = the tab's binding, as before.
+  const { pin } = useSettingsMachineScope();
   const [snapshot, setSnapshot] = useState<AdeProjectSnapshot | null>(null);
   const [busy, setBusy] = useState<"repair" | "integrity" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -174,22 +178,25 @@ export function ProjectSection() {
   const [configOpen, setConfigOpen] = useState(false);
 
   const refresh = useCallback(async () => {
-    const next = await window.ade.project.getSnapshot();
+    const next = await window.ade.project.getSnapshot(pin);
     setSnapshot(next);
     return next;
-  }, []);
+  }, [pin]);
 
   useEffect(() => {
     void refresh().catch((err) => {
       setError(err instanceof Error ? err.message : String(err));
     });
+    // The change feed describes the tab's own project. Another machine has no
+    // feed here, so its card refreshes after each action instead.
+    if (pin) return undefined;
     const unsubscribe = window.ade.project.onStateEvent((event) => {
       setSnapshot(event.snapshot);
       setNotice("Project config reloaded.");
       setError(null);
     });
     return unsubscribe;
-  }, [refresh]);
+  }, [pin, refresh]);
 
   const runAction = useCallback(async (
     kind: "repair" | "integrity",
@@ -288,7 +295,7 @@ export function ProjectSection() {
                 ? primaryButton({ height: 28, padding: "0 10px", fontSize: 11 })
                 : outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
               disabled={busy != null}
-              onClick={() => void runAction("repair", () => window.ade.project.initializeOrRepair())}
+              onClick={() => void runAction("repair", () => window.ade.project.initializeOrRepair(pin))}
             >
               {busy === "repair" ? "Repairing..." : "Fix .ade folder"}
             </button>
@@ -296,7 +303,7 @@ export function ProjectSection() {
               type="button"
               style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11 })}
               disabled={busy != null}
-              onClick={() => void runAction("integrity", () => window.ade.project.runIntegrityCheck())}
+              onClick={() => void runAction("integrity", () => window.ade.project.runIntegrityCheck(pin))}
             >
               {busy === "integrity" ? "Repairing..." : "Repair session logs"}
             </button>

@@ -256,6 +256,7 @@ import {
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
 import { createPrEventFanout } from "./prEventFanout";
+import { createCtoCrossMachineBridge } from "./services/account/ctoCrossMachineBridge";
 import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 
 /** One warm-runtime budget for every project scope this brain opens. */
@@ -1438,6 +1439,8 @@ export async function createAdeRuntime(args: {
       dismiss: (args) => rebaseSuggestionService.dismiss(args),
     };
 
+    // Set once the runtime below is assembled; the CTO's home-machine actions read it.
+    let runtimeForCtoActions: AdeRuntime | null = null;
     const ctoMemoryService = createCtoMemoryService({
       adeDir: paths.adeDir,
       logger,
@@ -1445,11 +1448,26 @@ export async function createAdeRuntime(args: {
         ? projectContextAccountPort({ projectRoot, store: accountSettingsStore })
         : null,
     });
+    // The CTO acting on the account's other machines, for this project's
+    // repository there. Built on first use: most CTO turns never leave the home
+    // machine, and a project with no CTO turns never pays for it.
+    let ctoCrossMachine: ReturnType<typeof createCtoCrossMachineBridge> | null = null;
+    const getCtoCrossMachine = () => {
+      ctoCrossMachine ??= createCtoCrossMachineBridge({
+        projectRoot,
+        appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
+        logger,
+        getLocalActionServices: () =>
+          runtimeForCtoActions ? getAdeActionDomainServices(runtimeForCtoActions) : null,
+      });
+      return ctoCrossMachine;
+    };
     const ctoStateService = createCtoStateService({
       db,
       projectId,
       adeDir: paths.adeDir,
       ctoMemoryService,
+      capabilities: { crossMachine: true },
       // Resolved on every refresh, not captured here: the chat and automation
       // services are constructed further down, so the live block must read
       // them through a thunk rather than pin whatever was null at this point.
@@ -1461,6 +1479,7 @@ export async function createAdeRuntime(args: {
           prService: headlessLinearServices.prService,
           automationService: automationServiceRef,
           listChats: chat.listSessions,
+          crossMachine: getCtoCrossMachine(),
         };
       },
     });
@@ -1912,6 +1931,10 @@ export async function createAdeRuntime(args: {
         aiIntegrationService,
         ctoStateService,
         ctoMemoryService,
+        // The CTO acting on the account's other machines, for this project's
+        // repository there. Built on first use: most CTO turns never leave the
+        // home machine, and a project with no CTO turns never pays for it.
+        getCtoCrossMachine,
         logger,
         appVersion: "ade-cli",
         getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
@@ -2954,6 +2977,7 @@ export async function createAdeRuntime(args: {
     automationService?.bindAdeActionRegistry(
       createAutomationAdeActionLookup(() => getAdeActionDomainServices(runtime)),
     );
+    runtimeForCtoActions = runtime;
 
     usageTrackingService.start();
     runtimeCreated = true;

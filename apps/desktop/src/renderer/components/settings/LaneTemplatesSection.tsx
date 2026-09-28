@@ -25,6 +25,7 @@ import type {
   LaneMountPointConfig,
   LaneSetupScriptConfig,
 } from "../../../shared/types";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -257,6 +258,9 @@ const TEMPLATE_COLUMNS = [
 ];
 
 export function LaneTemplatesSection() {
+  // Templates live in each machine's `.ade/local.yaml`, so they are read and
+  // written on the machine the Settings page shows.
+  const { pin } = useSettingsMachineScope();
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -265,8 +269,8 @@ export function LaneTemplatesSection() {
   const refresh = useCallback(async () => {
     try {
       const [tpls, defId] = await Promise.all([
-        window.ade.lanes.listTemplates(),
-        window.ade.lanes.getDefaultTemplate(),
+        window.ade.lanes.listTemplates(pin),
+        window.ade.lanes.getDefaultTemplate(pin),
       ]);
       setTemplates(tpls);
       setDefaultId(defId);
@@ -276,38 +280,38 @@ export function LaneTemplatesSection() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [pin]);
 
   useEffect(() => { refresh(); }, [refresh]);
 
   const handleSetDefault = useCallback(async (templateId: string) => {
     const newId = templateId || null;
     try {
-      await window.ade.lanes.setDefaultTemplate({ templateId: newId });
+      await window.ade.lanes.setDefaultTemplate({ templateId: newId }, pin);
       setDefaultId(newId);
     } catch {
       await refresh();
     }
-  }, [refresh]);
+  }, [pin, refresh]);
 
   const handleSave = useCallback(async (template: LaneTemplate) => {
     try {
-      await window.ade.lanes.saveTemplate({ template });
+      await window.ade.lanes.saveTemplate({ template }, pin);
       setEditing(null);
       await refresh();
     } catch (err: unknown) {
       showToast({ title: "Failed to save template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
-  }, [refresh]);
+  }, [pin, refresh]);
 
   const handleDelete = useCallback(async (templateId: string) => {
     try {
-      await window.ade.lanes.deleteTemplate({ templateId });
+      await window.ade.lanes.deleteTemplate({ templateId }, pin);
       await refresh();
     } catch (err: unknown) {
       showToast({ title: "Failed to delete template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
-  }, [refresh]);
+  }, [pin, refresh]);
 
   if (loading) {
     return (

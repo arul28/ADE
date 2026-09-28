@@ -407,7 +407,7 @@ export function LaneDiffPane({
             </span>
           </div>
           <div className="flex items-center" style={{ gap: 3 }}>
-            {selectedFileMode === "unstaged" && !isForeign ? (
+            {selectedFileMode === "unstaged" ? (
               <SmartTooltip content={{
                 label: "Open in Files",
                 description: "Open this file in the Files tab for full editing.",
@@ -417,7 +417,11 @@ export function LaneDiffPane({
                   type="button"
                   className="focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
                   style={headerButton}
-                  onClick={() => navigate("/files", { state: { openFilePath: selectedPath, laneId } })}
+                  // Files pins itself to the lane's machine from `filesPin`, so a
+                  // foreign lane's file opens (and saves) on that machine.
+                  onClick={() => navigate("/files", {
+                    state: { openFilePath: selectedPath, laneId, ...(pin ? { filesPin: pin } : {}) },
+                  })}
                   title="Open in Files tab"
                 >
                   <FolderOpen size={13} />

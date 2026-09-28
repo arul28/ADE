@@ -88,7 +88,9 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // for the same reason: writing or destroying a provider credential is
   // operator work. `getMachineApiKeyStatus` stays open like `getStatus` — it
   // answers "is a key configured and where from", never the key.
-  ai: { only: ["updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
+  // `acpProviderDiagnostics` can run a provider CLI's doctor, so it is
+  // operator-only like the updater it pairs with.
+  ai: { only: ["acpProviderDiagnostics", "acpProviderUpdate", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "storeMachineApiKey", "deleteMachineApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel"] },
   budget: { only: ["updateConfig"] },
   feedback: { only: ["submitPreparedDraft"] },
   // `applyAccountRollups` writes another machine's history into a
@@ -681,6 +683,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getStatus",
     "getOpenCodeRuntimeDiagnostics",
     "isOpenCodeInstalled",
+    "acpProviderDiagnostics",
+    "acpProviderUpdate",
+    "listApiCredentials",
+    "getApiCredential",
+    "storeApiCredential",
+    "removeApiCredential",
     "verifyApiKeyConnection",
     "storeApiKey",
     "deleteApiKey",
