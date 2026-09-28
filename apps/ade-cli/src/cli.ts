@@ -2210,6 +2210,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
+    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -2423,6 +2424,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop windows --text                   List windows
     $ ade mac-desktop claim --window <id> --text       Move an existing window here
     $ ade mac-desktop release --window <id> --text     Give it to you (a lane app goes whole)
+    $ ade mac-desktop quit [<app>] --text              Quit apps the lane opened, released ones too (only when asked)
 
   Observe, then act by handle:
     $ ade mac-desktop observe --text                   Screenshot + numbered elements
@@ -2449,17 +2451,21 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade mac-desktop screenshot --out shot.png --text Capture without filing proof
     $ ade mac-desktop record start --caption "<what>"  Record; a caption files it
     $ ade mac-desktop record stop --text
+    $ ade mac-desktop record status --text             Is it recording, since when, how long
     $ ade mac-desktop proof --caption "<what>" --text  Capture, re-observe, file proof
 
   Recording flags (record start):
-    --keep-idle            Keep still stretches at real length.
-    --max-seconds <n>      Stop after n seconds of real time (default 600).
+    --plain                File it as recorded: no cuts, zoom, pointer or captions.
+    --max-seconds <n>      Stop after n seconds of real time (at most and default 300).
 
-  Still time is cut: a still screen longer than 2 s keeps 0.75 s in the video.
-  record stop reports durationMs (video), wallDurationMs (real time) and
-  idleCutMs. A recording a chat owns stops itself after 10 minutes of real
-  time (stopReason "cap") and is filed as proof under the chat that started
-  it, with or without a caption.
+  A recording becomes a demo when it stops: still stretches are cut, waits
+  play faster, the camera zooms to each action, a pointer and click rings are
+  drawn, and step captions (ade proof step "<text>") show. Every video ends
+  under 10 MB. record stop reports durationMs (video), wallDurationMs (real
+  time) and idleCutMs. A recording stops itself after 5 minutes (stopReason
+  "cap"), after 2 minutes with no action ("idle") or when the disk is almost
+  full ("disk"); a chat's recording that stops that way is filed as proof
+  under the chat that started it, with or without a caption.
 
   "mac-desktop proof" refuses without --caption: a proof record nobody can judge is
   not proof. It re-observes AFTER the capture, so check the state it returns
@@ -2534,14 +2540,16 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Recording flags (record start):
     --caption <text>       What the video shows. A captioned video is filed as proof.
-    --keep-idle            Keep still stretches at real length.
-    --max-seconds <n>      Stop after n seconds of real time (default 600).
+    --plain                File it as recorded: no cuts, zoom, pointer or captions.
+    --max-seconds <n>      Stop after n seconds of real time (at most and default 300).
 
-  A recording captures the app's own window, not the whole screen. Still time
-  is cut unless --keep-idle. record stop reports durationMs (video),
+  A recording captures the app's own window, not the whole screen. It becomes
+  a demo when it stops (cuts, speed-ups, zoom, pointer, step captions, under
+  10 MB) unless --plain. record stop reports durationMs (video),
   wallDurationMs (real time) and idleCutMs. A captioned video is filed as
   proof under the lane, the chat that started it and the lane's PR. A
-  recording stops itself at its cap (stopReason "cap"), when the app closes
+  recording stops itself after 5 minutes (stopReason "cap"), after 2 minutes
+  with no action ("idle"), when the disk is almost full ("disk"), when the app closes
   (stopReason "app-closed") or when the chat that started it ends (stopReason
   "chat-ended"), and is filed the same way.
 
@@ -2752,6 +2760,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                          Option to pick for browser select-option.
     --file <path>        Repeatable file path for browser upload.
     --fps <30|60>        Frame rate for browser record start.
+    --plain              Browser record start/stop: file the video as recorded (no cuts,
+                         zoom, pointer or captions). Otherwise it becomes a demo at stop.
     --include-ended, --all
                          Include ended browser sessions in browser sessions output.
     --timeout-ms <n>     Wait timeout for browser wait/fill/click readiness.
@@ -10491,6 +10501,29 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
       ],
     };
   }
+  if (sub === "step") {
+    // `ade proof step "<text>"`: a step caption for the lane's running
+    // recordings. The demo shows it from now until the next step, and ADE's
+    // player lists it as a chapter.
+    // Flags first: they take their values out of `args`, and every word
+    // left is the step's text.
+    const owner = proofOwnerBase();
+    const flagText = readValue(args, ["--text", "--caption"]);
+    const text = flagText ?? args.filter((value) => !value.startsWith("-")).join(" ").trim();
+    if (!text) throw new CliUsageError('ade proof step needs the step\'s text: ade proof step "Open the settings page"');
+    return {
+      kind: "execute",
+      label: "proof step",
+      steps: [
+        actionCallStep("result", "note_demo_step", {
+          ...owner,
+          ...proofCallerRootArgs(),
+          text,
+        }),
+      ],
+    };
+  }
+
   if (sub === "publish") {
     // `ade proof publish --pr <number|url> <artifact-id>...`: the agent picks
     // the items. They go up as one PR comment through `gh --attach`, then
@@ -12050,7 +12083,11 @@ function buildIosSimulatorPlan(
       }
     }
     const label = readValue(args, ["--label"]);
-    const keepIdle = readFlag(args, ["--keep-idle"]);
+    const plain = readFlag(args, ["--plain", "--keep-idle"]);
+    const zoom = readFlag(args, ["--zoom"]);
+    if (plain && zoom) {
+      throw new CliUsageError("record-start takes --plain or --zoom, not both: a plain recording has no zoom.");
+    }
     const maxSeconds = readNumberOption(args, ["--max-seconds"]);
     if (maxSeconds != null && maxSeconds <= 0) {
       throw new CliUsageError("record-start --max-seconds must be greater than 0.");
@@ -12067,7 +12104,8 @@ function buildIosSimulatorPlan(
         : {}),
       ...(overlays == null ? {} : { overlays }),
       ...(label ? { label } : {}),
-      ...(keepIdle ? { keepIdle: true } : {}),
+      ...(plain ? { plain: true } : {}),
+      ...(zoom ? { zoom: true } : {}),
       ...(maxSeconds == null ? {} : { maxSeconds }),
     });
   }
@@ -12202,9 +12240,9 @@ function buildAppControlRecordPlan(
 ): CliPlan {
   // Flags first: a positional read before them would take a flag's value.
   const caption = readValue(args, ["--caption", "--description", "--desc"]);
-  const keepIdle = readFlag(args, ["--keep-idle"]);
+  const plain = readFlag(args, ["--plain", "--keep-idle"]);
   const maxSeconds = readNumberOption(args, ["--max-seconds"]);
-  const hasStartFlags = Boolean(caption) || keepIdle || maxSeconds != null;
+  const hasStartFlags = Boolean(caption) || plain || maxSeconds != null;
   const mode = (firstPositional(args) ?? (hasStartFlags ? "start" : "status")).toLowerCase();
   const plan = (label: string, method: string, payload: JsonObject = {}): CliPlan => ({
     kind: "execute",
@@ -12218,13 +12256,13 @@ function buildAppControlRecordPlan(
     }
     return plan("app-control record start", "startRecording", {
       ...(caption ? { caption } : {}),
-      ...(keepIdle ? { keepIdle: true } : {}),
+      ...(plain ? { plain: true } : {}),
       ...(maxSeconds == null ? {} : { maxSeconds }),
     });
   }
   if (hasStartFlags) {
     throw new CliUsageError(
-      "--caption, --keep-idle and --max-seconds belong to 'app-control record start'.",
+      "--caption, --plain and --max-seconds belong to 'app-control record start'.",
     );
   }
   if (mode === "stop" || mode === "end" || mode === "finish") {
@@ -14067,6 +14105,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     if (mode === "start" || mode === "begin") {
       const fps = readNumberOption(args, ["--fps", "--frame-rate"]);
       const caption = readValue(args, ["--caption", "--description", "--desc"]);
+      const plain = readFlag(args, ["--plain"]);
       return {
         kind: "execute",
         label: "browser record start",
@@ -14079,6 +14118,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
               ...readBrowserOwnedTabTargetArgs(args),
               ...(fps == null ? {} : { fps }),
               ...(caption ? { caption } : {}),
+              ...(plain ? { plain: true } : {}),
             }),
           ),
         ],
@@ -14086,7 +14126,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
     }
     if (mode === "stop" || mode === "end" || mode === "finish") {
       const ownerBase = readProofOwnerBase(args);
-      const title = readValue(args, ["--title", "--name"]) ?? "ADE browser recording";
+      const titleFlag = readValue(args, ["--title", "--name"]);
+      const plain = readFlag(args, ["--plain"]);
       return {
         kind: "execute",
         label: "browser record stop",
@@ -14095,7 +14136,10 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
             "result",
             "built_in_browser",
             "stopRecording",
-            collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
+            collectGenericObjectArgs(args, {
+              ...readBrowserOwnedTabTargetArgs(args),
+              ...(plain ? { plain: true } : {}),
+            }),
           ),
           {
             key: "proof",
@@ -14108,6 +14152,8 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
               const recording = unwrapActionEnvelope(values.result);
               const caption = isRecord(recording) ? asString(recording.caption) : null;
               const filePath = isRecord(recording) ? asString(recording.path) : null;
+              // How the demo was made; the proof keeps it at `metadata.demo`.
+              const demo = isRecord(recording) && isRecord(recording.demo) ? recording.demo : null;
               const shouldIngest = Boolean(caption && filePath);
               return {
                 name: "ingest_computer_use_artifacts",
@@ -14121,9 +14167,12 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
                     ? [
                         {
                           kind: "video_recording",
-                          title,
+                          // The caption given at `record start` names the
+                          // video in the drawer, as every other recorder does.
+                          title: titleFlag ?? caption ?? "ADE browser recording",
                           description: caption,
                           path: filePath,
+                          ...(demo ? { metadata: { demo } } : {}),
                         },
                       ]
                     : [],
@@ -27869,6 +27918,30 @@ function summarizeExecution(args: {
 
   if (plan.proofFiling) {
     return summarizeProofFiling(plan.proofFiling, values);
+  }
+
+  if (plan.label === "Apple device record stop" && unwrapActionEnvelope(values.result) == null) {
+    // No recording ran on the lane. A bare `null` read as a failure.
+    return { recording: "not running — this lane has no recording to stop" };
+  }
+
+  if (plan.label === "browser record stop") {
+    // The recording, plus the proof it was filed as: the id and a ready
+    // citation, the same lines every other recorder prints. Without them an
+    // agent cited the file's name, which no proof has.
+    const recording = unwrapActionEnvelope(values.result);
+    const filed = firstArray(unwrapActionEnvelope(values.proof) as JsonObject, ["artifacts"])[0] ?? null;
+    const proofId = filed ? asString(filed.id) : null;
+    const caption = isRecord(recording) ? asString(recording.caption) : null;
+    return {
+      ...(isRecord(recording) ? recording : {}),
+      proof: proofId
+        ? `filed (${proofId}) — it is in the proof drawer`
+        : caption
+          ? "not filed"
+          : "not filed — start with --caption to file it as proof",
+      ...(proofId ? { proofArtifactId: proofId, cite: proofCitationMarkdown(proofId, caption) } : {}),
+    };
   }
 
   if (plan.label === "proof publish") {

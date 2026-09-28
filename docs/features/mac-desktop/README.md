@@ -420,10 +420,13 @@ screen streamers that feel live on a LAN (SameDesk, OpenDisplay, VoidDisplay):
   second. The encoder now asks for Main, sets
   `EnableLowLatencyRateControl` (the setting every fast streamer names) and
   `MaxFrameDelayCount = 0`.
-- **Newest frame wins in the decoder.** `H264VideoCanvas` drops a delta frame
-  while the decoder still holds more than one, so the picture never shows where
-  the pointer *was*; keyframes are always decoded because the next delta needs
-  them.
+- **Newest frame wins in the decoder.** The shared player
+  (`h264StreamPlayer.ts`, drawn by `H264StreamView`) skips a delta frame while
+  the decoder still holds more than one chunk from an earlier turn of the event
+  loop, so the picture never shows where the pointer *was*. A skipped delta
+  breaks the reference chain, so the picture then holds until the next keyframe
+  instead of painting corruption; keyframes are always decoded. A burst read in
+  one chunk never counts as falling behind.
 - **60 fps active, 10 idle.** The idle floor was 3, so every first drag after a
   pause started as a slideshow and ramped up.
 - **The floating preview is a JPEG snapshot of the live canvas, four times a

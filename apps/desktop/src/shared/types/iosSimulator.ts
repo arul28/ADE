@@ -2086,9 +2086,13 @@ export type AppleRecordStartArgs = AppleRecordScopeArgs & {
    * still screen longer than 2 s down to 0.75 s (`record-start --keep-idle`).
    */
   keepIdle?: boolean | null;
+  /** File it as recorded, with no demo treatment (`record start --plain`). */
+  plain?: boolean | null;
+  /** Zoom in on each tap in the demo. Off by default on a phone (`record start --zoom`). */
+  zoom?: boolean | null;
   /**
    * Wall-clock seconds after which the recording stops and files itself.
-   * Defaults to ten minutes for a recording a chat owns.
+   * Defaults to five minutes.
    */
   maxSeconds?: number | null;
 };

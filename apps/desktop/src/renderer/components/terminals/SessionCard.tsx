@@ -54,6 +54,8 @@ import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LanePrBadge } from "./LanePrBadge";
 import { LaneAppleDeviceMarker } from "../apple/LaneAppleDeviceMarker";
 import { LaneMacDesktopMarker } from "./LaneMacDesktopMarker";
+import { LaneWorkToolMarker } from "./LaneWorkToolMarker";
+import { LANE_APP_CONTROL_LABEL, laneBrowserLabel } from "./useLaneWorkToolUse";
 import type { LaneAppleDevice } from "../apple/useLaneAppleDevices";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { lanePrStateColor, lanePrStateLabel, openLanePr } from "../../lib/lanePrBadge";
@@ -411,6 +413,8 @@ export const SessionCard = React.memo(function SessionCard({
   machineMarker = null,
   laneAppleDevice = null,
   laneMacDesktop = false,
+  laneAppControl = false,
+  laneBrowserTabs = 0,
   suppressMachineChip = false,
   suppressStatusLabel = false,
   nestedSubagent = false,
@@ -479,6 +483,10 @@ export const SessionCard = React.memo(function SessionCard({
   laneAppleDevice?: LaneAppleDevice | null;
   /** The card's lane holds a Mac Desktop display. Shown like `laneAppleDevice`. */
   laneMacDesktop?: boolean;
+  /** The card's lane has a live App Control app. Shown like `laneAppleDevice`. */
+  laneAppControl?: boolean;
+  /** Browser tabs an agent of the card's lane owns. Shown like `laneAppleDevice`. */
+  laneBrowserTabs?: number;
   /**
    * The lane header above already names the machine, so the row's own chip
    * would just repeat it. Set by SessionListPane for children of a lane group
@@ -814,6 +822,12 @@ export const SessionCard = React.memo(function SessionCard({
         </span>
         {laneAppleDevice ? <LaneAppleDeviceMarker device={laneAppleDevice} /> : null}
         {laneMacDesktop ? <LaneMacDesktopMarker laneId={lane.id} /> : null}
+        {laneAppControl ? (
+          <LaneWorkToolMarker tool="app-control" laneId={lane.id} label={LANE_APP_CONTROL_LABEL} />
+        ) : null}
+        {laneBrowserTabs > 0 ? (
+          <LaneWorkToolMarker tool="browser" laneId={lane.id} label={laneBrowserLabel(laneBrowserTabs)} />
+        ) : null}
       </span>,
     );
   }

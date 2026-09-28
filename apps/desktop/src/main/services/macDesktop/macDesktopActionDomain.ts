@@ -256,6 +256,10 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       laneId: requiredLaneId(args, "releaseWindow"),
       windowId: optionalNumber(args, "windowId"),
     })),
+    quitApp: (args?: unknown) => gated(() => service.quitApp({
+      laneId: requiredLaneId(args, "quitApp"),
+      app: optionalString(args, "app"),
+    })),
     observe: (args?: unknown) => gated(() => service.observe({
       laneId: requiredLaneId(args, "observe"),
       windowId: optionalNumber(args, "windowId"),

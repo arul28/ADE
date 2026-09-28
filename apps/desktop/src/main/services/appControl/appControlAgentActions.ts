@@ -76,6 +76,9 @@ import {
 } from "./appControlObservations";
 import type { Logger } from "../logging/logger";
 import { nowIso } from "../shared/utils";
+import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
+import { demoElementLabel, demoTypedLabel, noteDemoPageAction } from "../demoVideo/demoTrackTargets";
+import { appControlRecordingKey } from "./appControlRecording";
 
 /**
  * App Control's agent action model.
@@ -553,6 +556,36 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     return observeWithClient(client, session, input);
   };
 
+  /**
+   * An action on a lane that is recording, for its demo track. Noted on every
+   * OS (a key with no running recording is a no-op). Costs nothing when the
+   * lane is not recording and never fails the action.
+   */
+  const noteDemoAction = async (
+    client: TClient,
+    session: AppControlSession,
+    kind: DemoTrackEventKind,
+    target: { point?: { x: number; y: number } | null; element?: AppControlElementSnapshot | null; label?: string },
+  ): Promise<void> => {
+    if (!session.laneId) return;
+    await noteDemoPageAction({
+      key: appControlRecordingKey(session.laneId),
+      kind,
+      by: "agent",
+      target,
+      // The screencast shows the visual viewport; element frames and input
+      // points are CSS pixels in it.
+      readViewport: async () => {
+        const metrics = await client.send<{
+          cssVisualViewport?: { clientWidth?: number; clientHeight?: number };
+        }>("Page.getLayoutMetrics");
+        const width = metrics?.cssVisualViewport?.clientWidth ?? 0;
+        const height = metrics?.cssVisualViewport?.clientHeight ?? 0;
+        return width > 0 && height > 0 ? { width, height } : null;
+      },
+    });
+  };
+
   const runAgentAction = async (
     action: string,
     input: AppControlAgentActionArgs,
@@ -589,6 +622,11 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
   const agentClick = async (input: AppControlAgentClickArgs): Promise<AppControlAgentActionResult> =>
     runAgentAction("click", input, async (client, session, tracker) => {
       const point = await resolveAgentPoint(client, session, input, tracker);
+      await noteDemoAction(client, session, "click", {
+        point: { x: point.x, y: point.y },
+        element: point.element,
+        label: demoElementLabel(point.element),
+      });
       const button = input.button === "middle" || input.button === "right" ? input.button : "left";
       const clickCount = Math.max(1, Math.min(3, normalizePositiveInteger(input.clickCount) ?? 1));
       await deps.enablePageDomain(client);
@@ -626,12 +664,13 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
       // is ever treated as the payload to type.
       const fillValue = typeof input.value === "string" ? input.value : null;
       if (fillValue == null) throw new Error("App Control fill requires a value.");
-      await locateElementTarget(client, session, input, {
+      const element = await locateElementTarget(client, session, input, {
         focus: true,
         select: true,
         clear: true,
         editableRequired: true,
       }, tracker);
+      await noteDemoAction(client, session, "type", { element, label: demoTypedLabel(fillValue, element) });
       await deps.enablePageDomain(client);
       await client.send("Input.insertText", { text: fillValue });
     });
@@ -647,10 +686,12 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     });
 
   const agentType = async (input: AppControlAgentTypeArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("type", input, async (client, _session, tracker) => {
+    runAgentAction("type", input, async (client, session, tracker) => {
       const text = typeof input.text === "string" ? input.text : "";
       if (!text.length) throw new Error("App Control type requires text.");
       await captureActionBaseline(client, input, tracker);
+      // No label: what had focus is unknown, so the text may be a secret.
+      await noteDemoAction(client, session, "type", {});
       await deps.enablePageDomain(client);
       await client.send("Input.insertText", { text });
     });
@@ -659,11 +700,13 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     runAgentAction("press", input, async (client, session, tracker) => {
       const key = stringOrNull(input.key);
       if (!key) throw new Error("App Control press requires a key.");
+      let element: AppControlElementSnapshot | null = null;
       if (hasElementTarget(input)) {
-        await locateElementTarget(client, session, input, { focus: true }, tracker);
+        element = await locateElementTarget(client, session, input, { focus: true }, tracker);
       } else {
         await captureActionBaseline(client, input, tracker);
       }
+      await noteDemoAction(client, session, "key", { element, label: key });
       const event = keyEventForAgentInput(key);
       await deps.enablePageDomain(client);
       await client.send("Input.dispatchKeyEvent", { type: "keyDown", ...event });
@@ -676,7 +719,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     });
 
   const agentScroll = async (input: AppControlAgentScrollArgs): Promise<AppControlAgentActionResult> =>
-    runAgentAction("scroll", input, async (client, _session, tracker) => {
+    runAgentAction("scroll", input, async (client, session, tracker) => {
       const deltaX = finiteNumber(input.deltaX);
       const deltaY = finiteNumber(input.deltaY);
       if (deltaX === 0 && deltaY === 0) throw new Error("App Control scroll requires deltaX or deltaY.");
@@ -687,6 +730,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         scale: input.scale ?? null,
         coordinateSpace: input.coordinateSpace ?? null,
       });
+      await noteDemoAction(client, session, "scroll", { point });
       await deps.enablePageDomain(client);
       await client.send("Input.dispatchMouseEvent", {
         type: "mouseWheel",

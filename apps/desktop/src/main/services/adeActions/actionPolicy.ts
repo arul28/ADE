@@ -955,6 +955,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "open",
     "claimWindow",
     "releaseWindow",
+    "quitApp",
     "observe",
     "click",
     "type",

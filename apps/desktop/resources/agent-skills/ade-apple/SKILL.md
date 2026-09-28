@@ -341,15 +341,21 @@ not a detail.
    the CLI, an agent action or a semantic action counts as evidence and starts
    one automatically, tagged `auto`. Input from the desktop pane is stamped as
    the user's and starts nothing.
-2. It stops at the end of your turn, or after ten minutes, whichever is first.
-   `record-start` during an auto recording converts it to manual with no gap.
-   A manual recording you own stops itself after ten minutes of real time
-   (`stopReason: "cap"`) and files as proof; `--max-seconds <n>` changes it.
-   Still call `record-stop` when you are done.
+2. It stops at the end of your turn, or after five minutes, whichever is
+   first. `record-start` during an auto recording converts it to manual with
+   no gap. A manual recording stops itself after five minutes of real time
+   (`stopReason: "cap"`), or after two minutes with no input (`"idle"`), and
+   files as proof; `--max-seconds <n>` sets a shorter limit. Still call
+   `record-stop` when you are done.
 
-   Still screens are cut: a still longer than 2 s keeps 0.75 s in the video.
-   `record-stop` reports `durationMs` (video), `wallDurationMs` (real time)
-   and `idleCutMs`. Pass `--keep-idle` when the waiting itself is the point.
+   When it stops, the recording becomes a demo: still time is cut, waits play
+   faster, tap rings are drawn, and the file ends under 10 MB. The camera
+   does not zoom on a phone; pass `record-start --zoom` only when the user
+   asks for zoom. Mark each step with `ade proof step "<what happens
+   next>"`: a caption in the video and a chapter in ADE's player.
+   `record-stop` reports `durationMs` (the demo), `wallDurationMs` (real time)
+   and `idleCutMs`. Pass `--plain` only when the user asks for the recording
+   as it was recorded.
 3. It files itself as proof on stop. There is **no auto-delete**; recordings
    accumulate until the user clears them.
 4. You may delete a recording you own. Anything else is

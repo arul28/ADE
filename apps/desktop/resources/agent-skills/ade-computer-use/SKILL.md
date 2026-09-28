@@ -115,6 +115,7 @@ Use these directly; you do not need `--help` for them.
 | Show the screen to the user | `ade mac-desktop show --text` (tools pane) or `--floating` |
 | Close your own window | `ade mac-desktop press w --cmd --text` |
 | Stop the screen (quits the apps the lane opened) | `ade mac-desktop stop --text` |
+| Quit apps the lane opened, released ones too (only when asked) | `ade mac-desktop quit [<app>] --text` |
 
 ## Operating loop
 
@@ -224,6 +225,23 @@ a native menu, a control with no `AXPress`.
   Save anything that matters before you stop. Windows you claimed go back to
   the user's screen; they are never quit. An app the user took with `release`
   is theirs and is not quit.
+- **Leave the screen and its apps running when you finish.** Do not `stop`
+  on your own: the user may want to look at the result. When the user asks
+  you to close, clean up or shut down what you opened, run `ade mac-desktop
+  quit --text` (every app the lane opened, including apps you released to
+  the user; `quit <app>` for one), then `ade mac-desktop stop --text`, and
+  report what quit. `stop` alone does not quit a released app. When the user
+  wants to keep using an app, `release` it (see above): its windows move to
+  the user's screen.
+- **Do not leave an app waiting on unsaved work.** An app with an unsaved
+  document shows a save dialog on the lane screen when it quits, and the user
+  cannot see that dialog. Close your own document window without saving
+  before you finish (`ade mac-desktop press w --cmd --text`, then choose
+  "Don't Save"), or save it where the user asked.
+- **Open a file as a document:** `ade mac-desktop open "<absolute path>"`
+  opens it in its app, and `ade mac-desktop open TextEdit -- "<absolute
+  path>"` opens it in that app. Do not type a file's text into a new document
+  to stand in for the file: that checks nothing and leaves unsaved work.
 - **`ade: Unknown command 'mac-desktop'` means your shell found an older
   `ade`,** not that the lane has no screen: a login shell can rebuild PATH and
   put an installed CLI ahead of the one this ADE launched. Run the same command
@@ -260,14 +278,35 @@ worktree or the OS temp directory (`$TMPDIR`); anywhere else is refused. `proof`
 is the intentional one and **refuses without `--caption`** — a record nobody can
 judge is not proof. It captures, then re-observes, and prints the state it filed.
 
-A recording cuts still stretches out by default, so the video shows only the
-changes. Add `--keep-idle` to keep them at real length. A recording that a chat
-started stops by itself after 10 minutes; `--max-seconds <n>` sets another
-limit. Set it from the real pace of your steps (each command takes seconds),
-or pass a large cap and stop the recording yourself:
+A recording becomes a **demo** when it stops. ADE cuts still time, speeds up
+waits (a load, a spinner) with a small `4×` badge, zooms to the part of the
+screen where the actions happen (not on a phone, unless you pass `--zoom`),
+draws the pointer and a ring on each click, and keeps the file under 10 MB.
+You do none of that; you only choose what to record.
+
+- **Record the flow that shows the claim, not the whole task.** Do the setup
+  first (open the app, reach the starting screen), start recording, run the
+  flow, and stop as soon as the result is on screen. Saving files, retries and
+  troubleshooting stay out of the video; if the flow went wrong, fix it and
+  record again. A recording stops itself after 5 minutes, or after 2 minutes
+  with no action. `--max-seconds <n>` sets a shorter limit.
+- **Mark the steps.** While recording, run `ade proof step "<what happens
+  next>"` before each part of the flow. Each step is a caption in the video
+  and a chapter in ADE's player. Keep steps short and in the user's words.
+- **Wait for the result, not for a time.** Use the surface's wait command
+  instead of `sleep` (for example `ade app-control wait --text-match "Saved"`
+  or `ade apple wait-for-element --label "Saved"`): the recording stops as
+  soon as the result shows, and a slow load still gets its time.
+- **`--plain`** files the recording as it was recorded (no cuts, zoom, pointer
+  or captions), still under 10 MB. Use it only when the user asks for it.
 
 ```bash
-ade mac-desktop record start --caption "<what>" --keep-idle --max-seconds 1200 --text
+ade mac-desktop record start --caption "Preferences saves the API key" --text
+ade proof step "Open Preferences"
+# ... act ...
+ade proof step "Save the key"
+# ... act, then confirm the result on screen ...
+ade mac-desktop record stop --text
 ```
 
 `record stop` finalizes within about two seconds. If it fails, the status it

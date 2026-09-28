@@ -1,3 +1,4 @@
+import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 
 export const LOCAL_RUNTIME_PROJECT_TIMEOUT_MS = 120_000;
@@ -128,6 +129,8 @@ export const PI_LOGIN_IPC_TIMEOUT_MS = 11 * 60_000;
  */
 export const CURSOR_LOGIN_IPC_TIMEOUT_MS = 21 * 60_000;
 
+export { DEMO_RECORDING_STOP_TIMEOUT_MS };
+
 const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = new Map([
   ["ai.piLoginStart", PI_LOGIN_IPC_TIMEOUT_MS],
   ["ai.cursorAuthLogin", CURSOR_LOGIN_IPC_TIMEOUT_MS],
@@ -174,6 +177,11 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.deviceCleanup", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   // See IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS.
   ["ios_simulator.runTests", IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS],
+  // See DEMO_RECORDING_STOP_TIMEOUT_MS.
+  ["mac_desktop.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["built_in_browser.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  ["ios_simulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

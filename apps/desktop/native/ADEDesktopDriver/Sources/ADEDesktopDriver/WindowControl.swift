@@ -761,7 +761,7 @@ final class WindowControl {
         switch plan {
         case .handOverApp:
             stopWatching(pid: pid)
-            launchedApps.forget(pid: pid)
+            launchedApps.markReleased(pid: pid)
             var released = moveWindowsToMainScreen(pid: pid, laneId: laneId)
             if !released.contains(windowId) {
                 // Not in the pid's listing any more (it ended between the two

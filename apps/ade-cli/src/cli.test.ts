@@ -13739,7 +13739,7 @@ describe("ADE CLI", () => {
     ]);
     expect(recordStartKeepIdle).toMatchObject({
       action: "recordStart",
-      args: { keepIdle: true, maxSeconds: 1200 },
+      args: { plain: true, maxSeconds: 1200 },
     });
     expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "0"])).toThrow(/greater than 0/);
     expect(() => buildCliPlan(["apple", "record-start", "--max-seconds", "soon"])).toThrow(/must be a number/);

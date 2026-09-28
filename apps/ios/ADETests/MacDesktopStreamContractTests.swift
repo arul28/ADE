@@ -167,21 +167,21 @@ final class MacDesktopStreamContractTests: XCTestCase {
     let idr: [UInt8] = [0x65, 0x88, 0x84, 0x00, 0x21, 0xFF]
     let annexB = Data([0, 0, 0, 1] + sps + [0, 0, 1] + pps + [0, 0, 0, 1] + idr)
 
-    let units = MacDesktopAnnexB.nalUnits(in: annexB)
+    let units = H264AnnexB.nalUnits(in: annexB)
     XCTAssertEqual(units, [sps, pps, idr])
-    XCTAssertEqual(MacDesktopAnnexB.nalUnitType(sps), 7)
-    XCTAssertEqual(MacDesktopAnnexB.nalUnitType(pps), 8)
-    XCTAssertEqual(MacDesktopAnnexB.nalUnitType(idr), 5)
-    XCTAssertEqual(MacDesktopAnnexB.parameterSets(in: units)?.sps, sps)
-    XCTAssertEqual(MacDesktopAnnexB.parameterSets(in: units)?.pps, pps)
+    XCTAssertEqual(H264AnnexB.nalUnitType(sps), 7)
+    XCTAssertEqual(H264AnnexB.nalUnitType(pps), 8)
+    XCTAssertEqual(H264AnnexB.nalUnitType(idr), 5)
+    XCTAssertEqual(H264AnnexB.parameterSets(in: units)?.sps, sps)
+    XCTAssertEqual(H264AnnexB.parameterSets(in: units)?.pps, pps)
 
     // The decoder's AVCC payload keeps the parameter sets out of the access
     // unit — they travel in the format description.
-    let decoderPayload = MacDesktopAnnexB.avccAccessUnit(fromAnnexB: annexB)
+    let decoderPayload = H264AnnexB.avccAccessUnit(fromAnnexB: annexB)
     XCTAssertEqual([UInt8](decoderPayload), [0, 0, 0, 6] + idr)
 
     // The pure framing conversion keeps every NAL, length-prefixed.
-    let framed = MacDesktopAnnexB.avccAccessUnit(fromAnnexB: annexB, excludingParameterSets: false)
+    let framed = H264AnnexB.avccAccessUnit(fromAnnexB: annexB, excludingParameterSets: false)
     XCTAssertEqual(
       [UInt8](framed),
       [0, 0, 0, 7] + sps + [0, 0, 0, 4] + pps + [0, 0, 0, 6] + idr)
@@ -190,16 +190,30 @@ final class MacDesktopStreamContractTests: XCTestCase {
   func testAnnexBConversionToleratesLeadingGarbageAndEmptyStartCodeRuns() {
     let idr: [UInt8] = [0x65, 0xAA]
     let stream = Data([0xDE, 0xAD] + [0, 0, 0, 1] + [0, 0, 1] + idr)
-    XCTAssertEqual(MacDesktopAnnexB.nalUnits(in: stream), [idr])
-    XCTAssertEqual(MacDesktopAnnexB.avccAccessUnit(fromAnnexB: stream), Data([0, 0, 0, 2] + idr))
-    XCTAssertTrue(MacDesktopAnnexB.nalUnits(in: Data([1, 2, 3])).isEmpty)
-    XCTAssertTrue(MacDesktopAnnexB.avccAccessUnit(fromAnnexB: Data()).isEmpty)
+    XCTAssertEqual(H264AnnexB.nalUnits(in: stream), [idr])
+    XCTAssertEqual(H264AnnexB.avccAccessUnit(fromAnnexB: stream), Data([0, 0, 0, 2] + idr))
+    XCTAssertTrue(H264AnnexB.nalUnits(in: Data([1, 2, 3])).isEmpty)
+    XCTAssertTrue(H264AnnexB.avccAccessUnit(fromAnnexB: Data()).isEmpty)
+  }
+
+  func testDecoderPayloadDropsDelimitersAndFillerAndIsEmptyForParameterSetsAlone() {
+    // Access unit delimiters (9) and filler (12) carry nothing a decoder needs
+    // and some decoders reject them inside a sample.
+    let aud: [UInt8] = [0x09, 0xF0]
+    let filler: [UInt8] = [0x0C, 0xFF, 0xFF]
+    let idr: [UInt8] = [0x65, 0xCC, 0xDD]
+    let stream = Data([0, 0, 0, 1] + aud + [0, 0, 0, 1] + idr + [0, 0, 0, 1] + filler)
+    XCTAssertEqual([UInt8](H264AnnexB.avccAccessUnit(fromAnnexB: stream)), [0, 0, 0, 3] + idr)
+
+    // Parameter sets alone are a format, not a frame: nothing to enqueue.
+    let setsOnly = Data([0, 0, 0, 1, 0x67, 0xAA, 0, 0, 0, 1, 0x68, 0xBB])
+    XCTAssertTrue(H264AnnexB.avccAccessUnit(fromAnnexB: setsOnly).isEmpty)
   }
 
   // MARK: - Frame gate
 
   func testFrameGateHoldsPFramesUntilTheKeyframeAfterASequenceGap() {
-    var gate = MacDesktopStreamFrameGate()
+    var gate = H264FrameGate()
     // The contract says a new subscriber's first frame is a keyframe; a P-frame
     // that arrives first has nothing to reference.
     XCTAssertFalse(gate.shouldDeliver(keyframe: false, seq: 0))
@@ -436,14 +450,14 @@ final class MacDesktopStreamContractTests: XCTestCase {
     // timebase, so without it the layer holds every frame forever — and no
     // NotSync, because an absent key means sync.
     let keyframeBuffer = try makeSyntheticSample()
-    MacDesktopSampleAttachments.apply(to: keyframeBuffer, keyframe: true)
+    H264SampleAttachments.apply(to: keyframeBuffer, keyframe: true)
     let keyframeAttachments = try XCTUnwrap(attachmentDictionary(of: keyframeBuffer))
     XCTAssertTrue(attachmentFlag(keyframeAttachments, kCMSampleAttachmentKey_DisplayImmediately as CFString))
     XCTAssertFalse(attachmentFlag(keyframeAttachments, kCMSampleAttachmentKey_NotSync as CFString))
 
     // A P-frame is a delta frame: the layer must not treat it as a sync sample.
     let deltaBuffer = try makeSyntheticSample()
-    MacDesktopSampleAttachments.apply(to: deltaBuffer, keyframe: false)
+    H264SampleAttachments.apply(to: deltaBuffer, keyframe: false)
     let deltaAttachments = try XCTUnwrap(attachmentDictionary(of: deltaBuffer))
     XCTAssertTrue(attachmentFlag(deltaAttachments, kCMSampleAttachmentKey_DisplayImmediately as CFString))
     XCTAssertTrue(attachmentFlag(deltaAttachments, kCMSampleAttachmentKey_NotSync as CFString))
@@ -536,12 +550,12 @@ final class MacDesktopStreamContractTests: XCTestCase {
     try await body(service)
   }
 
-  /// One synthetic H.264 sample, built the way `MacDesktopLiveSession.enqueue`
-  /// builds one, so the attachment assertions exercise the real object.
+  /// One synthetic H.264 sample, built the way `H264SampleBufferFeeder` builds
+  /// one, so the attachment assertions exercise the real object.
   private func makeSyntheticSample() throws -> CMSampleBuffer {
     let sps: [UInt8] = [0x67, 0x42, 0x00, 0x0A, 0xF8, 0x41, 0xA2]
     let pps: [UInt8] = [0x68, 0xCE, 0x38, 0x80]
-    let format = try XCTUnwrap(MacDesktopAnnexB.formatDescription(sps: sps, pps: pps))
+    let format = try XCTUnwrap(H264AnnexB.formatDescription(sps: sps, pps: pps))
     let accessUnit = Data([0x00, 0x00, 0x00, 0x01, 0x65, 0x88, 0x84])
 
     var blockBuffer: CMBlockBuffer?

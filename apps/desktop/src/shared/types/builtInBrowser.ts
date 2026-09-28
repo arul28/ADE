@@ -5,6 +5,7 @@ import type {
   AgentFrame,
   ComputerUseActionEffect,
 } from "./agentObservation";
+import { RECORDING_MAX_MS, type DemoArtifactMetadata } from "../demoVideo/demoContract";
 
 export type BuiltInBrowserProvider = "cdp";
 
@@ -89,6 +90,13 @@ export type BuiltInBrowserTab = {
   zoomFactor: number;
   devToolsOpen: boolean;
   emulation: BuiltInBrowserEmulationState | null;
+  /**
+   * The fixed page size an agent-owned or recording tab is laid out at
+   * (`BUILT_IN_BROWSER_AGENT_VIEWPORT`), or null when the tab follows its box.
+   * The pane letterboxes it exactly like a device preset. Absent on a main
+   * process that predates it, which reads as null.
+   */
+  agentViewport?: { width: number; height: number } | null;
   networkLogging: boolean;
   recording: BuiltInBrowserRecordingStatus | null;
   /**
@@ -1160,7 +1168,7 @@ export type BuiltInBrowserRecordingFps = (typeof BUILT_IN_BROWSER_RECORDING_FPS_
  * finalizes — see `suspendAgentCaptureForHandoff`. Neither resumes; an agent
  * that wants more has to start a new recording.
  */
-export const BUILT_IN_BROWSER_MAX_RECORDING_MS = 5 * 60_000;
+export const BUILT_IN_BROWSER_MAX_RECORDING_MS = RECORDING_MAX_MS;
 
 /**
  * Query parameters whose value is a credential rather than a request detail.
@@ -1208,13 +1216,16 @@ export type BuiltInBrowserRecordingStatus = {
  * action-trace entry carrying the same value, so `ade browser trace` explains it
  * to the agent.
  */
-export type BuiltInBrowserRecordingEndedBy = "handoff" | "max_duration";
+/** `idle` and `disk` are the limits every recording shares (`demoRecordingGuard.ts`). */
+export type BuiltInBrowserRecordingEndedBy = "handoff" | "max_duration" | "idle" | "disk";
 
 export type BuiltInBrowserStartRecordingArgs = BuiltInBrowserTabTargetArgs & {
   /** 30 or 60; anything else is rejected. */
   fps?: number | null;
   /** Supplying a caption is what makes `stopRecording` file a proof entry. */
   caption?: string | null;
+  /** File the recording as it happened: no cuts, zoom or overlays. */
+  plain?: boolean | null;
 };
 
 export type BuiltInBrowserStartRecordingResult = {
@@ -1223,7 +1234,10 @@ export type BuiltInBrowserStartRecordingResult = {
   status: BuiltInBrowserStatus;
 };
 
-export type BuiltInBrowserStopRecordingArgs = BuiltInBrowserTabTargetArgs;
+export type BuiltInBrowserStopRecordingArgs = BuiltInBrowserTabTargetArgs & {
+  /** Overrides the start's `plain` for this recording. */
+  plain?: boolean | null;
+};
 
 export type BuiltInBrowserStopRecordingResult = {
   tabId: string;
@@ -1237,6 +1251,8 @@ export type BuiltInBrowserStopRecordingResult = {
   caption: string | null;
   /** Reserved for encoders that emit a sidecar manifest; `null` today. */
   manifestPath: string | null;
+  /** How the demo was made; the proof stores it at `metadata.demo`. Null for a file passed through as recorded. */
+  demo?: DemoArtifactMetadata | null;
   status: BuiltInBrowserStatus;
 };
 
@@ -1271,6 +1287,24 @@ export const BUILT_IN_BROWSER_PREVIEW_JPEG_QUALITY = 80;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN = 64;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH = 960;
 export const BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT = 600;
+/** A remembered pane smaller than this parks at the floors above instead. */
+export const BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_WIDTH = 640;
+export const BUILT_IN_BROWSER_PARKED_PREVIEW_USABLE_HEIGHT = 400;
+
+/**
+ * The page size of a tab an agent owns or that is being recorded.
+ *
+ * A page lays out at its native view's size, so an agent's tab opened in a
+ * narrow Work pane reflowed to a thin strip — and every screenshot, recording
+ * and floating preview the agent took of it was that strip. While a tab is
+ * agent-owned or recording its layout viewport is pinned here (the same CDP
+ * device-metrics override a device preset uses) and scaled to fit whatever box
+ * shows it; parked off screen, it is exactly this size at scale 1.
+ */
+export const BUILT_IN_BROWSER_AGENT_VIEWPORT: { readonly width: number; readonly height: number } = {
+  width: 1280,
+  height: 800,
+};
 /**
  * How long a watched view is held overlapping the window before it is parked.
  *

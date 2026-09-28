@@ -82,19 +82,7 @@ export function resolveMacDesktopDriverBinary(input: {
   }
   // The daemon path: no Electron `app`, so walk up from this module to the same
   // `resources/native` directory the packaged build copies from.
-  const candidates: string[] = [];
-  const processResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  if (processResourcesPath) {
-    candidates.push(path.join(processResourcesPath, "native", MAC_DESKTOP_DRIVER_BINARY));
-  }
-  let current = typeof __dirname === "string" ? __dirname : process.cwd();
-  for (let depth = 0; depth < 10; depth += 1) {
-    candidates.push(path.join(current, "resources", "native", MAC_DESKTOP_DRIVER_BINARY));
-    candidates.push(path.join(current, "apps", "desktop", "resources", "native", MAC_DESKTOP_DRIVER_BINARY));
-    const parent = path.dirname(current);
-    if (parent === current) break;
-    current = parent;
-  }
+  const candidates = daemonNativeCandidates(MAC_DESKTOP_DRIVER_BINARY);
   for (const candidate of candidates) {
     try {
       if (fs.existsSync(candidate)) return candidate;
@@ -105,6 +93,52 @@ export function resolveMacDesktopDriverBinary(input: {
   // Nothing on disk. Name the location the packaged build would use anyway, so
   // the health card can say which file is missing instead of "unknown".
   return candidates[0] ?? null;
+}
+
+/** The demo-video engine, built into the same `resources/native` directory. */
+const ADE_MEDIA_BINARY = "ade-media";
+
+/**
+ * The `ade-media` demo engine (analyze + render), or `null` when this host
+ * cannot run it.
+ *
+ * Searched the way the Mac Desktop driver is — packaged resources, the dev
+ * app's `resources/native`, then upward from this module for the brain, which
+ * has no Electron `app` — but unlike the driver it answers `null` rather than
+ * a missing path: a demo with no engine is filed as its raw recording, and the
+ * caller needs a yes/no to choose the other engine, not a path to report.
+ * `ADE_MEDIA_PATH` overrides the search when it names an executable file.
+ */
+export function resolveAdeMediaBinary(input: {
+  logger?: { debug: (event: string, detail?: Record<string, unknown>) => void } | null;
+} = {}): string | null {
+  if (process.platform !== "darwin") return null;
+  const override = process.env.ADE_MEDIA_PATH?.trim();
+  if (override) {
+    if (isExecutableFile(override)) return override;
+    input.logger?.debug("demo_video.ade_media_path_override_ignored", { path: override });
+  }
+  return daemonNativeCandidates(ADE_MEDIA_BINARY).find(isExecutableFile) ?? null;
+}
+
+/**
+ * Where a native helper sits when there is no Electron `app` to ask (the
+ * runtime daemon) or when Electron main runs it: the process's resources
+ * directory, then every `resources/native` walking up from this module.
+ */
+function daemonNativeCandidates(binary: string): string[] {
+  const candidates: string[] = [];
+  const processResourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
+  if (processResourcesPath) candidates.push(path.join(processResourcesPath, "native", binary));
+  let current = typeof __dirname === "string" ? __dirname : process.cwd();
+  for (let depth = 0; depth < 10; depth += 1) {
+    candidates.push(path.join(current, "resources", "native", binary));
+    candidates.push(path.join(current, "apps", "desktop", "resources", "native", binary));
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return candidates;
 }
 
 /** How a packaged app was signed, as `MacDesktopSigningState` spells it. */

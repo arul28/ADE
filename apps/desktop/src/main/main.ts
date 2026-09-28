@@ -385,12 +385,14 @@ import { sceneDocumentStore } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
+import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
 import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
 import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
 import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
 import { createAppControlService } from "./services/appControl/appControlService";
 import { createAppControlScreencastRecorderHost } from "./services/appControl/appControlScreencastRecorderHost";
+import { createChromiumDemoEngine } from "./services/demoVideo/chromiumDemoEngine";
 import { resolveSessionLaneId } from "./services/lanes/resolveSessionLaneId";
 import { createBuiltInBrowserService } from "./services/builtInBrowser/builtInBrowserService";
 import { createBuiltInBrowserHandoffSessionListener } from "./services/builtInBrowser/builtInBrowserHandoffSession";
@@ -1681,8 +1683,17 @@ app.whenReady().then(async () => {
     }
   };
 
+  // The desktop bridge's log, which the demo engine shares.
+  const builtInBrowserBridgeLogger = createFileLogger(
+    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
+  );
+  // The Chromium demo engine (renders `.aderaw` captures on any OS). One per
+  // desktop, shared by the built-in browser's recorder, App Control and the
+  // runtime daemon (over the bridge below), so jobs queue on one hidden renderer.
+  const chromiumDemoEngine = createChromiumDemoEngine({ logger: builtInBrowserBridgeLogger });
   const builtInBrowserService = createBuiltInBrowserService({
     getLogger: () => getActiveContext().logger,
+    demoEngine: chromiumDemoEngine,
     getProjectRootForWindow: (win) => getWindowSession(win.id).binding?.rootPath ?? null,
     getWindowForProjectRoot: (projectRoot) => {
       const normalizedRoot = normalizeProjectRoot(projectRoot);
@@ -1796,9 +1807,6 @@ app.whenReady().then(async () => {
   // service itself (it needs WebContentsView). The bridge socket lives under
   // `<adeHome>/sock/desktop-bridge.sock`; the daemon discovers it via
   // resolveMachineAdeLayout() or ADE_DESKTOP_BRIDGE_SOCKET_PATH.
-  const builtInBrowserBridgeLogger = createFileLogger(
-    path.join(app.getPath("userData"), "desktop-bridge.jsonl"),
-  );
   const builtInBrowserBridgeSocketPath =
     process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
     || machineAdeLayout.desktopBridgeSocketPath;
@@ -1816,6 +1824,7 @@ app.whenReady().then(async () => {
       service: builtInBrowserService,
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
+      demoEngine: chromiumDemoEngine,
     });
   } catch (error) {
     builtInBrowserBridgeLogger.warn("built_in_browser_bridge.start_failed", {
@@ -4182,6 +4191,7 @@ app.whenReady().then(async () => {
       getLocalGitHubToken: () => githubService.getGitTransportTokenOrThrowAsync(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
+        feedDemoTrackFromChatEvent(event);
         emitProjectEvent(projectRoot, IPC.agentChatEvent, event);
       },
       onTurnSettled: (event) => captureAgentTurnSettledAnalytics({
@@ -4892,6 +4902,7 @@ app.whenReady().then(async () => {
       // Recording: macOS records the app's window with the desktop helper
       // (the service's default); Windows/Linux use this desktop's encoder.
       getScreencastRecorder: () => appControlScreencastRecorder,
+      getChromiumDemoEngine: () => chromiumDemoEngine,
       // A lane may not attach to an app another lane's Mac Desktop holds.
       macDesktopLaneForProcess: (pid: number) => macDesktopService.laneForProcess(pid),
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
@@ -7479,6 +7490,7 @@ app.whenReady().then(async () => {
       }
       try {
         appControlScreencastRecorder.dispose();
+        chromiumDemoEngine.dispose();
       } catch {
         // ignore
       }

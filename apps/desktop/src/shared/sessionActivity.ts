@@ -1,11 +1,12 @@
 import {
   SESSION_ACTIVITY_VALUES,
+  SESSION_SYSTEM_ACTIVITY_VALUES,
   type SessionActivityReport,
   type SessionActivitySource,
   type SessionActivityValue,
 } from "./types/sessions";
 
-const SESSION_ACTIVITY_VALUE_SET: ReadonlySet<string> = new Set(SESSION_ACTIVITY_VALUES);
+const SESSION_ACTIVITY_VALUE_SET: ReadonlySet<string> = new Set([...SESSION_ACTIVITY_VALUES, ...SESSION_SYSTEM_ACTIVITY_VALUES]);
 
 /** Agent CLI target for activity reports; unlike ADE_CHAT_SESSION_ID this is a PTY row id. */
 export const SESSION_ACTIVITY_SESSION_ID_ENV = "ADE_ACTIVITY_SESSION_ID";
@@ -67,6 +68,7 @@ const AGENT_REPORT_COVERS: Record<SessionActivityValue, ReadonlySet<SessionActiv
   reviewing: new Set(["reviewing", "exploring"]),
   shipping: new Set(["shipping", "testing", "exploring"]),
   monitoring: new Set(["monitoring", "exploring"]),
+  recording: new Set(["recording"]),
 };
 
 /**

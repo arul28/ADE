@@ -20,7 +20,7 @@
     "build": "tsup && vite build",
     "build:notch": "node ./scripts/build-attention-notch.mjs",
     "build:desktop-driver": "node ./scripts/build-mac-desktop-driver.mjs",
-    "build:mac-native": "npm run build:notch && npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper",
+    "build:mac-native": "npm run build:notch && npm run build:desktop-driver && npm run build:capture-helper && npm run build:sim-helper && npm run build:ade-media",
     "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
     "test:desktop-driver": "swift test --package-path ./native/ADEDesktopDriver",
     "build:capture-helper": "node ./scripts/build-capture-helper.mjs",
@@ -28,6 +28,8 @@
     "test:capture-helper": "swift test --package-path ./native/ADECaptureHelper",
     "build:sim-helper": "node ./scripts/build-sim-helper.mjs",
     "test:sim-helper": "swift test --package-path ./native/ADESimHelper",
+    "build:ade-media": "node ./scripts/build-ade-media.mjs",
+    "test:ade-media": "swift test --package-path ./native/ADEMedia",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
     "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
     "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build:capture-helper:win && npm run build && npm run package:win && npm run validate:win:release",
@@ -94,6 +96,7 @@
     "chokidar": "^4.0.3",
     "electron-updater": "^6.8.3",
     "graceful-fs": "^4.2.11",
+    "mp4-muxer": "^5.2.2",
     "node-cron": "^3.0.3",
     "node-pty": "^1.1.0",
     "ssh2": "^1.17.0",
@@ -326,7 +329,8 @@
         "filter": [
           "ade-capture-helper",
           "ade-capture-helper.exe",
-          "ade-sim-helper"
+          "ade-sim-helper",
+          "ade-media"
         ]
       },
       {

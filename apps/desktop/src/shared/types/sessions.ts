@@ -36,7 +36,17 @@ export const SESSION_ACTIVITY_VALUES = [
   "monitoring",
 ] as const;
 
-export type SessionActivityValue = (typeof SESSION_ACTIVITY_VALUES)[number];
+/**
+ * Activities only ADE sets, never an agent: `recording` shows while a
+ * recording the chat owns is running, in place of the detected activity, and
+ * the detected one comes back when it stops. `ade chat activity` does not
+ * accept these.
+ */
+export const SESSION_SYSTEM_ACTIVITY_VALUES = ["recording"] as const;
+
+export type SessionActivityValue =
+  | (typeof SESSION_ACTIVITY_VALUES)[number]
+  | (typeof SESSION_SYSTEM_ACTIVITY_VALUES)[number];
 
 /** Who set the session-card substatus: the agent itself, or ADE's tool-call detector. */
 export type SessionActivitySource = "agent" | "detected";

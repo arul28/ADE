@@ -188,4 +188,24 @@ final class LaneAppsTests: XCTestCase {
         )
         XCTAssertEqual(report.jsonFields["quitApps"], .array([.string("Safari")]))
     }
+
+    func testAReleasedAppLeavesStopOwnershipButRemainsAvailableForExplicitQuit() {
+        let registry = LaunchedAppRegistry()
+        XCTAssertTrue(registry.record(
+            pid: 42,
+            laneId: "lane",
+            appName: "Safari",
+            bundleId: "com.apple.Safari",
+            wasRunningBefore: false
+        ))
+
+        registry.markReleased(pid: 42)
+
+        XCTAssertTrue(registry.apps(forLane: "lane").isEmpty)
+        XCTAssertEqual(registry.releasedApps(forLane: "lane"), [
+            LaunchedAppRegistry.App(pid: 42, laneId: "lane", appName: "Safari", bundleId: "com.apple.Safari"),
+        ])
+        XCTAssertTrue(registry.forgetLane("lane").isEmpty)
+        XCTAssertEqual(registry.releasedApps(forLane: "lane").map(\.pid), [42])
+    }
 }

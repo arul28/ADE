@@ -187,6 +187,7 @@ import {
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
+import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBridgeBrowserActorCapabilityIssuer,
@@ -194,6 +195,7 @@ import {
   verifyBuiltInBrowserDesktopBridgeAuth,
 } from "./services/builtInBrowser/desktopBridgeClient";
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
+import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
   createRemoteBrowserForwarder,
@@ -1582,10 +1584,12 @@ export async function createAdeRuntime(args: {
     // Windows/Linux App Control recording runs in the desktop's encoder, over
     // the desktop bridge. Set once the bridge client exists (below); null
     // while no desktop has attached here, which refuses a screencast start.
-    const appControlRecorderBridgeHolder: {
+    const desktopBridgeHolder: {
       current: ReturnType<typeof createAppControlRecorderBridgeClient> | null;
+      /** The desktop's Chromium demo engine, over the same bridge. */
+      demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
       isAttached: () => boolean;
-    } = { current: null, isAttached: () => false };
+    } = { current: null, demoEngine: null, isAttached: () => false };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -1604,7 +1608,9 @@ export async function createAdeRuntime(args: {
           return chatSession?.laneId ?? null;
         },
         getScreencastRecorder: () =>
-          appControlRecorderBridgeHolder.isAttached() ? appControlRecorderBridgeHolder.current : null,
+          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.current : null,
+        getChromiumDemoEngine: () =>
+          desktopBridgeHolder.isAttached() ? desktopBridgeHolder.demoEngine : null,
         // A lane may not attach to an app another lane's Mac Desktop holds.
         // Read at call time: the Mac Desktop service is built just below.
         macDesktopLaneForProcess: (pid: number): string | null => macDesktopService?.laneForProcess(pid) ?? null,
@@ -1636,9 +1642,12 @@ export async function createAdeRuntime(args: {
     // through that client, and a client disposed first drops the cancels,
     // orphaning the desktop's encoder window for the lane.
     teardown.push(() => {
-      const bridge = appControlRecorderBridgeHolder.current;
-      appControlRecorderBridgeHolder.current = null;
+      const bridge = desktopBridgeHolder.current;
+      desktopBridgeHolder.current = null;
       bridge?.dispose();
+      const demoEngine = desktopBridgeHolder.demoEngine;
+      desktopBridgeHolder.demoEngine = null;
+      demoEngine?.dispose();
     });
     teardown.push(() => appControlService?.dispose());
     if (appControlService) {
@@ -1737,8 +1746,13 @@ export async function createAdeRuntime(args: {
         getAuthToken: () => builtInBrowserBridgeAuthToken,
         logger,
       });
-      appControlRecorderBridgeHolder.current = appControlRecorderBridge;
-      appControlRecorderBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
+      desktopBridgeHolder.current = appControlRecorderBridge;
+      desktopBridgeHolder.demoEngine = createDemoEngineBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+        getAuthToken: () => builtInBrowserBridgeAuthToken,
+        logger,
+      });
+      desktopBridgeHolder.isAttached = () => Boolean(builtInBrowserBridgeAuthToken);
       // Released by the teardown step registered before appControlService's.
     }
     teardown.push(() => {
@@ -1904,6 +1918,7 @@ export async function createAdeRuntime(args: {
         getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
         onLinearIssueChatLinked: publishLinearChatLink,
         onEvent: (event) => {
+          feedDemoTrackFromChatEvent(event);
           pushEvent("runtime", event as unknown as Record<string, unknown>);
         },
         onTurnSettled: (event) => captureAgentTurnSettledAnalytics({

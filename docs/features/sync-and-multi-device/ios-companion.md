@@ -3200,9 +3200,9 @@ one stable subscription id per lane per app instance. Records arrive as
 `macDesktop.streamRecord` pushes (a `config` first, then Annex-B frames with
 SPS/PPS ahead of every keyframe), are base64-decoded off the main actor,
 rewritten to AVCC, and decoded through a `CMVideoFormatDescription` built from
-the in-band parameter sets; `MacDesktopStreamFrameGate` holds P-frames until
-the keyframe that follows any sequence gap, which is what the host's
-backpressure contract promises. `macDesktop.streamEnded` ends the session
+the in-band parameter sets; `H264FrameGate` (in the shared
+`H264SampleBufferFeeder`) holds P-frames until the keyframe that follows any
+sequence gap, which is what the host's backpressure contract promises. `macDesktop.streamEnded` ends the session
 (stopped/display destroyed) or waits for the reconnect
 (`connection_closed`). The still image is fetched once as the placeholder
 behind the first keyframe and stays when the host reports `stream.idle` — the

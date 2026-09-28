@@ -2732,6 +2732,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       x: input.x,
       y: input.y,
       text: input.text,
+      pointSize: runtime.streamStatus?.transport?.pointWidth && runtime.streamStatus.transport.pointHeight
+        ? { width: runtime.streamStatus.transport.pointWidth, height: runtime.streamStatus.transport.pointHeight }
+        : null,
       source: input.source ?? "agent",
     })).catch((error: unknown) => {
       args.logger.debug("apple.note_input_failed", {
@@ -6378,6 +6381,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       overlays: recordArgs.overlays ?? undefined,
       label: recordArgs.label ?? undefined,
       keepIdle: recordArgs.keepIdle ?? undefined,
+      plain: recordArgs.plain ?? undefined,
+      zoom: recordArgs.zoom ?? undefined,
       maxSeconds: recordArgs.maxSeconds ?? undefined,
     });
   };

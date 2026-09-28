@@ -1045,17 +1045,17 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     service.dispose();
   });
 
-  it("does not warm a view the panel has already shown", async () => {
-    // A view that has been on screen already has the surface, and warming it
-    // again would flash a pixel of the page for no reason on every tool switch.
+  it("uses the parked preview floor when the last panel size is too small", async () => {
+    // A preview below the usable capture size is parked at the floor so the
+    // page does not render as a narrow strip.
     fakes.fakeScreen.setDisplays([{ bounds: { x: 0, y: 0, width: 1280, height: 720 } }]);
     const { service, view, tabId } = await parkedTabFixture(collector, { width: 640, height: 360 });
     const parked = view.boundsCalls.at(-1)!;
     expect(parked).toMatchObject({
       x: 1280 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
       y: 720 + BUILT_IN_BROWSER_PARKED_PREVIEW_MARGIN,
-      width: 640,
-      height: 360,
+      width: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_WIDTH,
+      height: BUILT_IN_BROWSER_PARKED_PREVIEW_MIN_HEIGHT,
     });
 
     service.stopPreviewStream({ tabId });
@@ -1382,17 +1382,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("keeps the size the panel last showed a parked tab at", async () => {
-    // Parking used to floor every hidden tab at 960x600, firing a real window
-    // resize inside the page each way round.
+    // A usable remembered size survives parking without a page resize.
     const { service, view, tabId } = await parkedTabFixture(collector, { width: 1100, height: 700 });
     expect(view.boundsCalls.at(-1)).toMatchObject({ width: 1100, height: 700 });
     service.stopPreviewStream({ tabId });
 
-    // The case that matters: the Work pane is clamped to 26-55% of the window,
-    // so EVERY realistic pane is narrower than the 960px floor. Flooring here
-    // is what fired a real `window` resize inside the page each way round.
+    // An undersized pane has no usable page area, so the floor applies.
     const narrow = await parkedTabFixture(collector, { width: 480, height: 640 });
-    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 480, height: 640 });
+    expect(narrow.view.boundsCalls.at(-1)).toMatchObject({ width: 960, height: 600 });
     narrow.service.stopPreviewStream({ tabId: narrow.tabId });
 
     // A tab the panel never showed has no rect to reuse, so the floor applies.

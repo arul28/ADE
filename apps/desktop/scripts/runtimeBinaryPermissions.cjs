@@ -65,6 +65,7 @@ function collectDesktopRuntimeExecutableCandidates(rootPath) {
     "ade-capture-helper.exe",
     "ade-sim-helper",
     "ade-attention-notch",
+    "ade-media",
   ]) {
     candidates.push({
       filePath: path.join(rootPath, "resources", "native", helperName),

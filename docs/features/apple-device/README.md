@@ -426,7 +426,7 @@ ade --socket apple device-delete [--force] --text
 ade --socket apple device-cleanup [--power-off-idle] --text
 ade --socket apple test [--target <id>|--scheme <s>] [--only <ids>] [--build-only] --text
 
-ade --socket apple record-start [--overlays on|off] [--label <text>] [--keep-idle] [--max-seconds <n>] --text
+ade --socket apple record-start [--overlays on|off] [--label <text>] [--plain] [--max-seconds <n>] --text
 ade --socket apple record-stop [--keep|--discard] --text
 ade --socket apple record-list --text
 ade --socket apple record-delete --id <id> --text
@@ -489,24 +489,25 @@ identical and is deliberately not claimed.
    `fill-element`, `drag`, `select`, `open-url`) against a device with no
    running recording starts one automatically, tagged `auto`, owned by that
    chat, overlays per Settings.
-2. It stops at the end of the chat's turn, or after 10 minutes, whichever
+2. It stops at the end of the chat's turn, or after 5 minutes, whichever
    comes first. `record-start` while an auto recording is running converts it
    to manual (no restart, no gap) and swaps the auto cap for the manual one.
-   A manual recording a chat owns stops itself after 10 minutes of real time,
-   counted from its start or conversion (`--max-seconds` changes it, up to 4
-   hours), and files as proof with `stopReason: "cap"`. A person's recording
-   from the pane has no cap unless it asks for one.
+   Every manual recording stops itself after 5 minutes of real time, counted
+   from its start or conversion (`--max-seconds` sets less), and files as
+   proof with `stopReason: "cap"`. Two minutes with no input stops it too
+   (`"idle"`), as does a nearly full disk (`"disk"`).
 
-   Still time is cut by default. When no new picture and no overlay arrives
-   for more than 2 s, the helper keeps 0.75 s of the still and shifts later
-   frames back (`IdleGapCompressor` in the helper). A blinking caret or a
-   status-bar clock does not count as a new picture (`ScreenChange` compares
-   small grey thumbnails). The sidecar and `record-stop` carry `durationMs`
-   (the video), `wallDurationMs` (real time) and `idleCutMs`; the proof keeps
-   wall-clock `recordedFrom`/`recordedTo`, and its caption and drawer line say
-   "idle cut 2:07". `--keep-idle` sends `idleCompression: false` and records
-   at wall-clock length. An older helper ignores the field and does not echo
-   it, so the record says `idleCompression: false` and `idleCutMs: 0`.
+   The helper records a raw MP4 at wall clock with no overlays
+   (`idleCompression: false`, `overlays: false`, path `<id>.raw.mp4`). At the
+   stop the service turns it into a demo at `<id>.mp4` (see
+   [Demo videos](../proof.md#demo-videos)): still time cut, waits sped up,
+   zoom to each tap, tap rings, under 10 MB. The ring and badge settings still
+   decide whether the demo shows tap rings and typed text. The sidecar and
+   `record-stop` carry `durationMs` (the demo), `wallDurationMs` (real time)
+   and `idleCutMs`; the proof keeps wall-clock `recordedFrom`/`recordedTo`.
+   `--plain` (older name `--keep-idle`) files it as recorded, sized to fit.
+   A raw recording the service lost is still made into a demo when it is
+   reclaimed.
 3. An agent may `record-delete` a recording it owns that is not marked
    `proof`. Anything else is `APPLE_RECORDING_PINNED`.
 4. **Every recording files itself in the proof drawer the moment it stops**,
@@ -552,7 +553,7 @@ forwarded.
 | `show` (`reveal`) | show request (not an `ios_simulator` action) | `--floating`, `--session` |
 | `open-device` (`open-sim`, `boot`) | `openDevice` | `--device/--udid`, `--lane`, `--chat-session`, `--no-window`, `--force` |
 | `close-device` (`close-sim`) | `closeDevice` | `--device`, `--chat-session`, `--force`, `--ignore-ownership`, `--shutdown` |
-| `record-start` | `recordStart` | `--overlays on\|off`, `--label`, `--keep-idle`, `--max-seconds`, `--lane` |
+| `record-start` | `recordStart` | `--overlays on\|off`, `--label`, `--plain`, `--max-seconds`, `--lane` |
 | `record-stop` | `recordStop` | `--keep`, `--discard`, `--lane` |
 | `record-list` | `recordList` | `--lane` |
 | `record-delete` | `recordDelete` | `--id` (required), `--force`, `--lane` |

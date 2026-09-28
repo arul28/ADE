@@ -8400,6 +8400,7 @@ describe("MAC_DESKTOP_LANE_BOUND_ACTIONS", () => {
       "open",
       "present",
       "press",
+      "quitApp",
       "releaseWindow",
       "requestInputLease",
       "screenshot",

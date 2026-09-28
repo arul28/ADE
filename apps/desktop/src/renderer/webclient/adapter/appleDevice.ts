@@ -14,7 +14,7 @@ import type { AdeNamespace } from "./types";
  * 1. **The stream is a WebSocket, not a loopback body.** `startStream` mints a
  *    ticket instead of returning the helper's address, and `resolveStreamUrl`
  *    turns that ticket's path into an absolute `ws(s)://` URL against whatever
- *    endpoint this tab is connected through. `IosSimH264Video` reads either.
+ *    endpoint this tab is connected through. `H264StreamView` reads either.
  * 2. **The relay needs to be told the local path.** A direct endpoint resolves
  *    by URL arithmetic. A relay endpoint (`/connect/<machineKey>`) pairs the
  *    tab with a brain-side pipe that dials loopback itself, so the ticket path
@@ -172,7 +172,7 @@ export function createAppleDeviceNamespace(
       const resolved = resolveAppleStreamUrl(getEndpoint(), ticketPath);
       if (!resolved.url || !lastTicket) return resolved;
       // The token cannot ride a WebSocket header from a browser, so it rides
-      // the query the brain also accepts. `IosSimH264Video` still passes the
+      // the query the brain also accepts. `H264StreamView` still passes the
       // token separately for the loopback transport; this is the other one.
       const withToken = new URL(resolved.url);
       if (!withToken.searchParams.get("kind")) {

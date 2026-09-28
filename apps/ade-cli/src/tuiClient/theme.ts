@@ -208,6 +208,7 @@ export function sessionToneColor(tone: SessionStatusTone | null | undefined): st
 const SESSION_GLYPH_MARK: Record<Exclude<SessionStatusGlyph, null>, string> = {
   working: "◐",
   monitoring: "◇",
+  recording: "◉",
   planning: "◈",
   exploring: "○",
   implementing: "✎",

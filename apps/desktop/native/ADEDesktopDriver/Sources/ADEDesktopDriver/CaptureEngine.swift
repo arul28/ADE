@@ -112,6 +112,17 @@ final class CaptureEngine {
         /// The newest frame the idle cut skipped, so a small change during a
         /// final still (a clock tick) is still what the file ends on.
         var pendingBuffer: CVPixelBuffer?
+        /// What is recorded and at what size, so a recording of a screen that
+        /// never changed can still be written from one still picture.
+        var displayId: CGDirectDisplayID = 0
+        var windowId: CGWindowID?
+        /// The newest picture written and its time in the file. An MP4 track
+        /// ends at its last sample, so a stop repeats it at the end time, or a
+        /// screen that went still before the stop is missing from the file.
+        var lastAppended: CVPixelBuffer?
+        var lastAppendedTime: Double = -1
+        var width: Int = 0
+        var height: Int = 0
     }
 
     /// How long a reader may go without a picture on a screen where nothing is
@@ -276,6 +287,7 @@ final class CaptureEngine {
     /// made against a stale content snapshot.
     static let startBackoffs: [TimeInterval] = [0.25, 0.5, 1.0, 2.0]
 
+
     /// The `SCStreamError` codes worth trying again.
     ///
     /// Everything here describes the world being momentarily not ready — a
@@ -354,17 +366,24 @@ final class CaptureEngine {
                 }
                 let settled = SettledFlag()
                 let failure = ValueBox<Error>()
+                let start = AbandonableStart()
                 stream.startCapture { error in
+                    let givenUp = start.answer()
                     failure.set(error)
                     settled.set()
+                    // Given up on before it answered: stopped only now, once
+                    // it has. Stopping a stream whose start was still pending
+                    // interrupted every other stream in the process.
+                    if givenUp, error == nil { stream.stopCapture { _ in } }
                 }
                 RunLoopPump.wait(until: { settled.isSet }, timeout: 10)
                 guard settled.isSet else {
                     // A completion that never came. Treated as a failure and
                     // never as a success: the old code carried on here, which
                     // handed back a stream that was not capturing and a reply
-                    // that said it was.
-                    stream.stopCapture { _ in }
+                    // that said it was. The stream is left to its completion
+                    // (see above), unless it answered just now.
+                    if start.abandon(), failure.value == nil { stream.stopCapture { _ in } }
                     throw CaptureError.failed("ScreenCaptureKit did not answer the \(label) start request.")
                 }
                 if let error = failure.value {
@@ -1055,6 +1074,10 @@ final class CaptureEngine {
                 let placed = state.idleCut.place(frameAt: elapsed) { Self.idleThumbnail(of: buffer) }
                 let willAppend = placed != nil && input.isReadyForMoreMediaData && writer.status == .writing
                 state.pendingBuffer = willAppend ? nil : buffer
+                if willAppend, let placed {
+                    state.lastAppended = buffer
+                    state.lastAppendedTime = placed
+                }
                 self.lock.lock()
                 self.recordings[laneId] = state
                 if willAppend {
@@ -1122,7 +1145,11 @@ final class CaptureEngine {
             firstPresentationTime: nil,
             firstFrameAt: nil,
             idleCut: RecordingIdleCut(enabled: !keepIdle),
-            pendingBuffer: nil
+            pendingBuffer: nil,
+            displayId: displayId,
+            windowId: windowId,
+            width: evenWidth,
+            height: evenHeight
         )
         lock.unlock()
         return startedAt
@@ -1166,10 +1193,16 @@ final class CaptureEngine {
         recordedFrameCounts.removeValue(forKey: laneId)
         lock.unlock()
 
-        // A recording that never received a frame has no moov and no pictures:
-        // it is not a short video, and answering `ok` with its path filed a
-        // zero-byte file as proof. Refused with a reason the caller can act on.
+        // ScreenCaptureKit sends a frame only when the content is redrawn, so a
+        // screen that did not change for the whole recording gives none. That
+        // is a still video, not a failure: it is written from one picture of
+        // what was recorded, held for the real length. Only when even that
+        // picture cannot be taken is the recording refused.
         guard state.firstPresentationTime != nil else {
+            if let still = writeStillRecording(state: state, finalizeBudget: finalizeBudget) {
+                log("recording for lane \(laneId) had no redraw; wrote one still picture for \(still.wallDurationMs) ms")
+                return still
+            }
             state.writer.cancelWriting()
             try? FileManager.default.removeItem(at: URL(fileURLWithPath: state.filePath))
             throw DriverError(
@@ -1185,11 +1218,24 @@ final class CaptureEngine {
         var idleCut = state.idleCut
         let wallSeconds = max(0, Date().timeIntervalSince(state.firstFrameAt ?? state.startedAt))
         let finish = idleCut.finish(at: wallSeconds, pendingFrame: state.pendingBuffer != nil)
+        var lastTime = state.lastAppendedTime
+        var lastBuffer = state.lastAppended
         if let finalFrame = finish.finalFrame,
            let buffer = state.pendingBuffer,
            state.writer.status == .writing,
+           state.input.isReadyForMoreMediaData,
+           state.adaptor.append(buffer, withPresentationTime: CMTime(seconds: finalFrame, preferredTimescale: 600)) {
+            lastTime = finalFrame
+            lastBuffer = buffer
+        }
+        // Hold the last picture to the end: repeat it just before the end
+        // time, so the track (and the video's length) reaches the stop.
+        let holdTime = finish.end - 1.0 / 60
+        if let buffer = lastBuffer,
+           holdTime > lastTime + 1.0 / 60,
+           state.writer.status == .writing,
            state.input.isReadyForMoreMediaData {
-            state.adaptor.append(buffer, withPresentationTime: CMTime(seconds: finalFrame, preferredTimescale: 600))
+            state.adaptor.append(buffer, withPresentationTime: CMTime(seconds: holdTime, preferredTimescale: 600))
         }
 
         if state.writer.status == .writing {
@@ -1241,6 +1287,55 @@ final class CaptureEngine {
             wallDurationMs: wallDurationMs,
             idleCutMs: max(wallDurationMs - durationMs, 0)
         )
+    }
+
+    /// A recording whose screen never changed, written from one picture held
+    /// from the start to the stop. Nil when the picture or the writer fails.
+    private func writeStillRecording(state: RecordingState, finalizeBudget: TimeInterval) -> FinishedRecording? {
+        guard #available(macOS 12.3, *), state.width > 0, state.height > 0 else { return nil }
+        guard let image = try? captureImage(displayId: state.displayId, windowId: state.windowId) else { return nil }
+        var pixelBuffer: CVPixelBuffer?
+        let attributes: [String: Any] = [
+            kCVPixelBufferCGImageCompatibilityKey as String: true,
+            kCVPixelBufferCGBitmapContextCompatibilityKey as String: true,
+        ]
+        guard
+            CVPixelBufferCreate(kCFAllocatorDefault, state.width, state.height, kCVPixelFormatType_32BGRA, attributes as CFDictionary, &pixelBuffer) == kCVReturnSuccess,
+            let buffer = pixelBuffer
+        else { return nil }
+        CVPixelBufferLockBaseAddress(buffer, [])
+        let drawn: Bool = {
+            guard let context = CGContext(
+                data: CVPixelBufferGetBaseAddress(buffer),
+                width: state.width,
+                height: state.height,
+                bitsPerComponent: 8,
+                bytesPerRow: CVPixelBufferGetBytesPerRow(buffer),
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue | CGBitmapInfo.byteOrder32Little.rawValue
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: state.width, height: state.height))
+            return true
+        }()
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        guard drawn, state.writer.startWriting() else { return nil }
+        state.writer.startSession(atSourceTime: .zero)
+        guard state.input.isReadyForMoreMediaData, state.adaptor.append(buffer, withPresentationTime: .zero) else { return nil }
+        let wallSeconds = max(0.5, Date().timeIntervalSince(state.startedAt))
+        let writer = state.writer
+        let settled = Self.finalizeRecordingWriter(
+            writer: writer,
+            input: state.input,
+            endTime: CMTime(seconds: wallSeconds, preferredTimescale: 600),
+            timeout: finalizeBudget,
+            onCompletion: { [weak self] in self?.releaseAbandonedWriter(writer) }
+        )
+        guard settled, writer.status == .completed else {
+            if !settled { abandonWriter(writer) }
+            return nil
+        }
+        let wallMs = Int((wallSeconds * 1000).rounded())
+        return FinishedRecording(filePath: state.filePath, durationMs: wallMs, wallDurationMs: wallMs, idleCutMs: 0)
     }
 
     /// A greyscale thumbnail of a captured BGRA frame, for the idle cut.

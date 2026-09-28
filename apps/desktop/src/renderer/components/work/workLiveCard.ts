@@ -769,10 +769,16 @@ export function workLiveCardAspect(
   sourceAspect?: number | null,
 ): number {
   if (typeof sourceAspect === "number" && Number.isFinite(sourceAspect) && sourceAspect > 0) {
-    return sourceAspect;
+    // A parked browser tab can keep the size of a narrow, tall Work pane, and
+    // a card of that shape is a sliver down the column. The card stays a
+    // landscape box, and the page is shrunk to fit inside it.
+    return tool === "browser" ? Math.max(sourceAspect, WORK_LIVE_BROWSER_MIN_ASPECT) : sourceAspect;
   }
   return tool ? WORK_LIVE_TOOL_ASPECT[tool] : WORK_LIVE_CARD_DEFAULT_ASPECT;
 }
+
+/** The narrowest box the browser card takes: 4:3. */
+export const WORK_LIVE_BROWSER_MIN_ASPECT = 4 / 3;
 
 /**
  * The width range available in a column of this width.

@@ -12,14 +12,14 @@ import { BUILT_IN_BROWSER_BRIDGE_AUTH_PARAM } from "./desktopBridgeMethods";
  * The App Control screencast recorder (Windows and Linux) as the runtime
  * daemon reaches it.
  *
- * The encoder needs a hidden Electron renderer, so it lives in the desktop.
- * The daemon talks to it over the same desktop bridge socket and with the same
+ * The recorder writes the `.aderaw` capture that the desktop's Chromium demo
+ * engine renders, so it lives in the desktop with that engine. The daemon talks to it over the same desktop bridge socket and with the same
  * bridge token as the built-in browser. Methods are
  * `app_control_recorder.<start|pushFrame|stop|cancel>`.
  *
  * Frames: at most one `pushFrame` is in flight per recording. A frame that
  * arrives meanwhile replaces the waiting one, so a slow bridge drops frames
- * instead of building a backlog (the host does the same inside the renderer).
+ * instead of building a backlog (the host keeps the newest frame the same way).
  */
 
 export const APP_CONTROL_RECORDER_BRIDGE_PREFIX = "app_control_recorder.";
@@ -32,7 +32,7 @@ export function isAppControlRecorderBridgeMethod(name: string): name is AppContr
 
 const CONNECT_TIMEOUT_MS = 3_000;
 const CALL_TIMEOUT_MS = 30_000;
-/** Stop finalises the file in the renderer and drains the last chunks. */
+/** Stop flushes the capture to disk. */
 const STOP_TIMEOUT_MS = 60_000;
 /** How long dispose lets a last cancel or stop reach the desktop before it closes the socket. */
 const DISPOSE_DRAIN_MS = 2_000;

@@ -61,9 +61,11 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
   }
 }
 
-/// Mirrors `SESSION_ACTIVITY_VALUES` in `apps/desktop/src/shared/types/sessions.ts`.
+/// Mirrors `SESSION_ACTIVITY_VALUES` plus `SESSION_SYSTEM_ACTIVITY_VALUES` in
+/// `apps/desktop/src/shared/types/sessions.ts`.
 let workSessionActivityValues: Set<String> = [
   "planning", "exploring", "implementing", "testing", "debugging", "reviewing", "shipping", "monitoring",
+  "recording",
 ]
 
 /// The activity detail that refines a running Work row's one status slot:
@@ -96,9 +98,10 @@ func workSessionActivityDetailPresentation(
   guard !isStaleForTurn else { return nil }
 
   let isPlanning = activityStatus.value == "planning"
+  let isRecording = activityStatus.value == "recording"
   return WorkSessionStatusPresentation(
     label: activityStatus.value.capitalized,
-    tone: isPlanning ? .violet : .blue,
+    tone: isRecording ? .red : isPlanning ? .violet : .blue,
     glyph: ActivityGlyph(rawValue: activityStatus.value) ?? .working,
     showsElapsed: true,
     prominent: false,

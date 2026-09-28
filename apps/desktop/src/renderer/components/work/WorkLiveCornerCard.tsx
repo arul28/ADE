@@ -67,6 +67,8 @@ import {
 } from "./workLiveCard";
 import { MacDesktopMiniPlayer } from "./MacDesktopMiniPlayer";
 import { AppControlMiniPlayer } from "./AppControlMiniPlayer";
+import { FloatingPlayerCapturePill, useFloatingPlayerCapture } from "../shared/FloatingPlayer";
+import { showToast } from "../app/toast/toastStore";
 
 /**
  * The floating live-preview card.
@@ -395,10 +397,31 @@ export function WorkLiveCornerCard({
 
   /* ── Which tool, and does it fit ───────────────────────────────────────── */
 
+  /**
+   * The tab the card pictures: this chat's own tab when it has one, else the
+   * browser's active tab.
+   *
+   * It used to be the active tab only, so an agent working in a background tab
+   * (`--tab <id>`, or a tab it opened without activating) floated nothing over
+   * its chat while a person's tab sat in front. Among several tabs the chat
+   * owns, the one it touched last wins — every claim renews `ownerClaimedAt`.
+   */
   const activeBrowserTab = useMemo(() => {
     if (!browserStatus) return null;
-    return browserStatus.tabs.find((tab) => tab.id === browserStatus.activeTabId) ?? browserStatus.tabs[0] ?? null;
-  }, [browserStatus]);
+    const active = browserStatus.tabs.find((tab) => tab.id === browserStatus.activeTabId) ?? browserStatus.tabs[0] ?? null;
+    if (!chatSessionId || active?.ownerChatSessionId === chatSessionId) return active;
+    let owned: (typeof browserStatus.tabs)[number] | null = null;
+    let ownedAt = -1;
+    for (const tab of browserStatus.tabs) {
+      if (tab.ownerChatSessionId !== chatSessionId) continue;
+      const claimedAt = Date.parse(tab.ownerClaimedAt ?? "") || 0;
+      if (claimedAt > ownedAt) {
+        owned = tab;
+        ownedAt = claimedAt;
+      }
+    }
+    return owned ?? active;
+  }, [browserStatus, chatSessionId]);
 
   // Every per-tool question the card asks — live, owner, caption, handoff,
   // recording, session key — answered once, by the adapter map beside the tool
@@ -867,6 +890,39 @@ export function WorkLiveCornerCard({
     setLocalFloating((current) => current.filter((entry) => entry !== tool));
   }, [chatSessionId, sources, tool]);
 
+  /*
+    Stop, from the card, through the browser's own stop. "Making demo…" holds
+    from the click until the answer: the tab's `recording` goes null early in
+    that stretch, so the stop in flight outranks it.
+  */
+  const recordingTab = tool === "browser" ? activeBrowserTab : null;
+  const recordingStartedAt = recordingTab?.recording?.startedAt ?? null;
+  const recordingTabId = recordingTab?.id ?? null;
+  // The chat's id only for its own tab: the service claims the tab for any
+  // chat that names itself, and a person stopping their own recording must
+  // not hand their tab to this chat's agent.
+  const recordingTabOwned = chatSessionId != null && recordingTab?.ownerChatSessionId === chatSessionId;
+  const stopBrowserRecording = useCallback(async () => {
+    const stop = window.ade?.builtInBrowser?.stopRecording;
+    if (!recordingTabId || !stop) return;
+    await stop({
+      ...(browserViewRoot ? { projectRoot: browserViewRoot } : {}),
+      tabId: recordingTabId,
+      ...(recordingTabOwned && chatSessionId ? { chatSessionId } : {}),
+    }, runtimePinRef.current).catch((error: unknown) => {
+      showToast({
+        tone: "error",
+        title: "Recording did not stop",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, [browserViewRoot, chatSessionId, recordingTabId, recordingTabOwned]);
+  const recordingCapture = useFloatingPlayerCapture({
+    startedAt: recordingStartedAt,
+    makingDemo: false,
+    stop: recordingTabId ? stopBrowserRecording : null,
+  });
+
   const activate = useCallback(() => {
     if (suppressClickRef.current || draggingRef.current || resizeStartRef.current || !tool) return;
     onPick(tool);
@@ -1040,6 +1096,19 @@ export function WorkLiveCornerCard({
             ) : null}
 
             {/*
+              While the page records: the same live pill and Stop the tool's
+              pane draws, so a recording is never running behind a card that
+              only has a red dot to say so. Inert to the card's own click.
+            */}
+            {recordingCapture ? (
+              <FloatingPlayerCapturePill
+                capture={recordingCapture}
+                attrPrefix="live-card"
+                marker={{ "data-live-card-inert": "" }}
+              />
+            ) : null}
+
+            {/*
               At rest: one 8px dot. It is the whole chrome, and it is enough —
               the card's job is to show you the screen, and a title bar over a
               picture spends a tenth of it saying what the picture already says.
@@ -1058,6 +1127,22 @@ export function WorkLiveCornerCard({
               )}
               style={statusColor ? { background: statusColor } : undefined}
             />
+
+            {/* The tool's glyph at rest, the same one its Work tab shows; the pill replaces it on hover. */}
+            {Icon ? (
+              <span
+                aria-hidden="true"
+                data-live-card-icon=""
+                className={cn(
+                  "pointer-events-none absolute left-2 top-2 inline-flex h-5 w-5 items-center justify-center rounded-md",
+                  "bg-black/55 shadow-[0_0_0_1px_rgba(255,255,255,0.08)]",
+                  "transition-opacity duration-[120ms] ease-out motion-reduce:transition-none",
+                  "group-hover:opacity-0 group-focus-within:opacity-0",
+                )}
+              >
+                <Icon size={12} weight="duotone" style={{ color: hue }} />
+              </span>
+            ) : null}
 
             {/*
               …and on hover, in its place: the 32px pill. It is also the drag

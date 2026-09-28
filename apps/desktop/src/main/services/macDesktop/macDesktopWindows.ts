@@ -19,6 +19,8 @@ import {
   type MacDesktopOpenArgs,
   type MacDesktopOpenResult,
   type MacDesktopPresentArgs,
+  type MacDesktopQuitAppArgs,
+  type MacDesktopQuitAppResult,
   type MacDesktopReleaseArgs,
   type MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
@@ -231,6 +233,23 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     return { released };
   };
 
+  const quitApp = async (args: MacDesktopQuitAppArgs): Promise<MacDesktopQuitAppResult> => {
+    const laneId = args.laneId.trim();
+    const seat = await deps.ensureProvider();
+    const reply = await seat.quitApp({ laneId, app: args.app?.trim() || null });
+    const quit = (Array.isArray(reply.quit) ? reply.quit : [])
+      .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry != null)
+      .map((entry) => ({
+        pid: asNumber(entry.pid, 0),
+        appName: typeof entry.appName === "string" ? entry.appName : "app",
+        bundleId: typeof entry.bundleId === "string" ? entry.bundleId : null,
+        released: entry.released === true,
+      }));
+    for (const entry of quit) ownership.unwatchLaunch(entry.pid);
+    deps.emit({ type: "windows-changed", laneId, windows: await listInternal(laneId) });
+    return { quit };
+  };
+
   const present = async (args: MacDesktopPresentArgs): Promise<{ moved: number }> => {
     const laneId = args.laneId.trim();
     deps.requireDisplay(laneId);
@@ -241,5 +260,5 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     return { moved: asNumber(reply.moved, 0) };
   };
 
-  return { listInternal, open, claimWindow, releaseWindow, present };
+  return { listInternal, open, claimWindow, releaseWindow, quitApp, present };
 }

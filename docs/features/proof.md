@@ -45,6 +45,9 @@ promotes any of them after the fact.
 | `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` | Typed `ade proof …` commands and JSON-RPC tools. |
 | `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
 | `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the collapsible inline proof filmstrip. |
+| `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner, and the proof sentences and chapters every surface shares. |
+| `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, and the two engine clients. |
+| `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
 
 ## Runtime ownership
 
@@ -294,9 +297,12 @@ what the caller asked for, so it reflects the authorized owner set.
 - `ade proof record --seconds <n>` records the lane's Mac Desktop display for
   `n` seconds (1–120, default 10). It starts the Mac Desktop recorder, waits,
   stops it, and files the video the way `ade mac-desktop record stop` does,
-  idle cut included. It refuses when a recording is already running on the
+  as a demo. It refuses when a recording is already running on the
   lane. With no lane display it is refused like `capture`; `--real-screen`
   records the whole real screen with `screencapture -v` instead.
+- `ade proof step "<text>"` adds a step caption to every recording running on
+  the caller's lane (or its chat, when no lane resolves). See
+  [Demo videos](#demo-videos).
 - `ade proof launch`, `ade proof interact`, and `ade proof environment` are lower-level computer-use helpers for capture workflows.
 - `ade proof ingest --input-json ...` ingests externally produced artifacts directly through the proof broker.
 - `ade proof rm <artifact-id> [<artifact-id>…]` irreversibly deletes the selected
@@ -311,6 +317,78 @@ what the caller asked for, so it reflects the authorized owner set.
   browser-output root.
 
 ---
+
+## Demo videos
+
+Every recording ADE files is a demo: the agent returns a short, readable video
+of what it did, not a raw screen capture. This holds on every recording surface:
+the Apple device, the lane's Mac Desktop, App Control (window capture on macOS,
+the CDP screencast on Windows and Linux) and the built-in browser.
+
+### What a demo does
+
+| Step | Rule |
+|---|---|
+| Still time | A still stretch over 2 s keeps 0.75 s; the rest is cut. |
+| Waits | A page load, or a small change (spinner, progress bar) after an action while the agent waits on a tool, plays at 2×, 4×, 8× or 16× so it lasts about 2.5 s. A `4×` badge shows. Past 16× the middle is cut. |
+| Agent thinking | While the agent thinks and acts on nothing, the screen counts as still, even if a clock or an animation changes. |
+| Actions | 0.3 s before to 1.2 s after each action always plays at normal speed. |
+| Zoom | The recording splits into scenes at each navigation or change of the whole screen. In each scene the camera zooms once (at most 2×) to one steady view that holds every action and every change in it, holds that view, and zooms out at the end of the scene. It does not move between actions in a scene. A scene with a short zoom, or one whose view would be almost the whole screen, gets no zoom. A phone recording does not zoom unless it started with `--zoom`; then each tap gets a short 1.3× zoom. |
+| Pointer | Mac Desktop, App Control and the browser get a drawn pointer that glides to each action, and a ring on each click. The Apple device gets tap rings. |
+| Captions | Each `ade proof step "<text>"` shows at the bottom from that moment until the next step (at most 5 s). With no steps, the actions' own labels show ("Click Save"). |
+| Size | Every file, plain ones included, ends under 10 MB: GitHub Free's limit for a PR video. The output steps down 1080p30 → 720p30 → 720p15 → 720p10 → 540p10 until the bitrate that fits reads well, then the timing gets stricter. |
+
+`record start --plain` (older name `--keep-idle`) skips everything but the
+size fit. Agents use it only when the user asks for the recording as it was
+recorded.
+
+### How it works
+
+1. `record start` begins a raw recording at wall clock with nothing drawn:
+   an MP4 from the Swift recorders, or an `.aderaw` capture (JPEG frames or
+   H.264 access units) from the Chromium-side recorders. It sits beside the
+   final path as `<name>.raw.<ext>`.
+2. While it runs, the process that owns the recording logs a track
+   (`demoTrackRegistry.ts`): every action with its point and element, page
+   loads, step captions, and the owning chat's state (thinking, or waiting on
+   a tool), read from the chat's own `tool_call`/`tool_result`/`done` events.
+3. At the stop, `produceDemoVideo` (`demoRenderService.ts`) asks an engine to
+   measure the raw file, plans the demo (`demoPlanner.ts`, pure), asks the
+   engine to render the plan, refits once or twice when the file is over
+   10 MB, and deletes the raw file. ADE never keeps two files of one
+   recording.
+4. The proof is filed with `metadata.demo`: the source and output lengths,
+   what was cut and sped up, and the steps with their times in the video.
+   ADE's player lists the steps as chapters on the desktop and on iOS.
+
+Two engines execute the same plan (`demoContract.ts`), so a demo looks the
+same on every OS:
+
+- **`ade-media`** (`apps/desktop/native/ADEMedia`), macOS only. It reads MP4
+  and MOV, runs in the headless brain, and ships to remote Macs with the other
+  native helpers.
+- **The Chromium engine** (`chromiumDemoEngine.ts`), in the ADE desktop app on
+  any OS. It reads `.aderaw`, decodes and encodes with WebCodecs, and muxes
+  with `mp4-muxer`. The brain reaches it over the desktop bridge.
+
+When no engine can read the raw file, an MP4 is filed as recorded and the
+metadata says why (`fallbackReason`); an `.aderaw` capture cannot be played,
+so the stop reports the failure and files nothing. A demo render that fails is
+tried once more as a plain render first.
+
+### Limits every recording shares
+
+| Limit | Value | Stop reason |
+|---|---|---|
+| Length | 5 minutes of wall clock (`--max-seconds` sets less) | `cap` |
+| No action | 2 minutes with no action, load or step on the track | `idle` |
+| Raw file | 2 GB | `disk` |
+| Free disk | under 5 GB on the raw file's volume | `disk` |
+
+A chat's recording that a limit stops is filed as proof, with or without a
+caption. A recording's stop answers after the demo is filed; the desktop
+client gives the four `stopRecording`/`recordStop` actions four minutes, and
+the panes show "Making demo…" meanwhile.
 
 ## Owner inference
 

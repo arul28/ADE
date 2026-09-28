@@ -11,6 +11,10 @@
  * gates in, and keeps the API surface.
  */
 
+import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
+import { macDesktopDemoKey } from "./macDesktopRecording";
 import {
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
   type DesktopSeatProvider,
@@ -255,6 +259,50 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     return { payload: {}, element: null, needsReal: false };
   };
 
+  /** A bare `{x, y}` in a driver payload (a drag's `from`), global points. */
+  const pointOf = (payload: Record<string, unknown>): { x: number; y: number } | null => {
+    const source = (payload.from && typeof payload.from === "object" ? payload.from : payload) as Record<string, unknown>;
+    return typeof source.x === "number" && typeof source.y === "number" ? { x: source.x, y: source.y } : null;
+  };
+
+  /**
+   * Notes one action on the lane's running recording, in the display's own
+   * frame: element frames and points are global screen points, the recording
+   * is the lane's display. A lane that is not recording notes nothing.
+   */
+  const noteDemoAction = (laneId: string, action: {
+    kind: DemoTrackEventKind;
+    label: string | null;
+    element: MacDesktopElement | null;
+    point: { x: number; y: number } | null;
+    by: "agent" | "user";
+  }): void => {
+    const key = macDesktopDemoKey(laneId);
+    if (!demoTrackRegistry.isRecording(key)) return;
+    let display: MacDesktopDisplay;
+    try {
+      display = deps.requireDisplay(laneId);
+    } catch {
+      return;
+    }
+    if (display.width <= 0 || display.height <= 0) return;
+    const nx = (x: number) => (x - display.origin.x) / display.width;
+    const ny = (y: number) => (y - display.origin.y) / display.height;
+    const frame = action.element?.frame ?? null;
+    const center = action.element?.center ?? action.point;
+    demoTrackRegistry.note(key, {
+      kind: action.kind,
+      by: action.by,
+      ...(center ? { x: nx(center.x), y: ny(center.y) } : {}),
+      ...(frame ? { rect: [nx(frame.x), ny(frame.y), frame.width / display.width, frame.height / display.height] } : {}),
+      // A type event's label is the typed text itself (already filtered), never
+      // the field's name: the caption reads `Type "<label>"`.
+      label: action.kind === "type"
+        ? action.label ?? undefined
+        : action.label ?? action.element?.title ?? action.element?.label ?? undefined,
+    });
+  };
+
   const leaseHolderId = (chatSessionId: string | null | undefined): string =>
     chatSessionId?.trim() || "anonymous-agent";
 
@@ -309,6 +357,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     silent?: boolean;
     /** The first step of two: the second one observes, so this one does not. */
     skipObservation?: boolean;
+    /** What a running recording's demo track notes about this action. */
+    demo?: { kind: DemoTrackEventKind; label?: string | null } | null;
   }): Promise<MacDesktopInputResult> => {
     const laneId = args.laneId;
     deps.requireDisplay(laneId);
@@ -359,6 +409,17 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     ownership.touchDisplay(laneId);
     deps.noteTurnActivity(laneId, args.chatSessionId);
     if (failure) throw failure;
+    if (args.demo) {
+      const element = args.resolved
+        ?? (resolvedIndex != null ? resolvedAgainst?.elements.find((entry) => entry.index === resolvedIndex) ?? null : null);
+      noteDemoAction(laneId, {
+        kind: args.demo.kind,
+        label: args.demo.label ?? null,
+        element,
+        point: pointOf(args.payload),
+        by: args.controllerId?.trim() ? "user" : "agent",
+      });
+    }
     // A human takeover always carries a controller id; the action bus strips
     // that field from every agent-shaped caller. The fast path never reaches
     // here, so a person's pointer does not count as an agent driving.
@@ -452,6 +513,12 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
     deps.noteTurnActivity(laneId, args.chatSessionId);
+    // A person's own clicks on the live view count for the demo too; their
+    // pointer moves do not (sixty a second, and the drawn pointer follows
+    // actions, not motion).
+    if (args.command === "click") {
+      noteDemoAction(laneId, { kind: "click", label: null, element: null, point: pointOf(args.payload), by: "user" });
+    }
   };
 
   return {
@@ -479,6 +546,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         controllerId: args.controllerId ?? null,
         silent: isSilent(args, mode),
         caption: `click · ${label}`,
+        demo: { kind: "click", label: label === "point" ? null : label },
         target: { ...target.payload },
       });
     },
@@ -505,6 +573,15 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         silent,
         skipObservation: submit,
         caption,
+        // Only for a named field that is not a secure (password) field: a demo
+        // goes to a pull request, and text typed into whatever had focus may
+        // be a password.
+        demo: {
+          kind: "type",
+          label: target.element && target.element.subrole !== "AXSecureTextField" && target.element.role !== "AXSecureTextField"
+            ? demoTypedLabelForField(args.text, [target.element.title, target.element.label, target.element.identifier, target.element.help])
+            : null,
+        },
         target: { ...target.payload },
       });
       if (!submit) return typed;
@@ -548,6 +625,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         controllerId: args.controllerId ?? null,
         silent: isSilent(args, args.mode ?? "accessibility"),
         caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
+        demo: { kind: "key", label: [...(args.modifiers ?? []), args.key].join("+") },
         target: { key: args.key, modifiers: args.modifiers ?? [] },
       });
     },
@@ -571,6 +649,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         controllerId: args.controllerId ?? null,
         silent: isSilent(args, mode),
         caption: `scroll · ${args.direction}`,
+        demo: { kind: "scroll", label: null },
         target: { ...target.payload, direction: args.direction },
       });
     },
@@ -596,6 +675,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         controllerId: args.controllerId ?? null,
         silent: isSilent(args, "real"),
         caption: "drag",
+        demo: { kind: "drag", label: null },
         target: { from: from.payload, to: to.payload },
       });
     },

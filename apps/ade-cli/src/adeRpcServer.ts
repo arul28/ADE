@@ -1,3 +1,5 @@
+import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
+import { demoTrackRegistry } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
 import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -721,6 +723,23 @@ const TOOL_SPECS: ToolSpec[] = [
         artifactIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
         prUrl: { type: "string", minLength: 1 },
         commentUrl: { type: "string" },
+      }
+    }
+  },
+  {
+    name: "note_demo_step",
+    description: "Add a step caption to the caller's running recordings (`ade proof step`). The demo shows it at the bottom of the video from this moment, and ADE's player lists it as a chapter.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["text"],
+      properties: {
+        text: { type: "string", minLength: 1, maxLength: 200 },
+        callerRoot: { type: "string" },
+        ownerKind: { type: "string" },
+        ownerId: { type: "string" },
+        laneId: { type: "string" },
+        chatSessionId: { type: "string" },
       }
     }
   },
@@ -1492,6 +1511,7 @@ const MUTATION_TOOLS = new Set([
   "create_lane",
   "delete_computer_use_artifacts",
   "link_computer_use_artifacts_to_pr",
+  "note_demo_step",
   "prune_broken_computer_use_artifacts",
   "recover_computer_use_artifact",
   "run_ade_action",
@@ -2461,6 +2481,17 @@ async function resolveProofDisplayTarget(
     laneId: sessionLaneId ?? inferredLaneId ?? namedLaneId ?? null,
     chatSessionId,
   };
+}
+
+/**
+ * Notes a browser recording's start or stop for the owning chat's status.
+ * Keyed by chat, not tab: a start without `--tab` and a stop with one name
+ * the same recording.
+ */
+function noteBrowserRecording(session: SessionState, running: boolean): void {
+  const chatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!chatSessionId) return;
+  demoTrackRegistry.noteExternalRecording(`browser:${chatSessionId}`, chatSessionId, running, RECORDING_MAX_MS + 60_000);
 }
 
 /**
@@ -3993,6 +4024,7 @@ const MAC_DESKTOP_NON_DRIVING_ACTIONS = new Set<string>([
   ...MAC_DESKTOP_READ_ONLY_ACTIONS,
   "stop",
   "releaseWindow",
+  "quitApp",
   "observe",
   "wait",
   "screenshot",
@@ -5502,9 +5534,16 @@ async function runTool(args: {
       }
     } catch (error) {
       undoBrowserActivityOnFailure?.();
+      // A stop that failed still ended the recording in the desktop app.
+      if (domain === "built_in_browser" && action === "stopRecording") noteBrowserRecording(session, false);
       throw error;
     }
     noteBrowserActivityOnSuccess?.();
+    // A browser recording runs in the desktop app. The chat's "Recording"
+    // status lives here, so the start and the stop are noted as they pass.
+    if (domain === "built_in_browser" && (action === "startRecording" || action === "stopRecording")) {
+      noteBrowserRecording(session, action === "startRecording");
+    }
     await rememberCaptureActionResult(runtime, domain, action, result);
     if (transformScopedResult) result = transformScopedResult(result);
     if (domain === "pty" && (action === "resumeSession" || action === "sendToSession") && isRecord(result) && result.resumed === true) {
@@ -6534,6 +6573,43 @@ async function runTool(args: {
           limit: asNumber(toolArgs.limit, 50),
         })),
     };
+  }
+
+  if (name === "note_demo_step") {
+    const text = asOptionalTrimmedString(toolArgs.text);
+    if (!text) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the step's text.");
+    validateComputerUseOwnerClaims(runtime, session, toolArgs);
+    const target = await resolveProofDisplayTarget(runtime, session, toolArgs);
+    if (!target.laneId && !target.chatSessionId) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "ADE could not tell which lane or chat this step belongs to. Run it from the lane's worktree or from its chat.",
+      );
+    }
+    let noted = demoTrackRegistry.noteStep({ laneId: target.laneId, chatSessionId: target.chatSessionId }, text);
+    // Browser recordings live in the desktop app's own registry. Best effort:
+    // a machine with no desktop app attached has no browser recording to caption.
+    const browser = getAdeActionDomainServices(runtime).built_in_browser as
+      | { noteDemoStep?: (args: Record<string, unknown>) => unknown }
+      | undefined;
+    // The desktop bridge accepts a call only with the chat's browser
+    // capability, and it scopes the step to that chat's lane itself. A caller
+    // without one (a plain terminal) has no browser recording to caption.
+    const browserActorToken = asOptionalTrimmedString(session.identity.browserActorToken);
+    const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (typeof browser?.noteDemoStep === "function" && browserActorToken && callerChatSessionId) {
+      try {
+        const reply = await Promise.race([
+          Promise.resolve(browser.noteDemoStep(scopeBuiltInBrowserAdeActionArgs(session, "noteDemoStep", { text }))),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref?.()),
+        ]);
+        const extra = reply && typeof reply === "object" ? (reply as { noted?: unknown }).noted : null;
+        if (typeof extra === "number" && Number.isFinite(extra)) noted += extra;
+      } catch (error) {
+        runtime.logger.warn("demo_video.browser_step_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return { noted, laneId: target.laneId, chatSessionId: target.chatSessionId, text };
   }
 
   if (name === "link_computer_use_artifacts_to_pr") {

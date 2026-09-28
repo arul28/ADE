@@ -96,6 +96,17 @@ ade --socket browser record start --tab <tab-id> --caption "Checkout flow" --tex
 ade --socket browser record stop --tab <tab-id> --text
 ```
 
+Every recording becomes a **demo** when it stops: still time cut, waits sped
+up, zoom to where the actions happen (a phone only with `--zoom`), a pointer and click rings, under 10 MB (GitHub's
+limit for a PR video). Mark the steps while recording with
+`ade proof step "<what happens next>"`; each one is a caption in the video
+and a chapter in ADE's player. `record start --plain` keeps a recording as it
+was recorded; use it only when the user asks. A recording stops itself after
+5 minutes, or after 2 minutes with no action, so record the flow that proves
+the claim and not the whole task: set up first, start recording, run the
+flow, and stop as soon as the result is on screen. Retries, saving and
+troubleshooting stay out of the video; if the flow went wrong, record again.
+
 `ade proof capture` and `ade proof record` capture the lane's display. They
 refuse the user's real screen unless you pass `--real-screen`. Pass it only
 when the user asks for proof of their own screen. To pick a surface, see the
@@ -164,6 +175,22 @@ Proof shows what you did for this request. ADE checks:
   ADE, or attached by the agent. `ade proof attach` of a fresh, unchanged ADE
   capture keeps ADE's label; any other file is "attached by the agent",
   whatever label you pass.
+
+## Keep the drawer clean
+
+Delete proof that is no longer true, with `ade proof rm <id> --text`. Do not
+ask first and do not keep it "just in case": you can always capture it again,
+but a drawer full of old proof hides the proof that matters.
+
+Delete it when:
+
+- a new recording or capture replaces it (you recorded the flow again);
+- it shows a mistake, a failed attempt or a wrong result;
+- the code changed after it, so it no longer shows the current behavior.
+
+Delete only proof of this same work. Proof of other work in the lane is not
+yours to delete. Before your final reply, run `ade proof list --text` and
+delete what is stale; cite only what stays.
 
 ## Gotchas
 
