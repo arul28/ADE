@@ -7,13 +7,13 @@ and exposes chat as durable named threads.
 
 | Page | What it covers |
 |---|---|
-| [Threads](https://www.ade-app.dev/docs/sdk/threads) | Instructions, working directory, configuration layers, model switching |
-| [MCP servers](https://www.ade-app.dev/docs/sdk/mcp) | Injected tools and the strict-mode honesty table |
+| [Threads](https://www.ade-app.dev/docs/sdk/threads) | Lifecycle, attachments, paged history, instructions, working directory, configuration layers, model switching |
+| [MCP servers](https://www.ade-app.dev/docs/sdk/mcp) | Injected tools, credentials that change, resource links, and the strict-mode honesty table |
 | [Permissions](https://www.ade-app.dev/docs/sdk/permissions) | The policy object, per-provider enforcement, answering approvals |
 | [Chat UI](https://www.ade-app.dev/docs/sdk/chat-ui) | `@ade-dev/chat-ui`, theming, approval cards, provider cards |
 | [Electron](https://www.ade-app.dev/docs/sdk/electron) | The main / preload / renderer bridge under `sandbox: true` |
 | [Bundling](https://www.ade-app.dev/docs/sdk/bundling) | Platform packages, `codesign`, entitlements, electron-builder |
-| [Runtime](https://www.ade-app.dev/docs/sdk/runtime) | The sidecar, and `doctor().runtime` provenance |
+| [Runtime](https://www.ade-app.dev/docs/sdk/runtime) | The sidecar, exit events and `autoRestart`, version compatibility, and `doctor().runtime` provenance |
 | [Reference](https://www.ade-app.dev/docs/sdk/reference) | Every option, shape, and error code |
 | [License](https://www.ade-app.dev/docs/sdk/license) | What each artifact is licensed under |
 
@@ -23,6 +23,11 @@ npm install @ade-dev/sdk
 
 Requires Node 22. The sidecar is a guest: isolated `home`, sync off, no
 machine-brain authority. It dies with your process.
+
+SDK 0.3.0 supports runtime `>=1.2.81 <2.0.0` (`SUPPORTED_RUNTIME_RANGE`). An
+older or newer runtime still connects, logs one warning, and degrades feature
+by feature. Pass `requireCompatibleRuntime: true` to refuse it with
+`runtime_incompatible`. `doctor().runtime.compatibility` reports the verdict.
 
 ## Quickstart
 
@@ -77,20 +82,54 @@ const thread = await ade.threads.open("support", {
 
 await thread.send("What changed?");
 await thread.steer("Focus on the outage");   // mid-turn follow-up
+await thread.steer("", { attachments: [{ path: "/abs/path/log.txt" }] });
 await thread.interrupt();
 await thread.setModel("claude-opus-4");      // see setModel below
+await thread.update({ title: "Outage review" });
+
+const page = await thread.historyPage({ limit: 200 });   // newest page
+const rows = await ade.threads.list();                   // title, archived, updatedAt, modelSelection
+await ade.threads.archive("support");                    // or unarchive / delete
 ```
 
 `threads.open(key)` is open-or-resume by key stored under `home`. Keys survive
 host restarts. `exportThread(key)` returns the transcript as one JSON envelope
-per line.
+per line. `thread.title` and `thread.model` (with `displayName`) are on the
+handle.
+
+`threads.delete(key)` removes the runtime session, the transcript and the key.
+`archive` keeps both. Each interrupts a running turn first.
+
+`thread.update({ title, reasoningEffort, fastMode }, { force })` renames at any
+time. The other two fields are refused mid-turn unless `{ force: true }`.
+
+Attachments are `{ path, name?, mimeType?, type?, hydrate? }` refs. `type`
+(`"file"` or `"image"`) is inferred from the MIME type or extension when
+absent, so an image reaches the model as an image. `hydrate: false` sends the
+path only and the runtime never reads the bytes. An absolute path must be
+inside the chat's `cwd` or `<home>/personal-chats/state`. See
+[Attachments](https://www.ade-app.dev/docs/sdk/threads#attachments) for the
+size limits.
+
+There is no `retry()` or `editLast()` in 0.3. A retry today sends a new
+message.
 
 Host configuration applies on **create only**. A resume re-applies what the key
 was created with and ignores the `cwd`, `instructions`, `settingSources`,
 `permissions`, `mcpServers` and `loadUserMcpServers` passed to that call,
 logging one line per option it ignored. Open a different key to run under
 different configuration — do not assume a tighter policy took effect because you
-passed one.
+passed one. The one exception is `refresh.mcpServers` (see below).
+
+When the runtime lost a key's session, the SDK **recreates** it from the stored
+record. The record wins for `provider`, `model`, `cwd`, `instructions`,
+`settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers`; the
+call's options only fill a field the record lacks. Before 0.3 the call's
+options won. A recreate changes `thread.id`, so key your state on `key`.
+
+`setModel` returns the resolved model with `displayName` and the four
+capability reports on the new provider, and emits `capabilities_changed` on the
+`status` channel.
 
 `setModel` refuses while a turn is in flight — call `interrupt()` first, or
 pass `{ force: true }` to accept losing the turn. `dispose()` is not guarded
@@ -139,6 +178,30 @@ Read `thread.mcpCapability` after open. `strictRequested` first, then `level`.
 `"enforced"` is the only value that means "nothing but the servers I supplied".
 Do not tell your users "only your tools are loaded" without checking that.
 
+### Credentials that change
+
+The SDK never writes MCP header values to disk. The thread store keeps header
+names only, and a pre-0.3 store is migrated on first read. The runtime does the
+same. So supply current values in one of three ways:
+
+```ts
+const ade = await createAdeChat({
+  home,
+  mcpHeaders: (key, server) => (server === "app" ? { Authorization: `Bearer ${token()}` } : undefined),
+});
+await ade.threads.open("support", { refresh: { mcpServers: { app: { type: "http", url, headers } } } });
+await thread.updateMcpServers({ app: { type: "http", url: newUrl, headers: newHeaders } });
+```
+
+`refresh.mcpServers` replaces the servers on a resume or a recreate.
+`thread.updateMcpServers()` replaces them on a live thread, for the next turn;
+it is refused mid-turn and on a runtime before 1.2.81. Without any of the
+three, a server connects without its headers and the SDK logs a line. URL query
+strings and stdio `env` values are still stored; do not put secrets there.
+
+Tool results carry MCP `resource_link` items as `event.resourceLinks` on Codex
+and on Claude (MCP tools only). Other providers do not pass them.
+
 ## Shaping the session
 
 `threads.open` takes four options beyond the provider and model. Each one is
@@ -178,6 +241,18 @@ on `level` — the presence of a report is never itself a guarantee.
 An approval blocks the turn until it is answered. Handle `approval_request` with
 `thread.approve(itemId, decision)`, restore cards after a reload with
 `thread.pendingApprovals()`, or pass `fallback: "deny"` so nothing ever asks.
+`approvalTimeoutMs` on the policy (opt-in, enforced by the SDK) declines an
+approval-shaped request that this client saw and nobody answered in time.
+
+On Codex, every MCP tool call raises an approval, and the policy judges it as
+`mcp:<server>:<tool>`: `deniedTools`, then `allowedTools` /
+`autoApproveMcpServers`, then `fallback`. `accept_always` remembers the answer
+for the session only. On Codex, `sandboxRoot` still decides command and file
+escapes, and the tool fields do not.
+
+On Claude (Agent SDK 0.3.280), `canUseTool` fires for MCP tools and for
+commands that change things, not for commands Claude Code classifies as
+read-only. `fallback: "ask"` stays `best-effort` for that reason.
 
 On Claude a deny fallback does more than skip the prompt. It removes every
 mutating built-in the policy does not name from the model's catalog, and scopes
@@ -201,12 +276,42 @@ const ade = await createAdeChat({
 Do not write the bridge yourself. `@ade-dev/sdk/electron`,
 `@ade-dev/sdk/electron/preload` and `@ade-dev/sdk/electron/renderer` ship one
 function per process, with listener teardown on reload and the history-and-live
-ordering rule already in code. None of the three depends on `electron`. See
+ordering rule already in code. None of the three depends on `electron`.
+`@ade-dev/sdk/electron/global` types `window.ade`. For a `sandbox: true`
+preload, point `webPreferences.preload` at
+`require.resolve("@ade-dev/sdk/electron/preload-auto")` (default key and
+prefix), copy the ten-line preload from the docs, or bundle `exposeAdeBridge`
+into one file. `@ade-dev/sdk/electron/preload` alone only exports the function
+and exposes nothing. See
 [Electron](https://www.ade-app.dev/docs/sdk/electron).
 
+The renderer does not configure threads. Pass `openOptions: (key, rendererOptions) => ThreadOpenOptions`
+to `registerAdeIpc` and main decides; without it, only `provider`, `model`,
+`title` and `reasoningEffort` cross (breaking in 0.3). `allowModel` gates model
+choice. `registerAdeIpc` also accepts `() => client`, for a host that replaces
+its client per account.
+
 To ship the runtime inside a signed app instead of downloading it, install
-`@ade-dev/runtime` and pass `allowDownload: false`. See
+`@ade-dev/runtime`, copy it into your resources, and pass
+`...resolvePackagedRuntime(process.resourcesPath)` with `allowDownload: false`.
+`doctor().runtime.source` then reports `"packaged"`. See
 [Bundling](https://www.ade-app.dev/docs/sdk/bundling).
+
+## Runtime exits
+
+```ts
+const ade = await createAdeChat({ home, autoRestart: true });
+ade.on("exit", ({ code, signal, error }) => {});
+ade.on("transport", ({ state }) => {});          // "closed" | "reconnected"
+ade.on("restart", ({ attempt, ok }) => {});
+```
+
+When the runtime exits, each live thread gets a synthetic
+`{ type: "status", turnStatus: "failed", message, synthetic: true }` envelope.
+`autoRestart` (off by default; `true` = 5 attempts, 1 s doubling backoff)
+respawns the runtime and re-opens every live thread. The client object stays
+the same. A turn in flight is not resumed. See
+[Runtime](https://www.ade-app.dev/docs/sdk/runtime#when-the-runtime-exits).
 
 ## The live seam test
 

@@ -207,6 +207,12 @@ export type PersonalChatCapabilities = {
    * silently ignore them.
    */
   mcpServers?: boolean;
+  /**
+   * `updateSession` accepts `mcpServers` for a personal chat and replaces the
+   * caller servers wholesale (restarting the provider on the next turn). Absent
+   * on runtimes before 1.2.81, which ignore the field.
+   */
+  updateMcpServers?: boolean;
 };
 
 export type PersonalChatStreamEventsArgs = {

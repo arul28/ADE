@@ -5,10 +5,10 @@ import os from "node:os";
 import path from "node:path";
 import type {
   AgentChatEventEnvelope,
-  BufferedEvent,
   PendingInputRequest,
   ProviderStatusRpcResult,
 } from "../src/types.js";
+import type { BufferedEvent } from "../src/wireTypes.js";
 
 /**
  * An in-test ADE runtime: a real `net.Server` on a real temp socket speaking
@@ -31,6 +31,10 @@ export type MockRuntimeOptions = {
   providersStatus?: boolean;
   /** Advertise the `pendingInputs` action. Default true. */
   pendingInputs?: boolean;
+  /** Advertise `capabilities.personalChats.updateMcpServers`. Default false. */
+  updateMcpServers?: boolean;
+  /** Advertise archive/unarchive/delete/getEventHistoryPage. Default true. */
+  lifecycleActions?: boolean;
 };
 
 type Session = {
@@ -123,6 +127,8 @@ export class MockRuntime {
       capacity: options.capacity ?? 1000,
       providersStatus: options.providersStatus ?? false,
       pendingInputs: options.pendingInputs ?? true,
+      updateMcpServers: options.updateMcpServers ?? false,
+      lifecycleActions: options.lifecycleActions ?? true,
       runtimeVersion: options.runtimeVersion ?? "1.2.69",
     };
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-mock-"));
@@ -172,12 +178,13 @@ export class MockRuntime {
 
   /** Publishes a chat event through the buffer and any live push subscription. */
   emitChatEvent(sessionId: string, event: Record<string, unknown>): BufferedEvent {
+    const transcript = this.transcripts.get(sessionId) ?? [];
     const envelope: AgentChatEventEnvelope = {
       sessionId,
       timestamp: new Date().toISOString(),
       event: event as AgentChatEventEnvelope["event"],
+      sequence: transcript.length + 1,
     };
-    const transcript = this.transcripts.get(sessionId) ?? [];
     transcript.push(envelope);
     this.transcripts.set(sessionId, transcript);
 
@@ -261,9 +268,13 @@ export class MockRuntime {
                 "modelCatalog",
                 "approve",
                 ...(this.options.pendingInputs ? ["pendingInputs"] : []),
+                ...(this.options.lifecycleActions
+                  ? ["updateSession", "archive", "unarchive", "delete", "getEventHistoryPage"]
+                  : []),
               ],
               pushEvents: this.options.pushEvents,
               mcpServers: this.options.mcpServers,
+              ...(this.options.updateMcpServers ? { updateMcpServers: true } : {}),
             },
             ...(this.options.providersStatus
               ? { providers: { status: true, cacheTtlMs: 60_000 } }
@@ -420,8 +431,44 @@ export class MockRuntime {
             ? null
             : settingSourcesCapabilityFor(switched);
         }
-        if (typeof args.title === "string") session.title = args.title;
+        if (typeof args.title === "string" || args.title === null) session.title = args.title as string | null;
+        if (args.reasoningEffort !== undefined) session.createArgs = { ...session.createArgs, reasoningEffort: args.reasoningEffort };
+        if (args.fastMode !== undefined) session.createArgs = { ...session.createArgs, fastMode: args.fastMode };
+        if (args.mcpServers !== undefined) {
+          if (session.status === "active") throw new Error("invalid_argument: mcpServers cannot change with a turn in flight");
+          session.createArgs = { ...session.createArgs, mcpServers: args.mcpServers };
+          session.mcpCapability = this.suppressMcpCapability ? null : this.capabilityReport(session.createArgs);
+        }
         return toSummary(session);
+      }
+      case "archive":
+      case "unarchive": {
+        const session = this.sessions.get(String(args.sessionId ?? ""));
+        if (!session) throw new Error("Chat session was not found.");
+        session.archivedAt = action === "archive" ? new Date().toISOString() : null;
+        return { ok: true };
+      }
+      case "delete": {
+        const sessionId = String(args.sessionId ?? "");
+        this.sessions.delete(sessionId);
+        this.transcripts.delete(sessionId);
+        return { ok: true };
+      }
+      case "getEventHistoryPage": {
+        const sessionId = String(args.sessionId ?? "");
+        const before = typeof args.beforeSequence === "number" ? args.beforeSequence : 0;
+        const older = (this.transcripts.get(sessionId) ?? []).filter(
+          (envelope) => typeof envelope.sequence === "number" && envelope.sequence < before,
+        );
+        const pageSize = 3;
+        const events = older.slice(-pageSize);
+        return {
+          sessionId,
+          events,
+          startOffset: 0,
+          hasMore: older.length > pageSize,
+          sessionFound: this.sessions.has(sessionId),
+        };
       }
       case "pendingInputs": {
         const sessionId = String(args.sessionId ?? "");
@@ -613,7 +660,7 @@ function permissionCapabilityFor(args: Record<string, unknown>): Record<string, 
     return {
       level: "best-effort",
       mechanism: "approvalPolicy on-request + workspace-write sandbox",
-      residual: "Codex does not gate plain MCP tool calls, so allowedTools does not apply to them",
+      residual: "Codex gates MCP tool calls through an elicitation; commands and file changes reach sandboxRoot and fallback only",
     };
   }
   return {

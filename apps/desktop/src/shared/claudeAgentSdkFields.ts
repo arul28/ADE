@@ -93,3 +93,55 @@ export function resourceLinkCopyPaths(links: readonly AgentChatResourceLink[]): 
   }
   return paths;
 }
+
+/** More than any real tool result carries; a runaway list stays out of the transcript. */
+const MAX_RESULT_RESOURCE_LINKS = 50;
+
+/**
+ * MCP `resource_link` items in a tool result, as structured links.
+ *
+ * Two shapes, one per provider, both measured live on 2026-09-28:
+ * - Codex (app-server 0.156.1) hands over the MCP `CallToolResult` itself, so
+ *   the links are `{ type: "resource_link", uri, … }` items in `content`.
+ * - Claude (Agent SDK 0.3.280) turns each link into a `[Resource link: …]` text
+ *   block in the model-facing content, and keeps the structured list on the
+ *   message's `tool_use_result.resourceLinks` — `{ uri, name, title, mimeType }`.
+ *
+ * Accepts either (or a bare content array), keeps only items with a `uri`, and
+ * dedupes by `uri`. Everything else in the result is left to `result` itself.
+ */
+export function parseMcpResultResourceLinks(result: unknown): AgentChatResourceLink[] {
+  const record = asRecord(result);
+  const candidates: unknown[] = [];
+  if (record && Array.isArray(record.resourceLinks)) candidates.push(...record.resourceLinks);
+  const content = Array.isArray(result) ? result : record?.content;
+  if (Array.isArray(content)) {
+    for (const entry of content) {
+      if (asRecord(entry)?.type === "resource_link") candidates.push(entry);
+    }
+  }
+  const links: AgentChatResourceLink[] = [];
+  const seen = new Set<string>();
+  for (const entry of candidates) {
+    const item = asRecord(entry);
+    if (!item) continue;
+    const uri = typeof item.uri === "string" ? item.uri.trim() : "";
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    const text = (key: "name" | "title" | "mimeType"): string | undefined => {
+      const value = item[key];
+      return typeof value === "string" && value.trim() ? value.trim() : undefined;
+    };
+    const name = text("name");
+    const title = text("title");
+    const mimeType = text("mimeType");
+    links.push({
+      uri,
+      ...(name ? { name } : {}),
+      ...(title ? { title } : {}),
+      ...(mimeType ? { mimeType } : {}),
+    });
+    if (links.length >= MAX_RESULT_RESOURCE_LINKS) break;
+  }
+  return links;
+}

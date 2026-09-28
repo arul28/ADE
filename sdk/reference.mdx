@@ -22,6 +22,14 @@ function createAdeChat(options: CreateAdeChatOptions): Promise<AdeChatClient>
 | `channel` | `string` | Downloader channel: `latest` (default) or a release tag. |
 | `logger` | `(line: string) => void` | Sidecar / client log sink. |
 | `instructions` | `string \| { mode, text }` | Default instructions for every thread. A per-thread value replaces it. |
+| `mcpHeaders` | `(key, serverName) => Record<string, string> \| undefined` | Supplies MCP header values at every create, resume, recreate and restart. Header values are never stored. See [MCP](/sdk/mcp#credentials-that-change). |
+| `autoRestart` | `boolean \| { maxAttempts?, backoffMs? }` | Default off. Respawns the runtime after an unexpected exit and re-opens every live thread. `true` = 5 attempts, 1 s backoff that doubles. |
+| `requireCompatibleRuntime` | `boolean` | Default off. `true` throws `runtime_incompatible` for a runtime outside `SUPPORTED_RUNTIME_RANGE`. |
+| `source` | `"packaged"` | Set by `resolvePackagedRuntime()`. Makes `doctor().runtime.source` report `packaged`. |
+
+`resolvePackagedRuntime(resourcesPath, { dir?, platform?, arch? })` returns `{ binaryPath, runtimeRoot, runtimeNodeModules, source: "packaged" }` or `null`. Spread it into the options. See [Bundling](/sdk/bundling#inside-a-packaged-app).
+
+`SUPPORTED_RUNTIME_RANGE` is the runtime range this SDK build supports. SDK 0.3.0 supports `>=1.2.81 <2.0.0`.
 
 Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev/runtime-<target>` package, then the home cache, then `ade` on `PATH`, then a download. See [Bundling](/sdk/bundling).
 
@@ -30,7 +38,10 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 | Member | |
 |---|---|
 | `threads.open(key, opts?)` | Open-or-resume. Create requires `provider` + `model`. Resume reads the stored record. |
-| `threads.list()` | Tracked threads for this home. |
+| `threads.list()` | Every chat in this home as [`ThreadSummary`](#threadsummary), archived ones included. Not sorted. |
+| `threads.delete(key)` | Interrupt a running turn, delete the runtime session and its transcript, and remove the key. |
+| `threads.archive(key)` / `threads.unarchive(key)` | Keep the key and the transcript; `list()` reports `archived`. A running turn is interrupted first. |
+| `on("exit" \| "transport" \| "restart", cb)` | Runtime lifecycle events. See [Runtime](/sdk/runtime#when-the-runtime-exits). Returns unsubscribe. |
 | `providers.status()` | Map of provider id → [`ProviderStatus`](#providerstatus). Served from the runtime's probe cache. |
 | `providers.refresh()` | The same map with the probe cache bypassed. Spawns `--version` per provider. |
 | `providers.onChange(cb)` | Full status list on each change. Never bypasses the cache. Returns unsubscribe. |
@@ -53,10 +64,13 @@ Runtime resolution runs in five steps: `binaryPath`, then an installed `@ade-dev
 | `title` | Display title stored on the thread record. |
 | `mcpServers` | Caller-owned servers for this thread. See [MCP](/sdk/mcp). |
 | `loadUserMcpServers` | Opt the user's MCP back in. Explicit `false` ≠ omitting the field. |
+| `refresh` | `{ mcpServers }`. Replaces the thread's MCP servers on a resume, so a new token or port takes effect. The one option a resume does not ignore. |
 
 All four host-configuration options persist on the thread record, so a resume that has to recreate a lost session rebuilds the same thread.
 
-They apply on **create only**. A resume reads `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` off the stored record and ignores what this call passed, logging one line per differing option. Open a different key to run under different configuration.
+They apply on **create only**, with one exception: `refresh.mcpServers`. A resume reads `cwd`, `instructions`, `settingSources`, `permissions`, `mcpServers` and `loadUserMcpServers` off the stored record and ignores what this call passed, logging one line per differing option. Open a different key to run under different configuration.
+
+A **recreate** (the key is stored, but the runtime lost its session) uses the stored record first. This call's options fill only fields the record does not have. The SDK logs one line for each stored value it used.
 
 ```ts
 type ThreadPermissionPolicy = {
@@ -77,18 +91,33 @@ What a policy is worth depends on the provider and, on Claude, on `fallback`. A 
 | `id` / `key` | Runtime session id and caller key. |
 | `mcpCapability` | Honesty report. `null` when MCP was not requested, **or** when an older runtime omitted the report — treat the latter as unverified if you asked. |
 | `send(text, opts?)` | Dispatch a turn. Resolves when accepted, not when finished. |
-| `steer(text)` | Mid-turn follow-up. Does not start a turn. |
+| `title` | The thread's title, or `null`. |
+| `model` | `ThreadModelSelection` — `{ modelId, provider, model, displayName }`, or `null` before the runtime reported one. |
+| `steer(text, { attachments }?)` | Mid-turn follow-up. Does not start a turn. Text or at least one attachment. |
 | `interrupt()` | Stop the in-flight turn. |
-| `setModel(id, opts?)` | Switch model/provider. Refused mid-turn unless `{ force: true }`. |
+| `setModel(id, opts?)` | Switch model/provider. Refused mid-turn unless `{ force: true }`. Returns the selection plus `capabilities` (the four reports for the new provider), and emits `capabilities_changed` on the `status` channel. |
+| `update({ title?, reasoningEffort?, fastMode? }, { force? }?)` | Rename, or change effort or fast mode. A rename always works; the other two are refused mid-turn unless `{ force: true }`. Returns `{ title, model }`. |
+| `updateMcpServers(servers)` | Replace the thread's MCP servers. Takes effect on the next turn. Returns the new `mcpCapability`. Needs runtime 1.2.81 or later. |
 | `history({ limit }?)` | Envelopes in transcript order. |
+| `historyPage({ beforeSequence?, limit? }?)` | One page: `{ events, hasMore, nextBeforeSequence }`. Omit `beforeSequence` for the newest page. |
 | `approve(itemId, decision, responseText?)` | Answer an approval. `"accept"` \| `"accept_always"` \| `"reject"`. Throws `approval_not_found` when it is already settled, and `invalid_option` for a question-shaped request. |
 | `pendingApprovals()` | Outstanding requests, so a reload can restore cards. |
 | `instructionsCapability` | `{ requested, level, mode, mechanism, detail }` or `null`. |
 | `settingSourcesCapability` | `{ requested, level, value, mechanism, detail }` or `null`. |
 | `permissionCapability` | `{ level, mechanism, residual }` or `null`. Refreshed after `setModel`. |
-| `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. |
+| `on("event" \| "status" \| "usage", cb)` | Subscribe. Returns unsubscribe. When the runtime exits, each live thread receives `{ type: "status", turnStatus: "failed", message, synthetic: true }` on `status`. |
 
 The three capability fields are `null` when the thread requested nothing, **and** when an older runtime reported nothing. `level` is `"applied"` \| `"best-effort"` \| `"ignored"` for the two host-config reports, and `"enforced"` \| `"best-effort"` \| `"unsupported"` for the permission one.
+
+## `ThreadSummary` {#threadsummary}
+
+| Field | |
+|---|---|
+| `key` | The caller key, or `null` for a chat created outside the SDK. |
+| `sessionId`, `provider`, `model`, `title`, `status` | As the runtime reports them. |
+| `startedAt`, `lastActivityAt`, `updatedAt` | ISO strings. `updatedAt` equals `lastActivityAt`. |
+| `archived` | `true` after `threads.archive`. |
+| `modelSelection` | `ThreadModelSelection` with `displayName`, or `null`. |
 
 ## Session summary
 
@@ -141,6 +170,7 @@ type DoctorReport = {
   };
   runtime: {
     source:
+      | "packaged"
       | "explicit"
       | "bundled-package"
       | "cached-download"
@@ -151,9 +181,15 @@ type DoctorReport = {
     version: string | null;
     runtimeRoot: string | null;
     nodeModulesPath: string | null;
-    signature: { signed: boolean; authority?: string; accepted?: boolean } | null;
+    signature: { signed: boolean; authority?: string; accepted?: boolean | null } | null;
     downloadedThisSession: boolean;
     checksumVerified: boolean;
+    compatibility: {
+      supported: boolean;
+      range: string;          // SUPPORTED_RUNTIME_RANGE
+      version: string | null; // what the runtime reported
+      note: string | null;    // why a version passed without a check
+    };
   };
   socket: {
     path: string;
@@ -174,15 +210,17 @@ type DoctorReport = {
 
 `sdkVersion` is injected at package build time from `package.json`. Compare it to `socket.runtimeVersion` when versions disagree.
 
-`binary` is the 0.1.x view and keeps its four `source` values. `runtime` is the 0.2 view: which of the five resolution steps produced the binary, and what the OS thinks of its signature. `runtime.signature` is `null` for "not known", never for "not signed" — see [Runtime](/sdk/runtime#doctorruntime).
+`binary` is the 0.1.x view and keeps its four `source` values. A `packaged` or `attached` runtime reports `binary.source: "option"`. `runtime` is the 0.2 view: which of the five resolution steps produced the binary, and what the OS thinks of its signature. `runtime.signature` is `null` for "not known", never for "not signed" — see [Runtime](/sdk/runtime#doctorruntime). `accepted` is Gatekeeper's verdict on the outermost `.app` that contains the runtime, and `null` when it could not be judged. `runtime.compatibility` compares the runtime version with `SUPPORTED_RUNTIME_RANGE`; see [Runtime](/sdk/runtime#version-compatibility).
 
 ## Errors
 
 `AdeError` with `code`:
 
-`binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed`
+`runtime_incompatible` · `binary_not_found` · `download_failed` · `checksum_mismatch` · `spawn_failed` · `connect_failed` · `handshake_failed` · `rpc_error` · `rpc_timeout` · `transport_closed` · `protocol_error` · `thread_not_found` · `invalid_option` · `runtime_unavailable` · `approval_not_found` · `unauthorized` · `disposed`
 
 `setModel` mid-turn without `{ force: true }` throws `invalid_option`. So does a relative or refused `cwd`, a policy with no `fallback`, a `sandboxRoot` that is not absolute, and an `approve()` naming a question-shaped request — the SDK checks those before any RPC, and the engine's own `invalid_argument:` refusals are mapped onto the same code.
+
+`runtime_incompatible` comes from `createAdeChat({ requireCompatibleRuntime: true })` when the runtime version is outside `SUPPORTED_RUNTIME_RANGE`.
 
 `approve()` throws `approval_not_found` when the item is already settled. `unauthorized` comes from an Electron bridge whose `authorize` hook refused the call.
 

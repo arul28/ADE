@@ -170,6 +170,12 @@ export function threadOpenWarnings(input: ThreadOpenWarningInput): string[] {
 
 export type ThreadResumeMismatchInput = {
   key: string;
+  /**
+   * `"recreated"` when the runtime lost the session and the key was rebuilt
+   * from its record, which follows the same stored-wins rule. Defaults to
+   * `"resumed"`.
+   */
+  verb?: "resumed" | "recreated";
   /** Options the caller passed to this `open()` call, already normalized. */
   supplied: {
     cwd?: string | undefined;
@@ -185,6 +191,8 @@ export type ThreadResumeMismatchInput = {
     instructions?: AgentChatInstructions | undefined;
     settingSources?: string | undefined;
     permissionPolicy?: ThreadPermissionPolicy | undefined;
+    /** The stored preset, on a record that has one (0.3+) and no policy. */
+    permissionPreset?: string | undefined;
     mcpServers?: Record<string, unknown> | undefined;
     loadUserMcpServers?: boolean | undefined;
   };
@@ -212,9 +220,10 @@ function sameJson(a: unknown, b: unknown): boolean {
  */
 export function threadResumeMismatchWarnings(input: ThreadResumeMismatchInput): string[] {
   const { key, supplied, stored } = input;
+  const verb = input.verb ?? "resumed";
   const lines: string[] = [];
   const ignored = (field: string, storedValue: string): string =>
-    `ade sdk: thread "${key}" resumed with its stored ${field} (${storedValue}); the ${field} passed to open() was ignored`;
+    `ade sdk: thread "${key}" ${verb} with its stored ${field} (${storedValue}); the ${field} passed to open() was ignored`;
 
   // No `stored.cwd !== undefined` clause, deliberately, and unlike an earlier
   // version of this check. A thread created without a `cwd` is the common case,
@@ -233,7 +242,10 @@ export function threadResumeMismatchWarnings(input: ThreadResumeMismatchInput): 
   ) {
     lines.push(ignored("settingSources", stored.settingSources ?? "none"));
   }
-  if (supplied.permissions !== undefined && !sameJson(supplied.permissions, stored.permissionPolicy)) {
+  if (
+    supplied.permissions !== undefined &&
+    !sameJson(supplied.permissions, stored.permissionPolicy ?? stored.permissionPreset)
+  ) {
     lines.push(ignored("permissions", stored.permissionPolicy ? "the stored policy" : "the stored preset"));
   }
   // The tool surface, for the same reason as the four above and with a sharper

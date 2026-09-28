@@ -10,8 +10,20 @@ import type { ActivityLabelConfig } from "../activity/labels";
 import { describeToolActivity } from "../activity/labels";
 import { eventHasPayload, formatStructuredValue, type ToolChipRow } from "./transcriptRows";
 
+/** One host action drawn on a tool chip (e.g. "Open in Versic"). */
+export type ToolChipAction = {
+  /** Button text. Also the React key, so keep labels unique per chip. */
+  label: string;
+  onSelect: () => void;
+};
+
 export type ToolChipProps = {
   chip: ToolChipRow;
+  /**
+   * Buttons drawn under the chip's head, always visible (not inside the
+   * collapsible body). Empty or omitted draws nothing.
+   */
+  actions?: readonly ToolChipAction[];
   labels?: ActivityLabelConfig;
   /** When the call started, for the elapsed suffix. */
   startedAt?: number | undefined;
@@ -33,7 +45,7 @@ function useElapsedMs(startedAt: number | undefined, running: boolean): number |
   return Math.max(0, now - startedAt);
 }
 
-export function ToolChip({ chip, labels, startedAt, expanded, onToggle }: ToolChipProps) {
+export function ToolChip({ chip, labels, startedAt, expanded, onToggle, actions }: ToolChipProps) {
   const [internalExpanded, setInternalExpanded] = useState(false);
   const isExpanded = expanded ?? internalExpanded;
   const elapsedMs = useElapsedMs(startedAt, chip.status === "running");
@@ -68,6 +80,20 @@ export function ToolChip({ chip, labels, startedAt, expanded, onToggle }: ToolCh
         <span className="adechat-chip-label">{label}</span>
         {elapsed ? <span className="adechat-chip-elapsed">{elapsed}</span> : null}
       </button>
+      {actions?.length ? (
+        <div className="adechat-chip-actions">
+          {actions.map((action) => (
+            <button
+              key={action.label}
+              type="button"
+              className="adechat-chip-action"
+              onClick={() => action.onSelect()}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       {isExpanded && expandable ? (
         <div className="adechat-chip-body">
           {hasArgs ? (

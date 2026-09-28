@@ -298,7 +298,7 @@ describe("resolvePermissionCapability", () => {
     expect(report.mechanism).toContain("without raising an approval");
     expect(report.mechanism).toContain("$TMPDIR");
     expect(report.mechanism).toContain("/tmp");
-    expect(report.residual).toContain("sandbox escapes only");
+    expect(report.residual).toContain("are ungated by Codex's own sandbox");
   });
 
   it("says a Codex sandbox escape goes to sandboxRoot containment and then to fallback", () => {
@@ -318,14 +318,13 @@ describe("resolvePermissionCapability", () => {
     expect(report.mechanism).toContain("before containment is consulted");
   });
 
-  it("says the Codex tool lists are Claude-only and gate nothing", () => {
-    // Nothing on the Codex path reads allowedTools/deniedTools. A host that
-    // reads the published precedence line as a shell blocklist gets no gate.
+  it("says the Codex tool lists gate MCP tool calls only, not shell commands", () => {
+    // Codex now raises an elicitation before every MCP tool call, so the policy's
+    // tool lists do apply to it — but only there. A host that reads the published
+    // precedence line as a shell blocklist gets no gate for commands.
     const report = resolvePermissionCapability("codex", askPolicy);
-    expect(report.residual).toContain("are Claude-only");
-    expect(report.residual).toContain("sandboxRoot containment and then fallback are the whole decision");
-    expect(report.residual).toContain("Do not read deniedTools as a shell or tool blocklist");
-    expect(report.residual).toContain("does not route plain MCP tool calls");
+    expect(report.residual).toContain("are read for MCP tool calls and nothing else");
+    expect(report.residual).toContain("do not read deniedTools as a shell or built-in tool blocklist on Codex");
   });
 
   // The two Claude rows. `deniedTools`/`allowedTools` are applied by the CLI

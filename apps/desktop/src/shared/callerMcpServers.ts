@@ -62,7 +62,7 @@ export type CallerMcpSupport = {
  * `callerMcpSupport`, which is `hasOwnProperty`-guarded.
  *
  * This table is also the source of truth the `@ade-dev/sdk` docs summarize
- * (`packages/sdk/src/client.ts`, `ThreadOpenOptions.loadUserMcpServers`) and
+ * (`packages/sdk/src/clientOptions.ts`, `ThreadOpenOptions.loadUserMcpServers`) and
  * the SDK's test fixture pins for `claude` and `pi`
  * (`packages/sdk/test/mockRuntime.ts`, `PROVIDER_MCP_VERDICTS`). Changing a
  * row's `level` is a change to both of those too.
@@ -174,6 +174,73 @@ export function callerMcpUnsupportedTransport(
     if (names.length) return { transport, names };
   }
   return null;
+}
+
+/**
+ * Why `servers` cannot be delivered to `provider`, or null when they can (or
+ * when there are none). The one check create, a model switch, and
+ * `updateSession({ mcpServers })` all run — each wraps it in its own message,
+ * because each caller did something different to reach it.
+ *
+ * `provider`: the provider has no MCP surface; `mechanism` is its table text
+ * (null for a provider missing from the table). `transport`: the provider
+ * accepts servers but has no client for the transport the named ones speak.
+ */
+export type CallerMcpDeliveryProblem =
+  | { kind: "provider"; mechanism: string | null }
+  | { kind: "transport"; transport: string; names: string[] };
+
+export function callerMcpDeliveryProblem(
+  provider: AgentChatProvider | string,
+  servers: CallerMcpServers | null | undefined,
+): CallerMcpDeliveryProblem | null {
+  if (!servers) return null;
+  if (!providerAcceptsCallerMcpServers(provider)) {
+    return { kind: "provider", mechanism: callerMcpSupport(provider)?.mechanism ?? null };
+  }
+  const unsupported = callerMcpUnsupportedTransport(provider, servers);
+  return unsupported ? { kind: "transport", ...unsupported } : null;
+}
+
+/**
+ * The capability report a session carries, or null when it should carry none.
+ *
+ * The gate is "servers, or strict explicitly requested": an explicit
+ * `strictMcpConfig: false` with no servers emits NO report, because an absent
+ * report is how every consumer tells "no MCP was requested" from "here is what
+ * ADE did with your request".
+ */
+export function callerMcpCapabilityFor(
+  provider: AgentChatProvider | string,
+  { servers, strict }: { servers: CallerMcpServers | null | undefined; strict: boolean | null | undefined },
+): AgentChatMcpCapability | null {
+  if (!servers && strict !== true) return null;
+  return resolveCallerMcpCapability(provider, {
+    hasServers: servers != null,
+    strictRequested: strict === true,
+  });
+}
+
+/**
+ * The transcript warning for servers restored without the header values the
+ * host once gave them, or null when nothing was withheld. `key` identifies the
+ * withheld set, so a caller can warn once per set rather than once per launch.
+ * The fix is the host's: send the servers again with
+ * `updateSession({ mcpServers })`.
+ */
+export function callerMcpMissingHeadersNotice(
+  servers: CallerMcpServers | null | undefined,
+): { key: string; message: string } | null {
+  const missing = callerMcpServersMissingHeaders(servers);
+  if (!missing.length) return null;
+  return {
+    key: missing.join("\u0000"),
+    message:
+      `MCP ${missing.length > 1 ? "servers" : "server"} ${missing.map((name) => `'${name}'`).join(", ")} `
+      + "restarted without the headers the host supplied, because ADE does not store header values. "
+      + "The host must send the servers again (updateSession with mcpServers) before tools that need "
+      + "those credentials will work.",
+  };
 }
 
 /**
@@ -473,6 +540,18 @@ function normalizeStringRecord(value: unknown): Record<string, string> | null {
   return Object.keys(out).length ? out : null;
 }
 
+function normalizeHeaderNames(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== "string") continue;
+    const name = entry.trim();
+    if (!name || out.some((existing) => existing.toLowerCase() === name.toLowerCase())) continue;
+    out.push(name);
+  }
+  return out.length ? out : null;
+}
+
 /**
  * Validates and normalizes one caller-supplied server in a single pass: either
  * the config ADE will hand a provider verbatim, or the reason it cannot.
@@ -508,7 +587,11 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
     try {
       parsed = new URL(url);
     } catch {
-      return { ok: false, problem: `server '${name}' has a url that is not a valid absolute URL: ${url}` };
+      return {
+        ok: false,
+        // A malformed URL can still carry a token in its query string.
+        problem: `server '${name}' has a url that is not a valid absolute URL: ${redactUrl(url)}`,
+      };
     }
     // Scheme allow-list, not a block-list. `file:` would read local paths and a
     // custom scheme would be handed to whatever the provider's client does with
@@ -517,12 +600,16 @@ function readCallerMcpServer(name: string, value: unknown): CallerMcpServerRead 
       return { ok: false, problem: `server '${name}' must use http: or https:, got ${parsed.protocol}` };
     }
     const headers = normalizeStringRecord(record.headers);
+    // Names only survive when there are no values: with values present the
+    // names are their keys, and a second list could only disagree with them.
+    const headerNames = headers ? null : normalizeHeaderNames(record.headerNames);
     return {
       ok: true,
       config: {
         type,
         url,
         ...(headers ? { headers } : {}),
+        ...(headerNames ? { headerNames } : {}),
       },
     };
   }
@@ -687,7 +774,18 @@ export function callerMcpServersToCodexConfig(
 export function callerMcpServersToInlineRecord(
   servers: CallerMcpServers,
 ): Record<string, AgentChatMcpServerConfig> {
-  return { ...servers };
+  const out: Record<string, AgentChatMcpServerConfig> = {};
+  for (const [name, config] of Object.entries(servers)) {
+    // `headerNames` is ADE's own bookkeeping for withheld credentials, not a
+    // transport field; a provider schema that validates strictly would reject it.
+    if (config.type === "stdio" || config.headerNames === undefined) {
+      out[name] = config;
+      continue;
+    }
+    const { headerNames: _headerNames, ...transport } = config;
+    out[name] = transport;
+  }
+  return out;
 }
 
 /**
@@ -764,4 +862,116 @@ export function callerMcpServersToDroidList(
       ...(headers?.length ? { headers } : {}),
     };
   });
+}
+
+// ---------------------------------------------------------------------------
+// Credentials: header values stay in memory, never on disk or in error text
+// ---------------------------------------------------------------------------
+
+/**
+ * The servers as ADE may write them down: every header VALUE dropped, the
+ * header names kept in `headerNames`.
+ *
+ * Used for the durable chat record and for any summary that leaves the
+ * process, because an MCP header is almost always a credential. A value
+ * replaced by a placeholder would be worse than one dropped: the placeholder
+ * would be sent to the server as if it were the token. Stdio servers are
+ * returned unchanged — their `env` is launch configuration the provider needs
+ * to start the process at all after a restart.
+ *
+ * Twin: `toStoredMcpServers` in packages/sdk/src/mcpHeaders.ts, the SDK's
+ * copy for the host side. Change the two together.
+ */
+export function withholdCallerMcpHeaderValues(servers: CallerMcpServers): CallerMcpServers {
+  const out: CallerMcpServers = {};
+  for (const [name, config] of Object.entries(servers)) {
+    if (config.type === "stdio" || !config.headers) {
+      out[name] = config;
+      continue;
+    }
+    const { headers, headerNames: _existing, ...rest } = config;
+    // Deduped case-insensitively on write, like the SDK twin, so the stored
+    // bytes agree and not only the values read back.
+    const headerNames = normalizeHeaderNames(Object.keys(headers)) ?? [];
+    out[name] = headerNames.length ? { ...rest, headerNames } : rest;
+  }
+  return out;
+}
+
+/**
+ * Servers restored without the header values the host once gave them — the
+ * ones a provider will now dial with no credentials until the host sends the
+ * servers again. Empty when nothing was withheld.
+ */
+function callerMcpServersMissingHeaders(servers: CallerMcpServers | null | undefined): string[] {
+  if (!servers) return [];
+  return Object.entries(servers)
+    .filter(([, config]) => config.type !== "stdio" && !config.headers && (config.headerNames?.length ?? 0) > 0)
+    .map(([name]) => name);
+}
+
+/**
+ * `scheme://host[:port]/path` with any userinfo, query string, and fragment
+ * replaced. Text that does not parse as a URL keeps everything before its first
+ * `?`.
+ */
+function redactUrl(raw: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    // Not a URL, so the parser cannot find the secrets; cut them by hand,
+    // since a malformed URL can still carry a token in its userinfo, query
+    // string or fragment.
+    return raw
+      .replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/@\s]*@/i, "$1<redacted>@")
+      .replace(/\?[^#]*/, "?<redacted>")
+      .replace(/#.*$/s, "#<redacted>");
+  }
+  const hadUserinfo = parsed.username.length > 0 || parsed.password.length > 0;
+  const hadQuery = parsed.search.length > 0;
+  const hadHash = parsed.hash.length > 0;
+  if (!hadUserinfo && !hadQuery && !hadHash) return raw;
+  return `${parsed.protocol}//${hadUserinfo ? "<redacted>@" : ""}${parsed.host}${parsed.pathname}`
+    + `${hadQuery ? "?<redacted>" : ""}${hadHash ? "#<redacted>" : ""}`;
+}
+
+const URL_IN_TEXT = /\bhttps?:\/\/[^\s"'<>`)\]]+/gi;
+const BEARER_IN_TEXT = /\b(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi;
+
+/**
+ * Scrub MCP credentials out of text ADE is about to show or record: an error
+ * message, a notice, a provider's startup-failure line.
+ *
+ * Every URL loses its query string, fragment, and userinfo (a token in
+ * `?key=` is as common as one in a header); every `Bearer …` credential loses
+ * its value; and every header value of `servers`
+ * is replaced wherever it appears verbatim, which catches a token a provider
+ * echoed in some other shape. Values shorter than four characters are left
+ * alone — replacing every "1" in a message would destroy it and protect
+ * nothing.
+ */
+export function redactCallerMcpText(
+  text: string,
+  servers?: CallerMcpServers | null,
+): string {
+  let out = text.replace(URL_IN_TEXT, (match) => redactUrl(match));
+  out = out.replace(BEARER_IN_TEXT, (_match, scheme: string) => `${scheme} <redacted>`);
+  if (servers) {
+    const secrets = new Set<string>();
+    for (const config of Object.values(servers)) {
+      if (config.type === "stdio" || !config.headers) continue;
+      for (const value of Object.values(config.headers)) {
+        const trimmed = value.trim();
+        if (trimmed.length >= 4) secrets.add(trimmed);
+        // `Bearer abc…`: the token alone may be echoed without its scheme.
+        const token = trimmed.split(/\s+/).at(-1);
+        if (token && token.length >= 4) secrets.add(token);
+      }
+    }
+    for (const secret of [...secrets].sort((a, b) => b.length - a.length)) {
+      out = out.split(secret).join("<redacted>");
+    }
+  }
+  return out;
 }

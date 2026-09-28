@@ -9,11 +9,16 @@ import { useEffect } from "react";
 
 import { injectAdeChatStyles } from "./styles";
 
-export function AdeChatStyles() {
+export type AdeChatStylesProps = {
+  /** CSP nonce for the injected `<style>`. See `InjectAdeChatStylesOptions`. */
+  nonce?: string;
+};
+
+export function AdeChatStyles({ nonce }: AdeChatStylesProps = {}) {
   // Effect rather than render output: two mounted chats must not emit two
   // copies of the sheet, and injection is idempotent by element id.
   useEffect(() => {
-    injectAdeChatStyles();
-  }, []);
+    injectAdeChatStyles(undefined, nonce ? { nonce } : {});
+  }, [nonce]);
   return null;
 }

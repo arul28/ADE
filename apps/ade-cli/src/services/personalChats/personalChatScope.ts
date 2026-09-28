@@ -290,6 +290,7 @@ export class PersonalChatScope {
       actions: [...PERSONAL_CHAT_ACTIONS],
       pushEvents: true,
       mcpServers: true,
+      updateMcpServers: true,
     };
   }
 
@@ -546,7 +547,13 @@ export class PersonalChatScope {
       case "updateSession": {
         const sessionId = readSessionId(args);
         await this.requirePersonalSession(service, sessionId);
-        result = await service.updateSession(args as never);
+        // `mcpServers` rides through with the rest: the chat service accepts
+        // it only for a personal session, which `requirePersonalSession` has
+        // just established, and validates it exactly as create does.
+        await service.updateSession(args as never);
+        // The same shape create returns. The summary already withholds header
+        // values, so the reply never echoes back a credential the host sent.
+        result = await service.getSessionSummary(sessionId);
         break;
       }
       case "archive":

@@ -182,20 +182,29 @@ export const SETTING_SOURCES_SUPPORT = {
 /**
  * What Claude's answer depends on that no other provider's does: the fallback.
  *
- * Measured against Agent SDK 0.3.258 and not re-measured against a later pin
- * — `allowedTools` and `disallowedTools` are
- * enforced, because the CLI removes a denied tool from the model's catalog, but
- * `canUseTool` did not fire on any permission mode tried. So the two lists are
- * the enforceable surface and the prompt path is not.
+ * Re-measured on 2026-09-28 against the pinned Agent SDK 0.3.280 (bundled
+ * Claude Code 2.1.280), permissionMode "default", settingSources [], with a
+ * stdio MCP server: `canUseTool` DOES fire — for an MCP tool call
+ * (`mcp__probe__lookup_song`) and for a mutating Bash command (`touch …`). It
+ * did NOT fire for `echo …`, which Claude Code classifies as read-only and
+ * runs without asking anyone. (Against 0.3.258 it had not fired on any mode
+ * tried.) `allowedTools` and `disallowedTools` stay the primary enforcement:
+ * the CLI removes a denied tool from the model's catalog, which holds whatever
+ * the prompt path does.
  *
- * `fallback: "deny"` is therefore expressible entirely in the lists and is
- * reported as enforced. `fallback: "ask"` needs the prompt to run and is
- * reported as best-effort, with this residual naming why.
+ * `fallback: "deny"` is expressible entirely in the lists and is reported as
+ * enforced. `fallback: "ask"` needs the prompt path, and is reported as
+ * best-effort for the two ways past it the measurement shows: Claude's own
+ * read-only auto-allow, and a setting layer the host turned on
+ * (`settingSources`) that pre-approves a tool before the gate is asked.
  */
 const CLAUDE_ASK_FALLBACK_RESIDUAL =
-  "the ask verdict depends on the Agent SDK permission prompt; a user-level Claude setting such "
-  + "as permissions.defaultMode: auto can pre-approve an unlisted tool before ADE's gate runs. "
-  + "deniedTools/allowedTools are enforced either way.";
+  "the ask verdict depends on the Agent SDK calling ADE's gate (canUseTool), which it does on "
+  + "Agent SDK 0.3.280 for MCP tools and for commands that change things, but not for a command "
+  + "Claude Code itself classifies as read-only, which runs without an approval. A Claude setting "
+  + "loaded through settingSources (permissions.allow, or permissions.defaultMode: auto) can also "
+  + "pre-approve an unlisted tool before ADE's gate runs. deniedTools/allowedTools are enforced "
+  + "either way.";
 
 export const PERMISSION_POLICY_SUPPORT = {
   // Claude's row is the floor, not the answer: its level depends on the
@@ -212,7 +221,10 @@ export const PERMISSION_POLICY_SUPPORT = {
   // live Codex app-server: under `sandbox: workspace-write` a command or a
   // write inside the thread's cwd, `$TMPDIR`, or `/tmp` raises no approval at
   // all, so the policy is never consulted for it. The policy governs the
-  // requests Codex does raise, which are the sandbox escapes.
+  // requests Codex does raise: the sandbox escapes, and — measured on
+  // @openai/codex 0.156.1 with approvalPolicy on-request — every MCP tool call,
+  // which Codex asks about as an `mcpServer/elicitation/request` carrying
+  // `_meta.codex_approval_kind: "mcp_tool_call"`.
   codex: {
     level: "best-effort",
     mechanism:
@@ -222,17 +234,21 @@ export const PERMISSION_POLICY_SUPPORT = {
       + "what the policy answers: a request contained by sandboxRoot is auto-accepted, and "
       + "everything else goes to fallback, so 'ask' raises an approval request and 'deny' "
       + "declines it. A policy with no sandboxRoot contains nothing, so every escape goes "
-      + "straight to fallback. Legacy full auto is the one exception: it auto-accepts every "
-      + "request before containment is consulted, and a policy sent through the SDK cannot "
-      + "reach it because that forces permissionMode 'default'.",
+      + "straight to fallback. MCP tool calls are asked about through an MCP elicitation, and "
+      + "those are judged like Claude's: deniedTools, then allowedTools and "
+      + "autoApproveMcpServers on mcp:<server>:<tool>, then fallback. Legacy full auto is the "
+      + "one exception: it auto-accepts every command and file-change request before "
+      + "containment is consulted, and a policy sent through the SDK cannot reach it because "
+      + "that forces permissionMode 'default'.",
     residual:
-      "The policy governs sandbox escapes only. Commands and file changes inside the thread's "
-      + "cwd, $TMPDIR, or /tmp are ungated by Codex's own sandbox and reach neither sandboxRoot "
-      + "nor fallback. allowedTools, deniedTools, and autoApproveMcpServers are Claude-only "
-      + "fields: nothing on the Codex path reads them, so sandboxRoot containment and then "
-      + "fallback are the whole decision. Do not read deniedTools as a shell or tool blocklist "
-      + "on Codex — it is not consulted. Codex also does not route plain MCP tool calls through "
-      + "an approval request, so they are ungated too.",
+      "The policy governs sandbox escapes and MCP tool calls only. Commands and file changes "
+      + "inside the thread's cwd, $TMPDIR, or /tmp are ungated by Codex's own sandbox and reach "
+      + "neither sandboxRoot nor fallback. allowedTools, deniedTools, and autoApproveMcpServers "
+      + "are read for MCP tool calls and nothing else, so do not read deniedTools as a shell or "
+      + "built-in tool blocklist on Codex. Codex names the MCP tool only in the approval's "
+      + "message text; when it cannot be read there (an app connector's approval), the call is "
+      + "judged on its server alone, which means only a whole-server allowance approves it and "
+      + "any deniedTools entry that could name one of that server's tools sends it to fallback.",
   },
   cursor: {
     level: "unsupported",
@@ -391,9 +407,10 @@ export function resolveSettingSourcesCapability(
  * elsewhere breaks on a wording change that broke nothing.
  */
 export const CLAUDE_DENY_SANDBOX_ROOT_RESIDUAL =
-  "sandboxRoot is not applied on Claude under a deny fallback: containment is a per-call "
-  + "decision and the per-call hook does not fire, so a mutating built-in is denied "
-  + "outright unless allowedTools names it.";
+  "sandboxRoot is not applied on Claude under a deny fallback: a deny fallback removes every "
+  + "mutating built-in the policy does not name from the model's catalog up front, so no call "
+  + "reaches the per-call containment check — a mutating built-in is denied outright unless "
+  + "allowedTools names it.";
 
 /** Prefix of the residual naming caller MCP servers the policy shuts out. */
 export const CLAUDE_BLOCKED_CALLER_SERVERS_PREFIX = "caller MCP servers blocked by the policy: ";
@@ -427,13 +444,17 @@ function resolveClaudePermissionCapability(
   // clauses that would make it a lie.
   //
   // sandboxRoot always lands here: containment is a per-call decision about a
-  // path, and the per-call hook is the one that does not fire. It does not
-  // downgrade the level, because the deny fallback answers it by refusing the
-  // tool outright — stricter than the root, never looser.
+  // path, and under a deny fallback the mutating built-ins are removed from
+  // the catalog before any call can reach it. It does not downgrade the level,
+  // because that refusal is stricter than the root, never looser.
   const residuals: string[] = [CLAUDE_DENY_SANDBOX_ROOT_RESIDUAL];
   // This one DOES downgrade. `allowManagedMcpServersOnly` is per-server, so an
   // entry naming one tool admits the whole server, and the per-tool refusal
-  // would have to come from the hook that does not fire.
+  // has to come from `canUseTool`. On Agent SDK 0.3.280 that hook does fire
+  // for an unlisted MCP tool (measured, permissionMode "default") and denies
+  // it, but a setting layer the host loaded can pre-approve the tool before
+  // the hook is asked, so the refusal is not guaranteed the way a catalog
+  // removal is.
   const toolLevelServers = policyToolLevelMcpServers(policy);
   const allowedServers = policyAllowedMcpServers(policy);
   const blockedCallerServers = (context.callerMcpServerNames ?? []).filter((name) => {
@@ -461,7 +482,8 @@ function resolveClaudePermissionCapability(
       "Agent SDK allowedTools/disallowedTools plus allowManagedMcpServersOnly scoped to the "
       + "servers the policy names, which is per-server rather than per-tool.",
     residual: [
-      `${CLAUDE_TOOL_LEVEL_MCP_RESIDUAL_PREFIX}${toolLevelServers.join(", ")} are not refused.`,
+      `${CLAUDE_TOOL_LEVEL_MCP_RESIDUAL_PREFIX}${toolLevelServers.join(", ")} are refused only by `
+        + "the per-call gate, which a Claude setting loaded through settingSources can pre-empt.",
       ...residuals,
     ].join(" "),
   };

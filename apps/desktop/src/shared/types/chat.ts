@@ -584,7 +584,23 @@ export type AgentChatNoticeDetail = {
 
 export type AgentChatLocalFileRef = {
   path: string;
+  /**
+   * `"image"` sends the bytes as an image the model can see; `"file"` sends a
+   * path hint the agent opens with its own tools (Codex gets a staged copy).
+   * An inbound ref with no usable type is typed from its extension or
+   * `mimeType` by `normalizeInboundFileRef`.
+   */
   type: "file" | "image";
+  /**
+   * `false` makes the attachment reference-only: ADE never reads, copies, or
+   * stages its bytes, on any provider, and the model receives the path as a
+   * hint instead — an image included. For files that must not be downloaded
+   * as a side effect of sending, such as a macOS File Provider placeholder.
+   * Absent or `true` is the normal behavior.
+   */
+  hydrate?: boolean;
+  /** Optional MIME type from the sender; only consulted to infer `type`. */
+  mimeType?: string;
 };
 
 export type AgentChatImageUrlRef = {
@@ -689,13 +705,69 @@ export type AgentChatContextAttachment =
 /** Max attachments per parallel multi-lane launch (same refs sent to each child session). */
 export const PARALLEL_CHAT_MAX_ATTACHMENTS = 12;
 
-/** Infer whether a file path points to an image or a generic file. */
+/**
+ * Infer whether a file path points to an image or a generic file.
+ *
+ * The canonical image rule: a `mimeType` of `image/*` wins, then the path's
+ * extension. Twins that must apply the same rule word for word:
+ * `packages/sdk/src/attachments.ts` and the attachment inference in
+ * `packages/chat-ui/src/adapters/sdkClient.ts`. Change all three together.
+ */
 export function inferAttachmentType(
   filePath: string,
   mimeType?: string | null,
 ): AgentChatLocalFileRef["type"] {
   if (mimeType?.toLowerCase().startsWith("image/")) return "image";
   return isImageAttachmentPath(filePath) ? "image" : "file";
+}
+
+/** True when ADE must not read this attachment's bytes (see `AgentChatLocalFileRef.hydrate`). */
+export function attachmentIsReferenceOnly(attachment: { type: string; hydrate?: boolean }): boolean {
+  return attachment.type !== "image-url" && attachment.hydrate === false;
+}
+
+/**
+ * An attachment as a caller sent it, made safe to route: path trimmed, a
+ * missing or unknown `type` inferred from the extension or `mimeType` (so an
+ * image sent without one still reaches the model as an image), and `hydrate`
+ * kept only when it is the explicit `false` that changes behavior.
+ */
+export function normalizeInboundFileRef(attachment: AgentChatFileRef): AgentChatFileRef {
+  const pathValue = typeof attachment.path === "string" ? attachment.path.trim() : "";
+  if (attachment.type === "image-url") return { ...attachment, path: pathValue };
+  const record = attachment as AgentChatLocalFileRef & { type?: unknown; hydrate?: unknown; mimeType?: unknown };
+  const mimeType = typeof record.mimeType === "string" && record.mimeType.trim().length
+    ? record.mimeType.trim()
+    : null;
+  const type: AgentChatLocalFileRef["type"] = record.type === "file" || record.type === "image"
+    ? record.type
+    : inferAttachmentType(pathValue, mimeType);
+  const { hydrate: _hydrate, mimeType: _mimeType, ...rest } = record;
+  return {
+    ...rest,
+    path: pathValue,
+    type,
+    ...(mimeType ? { mimeType } : {}),
+    ...(record.hydrate === false ? { hydrate: false } : {}),
+  };
+}
+
+/**
+ * The path an agent is told for an attachment: the absolute path ADE resolved
+ * and validated. A path relative to the caller's cwd means nothing to the
+ * agent's process. Falls back to the raw path only for a ref that was never
+ * resolved.
+ */
+export function attachmentAgentPath(attachment: { path: string; _resolvedPath?: string | null }): string {
+  return attachment._resolvedPath || attachment.path;
+}
+
+/**
+ * The path hint a provider gets for an attachment whose bytes ADE did not send
+ * (a `hydrate: false` reference, or a file a provider reads itself).
+ */
+export function attachmentPathHint(attachment: { path: string; _resolvedPath?: string | null }): string {
+  return `[File attached: ${attachmentAgentPath(attachment)}]`;
 }
 
 /** Merge two attachment lists, deduplicating by path (last-write wins). */
@@ -1043,11 +1115,19 @@ export type AgentChatScheduledWorkOrigin =
   | "background_task"
   | "sdk";
 
-/** Files a backgrounded MCP task returned on `task_notification`. */
+/**
+ * A file or resource a tool pointed at: what a backgrounded MCP task returned
+ * on `task_notification`, or an MCP `resource_link` content item in a tool
+ * result (`tool_result.resourceLinks`, which always carries `uri`).
+ */
 export type AgentChatResourceLink = {
   uri?: string;
   name?: string;
   path?: string;
+  /** MCP `resource_link.title`, when the server sent one. */
+  title?: string;
+  /** MCP `resource_link.mimeType`, when the server sent one. */
+  mimeType?: string;
 };
 
 /**
@@ -1203,6 +1283,14 @@ export type AgentChatEvent =
       sources?: ChatSourceRef[];
       /** Additional refs omitted from the mobile-only source preview. Never stored. */
       sourceRefsOmittedForMobile?: number;
+      /**
+       * MCP `resource_link` content items in this tool's result, as structured
+       * data (`uri` always present), so a host can act on them without
+       * scraping `result`. Present only when the provider hands ADE the MCP
+       * result content: Codex does, and so does Claude for its `mcp__` tools;
+       * see `parseMcpResultResourceLinks`.
+       */
+      resourceLinks?: AgentChatResourceLink[];
       timedOutAfterMs?: number;
       backgroundCwdHint?: string;
       grepTotals?: {
@@ -3310,6 +3398,18 @@ export type AgentChatMcpServerConfig =
     type: "http" | "sse";
     url: string;
     headers?: Record<string, string>;
+    /**
+     * The names of headers the host supplied, without their values.
+     *
+     * Header values are credentials (a Bearer token, typically), so ADE never
+     * writes them to durable chat state: the persisted record keeps the names
+     * here and drops `headers`. A chat reloaded after a runtime restart
+     * therefore comes back with `headerNames` and no `headers` until the host
+     * sends the servers again through `updateSession({ mcpServers })`, and the
+     * provider starts without those headers in the meantime (ADE says so in a
+     * `system_notice`). Ignored on input when `headers` is present.
+     */
+    headerNames?: string[];
   }
   | {
     type: "stdio";
@@ -4770,6 +4870,18 @@ export type AgentChatUpdateSessionArgs = {
   acpPermissionMode?: AgentChatAcpPermissionMode;
   acpConfigSnapshot?: AgentChatAcpConfigSnapshot | null;
   autoContinueAtUsageLimit?: boolean;
+  /**
+   * Replace the caller-injected MCP servers of a PERSONAL chat, wholesale.
+   *
+   * Validated exactly like create (`parseCallerMcpServers`: names, reserved
+   * names, the 32-server cap, transport per provider). `{}` or `null` removes
+   * every caller server. Refused on any other surface and while a turn is in
+   * flight. The provider process is restarted so the next turn dials the new
+   * url and headers; the conversation resumes where it was. This is also how a
+   * host re-supplies header values after a runtime restart, since ADE never
+   * stores them (see `AgentChatMcpServerConfig.headerNames`).
+   */
+  mcpServers?: Record<string, AgentChatMcpServerConfig> | null;
 };
 
 export const AGENT_CHAT_SESSION_METADATA_FIELDS = ["title", "laneName", "statusLine"] as const;

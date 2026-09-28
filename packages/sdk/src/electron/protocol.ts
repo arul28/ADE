@@ -13,12 +13,18 @@
  * all, so anything that reaches it must be self-contained.
  */
 
+import type { AdeClientEvent, AdeClientEventMap } from "../clientEvents.js";
 import type {
   InstructionsCapability,
   PermissionCapability,
   SettingSourcesCapability,
 } from "../hostConfig.js";
-import type { AgentChatEventEnvelope, McpCapabilityReport, ProviderStatus } from "../types.js";
+import type {
+  AgentChatEventEnvelope,
+  McpCapabilityReport,
+  ProviderStatus,
+  ThreadModelSelection,
+} from "../types.js";
 
 /** Channel namespace. A host that runs two bridges gives each its own prefix. */
 export const ADE_DEFAULT_CHANNEL_PREFIX = "ade";
@@ -124,7 +130,24 @@ export type AdeIpcProvidersEvent = {
   statuses: Record<string, ProviderStatus>;
 };
 
-export type AdeIpcEventPayload = AdeIpcThreadEvent | AdeIpcProvidersEvent;
+/**
+ * A pushed runtime lifecycle event for one `client.subscribe` subscription.
+ *
+ * `event` and `payload` are exactly what `AdeChatClient.on` delivers in the
+ * main process: a union keyed by `AdeClientEventMap`, so narrowing on `event`
+ * types `payload`. One subscription carries every event name; the renderer
+ * client splits them.
+ */
+export type AdeIpcClientEvent = {
+  [E in AdeClientEvent]: {
+    kind: "client";
+    subscriptionId: string;
+    event: E;
+    payload: AdeClientEventMap[E];
+  };
+}[AdeClientEvent];
+
+export type AdeIpcEventPayload = AdeIpcThreadEvent | AdeIpcProvidersEvent | AdeIpcClientEvent;
 
 /**
  * What the preload puts on `window[key]`.
@@ -158,6 +181,10 @@ export type AdeBridge = {
 export type AdeIpcThreadSnapshot = {
   id: string;
   key: string;
+  /** The thread's title at open (or after the last `thread.update`). */
+  title: string | null;
+  /** What the thread's model resolved to, with the catalog display name. */
+  model: ThreadModelSelection | null;
   mcpCapability: McpCapabilityReport | null;
   instructionsCapability: InstructionsCapability | null;
   settingSourcesCapability: SettingSourcesCapability | null;
@@ -171,13 +198,31 @@ export type AdeIpcSubscription = { subscriptionId: string };
 /* Method names                                                                */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * Every method a renderer may call.
+ *
+ * NOT on this list, deliberately: `thread.updateMcpServers`. MCP servers carry
+ * credentials and choose the agent's tool surface, so only the host's main
+ * process may change them — through `thread.updateMcpServers`, or through the
+ * bridge's `openOptions` hook returning `refresh.mcpServers`.
+ */
 export const ADE_IPC_METHODS = [
   "providers.status",
   "providers.refresh",
   "providers.subscribe",
   "providers.unsubscribe",
   "models.list",
+  "doctor",
+  "client.subscribe",
+  "client.unsubscribe",
   "threads.open",
+  "threads.list",
+  "threads.delete",
+  "threads.archive",
+  "threads.unarchive",
+  "thread.export",
+  "thread.update",
+  "thread.historyPage",
   "thread.send",
   "thread.steer",
   "thread.interrupt",
@@ -197,6 +242,12 @@ export type AdeIpcMethod = (typeof ADE_IPC_METHODS)[number];
  */
 export const ADE_IPC_THREAD_KEY_METHODS: ReadonlySet<AdeIpcMethod> = new Set<AdeIpcMethod>([
   "threads.open",
+  "threads.delete",
+  "threads.archive",
+  "threads.unarchive",
+  "thread.export",
+  "thread.update",
+  "thread.historyPage",
   "thread.send",
   "thread.steer",
   "thread.interrupt",

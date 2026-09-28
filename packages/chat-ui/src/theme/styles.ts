@@ -22,7 +22,7 @@ ${themeToCss(defaultTheme, ".adechat-root")}
   flex-direction: column;
   min-height: 0;
   color: var(--adechat-fg);
-  background: var(--adechat-bg);
+  background: var(--adechat-root-bg, var(--adechat-bg));
   font-family: var(--adechat-font);
   font-size: var(--adechat-font-size);
   line-height: 1.5;
@@ -40,11 +40,28 @@ ${themeToCss(defaultTheme, ".adechat-root")}
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
+  /* The windowed transcript restores the reader's position itself when older
+     rows load; the browser's own anchoring would apply the shift twice. */
+  overflow-anchor: none;
   display: flex;
   flex-direction: column;
   gap: calc(var(--adechat-space) * 1.5);
   padding: calc(var(--adechat-space) * 2);
 }
+.adechat-row-slot { display: flex; flex-direction: column; min-width: 0; }
+.adechat-transcript-spacer { flex: 0 0 auto; }
+.adechat-transcript-older {
+  align-self: center;
+  font: inherit;
+  font-size: 0.85em;
+  color: var(--adechat-muted);
+  background: none;
+  border: 1px solid var(--adechat-border);
+  border-radius: var(--adechat-radius-sm);
+  padding: 2px 10px;
+  cursor: pointer;
+}
+.adechat-transcript-older:disabled { cursor: default; opacity: 0.6; }
 .adechat-transcript-empty {
   margin: auto;
   color: var(--adechat-muted);
@@ -213,6 +230,24 @@ ${themeToCss(defaultTheme, ".adechat-root")}
   color: var(--adechat-muted);
   margin-bottom: 4px;
 }
+.adechat-chip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: calc(var(--adechat-space) * 0.5);
+  padding: 0 calc(var(--adechat-space) * 1.25) calc(var(--adechat-space) * 0.75);
+}
+.adechat-chip-action {
+  font: inherit;
+  font-size: 0.8em;
+  color: var(--adechat-accent);
+  background: var(--adechat-accent-subtle);
+  border: 0;
+  border-radius: var(--adechat-radius-sm);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.adechat-chip-action:hover { filter: brightness(1.1); }
+.adechat-tool-result { margin-top: calc(var(--adechat-space) * 0.5); }
 .adechat-chip-pre {
   font-family: var(--adechat-font-mono);
   font-size: 0.85em;
@@ -321,7 +356,7 @@ ${themeToCss(defaultTheme, ".adechat-root")}
   gap: calc(var(--adechat-space) * 0.75);
   padding: calc(var(--adechat-space) * 1.5);
   border-top: 1px solid var(--adechat-border);
-  background: var(--adechat-bg);
+  background: var(--adechat-root-bg, var(--adechat-bg));
 }
 .adechat-composer-surface {
   display: flex;
@@ -490,6 +525,30 @@ ${themeToCss(defaultTheme, ".adechat-root")}
 .adechat-modelpicker-row[aria-selected="true"] { background: var(--adechat-accent-subtle); }
 .adechat-modelpicker-rowname { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .adechat-modelpicker-rowmeta { flex: 1 1 auto; color: var(--adechat-muted); font-size: 0.85em; text-align: right; }
+.adechat-modelpicker-effort {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: calc(var(--adechat-space) * 0.5);
+  padding: calc(var(--adechat-space) * 0.75) calc(var(--adechat-space) * 1);
+  border-top: 1px solid var(--adechat-border);
+}
+.adechat-modelpicker-effortlabel { color: var(--adechat-muted); font-size: 0.8em; margin-right: auto; }
+.adechat-modelpicker-effortoption {
+  font: inherit;
+  font-size: 0.8em;
+  color: var(--adechat-fg);
+  background: none;
+  border: 1px solid var(--adechat-border);
+  border-radius: var(--adechat-radius-sm);
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.adechat-modelpicker-effortoption:hover { background: var(--adechat-hover); }
+.adechat-modelpicker-effortoption[aria-checked="true"] {
+  background: var(--adechat-accent-subtle);
+  border-color: var(--adechat-accent);
+}
 .adechat-modelpicker-empty { padding: calc(var(--adechat-space) * 2); color: var(--adechat-muted); font-size: 0.9em; }
 
 /* Provider card ---------------------------------------------------------- */
@@ -559,12 +618,29 @@ ${themeToCss(defaultTheme, ".adechat-root")}
  * Insert the stylesheet once per document. Safe to call repeatedly and in SSR
  * (it no-ops without a document).
  */
-export function injectAdeChatStyles(target?: Document): void {
+export type InjectAdeChatStylesOptions = {
+  /**
+   * CSP nonce set on the injected `<style>`, so a host whose `style-src` lists
+   * `'nonce-…'` instead of `'unsafe-inline'` can load the sheet. Applied only
+   * by the call that creates the element: a sheet already in the document is
+   * left as it is.
+   */
+  nonce?: string;
+};
+
+export function injectAdeChatStyles(target?: Document, options: InjectAdeChatStylesOptions = {}): void {
   const doc = target ?? (typeof document === "undefined" ? null : document);
   if (!doc) return;
   if (doc.getElementById(ADE_CHAT_STYLE_ID)) return;
   const style = doc.createElement("style");
   style.id = ADE_CHAT_STYLE_ID;
+  if (options.nonce) {
+    // The attribute AND the property: browsers hide the attribute value after
+    // parse and read the internal slot, and the property alone is lost on an
+    // element some DOMs serialize.
+    style.setAttribute("nonce", options.nonce);
+    style.nonce = options.nonce;
+  }
   style.textContent = adeChatCss;
   doc.head.appendChild(style);
 }

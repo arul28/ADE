@@ -16,6 +16,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type KeyboardEvent,
@@ -29,10 +30,42 @@ import {
   resolveKeyIntent,
 } from "./composerState";
 
+/**
+ * Merge `incoming` into `current`, keyed by `id`.
+ *
+ * An id already staged is replaced in place (newer metadata, same position);
+ * a new id is appended; duplicate ids inside either list collapse to their
+ * last occurrence's data at their first occurrence's position. The result
+ * never holds one id twice.
+ */
+export function mergeAttachments(
+  current: readonly ChatAttachment[],
+  incoming: readonly ChatAttachment[] = [],
+): ChatAttachment[] {
+  const merged: ChatAttachment[] = [];
+  const indexById = new Map<string, number>();
+  for (const attachment of [...current, ...incoming]) {
+    const existing = indexById.get(attachment.id);
+    if (existing === undefined) {
+      indexById.set(attachment.id, merged.length);
+      merged.push(attachment);
+    } else {
+      merged[existing] = attachment;
+    }
+  }
+  return merged;
+}
+
 export type ComposerProps = {
   /** Start a new turn. */
   onSend: (input: SendInput) => void | Promise<void>;
-  /** Deliver into a running turn. Omit to disable steering entirely. */
+  /**
+   * Deliver into a running turn. Omit to disable steering entirely.
+   *
+   * Receives the staged attachments exactly like `onSend`, and is called with
+   * empty text when only attachments are staged. The composer clears its
+   * staged files when the steer is handed off and puts them back if it throws.
+   */
   onSteer?: (input: SendInput) => void | Promise<void>;
   /** Stop the running turn. Omit to hide the stop control. */
   onInterrupt?: () => void | Promise<void>;
@@ -56,10 +89,34 @@ export type ComposerProps = {
   /**
    * Invoked when the attachment button is pressed. Resolve with the
    * attachments to stage, or null to cancel. Omit to hide the button.
+   *
+   * The composer stages what this returns itself — do NOT also add the
+   * returned items to a controlled `attachments` list, or they are merged a
+   * second time (harmlessly, since ids de-duplicate, but pointlessly). See
+   * `attachments` for the merge rule.
    */
   onRequestAttachment?: () => Promise<ChatAttachment[] | null> | ChatAttachment[] | null;
-  /** Controlled attachment list; omit to let the composer manage its own. */
+  /**
+   * Controlled attachment list; omit to let the composer manage its own.
+   *
+   * MERGE RULE. `onAttachmentsChange` is always called with the COMPLETE next
+   * list; replace your state with it, never append it. The composer computes
+   * that list as follows:
+   *   - Picker (`onRequestAttachment`): once the picker resolves, the returned
+   *     items are merged into the LATEST `attachments` value (read after the
+   *     await), so anything the host staged while the picker was open — a
+   *     drop, a paste — is kept.
+   *   - Merge is by `id`: an id already staged is replaced in place, a new id
+   *     is appended. Duplicate ids in the list you pass are shown once.
+   *   - Remove (the × on a chip) drops that one id and keeps everything else.
+   *   - Submit sends the list and then calls `onAttachmentsChange([])`; a
+   *     failed send or steer restores the sent items merged with whatever was
+   *     staged meanwhile.
+   * A host adding its own items (drag-and-drop, paste) merges them into its
+   * state by `id` the same way (`mergeAttachments` is exported for this).
+   */
   attachments?: ChatAttachment[];
+  /** Called with the complete next attachment list. See `attachments`. */
   onAttachmentsChange?: (attachments: ChatAttachment[]) => void;
 
   /** Slot for the model rail (typically `<ModelPicker>` in a trigger). */
@@ -98,7 +155,20 @@ export function Composer({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   const draft = value ?? internalDraft;
-  const staged = attachments ?? internalAttachments;
+  // De-duplicated for display and for sending: two chips under one React key
+  // clash, and one × click used to remove every copy.
+  const staged = useMemo(
+    () => mergeAttachments(attachments ?? internalAttachments),
+    [attachments, internalAttachments],
+  );
+  /**
+   * The latest staged list, readable after an `await`. A closure captured
+   * before the picker opened would otherwise overwrite whatever the host
+   * staged while it was open. Updated during render for the controlled prop;
+   * `setStaged` writes it too, so two changes in one tick see each other.
+   */
+  const stagedRef = useRef(staged);
+  stagedRef.current = staged;
 
   const setDraft = useCallback(
     (next: string) => {
@@ -108,12 +178,14 @@ export function Composer({
     [onValueChange, value],
   );
 
+  const controlled = attachments !== undefined;
   const setStaged = useCallback(
     (next: ChatAttachment[]) => {
-      if (attachments === undefined) setInternalAttachments(next);
+      stagedRef.current = next;
+      if (!controlled) setInternalAttachments(next);
       onAttachmentsChange?.(next);
     },
-    [attachments, onAttachmentsChange],
+    [controlled, onAttachmentsChange],
   );
 
   const state = resolveComposerState({
@@ -150,9 +222,10 @@ export function Composer({
       if (action.kind === "steer" && onSteer) await onSteer(input);
       else await onSend(input);
     } catch (cause: unknown) {
-      // Put the text back rather than losing it to a transport failure.
+      // Put the text back rather than losing it to a transport failure, and
+      // the files with it — merged, so nothing staged meanwhile is dropped.
       setDraft(action.text);
-      setStaged(staged);
+      setStaged(mergeAttachments(staged, stagedRef.current));
       setSubmitError(cause instanceof Error ? cause.message : String(cause));
     }
   }, [onSend, onSteer, setDraft, setStaged, staged, state.action]);
@@ -192,8 +265,15 @@ export function Composer({
     if (!onRequestAttachment) return;
     const next = await onRequestAttachment();
     if (!next || next.length === 0) return;
-    setStaged([...staged, ...next]);
-  }, [onRequestAttachment, setStaged, staged]);
+    // `stagedRef`, not `staged`: the list may have changed while the picker
+    // was open, and the closure's copy is from before it opened.
+    setStaged(mergeAttachments(stagedRef.current, next));
+  }, [onRequestAttachment, setStaged]);
+
+  const remove = useCallback(
+    (id: string) => setStaged(stagedRef.current.filter((item) => item.id !== id)),
+    [setStaged],
+  );
 
   const hint =
     state.action.kind === "blocked" ? blockedHint(state.action.reason) : null;
@@ -209,7 +289,7 @@ export function Composer({
                 key={attachment.id}
                 type="button"
                 className="adechat-attachment"
-                onClick={() => setStaged(staged.filter((item) => item.id !== attachment.id))}
+                onClick={() => remove(attachment.id)}
                 aria-label={`Remove ${attachment.name}`}
               >
                 {attachment.name} ×

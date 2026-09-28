@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
 import {
-  mcpElicitationAllowsAlways,
   mcpElicitationContent,
   mcpElicitationQuestions,
+  mcpElicitationSessionPersistScope,
 } from "./codexMcpElicitation";
 
 describe("Codex MCP elicitation mapping", () => {
-  it("recognizes persistent approval metadata", () => {
-    expect(mcpElicitationAllowsAlways({ persist: "always" })).toBe(true);
-    expect(mcpElicitationAllowsAlways({ persist: ["session", "always"] })).toBe(true);
-    expect(mcpElicitationAllowsAlways({ persist: "session" })).toBe(false);
+  it.each([
+    [{ persist: "always" }, "always"],
+    [{ persist: ["session", "always"] }, "session"],
+    [{ persist: "session" }, "session"],
+  ] as const)("answers an allow-for-session with the narrowest offered persist scope (%j)", (meta, expected) => {
+    expect(mcpElicitationSessionPersistScope(meta)).toBe(expected);
   });
 
   it("maps titled and multi-select enum schemas to native questions", () => {

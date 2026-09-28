@@ -1,13 +1,12 @@
 import { errorMessage } from "./errors.js";
 import type { JsonRpcConnection } from "./jsonRpc.js";
+import type { AgentChatEventEnvelope, Unsubscribe } from "./types.js";
 import type {
-  AgentChatEventEnvelope,
   BufferedEvent,
   PersonalChatStreamEventsResult,
   PersonalChatSubscribeEventsResult,
   RuntimeEventNotification,
-  Unsubscribe,
-} from "./types.js";
+} from "./wireTypes.js";
 
 /**
  * Machine-scoped chat event stream.
@@ -28,6 +27,46 @@ import type {
  */
 
 export type ChatEventListener = (envelope: AgentChatEventEnvelope) => void;
+
+/** What a thread subscribes to. `ChatEventStream` and `ChatEventHub` both are one. */
+export interface ChatEventSource {
+  onEvent(listener: ChatEventListener): Unsubscribe;
+}
+
+/**
+ * The client-lifetime fan-out every thread listens on.
+ *
+ * A `ChatEventStream` is bound to one connection and dies with it. The hub is
+ * not: a client that respawns its runtime points a NEW stream at the same hub,
+ * so a thread — and a bridge subscription holding that thread — keeps
+ * receiving without re-subscribing. It is also where the SDK injects the
+ * envelopes it synthesizes (runtime lost, capabilities changed), so they reach
+ * subscribers through exactly the path a runtime envelope takes.
+ */
+export class ChatEventHub implements ChatEventSource {
+  private readonly listeners = new Set<ChatEventListener>();
+
+  onEvent(listener: ChatEventListener): Unsubscribe {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  emit(envelope: AgentChatEventEnvelope): void {
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(envelope);
+      } catch {
+        // Best-effort per subscriber, the same rule the stream applies.
+      }
+    }
+  }
+
+  clear(): void {
+    this.listeners.clear();
+  }
+}
 
 export type EventStreamOptions = {
   connection: JsonRpcConnection;

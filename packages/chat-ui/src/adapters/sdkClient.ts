@@ -44,14 +44,18 @@ import type {
   ApprovalDecision,
   ApprovalRequest,
   ChatAttachment,
+  ThreadHistoryPage,
+  HistoryPageOptions,
   ModelDescriptor,
   ProviderStatus,
   SendInput,
+  ThreadModelSelection,
   ThreadOpenOptions,
   ThreadStatus,
   ThreadUsage,
   Unsubscribe,
 } from "../sdkTypes";
+import { readThreadModelSelection } from "../models/modelSelection";
 
 /* -------------------------------------------------------------------------- */
 /* The shape this adapter consumes                                             */
@@ -100,8 +104,17 @@ export type SdkProviderStatusRecord = Pick<
     detail: string | null;
   }>;
 
-/** The SDK's attachment reference, under this adapter's name. */
-export type SdkFileRef = AgentChatFileRef;
+/**
+ * The SDK's attachment reference, under this adapter's name.
+ *
+ * `type` and `hydrate` are restated rather than read off the SDK type because
+ * an SDK before 0.3 has neither: the adapter always sets `type`, and an older
+ * SDK forwards the extra field to a runtime that already reads it.
+ */
+export type SdkFileRef = AgentChatFileRef & {
+  type?: "file" | "image";
+  hydrate?: boolean;
+};
 
 /**
  * A catalog row as this adapter reads one.
@@ -122,11 +135,41 @@ export type SdkModelCatalogEntry = Pick<ModelCatalogEntry, "id" | "displayName" 
  * `mcpCapability` are optional because nothing here reads them, and demanding
  * them would reject a proxy that forwards only the chat surface.
  */
-export type SdkLikeThread = Pick<
-  SdkThread,
-  "key" | "send" | "steer" | "interrupt" | "history" | "on"
-> &
-  Partial<Pick<SdkThread, "id" | "mcpCapability" | "setModel">> & {
+export type SdkLikeThread = Pick<SdkThread, "key" | "send" | "interrupt" | "history" | "on"> &
+  Partial<Pick<SdkThread, "id" | "mcpCapability">> & {
+    /**
+     * Restated rather than picked: `@ade-dev/sdk` 0.3 resolves it to the
+     * selection plus the new capability reports, 0.2 and the Electron bridge to
+     * the selection alone. The adapter reads the result only as an optional
+     * `ThreadModelSelection`, so every generation fits.
+     */
+    setModel?(modelId: string): Promise<unknown>;
+    /**
+     * Restated so both SDK generations fit: 0.3 takes `(text, { attachments })`
+     * and accepts an empty text with attachments; 0.2 and a chat-only proxy take
+     * `(text)` only. The adapter always passes the options, which an older
+     * thread ignores.
+     */
+    steer(text: string, opts?: { attachments?: SdkFileRef[] }): Promise<void>;
+    /**
+     * Paged history (`@ade-dev/sdk` >= 0.3). OPTIONAL; forwarded only when
+     * present, so `useAdeThread` can tell a paging client from one that loads
+     * the whole window in one `history()` read.
+     */
+    historyPage?(request?: HistoryPageOptions): Promise<{
+      events: AgentChatEventEnvelope[];
+      hasMore: boolean;
+      nextBeforeSequence?: number | null;
+    }>;
+    /**
+     * The resolved model (`@ade-dev/sdk` >= 0.3 `ThreadModelSelection`). Read as a
+     * live property, never cached: the SDK updates it after `setModel`.
+     */
+    readonly model?: {
+      modelId: string;
+      displayName?: string | null;
+      provider?: string;
+    } | null;
     /**
      * Declared structurally rather than picked from the SDK thread, for the
      * same reason as the probe fields above: an older `@ade-dev/sdk`, a fake,
@@ -184,6 +227,12 @@ export type AdaptSdkClientOptions = {
    * `<AdeChat>` only ever supplies a `modelId`, so the provider, MCP servers,
    * permission preset and title all have to come from the host. When the picked
    * model is in the catalog its provider wins over `defaults.provider`.
+   *
+   * Over the `@ade-dev/sdk` >= 0.3 Electron bridge, the main process drops every
+   * renderer open option except `provider`, `model`, `title` and
+   * `reasoningEffort` unless the host registered an `openOptions` hook, so MCP
+   * servers, permissions, cwd and instructions set here have no effect there.
+   * Set them in the main process instead.
    */
   defaults?: Record<string, unknown> & { provider?: string; model?: string };
   /** Install/login commands rendered on `<ProviderCard>`. */
@@ -236,6 +285,8 @@ export function threadStatusFromEnvelope(envelope: AgentChatEventEnvelope): Thre
       case "completed":
       case "interrupted":
         return { state: "idle", turnId };
+      // Also the SDK's synthetic status for a runtime that exited mid-turn
+      // (`synthetic: true`), which no `done` follows.
       case "failed":
         return {
           state: "error",
@@ -362,6 +413,8 @@ export function modelDescriptorsFromSdk(
         displayName: model.displayName || model.id,
       };
       if (model.description) descriptor.description = model.description;
+      if (model.reasoningEfforts?.length) descriptor.reasoningEfforts = [...model.reasoningEfforts];
+      if (model.defaultReasoningEffort) descriptor.defaultReasoningEffort = model.defaultReasoningEffort;
       // Only an explicit false is forwarded: `undefined` means "usable if the
       // provider is", which is not the same as "unavailable".
       if (model.isAvailable === false) descriptor.available = false;
@@ -377,6 +430,62 @@ function toSendText(input: SendInput | string): string {
   return typeof input === "string" ? input : input.text;
 }
 
+/*
+ * ONE RULE, THREE COPIES. `IMAGE_EXTENSIONS`, `isImageAttachmentPath` and
+ * `inferAttachmentType` below are a word-for-word copy of the runtime's own
+ * `inferAttachmentType` rule in `apps/desktop/src/shared/types/chat.ts`, and
+ * `@ade-dev/sdk` carries the same copy in `packages/sdk/src/attachments.ts`.
+ * This package cannot import either (the SDK is an optional peer and this runs
+ * in a browser), so a change to the rule is made in all three places or none.
+ */
+
+/** The runtime's `IMAGE_ATTACHMENT_MEDIA_TYPES` keys: the extensions it reads as images. */
+const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".heif",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".png",
+  ".svg",
+  ".tif",
+  ".tiff",
+  ".webp",
+]);
+
+/** The runtime's `isImageAttachmentPath`: the last suffix of the path, lowercased. */
+function isImageAttachmentPath(filePath: string): boolean {
+  const extension = filePath.match(/\.[^./\\]+$/)?.[0]?.toLowerCase();
+  return extension ? IMAGE_EXTENSIONS.has(extension) : false;
+}
+
+/**
+ * `"image"` or `"file"` for one attachment, by the runtime's rule.
+ *
+ * Any `image/*` mime type means image. Otherwise — including for a non-image
+ * mime type, which does NOT force `"file"` — the path's extension decides:
+ * `.bmp .gif .heic .heif .ico .jpeg .jpg .png .svg .tif .tiff .webp` are
+ * images, everything else is a file. Same name, signature and answer as the
+ * runtime's `inferAttachmentType`.
+ */
+export function inferAttachmentType(filePath: string, mimeType?: string | null): "file" | "image" {
+  if (mimeType?.toLowerCase().startsWith("image/")) return "image";
+  return isImageAttachmentPath(filePath) ? "image" : "file";
+}
+
+/**
+ * `"image"` or `"file"` for one attachment: an explicit `type` wins, else
+ * `inferAttachmentType` on its `uri` — the path the runtime receives, so the
+ * runtime would infer the same — with its `mimeType`. `name` stands in only
+ * for an attachment with no `uri`, which is never sent.
+ */
+export function attachmentKind(attachment: ChatAttachment): "file" | "image" {
+  if (attachment.type) return attachment.type;
+  return inferAttachmentType(attachment.uri || attachment.name || "", attachment.mimeType);
+}
+
 function toFileRefs(input: SendInput | string): SdkFileRef[] | undefined {
   if (typeof input === "string") return undefined;
   const attachments = input.attachments ?? [];
@@ -386,10 +495,14 @@ function toFileRefs(input: SendInput | string): SdkFileRef[] | undefined {
       // nothing to send, and passing `undefined` through would fail deep inside
       // the runtime instead of here.
       if (!attachment.uri) return null;
-      const ref: SdkFileRef = { path: attachment.uri };
+      // `type` is always set: a runtime reads bytes as an image only when it
+      // is told the file IS one, so leaving it out sent every screenshot as a
+      // path hint.
+      const ref: SdkFileRef = { path: attachment.uri, type: attachmentKind(attachment) };
       if (attachment.name) ref.name = attachment.name;
       if (attachment.mimeType) ref.mimeType = attachment.mimeType;
       if (attachment.sizeBytes !== undefined) ref.bytes = attachment.sizeBytes;
+      if (attachment.hydrate !== undefined) ref.hydrate = attachment.hydrate;
       return ref;
     })
     .filter((ref): ref is SdkFileRef => ref !== null);
@@ -426,6 +539,9 @@ class AdaptedThread implements AdeThread {
 
   readonly pendingApprovals?: () => Promise<readonly ApprovalRequest[]>;
 
+  /** Present only when the inner thread pages, so the hook can feature-detect it. */
+  readonly historyPage?: (request?: HistoryPageOptions) => Promise<ThreadHistoryPage>;
+
   constructor(private readonly inner: SdkLikeThread) {
     if (inner.setModel) {
       this.setModel = (modelId: string) => inner.setModel!(modelId);
@@ -439,6 +555,24 @@ class AdaptedThread implements AdeThread {
     if (inner.pendingApprovals) {
       this.pendingApprovals = () => inner.pendingApprovals!();
     }
+    if (inner.historyPage) {
+      this.historyPage = async (request) => {
+        const page = await inner.historyPage!(request ?? {});
+        return {
+          events: page?.events ?? [],
+          hasMore: page?.hasMore === true,
+          nextBeforeSequence: page?.nextBeforeSequence ?? null,
+        };
+      };
+    }
+  }
+
+  /**
+   * Read through to the inner thread every time: the SDK replaces its value
+   * after `setModel`, so a copy taken at construction would go stale.
+   */
+  get model(): ThreadModelSelection | null {
+    return readThreadModelSelection(this.inner.model);
   }
 
   get key(): string {
@@ -451,7 +585,9 @@ class AdaptedThread implements AdeThread {
   }
 
   async steer(input: SendInput | string): Promise<void> {
-    await this.inner.steer(toSendText(input));
+    const refs = toFileRefs(input);
+    if (refs) await this.inner.steer(toSendText(input), { attachments: refs });
+    else await this.inner.steer(toSendText(input));
   }
 
   async interrupt(): Promise<void> {

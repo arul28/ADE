@@ -159,9 +159,10 @@ import {
 } from "./providerResumeClassifier";
 import { probeCodexRolloutFile } from "../externalSessions/discoverCodex";
 import {
-  mcpElicitationAllowsAlways,
+  codexMcpToolApproval,
   mcpElicitationContent,
   mcpElicitationQuestions,
+  mcpElicitationSessionPersistScope,
 } from "./codexMcpElicitation";
 import { discoverCursorSlashCommands } from "./cursorSlashCommandDiscovery";
 import { resolveProviderSlashCommandPrompt } from "./slashCommandPromptExpansion";
@@ -253,6 +254,7 @@ import {
   writeFileAtomic,
   writeJsonWithPrevious,
 } from "../state/durableFile";
+import { sweepPersistedCallerMcpHeaderValues } from "./callerMcpHeaderSweep";
 import {
   readThreadPointerLedger,
   recordThreadPointerChange,
@@ -584,6 +586,10 @@ import {
   type AgentChatCodexCollaborationMode,
   type AgentChatResourceLink,
   type AgentChatWorkflowProgress,
+  attachmentIsReferenceOnly,
+  normalizeInboundFileRef,
+  attachmentAgentPath,
+  attachmentPathHint,
 } from "../../../shared/types/chat";
 
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
@@ -604,6 +610,7 @@ import {
 import {
   isClaudeHousekeepingTask,
   parseClaudeResourceLinks,
+  parseMcpResultResourceLinks,
   readClaudeSpawnDepth,
 } from "../../../shared/claudeAgentSdkFields";
 import {
@@ -1178,15 +1185,16 @@ import {
   callerMcpServersToDroidList,
   callerMcpServersToInlineRecord,
   callerMcpServersToOpenCodeConfig,
-  callerMcpSupport,
-  callerMcpUnsupportedTransport,
+  callerMcpCapabilityFor,
+  callerMcpDeliveryProblem,
+  callerMcpMissingHeadersNotice,
   codexConfiguredMcpServerNames,
   codexDisabledMcpServerOverrides,
   normalizeCallerMcpCapability,
   normalizeCallerMcpServers,
   parseCallerMcpServers,
-  providerAcceptsCallerMcpServers,
-  resolveCallerMcpCapability,
+  redactCallerMcpText,
+  withholdCallerMcpHeaderValues,
   type CallerMcpServers,
 } from "../../../shared/callerMcpServers";
 import {
@@ -1204,6 +1212,7 @@ import {
   type HostSessionConfigFields,
 } from "../../../shared/hostSessionConfig";
 import {
+  evaluateMcpToolApprovalPolicy,
   evaluatePermissionPolicy,
   normalizePermissionPolicy,
   policyAllowedMcpServers,
@@ -2064,7 +2073,8 @@ type PendingCodexApproval = {
   permissions?: Record<string, unknown> | null;
   questionResponseKind?: "native_request_user_input";
   elicitationSchema?: Record<string, unknown> | null;
-  elicitationPersistenceAllowed?: boolean;
+  /** What an "allow for this session" answer persists; null when the request offered no scope. */
+  elicitationPersistScope?: "session" | "always" | null;
 };
 
 type CodexSubagentThreadState = {
@@ -7389,6 +7399,10 @@ async function buildStreamingUserContent(
         });
         continue;
       }
+      if (attachmentIsReferenceOnly(attachment)) {
+        parts.push({ type: "text", text: `\n${attachmentPathHint(attachment)}` });
+        continue;
+      }
       const data = await args.readAttachmentBytes(attachment);
       const mediaType = inferAttachmentMediaType(attachment);
 
@@ -9657,11 +9671,48 @@ export function createAgentChatService(args: {
    * config untouched unless an external embedder injected servers or asked for
    * strict mode.
    */
+  /**
+   * Which withheld-header server set each chat was last warned about, so the
+   * notice is written once per restart rather than once per provider launch.
+   * Cleared when the host replaces the servers.
+   */
+  const callerMcpMissingHeadersNoticeBySession = new Map<string, string>();
+
+  /**
+   * The caller's MCP servers as a provider adapter should launch them.
+   *
+   * The one read every adapter makes. It is also where a chat reloaded after a
+   * runtime restart learns that its servers came back without their header
+   * values — ADE never writes those to disk — and says so in the transcript,
+   * because a provider dialing an authenticated server with no token fails in
+   * a way nobody can trace back to the restart. The fix is the host's: send the
+   * servers again with `updateSession({ mcpServers })` (the SDK does this on
+   * open when the host supplies `refresh.mcpServers`).
+   */
+  const callerMcpServersForLaunch = (managed: ManagedChatSession): CallerMcpServers | null => {
+    const servers = managed.session.mcpServers ?? null;
+    const notice = callerMcpMissingHeadersNotice(servers);
+    if (!notice) {
+      callerMcpMissingHeadersNoticeBySession.delete(managed.session.id);
+      return servers;
+    }
+    if (callerMcpMissingHeadersNoticeBySession.get(managed.session.id) !== notice.key) {
+      callerMcpMissingHeadersNoticeBySession.set(managed.session.id, notice.key);
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "warning",
+        severity: "warning",
+        message: notice.message,
+      });
+    }
+    return servers;
+  };
+
   const codexThreadConfigArgsFor = async (
     managed: ManagedChatSession,
     reasoningEffort: string | null | undefined,
   ): Promise<{ config?: Record<string, unknown> }> => {
-    const callerServers = managed.session.mcpServers ?? null;
+    const callerServers = callerMcpServersForLaunch(managed);
     const callerStrict = managed.session.strictMcpConfig === true;
     return codexThreadConfigArgs({
       reasoningEffort,
@@ -10394,6 +10445,8 @@ export function createAgentChatService(args: {
       count: abandonedTempCount,
     });
   }
+  // Before any chat loads, so no persist can race the rewrite.
+  sweepPersistedCallerMcpHeaderValues(chatSessionsDir, logger);
   fs.mkdirSync(transcriptsDir, { recursive: true });
   fs.mkdirSync(chatTranscriptsDir, { recursive: true });
 
@@ -10443,6 +10496,20 @@ export function createAgentChatService(args: {
       taskType: args.taskType,
     });
   };
+
+  /**
+   * A `hydrate: false` attachment on Codex: no staged copy (staging reads every
+   * byte, which on macOS downloads a File Provider placeholder), just the
+   * resolved absolute path as text so the agent can open it itself if it
+   * needs to.
+   */
+  const codexReferenceOnlyAttachmentInput = (
+    attachment: ResolvedAgentChatFileRef,
+  ): { type: "text"; text: string; text_elements: [] } => ({
+    type: "text",
+    text: attachmentPathHint(attachment),
+    text_elements: [],
+  });
 
   const stageAttachmentForCodexInput = async (attachment: ResolvedAgentChatFileRef): Promise<string> => {
     const content = await readResolvedAttachmentBytes(attachment);
@@ -15399,7 +15466,7 @@ export function createAgentChatService(args: {
     // Caller-injected servers (ADE SDK embedders) join the same map, ADE leases
     // last so a caller cannot displace one by reusing its name. OpenCode's
     // config calls an HTTP/SSE server "remote" and a stdio server "local".
-    const opencodeCallerMcpServers = managed.session.mcpServers ?? null;
+    const opencodeCallerMcpServers = callerMcpServersForLaunch(managed);
     const opencodeMcpConfig = opencodeMcpLeases.length || opencodeCallerMcpServers
       ? {
         ...(opencodeCallerMcpServers
@@ -15720,7 +15787,9 @@ export function createAgentChatService(args: {
     }
     const imagePaths: string[] = [];
     for (const attachment of (args.attachments ?? []).slice(0, 8)) {
-      if (attachment.type !== "image") continue;
+      // A reference-only attachment is a path the agent may open, not content
+      // the caller asked ADE to read — naming must not read it either.
+      if (attachment.type !== "image" || attachmentIsReferenceOnly(attachment)) continue;
       try {
         const root = path.isAbsolute(attachment.path) ? projectRoot : cwd;
         const resolved = resolvePathWithinRoot(root, attachment.path, { allowMissing: false });
@@ -16342,7 +16411,12 @@ export function createAgentChatService(args: {
       ...(managed.session.cursorModeSnapshot ? { cursorModeSnapshot: managed.session.cursorModeSnapshot } : {}),
       ...(managed.session.cursorModeId !== undefined ? { cursorModeId: managed.session.cursorModeId } : {}),
       ...(managed.session.cursorConfigValues ? { cursorConfigValues: managed.session.cursorConfigValues } : {}),
-      ...(managed.session.mcpServers ? { mcpServers: managed.session.mcpServers } : {}),
+      // Header VALUES are withheld: the record keeps each server's header
+      // names and drops the credentials, which live only in memory for as
+      // long as this runtime does.
+      ...(managed.session.mcpServers
+        ? { mcpServers: withholdCallerMcpHeaderValues(managed.session.mcpServers) }
+        : {}),
       // Explicit `false` is persisted, not collapsed to absent: on the lightweight
       // profile every SDK chat uses, absent means strict and false means the
       // caller asked for the user's MCP config back.
@@ -19907,6 +19981,11 @@ export function createAgentChatService(args: {
     const structured = record.tool_use_result;
     // `structured` never reaches clients, so WebSearch/WebFetch hits travel as `sources`.
     const webSources = claudeWebToolSourceRefs(toolMeta.toolName, structured);
+    // An MCP tool's `resource_link` items survive only here: the model-facing
+    // content has them flattened to text.
+    const resourceLinks = toolMeta.toolName.startsWith("mcp__")
+      ? parseMcpResultResourceLinks(structured)
+      : [];
     emitChatEvent(managed, {
       type: "tool_result",
       tool: toolMeta.toolName,
@@ -19915,6 +19994,7 @@ export function createAgentChatService(args: {
       ...(record.tool_result_meta !== undefined ? { toolResultMeta: record.tool_result_meta } : {}),
       ...claudeStructuredToolResultFields(toolMeta.toolName, structured),
       ...(webSources.length ? { sources: webSources } : {}),
+      ...(resourceLinks.length ? { resourceLinks } : {}),
       itemId: payload.toolUseId,
       ...(turnId ? { turnId } : {}),
       status: "completed",
@@ -21507,7 +21587,13 @@ export function createAgentChatService(args: {
     runtime: CodexRuntime,
     params: Record<string, unknown>,
   ): void => {
-    const status = normalizeCodexMcpStartupStatus(params);
+    const rawStatus = normalizeCodexMcpStartupStatus(params);
+    // A failed MCP startup line routinely quotes the server's URL, and an
+    // embedder's URL or header can carry its token. Scrubbed before it reaches
+    // the log, the transcript diagnostics, or the dedupe key.
+    const status = rawStatus.message
+      ? { ...rawStatus, message: redactCallerMcpText(rawStatus.message, managed.session.mcpServers) }
+      : rawStatus;
     const computerUseCall = codexComputerUseToolCall({
       platform: process.platform,
       serverName: status.serverName,
@@ -21801,6 +21887,29 @@ export function createAgentChatService(args: {
     },
   ): boolean => {
     if (!codexApprovalDeniesByPolicy(managed.session)) return false;
+    refuseCodexApprovalByPolicy(managed, runtime, id, response, request, ui);
+    return true;
+  };
+
+  /**
+   * The unconditional half of {@link declineCodexApprovalByPolicy}: answer the
+   * app-server with the refusal, then write the `approval_request` and its
+   * `pending_input_resolved` receipt, in that order. Called directly when the
+   * policy's verdict is already "deny" for a reason other than the fallback — a
+   * `deniedTools` entry naming the MCP tool Codex asked to run.
+   */
+  const refuseCodexApprovalByPolicy = (
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    id: string | number,
+    response: Record<string, unknown>,
+    request: PendingInputRequest,
+    ui: {
+      kind: "command" | "file_change" | "tool_call";
+      description: string;
+      detail?: Record<string, unknown>;
+    },
+  ): void => {
     runtime.sendResponse(id, response);
     emitPendingInputRequest(managed, request, ui);
     emitPendingInputResolved(managed, {
@@ -21809,7 +21918,6 @@ export function createAgentChatService(args: {
       turnId: request.turnId ?? null,
       questions: request.questions,
     });
-    return true;
   };
 
   const activeTurnIdForManaged = (managed: ManagedChatSession): string | null => {
@@ -23866,6 +23974,10 @@ export function createAgentChatService(args: {
       for (const attachment of resolvedAttachments) {
         if (attachment.type === "image-url") {
           input.push({ type: "image", url: attachment.url });
+          continue;
+        }
+        if (attachmentIsReferenceOnly(attachment)) {
+          input.push(codexReferenceOnlyAttachmentInput(attachment));
           continue;
         }
         const stagedPath = await stageAttachmentForCodexInput(attachment);
@@ -28492,7 +28604,7 @@ export function createAgentChatService(args: {
       ? [
           "ADE attached files/images for this turn:",
           ...args.resolvedAttachments.map((attachment) => {
-            const pathText = attachment._resolvedPath || attachment.path;
+            const pathText = attachmentAgentPath(attachment);
             const label = path.basename(pathText) || pathText;
             return `- ${label}: ${pathText}`;
           }),
@@ -30428,9 +30540,20 @@ export function createAgentChatService(args: {
       }
 
       const providerSlashCommand = args.providerSlashCommand === true;
-      const attachmentHint = formatAttachedContextHint(attachments);
+      // The resolved path, like every other attachment hint: a relative path
+      // means nothing once it reaches the model.
+      const attachmentHint = formatAttachedContextHint(
+        resolvedAttachments.map((attachment) => ({
+          type: attachment.type,
+          path: attachmentAgentPath(attachment),
+        })),
+      );
       const pendingContext = consumePendingTurnContextPrefix(managed, providerSlashCommand)?.composed;
-      const files = openCodePromptFiles(resolvedAttachments.map((attachment) => attachment._resolvedPath));
+      // OpenCode reads every file it is handed, so a reference-only attachment
+      // is left to the path hint above instead.
+      const files = openCodePromptFiles(resolvedAttachments
+        .filter((attachment) => !attachmentIsReferenceOnly(attachment))
+        .map((attachment) => attachment._resolvedPath));
       const slash = providerSlashCommand ? /^\/(\S+)\s*([\s\S]*)$/.exec(args.promptText.trim()) : null;
       if (slash) {
         await client.session.command({
@@ -30625,11 +30748,16 @@ export function createAgentChatService(args: {
       const message = stringOrNull(params.message)
         ?? (mode === "url" ? `Open the ${serverName} authorization link?` : `${serverName} is requesting input.`);
       const requestedSchema = asRecord(params.requestedSchema);
-      const questions = mode === "form" || mode === "openai/form"
+      // Codex's own "may this MCP tool run?" prompt rides the same method as a
+      // server's form. It is an approval, whatever its schema says: raised as
+      // a question card, `approve()` could not answer it and the only way out
+      // of the turn was an interrupt.
+      const toolApproval = codexMcpToolApproval(params);
+      const questions = !toolApproval && (mode === "form" || mode === "openai/form")
         ? mcpElicitationQuestions(requestedSchema)
         : [];
-      const persistenceAllowed = mcpElicitationAllowsAlways(params._meta)
-        || mcpElicitationAllowsAlways(params.meta);
+      const persistScope = mcpElicitationSessionPersistScope(params._meta, params.meta);
+      const persistenceAllowed = persistScope !== null;
       const requestTurnId = normalizeCodexTurnId(
         params.turnId,
         runtime.activeTurnId ?? runtime.startedTurnId ?? null,
@@ -30651,27 +30779,58 @@ export function createAgentChatService(args: {
           serverName,
           mode,
           persistenceSupported: persistenceAllowed,
+          ...(toolApproval ? { approvalKind: "mcp_tool_call" } : {}),
+          ...(toolApproval?.toolName ? { toolName: toolApproval.toolName } : {}),
           ...(stringOrNull(params.url) ? { url: stringOrNull(params.url) } : {}),
         },
         turnId: requestTurnId,
       };
-      runtime.approvals.set(itemId, {
-        requestId: id,
-        kind: "mcp_elicitation",
-        request,
-        elicitationSchema: requestedSchema,
-        elicitationPersistenceAllowed: persistenceAllowed,
-      });
-      markCodexTurnProgress(managed, runtime, requestTurnId);
-      emitPendingInputRequest(managed, request, {
-        kind: "tool_call",
+      const elicitationUi = {
+        kind: "tool_call" as const,
         description: message,
         detail: {
           serverName,
           mode,
           persistenceSupported: persistenceAllowed,
+          ...(toolApproval?.toolName ? { toolName: toolApproval.toolName } : {}),
         },
+      };
+      const declineResponse = { action: "decline", content: null, _meta: null };
+      // The host policy answers Codex's MCP tool approvals the way Claude's
+      // tool gate answers the same calls: deniedTools, then allowedTools and
+      // autoApproveMcpServers on `mcp:<server>:<tool>`, then fallback. Any
+      // other elicitation (a server's own form, an auth link) is not a tool
+      // call and has no name to match, so only a deny fallback reaches it —
+      // a host that renders no card has no one to answer it either.
+      const policy = managed.session.permissionPolicy ?? null;
+      if (policy && toolApproval) {
+        const verdict = evaluateMcpToolApprovalPolicy(policy, serverName, toolApproval.toolName);
+        if (verdict === "allow") {
+          runtime.sendResponse(id, {
+            action: "accept",
+            content: mcpElicitationContent(requestedSchema, undefined, null),
+            _meta: null,
+          });
+          return;
+        }
+        if (verdict === "deny") {
+          refuseCodexApprovalByPolicy(managed, runtime, id, declineResponse, request, elicitationUi);
+          return;
+        }
+      } else if (
+        declineCodexApprovalByPolicy(managed, runtime, id, declineResponse, request, elicitationUi)
+      ) {
+        return;
+      }
+      runtime.approvals.set(itemId, {
+        requestId: id,
+        kind: "mcp_elicitation",
+        request,
+        elicitationSchema: requestedSchema,
+        elicitationPersistScope: persistScope,
       });
+      markCodexTurnProgress(managed, runtime, requestTurnId);
+      emitPendingInputRequest(managed, request, elicitationUi);
       return;
     }
 
@@ -33427,6 +33586,7 @@ export function createAgentChatService(args: {
       }
       if (eventKind === "completed") {
         const failed = String(item.status ?? "completed") === "failed" || item.error != null;
+        const resourceLinks = failed ? [] : parseMcpResultResourceLinks(item.result);
         emitChatEvent(managed, {
           type: "tool_result",
           tool: label,
@@ -33435,6 +33595,7 @@ export function createAgentChatService(args: {
           itemId,
           turnId,
           status: failed ? "failed" : "completed",
+          ...(resourceLinks.length ? { resourceLinks } : {}),
         });
       }
       return;
@@ -34171,6 +34332,7 @@ export function createAgentChatService(args: {
         turnId,
       });
       if (!isCodexReconciledItemInProgress(item.status)) {
+        const resourceLinks = item.error ? [] : parseMcpResultResourceLinks(item.result);
         emitChatEvent(managed, {
           type: "tool_result",
           tool: label,
@@ -34179,6 +34341,7 @@ export function createAgentChatService(args: {
           itemId,
           turnId,
           status: item.error ? "failed" : "completed",
+          ...(resourceLinks.length ? { resourceLinks } : {}),
         });
       }
       rememberReconciledItemSignature(runtime, turnId, signature);
@@ -35893,7 +36056,9 @@ export function createAgentChatService(args: {
       if (!text.length) return;
       logger.warn("agent_chat.codex_stderr", {
         sessionId: managed.session.id,
-        line: text,
+        // Codex's rmcp client prints the URL of an MCP server it failed to
+        // reach, and an embedder's URL can carry a token in its query string.
+        line: redactCallerMcpText(text, managed.session.mcpServers),
         cwd: managed.laneWorktreePath,
       });
     });
@@ -35908,13 +36073,17 @@ export function createAgentChatService(args: {
     };
 
     proc.on("error", (error) => {
-      const message = `Codex app-server failed to start: ${error instanceof Error ? error.message : String(error)}`;
+      const redactedError = redactCallerMcpText(
+        error instanceof Error ? error.message : String(error),
+        managed.session.mcpServers,
+      );
+      const message = `Codex app-server failed to start: ${redactedError}`;
       logger.warn("agent_chat.codex_spawn_failed", {
         sessionId: managed.session.id,
         cwd: managed.laneWorktreePath,
         path: process.env.PATH ?? "",
         shellPath: process.env.SHELL ?? "",
-        error: error instanceof Error ? error.message : String(error),
+        error: redactedError,
       });
 
       rejectPendingCodexRequests(pending, message);
@@ -36750,7 +36919,7 @@ export function createAgentChatService(args: {
     // name. The user's own MCP config still loads unless the caller asked for
     // strictMcpConfig, which the SDK honors by ignoring ~/.claude.json and
     // project .mcp.json while leaving programmatic servers — these — in place.
-    const callerClaudeMcpServers = managed.session.mcpServers;
+    const callerClaudeMcpServers = callerMcpServersForLaunch(managed);
     if (callerClaudeMcpServers) {
       opts.mcpServers = {
         ...callerMcpServersToInlineRecord(callerClaudeMcpServers),
@@ -36778,12 +36947,15 @@ export function createAgentChatService(args: {
       // that render no approval card.
       const permissionPolicy = managed.session.permissionPolicy;
       if (permissionPolicy) {
-        // The two lists are the enforcement, not a fast path. Measured against
-        // Agent SDK 0.3.258 and not re-measured against a later pin:
-        // `allowedTools` and `disallowedTools` are applied
-        // by the CLI, which removes a denied tool from the model's catalog,
-        // while `canUseTool` did not fire on any permission mode tried. So a
-        // policy that only wired the prompt would enforce nothing.
+        // The two lists are the primary enforcement, not a fast path:
+        // `allowedTools` and `disallowedTools` are applied by the CLI, which
+        // removes a denied tool from the model's catalog. `canUseTool` below is
+        // the per-call half. Re-measured 2026-09-28 on the pinned Agent SDK
+        // 0.3.280 (permissionMode "default"): it fires for MCP tool calls and
+        // mutating commands, and not for a command Claude Code classifies as
+        // read-only (on 0.3.258 it had not fired at all). So a policy that
+        // only wired the prompt would miss those read-only commands and
+        // anything a loaded setting layer pre-approves.
         //
         // Under `fallback: "deny"` the list already carries every mutating
         // built-in the policy did not name (see `policyToClaudeToolLists`).
@@ -36819,9 +36991,9 @@ export function createAgentChatService(args: {
             allowManagedMcpServersOnly: true,
           };
         }
-        // Kept wired as a second line even under a deny fallback. It is not
-        // load-bearing on the SDK version measured, but if a future version
-        // starts calling back, the gate is already there and already denies.
+        // Wired under both fallbacks. On 0.3.280 it is what answers a tool the
+        // lists do not name — an MCP tool of an admitted server, or a mutating
+        // command under `fallback: "ask"` — so it is load-bearing, not a spare.
         opts.canUseTool = buildClaudeCanUseTool(runtime, managed) as ClaudeSDKOptions["canUseTool"];
       }
     } else if (!lightweight) {
@@ -37905,6 +38077,38 @@ export function createAgentChatService(args: {
     });
   };
 
+  /**
+   * Where a local attachment path is allowed to point, and the root it is
+   * read under.
+   *
+   * A relative path is resolved against the chat's working directory
+   * (`laneWorktreePath`: the lane worktree, or for a personal chat the host's
+   * `requestedCwd`, or its scratch workspace). An absolute path must sit
+   * inside `projectRoot` — for a personal chat that is the runtime's state
+   * directory, which holds the attachment store `saveTempAttachment` writes
+   * to — or inside that same working directory. The second root is what lets
+   * a host point at a file in the folder it gave the agent without staging a
+   * copy first; the agent could open that file with its own tools anyway, so
+   * it widens nothing. `null` means neither root contains it.
+   */
+  const resolveLocalAttachmentPath = (
+    managed: ManagedChatSession,
+    rawPath: string,
+  ): { resolvedPath: string; rootPath: string } | null => {
+    const roots = path.isAbsolute(rawPath)
+      ? [projectRoot, managed.laneWorktreePath]
+      : [managed.laneWorktreePath];
+    for (const root of roots) {
+      if (!root) continue;
+      try {
+        return { resolvedPath: resolvePathWithinRoot(root, rawPath, { allowMissing: true }), rootPath: root };
+      } catch {
+        // Try the next root.
+      }
+    }
+    return null;
+  };
+
   const hydratePersistedPendingSteers = (
     persisted: PersistedChatState | null,
     managed: ManagedChatSession,
@@ -37919,6 +38123,7 @@ export function createAgentChatService(args: {
             && typeof a === "object"
             && typeof (a as AgentChatFileRef).path === "string"
             && ((a as AgentChatFileRef).type === "file" || (a as AgentChatFileRef).type === "image" || (a as AgentChatFileRef).type === "image-url"))
+          .map(normalizeInboundFileRef)
         : [];
       const contextAttachments = normalizeChatContextAttachments(entry.contextAttachments);
       let resolvedAttachments: ResolvedAgentChatFileRef[] = [];
@@ -37931,12 +38136,12 @@ export function createAgentChatService(args: {
               _rootPath: projectRoot,
             };
           }
-          const isAbsolute = path.isAbsolute(attachment.path);
-          const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
+          const located = resolveLocalAttachmentPath(managed, attachment.path);
+          if (!located) throw new Error(`Attachment path is outside every allowed root: ${attachment.path}`);
           return {
             ...attachment,
-            _resolvedPath: resolvePathWithinRoot(root, attachment.path, { allowMissing: true }),
-            _rootPath: root,
+            _resolvedPath: located.resolvedPath,
+            _rootPath: located.rootPath,
           };
         });
       } catch (err) {
@@ -39306,25 +39511,24 @@ export function createAgentChatService(args: {
     // existing chat unloadable.
     const callerMcpServers = parseCallerMcpServers(requestedMcpServers);
     const requireProviderAcceptsCallerMcpServers = (candidate: AgentChatProvider): void => {
-      if (!callerMcpServers) return;
-      if (!providerAcceptsCallerMcpServers(candidate)) {
-        throw new Error(
-          `Provider '${candidate}' cannot accept injected MCP servers: `
-          + `${callerMcpSupport(candidate)?.mechanism ?? "no MCP support"}. `
-          + "Create this chat without mcpServers, or pick a provider that supports "
-          + `them (${CALLER_MCP_CAPABLE_PROVIDERS.join(", ")}).`,
-        );
-      }
       // A provider that accepts servers can still lack a transport. Codex has
       // no SSE client — its config treats every `url` as streamable HTTP — so
       // an SSE server handed to it connects over the wrong protocol and fails
       // at first use with a transport error nobody can trace back to here.
-      const unsupported = callerMcpUnsupportedTransport(candidate, callerMcpServers);
-      if (unsupported) {
+      const problem = callerMcpDeliveryProblem(candidate, callerMcpServers);
+      if (problem?.kind === "provider") {
         throw new Error(
-          `Provider '${candidate}' has no '${unsupported.transport}' MCP transport, so `
-          + `${unsupported.names.map((name) => `'${name}'`).join(", ")} cannot be delivered. `
-          + `Use a supported transport for ${unsupported.names.length > 1 ? "those servers" : "that server"}, `
+          `Provider '${candidate}' cannot accept injected MCP servers: `
+          + `${problem.mechanism ?? "no MCP support"}. `
+          + "Create this chat without mcpServers, or pick a provider that supports "
+          + `them (${CALLER_MCP_CAPABLE_PROVIDERS.join(", ")}).`,
+        );
+      }
+      if (problem?.kind === "transport") {
+        throw new Error(
+          `Provider '${candidate}' has no '${problem.transport}' MCP transport, so `
+          + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered. `
+          + `Use a supported transport for ${problem.names.length > 1 ? "those servers" : "that server"}, `
           + "or pick a provider that speaks it.",
         );
       }
@@ -39432,12 +39636,10 @@ export function createAgentChatService(args: {
     // That caller asked for the default MCP surface, and an absent report is
     // how every consumer tells "no MCP was requested" from "here is what ADE
     // did with your request".
-    const callerMcpCapability = callerMcpServers || requestedStrictMcpConfig === true
-      ? resolveCallerMcpCapability(effectiveProvider, {
-        hasServers: callerMcpServers != null,
-        strictRequested: requestedStrictMcpConfig === true,
-      })
-      : null;
+    const callerMcpCapability = callerMcpCapabilityFor(effectiveProvider, {
+      servers: callerMcpServers,
+      strict: requestedStrictMcpConfig,
+    });
     // A structured permission policy is the SDK's third form of `permissions`,
     // alongside the two presets. It is normalized once here and persisted, so
     // every later read — the Claude tool gate, the Codex approval handlers, a
@@ -42871,10 +43073,7 @@ export function createAgentChatService(args: {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
     const executionContext = refreshManagedLaneLaunchContext(managed);
-    const publicAttachments = attachments.map((attachment) => ({
-      ...attachment,
-      path: attachment.path.trim(),
-    }));
+    const publicAttachments = attachments.map(normalizeInboundFileRef);
     const resolvedAttachments = publicAttachments.map((attachment): ResolvedAgentChatFileRef => {
       const rawPath = attachment.path;
       if (!rawPath.length) {
@@ -42898,22 +43097,20 @@ export function createAgentChatService(args: {
         }
       }
       const isAbsolute = path.isAbsolute(rawPath);
-      const root = isAbsolute ? projectRoot : managed.laneWorktreePath;
-      try {
-        const safePath = resolvePathWithinRoot(root, rawPath, { allowMissing: true });
-        return {
-          ...attachment,
-          path: rawPath,
-          _resolvedPath: safePath,
-          _rootPath: root,
-        };
-      } catch {
+      const located = resolveLocalAttachmentPath(managed, rawPath);
+      if (!located) {
         throw new Error(
           isAbsolute
-            ? `Attachment path must stay within the project root: ${rawPath}`
+            ? `Attachment path must stay within the project root or the chat's working directory: ${rawPath}`
             : `Attachment path must stay within the active lane: ${rawPath}`,
         );
       }
+      return {
+        ...attachment,
+        path: rawPath,
+        _resolvedPath: located.resolvedPath,
+        _rootPath: located.rootPath,
+      };
     });
     if (managed.session.provider === "claude" && slashCommand === "/login") {
       throw new Error(CLAUDE_LOGIN_NOT_SDK_COMMAND);
@@ -44294,6 +44491,10 @@ export function createAgentChatService(args: {
       { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
     > = [{ type: "text", text: promptText }];
     for (const attachment of resolvedAttachments) {
+      if (attachmentIsReferenceOnly(attachment)) {
+        blocks.push({ type: "text", text: attachmentPathHint(attachment) });
+        continue;
+      }
       try {
         let buf: Buffer;
         if (attachment.type === "image") {
@@ -44363,7 +44564,11 @@ export function createAgentChatService(args: {
   ): Promise<string> => {
     const promptBlocks = await buildAgentPromptBlocks(
       promptText,
-      resolvedAttachments.filter((attachment) => attachment.type !== "image" && attachment.type !== "image-url"),
+      // A reference-only image stays in: it is sent as a path hint, not bytes.
+      resolvedAttachments.filter((attachment) => (
+        attachment.type !== "image-url"
+        && (attachment.type !== "image" || attachmentIsReferenceOnly(attachment))
+      )),
     );
     return promptBlocks
       .filter((block): block is { type: "text"; text: string } => block.type === "text")
@@ -44376,7 +44581,7 @@ export function createAgentChatService(args: {
   ): Array<{ path: string; mimeType: string; rootPath: string }> => (
     workerPathImagesFromAttachments(
       resolvedAttachments.flatMap((attachment) => {
-        if (attachment.type !== "image") return [];
+        if (attachment.type !== "image" || attachmentIsReferenceOnly(attachment)) return [];
         const rootPath = attachment._rootPath.trim();
         if (!rootPath) return [];
         return [{
@@ -44821,7 +45026,7 @@ export function createAgentChatService(args: {
     // shadowed by a caller reusing its name. Strict mode rides a trimmed
     // `local.settingSources`; see CALLER_MCP_SUPPORT.cursor for the residual
     // (user-layer servers).
-    const cursorCallerMcpServers = managed.session.mcpServers ?? null;
+    const cursorCallerMcpServers = callerMcpServersForLaunch(managed);
     const cursorMcpServerConfig = cursorMcpLeases.length || cursorCallerMcpServers
       ? {
         ...(cursorCallerMcpServers ? callerMcpServersToInlineRecord(cursorCallerMcpServers) : {}),
@@ -47860,7 +48065,7 @@ export function createAgentChatService(args: {
       // Caller-injected servers (ADE SDK embedders) ride the same list. Droid's
       // config shape is `{ name, ...transport }`, and the ADE leases go last so
       // a caller reusing an ADE server name cannot displace the lease.
-      const droidCallerMcpServers = managed.session.mcpServers ?? null;
+      const droidCallerMcpServers = callerMcpServersForLaunch(managed);
       const droidMcpServerList = droidMcpLeases.length || droidCallerMcpServers
         ? [
           ...(droidCallerMcpServers ? callerMcpServersToDroidList(droidCallerMcpServers) : []),
@@ -49143,8 +49348,17 @@ export function createAgentChatService(args: {
         emitSteerUserRow(managed, row, delivery === "steer" ? "accepted" : "queued", turnId);
         persistChatState(managed);
         try {
-          const files = openCodePromptFiles(preparedSteer.resolvedAttachments.map((attachment) => attachment._resolvedPath));
-          const text = [buildChatContextAttachmentPrompt(preparedSteer.contextAttachments) || null, preparedSteer.submittedText]
+          const files = openCodePromptFiles(preparedSteer.resolvedAttachments
+            .filter((attachment) => !attachmentIsReferenceOnly(attachment))
+            .map((attachment) => attachment._resolvedPath));
+          const referenceOnlyHints = preparedSteer.resolvedAttachments
+            .filter(attachmentIsReferenceOnly)
+            .map((attachment) => attachmentPathHint(attachment));
+          const text = [
+            buildChatContextAttachmentPrompt(preparedSteer.contextAttachments) || null,
+            preparedSteer.submittedText,
+            referenceOnlyHints.length ? referenceOnlyHints.join("\n") : null,
+          ]
             .filter((section): section is string => Boolean(section))
             .join("\n\n");
           const admitted = await runtime.handle.client.session.prompt({
@@ -49594,6 +49808,10 @@ export function createAgentChatService(args: {
       for (const attachment of preparedSteer.resolvedAttachments) {
         if (attachment.type === "image-url") {
           input.push({ type: "image", url: attachment.url });
+          continue;
+        }
+        if (attachmentIsReferenceOnly(attachment)) {
+          input.push(codexReferenceOnlyAttachmentInput(attachment));
           continue;
         }
         const stagedPath = await stageAttachmentForCodexInput(attachment);
@@ -52479,6 +52697,7 @@ export function createAgentChatService(args: {
     const summaryCursorModeSnapshot = summaryCursorModeId === null
       ? undefined
       : liveSession?.cursorModeSnapshot ?? persisted?.cursorModeSnapshot;
+    const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -52544,9 +52763,9 @@ export function createAgentChatService(args: {
       // live session object. Omitting the MCP fields here persisted the
       // capability report and then dropped it on the way out, so a caller could
       // not tell "strict mode is enforced" from "the runtime ignored me".
-      ...(liveSession?.mcpServers || persisted?.mcpServers
-        ? { mcpServers: liveSession?.mcpServers ?? persisted?.mcpServers }
-        : {}),
+      // Header values withheld here too: a summary fans out to every client
+      // that lists chats, and the credential is the host's, not theirs.
+      ...(summaryMcpServers ? { mcpServers: withholdCallerMcpHeaderValues(summaryMcpServers) } : {}),
       ...(typeof (liveSession?.strictMcpConfig ?? persisted?.strictMcpConfig) === "boolean"
         ? { strictMcpConfig: liveSession?.strictMcpConfig ?? persisted?.strictMcpConfig }
         : {}),
@@ -54314,8 +54533,8 @@ export function createAgentChatService(args: {
             : null,
           _meta: accepted
             && resolvedDecision === "accept_for_session"
-            && pending.elicitationPersistenceAllowed
-            ? { persist: "always" }
+            && pending.elicitationPersistScope
+            ? { persist: pending.elicitationPersistScope }
             : null,
         });
         completeCodexPendingInput();
@@ -56067,6 +56286,91 @@ export function createAgentChatService(args: {
   };
 
 
+  /**
+   * `updateSession({ mcpServers })`, step one: check a replacement of a
+   * personal chat's caller servers and return the parsed set. Commits nothing.
+   *
+   * Everything a create checks is checked again — a replacement is a request
+   * for tools the chat will depend on, and the same silent under-delivery is
+   * possible. `provider` is the provider the chat will be on once the whole
+   * update lands, so a request that also switches the model is judged against
+   * the provider it is switching TO.
+   *
+   * Refused mid-turn rather than deferred: the running provider process was
+   * started with the old servers, and swapping them under a live turn would
+   * leave the session reporting servers the agent cannot see.
+   */
+  const prepareCallerMcpReplacement = (
+    managed: ManagedChatSession,
+    requested: Record<string, AgentChatMcpServerConfig> | null,
+    provider: AgentChatProvider,
+  ): CallerMcpServers | null => {
+    if (!isPersonalSession(managed.session)) {
+      throw new Error("invalid_argument: mcpServers can only be updated on a personal chat.");
+    }
+    if (managed.session.status === "active" || runtimeMidTurn(managed)) {
+      throw new Error(
+        "invalid_argument: cannot replace mcpServers with a turn in flight. "
+        + "Await the turn or interrupt it, then update.",
+      );
+    }
+    const next = parseCallerMcpServers(requested);
+    const problem = callerMcpDeliveryProblem(provider, next);
+    if (problem?.kind === "provider") {
+      throw new Error(
+        `invalid_argument: provider '${provider}' cannot accept injected MCP servers: `
+        + `${problem.mechanism ?? "no MCP support"}.`,
+      );
+    }
+    if (problem?.kind === "transport") {
+      throw new Error(
+        `invalid_argument: provider '${provider}' has no '${problem.transport}' MCP transport, so `
+        + `${problem.names.map((name) => `'${name}'`).join(", ")} cannot be delivered.`,
+      );
+    }
+    return next;
+  };
+
+  /**
+   * Step two: install a replacement `prepareCallerMcpReplacement` accepted.
+   * Only called once every check of the update has passed, so a refused update
+   * leaves the old servers and a live runtime in place. Between turns the
+   * runtime is torn down with a preserving reason, so the next turn starts a
+   * fresh process that resumes the same provider thread with the new config.
+   */
+  const commitCallerMcpReplacement = (
+    managed: ManagedChatSession,
+    next: CallerMcpServers | null,
+  ): void => {
+    const provider = managed.session.provider;
+    if (next) managed.session.mcpServers = next;
+    else delete managed.session.mcpServers;
+    // Same gate as create: a report exists when servers exist or strict mode
+    // was asked for, and describes this provider.
+    const capability = callerMcpCapabilityFor(provider, {
+      servers: next,
+      strict: managed.session.strictMcpConfig,
+    });
+    if (capability) managed.session.mcpCapability = capability;
+    else delete managed.session.mcpCapability;
+    // The permission report names caller servers the policy shuts out, so it
+    // moves with the server list.
+    if (managed.session.permissionPolicy) {
+      managed.session.permissionCapability = resolvePermissionCapability(
+        provider,
+        managed.session.permissionPolicy,
+        { callerMcpServerNames: Object.keys(next ?? {}) },
+      );
+    }
+    callerMcpMissingHeadersNoticeBySession.delete(managed.session.id);
+    if (managed.runtime) teardownRuntime(managed, "pool_compaction");
+    logger.info("agent_chat.caller_mcp_servers_replaced", {
+      sessionId: managed.session.id,
+      provider,
+      serverNames: Object.keys(next ?? {}),
+    });
+  };
+
   const updateSession = async ({
     sessionId,
     title,
@@ -56091,6 +56395,7 @@ export function createAgentChatService(args: {
     spawnKind: requestedSpawnKind,
     subagentTakeoverPromptShown,
     autoContinueAtUsageLimit: requestedAutoContinueAtUsageLimit,
+    mcpServers: requestedMcpServers,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
     // Cursor's Fast toggle sent as a model option by an older client becomes
     // the chat's Fast tier; an option record left empty by the fold clears.
@@ -56138,6 +56443,14 @@ export function createAgentChatService(args: {
     let modelHandoff: AgentChatModelHandoff | null = null;
     let modelSwitched = false;
 
+    // Every check the model switch and the server replacement make runs here,
+    // before either commits anything: a refused update must leave the old
+    // servers, the old reports, and a live runtime exactly as they were.
+    let requestedModel: {
+      descriptor: ModelDescriptor;
+      nextProvider: AgentChatProvider;
+      nextModel: string;
+    } | null = null;
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
       if (!nextModelId.length) {
@@ -56150,53 +56463,75 @@ export function createAgentChatService(args: {
       }
 
       const nextProvider: AgentChatProvider = resolveProviderGroupForModel(descriptor);
-      const nextModel = descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id;
       if (nextProvider === "cursor") {
         assertCursorChatModelCanUseSdk({
           modelRef: descriptor.providerModelId,
           descriptor,
         });
       }
+      requestedModel = {
+        descriptor,
+        nextProvider,
+        nextModel: descriptor.isCliWrapped ? descriptor.providerModelId : descriptor.id,
+      };
+    }
+    // New servers are judged against the provider the chat lands on, so a
+    // request that changes both is checked as one move.
+    const nextCallerMcpServers = requestedMcpServers !== undefined
+      ? prepareCallerMcpReplacement(
+        managed,
+        requestedMcpServers,
+        requestedModel?.nextProvider ?? managed.session.provider,
+      )
+      : undefined;
+    if (requestedModel && nextCallerMcpServers === undefined) {
+      // A model switch can cross providers, which means it can move a chat
+      // onto a provider that cannot honor the MCP request the chat was created
+      // with. Create-time refuses that; without the same check here the switch
+      // was a way around it, landing a chat on Pi with its injected servers
+      // silently gone. Refuse for the same reason and with the same shape —
+      // including a provider that accepts servers but lacks the transport one
+      // of them speaks.
+      const { nextProvider } = requestedModel;
+      const problem = callerMcpDeliveryProblem(nextProvider, managed.session.mcpServers);
+      if (problem?.kind === "provider") {
+        throw new Error(
+          `Cannot switch this chat to '${nextProvider}': it has injected MCP servers and `
+          + `${problem.mechanism ?? "that provider has no MCP support"}. `
+          + "Start a new chat on that provider instead.",
+        );
+      }
+      if (problem?.kind === "transport") {
+        throw new Error(
+          `Cannot switch this chat to '${nextProvider}': it has no '${problem.transport}' `
+          + `MCP transport for ${problem.names.map((name) => `'${name}'`).join(", ")}. `
+          + "Start a new chat on that provider instead.",
+        );
+      }
+    }
+
+    // Before the model switch below, so the reports the switch recomputes
+    // describe the servers it is switching WITH.
+    if (nextCallerMcpServers !== undefined) {
+      commitCallerMcpReplacement(managed, nextCallerMcpServers);
+    }
+
+    if (requestedModel) {
+      const { descriptor, nextProvider, nextModel } = requestedModel;
       const previousProvider = managed.session.provider;
       const previousModelId = managed.session.modelId
         ?? resolveModelIdFromStoredValue(managed.session.model, previousProvider)
         ?? managed.session.model;
 
-      // A model switch can cross providers, which means it can move a chat onto
-      // a provider that cannot honor the MCP request the chat was created with.
-      // Create-time refuses that; without the same check here the switch was a
-      // way around it, landing a chat on Pi with its injected servers silently
-      // gone. Refuse for the same reason and with the same shape.
-      if (managed.session.mcpServers && !providerAcceptsCallerMcpServers(nextProvider)) {
-        throw new Error(
-          `Cannot switch this chat to '${nextProvider}': it has injected MCP servers and `
-          + `${callerMcpSupport(nextProvider)?.mechanism ?? "that provider has no MCP support"}. `
-          + "Start a new chat on that provider instead.",
-        );
-      }
-      // Same reasoning one level down: a provider that accepts servers can
-      // still lack the transport one of them speaks, and switching onto it
-      // would connect that server over the wrong protocol.
-      const unsupportedTransport = managed.session.mcpServers
-        ? callerMcpUnsupportedTransport(nextProvider, managed.session.mcpServers)
-        : null;
-      if (unsupportedTransport) {
-        throw new Error(
-          `Cannot switch this chat to '${nextProvider}': it has no '${unsupportedTransport.transport}' `
-          + `MCP transport for ${unsupportedTransport.names.map((name) => `'${name}'`).join(", ")}. `
-          + "Start a new chat on that provider instead.",
-        );
-      }
       // The report describes THIS provider's enforcement. Carrying the old one
       // across a switch would claim Claude's "enforced" on a Codex session —
       // a guarantee ADE is no longer keeping. Recomputed whenever the session
       // carries an MCP request at all, including strict-mode-only.
-      if (managed.session.mcpServers || managed.session.strictMcpConfig === true) {
-        managed.session.mcpCapability = resolveCallerMcpCapability(nextProvider, {
-          hasServers: managed.session.mcpServers != null,
-          strictRequested: managed.session.strictMcpConfig === true,
-        });
-      }
+      const switchedMcpCapability = callerMcpCapabilityFor(nextProvider, {
+        servers: managed.session.mcpServers,
+        strict: managed.session.strictMcpConfig,
+      });
+      if (switchedMcpCapability) managed.session.mcpCapability = switchedMcpCapability;
       // Same reasoning for the host configuration reports. A thread that moves
       // from Claude to Droid keeps its instructions text, but "applied on a
       // real system-prompt channel" stops being true the moment it moves, and

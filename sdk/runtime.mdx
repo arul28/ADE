@@ -1,6 +1,6 @@
 ---
 title: "Runtime"
-description: "The embedded ADE sidecar: isolated home, --profile embedded, parent-death watchdog, pidfile reclaim, and doctor()."
+description: "The embedded ADE sidecar: isolated home, --profile embedded, parent-death watchdog, pidfile reclaim, exit events and autoRestart, version compatibility, and doctor()."
 icon: "server"
 ---
 
@@ -37,13 +37,92 @@ your process
 
 The client prefers push (`personalChats.subscribeEvents`). If the runtime omits that capability, it drains `personalChats.streamEvents` by cursor. `doctor().events.mode` is `"push"`, `"drain"`, or `"unavailable"`.
 
+## When the runtime exits
+
+The runtime is a child process. It can crash, the OS can end it, or its socket can close. The client reports each case with a client event:
+
+```ts
+ade.on("exit", ({ code, signal, error }) => { /* the child process exited */ });
+ade.on("transport", ({ state, error }) => { /* "closed" or "reconnected" */ });
+ade.on("restart", ({ attempt, ok, error }) => { /* one autoRestart attempt ended */ });
+```
+
+| Event | Payload | When |
+|---|---|---|
+| `exit` | `{ code, signal, error }` | The runtime that this client spawned exited without `dispose()`. `error` is the end of its stderr, or `null`. Not sent in attach mode, where the client owns no process |
+| `transport` | `{ state: "closed" \| "reconnected", error }` | The socket closed unexpectedly, or `autoRestart` connected again |
+| `restart` | `{ attempt, ok, error }` | One `autoRestart` attempt ended. `attempt` counts from 1 for each outage |
+
+Each `on` returns an unsubscribe function. The listeners stay attached across an `autoRestart`. Over the Electron bridge a renderer gets the same events. See [Electron](/sdk/electron#runtime-lifecycle-in-the-renderer).
+
+**Every live thread gets a synthetic status.** A runtime that stops mid-turn sends no `done` and no `error`. So the SDK sends this envelope on each live thread's `status` channel:
+
+```ts
+{ type: "status", turnStatus: "failed", message: "The ADE runtime exited (…)", synthetic: true }
+```
+
+Show the thread as stopped when you get it. Approvals that were pending died with the provider process. Their `approvalTimeoutMs` clocks stop.
+
+### `autoRestart`
+
+```ts
+const ade = await createAdeChat({
+  home,
+  autoRestart: true,                       // 5 attempts, 1 s backoff that doubles
+  // autoRestart: { maxAttempts: 3, backoffMs: 500 },
+});
+```
+
+`autoRestart` is off by default. When it is on and the runtime is lost, the client:
+
+1. Waits `backoffMs × 2^(attempt − 1)`, then starts a runtime and does the handshake again. The first wait is `backoffMs`.
+2. Connects the event stream again.
+3. Rebinds every thread that it had open. A session that the new runtime still has keeps its thread object, and gets fresh MCP header values from `mcpHeaders` when its record needs them. A session that the runtime lost is recreated from the stored record, and the thread object that you hold takes the new session. Its `thread.id` then changes.
+4. Sends `restart` with `ok: true`, then `transport` with `state: "reconnected"`.
+
+After `maxAttempts` failures the client stops and logs a line. Each failed attempt sends `restart` with `ok: false`.
+
+The client object does not change, so the threads that you hold and a bridge built on the client keep working.
+
+Limits:
+
+- A turn that was in flight is **not** resumed. The transcript keeps everything that the runtime persisted.
+- No restart after `dispose()`.
+- `requireCompatibleRuntime: true` also fails an attempt when the new runtime is outside the supported range.
+
+## Version compatibility
+
+The SDK and the runtime release on separate cadences, and a downloaded runtime can be newer or older than the SDK. `SUPPORTED_RUNTIME_RANGE` is the range that this SDK build is written for.
+
+| SDK | Supported runtime |
+|---|---|
+| 0.3.0 | `>=1.2.81 <2.0.0` |
+
+```ts
+import { SUPPORTED_RUNTIME_RANGE } from "@ade-dev/sdk";
+```
+
+After the handshake, the SDK compares the runtime's reported version with the range:
+
+- **Inside the range:** nothing happens.
+- **Outside the range:** the runtime still connects. The SDK logs one line, and features that the runtime lacks degrade feature by feature. For example, `thread.updateMcpServers()` throws `invalid_option`, and `hydrate: false` is ignored.
+- **With `requireCompatibleRuntime: true`:** `createAdeChat` throws `AdeError("runtime_incompatible")` and stops the runtime.
+
+A pre-release suffix is ignored, so `1.2.81-alpha.3` counts as `1.2.81`. A development build (`0.0.0`, or no version) counts as supported, and `note` says so. A version that the SDK cannot parse counts as not supported.
+
+`doctor().runtime.compatibility` reports the result every time:
+
+```ts
+{ supported: boolean, range: string, version: string | null, note: string | null }
+```
+
 ## `doctor()`
 
 ```ts
 const report = await ade.doctor();
 ```
 
-Use this as the first check when an embedder chat misbehaves. `sdkVersion` is this package; `socket.runtimeVersion` is the sidecar binary. They ship on separate cadences.
+Use this as the first check when an embedder chat misbehaves. `sdkVersion` is this package; `socket.runtimeVersion` is the sidecar binary. They release on separate cadences.
 
 | Field | What it tells you |
 |---|---|
@@ -66,16 +145,19 @@ Which of the resolution paths actually produced the running binary, and what the
 
 | Field | What it tells you |
 |---|---|
-| `source` | `explicit`, `bundled-package`, `cached-download`, `path`, `downloaded`, or `attached` |
+| `source` | `packaged`, `explicit`, `bundled-package`, `cached-download`, `path`, `downloaded`, or `attached`. `packaged` means the options came from `resolvePackagedRuntime()`: the copy inside your own app bundle. `explicit` is any other `binaryPath` you pinned |
 | `binaryPath` | The binary that was spawned |
 | `version` | `<binary> --version`, when it answered |
 | `runtimeRoot` | `ADE_RUNTIME_ROOT` as spawned. Null when the install carries its own environment |
 | `nodeModulesPath` | `ADE_RUNTIME_NODE_MODULES` as spawned |
 | `signature` | `{ signed, authority?, accepted? }` on macOS and Windows. **Null means "not known"**, never "not signed": it is null on Linux, in attach mode, and whenever the check could not run |
+| `compatibility` | `{ supported, range, version, note }`. See [Version compatibility](#version-compatibility) |
 | `downloadedThisSession` | True only when *this* client downloaded a runtime during its lifetime |
 | `checksumVerified` | False on the pinned and bundled routes by design |
 
 The signature probe runs at most once per client, and never throws: `codesign -dv --verbose=2` plus `spctl --assess --type execute` on macOS, `Get-AuthenticodeSignature` through the trusted System32 PowerShell on Windows, each with a 10 second budget.
+
+On macOS, `accepted` is Gatekeeper's verdict on the **outermost** `.app` that contains the runtime. Gatekeeper judges a nested binary as part of the app that carries it. Judged alone, a correctly signed and notarized runtime inside an app gets "the code is valid but does not seem to be an app". A runtime outside any `.app` that gets that answer reports `accepted: null`. `accepted` absent or `null` means "not known". Only `accepted: false` means the OS refused it. On Windows, `accepted` is whether the Authenticode chain is valid.
 
 A packaged build that reports `source: "downloaded"` is a packaging bug. Set `allowDownload: false` and it becomes a `runtime_unavailable` throw at startup instead. See [Bundling](/sdk/bundling).
 

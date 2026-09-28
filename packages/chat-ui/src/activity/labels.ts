@@ -10,10 +10,16 @@
  *   2. exact `map` entry              e.g. "server.tool"
  *   3. longest matching wildcard      e.g. "server.*" then "*"
  *   4. `null` — the caller falls back to the raw tool name
+ *
+ * MCP tool keys are matched on the tool's identity, not its spelling (see
+ * `matchLabelKey`): `mcp:versic:*`, `versic:search`, `mcp__versic__search` and
+ * a bare `search` all reach a Claude `mcp__versic__search` and a Codex
+ * `versic:search` alike.
  */
 
 import type { AgentChatEvent } from "../sdkTypes";
 import type { ToolChipRow } from "../transcript/transcriptRows";
+import { parseToolIdentity } from "./toolIdentity";
 
 /** The phase a label is being rendered for. */
 export type ActivityPhase = "running" | "done" | "error";
@@ -36,7 +42,14 @@ export type ActivityLabelSource =
   | { kind: "thinking"; tool: null; phase: "running"; event: null };
 
 export type ActivityLabelConfig = {
-  /** Keyed by tool name. Supports trailing `*` wildcards and a bare `"*"`. */
+  /**
+   * Keyed by tool name. Supports trailing `*` wildcards and a bare `"*"`.
+   *
+   * MCP tools may be keyed in any spelling — the policy form `mcp:srv:tool` /
+   * `mcp:srv:*`, Claude's `mcp__srv__tool`, Codex's `srv:tool`, or the bare
+   * `tool` — and one key matches the tool under every provider. A
+   * server-qualified key beats a bare one for the same tool.
+   */
   map?: Record<string, ActivityLabelEntry>;
   /** Runs before `map`. Return null to fall through to the map. */
   resolve?: (source: ActivityLabelSource) => string | null;
@@ -54,25 +67,72 @@ export type ActivityLabelConfig = {
 export const DEFAULT_ELAPSED_AFTER_MS = 3000;
 export const DEFAULT_THINKING_LABEL = "Working…";
 
+/** Score tiers for `matchLabelKey`; a higher tier always wins. */
+const TIER = 1_000_000;
+const QUALIFIED_WILDCARD_BONUS = 10_000;
+
+/** Specificity of one key against one candidate, or -1 when it does not match. */
+function scoreLabelKey(
+  key: string,
+  candidate: string,
+  identity: ReturnType<typeof parseToolIdentity>,
+): number {
+  // The spelling the host wrote, verbatim: nothing is more specific.
+  if (key === candidate) return 4 * TIER;
+  const parsed = parseToolIdentity(key);
+  const wildcard = parsed.tool.endsWith("*");
+  const toolPrefix = wildcard ? parsed.tool.slice(0, -1) : parsed.tool;
+
+  if (parsed.server !== null) {
+    // A server-qualified key only ever matches that server's tools.
+    if (identity.server !== parsed.server) return -1;
+    if (!wildcard) return parsed.tool === identity.tool ? 3 * TIER : -1;
+    if (!identity.tool.startsWith(toolPrefix)) return -1;
+    return TIER + QUALIFIED_WILDCARD_BONUS + toolPrefix.length;
+  }
+
+  // A bare key: compared with the raw candidate (what 0.2 did) and with the
+  // tool name under its server prefix, so `search` reaches `mcp__srv__search`.
+  if (!wildcard) {
+    return identity.server !== null && key === identity.tool ? 2 * TIER : -1;
+  }
+  let best = -1;
+  // A bare "*" has prefix "" and matches everything at the lowest score.
+  if (candidate.startsWith(toolPrefix)) best = TIER + toolPrefix.length;
+  if (identity.server !== null && identity.tool.startsWith(toolPrefix)) {
+    best = Math.max(best, TIER + toolPrefix.length);
+  }
+  return best;
+}
+
 /**
- * Wildcard specificity: an exact key beats `a.b.*` beats `a.*` beats `*`.
- * Returns the matching key, or null.
+ * The best map key for a tool name, or null.
+ *
+ * Specificity, highest first:
+ *   1. the key spelled exactly like the candidate
+ *   2. a server-qualified key for the same server and tool, in any spelling
+ *      (`mcp:srv:tool`, `mcp__srv__tool`, `srv:tool`)
+ *   3. a bare key equal to the tool name without its server (`tool`)
+ *   4. wildcards — server-qualified (`mcp:srv:*`) before bare, then the longest
+ *      prefix; a bare `"*"` last. On a tie the later key wins.
+ *
+ * This is the one matcher: labels, icons and hosts' own lookups all use it, so
+ * a tool never has to be listed once per provider spelling.
  */
 export function matchLabelKey(
   keys: readonly string[],
   candidate: string,
 ): string | null {
+  const identity = parseToolIdentity(candidate);
   let best: string | null = null;
   let bestScore = -1;
   for (const key of keys) {
-    if (key === candidate) return key;
-    if (!key.endsWith("*")) continue;
-    const prefix = key.slice(0, -1);
-    if (prefix.length > 0 && !candidate.startsWith(prefix)) continue;
-    // A bare "*" has prefix "" and matches everything at the lowest score.
-    if (prefix.length >= bestScore) {
+    const score = scoreLabelKey(key, candidate, identity);
+    if (score < 0) continue;
+    if (score >= 4 * TIER) return key;
+    if (score >= bestScore) {
       best = key;
-      bestScore = prefix.length;
+      bestScore = score;
     }
   }
   return best;

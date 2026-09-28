@@ -72,6 +72,30 @@ export type ModelDescriptor = {
    * provider is authenticated. Undefined means "usable if the provider is".
    */
   available?: boolean;
+  /**
+   * Reasoning-effort levels this model accepts, in the order to offer them
+   * (e.g. `["low", "medium", "high"]`). Absent or empty means the model takes
+   * no effort setting, and `<ModelPicker>` draws no effort control for it.
+   */
+  reasoningEfforts?: string[];
+  /** The effort the runtime uses when none is chosen. */
+  defaultReasoningEffort?: string | null;
+};
+
+/**
+ * The model a thread is actually bound to, as the runtime resolved it.
+ *
+ * This can differ from the id the host asked for: a runtime resolves a retired
+ * id forward to its successor, so `modelId` here may not be in the catalog the
+ * picker shows. `displayName` is the runtime's name for it, and a UI should
+ * prefer it over printing a raw id. Mirrors the type of the same name in
+ * `@ade-dev/sdk` >= 0.3; every field past `modelId` is optional so an older
+ * SDK or a proxy that forwards less still fits.
+ */
+export type ThreadModelSelection = {
+  modelId: string;
+  displayName?: string | null;
+  provider?: string;
 };
 
 /** Running state of a thread, as reported by `thread.on("status")`. */
@@ -89,7 +113,13 @@ export type ThreadUsage = {
   contextWindow?: number;
 };
 
-/** An attachment handed to `send`/`steer`. Opaque to this package. */
+/**
+ * An attachment handed to `send`/`steer`. Opaque to this package.
+ *
+ * `id` is the attachment's identity: the composer de-duplicates its staged
+ * list by it, and it is the React key the chips render under. Two different
+ * files must not share one.
+ */
 export type ChatAttachment = {
   id: string;
   name: string;
@@ -97,6 +127,22 @@ export type ChatAttachment = {
   /** Local path or URL — whichever the host's SDK client understands. */
   uri?: string;
   sizeBytes?: number;
+  /**
+   * How the runtime should hand the file to the model. `"image"` sends the
+   * bytes as an image; `"file"` sends a path hint. Omit it and `adaptSdkClient`
+   * infers it with the runtime's rule (`inferAttachmentType`): an `image/*`
+   * `mimeType`, else an image extension on `uri` (bmp, gif, heic, heif, ico,
+   * jpeg, jpg, png, svg, tif, tiff, webp), else `"file"`.
+   */
+  type?: "file" | "image";
+  /**
+   * `false` makes the attachment reference-only: the runtime never reads its
+   * bytes (no staging copy, no download of a cloud placeholder) and the model
+   * gets the path. An image sent this way arrives as a path, not as pixels.
+   * Omitted means the runtime default (read the file). Needs an ADE runtime
+   * that understands the flag; an older one ignores it and reads the file.
+   */
+  hydrate?: boolean;
 };
 
 export type SendInput = {
@@ -175,6 +221,15 @@ export type ChatEventReasoning = {
   summaryIndex?: number;
 };
 
+/**
+ * The MCP identity a runtime attaches to a tool event when it knows it (Codex
+ * does, as `mcp: { server, tool }`). Preferred over parsing the tool string.
+ */
+export type ChatEventMcpSource = {
+  server?: string;
+  tool?: string;
+};
+
 export type ChatEventToolCall = {
   type: "tool_call";
   tool: string;
@@ -182,6 +237,19 @@ export type ChatEventToolCall = {
   itemId: string;
   logicalItemId?: string;
   turnId?: string;
+  mcp?: ChatEventMcpSource;
+};
+
+/**
+ * An MCP `resource_link` content item a tool returned, carried as data rather
+ * than left inside the result text. The runtime fills it when the provider
+ * reports structured tool content.
+ */
+export type AgentChatResourceLink = {
+  uri: string;
+  name?: string;
+  title?: string;
+  mimeType?: string;
 };
 
 export type ChatEventToolResult = {
@@ -192,6 +260,9 @@ export type ChatEventToolResult = {
   logicalItemId?: string;
   turnId?: string;
   status?: ToolCallStatus;
+  mcp?: ChatEventMcpSource;
+  /** Structured MCP `resource_link` items, when the runtime passes them on. */
+  resourceLinks?: AgentChatResourceLink[];
 };
 
 export type ChatEventError = {
@@ -207,6 +278,12 @@ export type ChatEventStatus = {
   turnStatus: "started" | "completed" | "interrupted" | "failed";
   turnId?: string;
   message?: string;
+  /**
+   * Set only on the SDK's own `"failed"` status for a runtime that went away
+   * mid-turn (`@ade-dev/sdk` >= 0.3); the runtime never sends it. It ends the
+   * turn like any `"failed"`.
+   */
+  synthetic?: true;
 };
 
 /**
@@ -284,10 +361,36 @@ export type AgentChatEventEnvelope = {
 /** Unsubscribe handle returned by every `on*` registration. */
 export type Unsubscribe = () => void;
 
+/** Options for one `historyPage` read. */
+export type HistoryPageOptions = {
+  /** Return envelopes strictly older than this sequence. Omit for the newest page. */
+  beforeSequence?: number;
+  /** Page size. The runtime caps it. */
+  limit?: number;
+};
+
+/** One page of transcript history, oldest envelope first. */
+export type ThreadHistoryPage = {
+  events: AgentChatEventEnvelope[];
+  /** More envelopes exist before this page. */
+  hasMore: boolean;
+  /**
+   * Pass as `beforeSequence` to read the next older page. Null or absent when
+   * the runtime gave none; the hook then pages from the oldest sequence it holds.
+   */
+  nextBeforeSequence?: number | null;
+};
+
 export interface AdeThread {
   readonly key: string;
   send(input: SendInput | string): Promise<void>;
-  /** Deliver a message into an already-running turn. */
+  /**
+   * Deliver a message into an already-running turn.
+   *
+   * Attachments on `input` are forwarded, and an attachment-only steer (empty
+   * text) is valid. Both need `@ade-dev/sdk` >= 0.3: an older SDK thread's
+   * `steer(text)` ignores the attachments, and refuses an empty text.
+   */
   steer(input: SendInput | string): Promise<void>;
   interrupt(): Promise<void>;
   /**
@@ -315,6 +418,22 @@ export interface AdeThread {
   /** Outstanding requests, so a host re-rendering after a reload restores cards. */
   pendingApprovals?(): Promise<readonly ApprovalRequest[]>;
   history(): Promise<AgentChatEventEnvelope[]>;
+  /**
+   * Read one page of history, newest first by page (each page oldest-first).
+   *
+   * OPTIONAL: `useAdeThread` uses it when present — the newest page on open,
+   * older pages on demand — and falls back to one `history()` read otherwise.
+   * A client without it (an SDK before 0.3, a proxy) loads the whole window.
+   */
+  historyPage?(request?: HistoryPageOptions): Promise<ThreadHistoryPage>;
+  /**
+   * The model the runtime has this thread on, resolved (see `ThreadModelSelection`).
+   *
+   * OPTIONAL: read after `open` and after every `setModel`. Absent or null on a
+   * client that does not report it, and the UI then names the model from the
+   * catalog alone.
+   */
+  readonly model?: ThreadModelSelection | null;
   on(type: "event", cb: (envelope: AgentChatEventEnvelope) => void): Unsubscribe;
   on(type: "usage", cb: (usage: ThreadUsage) => void): Unsubscribe;
   on(type: "status", cb: (status: ThreadStatus) => void): Unsubscribe;

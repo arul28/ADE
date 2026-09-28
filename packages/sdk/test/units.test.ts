@@ -46,6 +46,7 @@ import {
 } from "../src/hostConfig.js";
 import { ADE_ERROR_CODES, AdeError, readAdeErrorCode } from "../src/errors.js";
 import { probeRuntimeSignature } from "../src/runtimeSignature.js";
+import { checkRuntimeCompatibility, SUPPORTED_RUNTIME_RANGE } from "../src/compatibility.js";
 import { mergeHistoryWithBuffer } from "../src/electron/protocol.js";
 import { SDK_VERSION } from "../src/version.js";
 import {
@@ -823,6 +824,75 @@ describe("thread store", () => {
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("migrates a pre-0.3 record: strips MCP header values, keeps names, rewrites the file", async () => {
+    // An SDK before 0.3 wrote MCP header values — bearer tokens — into this
+    // file in plaintext. On first read the values come off disk and only the
+    // names stay, so a later resume cannot replay a stale credential.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sdk-store-"));
+    try {
+      const file = path.join(dir, "threads.json");
+      fs.writeFileSync(
+        file,
+        JSON.stringify({
+          version: 1,
+          threads: {
+            a: {
+              key: "a",
+              sessionId: "s1",
+              provider: "claude",
+              model: "m",
+              createdAt: "t",
+              lastOpenedAt: "t",
+              mcpServers: {
+                notes: {
+                  type: "http",
+                  url: "https://example.test/mcp",
+                  headers: { authorization: "Bearer secret" },
+                },
+              },
+            },
+          },
+        }),
+      );
+
+      const record = await new ThreadStore(file).get("a");
+      expect(record!.mcpServers).toEqual({
+        notes: { type: "http", url: "https://example.test/mcp", headerNames: ["authorization"] },
+      });
+      // The write is awaited before `get` resolves, so the plaintext is off disk
+      // by the time any caller can read the record.
+      expect(fs.readFileSync(file, "utf8")).not.toContain("Bearer secret");
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("runtime compatibility", () => {
+  it.each([
+    ["1.2.81", true],
+    ["1.2.81-alpha.3", true], // a pre-release carries the same wire as its release
+    ["1.9.7", true],
+    ["2.0.0", false], // the next major
+    ["1.2.80", false], // one patch below the floor
+    ["0.0.0", true], // a source checkout
+    [null, true], // the runtime reported no version
+    ["", true],
+  ])("reports %s as supported=%s", (version, supported) => {
+    const report = checkRuntimeCompatibility(version as string | null);
+    expect(report.supported).toBe(supported);
+    expect(report.range).toBe(SUPPORTED_RUNTIME_RANGE);
+    if (supported && (version === null || version === "" || version === "0.0.0")) {
+      expect(report.note).toBeTruthy();
+    }
+  });
+
+  it("refuses a version it cannot parse rather than vouching for it", () => {
+    const report = checkRuntimeCompatibility("not-a-version");
+    expect(report).toMatchObject({ supported: false, version: "not-a-version" });
+    expect(report.note).toContain("could not be parsed");
   });
 });
 
