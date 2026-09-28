@@ -395,7 +395,7 @@ export function OpenCodeBody({ ctx }: { ctx: ProvidersViewContext }) {
         <div style={SECTION_LABEL_STYLE}>Connected</div>
         {connectedRows.length === 0 ? (
           <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textDim }}>
-            No providers connected yet. Pick one below to sign in or add a key.
+            No other providers connected yet. Pick one below to sign in or add a key.
           </div>
         ) : (
           <ProviderGrid>

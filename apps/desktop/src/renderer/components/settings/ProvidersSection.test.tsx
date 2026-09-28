@@ -397,6 +397,12 @@ describe("ProvidersSection", () => {
   });
 
   it("shows Connected while the bundled Claude runtime is authenticated", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, [], {
+      claudeBinaryPresent: true,
+      claudeAuthReady: true,
+    }));
     renderProvidersSection("claude");
 
     await waitFor(() => {
@@ -1287,7 +1293,6 @@ describe("ProvidersSection", () => {
     renderProvidersSection("opencode");
 
     expect(await screen.findByText("npm i -g @opencode/cli")).toBeTruthy();
-    expect(screen.getByText("brew install anomalyco/tap/opencode")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Re-check/ })).toBeTruthy();
     // The group body is hidden while uninstalled.
     expect(screen.queryByText(/^All providers/)).toBeNull();

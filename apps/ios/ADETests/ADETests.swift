@@ -14099,36 +14099,46 @@ final class ADETests: XCTestCase {
     // interrupts. `atomicDispatchModes` drops `.queue`, which is staging, not a
     // promotion target.
     let claudeSummary = makeAgentChatSessionSummary(provider: "claude", status: "active")
-    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary), [.inline, .interrupt])
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: claudeSummary, hostSupportsOpenCodeSteer: true), [.inline, .interrupt])
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil),
+      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "claude-chat"), summary: nil, hostSupportsOpenCodeSteer: true),
       [.inline, .interrupt]
     )
-    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary), [.inline])
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: activeSummary, hostSupportsOpenCodeSteer: true), [.inline])
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "codex-chat"), summary: nil),
+      workChatManualSteerDispatchModes(session: makeTerminalSessionSummary(toolType: "codex-chat"), summary: nil, hostSupportsOpenCodeSteer: true),
       [.inline]
     )
     XCTAssertEqual(
       workChatManualSteerDispatchModes(
         session: makeTerminalSessionSummary(toolType: "cursor"),
-        summary: nil
+        summary: nil,
+        hostSupportsOpenCodeSteer: true
       ),
       [.inline, .interrupt]
+    )
+    let openCodeSummary = makeAgentChatSessionSummary(provider: "opencode", status: "active")
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: openCodeSummary, hostSupportsOpenCodeSteer: true),
+      [.inline]
+    )
+    XCTAssertEqual(
+      workChatManualSteerDispatchModes(session: nil, summary: openCodeSummary, hostSupportsOpenCodeSteer: false),
+      []
     )
     var cursorCloudSummary = makeAgentChatSessionSummary(provider: "cursor", status: "active")
     cursorCloudSummary.cursorCloudAgentId = "cloud-agent-1"
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary, hostSupportsOpenCodeSteer: true),
       [.interrupt]
     )
     // Host pin wins: leftover agent id on a local session must keep inline.
     cursorCloudSummary.cursorRuntime = "local"
     XCTAssertEqual(
-      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary),
+      workChatManualSteerDispatchModes(session: nil, summary: cursorCloudSummary, hostSupportsOpenCodeSteer: true),
       [.inline, .interrupt]
     )
-    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil), [])
+    XCTAssertEqual(workChatManualSteerDispatchModes(session: nil, summary: nil, hostSupportsOpenCodeSteer: true), [])
   }
 
   /// The mode the user picked has to ride `chat.steer` itself. When it did not,

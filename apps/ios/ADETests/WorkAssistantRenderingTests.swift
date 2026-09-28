@@ -438,7 +438,7 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   func testCtoSurfaceOffersNoQueueModeForEveryEligibleProvider() {
     // Read off the eligibility contract rather than restating the list.
     for provider in ctoLiveRedirectProviders {
-      let capability = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true)
+      let capability = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true, hostSupportsOpenCodeSteer: true)
       XCTAssertFalse(capability.modes.contains(.queue), "expected \(provider) CTO menu to drop queue")
       XCTAssertFalse(capability.modes.isEmpty, "expected \(provider) CTO menu to keep a live-redirect mode")
     }
@@ -446,15 +446,15 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
 
   func testCtoSurfaceKeepsExactlyTheLiveRedirectModesInMenuOrder() {
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true).modes,
+      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes,
       [.inline, .interrupt]
     )
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "codex", liveRedirectOnly: true).modes,
+      workChatActiveSendCapability(provider: "codex", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes,
       [.inline]
     )
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true).modes,
+      workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes,
       [.inline, .interrupt]
     )
   }
@@ -463,7 +463,7 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   /// default would name a mode the caret menu no longer lists.
   func testCtoDefaultModeIsNeverQueue() {
     for provider in ctoLiveRedirectProviders {
-      let capability = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true)
+      let capability = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true, hostSupportsOpenCodeSteer: true)
       XCTAssertNotEqual(capability.defaultMode, .queue, "expected \(provider) CTO default to redirect")
       XCTAssertEqual(capability.defaultMode, capability.modes.first)
     }
@@ -473,11 +473,11 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   /// `cursor-agent` must not fall through to the queue-only default arm.
   func testCtoSurfaceNormalizesProviderFamilyAliases() {
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "claude-code", liveRedirectOnly: true).modes,
+      workChatActiveSendCapability(provider: "claude-code", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes,
       [.inline, .interrupt]
     )
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "cursor-agent", liveRedirectOnly: true).modes,
+      workChatActiveSendCapability(provider: "cursor-agent", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes,
       [.inline, .interrupt]
     )
   }
@@ -485,11 +485,11 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   /// Copy and interrupt wording are untouched by the filter — only the menu
   /// contents change.
   func testCtoSurfaceKeepsAgentLabelAndInterruptWording() {
-    let cursor = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true)
+    let cursor = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true)
     XCTAssertEqual(cursor.agentLabel, "Cursor")
     XCTAssertTrue(cursor.interruptContinues)
 
-    let claude = workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true)
+    let claude = workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true)
     XCTAssertEqual(claude.agentLabel, "Claude")
     XCTAssertFalse(claude.interruptContinues)
   }
@@ -500,17 +500,17 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   func testOrdinaryChatKeepsEveryProviderMenuUnchanged() {
     for provider in ["claude", "codex", "cursor", "claude-code", "qwen", "kimi", "grok", "copilot", "droid"] {
       XCTAssertEqual(
-        workChatActiveSendCapability(provider: provider, liveRedirectOnly: false),
+        workChatActiveSendCapability(provider: provider, liveRedirectOnly: false, hostSupportsOpenCodeSteer: true),
         WorkActiveSendCapability.forProvider(provider),
         "expected \(provider) to keep its unfiltered menu outside the CTO"
       )
     }
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: false).modes,
+      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: false, hostSupportsOpenCodeSteer: true).modes,
       [.inline, .queue, .interrupt]
     )
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "qwen", liveRedirectOnly: false).modes,
+      workChatActiveSendCapability(provider: "qwen", liveRedirectOnly: false, hostSupportsOpenCodeSteer: true).modes,
       [.queue]
     )
   }
@@ -521,21 +521,32 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   /// impossible if some other caller ever sets the flag.
   func testQueueOnlyProviderKeepsItsRealMenuUnderTheCtoFilter() {
     for provider in ["qwen", "kimi", "grok", "copilot", "droid"] {
-      let filtered = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true)
+      let filtered = workChatActiveSendCapability(provider: provider, liveRedirectOnly: true, hostSupportsOpenCodeSteer: true)
       XCTAssertEqual(filtered, WorkActiveSendCapability.forProvider(provider), "expected \(provider) menu kept")
       XCTAssertFalse(filtered.modes.isEmpty, "expected \(provider) menu to stay non-empty")
     }
+  }
+
+  func testOpenCodeRequiresHostInboxSteerForComposerAndStagedPromotion() {
+    let oldHostComposer = workChatActiveSendCapability(
+      provider: "opencode",
+      liveRedirectOnly: false,
+      hostSupportsOpenCodeSteer: false
+    )
+    XCTAssertEqual(oldHostComposer.modes, [.queue])
+    XCTAssertEqual(oldHostComposer.defaultMode, .queue)
+
   }
 
   /// A Cursor CLOUD run refuses every inline steer, so the mobile capability
   /// must withhold that mode exactly as the desktop pane withholds its handler.
   /// Otherwise the primary button names an action the host will not perform.
   func testCursorCloudWithholdsInlineFromTheSendCapability() {
-    let local = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: false)
+    let local = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: false, hostSupportsOpenCodeSteer: true)
     XCTAssertEqual(local.modes, [.inline, .queue, .interrupt])
     XCTAssertEqual(local.defaultMode, .inline)
 
-    let cloud = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: false, runsInCloud: true)
+    let cloud = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: false, runsInCloud: true, hostSupportsOpenCodeSteer: true)
     XCTAssertEqual(cloud.modes, [.queue, .interrupt])
     // The primary button now names what the host will actually do.
     XCTAssertEqual(cloud.defaultMode, .queue)
@@ -545,7 +556,7 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
 
     // Only Cursor is affected — the rule is about `Run.steer`, not about cloud.
     XCTAssertEqual(
-      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: false, runsInCloud: true).modes,
+      workChatActiveSendCapability(provider: "claude", liveRedirectOnly: false, runsInCloud: true, hostSupportsOpenCodeSteer: true).modes,
       [.inline, .queue, .interrupt]
     )
   }
@@ -553,7 +564,7 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   /// On the CTO surface queue is filtered out, so a cloud Cursor thread is left
   /// with interrupt alone rather than an empty menu.
   func testCursorCloudCtoSurfaceFallsBackToInterrupt() {
-    let cloudCto = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true, runsInCloud: true)
+    let cloudCto = workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true, runsInCloud: true, hostSupportsOpenCodeSteer: true)
     XCTAssertEqual(cloudCto.modes, [.interrupt])
     XCTAssertEqual(cloudCto.defaultMode, .interrupt)
   }
@@ -562,9 +573,9 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
   /// Codex gets a plain send button rather than a one-item menu, while Claude
   /// and Cursor each keep a real two-way choice.
   func testCtoPickerRemainsAChoiceOnlyWhereMoreThanOneModeSurvives() {
-    XCTAssertEqual(workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true).modes.count, 2)
-    XCTAssertEqual(workChatActiveSendCapability(provider: "codex", liveRedirectOnly: true).modes.count, 1)
-    XCTAssertEqual(workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true).modes.count, 2)
+    XCTAssertEqual(workChatActiveSendCapability(provider: "claude", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes.count, 2)
+    XCTAssertEqual(workChatActiveSendCapability(provider: "codex", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes.count, 1)
+    XCTAssertEqual(workChatActiveSendCapability(provider: "cursor", liveRedirectOnly: true, hostSupportsOpenCodeSteer: true).modes.count, 2)
   }
 
   // MARK: - Work-board move (chat side)

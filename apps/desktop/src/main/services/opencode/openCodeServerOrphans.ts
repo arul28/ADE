@@ -652,7 +652,13 @@ export async function recoverManagedOpenCodeOrphans(args: {
       // Guard against PID reuse: the live process must still look like an
       // OpenCode server before we are willing to kill it.
       const command = commandByPid.get(record.pid);
-      if (command !== undefined && !commandLooksLikeOpenCodeServe(command)) {
+      if (command === undefined) {
+        // The process listing may have failed or missed a newer process. Keep
+        // the record for a later pass rather than killing an unidentified PID.
+        skippedPids.push(record.pid);
+        continue;
+      }
+      if (!commandLooksLikeOpenCodeServe(command)) {
         try {
           fs.rmSync(file, { force: true });
         } catch {

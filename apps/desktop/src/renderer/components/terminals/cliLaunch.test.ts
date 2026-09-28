@@ -1,5 +1,4 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { parseCommandLine } from "../../../shared/shell";
 import {
   buildClaudeForkLaunchCommand,
   buildCliIdentityResumeMetadata,
@@ -8,13 +7,11 @@ import {
   providerArgsResumeExistingSession,
   withPreassignedSessionIdInCommandLine,
   buildPtyContinuationLaunchFields,
-  buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliSessionActivityGuidance,
   buildTrackedCliLaunchCommand,
   buildTrackedCliResumeLaunchCommand,
   buildTrackedCliResumeCommand,
   buildTrackedCliStartupCommand,
-  buildOpenCodeReplayResumeCommand,
   defaultTrackedCliStartupCommand,
   deriveTrackedCliInitialInputSessionMeta,
   mergeContinuationLaunch,
@@ -26,7 +23,6 @@ import {
   piToolsForPermissionMode,
   piToolFlags,
   validateLaunchProfilePermissionMode,
-  withOpenCodeAdeInstructions,
   resolveTrackedCliResumeCommand,
   trackedCliResumeInstanceId,
   withClaudeSessionIdInCommandLine,
@@ -1464,94 +1460,6 @@ describe("buildTrackedCliStartupCommand", () => {
       });
     });
 
-    it("launches OpenCode with inline permission config", () => {
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "full-auto",
-        model: "github-copilot/gpt-5.4",
-        initialPrompt: "Use OpenCode.",
-      });
-      expect(launch.command).toBe("opencode");
-      expect(launch.args).toEqual(expect.arrayContaining(["--model", "github-copilot/gpt-5.4", "--prompt"]));
-      expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBe("{\"permission\":\"allow\"}");
-      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
-      expect(launch.startupCommand).toContain("OPENCODE_CONFIG_CONTENT=");
-      expect(launch.startupCommand).toContain("Use OpenCode.");
-    });
-
-    it("launches OpenCode fast mode through the interactive run variant flag", () => {
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "full-auto",
-        model: "opencode/openai/gpt-5.4",
-        reasoningEffort: "high",
-        fastMode: true,
-        initialPrompt: "Use OpenCode fast mode.",
-      });
-      expect(launch.command).toBe("opencode");
-      // The root TUI is the only launch surface now: `run --interactive`'s
-      // bare split-footer read as "a plain terminal with no UI", and the root
-      // command has no --variant flag to branch on.
-      expect(launch.args).toEqual(expect.arrayContaining([
-        "--model",
-        "openai/gpt-5.4",
-      ]));
-      expect(launch.args).not.toContain("--variant");
-      // The root command takes the kickoff through --prompt (the positional
-      // slot belongs to the project path); the prompt value carries ADE's
-      // session-guidance preamble with the user's text inside it.
-      expect(launch.args).toContain("--prompt");
-      expect(launch.startupCommand).not.toContain("run --interactive");
-      expect(launch.startupCommand).toContain("Use OpenCode fast mode.");
-    });
-
-    it("keeps reasoning effort out of OpenCode CLI launches (root TUI has no --variant)", () => {
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "full-auto",
-        model: "opencode/openai/gpt-5.4",
-        reasoningEffort: "high",
-        fastMode: false,
-        initialPrompt: "Use OpenCode high reasoning.",
-      });
-      // The root command silently drops unknown args, so passing --variant
-      // there would be a lie; reasoning effort stays a chat-runtime feature.
-      expect(launch.args).not.toContain("--variant");
-      expect(launch.startupCommand).not.toContain("run --interactive");
-    });
-
-    it("normalizes ADE OpenCode registry model ids before launching the CLI", () => {
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "full-auto",
-        model: "opencode/opencode/big-pickle",
-        initialPrompt: "Use OpenCode.",
-      });
-      expect(launch.args).toEqual(expect.arrayContaining(["--model", "opencode/big-pickle"]));
-      expect(launch.startupCommand).toContain("--model \"opencode/big-pickle\"");
-      expect(launch.startupCommand).not.toContain("opencode/opencode/big-pickle");
-
-      const encoded = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "full-auto",
-        model: `opencode/lmstudio/${encodeURIComponent("openai/gpt-oss-20b")}`,
-        initialPrompt: "Use OpenCode.",
-      });
-      expect(encoded.args).toEqual(expect.arrayContaining(["--model", "lmstudio/openai/gpt-oss-20b"]));
-    });
-
-    it("launches OpenCode config mode without inline permission config", () => {
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "config-toml",
-        model: "github-copilot/gpt-5.4",
-        initialPrompt: "Use OpenCode config.",
-      });
-      expect(launch.args).toEqual(expect.arrayContaining(["--model", "github-copilot/gpt-5.4", "--prompt"]));
-      expect(launch.env?.OPENCODE_CONFIG_CONTENT).toBeUndefined();
-      expect(launch.startupCommand).not.toContain("OPENCODE_CONFIG_CONTENT=");
-    });
-
     it("rejects config-toml for providers that do not support it", () => {
       expect(() => buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "config-toml" })).toThrow(
         "config-toml is only supported for Codex and OpenCode",
@@ -1569,9 +1477,6 @@ describe("buildTrackedCliStartupCommand", () => {
         "auto is only supported for Claude",
       );
       expect(() => buildTrackedCliLaunchCommand({ provider: "droid", permissionMode: "auto" })).toThrow(
-        "auto is only supported for Claude",
-      );
-      expect(() => buildTrackedCliLaunchCommand({ provider: "opencode", permissionMode: "auto" })).toThrow(
         "auto is only supported for Claude",
       );
     });
@@ -1597,55 +1502,6 @@ describe("buildTrackedCliStartupCommand", () => {
 });
 
 describe("tracked CLI resume helpers", () => {
-  it("builds Windows resumes as direct argv and env instead of POSIX shell commands", () => {
-    const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café";
-    const openCode = buildTrackedCliResumeLaunchCommand({
-      provider: "opencode",
-      targetKind: "session",
-      targetId: "ses_99",
-      launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4" },
-    }, { prompt }, { platform: "win32" });
-
-    expect(openCode).toMatchObject({
-      command: "opencode",
-      args: [
-        "--agent",
-        "plan",
-        "--model",
-        "openai/gpt-5.4",
-        "--session",
-        "ses_99",
-        "--prompt",
-        prompt,
-      ],
-      env: {
-        OPENCODE_CONFIG_CONTENT: JSON.stringify({
-          permission: { "*": "ask", edit: "deny", bash: "deny", question: "allow" },
-        }),
-      },
-    });
-    expect(openCode.args).not.toContain(expect.stringContaining("OPENCODE_CONFIG_CONTENT="));
-
-    const replay = buildOpenCodeReplayResumeLaunchCommand({
-      permissionMode: "plan",
-      model: "opencode/openai/gpt-5.4",
-      resumeTarget: "ses_99",
-      prompt,
-    });
-    expect(replay.command).toBe("opencode");
-    expect(replay.args).toEqual(expect.arrayContaining([
-      "--mini",
-      "--session",
-      "ses_99",
-      "--replay-limit",
-      "40",
-      "--prompt",
-      prompt,
-    ]));
-    expect(replay.args).not.toContain("--replay");
-    expect(replay.env?.OPENCODE_CONFIG_CONTENT).toBeTruthy();
-  });
-
   it("keeps the prompt out of the Windows Droid resume command line", () => {
     const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café\nsecond line";
     const launch = buildTrackedCliResumeLaunchCommand({
@@ -1765,13 +1621,6 @@ describe("tracked CLI resume helpers", () => {
       targetId: "chat-99",
       launch: { permissionMode: "default", model: "cursor/composer-2.5" },
     })).toBe("cursor-agent --model composer-2.5 --resume chat-99");
-
-    expect(buildTrackedCliResumeCommand({
-      provider: "opencode",
-      targetKind: "session",
-      targetId: "ses_99",
-      launch: { permissionMode: "plan" },
-    }, { model: "opencode/opencode/big-pickle" })).toContain("--agent plan --model \"opencode/big-pickle\" --session ses_99");
 
     expect(buildTrackedCliResumeCommand({
       provider: "pi",
@@ -1925,27 +1774,6 @@ describe("tracked CLI resume helpers", () => {
       launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: false },
     })).toContain("-c \"service_tier=\\\"default\\\"\"");
 
-    expect(buildTrackedCliResumeCommand({
-      provider: "opencode",
-      targetKind: "session",
-      targetId: "ses_99",
-      launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4", fastMode: true },
-    })).toContain("opencode --agent plan --model \"openai/gpt-5.4\" --session ses_99");
-  });
-
-  it("builds OpenCode interactive replay resume commands for freeze-frame continuation", () => {
-    const command = buildOpenCodeReplayResumeCommand({
-      permissionMode: "plan",
-      model: `opencode/openai/${encodeURIComponent("gpt-5.4")}`,
-      resumeTarget: "ses_99",
-      prompt: "continue from the snapshot",
-      replayLimit: 12,
-    });
-
-    expect(command).toContain("OPENCODE_CONFIG_CONTENT=");
-    expect(command).toContain("opencode --mini --agent plan --model \"openai/gpt-5.4\" --session ses_99 --replay-limit 12 --prompt");
-    expect(command).toContain("continue from the snapshot");
-    expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });
 
   it("falls back to the provider resume picker when the concrete target is missing", () => {
@@ -2001,102 +1829,6 @@ describe("tracked CLI resume helpers", () => {
     expect(resolveTrackedCliResumeCommand(session)).toBe("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox resume thread-99");
   });
 
-  describe("OpenCode prompt boundary", () => {
-    // The reported failure: launching a tracked OpenCode CLI showed ADE's
-    // instructions to the user. `--prompt` is submitted as a real user message
-    // and rendered in the TUI, so anything ADE prepended to the user's text was
-    // displayed verbatim — and reached the model as user content rather than as
-    // system instructions.
-    it("puts only the user's text on --prompt, never ADE's instructions", () => {
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "edit",
-        initialPrompt: "Fix the failing test.",
-        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
-      });
-
-      const promptIndex = launch.args.indexOf("--prompt");
-      expect(promptIndex).toBeGreaterThanOrEqual(0);
-      expect(launch.args[promptIndex + 1]).toBe("Fix the failing test.");
-
-      const everything = [launch.startupCommand, ...launch.args, launch.initialInput ?? ""].join("\n");
-      expect(everything).not.toContain("ADE session guidance");
-      expect(everything).not.toContain("User prompt:");
-      expect(everything).not.toContain("ADE is a local-first dev environment");
-      // Nor may it be smuggled in through the post-launch PTY write instead.
-      expect(launch.initialInput ?? "").not.toContain("ADE session guidance");
-    });
-
-    it("omits --prompt entirely when the user typed nothing", () => {
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "edit",
-        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
-      });
-
-      expect(launch.args).not.toContain("--prompt");
-      expect(launch.startupCommand).not.toContain("ADE session guidance");
-    });
-
-    it("adds ADE's instruction file to the config env without dropping the user's", () => {
-      const applied = withOpenCodeAdeInstructions(
-        { env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ instructions: ["./AGENTS.local.md"], permission: { edit: "allow" } }) } },
-        "/cache/ade/instructions.md",
-      );
-
-      const config = JSON.parse(applied?.env?.OPENCODE_CONFIG_CONTENT ?? "{}") as {
-        instructions?: string[];
-        permission?: Record<string, string>;
-      };
-      // Verified against opencode 1.18.31: config layers union `instructions`
-      // rather than overwriting, so the user's own files must survive.
-      expect(config.instructions).toEqual(["./AGENTS.local.md", "/cache/ade/instructions.md"]);
-      expect(config.permission).toEqual({ edit: "allow" });
-    });
-
-    it("rewrites the inline config assignment on the startup command too", () => {
-      // A shell assignment on the command line overrides the process
-      // environment for that child, so patching only `env` would silently drop
-      // the instructions on every launch that goes through the typed-command
-      // fallback instead of a direct spawn.
-      const launch = buildTrackedCliLaunchCommand({
-        provider: "opencode",
-        permissionMode: "edit",
-        initialPrompt: "Fix the failing test.",
-        laneWorktreePath: "/repo/.ade/worktrees/lane-1",
-      });
-      const applied = withOpenCodeAdeInstructions(launch, "/cache/ade/instructions.md");
-
-      expect(applied?.startupCommand).toBeDefined();
-      const [assignment] = parseCommandLine(applied!.startupCommand!, { platform: "linux" });
-      expect(assignment?.startsWith("OPENCODE_CONFIG_CONTENT=")).toBe(true);
-      const inline = JSON.parse(assignment!.slice("OPENCODE_CONFIG_CONTENT=".length)) as {
-        instructions?: string[];
-        permission?: unknown;
-      };
-      expect(inline.instructions).toEqual(["/cache/ade/instructions.md"]);
-      // The permission policy the launch already carried must survive.
-      expect(inline.permission).toEqual(
-        JSON.parse(applied!.env!.OPENCODE_CONFIG_CONTENT!).permission,
-      );
-      expect(applied!.startupCommand).toContain("Fix the failing test.");
-    });
-
-    it("creates the config env when a launch had none, and stays idempotent", () => {
-      const first = withOpenCodeAdeInstructions({}, "/cache/ade/instructions.md");
-      expect(JSON.parse(first?.env?.OPENCODE_CONFIG_CONTENT ?? "{}")).toEqual({
-        instructions: ["/cache/ade/instructions.md"],
-      });
-
-      expect(withOpenCodeAdeInstructions({ env: first!.env }, "/cache/ade/instructions.md")).toBeNull();
-    });
-
-    it("leaves a config value it cannot parse untouched", () => {
-      const env = { OPENCODE_CONFIG_CONTENT: "{not json" };
-      expect(withOpenCodeAdeInstructions({ env }, "/cache/ade/instructions.md")).toBeNull();
-      expect(withOpenCodeAdeInstructions({ env }, "   ")).toBeNull();
-    });
-  });
 });
 
 describe("provider account (instance) launch env", () => {

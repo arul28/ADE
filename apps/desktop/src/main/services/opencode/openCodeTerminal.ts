@@ -257,7 +257,7 @@ export async function attachOpenCodeTerminal(args: {
     let resumed = false;
     // A resumed session takes the launch's mode, whichever way it was found.
     const applyMode = (existing: Parameters<typeof applyOpenCodeSessionMode>[1]) =>
-      applyOpenCodeSessionMode(client, existing, { agent, rules: sessionRules });
+      applyOpenCodeSessionMode(client, existing, { agent, rules: openCodeSessionRulesFor(permissionMode) });
     if (selector?.kind === "session") {
       try {
         const existing = await client.session.get({ sessionID: selector.id });

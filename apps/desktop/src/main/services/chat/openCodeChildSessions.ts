@@ -162,7 +162,7 @@ export function mapOpenCodeChildEvent(
       return [{
         type: "subagent_progress",
         taskId: childId,
-        parentToolUseId: null,
+        parentToolUseId: state.callForChild(childId),
         description: child.description,
         summary: child.description,
         turnId: child.turnId,
