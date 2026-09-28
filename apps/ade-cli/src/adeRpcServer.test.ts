@@ -641,6 +641,7 @@ function createRuntime() {
       })),
     } as any,
     ctoStateService: {
+      updateIdentity: vi.fn((patch: Record<string, unknown>) => patch),
       getIdentity: vi.fn(() => ({
         name: "CTO",
         version: 1,
@@ -8282,6 +8283,36 @@ describe("adeRpcServer", () => {
         expect.objectContaining({ kind: "chat_session", id: "824b0410-b015-4aa5-82c9-125d5d7e6f15" }),
       ]);
     });
+  });
+});
+
+describe("CTO remote action policy", () => {
+  it("prevents the CTO caller from changing the desktop-owned machine access switch", async () => {
+    const { runtime } = createRuntime();
+    const updateIdentity = runtime.ctoStateService.updateIdentity as ReturnType<typeof vi.fn>;
+    const getSecret = vi.fn(() => "must stay on the user runtime");
+    (runtime as any).accountVaultStore = { get: getSecret };
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "cto-1", role: "cto" }, { clientName: "ade-cto-remote" });
+
+    const denied = await callTool(handler, "run_ade_action", {
+      domain: "cto_state",
+      action: "updateIdentity",
+      args: { name: "Changed", crossMachineEnabled: false },
+    });
+
+    expect(denied.error).toBeDefined();
+    expect(JSON.stringify(denied.error)).toMatch(/Only the user can change whether the CTO reaches other machines/);
+    expect(updateIdentity).not.toHaveBeenCalled();
+
+    const secretDenied = await callTool(handler, "run_ade_action", {
+      domain: "account_vault",
+      action: "get",
+      argsList: ["all", "provider_api_key", "openai"],
+    });
+    expect(secretDenied.error).toBeDefined();
+    expect(JSON.stringify(secretDenied.error)).toMatch(/returns secrets, so the CTO can't run it/);
+    expect(getSecret).not.toHaveBeenCalled();
   });
 });
 

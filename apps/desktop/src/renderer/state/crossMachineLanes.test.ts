@@ -12,6 +12,7 @@ import type {
 import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { AppStoreProvider, createProjectAppStore, useAppStore } from "./appStore";
+import { buildAllMachineLanes, createLaneMachineRouter } from "./laneMachineRouting";
 import {
   buildCrossMachineLaneRows,
   cancelCrossMachineOptimisticChatSession,
@@ -2629,5 +2630,57 @@ describe("pinned lane resolution reads the store that owns the union", () => {
     expect(locallyPresent.result.current).toBeNull();
     expect(unknown.result.current).toBeNull();
     expect(noSession.result.current).toBeNull();
+  });
+});
+
+describe("lane actions resolve against the lane's machine", () => {
+  const binding: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    projectId: "project-a",
+    rootPath: "/Users/arul/repo",
+    displayName: "Repo",
+    runtimeName: "Mac Studio",
+    hostname: "studio.local",
+  };
+
+  function routerForForeignLane(bindingOverride: OpenProjectBinding | null) {
+    const all = buildAllMachineLanes({
+      activeBinding: null,
+      activeLanes: [makeLane({ id: "shared-lane", name: "Local lane" })],
+      machines: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio",
+          targetId: "target-studio",
+          projectId: "project-a",
+          binding: bindingOverride,
+          online: true,
+          lanes: [makeLane({ id: "shared-lane", name: "Studio lane" })],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          lanesSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+    return createLaneMachineRouter(all);
+  }
+
+  it("pins duplicate lane ids to the requested owner and refuses missing or unroutable targets", () => {
+    const routable = routerForForeignLane(binding);
+    const local = routable.route("shared-lane");
+    const foreign = routable.route("shared-lane", "target-studio");
+    const unknownLane = routable.route("missing", "target-studio");
+    const unknownMachine = routable.route("shared-lane", "not-listed");
+    const unroutable = routerForForeignLane(null).route("shared-lane", "target-studio");
+
+    expect(local.kind).toBe("bound");
+    expect(foreign).toMatchObject({ kind: "pinned", pin: binding, machine: { machineId: "target-studio" } });
+    expect(unknownLane.kind).toBe("unknown");
+    expect(unknownMachine.kind).toBe("unknown");
+    expect(unroutable.kind).toBe("unroutable");
   });
 });

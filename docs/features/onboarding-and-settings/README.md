@@ -56,6 +56,11 @@ Main process:
   clears only remote targets, desktop paired-machine credentials, mobile/web
   pairing records, and runtime-host grants, then forces the background service
   to restart before committing the migration marker.
+- `apps/desktop/src/renderer/components/settings/SettingsMachinesNav.tsx` and
+  `SettingsMachineScope.tsx` — the per-machine Settings navigation and its
+  explicit current/pinned runtime target. `projectMachines.ts` supplies the
+  shared machine list; local-only and bound-runtime sections are gated to the
+  machine that can reach them.
 - `apps/desktop/src/main/services/account/accountBridge.ts`,
   `apps/ade-cli/src/services/account/accountAuthService.ts`, and
   `accountMachineDirectoryService.ts` — machine-scoped Clerk session and
@@ -1729,20 +1734,23 @@ of repeated as a badge on every row:
 
 | Group | Saves to | Pages |
 |---|---|---|
-| **Account** | Your ADE account, everywhere | Secrets, Usage (including the spend cap) |
-| **Preferences** | Your ADE account, everywhere | Appearance, Chat, Providers, Lanes, Notifications, Activity |
-| **&lt;repository&gt;** | Your account, for this repository | Integrations |
-| **This computer** | This machine only | General, Diagnostics |
+| **Account** | Your ADE account, everywhere | Account, Appearance, Chat, Notifications, Activity, Usage |
+| **Project** | Your account, for this repository | Secrets |
+| **Machines** | The selected machine | General, Providers, Lanes, Integrations, Diagnostics |
 
-Preferences are account-scoped too, so strictly they belong under Account. They
-get their own group because they are what people change most, and burying the
-theme switch under an identity heading would organise the page around the
-storage engine rather than around the person using it.
+The Machines group contains one set of pages per project machine. Calls from a
+machine page use that machine's binding; sections that only work on the current
+desktop or the tab's bound runtime are shown only for the machine they can
+reach. Offline machines remain in the navigation and identify why their pages
+are unavailable. The Project group is named after the repository and disappears
+when Settings is opened outside a project.
 
-The repository group is named after the repository, and a group with no pages
-does not render — which is how it disappears when Settings is opened outside a
-project. "This computer" comes from `THIS_MACHINE_NAME`, never a literal, so it
-cannot read "This Mac" on Windows.
+`SettingsMachinesNav.tsx` derives the machine pages from the shared project
+machine snapshot. `SettingsMachineScope` carries either the current-machine
+target or an explicit `OpenProjectBinding`; `machineSectionAvailable()` keeps
+local-only and bound-runtime sections on the machine they can actually reach.
+GitHub and Linear integrations are still managed on the selected machine that
+owns those credentials.
 
 `DEFAULT_SETTINGS_TAB` names where Settings opens. It used to be `tabs[0]`, so
 reordering the sidebar silently moved the landing page.

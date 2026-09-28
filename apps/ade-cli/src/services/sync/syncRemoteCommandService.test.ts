@@ -32,6 +32,7 @@ function createService(options?: {
   agentChatService?: Record<string, unknown>;
   chatLaunchService?: Record<string, unknown>;
   aiIntegrationService?: Record<string, unknown>;
+  ctoStateService?: Record<string, unknown>;
   cursorCloudFleetService?: Record<string, unknown>;
   conflictService?: Record<string, unknown>;
   diffService?: Record<string, unknown>;
@@ -110,6 +111,7 @@ function createService(options?: {
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     ...(options?.chatLaunchService ? { chatLaunchService: options.chatLaunchService } : {}),
     ...(options?.aiIntegrationService ? { aiIntegrationService: options.aiIntegrationService } : {}),
+    ...(options?.ctoStateService ? { ctoStateService: options.ctoStateService } : {}),
     ...(options?.cursorCloudFleetService ? { cursorCloudFleetService: options.cursorCloudFleetService } : {}),
     ...(options?.externalSessionsService ? { externalSessionsService: options.externalSessionsService } : {}),
     ...(options?.syncPinStore ? { syncPinStore: options.syncPinStore } : {}),
@@ -2495,6 +2497,21 @@ describe("createSyncRemoteCommandService", () => {
     await expect(service.execute(makePayload("lanes.listGitHubIssuesForLaneSessions", {
       laneId: "lane-1",
     }))).resolves.toEqual([{ issue }]);
+  });
+});
+
+describe("mobile CTO identity updates", () => {
+  it("drops the desktop-only cross-machine access switch and preserves other identity fields", async () => {
+    const updateIdentity = vi.fn(async (patch: Record<string, unknown>) => patch);
+    const { service } = createService({ ctoStateService: { updateIdentity } });
+
+    const result = await service.execute(makePayload("cto.updateIdentity", {
+      patch: { name: "Operator", crossMachineEnabled: false },
+    }));
+
+    expect(updateIdentity).toHaveBeenCalledWith({ name: "Operator" });
+    expect(result).toEqual({ name: "Operator" });
+    expect(updateIdentity.mock.calls[0]?.[0]).not.toHaveProperty("crossMachineEnabled");
   });
 });
 

@@ -40,6 +40,13 @@ fetched directly from the renderer through the existing per-feature
 preload bridges and merged into the timeline at render time; they are
 not persisted into `operations`.
 
+History merges lanes and timeline entries from every machine that has the
+repository. The lane picker groups entries by machine, and commit reads use the
+selected lane's binding. Activity reads are paged per machine so one offline or
+slow runtime does not hold back the other machines' results. Mutating git
+actions are disabled for a foreign lane; the timeline can still show its
+commits and events with the owning machine identified.
+
 ## Source file map
 
 Main process / runtime services:

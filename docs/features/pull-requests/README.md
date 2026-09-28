@@ -70,22 +70,18 @@ Every `pr` domain read in preload takes an optional trailing
 `OpenProjectBinding` pin. `callPrReadRuntimeActionOr(pin, action, request,
 local)` routes through `callPinnedOrBoundRuntimeActionOr`, so a pinned read
 resolves on the lane's own machine while an unpinned one resolves on the
-machine the project tab is bound to. `pin: null` is a stated choice rather
-than an absence: the PRs tab is bound-machine-scoped by design, so every
-tab-scoped call site passes `null` explicitly. `prs.onEvent(cb, pin)` obeys
-the same rule — a pinned surface subscribes to the owning machine's
-`prs-updated` / `pr-reconcile` feed, because the bound runtime's feed
-describes a different database and would leave a pinned PR pill permanently
-stale.
+machine the project tab is bound to. The PR tab joins machine-owned PR-to-lane
+mappings from the shared lane union; rebase, integration, and workflow views
+show entries from every machine with machine-scoped ids. The original lane and
+proposal ids are restored at the call boundary, and `prs.onEvent(cb, pin)`
+subscribes to the owner machine's event stream.
 
-Reads are pinned; writes are not. Creating a PR is a write against the lane's
-worktree, and the inline creator derives branch, base, and Linear links from
-the bound machine's lanes, so a pinned `ChatPrPane` renders
-`Switch to <machine> to open one` in place of `ChatPrInlineCreator` instead
-of offering a button that cannot work. Opening a PR is machine-bound in one
-direction: the PRs tab resolves a PR id against the bound machine only, so a
-foreign PR's chip opens GitHub — the one destination that means the same
-thing from either machine. `openLanePr` in
+Lane mutations are pinned to their owner. Creating a lane from a PR always
+requires a machine choice when more than one eligible machine exists. The GitHub
+PR inventory remains repository-wide; lane actions route to the machine that
+owns the mapped lane, and merge is unavailable while that owner is offline.
+Opening a foreign PR can still fall back to GitHub when no local PR workspace
+can resolve it. `openLanePr` in
 `apps/desktop/src/renderer/lib/lanePrBadge.ts` is the single implementation of
 that decision, shared by the sidebar badge, the session card and its hover
 card, the chat Git toolbar, and the chat PR pane, so a fourth caller cannot

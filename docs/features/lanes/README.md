@@ -33,24 +33,22 @@ summaries. Multi-window: each desktop window has its own project binding,
 so a lane-creation request in window A targets window A's runtime (local
 or remote) regardless of what window B is bound to.
 
-## Create-on machine and load balancing
+## Creating and routing lanes across machines
 
-The create-lane dialog is the only place a machine is picked; the options come
-from `renderer/components/lanes/laneMachines.ts` (pure, derived from the
-in-memory remote-runtime snapshot — no polling). When two or more connected
-machines can host the repo, the selector shows an **Auto — least loaded** card
-above the machine grid. It resolves through `chooseLaneMachineByLoad`, which
-prefers a machine with healthy disk headroom, then fewer already-running lanes
-(caller-supplied `activeLaneCount` — an uncounted machine is not treated as idle
-and the load rule is skipped unless both machines report a count), then more
-free disk, and keeps the bound machine on a true tie. With one eligible machine,
-or when the repo is missing from all but one, there is nothing to balance and
-the card is absent — the default stays the machine the project is bound to.
-Picking a named machine is still the way to force one.
+The create-lane dialog uses the eligible machines derived from the shared
+project-machine snapshot. When more than one machine can host the repository,
+the user chooses the target before submitting; a single eligible machine is
+selected automatically. Creating a lane on another machine does not rebind the
+project tab. The new lane is owned by that machine, and later detail, git,
+rebase, and batch actions route to its binding.
 
-Balancing is an explicit choice rather than the dialog's silent default because
-selecting a non-bound machine rebinds the whole app tab; doing that merely
-because a dialog opened would move the window under the user.
+The Lanes tab presents one flat list across machines, with machine chips and
+machine filters when the project exists on multiple computers. Offline lanes
+remain visible with actions disabled. Selection and routing use both machine
+id and lane id because lane ids can be copied between machines. Mixed batch
+selections are split by owner before their actions run. The shared router lives
+in `renderer/state/laneMachineRouting.ts`; unknown and unroutable targets fail
+closed instead of falling back to the tab's current machine.
 
 ## Default-branch auto-pull
 
@@ -128,6 +126,7 @@ Renderer components:
 
 | File | Responsibility |
 |------|---------------|
+| `renderer/state/projectMachines.ts` and `laneMachineRouting.ts` | Shared project-machine inventory and fail-closed lane routing. `route(laneId, machineId)` resolves the owner when supplied, including duplicate lane ids, and refuses unknown or unroutable lanes instead of sending them to the active binding. |
 | `renderer/components/app/App.tsx` | Project tab host and route keep-alive shell. Keeps the Work surface mounted after first visit and now does the same for `/lanes`, parking the inactive Lanes surface with `inert` / `aria-hidden` instead of unmounting it. Parked route and project surfaces also set `data-ade-animation-state="paused"`, which lets the global renderer stylesheet stop hidden CSS animations until the surface is active again. Surfaces are keyed by runtime binding (`local:<root>` or the remote binding key) so local and remote views of the same root do not share lane/work state. During cold project switches it renders a transition veil over the old project surface until the target project hydrates. |
 | `renderer/components/app/toast/{toastStore.ts,ToastStack.tsx,ToastViewport.tsx,useLaneEventToasts.ts}` | Shared renderer toast primitive. `ToastViewport` is mounted once from `AppShell`; `ToastStack` renders each toast card there. `useLaneEventToasts` subscribes to `lanes.onLifecycleEvent` and `lanes.rebaseSubscribe`, turning lane-created/archive/delete and final automated rebase outcomes into compact global notices; created-lane toasts include a `View` action that routes to `/lanes?laneId=...&focus=single`. Lane-created and lane-deleted toasts are suppressed for a lane a new-lane chat launch owns (`isChatLaunchLane` in `state/chatLaunchStore.ts`), because the launch's own setup card shows that lane's birth and cancellation. |
 | `renderer/components/lanes/LanesPage.tsx` | Lanes tab: portals `LaneSidebarList` into the project sidebar (`ProjectSidebarSlot`), renders the selected lane's `LaneDashboard` in the main area, and coordinates dialogs. Create-lane state lives in `CreateLaneDialogHost`; `LanesPage` owns only open/prefill routing, blocks forced close while the host is busy, and focuses the new lane after the host refreshes the lane list while the dialog stays open for setup progress. The lane filter, pinned lane ids, and expanded lane id live in the active project's `WorkProjectViewState`, not component-local state, so route/tab/project remounts restore the correct project's view. Every visible lane tag, counter, and hover list is derived from PRs whose normalized head branch matches the lane's current branch; a primary lane on its base branch never renders a PR tag. A merged PR remains visible while the lane stays on that branch, then disappears from the lane surfaces when the lane switches away. Older rows remain mapped for PR workspace history. The pure selectors in `lanePageModel.ts` prefer live same-branch GitHub repo inventory over terminal/stale ADE rows, then fall back to ADE-linked PR rows, so externally created PRs and open-after-closed branch reuse stay visible; linked PRs route to the PR workspace, while unlinked GitHub-only matches open externally. The page forces one GitHub snapshot refresh on project/branch-signature changes and otherwise uses cached snapshot/event refreshes to avoid repeated PR polling from the Lanes tab. Those forced refreshes are marked `automaticRefresh` — nobody pressed anything — so they stay inside the service's GitHub failure ladder and a rate-limited GitHub is not re-asked on every branch-signature change (see [pull-requests](../pull-requests/README.md#github-read-failure-ladder)); `refreshLaneGithubPrTags` returns `false` when it fell back to the last usable snapshot, which is what the retry logic keys on. Runtime activity refreshes use `refreshLanes({ includeStatus: false, includeSnapshots: true, ... })` so PTY/chat buckets update without recomputing git status. Lane delete kicks off optimistically: the page subscribes to `lanes.delete.event`, tracks per-lane `LaneDeleteProgress` through `useAppStore().laneDeleteProgressByLaneId`, immediately closes the manage dialog, and excludes deleting lanes from the selectable lane id sets used by keyboard navigation (`selectableFilteredLaneIds`, `sortedSelectableLaneIds`). On mount/project switch it hydrates active backend delete progress when available, but also keeps stored active delete progress long enough to move selection away and queue a refresh if the backend list is missing, stale, or temporarily failed. Batch deletes still run selected child lanes before their selected parents; within each dependency-safe batch the page dispatches up to two lane deletes at a time and records per-lane failures, and a parent remains blocked if a selected descendant fails. Sidebar rows for deleting lanes render a non-interactive overlay with a spinning `CircleNotch` and a `Deleting` / `Deleted` / `Deleted with warnings` label; selection / pinning / context menu / git-actions surfaces are all suppressed for those rows. `resolveLaneDeleteStartSelection` (also used by tests) computes a fallback selection so the user is moved to the next available lane the moment delete starts, and a top-bar lane action chip surfaces failures and non-fatal cleanup warnings through `laneActionError`. Work-tab action deeplinks scrub `action`, `laneId`, and `laneIds` after handling so modal routing cannot also rewrite split selection state. |

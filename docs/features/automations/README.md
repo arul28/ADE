@@ -8,6 +8,13 @@ There is no autonomous Linear intake pipeline (the CTO's Linear workflow engine 
 
 The automation rule engine, cron scheduler, deferred-cleanup sweeper, file watcher, ingress endpoints (webhook listener, GitHub relay/polling, Linear relay), and built-in action runner all execute inside the ADE runtime (`ade serve`) that owns the project. For local project bindings the local runtime hosts them; for remote project bindings the remote runtime hosts them. The desktop renderer is a view: it edits rules, watches run history, and triggers manual fires through `window.ade.automations`, but it does not own scheduling, ingress, or dispatch state.
 
+The Automations tab combines rules from every machine that has the repository.
+Each row carries its owner, and edit, enable/disable, delete, run, and history
+reads target that machine. Creating a rule chooses its execution machine when
+more than one is eligible. Moving a rule creates a paused copy on the target,
+deletes the original, then enables the copy; if deletion fails, the target copy
+stays paused so both machines cannot run the rule at once.
+
 ### Availability
 
 Automations ship **enabled in every build** — packaged desktop apps and installed daemons included. `areAutomationsEnabledForPackagedState` (`shared/automationAvailability.ts`) returns `true` regardless of the packaged flag; `ADE_DISABLE_AUTOMATIONS=1` is the kill switch and `ADE_ENABLE_AUTOMATIONS=1` still forces the feature on. The runtime reports the resolved state as `AppInfo.automationsEnabled`, and the `/automations` gate (`AutomationsProductionGate` in `AutomationsPage.tsx`) reads it, falling back to the old "off when packaged" rule only against a runtime too old to send the flag. When the kill switch is set the tab renders the disabled screen (`AutomationsComingSoon.tsx`, "Automations are disabled on this build.").
