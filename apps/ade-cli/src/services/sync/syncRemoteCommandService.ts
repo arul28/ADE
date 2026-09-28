@@ -279,8 +279,7 @@ import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } 
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCursorCloudFleetService } from "../../../../desktop/src/main/services/chat/cursorCloudFleetService";
-import type { createDevinCloudFleetService } from "../../../../desktop/src/main/services/chat/devinCloudFleetService";
-import type { DevinCloudMode } from "../../../../desktop/src/shared/types/config";
+import type { CloudAgentsService } from "../../../../desktop/src/main/services/chat/cloudAgentsService";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
 import { getSourceFaviconService } from "../../../../desktop/src/main/services/chat/sourceFaviconService";
 import {
@@ -400,7 +399,7 @@ type SyncRemoteCommandServiceArgs = {
   agentChatService?: ReturnType<typeof createAgentChatService>;
   chatLaunchService?: ChatLaunchService | null;
   cursorCloudFleetService?: ReturnType<typeof createCursorCloudFleetService> | null;
-  devinCloudFleetService?: ReturnType<typeof createDevinCloudFleetService> | null;
+  cloudAgentsService?: CloudAgentsService | null;
   personalChatScope?: Pick<PersonalChatScopeContract, "call" | "streamEvents">;
   ctoStateService?: ReturnType<typeof createCtoStateService> | null;
   ctoMemoryService?: CtoMemoryService | null;
@@ -595,13 +594,6 @@ function asOptionalCursorCloudServiceTier(value: unknown): "fast" | "standard" |
   if (value === null) return null;
   if (value === "fast" || value === "standard") return value;
   throw new Error("Cursor Cloud serviceTier must be 'fast', 'standard', null, or omitted.");
-}
-
-function asOptionalDevinCloudMode(value: unknown): DevinCloudMode | null | undefined {
-  if (value === undefined) return undefined;
-  if (value === null) return null;
-  if (value === "normal" || value === "fast" || value === "lite" || value === "ultra" || value === "fusion") return value;
-  throw new Error("Devin Cloud devinMode must be 'normal', 'fast', 'lite', 'ultra', 'fusion', null, or omitted.");
 }
 
 function asOptionalNumber(value: unknown): number | undefined {
@@ -6354,176 +6346,60 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     );
   });
 
-  register("ai.getDevinCloudAuthStatus", { viewerAllowed: true }, async () =>
-    requireService(args.aiIntegrationService, "AI integration service not available.").getDevinCloudAuthStatus());
-  // Same boundary as `ai.storeApiKey` (deliberately unregistered): adding or
-  // replacing a provider key is a desktop-only operation, so `localOnly`
-  // refuses every synced caller (viewers, controllers, relay). Remote clients
-  // can still remove the credential via `ai.deleteApiKey`.
-  register("ai.setDevinCloudCredentials", { viewerAllowed: false, controllerAllowed: true, queueable: false, localOnly: true }, async (payload) => {
-    if (typeof payload.apiKey !== "string") {
-      throw new Error("ai.setDevinCloudCredentials requires apiKey.");
-    }
-    if (typeof payload.orgId === "string" && payload.orgId.length > 256) {
-      throw new Error("ai.setDevinCloudCredentials orgId is too long.");
-    }
-    if (typeof payload.asUserId === "string" && payload.asUserId.length > 256) {
-      throw new Error("ai.setDevinCloudCredentials asUserId is too long.");
-    }
-    const status = await requireService(args.aiIntegrationService, "AI integration service not available.").setDevinCloudCredentials({
-      apiKey: payload.apiKey,
-      ...(typeof payload.orgId === "string" ? { orgId: payload.orgId } : {}),
-      ...(typeof payload.asUserId === "string" ? { asUserId: payload.asUserId } : {}),
-    });
-    args.devinCloudFleetService?.invalidateCache();
-    return status;
-  });
-  // Clearing is remote-allowed for parity with `ai.deleteApiKey`: a remote
-  // Remove still routes through the service so the stored org id and cached
-  // client are dropped, not just the key.
-  register("ai.deleteDevinCloudCredentials", { viewerAllowed: true, queueable: true }, async () => {
-    const status = await requireService(args.aiIntegrationService, "AI integration service not available.").setDevinCloudCredentials({ apiKey: "" });
-    args.devinCloudFleetService?.invalidateCache();
-    return status;
-  });
-  register("ai.getDevinCloudFleet", { viewerAllowed: true }, async (payload) => {
-    const fleetService = requireService(args.devinCloudFleetService, "Devin Cloud fleet not available.");
-    return fleetService.getFleet({
-      force: payload.force === true,
-      includeArchived: payload.includeArchived === true,
-    });
-  });
-  // Pull mutates host lane worktrees (fetch + merge or lane import), so like the
-  // Cursor equivalent it is refused for read-only viewers and runs immediately.
-  register("ai.pullDevinCloudSessionIntoLane", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
-    requireService(args.devinCloudFleetService, "Devin Cloud fleet not available.").pullIntoLane(
-      requireString(payload.devinSessionId, "ai.pullDevinCloudSessionIntoLane requires devinSessionId."),
-    ));
-  register("ai.terminateDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.aiIntegrationService, "AI integration service not available.").terminateDevinCloudSession({
-      devinSessionId: requireString(payload.devinSessionId, "ai.terminateDevinCloudSession requires devinSessionId."),
-      ...(typeof payload.archive === "boolean" ? { archive: payload.archive } : {}),
-    });
-    args.devinCloudFleetService?.invalidateCache();
-  });
-  register("ai.archiveDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.aiIntegrationService, "AI integration service not available.").archiveDevinCloudSession(
-      requireString(payload.devinSessionId, "ai.archiveDevinCloudSession requires devinSessionId."),
-    );
-    args.devinCloudFleetService?.invalidateCache();
-  });
-  register("ai.unarchiveDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.aiIntegrationService, "AI integration service not available.").unarchiveDevinCloudSession(
-      requireString(payload.devinSessionId, "ai.unarchiveDevinCloudSession requires devinSessionId."),
-    );
-    args.devinCloudFleetService?.invalidateCache();
-  });
-  register("ai.devinCloudFollowUp", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
-    await requireService(args.agentChatService, "Agent chat service not available.").devinCloudFollowUp({
-      devinSessionId: requireString(payload.devinSessionId, "ai.devinCloudFollowUp requires devinSessionId."),
-      message: (() => {
-        const message = requireString(payload.message, "ai.devinCloudFollowUp requires message.");
-        if (message.length > 100_000) throw new Error("ai.devinCloudFollowUp message is too long.");
-        return message;
-      })(),
-    });
-    args.devinCloudFleetService?.invalidateCache();
-  });
-  register("ai.openDevinCloudChat", { viewerAllowed: true, queueable: false }, async (payload) => {
-    const sessionId = asTrimmedString(payload.sessionId);
-    const devinMode = asOptionalDevinCloudMode(payload.devinMode);
-    return requireService(args.agentChatService, "Agent chat service not available.").openDevinCloudChat({
-      devinSessionId: requireString(payload.devinSessionId, "ai.openDevinCloudChat requires devinSessionId."),
-      laneId: requireString(payload.laneId, "ai.openDevinCloudChat requires laneId."),
-      ...(sessionId ? { sessionId } : {}),
-      ...(devinMode !== undefined ? { devinMode } : {}),
-    });
-  });
-  register("ai.watchDevinCloudMirror", { viewerAllowed: true, queueable: false }, async (payload) => {
-    if (typeof payload.watching !== "boolean") {
-      throw new Error("ai.watchDevinCloudMirror requires watching to be a boolean.");
-    }
-    requireService(args.agentChatService, "Agent chat service not available.").watchDevinCloudMirror({
-      sessionId: requireString(payload.sessionId, "ai.watchDevinCloudMirror requires sessionId."),
-      watching: payload.watching,
-    });
-  });
-  register("ai.createDevinCloudSession", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
-    const devinMode = asOptionalDevinCloudMode(payload.devinMode);
-    const sessionId = asTrimmedString(payload.sessionId);
-    const title = asTrimmedString(payload.title);
-    const projectId = asTrimmedString(payload.projectId);
-    const platform = asTrimmedString(payload.platform);
-    const playbookId = asTrimmedString(payload.playbookId);
-    const createAsUserId = asTrimmedString(payload.createAsUserId);
-    const knowledgeIds = asStringArray(payload.knowledgeIds).filter((id) => id.trim().length > 0);
-    const maxAcuLimit = typeof payload.maxAcuLimit === "number" && Number.isFinite(payload.maxAcuLimit)
-      ? Math.floor(payload.maxAcuLimit)
-      : undefined;
-    const prompt = requireString(payload.prompt, "ai.createDevinCloudSession requires prompt.");
-    // Bounds matching the credential caps above: identifiers are short and a
-    // prompt past 100 KB is abuse, not a task.
-    if (prompt.length > 100_000) throw new Error("ai.createDevinCloudSession prompt is too long.");
-    for (const [name, value] of [["sessionId", sessionId], ["title", title], ["projectId", projectId], ["platform", platform], ["playbookId", playbookId], ["createAsUserId", createAsUserId]] as const) {
-      if (value && value.length > 256) throw new Error(`ai.createDevinCloudSession ${name} is too long.`);
-    }
-    if (knowledgeIds.length > 100 || knowledgeIds.some((id) => id.length > 256)) {
-      throw new Error("ai.createDevinCloudSession knowledgeIds is too large.");
-    }
-    if (maxAcuLimit !== undefined && (maxAcuLimit <= 0 || maxAcuLimit > 1_000_000)) {
-      throw new Error("ai.createDevinCloudSession maxAcuLimit is out of range.");
-    }
-    const laneId = requireString(payload.laneId, "ai.createDevinCloudSession requires laneId.");
-    const attachments = parseAgentChatFileRefs(payload.attachments);
-    // Remote callers cannot pick files on this host, so a file attachment here
-    // can only reference something already on disk — without a bound, naming
-    // /etc/passwd would upload it to Devin. Remote-supplied files must resolve
-    // inside the target lane's worktree; image-url refs read no disk at all.
-    const fileAttachments = (attachments ?? []).filter(
-      (attachment) => attachment.type !== "image-url" && typeof attachment.path === "string" && attachment.path.trim().length > 0,
-    );
-    if (fileAttachments.length) {
-      const worktree = args.laneService.getLaneBaseAndBranch(laneId)?.worktreePath?.trim();
-      const root = worktree ? fs.realpathSync(worktree) : null;
-      for (const attachment of fileAttachments) {
-        const resolved = (() => {
-          try {
-            return root ? fs.realpathSync(attachment.path!) : null;
-          } catch {
-            return null;
-          }
-        })();
-        if (!root || !resolved || (resolved !== root && !resolved.startsWith(`${root}${path.sep}`))) {
-          throw new Error("ai.createDevinCloudSession file attachments must resolve inside the target lane.");
-        }
-      }
-    }
-    const result = await requireService(args.agentChatService, "Agent chat service not available.").createDevinCloudSessionForLane({
-      laneId,
+  // Cloud agents (Devin Cloud and Cursor Cloud): one contract for both
+  // providers, the same one the desktop reaches over `ade.cloudAgents.*`. The
+  // list is read-only; open can create a lane and a chat, and stop, archive
+  // and launch act on the provider, so those are refused for viewers and run
+  // now rather than queue.
+  const cloudAgents = () => requireService(args.cloudAgentsService, "Cloud agents are not available.");
+  register("ai.listCloudAgents", { viewerAllowed: true }, async (payload) =>
+    cloudAgents().list({
+      provider: requireCloudAgentProvider(payload.provider, "ai.listCloudAgents"),
+      ...(payload.force === true ? { force: true } : {}),
+    }));
+  register("ai.openCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().open({
+      provider: requireCloudAgentProvider(payload.provider, "ai.openCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.openCloudAgent"),
+    }));
+  register("ai.stopCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().stop({
+      provider: requireCloudAgentProvider(payload.provider, "ai.stopCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.stopCloudAgent"),
+    }));
+  register("ai.archiveCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
+    cloudAgents().archive({
+      provider: requireCloudAgentProvider(payload.provider, "ai.archiveCloudAgent"),
+      id: requireCloudAgentId(payload.id, "ai.archiveCloudAgent"),
+      archived: payload.archived !== false,
+    }));
+  register("ai.launchCloudAgent", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const prompt = requireString(payload.prompt, "ai.launchCloudAgent requires prompt.");
+    if (prompt.length > 100_000) throw new Error("ai.launchCloudAgent prompt is too long.");
+    const shortOptional = (value: unknown, name: string): string | null => {
+      if (typeof value !== "string" || !value.trim()) return null;
+      if (value.length > 256) throw new Error(`ai.launchCloudAgent ${name} is too long.`);
+      return value.trim();
+    };
+    return cloudAgents().launch({
+      provider: requireCloudAgentProvider(payload.provider, "ai.launchCloudAgent"),
       prompt,
-      ...(sessionId ? { sessionId } : {}),
-      ...(title ? { title } : {}),
-      ...(devinMode !== undefined ? { devinMode } : {}),
-      ...(projectId ? { projectId } : {}),
-      ...(platform ? { platform } : {}),
-      ...(playbookId ? { playbookId } : {}),
-      ...(knowledgeIds.length ? { knowledgeIds } : {}),
-      ...(maxAcuLimit !== undefined ? { maxAcuLimit } : {}),
-      ...(createAsUserId ? { createAsUserId } : {}),
-      ...(attachments?.length ? { attachments } : {}),
-      ...(typeof payload.bypassApproval === "boolean" ? { bypassApproval: payload.bypassApproval } : {}),
+      model: shortOptional(payload.model, "model"),
+      platform: shortOptional(payload.platform, "platform"),
+      laneId: shortOptional(payload.laneId, "laneId"),
     });
-    args.devinCloudFleetService?.invalidateCache();
-    return result;
   });
-  register("ai.getDevinCloudCatalog", { viewerAllowed: true, queueable: false }, async () => {
-    const ai = requireService(args.aiIntegrationService, "AI integration service not available.");
-    const [playbooks, knowledge] = await Promise.all([
-      ai.listDevinCloudPlaybooks(),
-      ai.listDevinCloudKnowledge(),
-    ]);
-    return { playbooks, knowledge };
-  });
+}
+
+function requireCloudAgentProvider(value: unknown, action: string): "devin" | "cursor" {
+  if (value === "devin" || value === "cursor") return value;
+  throw new Error(`${action} requires provider 'devin' or 'cursor'.`);
+}
+
+function requireCloudAgentId(value: unknown, action: string): string {
+  const id = requireString(value, `${action} requires id.`).trim();
+  if (id.length > 256) throw new Error(`${action} id is too long.`);
+  return id;
 }
 
 function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {

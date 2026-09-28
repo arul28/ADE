@@ -371,22 +371,12 @@ import type {
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
-  DevinCloudAuthStatus,
-  DevinCloudCatalog,
-  DevinCloudCreateSessionForLaneRequest,
-  DevinCloudCreateSessionForLaneResult,
-  DevinCloudFleetResult,
   CloudAgentArchiveArgs,
   CloudAgentLaunchArgs,
   CloudAgentList,
   CloudAgentListArgs,
   CloudAgentOpenResult,
   CloudAgentRef,
-  DevinCloudOpenChatRequest,
-  DevinCloudOpenChatResult,
-  DevinCloudPullIntoLaneResult,
-  DevinCloudSetCredentialsRequest,
-  DevinCloudWatchMirrorRequest,
   AdeCliInstallResult,
   AdeCliStatus,
   OpenCodeRuntimeSnapshot,
@@ -1441,37 +1431,6 @@ declare global {
         onCursorCloudFleetEvent: (
           cb: (event: CursorCloudFleetEvent) => void,
         ) => () => void;
-        devinCloudGetAuthStatus: () => Promise<DevinCloudAuthStatus>;
-        devinCloudSetCredentials: (
-          args: DevinCloudSetCredentialsRequest,
-        ) => Promise<DevinCloudAuthStatus>;
-        devinCloudFleet: (args?: {
-          force?: boolean;
-          includeArchived?: boolean;
-        }) => Promise<DevinCloudFleetResult>;
-        devinCloudPullIntoLane: (
-          devinSessionId: string,
-        ) => Promise<DevinCloudPullIntoLaneResult>;
-        devinCloudTerminateSession: (
-          devinSessionId: string,
-          options?: { archive?: boolean },
-        ) => Promise<void>;
-        devinCloudArchiveSession: (devinSessionId: string) => Promise<void>;
-        devinCloudUnarchiveSession: (devinSessionId: string) => Promise<void>;
-        devinCloudFollowUp: (args: {
-          devinSessionId: string;
-          message: string;
-        }) => Promise<void>;
-        devinCloudOpenChat: (
-          args: DevinCloudOpenChatRequest,
-        ) => Promise<DevinCloudOpenChatResult>;
-        devinCloudCreateSession: (
-          args: DevinCloudCreateSessionForLaneRequest,
-        ) => Promise<DevinCloudCreateSessionForLaneResult>;
-        devinCloudWatchMirror: (
-          args: DevinCloudWatchMirrorRequest,
-        ) => Promise<void>;
-        devinCloudCatalog: () => Promise<DevinCloudCatalog>;
       };
       transcription: {
         transcribe: (

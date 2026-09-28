@@ -233,22 +233,12 @@ import type {
   CursorAgentUsageRequest,
   CursorCloudStreamRunRequest,
   CursorCloudStreamRunResult,
-  DevinCloudAuthStatus,
-  DevinCloudCatalog,
-  DevinCloudCreateSessionForLaneRequest,
-  DevinCloudCreateSessionForLaneResult,
-  DevinCloudFleetResult,
   CloudAgentArchiveArgs,
   CloudAgentLaunchArgs,
   CloudAgentList,
   CloudAgentListArgs,
   CloudAgentOpenResult,
   CloudAgentRef,
-  DevinCloudOpenChatRequest,
-  DevinCloudOpenChatResult,
-  DevinCloudPullIntoLaneResult,
-  DevinCloudSetCredentialsRequest,
-  DevinCloudWatchMirrorRequest,
   OpenCodeRuntimeSnapshot,
   SyncDesktopConnectionDraft,
   SyncCloudRelayStatus,
@@ -5374,89 +5364,6 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.aiCursorCloudFleetEvent, listener);
       };
     },
-    devinCloudGetAuthStatus: async (): Promise<DevinCloudAuthStatus> =>
-      callProjectRuntimeActionOr("ai", "getDevinCloudAuthStatus", {}, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudGetAuthStatus),
-      ),
-    devinCloudSetCredentials: async (
-      args: DevinCloudSetCredentialsRequest,
-    ): Promise<DevinCloudAuthStatus> =>
-      callProjectRuntimeActionOr("ai", "setDevinCloudCredentials", { args }, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudSetCredentials, args),
-      ),
-    devinCloudFleet: async (
-      args?: { force?: boolean; includeArchived?: boolean },
-    ): Promise<DevinCloudFleetResult> =>
-      callProjectRuntimeActionOr("ai", "getDevinCloudFleet", { args: args ?? {} }, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudFleet, args ?? {}),
-      ),
-    devinCloudPullIntoLane: async (
-      devinSessionId: string,
-    ): Promise<DevinCloudPullIntoLaneResult> => {
-      const result = await callProjectRuntimeActionOr(
-        "ai",
-        "pullDevinCloudSessionIntoLane",
-        { args: { devinSessionId } },
-        () => ipcRenderer.invoke(IPC.aiDevinCloudPullIntoLane, { devinSessionId }),
-      );
-      // Pull can create a lane (importBranch) and moves refs; lane caches must
-      // not serve pre-pull answers.
-      clearGitReadCaches();
-      return result;
-    },
-    devinCloudTerminateSession: async (
-      devinSessionId: string,
-      options?: { archive?: boolean },
-    ): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "ai",
-        "terminateDevinCloudSession",
-        { args: { devinSessionId, ...(options?.archive !== undefined ? { archive: options.archive } : {}) } },
-        () => ipcRenderer.invoke(IPC.aiDevinCloudTerminateSession, { devinSessionId, ...(options?.archive !== undefined ? { archive: options.archive } : {}) }),
-      ),
-    devinCloudArchiveSession: async (devinSessionId: string): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "ai",
-        "archiveDevinCloudSession",
-        { args: { devinSessionId } },
-        () => ipcRenderer.invoke(IPC.aiDevinCloudArchiveSession, { devinSessionId }),
-      ),
-    devinCloudUnarchiveSession: async (devinSessionId: string): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "ai",
-        "unarchiveDevinCloudSession",
-        { args: { devinSessionId } },
-        () => ipcRenderer.invoke(IPC.aiDevinCloudUnarchiveSession, { devinSessionId }),
-      ),
-    devinCloudFollowUp: async (args: {
-      devinSessionId: string;
-      message: string;
-    }): Promise<void> =>
-      callProjectRuntimeActionOr("ai", "devinCloudFollowUp", { args }, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudFollowUp, args),
-      ),
-    devinCloudOpenChat: async (
-      args: DevinCloudOpenChatRequest,
-    ): Promise<DevinCloudOpenChatResult> =>
-      callProjectRuntimeActionOr("ai", "openDevinCloudChat", { args }, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudOpenChat, args),
-      ),
-    devinCloudCreateSession: async (
-      args: DevinCloudCreateSessionForLaneRequest,
-    ): Promise<DevinCloudCreateSessionForLaneResult> =>
-      callProjectRuntimeActionOr("ai", "createDevinCloudSession", { args }, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudCreateSession, args),
-      ),
-    devinCloudWatchMirror: async (
-      args: DevinCloudWatchMirrorRequest,
-    ): Promise<void> =>
-      callProjectRuntimeActionOr("ai", "watchDevinCloudMirror", { args }, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudWatchMirror, args),
-      ),
-    devinCloudCatalog: async (): Promise<DevinCloudCatalog> =>
-      callProjectRuntimeActionOr("ai", "getDevinCloudCatalog", {}, () =>
-        ipcRenderer.invoke(IPC.aiDevinCloudCatalog),
-      ),
   },
   transcription: {
     // Hand the captured 16 kHz mono PCM to the main process as a transferable

@@ -245,8 +245,8 @@ export function CloudAgentRow({
           setPortDraft(null);
         }}
         placement="bottom-end"
-        zIndex={Z_LAYERS.nestedDialog}
-        className="w-[230px] rounded-xl border border-white/10 bg-[#17151f] p-1 shadow-xl shadow-black/50"
+        zIndex={Z_LAYERS.dialogPopover}
+        className="w-[230px] rounded-xl border border-white/[0.08] bg-surface-overlay p-1 shadow-float"
         role="menu"
       >
         <div onClick={(event) => event.stopPropagation()}>

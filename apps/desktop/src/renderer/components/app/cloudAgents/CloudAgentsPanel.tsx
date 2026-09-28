@@ -9,21 +9,20 @@ import {
   PaperPlaneRight,
   X,
 } from "@phosphor-icons/react";
-import { Cursor } from "@lobehub/icons";
 import type {
   CloudAgent,
   CloudAgentList,
   CloudAgentOpenResult,
   CloudAgentProvider,
 } from "../../../../shared/types";
-import { DEVIN_CLOUD_PLATFORMS, laneCloudProvider } from "../../../../shared/cloudLanes";
+import { laneCloudProvider } from "../../../../shared/cloudLanes";
+import { DEVIN_CLOUD_PLATFORMS, normalizeDevinCloudSessionId } from "../../../../shared/devinCloud";
 import { useAppStore } from "../../../state/appStore";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../../lib/openExternal";
 import { revealTerminalSessionInWork } from "../../work/ClaudeLoginPromptButton";
 import { settingsRouteFor } from "../../settings/settingsManifest";
-import { DevinMark } from "../../shared/ProviderLogos";
 import { cn } from "../../ui/cn";
 import { Dialog } from "../../ui/dialog";
 import { showToast } from "../toast/toastStore";
@@ -66,7 +65,7 @@ function ProviderTile({ provider, size = 34 }: { provider: CloudAgentProvider; s
         boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${brand.accent} 45%, transparent), 0 6px 18px -8px ${brand.accent}`,
       }}
     >
-      {provider === "devin" ? <DevinMark size={Math.round(size * 0.66)} /> : <Cursor size={Math.round(size * 0.5)} />}
+      <brand.Mark size={Math.round(size * brand.tileMarkScale)} />
     </span>
   );
 }
@@ -180,7 +179,7 @@ export function CloudAgentsPanel({
     [lanes, provider],
   );
 
-  const agents = list?.items ?? [];
+  const agents = useMemo(() => list?.items ?? [], [list]);
   const scoped = useMemo(
     () => agents.filter((agent) => scope === "everywhere" || agent.inThisProject || agent.link !== null),
     [agents, scope],
@@ -217,7 +216,8 @@ export function CloudAgentsPanel({
     }
   }, []);
 
-  const vmTerminal = useCallback(async (agent: CloudAgent, args: string[], title: string) => {
+  const vmTerminal = useCallback(async (agent: CloudAgent, args: (sessionId: string) => string[], title: string) => {
+    const sessionId = normalizeDevinCloudSessionId(agent.id);
     const laneId = agent.link?.laneId
       ?? lanes.find((lane) => lane.laneType === "primary")?.id
       ?? null;
@@ -230,7 +230,7 @@ export function CloudAgentsPanel({
       tracked: true,
       toolType: "devin",
       command: "devin",
-      args,
+      args: args(sessionId),
     });
     revealTerminalSessionInWork(navigate, { terminalId: created.sessionId, laneId });
     onClose();
@@ -242,12 +242,12 @@ export function CloudAgentsPanel({
     }),
     onStop: (agent) => void runRowAction(agent, async () => {
       await window.ade.cloudAgents.stop({ provider, id: agent.id });
-      showToast({ title: `Stopped “${agent.title}”`, tone: "success", durationMs: 3500 });
+      showToast({ title: `Stopped “${agent.title}”`, tone: "success" });
       await refresh(true);
     }),
     onArchive: (agent) => void runRowAction(agent, async () => {
       await window.ade.cloudAgents.archive({ provider, id: agent.id, archived: true });
-      showToast({ title: `Archived “${agent.title}”`, tone: "success", durationMs: 3500 });
+      showToast({ title: `Archived “${agent.title}”`, tone: "success" });
       await refresh(true);
     }),
     onWeb: (agent) => {
@@ -257,15 +257,15 @@ export function CloudAgentsPanel({
     onVmShell: (agent) => void runRowAction(agent, () =>
       vmTerminal(
         agent,
-        ["ssh", agent.id, "-o", "StrictHostKeyChecking=accept-new"],
+        (id) => ["ssh", id, "-o", "StrictHostKeyChecking=accept-new"],
         `Devin VM · ${agent.title.slice(0, 40)}`,
       )),
     onForwardPort: (agent, port) => void runRowAction(agent, () =>
-      vmTerminal(agent, ["forward", agent.id, port], `Devin VM :${port} · ${agent.title.slice(0, 32)}`)),
+      vmTerminal(agent, (id) => ["forward", id, port], `Devin VM :${port} · ${agent.title.slice(0, 32)}`)),
     onCopyLink: (agent) => {
       if (!agent.webUrl) return;
       void navigator.clipboard.writeText(agent.webUrl).then(
-        () => showToast({ title: "Link copied", tone: "success", durationMs: 2500 }),
+        () => showToast({ title: "Link copied", tone: "success" }),
         () => showToast({ title: "Could not copy the link", tone: "error" }),
       );
     },
@@ -289,7 +289,6 @@ export function CloudAgentsPanel({
         title: `${brand.name} is on it`,
         message: result.createdLane ? `New cloud lane “${result.laneName ?? "Cloud agent"}”` : undefined,
         tone: "success",
-        durationMs: 4000,
       });
       revealChat(result);
     } catch (error) {
@@ -479,13 +478,13 @@ export function CloudAgentsPanel({
           <div className="flex h-full flex-col items-center justify-center gap-3 px-10 text-center">
             <ProviderTile provider={provider} size={44} />
             <div className="text-[14px] font-medium text-fg/90">
-              {provider === "devin" ? "Connect the Devin CLI" : "Connect Cursor"}
+              {brand.connectTitle}
             </div>
             <div className="max-w-[440px] text-[12px] leading-relaxed text-muted-fg/60">
               {unavailable ?? loadError}
             </div>
-            {provider === "devin" ? (
-              <code className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 font-mono text-[12px] text-fg/85">devin auth login</code>
+            {brand.loginCommand ? (
+              <code className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 font-mono text-[12px] text-fg/85">{brand.loginCommand}</code>
             ) : null}
             <div className="flex items-center gap-2">
               <button
@@ -504,7 +503,7 @@ export function CloudAgentsPanel({
                 className="inline-flex h-8 items-center rounded-lg px-3 text-[12px] font-medium text-white"
                 style={{ background: brand.accent }}
               >
-                Open {provider === "devin" ? "Devin" : "Cursor"} settings
+                Open {brand.settingsLabel} settings
               </button>
             </div>
           </div>

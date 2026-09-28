@@ -2506,15 +2506,17 @@ box is where the lane lives, and a cloud is one of those machines.
 - **One running cloud chat per lane.** `cloudAgents.launch` refuses a second
   one; this also keeps two sessions from pushing to one branch.
 - **Devin has no branch field**, so the branch rides the prompt.
-  `buildDevinCloudBranchPin` writes a full "fetch and check out `<branch>`"
+  `buildDevinCloudBranchPin` (`shared/devinCloud.ts`) writes a full "fetch and check out `<branch>`"
   block on the first turn and a one-line reminder on later turns.
   `AgentChatDevinCloudConfig.pinned` records that the first turn went through.
   `stripDevinCloudBranchPin` removes the pin wherever Devin echoes the prompt
   back (history replay, list excerpts), so the user never sees ADE's
   instructions as their own words.
 - **After each successful turn** the lane mirror fetches `origin/<branch>` and
-  fast-forwards when the worktree is clean (`syncDevinCloudLaneMirror`), then
-  the diff summary is emitted.
+  fast-forwards (`lanes/cloudLaneMirror.ts` `syncCloudLaneMirror`), then the
+  diff summary is emitted. It fast-forwards only when the worktree is checked
+  out on that branch (`git symbolic-ref`) and is clean; a switched, dirty or
+  diverged worktree is logged and left alone.
 
 ### Transport
 
@@ -2527,12 +2529,16 @@ is `<hex>` (`devinCloudAcpSessionId` / `devinCloudRestSessionId`).
 `session/load` replays history, including user messages, which the translator
 echoes as cloud `user_message` rows (`echoRemoteUserMessages`), deduped by
 `cognition.ai/eventId`. `session_info_update` carries status
-(working / blocked / finished), `userActionRequired` and the title, which drive
-attention and the Work row.
+(working / blocked / finished), `userActionRequired`, `pendingRequest` and the
+title, which drive attention and the Work row.
 
-The older REST mirror (`devinCloudConversation.ts`, `watchMirror`) remains for
-chats linked over the v3 API. It skips relay chats: running both would print
-every message twice.
+The relay is the only Devin Cloud transport. `openDevinCloudChat` needs a
+`devinCloud` config (the Cloud agents service always passes one) unless the
+chat is already a relay chat, and it rejects a session id that is not
+`[devin-]<letters, digits, - or _>` (`normalizeDevinCloudSessionId`). The
+relay's status drives the chat's Needs-you marker through
+`devinDirectoryStatus`, the same rule the panel uses: blocked with
+`userActionRequired` or `pendingRequest` is needs_you.
 
 The **directory** (`devinCloudDirectory.ts`) is a short-lived scripted relay
 client used for `session/list` (4 s cache, single-flight), for cancel
@@ -2543,8 +2549,11 @@ there is no unarchive). Cursor Cloud reuses `cursorCloudFleetService`.
 
 `cloudAgentsService.ts` is one provider-neutral surface behind the `ai`-domain
 actions `listCloudAgents`, `openCloudAgent`, `stopCloudAgent`,
-`archiveCloudAgent` and `launchCloudAgent`. It is available as IPC and as
-`window.ade.cloudAgents.*`, and is shared by the brain and desktop main.
+`archiveCloudAgent` and `launchCloudAgent`. It is available as IPC, as
+`window.ade.cloudAgents.*`, and as the sync remote commands
+`ai.listCloudAgents` / `ai.openCloudAgent` / `ai.stopCloudAgent` /
+`ai.archiveCloudAgent` / `ai.launchCloudAgent`, which is how the web client's
+panel works. It is shared by the brain and desktop main.
 
 - `list` returns `CloudAgent` rows with a status in ADE's vocabulary
   (starting / working / needs_you / idle / finished / failed / archived), the
@@ -2564,8 +2573,8 @@ actions `listCloudAgents`, `openCloudAgent`, `stopCloudAgent`,
 (Needs you / Working / In ADE / Recent), brands, and the model-label rule:
 unknown Devin model ids are internal codenames and read as "Devin".
 
-Each cloud keeps its own top-bar modal (`DevinCloudQuickViewButton`,
-`CursorCloudQuickViewButton`). Anything can open one with
+Each cloud keeps its own top-bar modal, mounted by
+`CloudAgentsQuickViewButton` with that cloud's `provider`. Anything can open one with
 `openCloudAgentsPanel(provider)`, which is how the composer menu does it.
 
 - **Launch bar:** prompt, Model, VM (Devin), and Lane (a new cloud lane or an

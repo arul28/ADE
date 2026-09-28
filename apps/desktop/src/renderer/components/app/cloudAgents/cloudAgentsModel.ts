@@ -1,12 +1,27 @@
-import type { CloudAgent, CloudAgentProvider, CloudAgentStatus } from "../../../../shared/types";
+import { createElement, type ComponentType } from "react";
+import { Cursor } from "@lobehub/icons";
+import type {
+  AiSettingsStatus,
+  CloudAgent,
+  CloudAgentProvider,
+  CloudAgentStatus,
+  CursorCloudFleetEvent,
+} from "../../../../shared/types";
+import { DevinMark } from "../../shared/ProviderLogos";
 
 /**
  * What the cloud-agents panel shows, decided in one place: filters, sections,
- * the per-provider brand. Pure, so the panel is layout only.
+ * the per-provider brand. So the panel and the top-bar button are layout only.
  */
 
 export type CloudAgentFilter = "all" | "active" | "needs_you" | "done";
 export type CloudAgentScope = "project" | "everywhere";
+
+type MarkComponent = ComponentType<{ size: number; className?: string }>;
+
+// Cursor's icons type `size` as `string | number`; pin them to the mark shape.
+const CursorMark: MarkComponent = ({ size, className }) => createElement(Cursor, { size, className });
+const CursorAvatarMark: MarkComponent = ({ size }) => createElement(Cursor.Avatar, { size });
 
 export type CloudProviderBrand = {
   provider: CloudAgentProvider;
@@ -17,6 +32,25 @@ export type CloudProviderBrand = {
   accent: string;
   webHome: string;
   webHomeLabel: string;
+  /** The provider's mark, and the share of a brand tile it fills. */
+  Mark: MarkComponent;
+  tileMarkScale: number;
+  /** The mark in the top bar and in the overflow menu row. */
+  barMark: { Icon: MarkComponent; size: number; className?: string };
+  menuMark: { Icon: MarkComponent; size: number };
+  /** Top-bar button tooltip. */
+  quickViewTitle: string;
+  /** The not-connected panel: its title, the command that fixes it, the settings link. */
+  connectTitle: string;
+  loginCommand: string | null;
+  settingsLabel: string;
+  /** Whether the provider is connected, read from the AI status. */
+  isConnected: (status: AiSettingsStatus) => boolean;
+  /**
+   * Subscribe to "an agent finished" pushes, for the top-bar unread badge.
+   * Absent when the provider has no such push. Returns the unsubscribe.
+   */
+  subscribeFinished?: (onFinished: () => void) => (() => void) | null;
 };
 
 export const CLOUD_PROVIDER_BRANDS: Record<CloudAgentProvider, CloudProviderBrand> = {
@@ -27,6 +61,19 @@ export const CLOUD_PROVIDER_BRANDS: Record<CloudAgentProvider, CloudProviderBran
     accent: "#3B82F6",
     webHome: "https://app.devin.ai",
     webHomeLabel: "app.devin.ai",
+    Mark: DevinMark,
+    tileMarkScale: 0.66,
+    // The glyph sits inside a 24px viewBox with padding, so it needs a couple
+    // more px than Cursor's mark to read the same size in the bar.
+    barMark: { Icon: DevinMark, size: 20, className: "text-fg/80" },
+    menuMark: { Icon: DevinMark, size: 13 },
+    quickViewTitle: "Devin Cloud sessions",
+    connectTitle: "Connect the Devin CLI",
+    loginCommand: "devin auth login",
+    settingsLabel: "Devin",
+    // The panel rides the Devin CLI's own login (`devin acp --cloud`), so a
+    // signed-in CLI is all it needs.
+    isConnected: (status) => status.providerConnections?.devin?.authAvailable === true,
   },
   cursor: {
     provider: "cursor",
@@ -35,6 +82,26 @@ export const CLOUD_PROVIDER_BRANDS: Record<CloudAgentProvider, CloudProviderBran
     accent: "#A78BFA",
     webHome: "https://cursor.com/agents",
     webHomeLabel: "cursor.com/agents",
+    Mark: CursorMark,
+    tileMarkScale: 0.5,
+    // The bare mark, not the avatar: the avatar draws its own rounded tile
+    // and inset, which made the glyph read smaller than Linear's mark in the
+    // same 20px control.
+    barMark: { Icon: CursorMark, size: 15 },
+    menuMark: { Icon: CursorAvatarMark, size: 12 },
+    quickViewTitle: "Cursor Cloud agents",
+    connectTitle: "Connect Cursor",
+    loginCommand: null,
+    settingsLabel: "Cursor",
+    isConnected: (status) => status.providerConnections?.cursor?.authAvailable === true,
+    // Relay-driven: the same event that wakes the fleet rows.
+    subscribeFinished: (onFinished) => {
+      if (typeof window.ade?.ai?.onCursorCloudFleetEvent !== "function") return null;
+      return window.ade.ai.onCursorCloudFleetEvent((event: CursorCloudFleetEvent) => {
+        if (!event?.agentId) return;
+        if (String(event.status ?? "").toLowerCase() === "finished") onFinished();
+      });
+    },
   },
 };
 

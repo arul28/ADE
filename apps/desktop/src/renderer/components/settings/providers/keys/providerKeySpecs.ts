@@ -222,9 +222,8 @@ const SPECS: Record<SettingsProviderId, ProviderKeySpec> = {
   },
   devin: {
     provider: "devin",
-    // The cloud PAT lives in the `devin` slot (written by the Devin Cloud
-    // credential form); the Windsurf CLI key is a different credential, so it
-    // files under its own id instead of overwriting the PAT.
+    // The Windsurf API key the Devin CLI falls back to is stored under its own
+    // `devin-cli` credential id, not the provider's default `devin` slot.
     credentialProvider: "devin-cli",
     keyEnvVar: "WINDSURF_API_KEY",
     keyHelp: "A Windsurf API key. The Devin CLI signs in with it when `devin auth login` has not run.",

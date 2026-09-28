@@ -17,7 +17,7 @@ import type { SubagentCapability } from "../subagentCapabilities";
 import { providerDisplayLabel } from "../pendingInputLabels";
 import type { AgentChatStopMode as CanonicalAgentChatStopMode } from "../chatStopModes";
 import type { ClaudeContextCategoryKind } from "../claudeContextUsage";
-import type { CursorCloudServiceTier, DevinCloudMode } from "./config";
+import type { CursorCloudServiceTier } from "./config";
 import type { ExternalSessionProvider } from "./externalSessions";
 
 /** Plain-language causes the interrupted-turn card renders verbatim. */
@@ -855,9 +855,8 @@ export type AgentChatCompletionReport = {
 export type AgentChatRuntime = "local" | "cloud";
 
 /**
- * A Devin Cloud chat driven live over `devin acp --cloud` (the ACP relay), as
- * opposed to the older REST mirror. Present means the chat's turns run on a
- * Devin VM through the ACP host; absent on a cloud chat means the REST path.
+ * A Devin Cloud chat driven live over `devin acp --cloud` (the ACP relay).
+ * Present means the chat's turns run on a Devin VM through the ACP host.
  */
 export type AgentChatDevinCloudConfig = {
   transport: "acp";
@@ -2582,10 +2581,6 @@ export type AgentChatSession = {
   devinSessionId?: string;
   /** Default runtime for new turns in this session (set on promotion). */
   devinRuntime?: AgentChatRuntime;
-  /** Devin agent tier requested at create (`devin_mode`); null = Devin's default. */
-  devinMode?: DevinCloudMode | null;
-  /** Turn id at which the session was first promoted to cloud (renders the system bubble). */
-  devinPromotedTurnId?: string;
   /** Set on Devin Cloud chats driven over the ACP relay. */
   devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
@@ -2735,8 +2730,6 @@ export type AgentChatSessionSummary = {
   cursorPromotedTurnId?: string;
   devinSessionId?: string;
   devinRuntime?: AgentChatRuntime;
-  devinMode?: DevinCloudMode | null;
-  devinPromotedTurnId?: string;
   devinCloud?: AgentChatDevinCloudConfig | null;
   identityKey?: AgentChatIdentityKey;
   /**

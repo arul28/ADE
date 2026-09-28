@@ -35,13 +35,13 @@ import { readDevinAccount } from "./acpAccounts";
 /** Config option ids the cloud relay offers on `session/new`. */
 export const DEVIN_CLOUD_CONFIG_OPTION_IDS = ["repos", "devin_version", "platform"] as const;
 
-/** The `devin-` prefix the relay puts on ids the REST API reports bare. */
-export function devinCloudAcpSessionId(restId: string): string {
-  const id = restId.trim();
+/** The `devin-` prefix the relay puts on ids app.devin.ai shows bare. */
+export function devinCloudAcpSessionId(bareId: string): string {
+  const id = bareId.trim();
   return id.startsWith("devin-") ? id : `devin-${id}`;
 }
 
-export function devinCloudRestSessionId(acpId: string): string {
+export function devinCloudBareSessionId(acpId: string): string {
   return acpId.trim().replace(/^devin-/, "");
 }
 

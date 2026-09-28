@@ -133,6 +133,7 @@ export function createAdeWebAdapter(
     transcription: misc.transcription,
     modelPicker: misc.modelPicker,
     agentTools: misc.agentTools,
+    cloudAgents: misc.cloudAgents,
     adeCli: misc.adeCli,
     devTools: misc.devTools,
     onboarding: misc.onboarding,

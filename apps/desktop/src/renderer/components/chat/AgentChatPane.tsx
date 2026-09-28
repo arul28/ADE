@@ -56,7 +56,6 @@ import {
   type LaneSummary,
   type AiSettingsStatus,
   type CursorCloudOpenChatResult,
-  type DevinCloudOpenChatResult,
   type OpenProjectBinding,
   type TerminalSessionDetail,
   type AgentChatSendArgs,
@@ -324,7 +323,7 @@ import { CenteredWorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { WorkActivityModule } from "../usage/ActivityModule";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { cursorCloudAgentWebUrl, cursorCloudErrorMessage, resolveCursorCloudPrCreateFields, pushAutoCreatedLaneOriginForCursorCloud, ensureExistingLaneOriginReadyForCursorCloud } from "../../lib/cursorCloudUtils";
-import { devinCloudErrorMessage } from "../../lib/devinCloudUtils";
+import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../lib/openExternal";
 import { openCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
 import {
@@ -332,6 +331,8 @@ import {
   DEVIN_CLOUD_PLATFORMS,
   DEVIN_CLOUD_VERSIONS,
   devinCloudVersionLabel,
+} from "../../../shared/devinCloud";
+import {
   cloudLaneTag,
   laneCloudProvider,
   withCloudLaneTag,
@@ -434,6 +435,12 @@ import {
 } from "../../lib/visualContextFormatting";
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
+
+/** A Devin Cloud failure without Electron's `Error invoking remote method` wrapper. */
+function devinCloudErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  return stripElectronErrorWrapper(raw) || "Devin Cloud request failed.";
+}
 
 /**
  * Synthetic machine id for the launch shelf's Cursor Cloud row. It is never a real machine — it
@@ -6321,10 +6328,9 @@ export function AgentChatPane({
   // model selected. The eligibility hook switches to the first Cursor Cloud
   // model when the user chooses that machine, so requiring a Cursor model here
   // made the entry point impossible to discover from a fresh default draft.
-  const cursorCloudAvailable = cursorCloudPanelAvailable;
   // Launch-to-cloud is only allowed for a fresh chat: no events yet AND not already promoted to a
   // cloud agent.
-  const cursorCloudCanLaunch = cursorCloudAvailable
+  const cursorCloudCanLaunch = cursorCloudPanelAvailable
     && selectedEvents.length === 0
     && !selectedSession?.cursorCloudAgentId;
   // The lane's remote and branch feed ChatPrPane's branchName fallback as well as cloud launches.
@@ -6361,7 +6367,7 @@ export function AgentChatPane({
     cursorCloudUnavailableReason,
     refetchCursorCloudRepos,
   } = useCursorCloudDraftState({
-    cursorCloudAvailable,
+    cursorCloudAvailable: cursorCloudPanelAvailable,
     laneId: cloudReadinessLaneId,
     laneGitRemote,
     laneGitBranch,
@@ -6372,9 +6378,9 @@ export function AgentChatPane({
   // cloud row depends on: Cursor's repo list and this lane's git remote. Each
   // re-runs only when it actually failed, so opening a healthy picker costs
   // nothing.
-  // Devin Cloud availability is a stored-token check, read lazily once — the
-  // same cadence the fleet button uses — and re-read when the machine picker
-  // opens so a freshly pasted token appears without a reload.
+  // Devin Cloud availability is the Devin CLI login state, read lazily once and
+  // re-read when the machine picker opens so a fresh `devin auth login`
+  // appears without a reload.
   const refetchDevinCloudAuth = useCallback(() => {
     // Devin Cloud rides the Devin CLI's own login (`devin acp --cloud`), so a
     // signed-in CLI is the whole gate.
@@ -6392,16 +6398,15 @@ export function AgentChatPane({
     refetchDevinCloudAuth();
   }, [laneGitRemoteStatus, refetchCursorCloudRepos, refetchDevinCloudAuth, refetchLaneGitRemote]);
   const devinCloudPanelAvailable = Boolean(laneId) && devinCloudAuthConfigured === true;
-  const devinCloudAvailable = devinCloudPanelAvailable;
   // Devin Cloud launches have the same "fresh chat" rule as Cursor's: once any
   // turns exist, or the chat is already promoted, the cloud target is closed.
-  const devinCloudCanLaunch = devinCloudAvailable
+  const devinCloudCanLaunch = devinCloudPanelAvailable
     && selectedEvents.length === 0
     && !selectedSession?.devinSessionId;
   // Devin needs no account repo list — a session binds the lane's remote URL
-  // directly — so the only reasons are lane/remote shaped or a missing token.
+  // directly — so the only reasons are lane/remote shaped.
   const devinCloudUnavailableReason = useMemo(() => {
-    if (!devinCloudAvailable) return null;
+    if (!devinCloudPanelAvailable) return null;
     if (!laneId) return "Choose a lane before sending to Devin Cloud.";
     if (laneGitRemoteStatus === "idle" || laneGitRemoteStatus === "loading") {
       return "Checking this lane's git remote…";
@@ -6414,7 +6419,7 @@ export function AgentChatPane({
       return "This lane has no GitHub remote, so there is nothing for Devin Cloud to clone.";
     }
     return null;
-  }, [devinCloudAvailable, laneGitRemote, laneGitRemoteError, laneGitRemoteStatus, laneId]);
+  }, [devinCloudPanelAvailable, laneGitRemote, laneGitRemoteError, laneGitRemoteStatus, laneId]);
   // Cloud mode drops the moment the chat stops being launchable — a chat that
   // has started or a lost Cursor connection. A model switch is handled by the
   // cloud eligibility hook instead of hiding the entry point.
@@ -10996,8 +11001,8 @@ export function AgentChatPane({
   }, [notifySessionCreated, refreshSessions, touchSession]);
 
   // Identical adoption path for a Devin Cloud chat: select the session the
-  // mirror is bound to and let the transcript hydrate.
-  const adoptDevinCloudChatSession = useCallback((result: DevinCloudOpenChatResult) => {
+  // ACP relay is bound to and let the transcript hydrate.
+  const adoptDevinCloudChatSession = useCallback((result: { sessionId: string; session?: AgentChatSession | null }) => {
     const { sessionId, session } = result;
     if (!sessionId) return;
     loadedHistoryRef.current.delete(sessionId);
@@ -11040,21 +11045,21 @@ export function AgentChatPane({
     selectedSession,
   ]);
 
-  // Devin-linked chats get the same cold-start backfill: `devinCloudOpenChat`
-  // attaches the daemon mirror and hydrates the transcript once per selection.
+  // Devin-linked chats get the same cold-start backfill: `cloudAgents.open`
+  // finds the linked chat, re-attaches the ACP relay, and loads its history
+  // once per selection.
   useEffect(() => {
     const session = selectedSession;
-    if (!session?.devinSessionId) return;
+    const devinSessionId = session?.devinSessionId;
+    if (!session || !devinSessionId) return;
     if (chatHasMessages || selectedChatCold) return;
     if (devinCloudBackfillAttemptedRef.current.has(session.sessionId)) return;
     devinCloudBackfillAttemptedRef.current.add(session.sessionId);
     setCloudHydrateFailed(false);
-    void window.ade.ai.devinCloudOpenChat({
-      devinSessionId: session.devinSessionId,
-      laneId: session.laneId,
-      sessionId: session.sessionId,
-    }).then((result) => {
-      if (result.session) notifySessionCreated(result.session);
+    void window.ade.cloudAgents.open({
+      provider: "devin",
+      id: devinSessionId,
+    }).then(() => {
       loadedHistoryRef.current.delete(session.sessionId);
       void refreshSessions().catch(() => undefined);
     }).catch((error) => {
@@ -11065,40 +11070,9 @@ export function AgentChatPane({
   }, [
     chatHasMessages,
     cloudBackfillNonce,
-    notifySessionCreated,
     refreshSessions,
     selectedChatCold,
     selectedSession,
-  ]);
-
-  // Same presence-gated watch for Devin mirrors: visible pane polls, hidden
-  // pane suspends — the mirror watch is the only poller this surface needs.
-  useEffect(() => {
-    const sessionId = selectedSession?.sessionId;
-    const devinSessionId = selectedSession?.devinSessionId?.trim();
-    const watchFn = window.ade.ai.devinCloudWatchMirror;
-    // Relay chats stream live; only REST-linked chats need the mirror.
-    const relayChat = selectedSession?.devinCloud?.transport === "acp";
-    if (!sessionId || !devinSessionId || relayChat || subagentView || typeof watchFn !== "function") return;
-
-    let watching = false;
-    const sync = () => {
-      const shouldWatch = document.visibilityState !== "hidden";
-      if (shouldWatch === watching) return;
-      watching = shouldWatch;
-      void watchFn({ sessionId, watching }).catch(() => undefined);
-    };
-    document.addEventListener("visibilitychange", sync);
-    sync();
-    return () => {
-      document.removeEventListener("visibilitychange", sync);
-      if (watching) void watchFn({ sessionId, watching: false }).catch(() => undefined);
-    };
-  }, [
-    selectedSession?.devinCloud?.transport,
-    selectedSession?.devinSessionId,
-    selectedSession?.sessionId,
-    subagentView,
   ]);
 
   useEffect(() => {
@@ -11619,7 +11593,7 @@ export function AgentChatPane({
   /**
    * Hand off this chat to Devin Cloud: the prompt packages the lane + chat
    * context so the cloud session starts oriented. The lane's repo binding
-   * comes from `devinCloudCreateSession` resolving the lane remote.
+   * comes from `cloudAgents.launch` resolving the lane remote.
    */
   const handleHandoffToDevinCloud = useCallback(() => {
     const lines = [
@@ -15133,13 +15107,14 @@ export function AgentChatPane({
                 return next;
               });
             }}
-            cursorCloudCanLaunch={devinCloudMode ? devinCloudCanLaunch : cursorCloudCanLaunch}
-            cursorCloudModelReady={devinCloudSessionActive ? true : cursorCloudModelReady}
-            cursorCloudHasEligibleModels={devinCloudSessionActive ? true : cursorCloudModelIds.length > 0}
+            cloudLaunch={{
+              provider: devinCloudSessionActive ? "devin" : "cursor",
+              canLaunch: devinCloudMode ? devinCloudCanLaunch : cursorCloudCanLaunch,
+              modelReady: devinCloudSessionActive ? true : cursorCloudModelReady,
+              hasEligibleModels: devinCloudSessionActive ? true : cursorCloudModelIds.length > 0,
+              active: cursorCloudSessionActive || devinCloudSessionActive,
+            }}
             cloudSessionLinked={Boolean(selectedSession?.devinSessionId || selectedSession?.cursorCloudAgentId)}
-            cursorCloudModeActive={cursorCloudSessionActive || devinCloudSessionActive}
-            cloudTargetLabel={devinCloudSessionActive ? "Devin Cloud" : "Cursor Cloud"}
-            cloudFileAttachmentsDelivered={devinCloudSessionActive}
             cursorCloudPanelAvailable={cursorCloudPanelAvailable}
             onToggleCursorCloudPanel={() => openCloudAgentsPanel("cursor")}
             devinCloudPanelAvailable={devinCloudPanelAvailable}

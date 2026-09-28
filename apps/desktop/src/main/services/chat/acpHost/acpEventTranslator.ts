@@ -16,7 +16,7 @@
  * session and feed every update for that session through it in arrival order.
  */
 
-import { stripDevinCloudBranchPin } from "../../../../shared/cloudLanes";
+import { stripDevinCloudBranchPin } from "../../../../shared/devinCloud";
 import type { AgentChatEvent, AgentChatPlanStep, ChatSourceRef } from "../../../../shared/types";
 import { boundChatSourceRefs } from "../../../../shared/chatSources";
 import { acpResourceLinkSourceRef, acpToolSourceRefs } from "../chatSourceAdapters";

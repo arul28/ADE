@@ -1559,16 +1559,6 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
   const apiKeys = asStringMap(value.apiKeys);
   if (apiKeys && Object.keys(apiKeys).length) out.apiKeys = apiKeys;
 
-  const devinCloudOrgId = asString(value.devinCloudOrgId)?.trim();
-  if (devinCloudOrgId) out.devinCloudOrgId = devinCloudOrgId;
-  // Explicit null is a reset — keep it so the merge doesn't resurrect the
-  // shared org value the user just cleared.
-  else if (value.devinCloudOrgId === null) out.devinCloudOrgId = null;
-
-  const devinCloudAsUserId = asString(value.devinCloudAsUserId)?.trim();
-  if (devinCloudAsUserId) out.devinCloudAsUserId = devinCloudAsUserId;
-  else if (value.devinCloudAsUserId === null) out.devinCloudAsUserId = null;
-
   const localProviders = coerceAiLocalProviders(value.localProviders);
   if (localProviders) out.localProviders = localProviders;
 
@@ -1923,13 +1913,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.apiKeys ?? {}),
     ...(localAi?.apiKeys ?? {})
   };
-  // Explicit-null clears a configured org id; absent means keep.
-  const devinCloudOrgId = localAi?.devinCloudOrgId !== undefined
-    ? localAi.devinCloudOrgId
-    : sharedAi?.devinCloudOrgId;
-  const devinCloudAsUserId = localAi?.devinCloudAsUserId !== undefined
-    ? localAi.devinCloudAsUserId
-    : sharedAi?.devinCloudAsUserId;
   // Replace semantics (not union): the UI writes the full authoritative list,
   // and this merge also runs on the ai.updateConfig write-patch path — a union
   // would make removals impossible to persist. Absent = keep, [] = clear.
@@ -1963,8 +1946,6 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
     ...(Object.keys(featureReasoningOverrides).length ? { featureReasoningOverrides } : {}),
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
-    ...(devinCloudOrgId ? { devinCloudOrgId } : {}),
-    ...(devinCloudAsUserId ? { devinCloudAsUserId } : {}),
     ...(customProviders.length ? { customProviders } : {}),
     ...(customModelSlugs.length ? { customModelSlugs } : {}),
     ...(disabledProviders.length ? { disabledProviders } : {}),

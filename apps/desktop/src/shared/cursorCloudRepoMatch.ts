@@ -75,3 +75,9 @@ export function gitRemoteRepoSlug(url: string | null | undefined): string {
   const parts = s.split("/").filter(Boolean);
   return parts.length >= 2 ? parts.join("/") : "";
 }
+
+/** The PR number in a GitHub pull-request URL (`…/pull/123`), if any. */
+export function pullRequestNumber(url: string | null | undefined): number | null {
+  const match = url ? /\/pull\/(\d+)/.exec(url) : null;
+  return match ? Number(match[1]) : null;
+}

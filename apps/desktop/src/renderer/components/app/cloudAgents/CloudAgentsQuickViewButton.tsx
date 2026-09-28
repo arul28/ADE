@@ -1,18 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-import type { AiSettingsStatus } from "../../../shared/types";
-import { DevinMark } from "../shared/ProviderLogos";
-import { useAppStore } from "../../state/appStore";
+import type { AiSettingsStatus, CloudAgentProvider } from "../../../../shared/types";
+import { useAppStore } from "../../../state/appStore";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
-} from "../../lib/workSidebarBrowserResize";
-import { CloudAgentsPanel } from "./cloudAgents/CloudAgentsPanel";
-import { subscribeOpenCloudAgentsPanel } from "../../lib/cloudAgentsEvents";
+} from "../../../lib/workSidebarBrowserResize";
+import { subscribeOpenCloudAgentsPanel } from "../../../lib/cloudAgentsEvents";
+import { cn } from "../../ui/cn";
+import { CloudAgentsPanel } from "./CloudAgentsPanel";
+import { CLOUD_PROVIDER_BRANDS, type CloudProviderBrand } from "./cloudAgentsModel";
 
-// Keep the entry point on the same visibility cadence as Linear and Cursor.
-// Both integrations are connection-gated and should appear/disappear together
+// Keep the entry point on the same visibility cadence as Linear. The cloud
+// integrations are connection-gated and should appear/disappear together
 // while a provider key is being verified or a remote runtime reconnects.
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
@@ -29,28 +30,31 @@ type VisibilityCacheEntry = {
   inFlight: Promise<boolean> | null;
 };
 
-const visibilityCacheByProject = new Map<string, VisibilityCacheEntry>();
+/** Keyed by provider and project binding. */
+const visibilityCache = new Map<string, VisibilityCacheEntry>();
 
 /**
- * The fleet entry point only exists while the Devin CLI is signed in. Reads
- * the provider status through the cached reader so opening Work never pays an
- * extra auth probe in its startup window.
+ * The entry point only exists while the provider is connected. Reads the
+ * provider status through the cached reader so opening Work never pays an
+ * extra `ai.getStatus` in its startup window.
  */
-function readDevinVisibilityCached(
+function readVisibilityCached(
   args: {
+    brand: CloudProviderBrand;
     cacheKey: string | null | undefined;
     reader: (() => Promise<AiSettingsStatus>) | undefined;
     force?: boolean;
   },
 ): Promise<boolean> {
-  const { cacheKey, reader, force = false } = args;
+  const { brand, cacheKey, reader, force = false } = args;
   if (!cacheKey || !reader) return Promise.resolve(false);
+  const key = `${brand.provider}\u0000${cacheKey}`;
   const now = Date.now();
-  const existing = visibilityCacheByProject.get(cacheKey);
+  const existing = visibilityCache.get(key);
   const entry = existing && existing.reader === reader
     ? existing
     : { reader, value: false, checkedAtMs: 0, inFlight: null };
-  visibilityCacheByProject.set(cacheKey, entry);
+  visibilityCache.set(key, entry);
   if (entry.inFlight) return entry.inFlight;
   const ttl = entry.value ? VISIBILITY_CONNECTED_CACHE_TTL_MS : VISIBILITY_DISCONNECTED_CACHE_TTL_MS;
   if (!force && now - entry.checkedAtMs < ttl) return Promise.resolve(entry.value);
@@ -58,9 +62,7 @@ function readDevinVisibilityCached(
   entry.inFlight = Promise.resolve()
     .then(() => reader())
     .then((status) => {
-      // The panel rides the Devin CLI's own login (`devin acp --cloud`), so a
-      // signed-in CLI is all it needs.
-      const nextValue = status.providerConnections?.devin?.authAvailable === true;
+      const nextValue = brand.isConnected(status);
       entry.value = nextValue;
       entry.checkedAtMs = Date.now();
       return nextValue;
@@ -76,42 +78,45 @@ function readDevinVisibilityCached(
   return entry.inFlight;
 }
 
-export function DevinCloudQuickViewButton({
+/** The top-bar entry point to one provider's cloud agents panel. */
+export function CloudAgentsQuickViewButton({
+  provider,
   variant = "icon",
   onMenuActivate,
 }: {
+  provider: CloudAgentProvider;
   variant?: "icon" | "menu-row";
   onMenuActivate?: () => void;
-} = {}) {
+}) {
+  const brand = CLOUD_PROVIDER_BRANDS[provider];
   const project = useAppStore((s) => s.project);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
   // Remote hosts can expose the same project root path. The binding key is the
   // host identity, so a disconnected result from one machine must never hide a
-  // connected Devin Cloud entry on another machine.
+  // connected entry on another machine.
   const activeProjectVisibilityKey = projectBinding?.key ?? activeProjectRoot;
   const projectName = project?.displayName ?? null;
 
   const [visible, setVisible] = useState(false);
   const [open, setOpen] = useState(false);
+  const [unreadFinished, setUnreadFinished] = useState(0);
   const openRef = useRef(open);
   openRef.current = open;
 
-  const readDevinAuthStatus = useCallback(
-    () => window.ade.ai.getStatus(),
-    [],
-  );
+  const readStatus = useCallback(() => window.ade.ai.getStatus(), []);
 
   const loadVisibility = useCallback(
-    (force = false) => readDevinVisibilityCached({
+    (force = false) => readVisibilityCached({
+      brand,
       cacheKey: activeProjectVisibilityKey,
       reader: typeof window !== "undefined" && typeof window.ade?.ai?.getStatus === "function"
-        ? readDevinAuthStatus
+        ? readStatus
         : undefined,
       force,
     }),
-    [activeProjectVisibilityKey, readDevinAuthStatus],
+    [activeProjectVisibilityKey, brand, readStatus],
   );
 
   const shouldAutoCheckVisibility = Boolean(activeProjectRoot);
@@ -123,6 +128,7 @@ export function DevinCloudQuickViewButton({
   useEffect(() => {
     setVisible(false);
     setOpen(false);
+    setUnreadFinished(0);
     if (!shouldAutoCheckVisibility) return undefined;
     let cancelled = false;
     const timer = window.setTimeout(() => {
@@ -141,9 +147,9 @@ export function DevinCloudQuickViewButton({
     let cancelled = false;
     let timer: number | null = null;
     // Queue the same delayed re-check on bridge-ready rather than firing an
-    // immediate auth probe — this must never land in the Work startup IPC
-    // window. The timer is cancelled with the effect so a project switch
-    // cannot let a stale probe resolve.
+    // immediate forced `ai.getStatus` — this must never land in the Work
+    // startup IPC window. The timer is cancelled with the effect so a project
+    // switch cannot let a stale probe resolve.
     const queue = () => {
       if (timer != null) return;
       timer = window.setTimeout(() => {
@@ -195,20 +201,33 @@ export function DevinCloudQuickViewButton({
     };
   }, [activeProjectVisibilityKey, activeProjectRoot, loadVisibility, shouldAutoCheckVisibility, visibilityRetryIntervalMs, visible]);
 
+  // Push-driven finish badge where the provider has one. No polling: the
+  // event lights the pill while the panel is closed.
+  useEffect(() => {
+    if (!visible || !brand.subscribeFinished) return undefined;
+    const unsubscribe = brand.subscribeFinished(() => {
+      if (openRef.current) return;
+      setUnreadFinished((current) => Math.min(current + 1, 99));
+    });
+    return unsubscribe ?? undefined;
+  }, [brand, visible]);
+
+  useEffect(() => {
+    if (open) setUnreadFinished(0);
+  }, [open]);
+
   useEffect(() => {
     if (!visible) return undefined;
-    return subscribeOpenCloudAgentsPanel("devin", () => setOpen(true));
-  }, [visible]);
-
-  const occludesNativeBrowser = open;
+    return subscribeOpenCloudAgentsPanel(provider, () => setOpen(true));
+  }, [provider, visible]);
 
   useEffect(() => {
-    if (!occludesNativeBrowser || typeof window === "undefined") return undefined;
+    if (!open || typeof window === "undefined") return undefined;
     window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT));
     return () => {
       window.dispatchEvent(new Event(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT));
     };
-  }, [occludesNativeBrowser]);
+  }, [open]);
 
   if (!visible) return null;
 
@@ -217,36 +236,40 @@ export function DevinCloudQuickViewButton({
     onMenuActivate?.();
   };
 
-  // The glyph sits inside a 24px viewBox with padding, so it needs a couple
-  // more px than Cursor's mark to read the same size in the bar.
-  const iconSize = variant === "menu-row" ? 13 : 20;
-  const icon = <DevinMark size={iconSize} className={variant === "icon" ? "text-fg/80" : undefined} />;
+  const mark = variant === "menu-row" ? brand.menuMark : brand.barMark;
+  const MarkIcon = mark.Icon;
 
   return (
     <>
       <button
         type="button"
         role={variant === "menu-row" ? "menuitem" : undefined}
-        aria-label="Devin Cloud fleet"
+        aria-label={`${brand.name} fleet`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title="Devin Cloud sessions"
-        data-devin-cloud-button="true"
+        title={brand.quickViewTitle}
+        data-cloud-agents-button={provider}
         data-state={open ? "open" : undefined}
-        className={variant === "menu-row"
-          ? HEADER_STATUS_MENU_ROW_CLASS
-          : "ade-shell-control relative inline-flex h-[20px] w-[20px] items-center justify-center transition-[background-color,color,border-color,box-shadow] duration-150"}
-        style={{
-          WebkitAppRegion: "no-drag",
-        } as React.CSSProperties}
+        className={cn(
+          variant === "menu-row"
+            ? HEADER_STATUS_MENU_ROW_CLASS
+            : "ade-shell-control relative inline-flex h-[20px] w-[20px] items-center justify-center transition-[background-color,color,border-color,box-shadow] duration-150",
+          open && "text-accent",
+        )}
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
         onClick={handleToggle}
       >
-        {icon}
-        {variant !== "icon" ? <span className="ade-tab-label min-w-0 flex-1 truncate">Devin Cloud</span> : null}
+        <MarkIcon size={mark.size} className={variant === "icon" ? brand.barMark.className : undefined} />
+        {variant !== "icon" ? <span className="ade-tab-label min-w-0 flex-1 truncate">{brand.name}</span> : null}
+        {unreadFinished > 0 ? (
+          <span className="absolute -right-1 -top-1 grid h-[13px] min-w-[13px] place-items-center rounded-full border border-black/30 bg-accent px-[3px] font-mono text-[8px] font-bold leading-none text-accent-fg">
+            {unreadFinished > 9 ? "9+" : unreadFinished}
+          </span>
+        ) : null}
       </button>
       {open ? createPortal(
         <CloudAgentsPanel
-          provider="devin"
+          provider={provider}
           projectName={projectName}
           onClose={() => setOpen(false)}
         />,

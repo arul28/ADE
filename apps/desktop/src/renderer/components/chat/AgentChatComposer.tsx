@@ -38,6 +38,7 @@ import {
   parseAgentChatStopMode,
   stopModeClearsQueue,
 } from "../../../shared/chatStopModes";
+import { CLOUD_LANE_LABELS, type CloudLaneProvider } from "../../../shared/cloudLanes";
 import {
   buildChatContextAttachmentPrompt,
   chatContextAttachmentKey,
@@ -191,9 +192,39 @@ export const CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE =
   "Cursor's model list has not loaded yet. Open the model picker to load it, then try again.";
 export const CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE = "Add a message or issue context";
 
-export type CursorCloudSendBlock = {
+export type CloudSendBlock = {
   reason: string;
   notify: boolean;
+};
+
+/**
+ * The cloud run the composer's next send can target (Cursor Cloud or Devin
+ * Cloud). Null when no cloud target applies.
+ * - `canLaunch`: this chat can still start a cloud run. Only true for fresh
+ *   chats with no events and no existing cloud agent — once a chat has turns,
+ *   the cloud toggle goes disabled rather than disappearing, so the affordance
+ *   does not move around under the cursor.
+ * - `modelReady`: the draft's model is one the cloud can run. Read only while
+ *   cloud mode is active. It is separate from `canLaunch` on purpose: cloud
+ *   mode must stay on with an ineligible model so the send is BLOCKED with a
+ *   reason, never silently rerouted to the local runtime. Folding it into
+ *   `canLaunch` would also drop cloud mode before the pane's auto-switch could
+ *   move the draft onto an eligible model.
+ * - `hasEligibleModels`: this machine reports at least one model the cloud can
+ *   run. It only chooses which blocked message the user reads — the send is
+ *   refused either way.
+ * - `active`: cloud mode — the next send goes to the hosted cloud runtime
+ *   instead of the local runtime. Set by picking a cloud row in the launch
+ *   shelf's machine picker.
+ * The provider names the send button ("Send to Devin Cloud") and decides
+ * whether file attachments ride a launch (Devin uploads them; Cursor does not).
+ */
+export type ComposerCloudLaunch = {
+  provider: CloudLaneProvider;
+  canLaunch: boolean;
+  modelReady: boolean;
+  hasEligibleModels: boolean;
+  active: boolean;
 };
 
 /**
@@ -201,11 +232,11 @@ export type CursorCloudSendBlock = {
  * three cannot drift. `notify` is true when Enter should surface the reason;
  * empty content only disables the button.
  */
-export function cursorCloudSendBlock(input: {
+export function resolveCloudSendBlock(input: {
   hasEligibleModels: boolean;
   modelReady: boolean;
   hasContent: boolean;
-}): CursorCloudSendBlock | null {
+}): CloudSendBlock | null {
   if (!input.hasEligibleModels) {
     return { reason: CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE, notify: true };
   }
@@ -1758,19 +1789,12 @@ export function AgentChatComposer({
   showIosSimulatorToggle = false,
   iosSimulatorOpen = false,
   onToggleIosSimulator,
-  cursorCloudCanLaunch = false,
-  cursorCloudModelReady = false,
-  cursorCloudHasEligibleModels = true,
-  cursorCloudModeActive = false,
+  cloudLaunch = null,
   cloudSessionLinked = false,
   onSubmitToCloud,
-  cloudTargetLabel = "Cursor Cloud",
-  cloudFileAttachmentsDelivered = false,
   cursorCloudPanelAvailable = false,
-  cursorCloudPaneOpen = false,
   onToggleCursorCloudPanel,
   devinCloudPanelAvailable = false,
-  devinCloudPaneOpen = false,
   onToggleDevinCloudPanel,
   devinCloudHandoffAvailable = false,
   onHandoffToDevinCloud,
@@ -2008,58 +2032,22 @@ export function AgentChatComposer({
   showIosSimulatorToggle?: boolean;
   iosSimulatorOpen?: boolean;
   onToggleIosSimulator?: () => void;
-  /**
-   * Whether this chat can still start a cloud run. Only true for fresh chats with no events and
-   * no existing cloud agent — once a chat has turns, the cloud toggle goes disabled rather than
-   * disappearing, so the affordance does not move around under the cursor.
-   */
-  cursorCloudCanLaunch?: boolean;
+  /** The cloud run the next send can target; see `ComposerCloudLaunch`. */
+  cloudLaunch?: ComposerCloudLaunch | null;
   /**
    * Whether this chat is already bound to a cloud session (its agent is a
    * cloud session id, not the launchable-draft state). Linked replies ride
-   * the ordinary submit path — they are not launches — so `cursorCloudCanLaunch`
+   * the ordinary submit path — they are not launches — so `cloudLaunch.canLaunch`
    * stays false; this prop exists only so send gating does not fall back to
    * the local-model readiness check, which a cloud-bound chat never needs.
    */
   cloudSessionLinked?: boolean;
-  /**
-   * Whether the draft's model is one Cursor Cloud can run. Read only while cloud mode is active.
-   * It is a separate prop from `cursorCloudCanLaunch` on purpose: cloud mode must stay on with an
-   * ineligible model so the send is BLOCKED with a reason, never silently rerouted to the local
-   * runtime. Folding it into `cursorCloudCanLaunch` would also drop cloud mode before the pane's
-   * auto-switch could move the draft onto an eligible model.
-   */
-  cursorCloudModelReady?: boolean;
-  /**
-   * Whether this machine reports at least one model Cursor Cloud can run. It only
-   * chooses which blocked message the user reads — the send is refused either way.
-   * Defaults to true so a caller that never learned the count keeps the
-   * "choose a model" wording instead of claiming the catalog is missing.
-   */
-  cursorCloudHasEligibleModels?: boolean;
-  /**
-   * Cloud mode: the next send goes to a hosted cloud runtime instead of the local runtime.
-   * The composer sets it by picking a cloud row in the launch shelf's machine picker. The same
-   * overflow menu exposes the cloud sessions panel.
-   */
-  cursorCloudModeActive?: boolean;
   onSubmitToCloud?: (promptText: string) => Promise<boolean> | boolean;
-  /**
-   * Display name of the cloud runtime the next send targets ("Cursor Cloud", "Devin Cloud").
-   * The composer uses it for the send button's label and tooltip text.
-   */
-  cloudTargetLabel?: string;
-  /** True when the cloud provider behind this composer accepts file
-   *  attachments with a send (Devin uploads them; Cursor does not). Lets
-   *  attachment-only drafts enable Send only for providers that deliver them. */
-  cloudFileAttachmentsDelivered?: boolean;
   /** Whether the Cursor Cloud all-agents panel can be opened for this lane. */
   cursorCloudPanelAvailable?: boolean;
-  cursorCloudPaneOpen?: boolean;
   onToggleCursorCloudPanel?: () => void;
   /** Whether the Devin Cloud sessions panel can be opened for this lane. */
   devinCloudPanelAvailable?: boolean;
-  devinCloudPaneOpen?: boolean;
   onToggleDevinCloudPanel?: () => void;
   devinCloudHandoffAvailable?: boolean;
   onHandoffToDevinCloud?: () => void;
@@ -2072,7 +2060,15 @@ export function AgentChatComposer({
   appControlOpen?: boolean;
   onToggleAppControl?: () => void;
 }) {
-  const cursorCloudSessionActive = cursorCloudModeActive || cursorRuntime === "cloud";
+  const cloudCanLaunch = cloudLaunch?.canLaunch ?? false;
+  const cloudModelReady = cloudLaunch?.modelReady ?? false;
+  const cloudHasEligibleModels = cloudLaunch?.hasEligibleModels ?? true;
+  const cloudModeActive = cloudLaunch?.active ?? false;
+  const cloudTargetLabel = cloudLaunch ? CLOUD_LANE_LABELS[cloudLaunch.provider] : "the cloud";
+  const cloudFileAttachmentsDelivered = cloudLaunch?.provider === "devin";
+  // Cursor-only controls (the service-tier picker) key off this, so a Devin
+  // cloud chat must not turn it on.
+  const cursorCloudSessionActive = (cloudModeActive && cloudLaunch?.provider === "cursor") || cursorRuntime === "cloud";
   const promptStashRef = useRef<ComposerPromptStashHandle>(null);
   const promptStashButtonEnabled = useRootAppStore((state) => state.promptStashButtonEnabled);
   const [attachmentPickerOpen, setAttachmentPickerOpen] = useState(false);
@@ -5242,17 +5238,17 @@ export function AgentChatComposer({
     }
     // Cloud submit only fires when the chat is fresh enough to launch a new cloud run. Once any
     // turns have been exchanged the cloud target is unavailable, so this branch is gated on
-    // `cursorCloudCanLaunch` to defend against a stale `cursorCloudModeActive=true`.
+    // `cloudCanLaunch` to defend against a stale `cloudModeActive=true`.
     if (
-      cursorCloudCanLaunch
-      && cursorCloudModeActive
+      cloudCanLaunch
+      && cloudModeActive
       && onSubmitToCloud
     ) {
       if (busy || backgroundLaunchBusy || parallelLaunchBusy || composerInputLocked) return;
       const trimmed = draft.trim();
-      const block = cursorCloudSendBlock({
-        hasEligibleModels: cursorCloudHasEligibleModels,
-        modelReady: cursorCloudModelReady,
+      const block = resolveCloudSendBlock({
+        hasEligibleModels: cloudHasEligibleModels,
+        modelReady: cloudModelReady,
         // The launch prompt carries typed text, issue context, and delivered
         // file attachments — visual-context items are not part of it, so a
         // visual-only draft must stay blocked rather than launch with "".
@@ -5275,13 +5271,13 @@ export function AgentChatComposer({
     }
     // A linked cloud reply rides this same submit path but never touches the
     // local model — don't let local-model readiness veto it.
-    const linkedCloudReply = cloudSessionLinked && cursorCloudModeActive;
+    const linkedCloudReply = cloudSessionLinked && cloudModeActive;
     if (busy || (!singleModelReady && !linkedCloudReply) || !activeTurnHasContent) {
       if (!busy && !singleModelReady && !linkedCloudReply) onSubmitBlocked?.(singleModelBlockedMessage ?? "Select a model first");
       return;
     }
     onSubmit();
-  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cursorCloudCanLaunch, cursorCloudHasEligibleModels, cursorCloudModeActive, cursorCloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -5356,16 +5352,16 @@ export function AgentChatComposer({
     && parallelModelSlots.length >= 2
     && (draft.trim().length > 0 || attachments.length > 0 || contextAttachmentCount > 0);
   const singleReady = !parallelChatMode && singleModelReady && activeTurnHasContent;
-  const cloudModeActiveForSend = (cursorCloudCanLaunch || cloudSessionLinked) && cursorCloudModeActive && !parallelChatMode;
+  const cloudModeActiveForSend = (cloudCanLaunch || cloudSessionLinked) && cloudModeActive && !parallelChatMode;
   const cloudSendBlock = cloudModeActiveForSend
-    ? cursorCloudSendBlock({
-      hasEligibleModels: cursorCloudHasEligibleModels,
-      modelReady: cursorCloudModelReady,
+    ? resolveCloudSendBlock({
+      hasEligibleModels: cloudHasEligibleModels,
+      modelReady: cloudModelReady,
       // Match the predicate of the path the send will actually take: a fresh
       // launch delivers text + issue context + file attachments, while a
       // linked reply rides submit, which accepts composer context but not
       // file-attachment-only payloads.
-      hasContent: cursorCloudCanLaunch
+      hasContent: cloudCanLaunch
         ? draft.trim().length > 0 || contextAttachmentCount > 0
           || (cloudFileAttachmentsDelivered && attachments.length > 0)
         : hasComposerContextContent,

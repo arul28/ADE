@@ -48,6 +48,7 @@ import {
   subscribeWorkChatSessionCreated,
 } from "../../lib/chatSessionEvents";
 import { laneCloudProvider } from "../../../shared/cloudLanes";
+import { normalizeDevinCloudSessionId } from "../../../shared/devinCloud";
 import {
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
@@ -2248,7 +2249,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             ...args,
             title: args.title ?? "Devin VM",
             command: "devin",
-            args: ["ssh", latest.devinSessionId, "-o", "StrictHostKeyChecking=accept-new"],
+            args: ["ssh", normalizeDevinCloudSessionId(latest.devinSessionId), "-o", "StrictHostKeyChecking=accept-new"],
           };
         }
       }

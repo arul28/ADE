@@ -8,12 +8,22 @@
  * token. A list is one short-lived relay process: spawn, initialize, list,
  * exit — about a second — so nothing stays running while no panel is open.
  */
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Logger } from "../logging/logger";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import {
+  AcpConnectionClosedError,
+  AcpRpcError,
+  createAcpConnection,
+  initializeAcpConnection,
+  type AcpConnection,
+} from "./acpHost/acpConnection";
+import { devinCloudAcpSessionId, devinCloudDialect, devinCloudBareSessionId } from "./acpHost/acpDialects/devinCloud";
 import type { CloudAgentPullRequest, CloudAgentStatus } from "../../../shared/types/cloudAgents";
+import { pullRequestNumber } from "../../../shared/cursorCloudRepoMatch";
 
 export type DevinCloudDirectoryEntry = {
-  /** Bare id (`<hex>`), the form app.devin.ai and the REST API use. */
+  /** Bare id (`<hex>`), the form app.devin.ai uses. */
   id: string;
   title: string;
   status: CloudAgentStatus;
@@ -25,16 +35,12 @@ export type DevinCloudDirectoryEntry = {
   model: string | null;
   platform: string | null;
   origin: string | null;
-  tags: string[];
   excerpt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
-  archived: boolean;
 };
 
-type RpcMessage = { id?: number; method?: string; result?: unknown; error?: { message?: string } };
-
-const LIST_TIMEOUT_MS = 30_000;
+const RELAY_TIMEOUT_MS = 30_000;
 const CACHE_TTL_MS = 4_000;
 
 const ORIGIN_LABELS: Record<string, string> = {
@@ -58,11 +64,7 @@ function num(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-function prNumber(url: string): number | null {
-  const match = /\/pull\/(\d+)/.exec(url);
-  return match ? Number(match[1]) : null;
-}
-
+/** The number in a GitHub pull request URL (`…/pull/123`). */
 function readPullRequests(value: unknown): CloudAgentPullRequest[] {
   if (!Array.isArray(value)) return [];
   const out: CloudAgentPullRequest[] = [];
@@ -74,7 +76,7 @@ function readPullRequests(value: unknown): CloudAgentPullRequest[] {
     const state = text(record.state)?.toLowerCase() ?? null;
     out.push({
       url,
-      number: prNumber(url),
+      number: pullRequestNumber(url),
       state: state === "open" || state === "merged" || state === "closed" || state === "draft" ? state : null,
       title: text(record.title),
       headRef: text(record.headRef),
@@ -124,7 +126,7 @@ function readEntry(raw: unknown): DevinCloudDirectoryEntry | null {
   const origin = text(meta["cognition.ai/sessionOrigin"]);
   const excerpt = text(meta["cognition.ai/messageExcerpts"]);
   return {
-    id: acpId.replace(/^devin-/, ""),
+    id: devinCloudBareSessionId(acpId),
     title: text(record.title) ?? excerpt?.slice(0, 80) ?? "Devin session",
     status,
     statusText,
@@ -135,112 +137,80 @@ function readEntry(raw: unknown): DevinCloudDirectoryEntry | null {
     model: text(meta["cognition.ai/devinVersionOverride"]),
     platform: text(meta["cognition.ai/platform"]),
     origin: origin ? ORIGIN_LABELS[origin] ?? origin : null,
-    tags: Array.isArray(meta["cognition.ai/sessionTags"])
-      ? (meta["cognition.ai/sessionTags"] as unknown[]).filter((tag): tag is string => typeof tag === "string")
-      : [],
     excerpt: excerpt ? excerpt.slice(0, 240) : null,
     createdAt: text(meta["cognition.ai/createdAt"]),
     updatedAt: text(record.updatedAt) ?? text(meta["cognition.ai/sortUpdatedAt"]),
-    archived: meta["cognition.ai/isArchived"] === true,
   };
 }
 
-type RelayClient = {
-  request<T>(method: string, params: unknown): Promise<T>;
-  notify(method: string, params: unknown): void;
-};
+type RelayClient = Pick<AcpConnection, "request" | "notify">;
+
+/** The relay's own words for an ACP error, without the host's prefix. */
+function relayErrorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/^ACP \S+ failed \(-?\d+\): /, "");
+}
 
 /**
  * One scripted relay session: spawn `devin acp --cloud`, initialize, run
- * `script`, exit. Session updates the relay streams meanwhile (a load's
- * replay) are ignored. Rejects on timeout, a JSON-RPC error, or the process
- * dying first.
+ * `script`, exit. It rides the ACP host's connection, so framing, the
+ * handshake and the process-tree kill are the chat's own. Session updates the
+ * relay streams meanwhile (a load's replay) are ignored. Rejects on timeout, a
+ * JSON-RPC error, or the process dying first.
  */
 async function withRelay<T>(
   args: { binaryPath: string; env: NodeJS.ProcessEnv; cwd: string },
   script: (client: RelayClient) => Promise<T>,
 ): Promise<T> {
-  const child = spawn(args.binaryPath, ["acp", "--cloud"], {
-    cwd: args.cwd,
-    env: args.env,
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
-  let nextId = 0;
-  let buffer = "";
+  const spawnPlan = devinCloudDialect.buildSpawnPlan({ binaryPath: args.binaryPath, cwd: args.cwd, baseEnv: args.env });
   let stderrTail = "";
-  let closed: Error | null = null;
-  const pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
-  const failAll = (error: Error) => {
-    closed = closed ?? error;
-    for (const entry of pending.values()) entry.reject(error);
-    pending.clear();
-  };
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    buffer += chunk;
-    let newline = buffer.indexOf("\n");
-    while (newline >= 0) {
-      const line = buffer.slice(0, newline).trim();
-      buffer = buffer.slice(newline + 1);
-      newline = buffer.indexOf("\n");
-      if (!line) continue;
-      let message: RpcMessage;
-      try {
-        message = JSON.parse(line) as RpcMessage;
-      } catch {
-        continue;
-      }
-      if (message.method || typeof message.id !== "number") continue;
-      const entry = pending.get(message.id);
-      if (!entry) continue;
-      pending.delete(message.id);
-      if (message.error) entry.reject(new Error(message.error.message || "Devin Cloud rejected the request."));
-      else entry.resolve(message.result);
-    }
-  });
-  child.stderr.setEncoding("utf8");
-  child.stderr.on("data", (chunk: string) => {
-    stderrTail = `${stderrTail}${chunk}`.slice(-2_000);
-  });
-  child.on("error", (error) => failAll(error));
-  child.on("exit", (code) => {
-    const hint = /not logged in|auth login|unauthori/i.test(stderrTail) ? " Run `devin auth login`." : "";
-    failAll(new Error(`Devin Cloud relay exited (${code ?? "signal"}).${hint}`));
-  });
-  const client: RelayClient = {
-    request: <R>(method: string, params: unknown) => new Promise<R>((resolve, reject) => {
-      if (closed) {
-        reject(closed);
-        return;
-      }
-      const id = ++nextId;
-      pending.set(id, { resolve: resolve as (value: unknown) => void, reject });
-      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
-    }),
-    notify: (method, params) => {
-      if (!closed) child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+  const connection = createAcpConnection({
+    dialect: devinCloudDialect,
+    spawnPlan,
+    // Spawned here rather than by the connection so stdin gets an error
+    // listener: a relay that dies mid-write raises EPIPE on the pipe, and an
+    // unheard stream error is an uncaught exception in the main process.
+    spawnOverride: (plan) => {
+      const invocation = resolveCliSpawnInvocation(plan.command, plan.args, plan.env);
+      const child = spawn(invocation.command, invocation.args, {
+        cwd: plan.cwd,
+        env: plan.env,
+        stdio: ["pipe", "pipe", "pipe"],
+        // A process group on POSIX so the tree kill reaches the relay's
+        // children; Windows uses `taskkill /T /F` instead.
+        detached: process.platform !== "win32",
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      }) as ChildProcessWithoutNullStreams;
+      child.stdin.on("error", (error) => connection.dispose(`relay stdin failed: ${error.message}`));
+      return child;
     },
-  };
+  });
+  connection.onExit((exit) => {
+    stderrTail = exit.stderrTail;
+  });
   let timer: NodeJS.Timeout | null = null;
   try {
     return await Promise.race([
       (async () => {
-        await client.request("initialize", {
-          protocolVersion: 1,
-          clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
-        });
-        return await script(client);
+        await initializeAcpConnection({ connection, dialect: devinCloudDialect, timeoutMs: RELAY_TIMEOUT_MS });
+        return await script(connection);
       })(),
       new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error("Devin Cloud did not answer in time.")), LIST_TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error("Devin Cloud did not answer in time.")), RELAY_TIMEOUT_MS);
       }),
     ]);
+  } catch (error) {
+    if (error instanceof AcpConnectionClosedError) {
+      const hint = /not logged in|auth login|unauthori/i.test(stderrTail) ? " Run `devin auth login`." : "";
+      throw new Error(`Devin Cloud relay exited.${hint}`);
+    }
+    if (error instanceof AcpRpcError) throw new Error(relayErrorText(error) || "Devin Cloud rejected the request.");
+    throw error;
   } finally {
     if (timer) clearTimeout(timer);
-    closed = closed ?? new Error("relay closed");
-    try { child.stdin.end(); } catch { /* already closed */ }
-    child.kill();
+    // Ends stdin, then SIGTERM to the tree with a SIGKILL after the grace.
+    connection.dispose("devin cloud directory done");
   }
 }
 
@@ -260,7 +230,7 @@ export function createDevinCloudDirectory(deps: {
 
   /** Join a session long enough to run `action` on it. */
   const withSession = async (id: string, action: (client: RelayClient, acpId: string) => Promise<void>) => {
-    const acpId = `devin-${id.trim().replace(/^devin-/, "")}`;
+    const acpId = devinCloudAcpSessionId(id);
     await relay(async (client) => {
       await client.request("session/load", { sessionId: acpId, cwd: deps.cwd, mcpServers: [] });
       await action(client, acpId);
@@ -308,7 +278,7 @@ export function createDevinCloudDirectory(deps: {
   };
 
   const find = async (id: string, options?: { force?: boolean }): Promise<DevinCloudDirectoryEntry | null> => {
-    const bare = id.trim().replace(/^devin-/, "");
+    const bare = devinCloudBareSessionId(id);
     const entries = await list(options);
     return entries.find((entry) => entry.id === bare) ?? null;
   };

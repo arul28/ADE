@@ -1,8 +1,9 @@
 /**
  * One contract for every cloud agent ADE can show: a Devin Cloud session or a
- * Cursor Cloud agent. The two providers keep their own panels and their own
- * wire clients; this is the shape both panels render, so the list, the row and
- * the actions read the same whichever cloud you are looking at.
+ * Cursor Cloud agent. The two providers keep their own wire clients and each
+ * gets its own copy of the one shared panel; this is the shape that panel
+ * renders, so the list, the row and the actions read the same whichever cloud
+ * you are looking at.
  */
 export type CloudAgentProvider = "devin" | "cursor";
 

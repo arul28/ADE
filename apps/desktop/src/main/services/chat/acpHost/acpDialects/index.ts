@@ -66,4 +66,4 @@ export {
   type QwenSkillDefaultsResult,
 } from "./qwenSkillDefaults";
 
-export { DEVIN_CLOUD_CONFIG_OPTION_IDS, devinCloudAcpSessionId, devinCloudRestSessionId } from "./devinCloud";
+export { DEVIN_CLOUD_CONFIG_OPTION_IDS, devinCloudAcpSessionId, devinCloudBareSessionId } from "./devinCloud";

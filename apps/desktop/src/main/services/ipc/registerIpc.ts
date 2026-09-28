@@ -704,23 +704,12 @@ import type {
   CursorCloudFleetResult,
   CursorCloudFleetEvent,
   CursorCloudPullIntoLaneResult,
-  DevinCloudAuthStatus,
-  DevinCloudCatalog,
-  DevinCloudCreateSessionForLaneRequest,
-  DevinCloudCreateSessionForLaneResult,
-  DevinCloudFleetResult,
   CloudAgentArchiveArgs,
   CloudAgentLaunchArgs,
   CloudAgentList,
   CloudAgentListArgs,
   CloudAgentOpenResult,
   CloudAgentRef,
-  DevinCloudFollowUpRequest,
-  DevinCloudOpenChatRequest,
-  DevinCloudOpenChatResult,
-  DevinCloudPullIntoLaneResult,
-  DevinCloudSetCredentialsRequest,
-  DevinCloudWatchMirrorRequest,
   CursorAgentUsage,
   CursorAgentUsageRequest,
   AgentToolsCacheSnapshot,
@@ -897,7 +886,6 @@ import type { createAutomationIngressService } from "../automations/automationIn
 import type { LinearIngressService, LinearIngressStatus } from "../automations/linearIngressService";
 import type { CursorCloudIngressService } from "../automations/cursorCloudIngressService";
 import type { CursorCloudFleetService } from "../chat/cursorCloudFleetService";
-import type { DevinCloudFleetService } from "../chat/devinCloudFleetService";
 import type { CloudAgentsService } from "../chat/cloudAgentsService";
 import type { createGithubPollingService } from "../automations/githubPollingService";
 import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionNames } from "../adeActions/registry";
@@ -1216,7 +1204,6 @@ export type AppContext = {
   linearIngressService?: LinearIngressService | null;
   cursorCloudIngressService?: CursorCloudIngressService | null;
   cursorCloudFleetService?: CursorCloudFleetService | null;
-  devinCloudFleetService?: DevinCloudFleetService | null;
   cloudAgentsService?: CloudAgentsService | null;
   githubPollingService?: ReturnType<typeof createGithubPollingService> | null;
   projectConfigService: ReturnType<typeof createProjectConfigService> | null;
@@ -5772,134 +5759,6 @@ export function registerIpc({
     requireAppContextServices(ctx, ["cloudAgentsService"] as const);
     return await ctx.cloudAgentsService.archive(arg);
   });
-
-  ipcMain.handle(
-    IPC.aiDevinCloudFleet,
-    async (_event, arg?: { force?: boolean; includeArchived?: boolean }): Promise<DevinCloudFleetResult> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["devinCloudFleetService"] as const);
-      return await ctx.devinCloudFleetService.getFleet(arg);
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudPullIntoLane,
-    async (_event, arg: { devinSessionId: string }): Promise<DevinCloudPullIntoLaneResult> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["devinCloudFleetService"] as const);
-      return await ctx.devinCloudFleetService.pullIntoLane(arg.devinSessionId);
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudOpenChat,
-    async (_event, arg: DevinCloudOpenChatRequest): Promise<DevinCloudOpenChatResult> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["agentChatService"] as const);
-      return await ctx.agentChatService.openDevinCloudChat({
-        devinSessionId: arg.devinSessionId,
-        laneId: arg.laneId,
-        ...(arg.sessionId ? { sessionId: arg.sessionId } : {}),
-        ...(arg.devinMode !== undefined ? { devinMode: arg.devinMode } : {}),
-      });
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudWatchMirror,
-    async (_event, arg: DevinCloudWatchMirrorRequest): Promise<void> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["agentChatService"] as const);
-      ctx.agentChatService.watchDevinCloudMirror({
-        sessionId: arg.sessionId,
-        watching: arg.watching,
-      });
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudFollowUp,
-    async (_event, arg: DevinCloudFollowUpRequest): Promise<void> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["agentChatService"] as const);
-      await ctx.agentChatService.devinCloudFollowUp(arg);
-      ctx.devinCloudFleetService?.invalidateCache();
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudCreateSession,
-    async (_event, arg: DevinCloudCreateSessionForLaneRequest): Promise<DevinCloudCreateSessionForLaneResult> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["agentChatService"] as const);
-      const result = await ctx.agentChatService.createDevinCloudSessionForLane(arg);
-      ctx.devinCloudFleetService?.invalidateCache();
-      return result;
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudTerminateSession,
-    async (_event, arg: { devinSessionId: string; archive?: boolean }): Promise<void> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-      await ctx.aiIntegrationService.terminateDevinCloudSession(arg);
-      ctx.devinCloudFleetService?.invalidateCache();
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudArchiveSession,
-    async (_event, arg: { devinSessionId: string }): Promise<void> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-      await ctx.aiIntegrationService.archiveDevinCloudSession(arg.devinSessionId);
-      ctx.devinCloudFleetService?.invalidateCache();
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudUnarchiveSession,
-    async (_event, arg: { devinSessionId: string }): Promise<void> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-      await ctx.aiIntegrationService.unarchiveDevinCloudSession(arg.devinSessionId);
-      ctx.devinCloudFleetService?.invalidateCache();
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudGetAuthStatus,
-    async (): Promise<DevinCloudAuthStatus> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-      return await ctx.aiIntegrationService.getDevinCloudAuthStatus();
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudSetCredentials,
-    async (_event, arg: DevinCloudSetCredentialsRequest): Promise<DevinCloudAuthStatus> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-      const status = await ctx.aiIntegrationService.setDevinCloudCredentials(arg);
-      ctx.devinCloudFleetService?.invalidateCache();
-      return status;
-    },
-  );
-
-  ipcMain.handle(
-    IPC.aiDevinCloudCatalog,
-    async (): Promise<DevinCloudCatalog> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["aiIntegrationService"] as const);
-      const [playbooks, knowledge] = await Promise.all([
-        ctx.aiIntegrationService.listDevinCloudPlaybooks(),
-        ctx.aiIntegrationService.listDevinCloudKnowledge(),
-      ]);
-      return { playbooks, knowledge };
-    },
-  );
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
     const params = {

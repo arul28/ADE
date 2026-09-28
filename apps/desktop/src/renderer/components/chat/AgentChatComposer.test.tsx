@@ -19,7 +19,7 @@ import {
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   CURSOR_CLOUD_SEND_EMPTY_CONTENT_MESSAGE,
   cursorBooleanConfigLabel,
-  cursorCloudSendBlock,
+  resolveCloudSendBlock,
   HEIC_CONVERSION_UNAVAILABLE_MESSAGE,
   nextCursorBooleanConfigValue,
 } from "./AgentChatComposer";
@@ -3944,19 +3944,19 @@ describe("AgentChatComposer Cursor Cloud send blocking", () => {
   });
 });
 
-describe("cursorCloudSendBlock", () => {
+describe("resolveCloudSendBlock", () => {
   it("names the unloaded catalog first, then the ineligible model, then empty content", () => {
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: false,
       modelReady: false,
       hasContent: false,
     })).toEqual({ reason: CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE, notify: true });
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: false,
       hasContent: true,
     })).toEqual({ reason: CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE, notify: true });
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: true,
       hasContent: false,
@@ -3964,7 +3964,7 @@ describe("cursorCloudSendBlock", () => {
   });
 
   it("lets a ready cloud send through", () => {
-    expect(cursorCloudSendBlock({
+    expect(resolveCloudSendBlock({
       hasEligibleModels: true,
       modelReady: true,
       hasContent: true,

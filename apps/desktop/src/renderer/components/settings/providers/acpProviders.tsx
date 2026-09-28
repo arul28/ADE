@@ -7,8 +7,8 @@
  * honest-degradation note Kimi needs — so it lives in a table rather than in
  * four near-identical descriptors.
  */
-import React, { useCallback, useEffect, useState } from "react";
-import { CheckCircle, FolderSimple, Info, Key, Terminal, Warning, Wrench, XCircle } from "@phosphor-icons/react";
+import React from "react";
+import { FolderSimple, Key, Terminal, Warning, Wrench } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../../../shared/modelRegistry";
@@ -337,147 +337,20 @@ function KimiBody() {
 }
 
 /**
- * Devin Cloud credentials: the API token that powers the fleet, mirrored
- * chats, and cloud sends — separate from the `devin auth login` session the
- * local CLI keeps. Any Devin account can mint one in its settings.
+ * Devin Cloud rides the same CLI login as local Devin (`devin acp --cloud`),
+ * so there is nothing extra to configure here — the page only says so and
+ * points at where cloud sessions live.
  */
 function DevinBody() {
-  const [auth, setAuth] = useState<Awaited<ReturnType<typeof window.ade.ai.devinCloudGetAuthStatus>> | null>(null);
-  const [keyInput, setKeyInput] = useState("");
-  const [orgInput, setOrgInput] = useState("");
-  const [asUserInput, setAsUserInput] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-    void window.ade.ai.devinCloudGetAuthStatus()
-      .then((status) => { if (alive) setAuth(status); })
-      .catch(() => undefined);
-    return () => { alive = false; };
-  }, []);
-
-  const save = useCallback(async () => {
-    const apiKey = keyInput.trim();
-    if (!apiKey || busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const status = await window.ade.ai.devinCloudSetCredentials({
-        apiKey,
-        orgId: orgInput.trim() || null,
-        asUserId: asUserInput.trim() || null,
-      });
-      setAuth(status);
-      if (status.configured) {
-        setKeyInput("");
-        setOrgInput("");
-        setAsUserInput("");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, [asUserInput, busy, keyInput, orgInput]);
-
-  const clear = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      setAuth(await window.ade.ai.devinCloudSetCredentials({ apiKey: "" }));
-      setKeyInput("");
-      setOrgInput("");
-      setAsUserInput("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy]);
-
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       <SubsectionTitle>Devin Cloud</SubsectionTitle>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-        Paste a token from app.devin.ai → Settings → API. A Personal Access
-        Token (<span style={{ fontFamily: MONO_FONT }}>cog_…</span>) acts as
-        you; a service-user key is for automation.
+        Devin Cloud uses your Devin CLI login
+        (<span style={{ fontFamily: MONO_FONT }}>devin auth login</span>) — no
+        API token needed. Cloud sessions appear in the Devin Cloud panel in the
+        top bar.
       </div>
-      {auth?.configured ? (
-        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.success, fontSize: 10, fontFamily: SANS_FONT }}>
-            <CheckCircle size={12} weight="fill" />
-            Connected{auth.orgName ? ` — ${auth.orgName}` : ""}
-          </span>
-          {auth.orgId ? (
-            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-              {auth.orgId}
-            </span>
-          ) : null}
-          {auth.asUserId ? (
-            <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-              as {auth.asUserId}
-            </span>
-          ) : null}
-          <button type="button" style={outlineButton({ height: 28 })} disabled={busy} onClick={() => void clear()}>
-            Remove
-          </button>
-        </div>
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
-            <input
-              aria-label="Devin API token"
-              value={keyInput}
-              onChange={(event) => setKeyInput(event.target.value)}
-              placeholder="cog_..."
-              type="password"
-              disabled={busy}
-              onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
-              style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-            />
-            <button type="button" style={outlineButton({ height: 28 })} disabled={busy || !keyInput.trim()} onClick={() => void save()}>
-              {busy ? "Saving…" : "Save"}
-            </button>
-          </div>
-          <input
-            aria-label="Devin org id (optional)"
-            value={orgInput}
-            onChange={(event) => setOrgInput(event.target.value)}
-            placeholder="org-... (optional — required on non-enterprise accounts)"
-            disabled={busy}
-            onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
-            style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-          />
-          <input
-            aria-label="Devin act-as user id (optional)"
-            value={asUserInput}
-            onChange={(event) => setAsUserInput(event.target.value)}
-            placeholder="user-... (optional — attribute sessions to a person)"
-            disabled={busy}
-            onKeyDown={(event) => { if (event.key === "Enter") void save(); }}
-            style={{ width: "100%", background: COLORS.cardBg, border: `1px solid ${COLORS.border}`, padding: "8px 10px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textPrimary, outline: "none" }}
-          />
-          <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim, lineHeight: 1.4 }}>
-            Org id: auto-discovered for PATs; paste it for service users.
-            Act-as user: only for service-user keys.
-          </div>
-        </div>
-      )}
-      {auth && !auth.configured && auth.error ? (
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.danger, fontSize: 10, fontFamily: SANS_FONT }}>
-          <XCircle size={12} weight="fill" />
-          {auth.error}
-        </div>
-      ) : null}
-      {error ? (
-        <div style={{ display: "inline-flex", alignItems: "center", gap: 4, color: COLORS.danger, fontSize: 10, fontFamily: SANS_FONT }}>
-          <Info size={12} weight="fill" />
-          {error}
-        </div>
-      ) : null}
     </div>
   );
 }
