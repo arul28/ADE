@@ -1,11 +1,12 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ProvidersSection } from "./ProvidersSection";
 import type { AgentChatEventEnvelope, AiSettingsStatus, CursorSdkAuthEvent, PiAuthStatusEvent } from "../../../shared/types";
+import { setUsageHeaderVisible, setUsageProviderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
@@ -263,6 +264,7 @@ describe("ProvidersSection", () => {
   let emitCursorAuthStatus: ((event: CursorSdkAuthEvent) => void) | null = null;
 
   beforeEach(() => {
+    setUsageHeaderVisible(true);
     emitChatEvent = null;
     emitOAuthStatus = null;
     emitPiAuthStatus = null;
@@ -357,7 +359,24 @@ describe("ProvidersSection", () => {
 
   afterEach(() => {
     cleanup();
+    setUsageHeaderVisible(true);
     globalThis.window.ade = originalAde;
+  });
+
+  it("restores every provider when usage is turned back on from provider settings", async () => {
+    const providers = ["claude", "codex", "cursor", "copilot", "grok", "opencode", "kimi"] as const;
+    providers.forEach((provider) => setUsageProviderVisible(provider, false));
+    const preferences = renderHook(() => useUsageHeaderPreferences());
+    renderProvidersSection();
+
+    const showUsage = await screen.findByRole("switch", { name: "Show usage in header" });
+    expect(showUsage.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(showUsage);
+
+    await waitFor(() => expect(showUsage.getAttribute("aria-checked")).toBe("true"));
+    expect(preferences.result.current.showInHeader).toBe(true);
+    expect(Object.values(preferences.result.current.providers).every(Boolean)).toBe(true);
+    preferences.unmount();
   });
 
   it("refreshes provider status after an auth-related chat failure", async () => {

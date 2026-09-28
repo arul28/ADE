@@ -28,6 +28,7 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { useUsageSnapshot } from "./useUsageSnapshot";
+import { useUsageHeaderPreferences } from "./usageHeaderPreferences";
 
 const PROVIDER_LABEL: Record<UsageProvider, string> = {
   claude: "Claude",
@@ -227,6 +228,7 @@ export function HeaderUsageControl({
     useState<AiProviderConnections | null | undefined>(undefined);
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const headerPreferences = useUsageHeaderPreferences();
 
   // The single subscription behind this surface. The band inside the popover
   // used to own a second one — its own ordering guard, binding generation and
@@ -316,11 +318,11 @@ export function HeaderUsageControl({
   }, [open]);
 
   const providersWithUsage = useMemo(
-    () => detectedProviders.map((provider) => ({
+    () => detectedProviders.filter((provider) => headerPreferences.providers[provider]).map((provider) => ({
       provider,
       usage: headerUsageFor(snapshot, provider),
     })),
-    [detectedProviders, snapshot],
+    [detectedProviders, headerPreferences.providers, snapshot],
   );
   const warning = useMemo(() => usageWarning(snapshot), [snapshot]);
   const hasErrors = warning.warn;

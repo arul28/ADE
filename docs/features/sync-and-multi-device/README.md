@@ -1408,6 +1408,11 @@ Desktop connection UI:
   top-bar Connections surface with Machines, Phone, and Web tabs. The
   panel owns its header close control and passes the current in-app route to the
   Account page so signed-out users can return to the exact surface they left.
+  The desktop Connections control ends with the same account avatar shown in
+  Settings; its active-session action is **Account Settings**. In the top bar,
+  Connections follows Activity, while Cursor, Linear, and Usage appear before
+  Activity; narrow windows collect those controls in the Connections and usage
+  menu.
 - `apps/desktop/src/renderer/components/remoteTargets/RemoteTargetList.tsx` and
   `remoteMachineModel.ts` — the Machines list's one **This computer** card, and
   the only place publication state is worded. `describeThisComputerCard` renders

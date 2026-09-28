@@ -59,6 +59,7 @@ import type {
   ProjectIcon,
   OpenProjectBinding,
   RecentProjectSummary,
+  GitHubStatus,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
   RemoteRuntimeTarget,
@@ -78,6 +79,7 @@ import {
 } from "../../lib/connectionsPanel";
 import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
+import { useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
 import { ShellNavTab } from "./ShellNavTab";
@@ -87,6 +89,8 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { AccountAvatar } from "../account/AccountAvatar";
+import { useAccountStatus } from "../../lib/account";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -228,6 +232,38 @@ function connectedWebClients(snapshot: SyncRoleSnapshot | null) {
   return snapshot.connectedPeers.filter((peer) => peer.deviceType === "browser");
 }
 
+function HeaderAccountAvatar() {
+  const { status } = useAccountStatus();
+  const [githubStatus, setGithubStatus] = useState<GitHubStatus | null>(null);
+
+  useEffect(() => {
+    if (!status.signedIn || status.imageUrl) {
+      setGithubStatus(null);
+      return;
+    }
+    let cancelled = false;
+    const apply = (next: GitHubStatus) => {
+      if (cancelled) return;
+      setGithubStatus(next);
+    };
+    void window.ade.github?.getStatus?.().then(apply).catch(() => {});
+    const unsubscribe = window.ade.github?.onStatusChanged?.(apply);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [status.imageUrl, status.signedIn]);
+
+  return (
+    <AccountAvatar
+      status={status}
+      githubLogin={githubStatus?.userLogin ?? null}
+      githubConnected={Boolean(githubStatus?.connected)}
+      size={15}
+    />
+  );
+}
+
 function isWebSyncConnected(snapshot: SyncRoleSnapshot | null): boolean {
   return connectedWebClients(snapshot).length > 0;
 }
@@ -351,6 +387,7 @@ function ShellConnectionChip({
   title,
   ariaExpanded,
   onClick,
+  trailing,
   layout = "chip",
 }: {
   label: string;
@@ -359,6 +396,7 @@ function ShellConnectionChip({
   title: string;
   ariaExpanded?: boolean;
   onClick: () => void;
+  trailing?: React.ReactNode;
   layout?: "chip" | "menu-row";
 }) {
   return (
@@ -390,6 +428,7 @@ function ShellConnectionChip({
         )}
         aria-hidden
       />
+      {trailing}
     </button>
   );
 }
@@ -918,6 +957,7 @@ export function TopBar({
 } = {}) {
   const project = useAppStore((s) => s.project);
   const theme = useAppStore((s) => s.theme);
+  const usageHeaderPreferences = useUsageHeaderPreferences();
   const hasProject = Boolean(project?.rootPath);
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
@@ -2158,74 +2198,64 @@ export function TopBar({
 
   const anyConnectionActive = remoteConnected || syncConnected || webConnected;
 
-  const renderHeaderStatusControls = useCallback(
-    (options?: { menuLayout?: boolean; onActivate?: () => void }) => {
-      const menuLayout = options?.menuLayout === true;
-      const wrapActivate = (handler: () => void) => () => {
-        handler();
-        options?.onActivate?.();
-      };
+  const renderDesktopIntegrationControls = () => (
+    <>
+      <CursorCloudQuickViewButton />
+      <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
+    </>
+  );
 
-      // On the hosted client the machine IS the connection: the chip names it,
-      // and its popover is where machines are managed now that the Hub is gone.
-      const connectionsChip = webMode ? (
-        <React.Suspense fallback={null}>
-          <WebConnectionsChip />
-        </React.Suspense>
-      ) : (
+  const renderDesktopUsageControl = () => usageHeaderPreferences.showInHeader
+    ? <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
+    : null;
+
+  const renderWebConnectionsControl = () => (
+    <React.Suspense fallback={null}>
+      <WebConnectionsChip />
+    </React.Suspense>
+  );
+
+  const renderDesktopConnectionsControl = () => webMode
+    ? renderWebConnectionsControl()
+    : (
+      <ShellConnectionChip
+        label="Connections"
+        connected={anyConnectionActive}
+        title="Machines, mobile, and web clients"
+        ariaExpanded={connectionsOpen}
+        onClick={() => (connectionsOpen ? closeConnections() : openConnections("machines"))}
+        icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+        trailing={<HeaderAccountAvatar />}
+      />
+    );
+
+  const renderCompactStatusMenu = (onActivate: () => void) => (
+    <div className="flex flex-col gap-0.5">
+      <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={onActivate} />
+      <LinearQuickViewButton variant="menu-row" onMenuActivate={onActivate} onOpenHarnessSettings={openHarnessSettings} />
+      {usageHeaderPreferences.showInHeader ? (
+        <HeaderUsageControl
+          variant="menu-row"
+          onMenuActivate={onActivate}
+          deferInitialRead={Boolean(remoteBinding)}
+        />
+      ) : null}
+      {webMode ? renderWebConnectionsControl() : (
         <ShellConnectionChip
-          layout={menuLayout ? "menu-row" : "chip"}
+          layout="menu-row"
           label="Connections"
           connected={anyConnectionActive}
           title="Machines, mobile, and web clients"
           ariaExpanded={connectionsOpen}
-          onClick={
-            menuLayout
-              ? wrapActivate(() => openConnections("machines"))
-              : () => (connectionsOpen ? closeConnections() : openConnections("machines"))
-          }
-          icon={(
-            <Plugs
-              size={12}
-              weight="regular"
-              className="shrink-0 opacity-85"
-            />
-          )}
+          onClick={() => {
+            openConnections("machines");
+            onActivate();
+          }}
+          icon={<Plugs size={12} weight="regular" className="shrink-0 opacity-85" />}
+          trailing={<HeaderAccountAvatar />}
         />
-      );
-
-      if (menuLayout) {
-        return (
-          <div className="flex flex-col gap-0.5">
-            <CursorCloudQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
-            <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} onOpenHarnessSettings={openHarnessSettings} />
-            <HeaderUsageControl
-              variant="menu-row"
-              onMenuActivate={options?.onActivate}
-              deferInitialRead={Boolean(remoteBinding)}
-            />
-            {connectionsChip}
-          </div>
-        );
-      }
-
-      return (
-        <>
-          <CursorCloudQuickViewButton />
-          <LinearQuickViewButton onOpenHarnessSettings={openHarnessSettings} />
-          {connectionsChip}
-          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
-        </>
-      );
-    },
-    [
-      anyConnectionActive,
-      closeConnections,
-      connectionsOpen,
-      openConnections,
-      remoteBinding,
-      webMode,
-    ],
+      )}
+    </div>
   );
 
   const transitionTargetName = projectTransition?.rootPath
@@ -2749,6 +2779,21 @@ export function TopBar({
         ) : null}
       </div>
 
+      {projectTransitionLabel ? (
+        <div
+          aria-live="polite"
+          className={cn(
+            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
+            "text-[11px] font-medium",
+          )}
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+          title={projectTransitionLabel}
+        >
+          <CircleNotch size={12} weight="bold" className="animate-spin" />
+          <span className="max-w-[240px] truncate">{projectTransitionLabel}</span>
+        </div>
+      ) : null}
+
       {showPublishPill ? (
         <SmartTooltip
           content={{
@@ -2786,23 +2831,8 @@ export function TopBar({
         </SmartTooltip>
       ) : null}
 
-      {projectTransitionLabel ? (
-        <div
-          className={cn(
-            "ade-shell-control shrink-0 inline-flex items-center gap-1.5 rounded-md px-2.5 py-1",
-            "text-[11px] font-medium",
-          )}
-          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-          title={projectTransitionLabel}
-        >
-          <CircleNotch size={12} weight="bold" className="animate-spin" />
-          <span className="max-w-[240px] truncate">
-            {projectTransitionLabel}
-          </span>
-        </div>
-      ) : null}
-
-      {/* Trailing controls: activity · status · updates.
+      {/* Trailing controls follow the user's visual priority: update and
+          diagnostics first, then provider controls, activity, and connections.
           The group must be able to shrink: the header reserves room for the
           native window controls (macOS traffic lights at the start, Windows
           caption buttons at the end) with padding, and a shrink-0 group would
@@ -2810,18 +2840,24 @@ export function TopBar({
           them, so it clips instead. Feedback, help, and zoom live in the
           settings sidebar. */}
       <div className="flex min-w-0 items-center gap-2 overflow-hidden">
-        {/* Account-wide Activity — the one place every machine's work surfaces,
-            reachable from every tab and project without a nav detour. */}
-        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+        {!webMode ? <AutoUpdateControl /> : null}
+        <ResourcePressureIndicator usage={resourceUsage} />
+        <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />
 
-        <ResourcePressureIndicator usage={resourceUsage} />
-        <StoragePressureIndicator enabled={workspaceProjectOpen} />
+        <div className="hidden md:flex items-center gap-1.5">
+          {renderDesktopIntegrationControls()}
+          {renderDesktopUsageControl()}
+        </div>
+
+        {/* Account-wide Activity — the one place every machine's work surfaces,
+            reachable from every tab and project without a nav detour. */}
+        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
         <div className="hidden md:flex items-center gap-1.5">
-          {renderHeaderStatusControls()}
+          {renderDesktopConnectionsControl()}
         </div>
 
         <HeaderStatusMenu
@@ -2829,10 +2865,8 @@ export function TopBar({
           syncConnected={syncConnected || (!webMode && webConnected)}
           showSyncControl={showSyncControl}
         >
-          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+          {renderCompactStatusMenu}
         </HeaderStatusMenu>
-
-        {!webMode ? <AutoUpdateControl /> : null}
       </div>
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they

@@ -13,7 +13,7 @@
  * (`usageWindowFormat`, `UsagePaceBar`, `usageDesign`).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise, ArrowSquareOut, Gauge } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, Eye, EyeSlash, Gauge } from "@phosphor-icons/react";
 import type {
   AiProviderConnectionStatus,
   AiProviderConnections,
@@ -49,6 +49,7 @@ import {
   quotaPopoverProviders,
 } from "./usageLimitModel";
 import type { UsageRefreshOutcome, UsageSnapshotSource } from "./useUsageSnapshot";
+import { setUsageProviderVisible, useUsageHeaderPreferences } from "./usageHeaderPreferences";
 
 // Display names only. The limits URL is NOT re-listed here: it comes from
 // `usageProviderAccountUrl`, which is also what the host stamps onto
@@ -438,6 +439,8 @@ function ProviderLimitsRow({
   onRefresh: () => Promise<UsageRefreshOutcome>;
 }) {
   const meta = PROVIDER_META[provider];
+  const headerPreferences = useUsageHeaderPreferences();
+  const shownInHeader = headerPreferences.providers[provider];
   const isAuthed = connection?.authAvailable !== false;
   const isUsageUnauthed = status?.state === "unauthed";
 
@@ -501,17 +504,29 @@ function ProviderLimitsRow({
           <ProviderMark provider={provider} size={18} dim={dim} />
           <span className="sr-only">{meta.label}</span>
         </span>
-        {usageUrl ? (
+        <span className="inline-flex shrink-0 items-center gap-0.5">
           <button
             type="button"
-            onClick={() => openExternalUrl(usageUrl)}
-            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
-            aria-label={`Open ${meta.label} limits in browser`}
-            title={`Open ${meta.label} limits in browser`}
+            onClick={() => setUsageProviderVisible(provider, !shownInHeader)}
+            className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
+            aria-label={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
+            aria-pressed={shownInHeader}
+            title={`${shownInHeader ? "Hide" : "Show"} ${meta.label} in usage bar`}
           >
-            <ArrowSquareOut size={12} weight="regular" />
+            {shownInHeader ? <Eye size={12} weight="regular" /> : <EyeSlash size={12} weight="regular" />}
           </button>
-        ) : null}
+          {usageUrl ? (
+            <button
+              type="button"
+              onClick={() => openExternalUrl(usageUrl)}
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-fg hover:bg-muted hover:text-fg"
+              aria-label={`Open ${meta.label} limits in browser`}
+              title={`Open ${meta.label} limits in browser`}
+            >
+              <ArrowSquareOut size={12} weight="regular" />
+            </button>
+          ) : null}
+        </span>
       </div>
       <div data-provider-divider className={cn("border-b", USAGE_DIVIDER_COLOR_CLASS)} />
 
