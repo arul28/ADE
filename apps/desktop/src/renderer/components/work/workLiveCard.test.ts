@@ -595,11 +595,10 @@ describe("workLiveCardSize", () => {
   });
 
   it("derives the box from the source picture's own aspect ratio", () => {
-    // A 390x844 phone capture: no crop, the card is tall and narrow. The
-    // minimum width wins over the soft height cap, so it is 200px wide.
+    // A narrow browser capture stays in a 4:3 landscape card.
     const portrait = workLiveCardSize({ tool: "browser", aspect: 390 / 844, width: 250 });
-    expect(portrait.width).toBe(WORK_LIVE_CARD_MIN_WIDTH);
-    expect(portrait.width / portrait.height).toBeCloseTo(390 / 844, 2);
+    expect(portrait.width).toBe(250);
+    expect(portrait.width / portrait.height).toBeCloseTo(4 / 3, 2);
 
     // A wide window: the height follows, well under the cap.
     const wide = workLiveCardSize({ tool: "mac-desktop", aspect: 3440 / 1440, width: 288 });
@@ -609,8 +608,8 @@ describe("workLiveCardSize", () => {
   it("caps the height and shrinks the width to keep the aspect", () => {
     const size = workLiveCardSize({ tool: "browser", aspect: 0.7, width: 500 });
     expect(size.height).toBe(WORK_LIVE_CARD_MAX_HEIGHT);
-    expect(size.width).toBe(Math.round(WORK_LIVE_CARD_MAX_HEIGHT * 0.7));
-    expect(size.width / size.height).toBeCloseTo(0.7, 1);
+    expect(size.width).toBe(Math.round(WORK_LIVE_CARD_MAX_HEIGHT * (4 / 3)));
+    expect(size.width / size.height).toBeCloseTo(4 / 3, 2);
   });
 
   it("never exceeds half the column's width", () => {

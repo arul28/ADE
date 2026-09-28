@@ -165,59 +165,32 @@ describe("createAppControlRecording", () => {
   });
 });
 
-const screencastWindows = vi.hoisted(() => ({
-  list: [] as Array<{
-    loadGate: { promise: Promise<void>; resolve: () => void };
-    destroy: () => void;
-  }>,
-}));
-
-vi.mock("electron", () => ({
-  BrowserWindow: vi.fn(function MockWindow(this: {
-    loadGate: { promise: Promise<void>; resolve: () => void };
-    webContents: { executeJavaScript: (source: string) => Promise<string | undefined>; once: () => void };
-    loadURL: () => Promise<void>;
-    isDestroyed: () => boolean;
-    destroy: () => void;
-  }) {
-    let resolveLoad!: () => void;
-    const loadGate = {
-      promise: new Promise<void>((resolve) => {
-        resolveLoad = resolve;
-      }),
-      resolve: () => resolveLoad(),
-    };
-    this.loadGate = loadGate;
-    this.webContents = {
-      executeJavaScript: async (source: string) => (String(source).includes("pickMime") ? "video/webm" : undefined),
-      once: () => undefined,
-    };
-    this.loadURL = () => loadGate.promise;
-    this.isDestroyed = () => false;
-    this.destroy = () => undefined;
-    screencastWindows.list.push(this);
-  }),
-}));
-
 describe("createAppControlScreencastRecorderHost", () => {
-  it("refuses a second start for a reserved key, and a cancel during start removes the file", async () => {
+  it("reserves one raw capture per lane and refuses a concurrent start", async () => {
     const host = createAppControlScreencastRecorderHost({ logger });
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-screencast-"));
     roots.push(dir);
-    const filePath = path.join(dir, "take.webm");
+    const filePath = path.join(dir, "take.mp4");
 
     const first = host.start({ key: "app-control:lane-1", filePath, fps: 15, keepIdle: false });
-    await vi.waitFor(() => expect(screencastWindows.list).toHaveLength(1));
+    const started = await first;
     await expect(host.start({ key: "app-control:lane-1", filePath, fps: 15, keepIdle: false }))
       .rejects.toThrow(/already running/);
-    expect(screencastWindows.list).toHaveLength(1);
-
-    if (!host.cancel) throw new Error("recorder cancel missing");
-    host.cancel("app-control:lane-1");
-    const started = screencastWindows.list[0];
-    if (!started) throw new Error("recorder window missing");
-    started.loadGate.resolve();
-    await expect(first).rejects.toThrow(/cancelled while it was starting/);
-    expect(fs.existsSync(filePath)).toBe(false);
+    expect(started.filePath).toBe(path.join(dir, "take.aderaw"));
+    const frameBytes = Buffer.from("captured-frame");
+    host.pushFrame("app-control:lane-1", {
+      sessionId: "session-1",
+      mimeType: "image/jpeg",
+      data: frameBytes.toString("base64"),
+      capturedAt: new Date().toISOString(),
+      width: 800,
+      height: 600,
+      scale: 1,
+    });
+    const stopped = await host.stop("app-control:lane-1");
+    expect(stopped.filePath).toBe(started.filePath);
+    expect(fs.existsSync(stopped.filePath)).toBe(true);
+    expect(fs.readFileSync(stopped.filePath).indexOf(frameBytes)).toBeGreaterThan(-1);
+    host.dispose();
   });
 });

@@ -504,13 +504,13 @@ describe("mac-desktop recording duration", () => {
     expect(text).toContain("/tmp/clip.mp4");
   });
 
-  it("passes --keep-idle and --max-seconds the way `apple record-start` does", () => {
+  it("passes --keep-idle as plain capture and keeps the duration cap", () => {
     expect(actionArgs(plan(["mac-desktop", "record", "start", "--caption", "flow"])))
       .not.toHaveProperty("keepIdle");
     const args = actionArgs(plan([
       "mac-desktop", "record", "start", "--keep-idle", "--max-seconds", "1200", "--caption", "flow",
     ]));
-    expect(args).toMatchObject({ keepIdle: true, maxSeconds: 1200, caption: "flow", chatSessionId: "chat-1" });
+    expect(args).toMatchObject({ plain: true, maxSeconds: 1200, caption: "flow", chatSessionId: "chat-1" });
     expect(() => buildCliPlan(["mac-desktop", "record", "start", "--max-seconds", "0"]))
       .toThrow(/--max-seconds must be greater than 0/);
   });
