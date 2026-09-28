@@ -1,0 +1,36 @@
+---
+title: "v1.2.81"
+description: "Release notes for ADE v1.2.81 - September 28, 2026"
+---
+
+The ADE SDK and chat UI reach 0.3.0, carrying the fixes the first external host reported.
+
+---
+
+## SDK 0.3
+
+`@ade-dev/sdk` and `@ade-dev/chat-ui` are **0.3.0**, and they support `@ade-dev/runtime` **>=1.2.81 <2.0.0**. An older runtime still connects; features it lacks are detected and degrade with a logged line.
+
+- **Threads can be deleted, archived, renamed, and listed** — `threads.delete`, `threads.archive`, `threads.unarchive`, `thread.update`, `threads.list`, and `historyPage` are on the client and the Electron bridge.
+- **The renderer can no longer choose a thread's host options.** `RegisterAdeIpcOptions.openOptions` owns them; without a hook the bridge forwards only `provider`, `model`, `title`, and `reasoningEffort`. `allowModel` may refuse a model id, and a stored record wins on a recreate.
+- **The host sees a runtime that dies.** `client.on("exit" | "transport" | "restart")`, live threads move to an `error` status, and opt-in `autoRestart` respawns the runtime and re-opens stored keys. `registerAdeIpc` accepts a client getter and moves renderers across an account swap.
+- **MCP credentials are never persisted.** The ThreadStore keeps header names, not values; `refresh.mcpServers` / `client.mcpHeaders` supply current values at every create, resume, and restart. A pre-0.3 record is migrated on first read.
+- **`thread.setModel` returns the resolved model plus its capability reports**, and `thread.update` renames or changes reasoning effort.
+- Attachments carry `type` and can be reference-only (`hydrate: false`); `thread.steer` forwards attachments.
+- `approvalTimeoutMs`, `checkRuntimeCompatibility` / `SUPPORTED_RUNTIME_RANGE`, `resolvePackagedRuntime`, and a copy-paste sandboxed preload round out the release.
+
+## Runtime 1.2.81
+
+- **Codex MCP tool calls follow the permission policy.** Codex asks before every MCP tool call; the policy now judges it (`deniedTools`, then `allowedTools` / `autoApproveMcpServers` on `mcp:<server>:<tool>`, then `fallback`), and an approval-shaped elicitation is answerable with `approve()`.
+- **`updateSession({ mcpServers })`** replaces a personal chat's MCP servers, and MCP header values stay out of durable state and error text.
+- Reference-only attachments, `tool_result` `resource_link` items as structured data, and a re-measured Claude `canUseTool` residual.
+- The macOS runtime packages ship `signing/entitlements.runtime.plist` and `signing/manifest.json`; the bundling guide signs in `afterPack` so the app seal survives notarization.
+
+## Desktop
+
+- **Settings is redesigned and themes apply across the app** (#1366).
+- The browser works for every machine's sessions (#1367).
+- Sign-in status feeds stay alive across machine sync ticks (#1368).
+- Claude Sonnet 5.5, an aligned Claude/Codex model order, and a Claude Agent SDK bump (#1369).
+
+_This release fixes the Versic integrator report items ADE-001..007 and N1..N16. N14 (retry / edit-last) is planned: providers rewind differently, so it needs runtime work. `@ade-dev/sdk/electron/preload-auto` ships the sandboxed-preload entry that exposes `window.ade`._

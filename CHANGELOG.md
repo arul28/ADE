@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.81] - 2026-09-28
+
+### SDK 0.3
+
+- `@ade-dev/sdk` and `@ade-dev/chat-ui` 0.3.0, supporting runtime `>=1.2.81 <2.0.0`. Thread delete/archive/list/rename, host-owned renderer open options with an `allowModel` gate, exit/transport/restart events with opt-in auto-restart, header-value-free MCP persistence with on-read migration, `setModel` capability reports, attachment `type` and reference-only mode, paged history, and packaged-runtime resolution (#1370).
+
+### Runtime 1.2.81
+
+- Codex MCP tool calls now follow the permission policy and are answerable; `updateSession({ mcpServers })`; MCP header values stay out of durable state and error text; the macOS runtime packages ship a signing kit and the bundling guide signs in `afterPack` (#1370).
+
+### Desktop
+
+- Settings redesign and app-wide themes (#1366). Browser works for every machine's sessions (#1367). Sign-in status feeds stay alive across machine sync ticks (#1368). Claude Sonnet 5.5 and Claude/Codex model-order alignment, with a Claude Agent SDK bump (#1369).
+
 ## [1.2.80] - 2026-09-28
 
 ### Themes
@@ -2182,7 +2196,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.80...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.81...HEAD
+[1.2.81]: https://github.com/arul28/ADE/compare/v1.2.80...v1.2.81
 [1.2.80]: https://github.com/arul28/ADE/compare/v1.2.79...v1.2.80
 [1.2.79]: https://github.com/arul28/ADE/compare/v1.2.78...v1.2.79
 [1.2.78]: https://github.com/arul28/ADE/compare/v1.2.77...v1.2.78
