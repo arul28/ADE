@@ -919,6 +919,7 @@ import { acquireOpenCodeServer } from "../opencode/openCodeServer";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
   applyOpenCodeSessionContext,
+  applyOpenCodeSessionMode,
   isOpenCodeNotFoundError,
   openCodePromptFiles,
   openCodeSessionEnvironment,
@@ -2732,12 +2733,8 @@ type OpenCodeRuntime = {
   activeTurn: OpenCodeActiveTurn | null;
   activeTurnId: string | null;
   permissionMode: AgentChatOpenCodePermissionMode;
-  /** Agent currently selected on the OpenCode session. */
-  agent: OpenCodeAgentProfile | null;
-  /** Session-level rules as last applied, keyed by the mode they came from. */
-  sessionRulesKey: string;
   modelDescriptor: ModelDescriptor;
-  /** Model currently selected on the OpenCode session (with the effort variant). */
+  /** The model ADE last asked for (with the effort variant); names a served-model fallback. */
   model: OpenCodeModelRef | null;
   /** ADE's instruction entry as last applied, so an unchanged one is not resent. */
   instructions: string | null;
@@ -15414,7 +15411,7 @@ export function createAgentChatService(args: {
         directory: managed.laneWorktreePath,
         agent,
         model,
-        permissions: openCodeSessionRulesFor(permMode).rules,
+        permissions: openCodeSessionRulesFor(permMode),
         title: manualSessionTitleForRuntime(managed),
         sessionId: persisted?.providerSessionId,
         instructions,
@@ -15438,8 +15435,6 @@ export function createAgentChatService(args: {
       activeTurn: null,
       activeTurnId: null,
       permissionMode: permMode,
-      agent,
-      sessionRulesKey: openCodeSessionRulesFor(permMode).key,
       modelDescriptor: descriptor,
       model,
       instructions,
@@ -29518,8 +29513,12 @@ export function createAgentChatService(args: {
     ),
   });
 
-  const sameOpenCodeModel = (a: OpenCodeModelRef | null, b: OpenCodeModelRef): boolean =>
-    Boolean(a && a.providerID === b.providerID && a.id === b.id && (a.variant ?? null) === (b.variant ?? null));
+
+  /** The execution is live on the server now; a snapshot taken before this cannot end the turn. */
+  const markOpenCodeExecutionStarted = (turn: OpenCodeActiveTurn): void => {
+    turn.executionStarted = true;
+    turn.admittedAt = Date.now();
+  };
 
   const beginOpenCodeTurn = (
     managed: ManagedChatSession,
@@ -29949,8 +29948,7 @@ export function createAgentChatService(args: {
     switch (event.type) {
       case "session.execution.started":
         if (runtime.activeTurn) {
-          runtime.activeTurn.executionStarted = true;
-          runtime.activeTurn.admittedAt = Date.now();
+          markOpenCodeExecutionStarted(runtime.activeTurn);
         } else {
           beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
         }
@@ -30000,7 +29998,6 @@ export function createAgentChatService(args: {
     if (managed.runtime !== runtime) return;
     const client = runtime.handle.client;
     // The snapshot only speaks for a turn that was already live before it.
-    const turnAtSnapshot = runtime.activeTurn;
     const snapshotAt = Date.now();
     let active: Awaited<ReturnType<typeof client.session.active>>;
     try {
@@ -30018,8 +30015,8 @@ export function createAgentChatService(args: {
     if (parentRunning) {
       if (!turn) beginOpenCodeTurn(managed, runtime, { origin: "opencode" });
       // Its `execution.started` fell in the gap.
-      else turn.executionStarted = true;
-    } else if (turn && turn === turnAtSnapshot && turn.admittedAt !== null && turn.admittedAt < snapshotAt) {
+      else markOpenCodeExecutionStarted(turn);
+    } else if (turn && turn.admittedAt !== null && turn.admittedAt < snapshotAt) {
       // Idle now. A turn whose start was never seen either ran entirely in the
       // gap (an assistant message newer than the turn proves it) or never ran.
       // A turn admitted after the snapshot is left to its events and the watchdog.
@@ -30197,22 +30194,17 @@ export function createAgentChatService(args: {
     const sessionID = runtime.handle.sessionId;
     let startWatchdog: ReturnType<typeof setTimeout> | null = null;
     try {
-      // Agent (permissions) and model (with the effort/Fast variant) live on the
-      // OpenCode session; only a change is sent.
+      // Agent (permissions), session rules, and model (with the effort/Fast
+      // variant) live on the OpenCode session. They are checked against the
+      // server each turn, not a cache: another surface may have changed them.
       const agent = openCodeAgentFor(runtime.permissionMode);
-      if (agent && agent !== runtime.agent) {
-        await client.session.switchAgent({ sessionID, agent });
-        runtime.agent = agent;
-      }
-      const sessionRules = openCodeSessionRulesFor(runtime.permissionMode);
-      if (sessionRules.key !== runtime.sessionRulesKey) {
-        await client.session.update({ sessionID, permissions: sessionRules.rules });
-        runtime.sessionRulesKey = sessionRules.key;
-      }
-      if (!sameOpenCodeModel(runtime.model, model)) {
-        await client.session.switchModel({ sessionID, model });
-        runtime.model = model;
-      }
+      const current = await client.session.get({ sessionID });
+      await applyOpenCodeSessionMode(client, current, {
+        agent,
+        model,
+        rules: openCodeSessionRulesFor(runtime.permissionMode),
+      });
+      runtime.model = model;
       const instructions = buildOpenCodeSessionInstructions(managed, runtime.permissionMode);
       if (instructions !== runtime.instructions) {
         await applyOpenCodeSessionContext(runtime.handle, { instructions });

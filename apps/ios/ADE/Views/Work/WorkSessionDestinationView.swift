@@ -100,10 +100,11 @@ func workChatManualSteerDispatchModes(
     cursorRuntime: summary?.cursorRuntime ?? session?.cursorRuntime,
     cursorCloudAgentId: summary?.cursorCloudAgentId ?? session?.cursorCloudAgentId
   )
-  return WorkActiveSendCapability.forProvider(provider)
-    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
-    .withholdingOpenCodeInlineIfNeeded(hostSupportsOpenCodeSteer: hostSupportsOpenCodeSteer, provider: provider)
-    .atomicDispatchModes
+  return WorkActiveSendCapability.forSession(
+    provider: provider,
+    runsInCloud: runsInCloud,
+    hostSupportsOpenCodeSteer: hostSupportsOpenCodeSteer
+  ).atomicDispatchModes
 }
 
 /// iOS half of desktop `cursorSessionRunsInCloud`.

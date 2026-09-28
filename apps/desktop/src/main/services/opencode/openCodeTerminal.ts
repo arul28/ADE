@@ -25,6 +25,8 @@ import {
   isOpenCodeNotFoundError,
   openCodeSessionEnvironment,
   type OpenCodeModelRef,
+  applyOpenCodeSessionMode,
+  isAdeChatOpenCodeSession,
 } from "./openCodeSession";
 import { acquireOpenCodeServer, type OpenCodeServerLease } from "./openCodeServer";
 
@@ -232,7 +234,7 @@ export async function attachOpenCodeTerminal(args: {
   const permissionMode = args.permissionMode ?? intent?.permissionMode ?? null;
   const agent = openCodeAgentFor(permissionMode);
   // With no ADE mode the TUI's own agent rules apply, so the session keeps none.
-  const sessionRules = agent ? openCodeSessionRulesFor(permissionMode).rules : null;
+  const sessionRules = agent ? openCodeSessionRulesFor(permissionMode) : null;
   const model = modelRefFor(args.model ?? intent?.model, args.reasoningEffort ?? intent?.reasoningEffort);
   const { selector, rest } = splitOpenCodeArgs(direct?.args ?? line!.args);
   const lineRest = direct && line ? splitOpenCodeArgs(line.args).rest : rest;
@@ -254,12 +256,8 @@ export async function attachOpenCodeTerminal(args: {
     let sessionId: string | null = null;
     let resumed = false;
     // A resumed session takes the launch's mode, whichever way it was found.
-    const applyMode = async (existing: { id: string; agent?: string }): Promise<void> => {
-      if (agent && existing.agent !== agent) {
-        await client.session.switchAgent({ sessionID: existing.id, agent });
-      }
-      if (sessionRules) await client.session.update({ sessionID: existing.id, permissions: sessionRules });
-    };
+    const applyMode = (existing: Parameters<typeof applyOpenCodeSessionMode>[1]) =>
+      applyOpenCodeSessionMode(client, existing, { agent, rules: sessionRules });
     if (selector?.kind === "session") {
       try {
         const existing = await client.session.get({ sessionID: selector.id });
@@ -273,8 +271,10 @@ export async function attachOpenCodeTerminal(args: {
         args.logger.warn("opencode.terminal_session_missing", { sessionId: selector.id });
       }
     } else if (selector?.kind === "continue") {
-      const listed = await client.session.list({ directory: args.cwd, parentID: null, limit: 1, order: "desc" });
-      const latest = listed.data[0];
+      // The newest session here that is not an ADE chat's: a chat in the same
+      // lane owns its session, and resuming it would change its agent and rules.
+      const listed = await client.session.list({ directory: args.cwd, parentID: null, limit: 20, order: "desc" });
+      const latest = listed.data.find((session) => !isAdeChatOpenCodeSession(session));
       if (latest) {
         sessionId = latest.id;
         resumed = true;

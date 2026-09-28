@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   decodeOpenCodeRegistryId,
   ensureOpenCodeBaseURL,
@@ -15,7 +15,7 @@ import type {
 } from "../../../shared/types";
 import { stableStringify } from "../shared/utils";
 import type { PermissionMode } from "../ai/tools/universalTools";
-import { SHARED_OPENCODE_PROFILE, type OpenCodeServerConfig, type OpenCodeServerProfile } from "./openCodeServer";
+import type { OpenCodeServerConfig, OpenCodeServerProfile } from "./openCodeServer";
 
 /**
  * ADE's generated OpenCode 2.0 config, in the native 2.0 shape.
@@ -164,13 +164,9 @@ export function adeOpenCodeMode(mode: string | null | undefined): PermissionMode
  * parent's session rules, but not its parent's agent rules, so without these a
  * `general` subagent in edit mode writes files with no ask.
  */
-export function openCodeSessionRulesFor(mode: string | null | undefined): {
-  key: string;
-  rules: OpenCodePermissionRule[];
-} {
+export function openCodeSessionRulesFor(mode: string | null | undefined): OpenCodePermissionRule[] {
   const effective = adeOpenCodeMode(mode);
-  if (!effective) return { key: "none", rules: [] };
-  return { key: effective, rules: buildOpenCodePermissions(effective) };
+  return effective ? buildOpenCodePermissions(effective) : [];
 }
 
 /** The ADE agent a session runs under for a permission mode, or null when ADE sets none. */
@@ -247,9 +243,9 @@ function aiSdkPackage(npm: string | null | undefined): string {
 }
 
 function buildProviders(args: BuildOpenCodeConfigArgs): OpenCodeProviderMap | undefined {
-  const ai = args.projectConfig.ai ?? {};
-  const apiKeys = ai.apiKeys ?? {};
-  const localProviders = ai.localProviders ?? {};
+  // Every project setting the config reads comes from this one projection,
+  // which also decides the shared server (`sharedOpenCodeProfileFor`).
+  const { apiKeys, localProviders, customProviders, customModelSlugs } = projectOpenCodeSettings(args.projectConfig);
   const providers: OpenCodeProviderMap = {};
 
   const addApiKey = (id: string, key: string | null | undefined): void => {
@@ -318,8 +314,8 @@ function buildProviders(args: BuildOpenCodeConfigArgs): OpenCodeProviderMap | un
   addLocalProvider("ollama", localProviders.ollama);
   addLocalProvider("lmstudio", localProviders.lmstudio);
 
-  addCustomProviders(providers, ai.customProviders, resolveStoredApiKey);
-  mergeCustomModelSlugs(providers, ai.customModelSlugs);
+  addCustomProviders(providers, customProviders, resolveStoredApiKey);
+  mergeCustomModelSlugs(providers, customModelSlugs);
 
   for (const [id, block] of Object.entries(args.presetProviders ?? {})) {
     providers[id] = { ...providers[id], ...block };
@@ -416,25 +412,44 @@ export function buildOpenCodeConfig(args: BuildOpenCodeConfigArgs): OpenCodeServ
  * own MCP servers, a preset provider, an isolated surface) cannot share the
  * common server, so they get one keyed by their content.
  */
-export const PERSONAL_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared:personal", isolated: false };
+/** The shared server for projects with no OpenCode settings of their own. */
+export const SHARED_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared", isolated: false, shared: true };
 
-/** The project settings the generated config reads (keys, local servers, custom providers and slugs). */
-function projectOpenCodeSettings(projectConfig: ProjectConfigFile | EffectiveProjectConfig): Record<string, unknown> | null {
+export const PERSONAL_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared:personal", isolated: false, shared: true };
+
+type ProjectOpenCodeSettings = {
+  apiKeys: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["apiKeys"]>;
+  localProviders: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["localProviders"]>;
+  customProviders: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["customProviders"]>;
+  customModelSlugs: NonNullable<NonNullable<EffectiveProjectConfig["ai"]>["customModelSlugs"]>;
+};
+
+/** The project settings the generated config reads: keys, local servers, custom providers and slugs. */
+function projectOpenCodeSettings(projectConfig: ProjectConfigFile | EffectiveProjectConfig): ProjectOpenCodeSettings {
   const ai = projectConfig.ai ?? {};
-  const settings = {
+  return {
     apiKeys: ai.apiKeys ?? {},
     localProviders: ai.localProviders ?? {},
     customProviders: ai.customProviders ?? [],
     customModelSlugs: ai.customModelSlugs ?? [],
   };
-  const empty = Object.values(settings).every((value) => (
-    Array.isArray(value) ? value.length === 0 : Object.keys(value as object).length === 0
-  ));
-  return empty ? null : settings;
 }
 
+function hasProjectOpenCodeSettings(settings: ProjectOpenCodeSettings): boolean {
+  return Object.keys(settings.apiKeys).length > 0
+    || Object.keys(settings.localProviders).length > 0
+    || settings.customProviders.length > 0
+    || settings.customModelSlugs.length > 0;
+}
+
+/**
+ * Salted per process: profile keys appear in logs, and the settings hold API
+ * keys, so a key must not be a stable fingerprint of a secret across runs.
+ */
+const PROFILE_DIGEST_SALT = randomBytes(16).toString("hex");
+
 function digestOf(value: unknown): string {
-  return createHash("sha256").update(stableStringify(value)).digest("hex").slice(0, 16);
+  return createHash("sha256").update(PROFILE_DIGEST_SALT).update(stableStringify(value)).digest("hex").slice(0, 16);
 }
 
 /**
@@ -445,7 +460,9 @@ function digestOf(value: unknown): string {
  */
 export function sharedOpenCodeProfileFor(projectConfig: ProjectConfigFile | EffectiveProjectConfig): OpenCodeServerProfile {
   const settings = projectOpenCodeSettings(projectConfig);
-  return settings ? { key: `shared:${digestOf(settings)}`, isolated: false } : SHARED_OPENCODE_PROFILE;
+  return hasProjectOpenCodeSettings(settings)
+    ? { key: `shared:${digestOf(settings)}`, isolated: false, shared: true }
+    : SHARED_OPENCODE_PROFILE;
 }
 
 export function openCodeProfileFor(args: {
@@ -467,5 +484,5 @@ export function openCodeProfileFor(args: {
     preset: args.presetProviders ?? {},
     project: projectOpenCodeSettings(args.projectConfig),
   });
-  return { key: `profile:${digest}`, isolated: Boolean(args.isolated) };
+  return { key: `profile:${digest}`, isolated: Boolean(args.isolated), shared: false };
 }

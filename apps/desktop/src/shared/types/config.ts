@@ -517,11 +517,13 @@ export type RuntimeDiagnosticsStatus = {
 
 /** One running ADE-owned OpenCode server. */
 export type OpenCodeRuntimeEntry = {
-  /** Server profile: `shared`, or a per-config profile key. */
+  /** Server profile key: a shared one (per set of project settings, or personal chats) or a per-config one. */
   key: string;
   url: string;
   pid: number | null;
   isolated: boolean;
+  /** A long-lived server many chats share, rather than one chat's own profile. */
+  shared: boolean;
   refCount: number;
   listenerCount: number;
   startedAt: number;

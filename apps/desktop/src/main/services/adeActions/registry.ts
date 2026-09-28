@@ -2146,9 +2146,9 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
       return { lastFetchedAt: getModelsDevLastFetchedAt() };
     },
     getOpenCodeRuntimeDiagnostics: async () => {
-      const { getOpenCodeRuntimeDiagnostics, isSharedOpenCodeProfileKey } = await import("../opencode/openCodeServer");
+      const { getOpenCodeRuntimeDiagnostics } = await import("../opencode/openCodeServer");
       const { servers } = getOpenCodeRuntimeDiagnostics();
-      const sharedCount = servers.filter((server) => isSharedOpenCodeProfileKey(server.key)).length;
+      const sharedCount = servers.filter((server) => server.shared).length;
       return { sharedCount, dedicatedCount: servers.length - sharedCount, entries: servers };
     },
     isOpenCodeInstalled: async () => {

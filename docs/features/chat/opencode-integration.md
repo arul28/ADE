@@ -189,3 +189,11 @@ provider that offers a sign-in.
   experimental in 2.0.18; ADE depends on events more than on `wait`.
 - OpenCode issue [#49765](https://github.com/anomalyco/opencode/issues/49765):
   a subagent ignores its agent's configured model in 2.0.8+.
+- An attached terminal TUI gets `OPENCODE_SERVER_PASSWORD` in its PTY env. When
+  the TUI runs through the user's shell, that shell keeps the variable after
+  the TUI exits. The owner accepted this (2026-09-28): only programs the user
+  starts in that tab can read it, and the server listens on 127.0.0.1 only.
+- The host advertises `openCodeInboxSteer` in `hello_ok.features`; iOS offers
+  OpenCode's "send during turn" only when it is present. The desktop renderer
+  does not check it for a remote brain; an older remote brain rejects the
+  inline send and queue still works (owner decision, 2026-09-28).

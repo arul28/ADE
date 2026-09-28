@@ -624,32 +624,27 @@ struct WorkActiveSendCapability: Equatable {
   /// the staged-message strip can offer as buttons.
   var atomicDispatchModes: [WorkActiveSendMode] { modes.filter { $0 != .queue } }
 
-  /// Drops `.inline` for a Cursor run that executes in cloud.
-  ///
-  /// `Run.steer()` is a local-run API: a cloud run implements it and refuses
-  /// every call, so offering "Send during turn" there names an action the host
-  /// will not perform. The desktop pane withholds the same handler for the same
-  /// reason; this is the mobile half of that rule.
-  func withholdingInlineIfNeeded(runsInCloud: Bool, provider: String) -> WorkActiveSendCapability {
-    guard runsInCloud, providerFamilyKey(provider) == "cursor", modes.contains(.inline) else { return self }
+  /// The provider's modes, minus `.inline` where this session or host cannot
+  /// take it:
+  /// - A Cursor run in cloud: `Run.steer()` is a local-run API, and a cloud
+  ///   run refuses every call. The desktop pane withholds the same handler.
+  /// - OpenCode on a host without the `openCodeInboxSteer` feature: an older
+  ///   host only queues, and an inline send would fail.
+  static func forSession(
+    provider: String,
+    runsInCloud: Bool,
+    hostSupportsOpenCodeSteer: Bool
+  ) -> WorkActiveSendCapability {
+    let capability = forProvider(provider)
+    let family = providerFamilyKey(provider)
+    let withholdInline = (runsInCloud && family == "cursor")
+      || (!hostSupportsOpenCodeSteer && family == "opencode")
+    guard withholdInline, capability.modes.contains(.inline) else { return capability }
     return WorkActiveSendCapability(
-      modes: modes.filter { $0 != .inline },
-      agentLabel: agentLabel,
-      interruptContinues: interruptContinues,
-      inlineCarriesAttachments: inlineCarriesAttachments
-    )
-  }
-
-  /// An older host only queues for OpenCode; offering inline there would make
-  /// the default send fail. `hostSupportsOpenCodeSteer` is the host's
-  /// `openCodeInboxSteer` feature.
-  func withholdingOpenCodeInlineIfNeeded(hostSupportsOpenCodeSteer: Bool, provider: String) -> WorkActiveSendCapability {
-    guard !hostSupportsOpenCodeSteer, providerFamilyKey(provider) == "opencode", modes.contains(.inline) else { return self }
-    return WorkActiveSendCapability(
-      modes: modes.filter { $0 != .inline },
-      agentLabel: agentLabel,
-      interruptContinues: interruptContinues,
-      inlineCarriesAttachments: inlineCarriesAttachments
+      modes: capability.modes.filter { $0 != .inline },
+      agentLabel: capability.agentLabel,
+      interruptContinues: capability.interruptContinues,
+      inlineCarriesAttachments: capability.inlineCarriesAttachments
     )
   }
 
@@ -668,9 +663,8 @@ struct WorkActiveSendCapability: Equatable {
       // resends on the same thread, which Claude's does not.
       //
       // This arm is provider-keyed, matching desktop's table. The cloud
-      // carve-out is a SESSION fact, so it lives in
-      // `withholdingInlineIfNeeded` and is applied by the caller that knows the
-      // session.
+      // carve-out is a SESSION fact, so it lives in `forSession` and is
+      // applied by the caller that knows the session.
       return WorkActiveSendCapability(
         modes: [.inline, .queue, .interrupt],
         agentLabel: "Cursor",

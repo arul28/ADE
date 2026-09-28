@@ -70,9 +70,10 @@ export type OpenCodeServerConfig = Record<string, unknown>;
 export type OpenCodeServerProfile = {
   key: string;
   isolated: boolean;
+  /** A long-lived server many chats and helpers use, rather than one chat's own. */
+  shared: boolean;
 };
 
-export const SHARED_OPENCODE_PROFILE: OpenCodeServerProfile = { key: "shared", isolated: false };
 
 export type OpenCodeServerOwnerKind = "inventory" | "oneshot" | "chat" | "auth" | "terminal";
 
@@ -108,6 +109,7 @@ export type OpenCodeRuntimeDiagnosticsEntry = {
   url: string;
   pid: number | null;
   isolated: boolean;
+  shared: boolean;
   refCount: number;
   listenerCount: number;
   startedAt: number;
@@ -137,6 +139,7 @@ type OpenCodeServeLaunchSpec = {
 type OpenCodeServerEntry = {
   key: string;
   isolated: boolean;
+  shared: boolean;
   server: OpenCodeServerInstance;
   password: string;
   client: OpenCodeClient;
@@ -648,7 +651,7 @@ function closeEntry(entry: OpenCodeServerEntry, reason: string, logger?: Logger 
 function scheduleIdleShutdown(entry: OpenCodeServerEntry, logger?: Logger | null): void {
   clearIdleTimer(entry);
   if (entry.refCount > 0 || entry.closed) return;
-  const idleMs = isSharedOpenCodeProfileKey(entry.key) ? SHARED_SERVER_IDLE_MS : PROFILE_SERVER_IDLE_MS;
+  const idleMs = entry.shared ? SHARED_SERVER_IDLE_MS : PROFILE_SERVER_IDLE_MS;
   entry.idleTimer = setTimeout(() => {
     if (entry.refCount > 0) return;
     closeEntry(entry, "idle", logger);
@@ -745,6 +748,7 @@ async function startEntry(args: {
   const entry: OpenCodeServerEntry = {
     key: args.profile.key,
     isolated: args.profile.isolated,
+    shared: args.profile.shared,
     server,
     password,
     client,
@@ -831,7 +835,8 @@ function buildLease(entry: OpenCodeServerEntry, logger?: Logger | null): OpenCod
  * the running server hot-reloads it. Concurrent first acquires share one launch.
  */
 export async function acquireOpenCodeServer(args: {
-  profile?: OpenCodeServerProfile;
+  /** Required: the shared server is per set of project settings (`sharedOpenCodeProfileFor`). */
+  profile: OpenCodeServerProfile;
   /**
    * The profile's config. Omit it to use a running server as it is (a caller
    * that only needs a client); a server started without one gets ADE's
@@ -850,7 +855,7 @@ export async function acquireOpenCodeServer(args: {
   ownerId?: string | null;
   logger?: Logger | null;
 }): Promise<OpenCodeServerLease> {
-  const profile = args.profile ?? SHARED_OPENCODE_PROFILE;
+  const profile = args.profile;
   let entry = serverEntries.get(profile.key);
   if (entry?.closed) {
     serverEntries.delete(profile.key);
@@ -902,11 +907,6 @@ export async function acquireOpenCodeServer(args: {
   return lease;
 }
 
-/** A shared server (one per set of project settings, plus personal chats') rather than a per-chat profile. */
-export function isSharedOpenCodeProfileKey(key: string): boolean {
-  return key === SHARED_OPENCODE_PROFILE.key || key.startsWith(`${SHARED_OPENCODE_PROFILE.key}:`);
-}
-
 /** The running server for `profile`, if any, without starting one. */
 export function peekOpenCodeServerUrl(profile: OpenCodeServerProfile): string | null {
   const entry = serverEntries.get(profile.key);
@@ -936,6 +936,7 @@ export function getOpenCodeRuntimeDiagnostics(): {
       url: entry.server.url,
       pid: entry.server.pid,
       isolated: entry.isolated,
+      shared: entry.shared,
       refCount: entry.refCount,
       listenerCount: entry.listeners.size,
       startedAt: entry.startedAt,

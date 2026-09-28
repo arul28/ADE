@@ -2219,9 +2219,11 @@ func workChatActiveSendCapability(
   runsInCloud: Bool = false,
   hostSupportsOpenCodeSteer: Bool
 ) -> WorkActiveSendCapability {
-  let capability = WorkActiveSendCapability.forProvider(provider)
-    .withholdingInlineIfNeeded(runsInCloud: runsInCloud, provider: provider)
-    .withholdingOpenCodeInlineIfNeeded(hostSupportsOpenCodeSteer: hostSupportsOpenCodeSteer, provider: provider)
+  let capability = WorkActiveSendCapability.forSession(
+    provider: provider,
+    runsInCloud: runsInCloud,
+    hostSupportsOpenCodeSteer: hostSupportsOpenCodeSteer
+  )
   guard liveRedirectOnly else { return capability }
   let liveRedirectModes = capability.modes.filter { $0 != .queue }
   guard !liveRedirectModes.isEmpty else { return capability }

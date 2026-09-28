@@ -30,6 +30,50 @@ export type OpenCodePromptFile = { uri: string; name?: string };
 
 export type OpenCodeModelRef = { providerID: string; id: string; variant?: string };
 
+export function sameOpenCodeModelRef(a: OpenCodeModelRef | null | undefined, b: OpenCodeModelRef): boolean {
+  return Boolean(a && a.providerID === b.providerID && a.id === b.id && (a.variant ?? null) === (b.variant ?? null));
+}
+
+/**
+ * Marks a session an ADE chat owns. A terminal's `--continue` picks the newest
+ * session in its directory, and a chat's session there must never be taken:
+ * the terminal would change its agent and rules under the chat.
+ */
+const ADE_CHAT_SESSION_METADATA = { adeSurface: "chat" } as const;
+
+export function isAdeChatOpenCodeSession(info: { metadata?: Record<string, unknown> }): boolean {
+  return info.metadata?.adeSurface === ADE_CHAT_SESSION_METADATA.adeSurface;
+}
+
+type OpenCodeRule = { action: string; resource: string; effect: string };
+
+function sameRules(a: readonly OpenCodeRule[] | undefined, b: readonly OpenCodeRule[]): boolean {
+  const flat = (rules: readonly OpenCodeRule[]) => JSON.stringify(rules.map((rule) => [rule.action, rule.resource, rule.effect]));
+  return flat(a ?? []) === flat(b);
+}
+
+/**
+ * Bring a session to the agent, model, and session rules ADE wants, judged
+ * against what the server reports, not a cache: something else (another ADE
+ * surface, the user in a TUI) may have changed them. `agent: null` keeps the
+ * session's own agent (`config-toml`).
+ */
+export async function applyOpenCodeSessionMode(
+  client: OpenCodeClient,
+  current: { id: string; agent?: string; model?: OpenCodeModelRef; permissions?: readonly OpenCodeRule[] },
+  mode: { agent: OpenCodeAgentProfile | null; model?: OpenCodeModelRef; rules?: readonly OpenCodePermissionRule[] | null },
+): Promise<void> {
+  if (mode.agent && current.agent !== mode.agent) {
+    await client.session.switchAgent({ sessionID: current.id, agent: mode.agent });
+  }
+  if (mode.model && !sameOpenCodeModelRef(current.model, mode.model)) {
+    await client.session.switchModel({ sessionID: current.id, model: mode.model });
+  }
+  if (mode.rules && !sameRules(current.permissions, mode.rules)) {
+    await client.session.update({ sessionID: current.id, permissions: [...mode.rules] });
+  }
+}
+
 export type OpenCodeSessionHandle = {
   lease: OpenCodeServerLease;
   client: OpenCodeClient;
@@ -193,17 +237,9 @@ export async function startOpenCodeChatSession(args: {
       try {
         const existing = await client.session.get({ sessionID: persisted });
         const handle = handleFor(existing.id, existing.title, true);
-        // The saved session keeps the agent and model of its last turn. Bring
-        // them to what ADE shows now: the runtime treats them as already set.
-        if (args.agent && existing.agent !== args.agent) {
-          await client.session.switchAgent({ sessionID: existing.id, agent: args.agent });
-        }
-        const saved = existing.model;
-        if (!saved || saved.providerID !== args.model.providerID || saved.id !== args.model.id
-          || (saved.variant ?? null) !== (args.model.variant ?? null)) {
-          await client.session.switchModel({ sessionID: existing.id, model: args.model });
-        }
-        if (args.permissions) await client.session.update({ sessionID: existing.id, permissions: args.permissions });
+        // The saved session keeps the agent and model of its last turn; bring
+        // it to what ADE shows now.
+        await applyOpenCodeSessionMode(client, existing, { agent: args.agent, model: args.model, rules: args.permissions });
         await applyOpenCodeSessionContext(handle, args);
         return handle;
       } catch (error) {
@@ -218,9 +254,11 @@ export async function startOpenCodeChatSession(args: {
     const title = args.title?.trim();
     const created = await client.session.create({
       location: { directory: args.directory },
-      // `config-toml` has no ADE agent; a new session starts on the edit rules.
-      agent: args.agent ?? "ade-edit",
+      // `config-toml` has no ADE agent: the session starts on the user's own
+      // default agent, as a terminal does.
+      ...(args.agent ? { agent: args.agent } : {}),
       model: args.model,
+      metadata: ADE_CHAT_SESSION_METADATA,
       ...(args.permissions ? { permissions: args.permissions } : {}),
       ...(title ? { title } : {}),
     });

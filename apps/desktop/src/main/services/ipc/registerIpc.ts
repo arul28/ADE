@@ -5097,9 +5097,9 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.aiGetOpenCodeRuntimeDiagnostics, async (): Promise<OpenCodeRuntimeSnapshot> => {
-    const { getOpenCodeRuntimeDiagnostics, isSharedOpenCodeProfileKey } = await import("../opencode/openCodeServer");
+    const { getOpenCodeRuntimeDiagnostics } = await import("../opencode/openCodeServer");
     const { servers } = getOpenCodeRuntimeDiagnostics();
-    const sharedCount = servers.filter((server) => isSharedOpenCodeProfileKey(server.key)).length;
+    const sharedCount = servers.filter((server) => server.shared).length;
     return { sharedCount, dedicatedCount: servers.length - sharedCount, entries: servers };
   });
 
