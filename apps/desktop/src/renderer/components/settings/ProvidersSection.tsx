@@ -1208,7 +1208,7 @@ export function ProvidersSection({
             </label>
           )}
         >
-          <div className="ade-provider-grid" role="list">
+          <div className="ade-provider-grid">
             {descriptors.map((descriptor) => (
               <ProviderManagerRow
                 key={descriptor.id}

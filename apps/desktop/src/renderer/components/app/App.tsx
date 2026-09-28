@@ -38,6 +38,7 @@ import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavig
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
+import { MotionConfig } from "motion/react";
 import { applyAdeTheme } from "../../theme/applyTheme";
 import { applyInterfacePreferences } from "../../theme/applyInterface";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
@@ -1417,6 +1418,10 @@ export function App() {
   }, [themeId, customThemes]);
 
   return (
+    // The interface "Reduce motion" preference is explicit, so it wins over the
+    // OS query; off, `"user"` is exactly the OS-honouring default. Wrapping the
+    // shell (not just the desktop entry) keeps the hosted web client in step.
+    <MotionConfig reducedMotion={interfacePreferences.reduceMotion ? "always" : "user"}>
     <LaunchGate>
       <Router>
         <div
@@ -1446,5 +1451,6 @@ export function App() {
         </div>
       </Router>
     </LaunchGate>
+    </MotionConfig>
   );
 }

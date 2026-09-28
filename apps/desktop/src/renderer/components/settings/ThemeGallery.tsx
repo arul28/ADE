@@ -287,7 +287,16 @@ export function ThemeGallery() {
         />
       ))}
       {customThemes.map((theme) => (
-        <CustomTile key={theme.id} theme={theme} active={themeId === theme.id} onSelect={() => setTheme(theme.id)} />
+        <CustomTile
+          key={theme.id}
+          theme={theme}
+          active={themeId === theme.id}
+          // A custom theme has one mode, so "follow the system" does not apply.
+          onSelect={() => {
+            setThemeFollowsSystem(false);
+            setTheme(theme.id);
+          }}
+        />
       ))}
     </div>
   );

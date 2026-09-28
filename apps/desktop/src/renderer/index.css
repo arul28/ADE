@@ -5550,7 +5550,10 @@ button, [role="button"] {
 @media (prefers-reduced-motion: reduce) {
   .ade-swatch,
   .ade-swatch-tile:hover .ade-swatch,
-  .ade-theme-stage-preview {
+  .ade-theme-stage-canvas,
+  .ade-theme-stage-preview,
+  .ade-settings-slider::-webkit-slider-thumb,
+  .ade-settings-slider:hover::-webkit-slider-thumb {
     transition: none;
     transform: none;
     animation: none;

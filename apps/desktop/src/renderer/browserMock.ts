@@ -4340,8 +4340,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       set: resolvedArg({ name: "NEW_KEY", createdAt: now, updatedAt: now, valueLength: 8, storage: "account" }),
       delete: resolvedArg({ deleted: true, name: "" }),
       chooseEnvFile: resolved(null),
-      importEnv: resolvedArg({ imported: [], skipped: [] }),
-      exportEnv: resolved({ path: "", count: 0 }),
+      importEnv: resolvedArg({ imported: [], replaced: [] }),
+      exportEnv: resolved({ filePath: "", secretCount: 0 }),
     },
     storage: {
       getPressure: resolved({

@@ -295,7 +295,7 @@ export function SecretsSection() {
             const rowCopied = isCopied(secret.name);
             const revealed = revealedValues[secret.name];
             return (
-              <div key={secret.name} className="ade-settings-row ade-secret-row" role="row">
+              <div key={secret.name} className="ade-settings-row ade-secret-row">
                 <span aria-hidden className="ade-settings-row-icon" style={{ ["--tone" as string]: "#F5A524" } as React.CSSProperties}>
                   <Key size={15} weight="duotone" />
                 </span>
