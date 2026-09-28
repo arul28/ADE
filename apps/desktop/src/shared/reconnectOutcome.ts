@@ -49,6 +49,13 @@ export function describeReconnectOutcome(
             "This computer is back on your account, but it isn't delivering Activity yet. Reopen ADE on this computer to finish.",
         };
   }
+  // Nothing on this computer hosts sync, so there is no publisher to re-pair
+  // through. The brain's reason already names the cause and the fix (Repair),
+  // and the attempt did something (it tried to start sync), so say exactly that
+  // rather than the generic "try again in a moment".
+  if (result.state === "sync_host_not_running" && result.reason) {
+    return { tone: "warning", message: sentence(result.reason) };
+  }
   // Nothing was gated and the brain skipped the publish — no work to report.
   if (result.state === "not_revoked") {
     return { tone: "success", message: "This computer is already connected to your account." };

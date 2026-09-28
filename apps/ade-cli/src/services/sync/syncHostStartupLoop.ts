@@ -81,7 +81,51 @@ export type SyncHostStartupLoopDeps = {
    * wait the foreign owner out instead.
    */
   retryFirstConflict?: boolean;
+  /**
+   * How long one `startSyncHost` attempt may run before the loop reports it as
+   * stuck. The attempt is not abandoned (it cannot be cancelled, and starting a
+   * second one beside it would race it for the lease): the loop keeps waiting
+   * on the SAME attempt, restating that it is still waiting at the deduped
+   * cadence, so a hung project boot or listener bind is visible in
+   * `brain.jsonl` instead of a silent brain that never hosts sync.
+   */
+  attemptTimeoutMs?: number;
 };
+
+/**
+ * Why an activated project scope is not hosting phone sync, in one sentence
+ * for `brain.jsonl` and the desktop. `status` is the scope's own sync snapshot
+ * (null when it could not be read).
+ */
+export function describeScopeNotHostingSync(
+  projectName: string,
+  status: {
+    role?: string | null;
+    currentBrain?: { name?: string | null; lastSeenAt?: string | null } | null;
+    crdtSyncAvailable?: boolean;
+  } | null,
+  nowMs: number = Date.now(),
+): string {
+  if (status?.crdtSyncAvailable === false) {
+    return `ADE brain is not hosting phone sync: the CRDT database extension did not load for project "${projectName}", so phone sync is unavailable on this computer.`;
+  }
+  if (status?.role === "viewer") {
+    const brainName = status.currentBrain?.name?.trim() || "another ADE";
+    const lastSeenMs = status.currentBrain?.lastSeenAt ? Date.parse(status.currentBrain.lastSeenAt) : Number.NaN;
+    const seen = Number.isFinite(lastSeenMs)
+      ? ` (last seen ${Math.max(0, Math.round((nowMs - lastSeenMs) / 1000))}s ago)`
+      : "";
+    return `ADE brain is not hosting phone sync: project "${projectName}" still follows ${brainName}${seen} as its sync host. Retrying; this brain takes over once that host has been gone for a few minutes.`;
+  }
+  return `ADE brain is not hosting phone sync: project "${projectName}" is active but its sync host did not start. Retrying.`;
+}
+
+export class SyncHostStartTimeoutError extends Error {
+  constructor(readonly waitedMs: number) {
+    super(`ADE brain sync host start has not finished after ${Math.round(waitedMs / 1000)}s; still waiting on it.`);
+    this.name = "SyncHostStartTimeoutError";
+  }
+}
 
 export type SyncHostRehostWatchDeps = {
   /** `onSyncHostSingletonAuthorityChanged`. */
@@ -201,6 +245,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
   const fastRetryDelayMs = deps.fastRetryDelayMs ?? 2_000;
   const slowRetryDelayMs = deps.slowRetryDelayMs ?? 30_000;
   const fastRetryCount = deps.fastRetryCount ?? 5;
+  const attemptTimeoutMs = Math.max(1, deps.attemptTimeoutMs ?? 120_000);
   const sustainedStorageFaultAttempts = deps.sustainedStorageFaultAttempts ?? 3;
   let attempt = 0;
   let lastFailureSignature = "";
@@ -274,9 +319,37 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       logEvent("sync.host_start_failed", { ...meta, message });
     },
   });
+  // The attempt that is still running, when the previous wait on it timed out.
+  // Awaited again rather than replaced, so two starts never race for the lease.
+  let pendingAttempt: Promise<{ ok: true } | { ok: false; error: unknown }> | null = null;
+  let pendingAttemptStartedAt = 0;
   while (!deps.isDone()) {
     try {
-      await deps.startSyncHost();
+      if (!pendingAttempt) {
+        pendingAttemptStartedAt = now();
+        pendingAttempt = Promise.resolve()
+          .then(() => deps.startSyncHost())
+          .then(
+            () => ({ ok: true as const }),
+            (error: unknown) => ({ ok: false as const, error }),
+          );
+      }
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const timedOut = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), attemptTimeoutMs);
+        timer.unref?.();
+      });
+      let settled: Awaited<NonNullable<typeof pendingAttempt>> | "timeout";
+      try {
+        settled = await Promise.race([pendingAttempt, timedOut]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      if (settled === "timeout") {
+        throw new SyncHostStartTimeoutError(now() - pendingAttemptStartedAt);
+      }
+      pendingAttempt = null;
+      if (!settled.ok) throw settled.error;
       if (lastFailureSignature) failureLogs.clear(lastFailureSignature);
       // A recovery re-arms the conflict narration: a later conflict with a
       // different app should get its own first-occurrence full detail.
@@ -285,10 +358,26 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       if (attempt > 0) {
         deps.log("ADE brain mobile sync host recovered.");
         logEvent("sync.host_start_recovered", { attempts: attempt, lastFailureSignature });
+      } else {
+        // A first-attempt success used to leave no trace at all, so a brain
+        // whose sync host never started looked exactly like one whose started.
+        logEvent("sync.host_started", { attempts: 1 });
       }
       return;
     } catch (error) {
       attempt += 1;
+      if (error instanceof SyncHostStartTimeoutError) {
+        // Still running: no sleep, the next pass waits on the same attempt.
+        lastFailureSignature = error.name;
+        failureLogs.note(error.name, error.message, {
+          signature: error.name,
+          attempt,
+          code: "sync_host_start_timeout",
+          waitedMs: error.waitedMs,
+        });
+        if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;
+        continue;
+      }
       const message = error instanceof Error ? error.message : String(error);
       // A storage fault is permanent until the provider (or the disk, or the
       // mount) comes back, so it gets the classified sentence in the log, a
@@ -365,6 +454,11 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
           deps.log(
             `ADE brain taking over mobile sync from stale ${owner.appName ?? "ADE"} brain (pid ${owner.pid}).`,
           );
+          logEvent("sync.host_takeover_stale_owner", {
+            attempt,
+            ownerApp: owner.appName ?? null,
+            ownerPid: owner.pid,
+          });
           await terminatePidAsync(owner.pid, { kill, pidAlive, sleep });
           continue;
         }

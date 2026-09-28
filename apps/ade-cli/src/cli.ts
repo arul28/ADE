@@ -21518,6 +21518,17 @@ async function runServe(
     logger: headlessProjectLogger,
   });
   let accountMachinePublisher: AccountMachinePublisherService | null = null;
+  // The sync-host startup loop's latest failure sentence, cleared once the host
+  // is up. "Reconnect this computer" answers with it instead of a bare
+  // "not publishing yet" when there is no publisher because nothing hosts sync.
+  let latestSyncHostStartFailure: string | null = null;
+  // Starts the account publisher when this brain holds the sync-host lease and
+  // none is running. Assigned with the publisher wiring below (sync-enabled
+  // brains only). Returns true when it started one.
+  let ensureAccountMachinePublisher: ((reason: string) => boolean) | null = null;
+  // `startSyncHost`, reachable from "Reconnect this computer" (declared further
+  // down, inside the serve block).
+  let startSyncHostForRepair: (() => Promise<unknown>) | null = null;
   // Turns the "Reconnect this computer" button into something the machine can
   // press for itself when the directory refuses it. Built below, next to the
   // publisher it watches.
@@ -21678,11 +21689,60 @@ async function runServe(
         filePath: pushRelayFilePath,
         logger: headlessProjectLogger,
       });
+    let unavailable: { state: "sync_host_not_running"; reason: string } | null = null;
+    if (!accountMachinePublisher && syncEnabled && input?.onlyIfRevoked !== true) {
+      // The publisher only exists while this brain hosts phone sync. A lease
+      // that is held without one (a swallowed start failure) is fixed in place;
+      // a brain that is not hosting tries to start the sync host once, bounded,
+      // and otherwise says why instead of "not publishing yet".
+      ensureAccountMachinePublisher?.("reconnect_requested");
+      if (!accountMachinePublisher) {
+        const { holdsSyncHostSingleton: holdsLease } = await import("./services/sync/syncHostSingleton");
+        let startError: string | null = null;
+        if (!holdsLease() && startSyncHostForRepair) {
+          headlessProjectLogger.info("account.machine_repair_starting_sync_host", {});
+          try {
+            await Promise.race([
+              startSyncHostForRepair(),
+              new Promise<never>((_resolve, reject) => {
+                const timer = setTimeout(
+                  () => reject(new Error("Starting phone sync took longer than 20 seconds.")),
+                  20_000,
+                );
+                timer.unref?.();
+              }),
+            ]);
+          } catch (error) {
+            startError = error instanceof Error ? error.message : String(error);
+          }
+          ensureAccountMachinePublisher?.("reconnect_started_sync_host");
+        }
+        if (!accountMachinePublisher) {
+          const owner = readCompetingSyncHostOwner?.() ?? null;
+          const why = owner
+            ? `${owner.appName ?? "Another ADE app"} (pid ${owner.pid}) is hosting sync on this computer, so this ADE can't put it on your account.`
+            : `No ADE on this computer is hosting sync right now, so it can't be put on your account.${
+              (startError ?? latestSyncHostStartFailure) ? ` ${startError ?? latestSyncHostStartFailure}` : ""
+            }`;
+          unavailable = {
+            state: "sync_host_not_running",
+            reason: `${why} Repair restarts ADE's background service on this computer.`,
+          };
+          headlessProjectLogger.warn("account.machine_repair_sync_host_not_running", {
+            ownerApp: owner?.appName ?? null,
+            ownerPid: owner?.pid ?? null,
+            startError,
+            latestSyncHostStartFailure,
+          });
+        }
+      }
+    }
     return await runMachinePairingRepair({
       directory: accountMachinePublisher,
       push,
       pushStore,
       onlyIfRevoked: input?.onlyIfRevoked === true,
+      unavailable,
       logger: headlessProjectLogger,
     });
   };
@@ -22023,12 +22083,36 @@ async function runServe(
       brainRelayTunnelGate = null;
       brainSyncTunnelClient = null;
     }
+    if (activeScope) {
+      // Activating a scope is not the same as hosting. Its sync service makes
+      // its own host/viewer call from the project database: when that
+      // database names another device as brain and that device was seen in
+      // the last few minutes, the scope becomes a VIEWER, never takes the
+      // lease, and never listens -- and this function used to return success
+      // anyway, so the startup loop exited silently and nothing hosted sync
+      // until a restart (Windows Alpha brain, 2026-09-28, minutes after the
+      // Stable brain that had hosted was force-killed). Re-run the decision,
+      // and fail loudly while it still says viewer, so the loop logs it and
+      // retries until the other brain counts as gone.
+      const scopeSync = activeScope.runtime.syncService;
+      if (scopeSync && !scopeSync.getHostService()) {
+        await scopeSync.reevaluateHostRole();
+        if (!scopeSync.getHostService()) {
+          const status = await scopeSync
+            .getStatus({ includeTransferReadiness: false })
+            .catch(() => null);
+          const { describeScopeNotHostingSync } = await import("./services/sync/syncHostStartupLoop");
+          throw new Error(describeScopeNotHostingSync(activeScope.record.displayName || activeScope.record.rootPath, status));
+        }
+      }
+    }
     // A ProjectScope is a complete runtime (DB, search, chat, automation,
     // polling, PTY, and sync services), not a lightweight metadata cache.
     // Keep non-host projects lazy; the sync-host handoff keeps the old host
     // authoritative while a newly selected project boots on demand.
     return activeScope ?? null;
   };
+  startSyncHostForRepair = startSyncHost;
   const disposeServeResources = async () => {
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
@@ -22202,7 +22286,18 @@ async function runServe(
         // brain failure there is lived only as untimestamped free text in
         // `launchd.err.log` — never in `brain.jsonl`, so no report section and
         // no telemetry ever saw it.
-        logEvent: (event, meta) => headlessProjectLogger.warn(event, meta),
+        logEvent: (event, meta) => {
+          if (event === "sync.host_start_failed") {
+            latestSyncHostStartFailure = typeof meta.message === "string" ? meta.message : null;
+          } else if (event === "sync.host_started" || event === "sync.host_start_recovered") {
+            latestSyncHostStartFailure = null;
+          }
+          // Failures stay warnings; progress facts (started, recovered, a
+          // stale-owner takeover) are info, so they reach brain.jsonl without
+          // tripping anything that counts warnings.
+          if (event.endsWith("_failed")) headlessProjectLogger.warn(event, meta);
+          else headlessProjectLogger.info(event, meta);
+        },
         // The machine-scoped last-failure record: the same file the recovery
         // screen, `ade doctor`, and the diagnostic report already read.
         recordStorageFault: (fault, detail) => {
@@ -22235,11 +22330,29 @@ async function runServe(
             .catch(() => undefined);
         },
       };
+      // The sync host is up: the account publisher must be too. The lease
+      // notification is what normally starts it, but that notification fires
+      // mid-switch (before the scope is published), its first publish can skip
+      // silently, and a subscriber failure there is swallowed. So reconcile
+      // explicitly and publish now rather than on the next 30-second beat.
+      const reconcileAccountPublisher = (reason: string): void => {
+        if (done) return;
+        if (ensureAccountMachinePublisher?.(reason)) return;
+        if (accountMachinePublisher) {
+          void accountMachinePublisher.requestPublishAfterCurrentAttempt();
+          return;
+        }
+        headlessProjectLogger.warn("account_publisher.not_running_after_sync_host_start", {
+          reason,
+          holdsSyncHostLease: holdsSyncHostLease(),
+        });
+      };
       await runSyncHostStartupLoop(syncHostStartupLoopDeps);
       // A recorded sync-host failure is cleared only once the sync host is
       // really up; clearing it on the bind would reset the crash-loop counter
       // on every restart of a brain that keeps dying right here.
       if (!done) clearLastFailure({ kind: "machine" });
+      reconcileAccountPublisher("sync_host_started");
       // The loop is done, but the lease is not forever: another brain can take
       // it and then exit. Re-host when a loss outlives the switch grace, so
       // this brain does not sit as a viewer until someone restarts it.
@@ -22254,6 +22367,7 @@ async function runServe(
           rehost: async () => {
             await runSyncHostStartupLoop({ ...syncHostStartupLoopDeps, retryFirstConflict: true });
             if (!done) clearLastFailure({ kind: "machine" });
+            reconcileAccountPublisher("sync_host_rehosted");
           },
         });
       }
@@ -22404,6 +22518,11 @@ async function runServe(
       competingSyncHostOwnerCache.at = at;
       return owner;
     };
+    const activeSyncHostScopeWithoutBooting = async () => {
+      const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
+      if (!activeProjectId) return null;
+      return await scopeRegistry.getIfBooted(activeProjectId)?.catch(() => null) ?? null;
+    };
     const startAccountMachinePublisher = (): void => {
       if (accountMachinePublisher) return;
       accountMachinePublisher = createBrainAccountMachinePublisherService({
@@ -22418,7 +22537,13 @@ async function runServe(
         isSyncEnabled: () => syncEnabled,
         logger: headlessProjectLogger,
         getSnapshot: async () => {
-          const activeScope = await scopeRegistry.resolveActiveSyncHost();
+          // Read the host that is ALREADY active; never start one. This used
+          // to call `resolveActiveSyncHost()`, which boots and switches to the
+          // most recent project when no host is published yet -- and the first
+          // publish runs from inside the lease notification, i.e. while the
+          // startup loop's own switch is still in flight, so a status read
+          // superseded the switch it was reporting on.
+          const activeScope = await activeSyncHostScopeWithoutBooting();
           const scoped = await activeScope?.runtime.syncService?.getStatus({
             includeTransferReadiness: false,
           }) ?? null;
@@ -22434,7 +22559,7 @@ async function runServe(
         },
         getMachineKey: () => machineCloudRelayStore.getMachineIdentity().machineKey,
         getInventorySummary: async () => {
-          const activeScope = await scopeRegistry.resolveActiveSyncHost();
+          const activeScope = await activeSyncHostScopeWithoutBooting();
           return await readMachineInventorySummary({
             providerInstanceStore: getMachineProviderInstanceStore(),
             accountSettingsStore: activeScope?.runtime.accountSettingsStore ?? null,
@@ -22478,6 +22603,26 @@ async function runServe(
         },
       });
       accountMachinePublisher.start();
+      headlessProjectLogger.info("account_publisher.started", {});
+    };
+    // The lease notification runs subscribers inside a catch that swallows
+    // everything ("a subscriber must never break lease bookkeeping"), so a
+    // publisher that failed to build left no trace and the machine silently
+    // never published. Every start goes through here and says what happened.
+    ensureAccountMachinePublisher = (reason: string): boolean => {
+      if (accountMachinePublisher || !holdsSyncHostSingleton()) return false;
+      try {
+        startAccountMachinePublisher();
+        headlessProjectLogger.info("account_publisher.start_requested", { reason });
+        return accountMachinePublisher != null;
+      } catch (error) {
+        accountMachinePublisher = null;
+        headlessProjectLogger.error("account_publisher.start_failed", {
+          reason,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }
     };
     // A project switch deactivates the previous sync host before activating the
     // target, so authority momentarily reads false inside one brain. Without the
@@ -22493,7 +22638,7 @@ async function runServe(
     const unsubscribeAccountPublisherAuthority = onSyncHostSingletonAuthorityChanged((held) => {
       if (held) {
         cancelAccountPublisherRelease();
-        startAccountMachinePublisher();
+        ensureAccountMachinePublisher?.("sync_host_lease_acquired");
         return;
       }
       if (!accountMachinePublisher || accountPublisherReleaseTimer) return;
@@ -22515,7 +22660,7 @@ async function runServe(
       unsubscribeAccountPublisherAuthority();
     };
     if (holdsSyncHostSingleton()) {
-      startAccountMachinePublisher();
+      ensureAccountMachinePublisher("sync_host_lease_held_at_boot");
     } else {
       headlessProjectLogger.info("account_publisher.start_skipped", {
         reason: "This brain does not hold the machine-wide sync host lease; another ADE process publishes this machine.",

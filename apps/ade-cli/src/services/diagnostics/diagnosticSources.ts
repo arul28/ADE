@@ -24,6 +24,7 @@ import { servicePath as systemdUnitPath } from "../../serviceManager/installSyst
 import {
   buildWindowsExportTaskArgs,
   resolveWindowsServiceLauncherPath,
+  resolveWindowsBrainOutputLogPath,
   resolveWindowsSupervisorLogPath,
   resolveWindowsTaskName,
   windowsPowerShellCommand,
@@ -518,10 +519,11 @@ function collectServiceOutputLogs(args: {
   run: DiagnosticCommandRunner;
 }): DiagnosticLogTail[] {
   if (args.platform === "win32") {
-    // One merged stream by construction: the supervisor appends its own lines
-    // and the brain it starts inherits no redirection.
+    // The supervisor's own lines, then the brain's stdout and stderr, which
+    // the supervisor captures into one file with a stream tag per line.
     return [
       readLogTail("Background service supervisor", resolveWindowsSupervisorLogPath({ env: args.env })),
+      readLogTail("Background service (brain output)", resolveWindowsBrainOutputLogPath({ env: args.env })),
     ];
   }
   if (args.platform === "darwin") {

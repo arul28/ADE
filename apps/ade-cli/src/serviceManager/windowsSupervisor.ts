@@ -150,6 +150,17 @@ export function renderWindowsServiceLauncher(
      * was completely invisible. Optional so existing callers keep working.
      */
     logPath?: string;
+    /**
+     * Where the brain's own stdout and stderr go: launchd's
+     * `launchd.out.log`/`launchd.err.log`, merged into one file with a stream
+     * tag per line. Without it the brain inherited the hidden supervisor's
+     * console, so everything it wrote there -- the sync-host startup loop's
+     * narration, a crash's last words -- reached no file at all.
+     * Rotated by the supervisor itself at {@link brainOutputMaxBytes} (one
+     * `.1` generation), so it never grows without bound.
+     */
+    brainOutputLogPath?: string;
+    brainOutputMaxBytes?: number;
     initialRestartDelayMs?: number;
     maxRestartDelayMs?: number;
     healthyRuntimeMs?: number;
@@ -188,9 +199,95 @@ export function renderWindowsServiceLauncher(
       "}",
     ]
     : ["function Write-SupervisorLog([string]$message) { }"];
+  // The brain's stdout/stderr are drained by background threads compiled in
+  // here, NOT by PowerShell event handlers: the supervisor thread spends its
+  // life blocked in `WaitForExit`, and a PowerShell `Register-ObjectEvent`
+  // action only runs when that thread is free. A redirected pipe nobody drains
+  // fills up and blocks the brain on its next write, which is a wedge this
+  // supervisor would then kill and restart forever. So redirection is switched
+  // on only once the drain type has compiled; if it cannot compile, the brain
+  // keeps its old inherited console and the supervisor log says why.
+  //
+  // C# 5 only (no `?.`, no interpolation): Windows PowerShell 5.1 compiles
+  // Add-Type sources with the .NET Framework compiler.
+  const brainOutputLines = options.brainOutputLogPath
+    ? [
+      `$brainOutputLogPath = ${powerShellSingleQuotedLiteral(options.brainOutputLogPath)}`,
+      `$brainOutputMaxBytes = ${Math.max(64 * 1024, Math.floor(options.brainOutputMaxBytes ?? 10 * 1024 * 1024))}`,
+      "$brainOutputPump = $false",
+      "try {",
+      "  Add-Type -TypeDefinition @'",
+      "using System;",
+      "using System.IO;",
+      "using System.Text;",
+      "using System.Threading;",
+      "namespace AdeSupervisor {",
+      "  public static class BrainOutputLog {",
+      "    private static readonly object Gate = new object();",
+      "    public static void Pump(StreamReader reader, string path, string stream, long maxBytes) {",
+      "      Thread worker = new Thread(delegate() { Drain(reader, path, stream, maxBytes); });",
+      "      worker.IsBackground = true;",
+      "      worker.Start();",
+      "    }",
+      "    private static void Drain(StreamReader reader, string path, string stream, long maxBytes) {",
+      "      while (true) {",
+      "        string line;",
+      "        try { line = reader.ReadLine(); } catch (Exception) { return; }",
+      "        if (line == null) { return; }",
+      "        Append(path, stream, line, maxBytes);",
+      "      }",
+      "    }",
+      "    public static void Append(string path, string stream, string line, long maxBytes) {",
+      "      lock (Gate) {",
+      "        try {",
+      "          FileInfo info = new FileInfo(path);",
+      "          if (info.Exists && info.Length > maxBytes) {",
+      "            string rotated = path + \".1\";",
+      "            if (File.Exists(rotated)) { File.Delete(rotated); }",
+      "            File.Move(path, rotated);",
+      "          }",
+      "        } catch (Exception) { }",
+      "        try {",
+      "          File.AppendAllText(path, DateTimeOffset.UtcNow.ToString(\"o\") + \" \" + stream + \" \" + line + \"\\r\\n\", new UTF8Encoding(false));",
+      "        } catch (Exception) { }",
+      "      }",
+      "    }",
+      "  }",
+      "}",
+      "'@",
+      "  $startInfo.RedirectStandardOutput = $true",
+      "  $startInfo.RedirectStandardError = $true",
+      "  $startInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)",
+      "  $startInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding($false)",
+      "  $brainOutputPump = $true",
+      "} catch {",
+      "  Write-SupervisorLog \"brain output capture unavailable; the brain keeps the supervisor console: $($_.Exception.Message)\"",
+      "}",
+      // Called right after a successful start. Never throws into the launch
+      // catch: that catch restarts the brain, and a throw here would start a
+      // second brain beside the running one. A pump that cannot start still
+      // gets its pipe drained to nowhere so the brain can never block on it.
+      "function Start-BrainOutputPump($brainProcess) {",
+      "  if (-not $brainOutputPump) { return }",
+      "  try {",
+      "    [AdeSupervisor.BrainOutputLog]::Pump($brainProcess.StandardOutput, $brainOutputLogPath, 'out', $brainOutputMaxBytes)",
+      "  } catch {",
+      "    Write-SupervisorLog \"brain stdout capture failed: $($_.Exception.Message)\"",
+      "    try { [void]$brainProcess.StandardOutput.BaseStream.CopyToAsync([IO.Stream]::Null) } catch { }",
+      "  }",
+      "  try {",
+      "    [AdeSupervisor.BrainOutputLog]::Pump($brainProcess.StandardError, $brainOutputLogPath, 'err', $brainOutputMaxBytes)",
+      "  } catch {",
+      "    Write-SupervisorLog \"brain stderr capture failed: $($_.Exception.Message)\"",
+      "    try { [void]$brainProcess.StandardError.BaseStream.CopyToAsync([IO.Stream]::Null) } catch { }",
+      "  }",
+      "}",
+    ]
+    : ["function Start-BrainOutputPump($brainProcess) { }"];
   const processLines = [
     `$pidPath = ${powerShellSingleQuotedLiteral(options.pidPath)}`,
     ...logLines,
+    ...brainOutputLines,
     `$initialRestartDelayMs = ${Math.max(100, Math.floor(options.initialRestartDelayMs ?? 1_000))}`,
     `$maxRestartDelayMs = ${Math.max(100, Math.floor(options.maxRestartDelayMs ?? 30_000))}`,
     `$healthyRuntimeMs = ${Math.max(1_000, Math.floor(options.healthyRuntimeMs ?? 60_000))}`,
@@ -341,6 +438,7 @@ export function renderWindowsServiceLauncher(
     "    try {",
     "      $process = [System.Diagnostics.Process]::Start($startInfo)",
     "      if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
+    "      Start-BrainOutputPump $process",
     "      $lastLaunchError = $null",
     "      $nextRestartAt = $null",
     "      Write-PidRecord -runtimePid $process.Id -runtimeStartedAtMs $runtimeStartedAt.ToUnixTimeMilliseconds()",

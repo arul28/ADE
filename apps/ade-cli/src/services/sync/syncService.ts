@@ -1866,6 +1866,21 @@ export function createSyncService(args: SyncServiceArgs) {
       return hostService;
     },
 
+    /**
+     * Run the host/viewer decision again now.
+     *
+     * The decision is otherwise re-made only on events (a host-startup toggle,
+     * remote changes applied). A scope that decided "viewer" because another
+     * device was brain a moment ago -- a brain force-killed seconds before this
+     * one started still looks fresh for `STALE_BRAIN_LAST_SEEN_MS` -- and whose
+     * viewer connect then failed never received another event, so it stayed a
+     * viewer of a dead brain and nobody hosted sync until a restart. The brain's
+     * sync-host startup loop calls this on every retry.
+     */
+    async reevaluateHostRole(): Promise<void> {
+      await refreshRoleState();
+    },
+
     getRemoteCommandDescriptor(action: string) {
       return remoteCommandService.getDescriptor(action);
     },

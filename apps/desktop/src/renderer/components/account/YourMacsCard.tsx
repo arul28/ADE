@@ -113,6 +113,8 @@ import {
 } from "../../webclient/workspace/webWorkspaceModel";
 
 const MACHINES_REFRESH_MS = 30_000;
+/** Settings anchor for this card; the manifest entry `account.computers` points here. */
+const YOUR_COMPUTERS_SETTINGS_ANCHOR = "account-computers";
 /**
  * The ADE iPhone app holds live connections to at most this many computers at
  * once (the one in focus plus three). Keep in step with the iOS fleet limit.
@@ -817,7 +819,11 @@ export function YourMacsCard() {
   }, [pendingForget, workspace]);
 
   return (
-    <div style={cardStyle({ padding: 0, overflow: "hidden" })}>
+    <div
+      id={YOUR_COMPUTERS_SETTINGS_ANCHOR}
+      data-settings-anchor={YOUR_COMPUTERS_SETTINGS_ANCHOR}
+      style={cardStyle({ padding: 0, overflow: "hidden" })}
+    >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "16px 18px" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
           <span

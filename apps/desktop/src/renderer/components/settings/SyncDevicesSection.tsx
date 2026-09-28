@@ -212,9 +212,15 @@ export function ThisMacCard({
   sync,
   sessionState,
   statusSlot = null,
+  onOpenYourComputers,
 }: {
   sync: SyncConnections;
   sessionState: AdeAccountSessionState;
+  /**
+   * Opens Settings > Account > Your computers. The Connections popover passes
+   * it; the settings page itself does not need a link to the page it is on.
+   */
+  onOpenYourComputers?: () => void;
   /**
    * The Connections popover puts this computer's account standing and its one
    * button here (`ThisComputerStatus`), in place of the summary line, so the
@@ -243,6 +249,27 @@ export function ThisMacCard({
   const reconnect = useReconnectThisComputer({
     onSettled: () => { void sync.refresh({ force: true }); },
   });
+  // "No ADE on this computer is hosting sync" used to be a dead end. Start sync
+  // runs the brain's own sync-host recovery; when that cannot fix it, its
+  // answer says why and Repair (restart the background service) is offered.
+  const [startingSync, setStartingSync] = useState(false);
+  const [startSyncOutcome, setStartSyncOutcome] = useState<{ ok: boolean; message: string } | null>(null);
+  const startSyncHost = window.ade?.account?.startSyncHost;
+  const startSync = useCallback(async () => {
+    const start = window.ade?.account?.startSyncHost;
+    if (!start) return;
+    setStartingSync(true);
+    setStartSyncOutcome(null);
+    try {
+      const result = await start();
+      setStartSyncOutcome({ ok: result.ok, message: result.ok ? "Sync is running on this computer." : result.message });
+    } catch (err) {
+      setStartSyncOutcome({ ok: false, message: err instanceof Error ? err.message : String(err) });
+    } finally {
+      setStartingSync(false);
+      void sync.refresh({ force: true });
+    }
+  }, [sync]);
 
   const { saveRuntimeName } = sync;
   // The runtime name is what this card renders, so it is written first and the
@@ -298,6 +325,9 @@ export function ThisMacCard({
   // the reader nothing they could act on, and a missing pairing code is a
   // normal state now that the account is the primary way to connect.
   const problem = connectionProblem(status, host);
+  const syncNotHosted = !host
+    && !isRemoteBound
+    && status.routeHealth?.accountDirectory?.state === "sync_not_started";
   // Only the local machine's own snapshot can be refused. A remote-bound pane
   // shows another machine, and this computer's button cannot fix that one.
   // Read once, so the summary line and the button always agree.
@@ -317,15 +347,28 @@ export function ThisMacCard({
     return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
       <div style={{ display: "grid", gap: 10 }}>
-        <div
-          style={{
-            fontFamily: SANS_FONT,
-            fontSize: 12,
-            fontWeight: 600,
-            color: COLORS.textSecondary,
-          }}
-        >
-          {versionLine ? `This machine — ${versionLine.text}` : "This machine"}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minWidth: 0 }}>
+          <div
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 12,
+              fontWeight: 600,
+              color: COLORS.textSecondary,
+              minWidth: 0,
+            }}
+          >
+            {versionLine ? `This machine — ${versionLine.text}` : "This machine"}
+          </div>
+          {onOpenYourComputers ? (
+            <button
+              type="button"
+              onClick={onOpenYourComputers}
+              title="Open Settings > Account > Your computers"
+              style={outlineButton({ height: 24, padding: "0 9px", fontSize: 11, flexShrink: 0 })}
+            >
+              Your computers
+            </button>
+          ) : null}
         </div>
 
         <div style={{ display: "flex", alignItems: "flex-start", gap: 10, minWidth: 0 }}>
@@ -425,6 +468,38 @@ export function ThisMacCard({
                 <span style={{ ...helperTextStyle, lineHeight: 1.4, color: COLORS.warning }}>
                   {problem}
                 </span>
+                {syncNotHosted && startSyncHost ? (
+                  <button
+                    type="button"
+                    disabled={startingSync}
+                    onClick={() => void startSync()}
+                    style={outlineButton({
+                      height: 24,
+                      padding: "0 9px",
+                      fontSize: 11,
+                      flexShrink: 0,
+                      opacity: startingSync ? 0.6 : 1,
+                      cursor: startingSync ? "not-allowed" : "pointer",
+                    })}
+                  >
+                    {startingSync ? "Starting sync…" : "Start sync"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {syncNotHosted && startSyncOutcome ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                <span
+                  role="status"
+                  style={{
+                    ...helperTextStyle,
+                    lineHeight: 1.4,
+                    color: startSyncOutcome.ok ? COLORS.success : COLORS.warning,
+                  }}
+                >
+                  {startSyncOutcome.message}
+                </span>
+                {!startSyncOutcome.ok && repair.available ? <BrainRepairButton repair={repair} height={24} /> : null}
               </div>
             ) : null}
           </div>

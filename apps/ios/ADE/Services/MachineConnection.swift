@@ -852,8 +852,14 @@ final class MachineConnection {
 
 // MARK: - Pure helpers
 
-/// Exponential backoff with jitter: 2 s, 4 s, 8 s … capped at 60 s.
+/// Exponential backoff with jitter: 2 s, 4 s, 8 s … capped at 60 s, then
+/// 5 minutes once a machine has failed 8 times in a row. A machine that is
+/// switched off otherwise cost a 10 s dial every minute for as long as the
+/// app was open (round 10 log).
 func machineConnectionBackoffNanoseconds(failures: Int, jitter: Double = Double.random(in: 0.8...1.2)) -> UInt64 {
+  if failures >= 8 {
+    return UInt64(300.0 * jitter * 1_000_000_000)
+  }
   let exponent = min(max(failures, 1), 6)
   let seconds = min(60.0, pow(2.0, Double(exponent))) * jitter
   return UInt64(seconds * 1_000_000_000)
