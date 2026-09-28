@@ -44,6 +44,12 @@ const appStoreState = vi.hoisted(() => ({
   projectTransition: null as { kind: "opening" | "switching" | "closing"; rootPath: string | null; startedAtMs: number } | null,
   projectTransitionError: null as { code?: string; message: string; rootPath?: string } | null,
   theme: "dark",
+  themeId: "dark",
+  customThemes: [] as unknown[],
+  themeFollowsSystem: false,
+  systemColorScheme: "dark" as "dark" | "light",
+  interfacePreferences: { sansFont: "geist", monoFont: "jetbrains", reduceMotion: false },
+  setSystemColorScheme: vi.fn(),
   launchPromptClipboardEnabled: true,
   launchPromptClipboardNoticeEnabled: true,
   promptStashButtonEnabled: true,
@@ -115,6 +121,7 @@ vi.mock("../../state/appStore", async () => {
     workViewStoreForProject: vi.fn(() => ({ getState: () => appStoreState })),
     AppStoreProvider: ({ children }: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, children),
     selectActiveProjectRoot: (state: typeof appStoreState) => state.project?.rootPath ?? null,
+    selectEffectiveThemeId: (state: typeof appStoreState) => state.themeId,
     // `App` mounts the account-settings sync against the ROOT store. It makes
     // no calls without a signed-in account and a preload bridge, neither of
     // which this test provides, so a stub store is all it needs.

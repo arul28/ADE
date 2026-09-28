@@ -2841,7 +2841,7 @@ Account Activity and push:
 - `apps/desktop/src/renderer/components/activity/ActivitySettingsPopover.tsx` —
   the gear in both the popover and the pane. It mounts
   `settings/ActivitySettingsControls.tsx` in its `popover` variant, which
-  `settings/ActivitySection.tsx` also mounts, so the Settings tab and the
+  `settings/NotificationsSection.tsx` also mounts, so the Settings page and the
   in-surface gear cannot drift. Every row saves on change; there is no Save
   button, which the popover it replaced did have.
 - `apps/desktop/src/renderer/lib/legacyRoutes.ts` — `LEGACY_ROUTE_ALIASES`

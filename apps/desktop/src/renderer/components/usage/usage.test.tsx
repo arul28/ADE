@@ -2174,12 +2174,12 @@ describe("usage components", () => {
 
       await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "project" }));
 
-      fireEvent.click(screen.getByRole("button", { name: "This machine" }));
+      fireEvent.click(screen.getByRole("radio", { name: "This machine" }));
 
       await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "machine" }));
       expect(localStorage.getItem("ade.stats.scope.v1")).toBe("machine");
 
-      fireEvent.click(screen.getByRole("button", { name: "All machines" }));
+      fireEvent.click(screen.getByRole("radio", { name: "All machines" }));
 
       await waitFor(() => expect(getAdeStats).toHaveBeenCalledWith({ preset: "all", scope: "account" }));
       expect(localStorage.getItem("ade.stats.scope.v1")).toBe("account");
@@ -2210,7 +2210,7 @@ describe("usage components", () => {
       expect(explained.getAttribute("title")).toMatch(/Cursor/);
 
       // Scope is stated by the control rather than restated in prose.
-      expect(screen.getByRole("button", { name: "This project" }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByRole("radio", { name: "This project" }).getAttribute("aria-checked")).toBe("true");
 
       expect(screen.getByText(/Cursor ledger covers this machine only\./)).toBeTruthy();
     });
@@ -2425,7 +2425,7 @@ describe("usage components", () => {
       // already-cached key is what exercises the stale branch — switching to a
       // *new* preset has nothing cached to fall back on, so it takes the
       // blank-and-report path instead.
-      fireEvent.click(screen.getByRole("button", { name: "7d" }));
+      fireEvent.click(screen.getByRole("radio", { name: "7d" }));
       await waitFor(() =>
         expect(getAdeStats).toHaveBeenCalledWith(expect.objectContaining({ preset: "7d" })),
       );
@@ -2434,7 +2434,7 @@ describe("usage components", () => {
         getAdeStats: vi.fn(async () => { throw new Error("ade.usage.getAdeStats timed out"); }),
       });
 
-      fireEvent.click(screen.getByRole("button", { name: "All" }));
+      fireEvent.click(screen.getByRole("radio", { name: "All" }));
 
       expect(await screen.findByText("Couldn't check for new usage. Showing the last numbers.")).toBeTruthy();
       expect(screen.getByText("Estimated cost")).toBeTruthy();
@@ -2685,13 +2685,15 @@ describe("UsagePooledLimits", () => {
     );
 
     expect(screen.getByText(/Pooled across 2 computers/)).toBeTruthy();
-    expect(screen.getByText("a@example.com")).toBeTruthy();
-    expect(screen.getByText("b@example.com")).toBeTruthy();
+    // Each account's email appears on its reset line, which may read
+    // "resets in … · a@example.com", so match as a substring.
+    expect(screen.getByText(/a@example\.com/)).toBeTruthy();
+    expect(screen.getByText(/b@example\.com/)).toBeTruthy();
 
     // Deselecting Mac leaves only Nuc's account.
     fireEvent.click(screen.getByRole("button", { name: "Mac" }));
-    expect(screen.queryByText("a@example.com")).toBeNull();
-    expect(screen.getByText("b@example.com")).toBeTruthy();
+    expect(screen.queryByText(/a@example\.com/)).toBeNull();
+    expect(screen.getByText(/b@example\.com/)).toBeTruthy();
 
     // Deselecting the last environment is the empty selection.
     fireEvent.click(screen.getByRole("button", { name: "Nuc" }));

@@ -142,7 +142,7 @@ describe("Attention Notch routing", () => {
     });
     expect(attentionNotchAppNavigation({ type: "open_settings" } as never)).toEqual({
       request: {
-        target: { kind: "settings", tab: "activity", anchor: null },
+        target: { kind: "settings", tab: "notifications", anchor: null },
         source: "attention-notch",
       },
       activatesApp: true,

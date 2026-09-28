@@ -8,6 +8,7 @@ import {
   type AccountSyncedStore,
 } from "./accountSettingsSync";
 import type { AccountSettingRow } from "../../shared/types/accountSettings";
+import type { AppState } from "../state/appStore";
 
 // ---------------------------------------------------------------------------
 // A stand-in for the app store: the two registered settings below read plain
@@ -142,6 +143,8 @@ describe("accountSettingsSync (renderer)", () => {
       "theme",
       "themeId",
       "customThemes",
+      "themeFollowsSystem",
+      "interfacePreferences",
       "terminalPreferences",
       "smartTooltipsEnabled",
       "launchPromptClipboardEnabled",
@@ -565,5 +568,41 @@ describe("accountSettingsSync (renderer)", () => {
     state.setTheme("light");
     await settle();
     expect(api.set).not.toHaveBeenCalled();
+  });
+});
+
+describe("the synced theme mode respects the follow-the-system rule", () => {
+  const themeEntry = () => ACCOUNT_SYNCED_SETTINGS.find((entry) => entry.key === "theme")!;
+
+  // The incoming `theme` is a machine's painted base mode, which a machine that
+  // follows its OS derives locally. Applying it as a choice would let two
+  // machines in different OS modes overwrite each other's theme.
+  it("does not apply the incoming mode while this machine follows the system", () => {
+    const entry = themeEntry();
+    const applied: string[] = [];
+    const state = {
+      theme: "light",
+      themeId: "ocean-dark",
+      themeFollowsSystem: true,
+      setTheme: (id: string) => applied.push(id),
+    } as unknown as AppState;
+
+    entry.apply(state, "light");
+    expect(applied).toEqual([]);
+    expect(entry.read(state)).toBe("light");
+  });
+
+  it("moves the chosen family to the incoming mode's variant when this machine picks by hand", () => {
+    const entry = themeEntry();
+    const applied: string[] = [];
+    const state = {
+      theme: "dark",
+      themeId: "ocean-dark",
+      themeFollowsSystem: false,
+      setTheme: (id: string) => applied.push(id),
+    } as unknown as AppState;
+
+    entry.apply(state, "light");
+    expect(applied).toEqual(["ocean-light"]);
   });
 });

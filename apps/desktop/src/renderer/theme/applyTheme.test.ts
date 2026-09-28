@@ -11,6 +11,7 @@ type FakeElement = {
   };
   setAttribute: (name: string, value: string) => void;
   getAttribute: (name: string) => string | null;
+  removeAttribute: (name: string) => void;
   props: Map<string, string>;
   attrs: Map<string, string>;
 };
@@ -26,6 +27,7 @@ function fakeElement(): FakeElement {
     },
     setAttribute: (name, value) => void attrs.set(name, value),
     getAttribute: (name) => attrs.get(name) ?? null,
+    removeAttribute: (name) => void attrs.delete(name),
     props,
     attrs,
   };
@@ -42,12 +44,18 @@ describe("applyAdeTheme", () => {
     clearAppliedTheme(fakeElement() as unknown as HTMLElement);
   });
 
-  it("writes identity attributes and the base-mode structural block", () => {
+  it("writes identity attributes on <html>, and clears them from <body>", () => {
     const { doc, root, body } = fakeDocument();
-    applyAdeTheme(resolveTheme(getShippedTheme("parchment")!), doc);
+    // A stale body attribute is exactly the bug: the stylesheet re-declares
+    // every `--color-*` under `[data-theme]`, so a nearer element reset the
+    // palette one level below the inline overrides.
+    body.attrs.set("data-theme", "dark");
+    body.attrs.set("data-theme-id", "obsidian");
+    applyAdeTheme(resolveTheme(getShippedTheme("dune-light")!), doc);
     expect(root.attrs.get("data-theme")).toBe("light");
-    expect(root.attrs.get("data-theme-id")).toBe("parchment");
-    expect(body.attrs.get("data-theme-id")).toBe("parchment");
+    expect(root.attrs.get("data-theme-id")).toBe("dune-light");
+    expect(body.attrs.has("data-theme")).toBe(false);
+    expect(body.attrs.has("data-theme-id")).toBe(false);
     expect(root.style.colorScheme).toBe("light");
   });
 

@@ -86,6 +86,7 @@ vi.mock("../../state/appStore", () => ({
       : null,
     projectRevision: mockState.projectRevision,
   })),
+  selectEffectiveThemeId: (state: { theme: "dark" | "light" }) => state.theme,
   DEFAULT_TERMINAL_FONT_FAMILY: MOCK_TERMINAL_FONT_FAMILY,
   DEFAULT_TERMINAL_PREFERENCES: {
     fontFamily: MOCK_TERMINAL_FONT_FAMILY,

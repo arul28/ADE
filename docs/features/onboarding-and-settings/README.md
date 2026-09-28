@@ -484,14 +484,18 @@ Renderer — settings:
   container. It renders; it does not decide. Tabs, ordering, deep-link
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
-  entries. The ten tabs are General, Appearance, Agents & Models,
-  Lanes, Integrations, Notifications, Activity, Secrets, Diagnostics, and
-  Usage. Every tab id ADE has ever shipped in
-  a URL still resolves via `LEGACY_TAB_ALIASES`
-  (`settingsManifest.test.ts` asserts this); the one exception is
-  `keybindings`, dropped because it pointed at a tab with no keybindings
-  UI. Welcome video replay and help preferences live under the Help menu
-  in the top bar, not as a Settings tab.
+  entries. The tabs are General, Appearance, Chat, Notifications,
+  Agents & Models, Lanes, Integrations, Secrets, Storage, Diagnostics, and
+  Usage. Notifications and Activity are one page: the event policies, the
+  notch, per-machine mute, privacy, sounds, and scheduled work all read and
+  write through one `useActivitySettings()` model, so a change on one control
+  can no longer be overwritten by a save from another copy. The retired
+  `activity` tab id and the `attention` alias resolve to `notifications`.
+  Every tab id ADE has ever shipped in a URL still resolves via
+  `LEGACY_TAB_ALIASES` (`settingsManifest.test.ts` asserts this); the one
+  exception is `keybindings`, dropped because it pointed at a tab with no
+  keybindings UI. Welcome video replay and help preferences live under the
+  Help menu in the top bar, not as a Settings tab.
   The manifest assigns each setting to one of four persistence scopes:
   `account`, `account-repo`, `machine`, or `machine-repo`.
 - `apps/desktop/src/renderer/components/settings/BrowserLinksSection.tsx`
@@ -518,10 +522,34 @@ Renderer — settings:
   it as the section's opening line — so a toggle that will not follow you to
   another browser says so before you flip it. Desktop renders sections exactly
   as before, with no banner.
+- `apps/desktop/src/shared/theme/library.ts`, `resolve.ts`, and
+  `renderer/theme/applyTheme.ts` — the theme engine. Shipped themes are
+  `ADE_THEME_FAMILIES` (each family has a dark and a light variant); `dark`
+  and `light` keep the stylesheet's own palettes and emit no inline vars,
+  while every other theme paints its palette as inline `--color-*` properties
+  on `<html>`. Only `<html>` carries `data-theme` / `data-theme-id`: the
+  stylesheet re-declares every `--color-*` under `[data-theme]`, so the same
+  attribute on `<body>` or the app root reset the palette one level below the
+  inline overrides and made every theme look like plain dark or light.
+  `LEGACY_THEME_ID_ALIASES` maps a retired id (obsidian, high-contrast,
+  midnight, evergreen, parchment, blush) to the variant that replaced it. The
+  account-synced `themeFollowsSystem` flag makes the painted theme follow the
+  OS colour scheme: `effectiveThemeId` paints the chosen family's variant for
+  the current `systemColorScheme` (machine-local, never synced), and the sync
+  `theme` setter leaves the stored choice alone while the flag is on, so two
+  machines in different OS modes cannot overwrite each other.
+  `renderer/theme/applyInterface.ts` applies the account-synced
+  `interfacePreferences` (`sansFont`, `monoFont`, `reduceMotion`) as
+  `--font-sans` / `--font-mono` overrides plus `html[data-motion="reduced"]`,
+  and `App` drives `MotionConfig` from the same flag so the preference reaches
+  JS animations, not only CSS.
 - `apps/desktop/src/renderer/components/settings/primitives/` — the
   control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
   `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,
-  `SettingsDisclosure`, `useSavedFlash`). `SettingsDisclosure` is a
+  `SettingsDisclosure`, `useSavedFlash`). `primitives/SettingsRows.tsx` adds
+  the grouped-rows page vocabulary — `SettingsSection`, `SettingsPanel`,
+  `SettingsRow` (with `icon`/`tone`), `SettingsColumn`, `SettingsSplit`, and
+  `SettingsSectionAction` — which most redesigned pages use. `SettingsDisclosure` is a
   native `<details>` in a recessed card for rarely-needed fields —
   native markup keeps keyboard and find-in-page behaviour — and its
   `defaultOpen` is uncontrolled on purpose, so a caller passes `true`
@@ -1758,13 +1786,12 @@ The pages themselves:
 | Tab | Section file | What lives here |
 |---|---|---|
 | General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `ProductAnalyticsSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and the two Privacy consents — anonymous analytics and diagnostics sharing (`#diagnostics-sharing`, hidden on hosted web). Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
-| Appearance | `AppearanceSection.tsx` | Theme and terminal text. Everything chat-shaped moved to the Chat page. |
+| Appearance | `AppearanceSection.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx`, `AppleDevicesSection.tsx` | Theme families (dark + light each), the Auto / Light / Dark mode choice, the interface and code faces, reduce motion, terminal text, and Apple Development. Everything chat-shaped moved to the Chat page. |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`) | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt stash, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming and commit suggestions use the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
 | Lanes | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
-| Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx` | Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound. The per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this tab. |
-| Activity | `ActivitySection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | The surfaces Activity itself paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle, so neither had a card left for search to land on. `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the two entry points cannot drift. Legacy `?tab=attention` plus the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
+| Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
 | Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: estimated-cost hero, per-provider split, layered daily chart, Live limits band, metric strip, Activity, breakdown, and contributing machines. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |

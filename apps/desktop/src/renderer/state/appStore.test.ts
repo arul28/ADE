@@ -53,7 +53,9 @@ const mockLocalStorage = {
 // Import after window is set up
 import {
   createProjectAppStore,
+  effectiveThemeId,
   retainProjectAppStoreState,
+  selectEffectiveThemeId,
   useAppStore,
   THEME_IDS,
   DEFAULT_TERMINAL_PREFERENCES,
@@ -260,16 +262,19 @@ describe("appStore", () => {
       expect(JSON.parse(latest![1])).toMatchObject({ theme: "dark" });
     });
 
-    it("selects a shipped theme by id and derives its base mode", () => {
+    it("selects a shipped theme and resolves a retired id to its replacement", () => {
       useAppStore.getState().setTheme("parchment");
-      expect(useAppStore.getState().themeId).toBe("parchment");
-      // Parchment is a light theme; `theme` stays the base mode every existing
+      // `parchment` is a retired shipped id, so it canonicalizes to the variant
+      // that replaced it; a stored choice keeps its look instead of falling
+      // back to ADE dark.
+      expect(useAppStore.getState().themeId).toBe("dune-light");
+      // Dune is a light family; `theme` stays the base mode every existing
       // surface reads.
       expect(useAppStore.getState().theme).toBe("light");
       const latestCalls = mockLocalStorage.setItem.mock.calls
         .filter(([key]) => key === "ade.userPreferences.v1");
       const latest = latestCalls[latestCalls.length - 1];
-      expect(JSON.parse(latest[1])).toMatchObject({ themeId: "parchment", theme: "light" });
+      expect(JSON.parse(latest[1])).toMatchObject({ themeId: "dune-light", theme: "light" });
       useAppStore.getState().setTheme("dark");
     });
 
@@ -297,6 +302,50 @@ describe("appStore", () => {
       expect(persisted.customThemes).toHaveLength(1);
       expect(persisted.customThemes[0]).toMatchObject({ id: "my-theme", name: "My Theme" });
 
+      useAppStore.getState().setTheme("dark");
+      useAppStore.getState().setCustomThemes([]);
+    });
+  });
+
+  describe("follow-the-system colour scheme", () => {
+    it("paints the chosen family's variant for the OS mode without rewriting the choice", () => {
+      useAppStore.getState().setCustomThemes([]);
+      useAppStore.getState().setThemeFollowsSystem(false);
+      useAppStore.getState().setTheme("ocean-dark");
+
+      useAppStore.getState().setThemeFollowsSystem(true);
+      useAppStore.getState().setSystemColorScheme("light");
+      // The stored choice keeps the family; only the painted id moves.
+      expect(useAppStore.getState().themeId).toBe("ocean-dark");
+      expect(selectEffectiveThemeId(useAppStore.getState())).toBe("ocean-light");
+
+      // An OS flip repaints again, still without touching the choice.
+      useAppStore.getState().setSystemColorScheme("dark");
+      expect(useAppStore.getState().themeId).toBe("ocean-dark");
+      expect(selectEffectiveThemeId(useAppStore.getState())).toBe("ocean-dark");
+
+      useAppStore.getState().setThemeFollowsSystem(false);
+      useAppStore.getState().setTheme("dark");
+    });
+
+    it("leaves a custom theme, which has one mode, unchanged when the system flips", () => {
+      const custom = {
+        formatVersion: 1 as const,
+        id: "follow-system-custom",
+        name: "Follow System Custom",
+        baseMode: "dark" as const,
+        source: "custom" as const,
+        palette: { bg: "#111111", fg: "#eeeeee", surface: "#141414", card: "#161616", accent: "#60a5fa" },
+      };
+      useAppStore.getState().setCustomThemes([custom]);
+      useAppStore.getState().setTheme("follow-system-custom");
+      useAppStore.getState().setThemeFollowsSystem(true);
+
+      expect(effectiveThemeId("follow-system-custom", true, "light")).toBe("follow-system-custom");
+      expect(effectiveThemeId("follow-system-custom", true, "dark")).toBe("follow-system-custom");
+      expect(selectEffectiveThemeId(useAppStore.getState())).toBe("follow-system-custom");
+
+      useAppStore.getState().setThemeFollowsSystem(false);
       useAppStore.getState().setTheme("dark");
       useAppStore.getState().setCustomThemes([]);
     });
