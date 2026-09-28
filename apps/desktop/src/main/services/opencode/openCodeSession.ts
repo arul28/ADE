@@ -52,6 +52,17 @@ function sameRules(a: readonly OpenCodeRule[] | undefined, b: readonly OpenCodeR
   return flat(a ?? []) === flat(b);
 }
 
+/** The user's configured `default_agent` (the last config layer that sets one), else OpenCode's `build`. */
+async function openCodeDefaultAgent(client: OpenCodeClient, directory: string | undefined): Promise<string> {
+  const entries = await client.config.get(directory ? { location: { directory } } : undefined).catch(() => []);
+  let agent = "build";
+  for (const entry of entries) {
+    const value = entry.type === "document" ? entry.info.default_agent?.trim() : undefined;
+    if (value && !value.startsWith("ade-")) agent = value;
+  }
+  return agent;
+}
+
 /**
  * Bring a session to the agent, model, and session rules ADE wants, judged
  * against what the server reports, not a cache: something else (another ADE
@@ -60,11 +71,24 @@ function sameRules(a: readonly OpenCodeRule[] | undefined, b: readonly OpenCodeR
  */
 export async function applyOpenCodeSessionMode(
   client: OpenCodeClient,
-  current: { id: string; agent?: string; model?: OpenCodeModelRef; permissions?: readonly OpenCodeRule[] },
+  current: {
+    id: string;
+    agent?: string;
+    model?: OpenCodeModelRef;
+    permissions?: readonly OpenCodeRule[];
+    location?: { directory?: string };
+  },
   mode: { agent: OpenCodeAgentProfile | null; model?: OpenCodeModelRef; rules?: readonly OpenCodePermissionRule[] | null },
 ): Promise<void> {
   if (mode.agent && current.agent !== mode.agent) {
     await client.session.switchAgent({ sessionID: current.id, agent: mode.agent });
+  } else if (!mode.agent && current.agent?.startsWith("ade-")) {
+    // `config-toml` means the user's own configuration: a session left on an
+    // ADE agent (full-auto allows everything) must go back to their default.
+    await client.session.switchAgent({
+      sessionID: current.id,
+      agent: await openCodeDefaultAgent(client, current.location?.directory),
+    });
   }
   if (mode.model && !sameOpenCodeModelRef(current.model, mode.model)) {
     await client.session.switchModel({ sessionID: current.id, model: mode.model });
@@ -237,6 +261,14 @@ export async function startOpenCodeChatSession(args: {
       try {
         const existing = await client.session.get({ sessionID: persisted });
         const handle = handleFor(existing.id, existing.title, true);
+        // Sessions from before the marker, forks, and imports open here; mark
+        // them so a terminal's `--continue` never takes them.
+        if (!isAdeChatOpenCodeSession(existing)) {
+          await client.session.update({
+            sessionID: existing.id,
+            metadata: { ...existing.metadata, ...ADE_CHAT_SESSION_METADATA },
+          });
+        }
         // The saved session keeps the agent and model of its last turn; bring
         // it to what ADE shows now.
         await applyOpenCodeSessionMode(client, existing, { agent: args.agent, model: args.model, rules: args.permissions });
