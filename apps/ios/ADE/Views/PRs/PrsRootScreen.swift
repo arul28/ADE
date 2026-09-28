@@ -4,6 +4,9 @@ import UIKit
 struct PRsTabView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @EnvironmentObject private var syncService: SyncService
+  @EnvironmentObject private var machineFleet: MachineFleet
+  /// PR ↔ lane links and lanes of the other machines holding this repository.
+  @StateObject private var remotePrs = PrRemoteMachinesModel()
   @Namespace private var prTransitionNamespace
   var isActive = true
 
@@ -41,9 +44,6 @@ struct PRsTabView: View {
   @State private var githubDerived: PrGitHubDerivedList = .empty
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
   @State private var autoMapRequest: PrAutoMapRequest?
-  @State private var autoMapPreflight: PrAutoMapPreflight?
-  @State private var autoMapPreflightLoading = false
-  @State private var autoMapBlockingMessage: String?
   /// The PR a swipe-to-close is waiting on confirmation for. Closing is a
   /// GitHub state change on someone's work, so it asks first here exactly as it
   /// does on desktop — a swipe plus one tap is not a decision.
@@ -158,9 +158,14 @@ struct PRsTabView: View {
   /// the filter/sort/count cost.
   private func recomputeGitHubDerived() {
     let next = prComputeGitHubDerivedList(
-      items: prReconcileGitHubPullRequests(
-        snapshotItems: repoScopedGitHubPullRequests(from: githubSnapshot),
-        mappedPrs: prs
+      // Rows the focused machine does not link take the lane another machine
+      // holds for them.
+      items: prApplyRemoteLaneLinks(
+        prReconcileGitHubPullRequests(
+          snapshotItems: repoScopedGitHubPullRequests(from: githubSnapshot),
+          mappedPrs: prs
+        ),
+        links: remotePrs.links
       ),
       query: searchText,
       status: .all,
@@ -314,6 +319,75 @@ struct PRsTabView: View {
     githubDerived.linkedCount
   }
 
+  /// Re-read the other machines while the tab is visible, for the focused
+  /// project, and again when a machine's live link comes or goes.
+  private var remotePrsPollKey: String? {
+    guard isActive, let projectId = syncService.activeProjectId else { return nil }
+    let live = machineFleet.machines.filter { $0.state == .live }.map(\.machineKey).sorted()
+    return "\(projectId)|\(live.joined(separator: ","))"
+  }
+
+  private var focusedMachineName: String {
+    syncService.hostName ?? syncService.activeHostProfile?.hostName ?? "This machine"
+  }
+
+  /// The machines of the focused repository: names for the lane chips, and
+  /// where a lane made from a PR can go (this machine and every live one,
+  /// least busy first).
+  private var machineContext: PrMachineContext {
+    let focusedRunning = syncService.activeProject
+      .flatMap { syncService.rosterProject(for: $0) }?.runningCount ?? 0
+    var createMachines = [PrLaneMachine(
+      id: "",
+      name: focusedMachineName,
+      targetProjectId: nil,
+      targetRootPath: nil,
+      runningCount: focusedRunning
+    )]
+    for machine in remotePrs.machines where machine.isLive {
+      createMachines.append(PrLaneMachine(
+        id: machine.machineKey,
+        name: machine.name,
+        targetProjectId: syncFleetMarkedProjectId(machineKey: machine.machineKey, projectId: machine.projectId),
+        targetRootPath: machine.rootPath,
+        runningCount: machine.runningCount
+      ))
+    }
+    // Stable sort: ties keep the focused machine first.
+    createMachines = createMachines.enumerated()
+      .sorted { ($0.element.runningCount, $0.offset) < ($1.element.runningCount, $1.offset) }
+      .map(\.element)
+    return PrMachineContext(
+      focusedName: focusedMachineName,
+      remoteNames: Dictionary(
+        remotePrs.machines.map { ($0.machineKey, $0.name) },
+        uniquingKeysWith: { first, _ in first }
+      ),
+      createMachines: createMachines
+    )
+  }
+
+  /// Lanes a PR can be linked to: this machine's and every live machine's
+  /// (namespaced ids, so the link is made on the lane's machine).
+  private var linkableLanes: [LaneSummary] {
+    lanes + remotePrs.machines.flatMap(\.lanes)
+  }
+
+  /// The lane another machine holds for a detail route, by the PR's GitHub
+  /// coordinates.
+  private func remoteLaneLink(forRouteId routeId: String) -> PrRemoteLaneLink? {
+    guard let coordinates = prGitHubCoordinates(fromRouteId: routeId) else { return nil }
+    return remotePrs.link(
+      repoOwner: coordinates.repoOwner,
+      repoName: coordinates.repoName,
+      githubPrNumber: coordinates.githubPrNumber
+    )
+  }
+
+  private func refreshRemotePrs() async {
+    await remotePrs.refresh(sync: syncService, fleet: machineFleet)
+  }
+
   var body: some View {
     NavigationStack(path: $path) {
       List {
@@ -459,6 +533,17 @@ struct PRsTabView: View {
         guard prNavigationRequestKey != nil else { return }
         await handleRequestedPrNavigation()
       }
+      .task(id: remotePrsPollKey) {
+        guard remotePrsPollKey != nil else { return }
+        while !Task.isCancelled {
+          await refreshRemotePrs()
+          try? await Task.sleep(nanoseconds: PrRemoteMachinesModel.refreshIntervalNanoseconds)
+        }
+      }
+      .onChange(of: syncService.activeProjectId) { _, _ in
+        remotePrs.reset()
+      }
+      .onChange(of: remotePrs.machines) { _, _ in recomputeGitHubDerived() }
       .onChange(of: githubCategoryRawValue) { _, _ in
         guard selectedGitHubCategory.wrappedValue != .open else { return }
         Task { await loadGitHubExternalHistoryIfNeeded() }
@@ -485,8 +570,11 @@ struct PRsTabView: View {
           transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
           requestedRepoOwner: routeScope?.repoOwner,
           requestedRepoName: routeScope?.repoName,
-          availableLanes: lanes,
-          initialTab: prDetailInitialTabs[prId] ?? .overview
+          availableLanes: linkableLanes,
+          initialTab: prDetailInitialTabs[prId] ?? .overview,
+          remoteLaneLink: remoteLaneLink(forRouteId: prId),
+          machineContext: machineContext,
+          onRemoteLinksChanged: { await refreshRemotePrs() }
         )
           .environmentObject(syncService)
       }
@@ -502,8 +590,9 @@ struct PRsTabView: View {
       .sheet(item: $laneLinkRequest) { request in
         PrLaneLinkSheet(
           item: request.item,
-          lanes: lanes,
-          canLink: canLinkGitHubPullRequests
+          lanes: linkableLanes,
+          canLink: canLinkGitHubPullRequests,
+          machineContext: machineContext
         ) { laneId in
           runPrRootAction(
             "Linking pull request",
@@ -515,6 +604,9 @@ struct PRsTabView: View {
             },
             onSuccess: {
               laneLinkRequest = nil
+              // A link made on another machine shows once that machine is
+              // read again.
+              if isWorkRemoteLaneId(laneId) { Task { await refreshRemotePrs() } }
             }
           )
         } onOpenGitHub: {
@@ -524,15 +616,12 @@ struct PRsTabView: View {
       .sheet(item: $autoMapRequest) { request in
         PrAutoMapSheet(
           item: request.item,
-          preflight: autoMapPreflight,
-          loading: autoMapPreflightLoading,
-          blockingMessage: autoMapBlockingMessage,
-          canCreate: canAutoMapGitHubPullRequests
-            && (autoMapPreflight?.canCreate ?? false)
-            && autoMapBlockingMessage == nil,
-          onCreate: { confirmAutoMap(for: request.item) },
+          machines: machineContext.createMachines,
+          canCreate: canAutoMapGitHubPullRequests,
+          onCreate: { machine in confirmAutoMap(for: request.item, on: machine) },
           onCancel: { autoMapRequest = nil }
         )
+        .environmentObject(syncService)
       }
       .confirmationDialog(
         prCloseConfirmationTitle(prNumber: closeConfirmationTarget?.githubPrNumber),
@@ -625,7 +714,11 @@ struct PRsTabView: View {
         .accessibilityLabel(filtersExpanded ? "Hide filters" : "Show filters")
 
         Button {
-          Task { await reload(refreshRemote: true) }
+          Task {
+            async let remote: Void = refreshRemotePrs()
+            await reload(refreshRemote: true)
+            await remote
+          }
         } label: {
           PrsGlassDisc(tint: PrsGlass.textSecondary, isAlive: false) {
             Image(systemName: "arrow.clockwise")
@@ -917,6 +1010,15 @@ struct PRsTabView: View {
     return prs.first { $0.id == linkedPrId }
   }
 
+  /// The machine a row's lane is on, when the repository is on more than one.
+  /// Called per row, so it avoids building `machineContext`.
+  private func laneMachineName(for item: GitHubPrListItem) -> String? {
+    guard !remotePrs.machines.isEmpty else { return nil }
+    guard let laneId = item.linkedLaneId ?? linkedPullRequest(for: item)?.laneId, !laneId.isEmpty else { return nil }
+    guard let remote = workParseRemoteLaneId(laneId) else { return focusedMachineName }
+    return remotePrs.machines.first { $0.machineKey == remote.machineKey }?.name
+  }
+
   @ViewBuilder
   private func githubRowNavigation(for item: GitHubPrListItem) -> some View {
     if let prId = item.linkedPrId {
@@ -929,6 +1031,7 @@ struct PRsTabView: View {
         PrRowCard(
           item: item,
           linkedPr: linkedPullRequest(for: item),
+          laneMachineName: laneMachineName(for: item),
           transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
           isSelectedTransitionSource: selectedPrTransitionId == prId
         )
@@ -956,20 +1059,22 @@ struct PRsTabView: View {
       } label: {
         PrRowCard(
           item: item,
-          linkedPr: linkedPullRequest(for: item)
+          linkedPr: linkedPullRequest(for: item),
+          laneMachineName: laneMachineName(for: item)
         )
       }
       .buttonStyle(.plain)
       .swipeActions(edge: .trailing, allowsFullSwipe: false) {
         Button("Review") { openGitHubDetail(item) }
         .tint(ADEColor.warning)
-        if canAutoMapGitHubPullRequests {
+        // A lane on another machine already gives this PR a home.
+        if canAutoMapGitHubPullRequests, item.linkedLaneId == nil {
           Button("Create lane") {
             presentAutoMap(for: item)
           }
           .tint(ADEColor.success)
         }
-        if canLinkGitHubPullRequests {
+        if canLinkGitHubPullRequests, item.linkedLaneId == nil {
           Button("Link lane") {
             laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
           }
@@ -1163,7 +1268,10 @@ struct PRsTabView: View {
 
   @MainActor
   private func refreshFromPullGesture() async {
+    // The other machines are read now, not on their 30-second beat.
+    async let remote: Void = refreshRemotePrs()
     await reload(refreshRemote: true)
+    await remote
     if errorMessage == nil {
       withAnimation(ADEMotion.emphasis(reduceMotion: reduceMotion)) {
         refreshFeedbackToken += 1
@@ -1527,60 +1635,54 @@ struct PRsTabView: View {
 
   // MARK: - Auto-map (create lane from PR branch)
 
-  /// Open the auto-map confirmation sheet for an unmapped PR and kick off a
-  /// preflight so the sheet can show the target lane name / a blocking
-  /// conflict before the user commits. Preflight is best-effort: a failure
-  /// just leaves the sheet in its can't-confirm state with the error noted.
+  /// Open the auto-map confirmation sheet for an unmapped PR. The sheet asks
+  /// for the machine when there is more than one and runs the preflight there.
   private func presentAutoMap(for item: GitHubPrListItem) {
-    autoMapBlockingMessage = nil
-    autoMapPreflight = nil
-    autoMapPreflightLoading = canAutoMapGitHubPullRequests
     autoMapRequest = PrAutoMapRequest(item: item)
-    guard canAutoMapGitHubPullRequests else { return }
-    let service = syncService
-    let target = item
-    Task { @MainActor in
-      do {
-        let result = try await service.preflightCreateLaneFromPrBranch(
-          repoOwner: target.repoOwner,
-          repoName: target.repoName,
-          githubPrNumber: target.githubPrNumber
-        )
-        // Ignore a stale completion if the user moved on to another PR.
-        guard autoMapRequest?.item.id == target.id else { return }
-        autoMapPreflight = result.preflight
-        autoMapBlockingMessage = result.preflight.blockingConflict?.message
-      } catch {
-        guard autoMapRequest?.item.id == target.id else { return }
-        autoMapBlockingMessage = error.localizedDescription
-      }
-      autoMapPreflightLoading = false
-    }
   }
 
-  /// Commit the auto-map: create a lane from the PR's head branch via the
-  /// durable action wrapper (spinner survives a tab switch), then refresh the
-  /// list and navigate to the now-mapped PR. A blocking conflict surfaces its
-  /// message instead of navigating.
-  private func confirmAutoMap(for item: GitHubPrListItem) {
+  /// Commit the auto-map: create a lane from the PR's head branch on the
+  /// chosen machine via the durable action wrapper (spinner survives a tab
+  /// switch), then refresh the list and navigate to the now-mapped PR. A
+  /// blocking conflict surfaces its message instead of navigating.
+  private func confirmAutoMap(for item: GitHubPrListItem, on machine: PrLaneMachine?) {
     autoMapRequest = nil
+    let onRemote = machine?.targetProjectId != nil
     runPrRootAction(
       "Creating lane from PR branch",
       operation: {
-        let result = try await syncService.createLaneFromPrBranch(
-          repoOwner: item.repoOwner,
-          repoName: item.repoName,
-          githubPrNumber: item.githubPrNumber
-        )
+        let result: PrAutoMapCreateResult
+        if let machine {
+          result = try await syncService.createLaneFromPrBranch(
+            repoOwner: item.repoOwner,
+            repoName: item.repoName,
+            githubPrNumber: item.githubPrNumber,
+            on: machine
+          )
+        } else {
+          result = try await syncService.createLaneFromPrBranch(
+            repoOwner: item.repoOwner,
+            repoName: item.repoName,
+            githubPrNumber: item.githubPrNumber
+          )
+        }
         if let conflict = result.preflight.blockingConflict {
           throw PrAutoMapError.blocked(conflict.message)
         }
       },
       onSuccess: {
-        // The durable wrapper kicks off a refresh, but it isn't awaited before
-        // this fires — so re-pull the list ourselves and only then navigate to
-        // the freshly-mapped PR (matched by repo + number).
-        Task { await navigateToMappedPr(for: item) }
+        if onRemote {
+          // The PR row lives on that machine: read it again, then open the PR.
+          Task {
+            await refreshRemotePrs()
+            openGitHubDetail(item)
+          }
+        } else {
+          // The durable wrapper kicks off a refresh, but it isn't awaited
+          // before this fires — so re-pull the list ourselves and only then
+          // navigate to the freshly-mapped PR (matched by repo + number).
+          Task { await navigateToMappedPr(for: item) }
+        }
       }
     )
   }
@@ -1715,17 +1817,47 @@ struct PRsTabView: View {
 //
 // Mirrors desktop's `CreateLaneFromPrBranchDialog`: a compact summary of the
 // resolved preflight (PR, source branch, target lane, base branch) plus a
-// blocking-conflict banner and a primary "Create lane" action.
+// blocking-conflict banner and a primary "Create lane" action. With more than
+// one machine it asks which one first (least busy first), like Add lane, and
+// Create stays off until one is picked. The preflight runs on the picked
+// machine: branch ownership is per machine.
 
-private struct PrAutoMapSheet: View {
+struct PrAutoMapSheet: View {
   @Environment(\.dismiss) private var dismiss
+  @EnvironmentObject private var syncService: SyncService
   let item: GitHubPrListItem
-  let preflight: PrAutoMapPreflight?
-  let loading: Bool
-  let blockingMessage: String?
+  /// Least busy first. Empty means the focused machine only.
+  let machines: [PrLaneMachine]
   let canCreate: Bool
-  let onCreate: () -> Void
+  let onCreate: (PrLaneMachine?) -> Void
   let onCancel: () -> Void
+
+  @State private var selectedMachineId: String?
+  @State private var preflight: PrAutoMapPreflight?
+  @State private var loading = false
+  @State private var blockingMessage: String?
+
+  init(
+    item: GitHubPrListItem,
+    machines: [PrLaneMachine],
+    canCreate: Bool,
+    onCreate: @escaping (PrLaneMachine?) -> Void,
+    onCancel: @escaping () -> Void
+  ) {
+    self.item = item
+    self.machines = machines
+    self.canCreate = canCreate
+    self.onCreate = onCreate
+    self.onCancel = onCancel
+    _selectedMachineId = State(initialValue: machines.count > 1 ? nil : machines.first?.id ?? "")
+  }
+
+  private var selectedMachine: PrLaneMachine? {
+    machines.first { $0.id == selectedMachineId }
+  }
+
+  /// A machine is named: picked from the list, or the only one there is.
+  private var hasMachine: Bool { selectedMachineId != nil }
 
   private var sourceBranch: String {
     preflight?.remoteBranch ?? preflight?.headBranch ?? item.headBranch ?? "—"
@@ -1739,6 +1871,10 @@ private struct PrAutoMapSheet: View {
 
   private var baseBranch: String {
     preflight?.baseBranch ?? item.baseBranch ?? "—"
+  }
+
+  private var createEnabled: Bool {
+    canCreate && hasMachine && !loading && (preflight?.canCreate ?? false) && blockingMessage == nil
   }
 
   var body: some View {
@@ -1764,6 +1900,10 @@ private struct PrAutoMapSheet: View {
             .fixedSize(horizontal: false, vertical: true)
         }
 
+        if machines.count > 1 {
+          machinePicker
+        }
+
         if loading {
           HStack(spacing: 10) {
             ProgressView().tint(PrGlassPalette.purpleBright)
@@ -1772,7 +1912,7 @@ private struct PrAutoMapSheet: View {
               .foregroundStyle(PrsGlass.textSecondary)
             Spacer(minLength: 0)
           }
-        } else {
+        } else if hasMachine {
           VStack(spacing: 8) {
             PrGlassMonoRow(eyebrow: "Source branch", value: sourceBranch, icon: "arrow.triangle.branch")
             PrGlassMonoRow(eyebrow: "Target lane", value: targetLane, icon: "rectangle.stack")
@@ -1798,18 +1938,101 @@ private struct PrAutoMapSheet: View {
         }
 
         Button {
-          onCreate()
+          onCreate(selectedMachine)
           dismiss()
         } label: {
           Label("Create lane", systemImage: "arrow.triangle.branch")
         }
         .buttonStyle(PrGlassPrimaryButtonStyle())
-        .disabled(!canCreate)
-        .opacity(canCreate ? 1 : 0.5)
+        .disabled(!createEnabled)
+        .opacity(createEnabled ? 1 : 0.5)
       }
       .padding(16)
     }
+    .task(id: selectedMachineId) {
+      await runPreflight()
+    }
   }
+
+  private var machinePicker: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      PrsEyebrowLabel(text: "Machine")
+        .padding(.horizontal, 2)
+      VStack(spacing: 6) {
+        ForEach(Array(machines.enumerated()), id: \.element.id) { index, machine in
+          Button {
+            selectedMachineId = machine.id
+          } label: {
+            HStack(spacing: 12) {
+              Image(systemName: "desktopcomputer")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(PrGlassPalette.purpleBright)
+                .frame(width: 24)
+              VStack(alignment: .leading, spacing: 2) {
+                Text(machine.name)
+                  .font(.system(size: 13, weight: .semibold))
+                  .foregroundStyle(PrsGlass.textPrimary)
+                Text(prLaneMachineSubtitle(machine, isLeastBusy: index == 0))
+                  .font(.system(size: 11))
+                  .foregroundStyle(PrsGlass.textSecondary)
+              }
+              Spacer(minLength: 0)
+              if selectedMachineId == machine.id {
+                Image(systemName: "checkmark")
+                  .font(.system(size: 13, weight: .semibold))
+                  .foregroundStyle(PrGlassPalette.purpleBright)
+              }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+            .prGlassCard(cornerRadius: 12, shadow: false)
+          }
+          .buttonStyle(.plain)
+          .accessibilityAddTraits(selectedMachineId == machine.id ? .isSelected : [])
+        }
+      }
+    }
+  }
+
+  /// Best-effort dry run on the picked machine: a failure leaves Create off
+  /// with the reason shown.
+  @MainActor
+  private func runPreflight() async {
+    preflight = nil
+    blockingMessage = nil
+    guard hasMachine, canCreate else {
+      loading = false
+      return
+    }
+    let machineId = selectedMachineId
+    loading = true
+    do {
+      let result: PrAutoMapPreflightResult
+      if let machine = selectedMachine {
+        result = try await syncService.preflightCreateLaneFromPrBranch(
+          repoOwner: item.repoOwner, repoName: item.repoName, githubPrNumber: item.githubPrNumber, on: machine
+        )
+      } else {
+        result = try await syncService.preflightCreateLaneFromPrBranch(
+          repoOwner: item.repoOwner, repoName: item.repoName, githubPrNumber: item.githubPrNumber
+        )
+      }
+      // Ignore a stale answer when the user picked another machine meanwhile.
+      guard !Task.isCancelled, selectedMachineId == machineId else { return }
+      preflight = result.preflight
+      blockingMessage = result.preflight.blockingConflict?.message
+    } catch {
+      guard !Task.isCancelled, selectedMachineId == machineId else { return }
+      blockingMessage = error.localizedDescription
+    }
+    loading = false
+  }
+}
+
+private func prLaneMachineSubtitle(_ machine: PrLaneMachine, isLeastBusy: Bool) -> String {
+  let running = machine.runningCount == 0 ? "Nothing running" : "\(machine.runningCount) running"
+  return isLeastBusy ? "\(running) · least busy" : running
 }
 
 struct PrLaneLinkSheet: View {
@@ -1817,6 +2040,8 @@ struct PrLaneLinkSheet: View {
   let item: GitHubPrListItem
   let lanes: [LaneSummary]
   let canLink: Bool
+  /// Names each lane's machine when the repository is on more than one.
+  var machineContext: PrMachineContext = .single
   let onLink: (String) -> Void
   let onOpenGitHub: () -> Void
   @State private var selectedLaneId = ""
@@ -1917,7 +2142,7 @@ struct PrLaneLinkSheet: View {
             VStack(spacing: 6) {
               ForEach(availableLanes) { lane in
                 PrGlassLaneRow(
-                  name: lane.name,
+                  name: machineContext.machineName(forLaneId: lane.id).map { "\(lane.name) · \($0)" } ?? lane.name,
                   branch: lane.branchRef,
                   isSelected: selectedLaneId == lane.id
                 ) {

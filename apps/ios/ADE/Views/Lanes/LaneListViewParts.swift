@@ -630,10 +630,22 @@ extension LanesTabView {
     try? await Task.sleep(for: .milliseconds(650))
     guard syncService.requestedLaneNavigation?.id == request.id else { return }
 
-    var snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
-    if snapshot == nil {
-      await reload(refreshRemote: canRunLiveActions)
+    var snapshot: LaneListSnapshot?
+    if isWorkRemoteLaneId(request.laneId) {
+      // A lane of another machine (from the PRs tab or a link): its row comes
+      // from that machine, read again once when this phone has not yet.
+      let remoteSnapshot = { remoteLanes.machines.lazy.flatMap(\.snapshots).first { $0.lane.id == request.laneId } }
+      snapshot = remoteSnapshot()
+      if snapshot == nil {
+        await remoteLanes.refresh(sync: syncService, fleet: machineFleet)
+        snapshot = remoteSnapshot()
+      }
+    } else {
       snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
+      if snapshot == nil {
+        await reload(refreshRemote: canRunLiveActions)
+        snapshot = laneSnapshots.first(where: { $0.lane.id == request.laneId })
+      }
     }
 
     guard let resolvedSnapshot = snapshot else {

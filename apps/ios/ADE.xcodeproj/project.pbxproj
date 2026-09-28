@@ -324,6 +324,7 @@
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		G10000000000000000000030 /* PrMergeChecklist.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000030 /* PrMergeChecklist.swift */; };
+		E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F20 /* PrRemoteMachines.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
 		E20000000000000000000F11 /* LaneRemoteMachines.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F11 /* LaneRemoteMachines.swift */; };
 		E20000000000000000000F12 /* LaneMachinePreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F12 /* LaneMachinePreviews.swift */; };
@@ -762,6 +763,7 @@
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000030 /* PrMergeChecklist.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeChecklist.swift; path = ADE/Views/PRs/PrMergeChecklist.swift; sourceTree = "<group>"; };
+		D20000000000000000000F20 /* PrRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRemoteMachines.swift; path = ADE/Views/PRs/PrRemoteMachines.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
 		D20000000000000000000F11 /* LaneRemoteMachines.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneRemoteMachines.swift; path = ADE/Views/Lanes/LaneRemoteMachines.swift; sourceTree = "<group>"; };
 		D20000000000000000000F12 /* LaneMachinePreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneMachinePreviews.swift; path = ADE/Views/Lanes/LaneMachinePreviews.swift; sourceTree = "<group>"; };
@@ -1042,6 +1044,7 @@
 				G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */,
 				G2000000000000000000000F /* PrMergeGateCard.swift */,
 				G20000000000000000000030 /* PrMergeChecklist.swift */,
+				D20000000000000000000F20 /* PrRemoteMachines.swift */,
 				G20000000000000000000023 /* PrStackDiagramView.swift */,
 				G20000000000000000000024 /* PrRebaseScreen.swift */,
 			);
@@ -1955,6 +1958,7 @@
 				G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */,
 				G1000000000000000000000F /* PrMergeGateCard.swift in Sources */,
 				G10000000000000000000030 /* PrMergeChecklist.swift in Sources */,
+				E20000000000000000000F20 /* PrRemoteMachines.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
 				B10000000000000000000017 /* LaneTreeView.swift in Sources */,

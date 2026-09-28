@@ -24807,11 +24807,13 @@ extension SyncService {
         timeoutNanoseconds: timeoutNanoseconds
       )
       // Lane replies from another machine carry its lanes: tag them, so the
-      // next command on one of them goes back to that machine. A `lanes.*`
-      // command sent to a machine-marked project (create, import) counts too.
-      // Chat replies stay plain: the Work tab namespaces their lanes itself.
+      // next command on one of them goes back to that machine. A `lanes.*` or
+      // `prs.*` command sent to a machine-marked project (create, import, the
+      // PRs tab's PR list) counts too. Chat replies stay plain: the Work tab
+      // namespaces their lanes itself.
+      let replyNamesLanes = action.hasPrefix("lanes.") || action.hasPrefix("prs.")
       let replyMachineKey = laneTarget?.machineKey
-        ?? (action.hasPrefix("lanes.") ? syncFleetParseMarkedProjectId(targetProjectId)?.machineKey : nil)
+        ?? (replyNamesLanes ? syncFleetParseMarkedProjectId(targetProjectId)?.machineKey : nil)
       guard let replyMachineKey, replyMachineKey != focusedMachineKey else { return .routed(result) }
       return .routed(syncTagRemoteLaneIds(in: result, machineKey: replyMachineKey))
     }
@@ -25020,5 +25022,67 @@ extension SyncService {
     let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
     if let snapshots = payload.snapshots { return snapshots }
     return payload.lanes.map { LaneListSnapshot(lane: $0, runtime: syncRemoteLaneEmptyRuntime) }
+  }
+}
+
+// MARK: - PRs of other machines (see Views/PRs/PrRemoteMachines.swift)
+
+extension SyncService {
+  /// One other machine's PR rows for its checkout of the focused repository,
+  /// with namespaced lane ids. Throws when that machine is not live.
+  func fetchRemotePullRequestRows(repo: WorkRemoteMachineRepo, timeoutNanoseconds: UInt64) async throws -> [PrRemoteSummaryRow] {
+    let raw = try await sendCommand(
+      action: "prs.list",
+      args: [:],
+      timeoutNanoseconds: timeoutNanoseconds,
+      targetProjectId: syncFleetMarkedProjectId(machineKey: repo.machineKey, projectId: repo.projectId),
+      targetProjectRootPath: repo.rootPath,
+      fallbackToActiveProjectScope: false
+    )
+    // The router tagged the reply's lane ids (a `prs.*` reply from another
+    // machine).
+    return try decodeHydrationPayload(raw, as: [PrRemoteSummaryRow].self, domainLabel: "pull request", decoder: decoder)
+  }
+
+  /// `preflightCreateLaneFromPrBranch` on the machine the lane would be made on.
+  func preflightCreateLaneFromPrBranch(
+    repoOwner: String,
+    repoName: String,
+    githubPrNumber: Int,
+    on machine: PrLaneMachine
+  ) async throws -> PrAutoMapPreflightResult {
+    guard let projectId = machine.targetProjectId else {
+      return try await preflightCreateLaneFromPrBranch(repoOwner: repoOwner, repoName: repoName, githubPrNumber: githubPrNumber)
+    }
+    return try await sendDecodableCommand(
+      action: "prs.preflightCreateLaneFromPrBranch",
+      args: ["repoOwner": repoOwner, "repoName": repoName, "githubPrNumber": githubPrNumber],
+      targetProjectId: projectId,
+      targetProjectRootPath: machine.targetRootPath,
+      fallbackToActiveProjectScope: false,
+      as: PrAutoMapPreflightResult.self
+    )
+  }
+
+  /// `createLaneFromPrBranch` on the chosen machine. The new lane and the PR
+  /// row live there; the reply's lane ids come back namespaced.
+  @discardableResult
+  func createLaneFromPrBranch(
+    repoOwner: String,
+    repoName: String,
+    githubPrNumber: Int,
+    on machine: PrLaneMachine
+  ) async throws -> PrAutoMapCreateResult {
+    guard let projectId = machine.targetProjectId else {
+      return try await createLaneFromPrBranch(repoOwner: repoOwner, repoName: repoName, githubPrNumber: githubPrNumber)
+    }
+    return try await sendDecodableCommand(
+      action: "prs.createLaneFromPrBranch",
+      args: ["repoOwner": repoOwner, "repoName": repoName, "githubPrNumber": githubPrNumber],
+      targetProjectId: projectId,
+      targetProjectRootPath: machine.targetRootPath,
+      fallbackToActiveProjectScope: false,
+      as: PrAutoMapCreateResult.self
+    )
   }
 }

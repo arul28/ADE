@@ -9,6 +9,13 @@ struct PrDetailView: View {
   let requestedRepoOwner: String?
   let requestedRepoName: String?
   let availableLanes: [LaneSummary]
+  /// The lane another machine holds for this PR, when the focused machine has
+  /// no PR row for it. Its namespaced lane id sends every lane call there.
+  let remoteLaneLink: PrRemoteLaneLink?
+  let machineContext: PrMachineContext
+  /// Called after a lane was made or linked on another machine, so the list
+  /// reads that machine again and this screen gets its new link.
+  let onRemoteLinksChanged: (@MainActor () async -> Void)?
 
   init(
     prId: String,
@@ -16,13 +23,19 @@ struct PrDetailView: View {
     requestedRepoOwner: String? = nil,
     requestedRepoName: String? = nil,
     availableLanes: [LaneSummary] = [],
-    initialTab: PrDetailTab = .overview
+    initialTab: PrDetailTab = .overview,
+    remoteLaneLink: PrRemoteLaneLink? = nil,
+    machineContext: PrMachineContext = .single,
+    onRemoteLinksChanged: (@MainActor () async -> Void)? = nil
   ) {
     self.prId = prId
     self.transitionNamespace = transitionNamespace
     self.requestedRepoOwner = requestedRepoOwner
     self.requestedRepoName = requestedRepoName
     self.availableLanes = availableLanes
+    self.remoteLaneLink = remoteLaneLink
+    self.machineContext = machineContext
+    self.onRemoteLinksChanged = onRemoteLinksChanged
     _selectedTab = State(initialValue: initialTab)
   }
 
@@ -47,6 +60,7 @@ struct PrDetailView: View {
   @State private var filesWorkspaceId: String?
   @State private var stackPresentation: PrStackPresentation?
   @State private var laneLinkItem: GitHubPrListItem?
+  @State private var autoMapRequest: PrAutoMapRequest?
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
   @State private var actionsSheetPresented: Bool = false
@@ -277,9 +291,9 @@ struct PrDetailView: View {
 
   private var currentPr: PullRequestListItem {
     if let pr { return pr }
-    if let synthesizedPr { return synthesizedPr }
-    // Cold path: only hit before the first `recomputeDerivedModels()` runs.
-    return Self.synthesizePlaceholderPr(
+    // Cold path: the placeholder is only built before the first
+    // `recomputeDerivedModels()` runs.
+    var fallback = synthesizedPr ?? Self.synthesizePlaceholderPr(
       prId: prId,
       routedPrNumber: routedPrNumber,
       requestedRepoOwner: requestedRepoScope?.repoOwner,
@@ -287,6 +301,13 @@ struct PrDetailView: View {
       githubItem: githubItem,
       snapshot: snapshot
     )
+    // No PR row here, but another machine holds this PR's lane: lane calls
+    // made with its namespaced id go to that machine.
+    if let remoteLaneLink, fallback.laneId.isEmpty {
+      fallback.laneId = remoteLaneLink.laneId
+      fallback.laneName = remoteLaneLink.laneName
+    }
+    return fallback
   }
 
   private static func synthesizePlaceholderPr(
@@ -615,7 +636,9 @@ struct PrDetailView: View {
           pr: currentPr,
           state: isCurrentPrDraft ? "draft" : (snapshot?.status?.state ?? currentPr.state),
           authorLogin: snapshot?.detail?.author.login ?? githubItem?.author,
-          laneName: currentPr.laneName ?? availableLanes.first(where: { $0.id == currentPr.laneId })?.name
+          laneName: currentPr.laneName ?? availableLanes.first(where: { $0.id == currentPr.laneId })?.name,
+          laneMachineName: machineContext.machineName(forLaneId: currentPr.laneId),
+          onOpenLane: currentPr.laneId.isEmpty ? nil : openCurrentLane
         )
         .prListRow()
 
@@ -632,7 +655,9 @@ struct PrDetailView: View {
       case .files:
         PrFilesTab(
           snapshot: snapshot,
-          canOpenFiles: !currentPr.laneId.isEmpty,
+          // Files reads the focused machine only, so a lane of another
+          // machine cannot open there yet.
+          canOpenFiles: !currentPr.laneId.isEmpty && !isWorkRemoteLaneId(currentPr.laneId),
           onOpenFile: { file in Task { await openFileInFiles(file) } },
           onCopyPath: copyFilePath
         )
@@ -767,21 +792,37 @@ struct PrDetailView: View {
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
         .environmentObject(syncService)
     }
+    .sheet(item: $autoMapRequest) { request in
+      PrAutoMapSheet(
+        item: request.item,
+        machines: machineContext.createMachines,
+        canCreate: canAutoMapCurrentPr,
+        onCreate: { machine in autoMapCurrentPr(on: machine) },
+        onCancel: { autoMapRequest = nil }
+      )
+      .environmentObject(syncService)
+    }
     .sheet(item: $laneLinkItem) { item in
       PrLaneLinkSheet(
         item: item,
         lanes: availableLanes,
-        canLink: canMapCurrentPr
+        canLink: canMapCurrentPr,
+        machineContext: machineContext
       ) { laneId in
         runPrAction(
           "Linking pull request",
           action: {
+            // A namespaced lane id makes the link on the lane's machine.
             try await syncService.linkPullRequestToLane(
               laneId: laneId,
               prUrlOrNumber: item.githubUrl.isEmpty ? "\(item.githubPrNumber)" : item.githubUrl
             )
           },
-          onSuccess: { laneLinkItem = nil }
+          onSuccess: {
+            laneLinkItem = nil
+            guard isWorkRemoteLaneId(laneId), let onRemoteLinksChanged else { return }
+            Task { await onRemoteLinksChanged() }
+          }
         )
       } onOpenGitHub: {
         openGitHub(urlString: item.githubUrl)
@@ -1136,7 +1177,15 @@ struct PrDetailView: View {
         canAutoMap: canAutoMapCurrentPr,
         canMap: canMapCurrentPr,
         isExpanded: localLaneOfferExpanded,
-        onAutoMap: autoMapCurrentPr,
+        onAutoMap: {
+          // Creating a lane names its machine first when there is more than
+          // one (`PrAutoMapSheet`).
+          if machineContext.createMachines.count > 1, let githubItem {
+            autoMapRequest = PrAutoMapRequest(item: githubItem)
+          } else {
+            autoMapCurrentPr(on: machineContext.createMachines.first)
+          }
+        },
         onMap: {
           if let githubItem {
             laneLinkItem = githubItem
@@ -1810,21 +1859,45 @@ struct PrDetailView: View {
   /// Auto-map the current (unmapped) PR: create a lane from its head branch via
   /// the durable action wrapper so the spinner survives a tab switch. On a
   /// blocking conflict the message surfaces through the standard failure path.
-  private func autoMapCurrentPr() {
+  /// `machine` is where the lane is made; nil (or the focused machine) keeps
+  /// the command on the focused machine.
+  private func autoMapCurrentPr(on machine: PrLaneMachine?) {
+    autoMapRequest = nil
     let owner = currentPr.repoOwner
     let repo = currentPr.repoName
     let number = currentPr.githubPrNumber
     guard !owner.isEmpty, !repo.isEmpty else { return }
-    runPrAction("Creating lane from PR branch") {
-      let result = try await syncService.createLaneFromPrBranch(
-        repoOwner: owner,
-        repoName: repo,
-        githubPrNumber: number
-      )
-      if let conflict = result.preflight.blockingConflict {
-        throw PrAutoMapError.blocked(conflict.message)
+    let onRemote = machine?.targetProjectId != nil
+    runPrAction(
+      "Creating lane from PR branch",
+      action: {
+        let result: PrAutoMapCreateResult
+        if let machine {
+          result = try await syncService.createLaneFromPrBranch(
+            repoOwner: owner, repoName: repo, githubPrNumber: number, on: machine
+          )
+        } else {
+          result = try await syncService.createLaneFromPrBranch(
+            repoOwner: owner, repoName: repo, githubPrNumber: number
+          )
+        }
+        if let conflict = result.preflight.blockingConflict {
+          throw PrAutoMapError.blocked(conflict.message)
+        }
+      },
+      onSuccess: {
+        guard onRemote, let onRemoteLinksChanged else { return }
+        Task { await onRemoteLinksChanged() }
       }
-    }
+    )
+  }
+
+  /// Opens the PR's lane in the Lanes tab. A namespaced id names the lane's
+  /// machine.
+  private func openCurrentLane() {
+    let laneId = currentPr.laneId
+    guard !laneId.isEmpty else { return }
+    syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
   }
 
   private func requestReviewers() {
@@ -1872,7 +1945,10 @@ struct PrDetailView: View {
   }
 
   private func performCleanup() async {
-    guard let laneId = pr?.laneId, !laneId.isEmpty else { return }
+    // A lane of another machine is archived or deleted there, by its
+    // namespaced id.
+    let laneId = currentPr.laneId
+    guard !laneId.isEmpty else { return }
     let choice = cleanupChoice
     let token = syncService.beginPrAction(
       key: detailActionKey,

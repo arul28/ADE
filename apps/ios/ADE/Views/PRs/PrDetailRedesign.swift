@@ -531,6 +531,10 @@ struct PrDetailHeaderCard: View {
   let state: String
   let authorLogin: String?
   let laneName: String?
+  /// The lane's machine, when the repository is on more than one.
+  var laneMachineName: String? = nil
+  /// Opens the lane in the Lanes tab, on its machine.
+  var onOpenLane: (() -> Void)? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: 7) {
@@ -569,16 +573,36 @@ struct PrDetailHeaderCard: View {
       }
       .font(.system(size: 11.5, design: .monospaced))
       if let laneName, !laneName.isEmpty {
-        Label(laneName, systemImage: "arrow.triangle.branch")
-          .font(.system(size: 11.5, weight: .medium))
-          .foregroundStyle(ADEColor.tintLanes)
-          .lineLimit(1)
+        HStack(spacing: 8) {
+          if let onOpenLane {
+            Button(action: onOpenLane) {
+              laneLabel(laneName)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the lane")
+          } else {
+            laneLabel(laneName)
+          }
+          if let laneMachineName {
+            Label(laneMachineName, systemImage: "desktopcomputer")
+              .font(.system(size: 11.5, weight: .medium))
+              .foregroundStyle(ADEColor.textSecondary)
+              .lineLimit(1)
+          }
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(14)
     .prGlassCard(cornerRadius: 16)
-    .accessibilityElement(children: .combine)
+    .accessibilityElement(children: onOpenLane == nil ? .combine : .contain)
+  }
+
+  private func laneLabel(_ name: String) -> some View {
+    Label(name, systemImage: "arrow.triangle.branch")
+      .font(.system(size: 11.5, weight: .medium))
+      .foregroundStyle(ADEColor.tintLanes)
+      .lineLimit(1)
   }
 }
 

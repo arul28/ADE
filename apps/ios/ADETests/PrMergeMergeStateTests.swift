@@ -553,6 +553,40 @@ final class PrMergeMergeStateTests: XCTestCase {
     XCTAssertEqual(reconciled[0].updatedAt, mapped.updatedAt)
   }
 
+  /// Another machine's lane fills only a row the focused machine does not
+  /// link; the focused link always wins, the first other machine wins over a
+  /// later one, and no other machine's PR row id ever becomes `linkedPrId`.
+  func testRemoteLaneLinksFillOnlyRowsTheFocusedMachineDoesNotLink() {
+    func link(_ machineKey: String, owner: String = "arul28", number: Int = 849) -> PrRemoteLaneLink {
+      PrRemoteLaneLink(
+        repoOwner: owner, repoName: "ADE", githubPrNumber: number,
+        laneId: workRemoteLaneId(machineKey: machineKey, laneId: "lane-\(machineKey)"),
+        laneName: "lane on \(machineKey)", machineKey: machineKey, machineName: machineKey
+      )
+    }
+    var focusedLinked = githubItem(state: "open")
+    focusedLinked.linkedPrId = "pr-849"
+    focusedLinked.linkedLaneId = "lane-849"
+    var external = githubItem(state: "open")
+    external.scope = "external"
+
+    let cases: [(item: GitHubPrListItem, links: [PrRemoteLaneLink], laneId: String?, laneName: String?)] = [
+      (githubItem(state: "open"), [link("mac-b")], workRemoteLaneId(machineKey: "mac-b", laneId: "lane-mac-b"), "lane on mac-b"),
+      (githubItem(state: "open"), [link("mac-b", owner: "ARUL28")], workRemoteLaneId(machineKey: "mac-b", laneId: "lane-mac-b"), "lane on mac-b"),
+      (githubItem(state: "open"), [link("mac-b"), link("pc-c")], workRemoteLaneId(machineKey: "mac-b", laneId: "lane-mac-b"), "lane on mac-b"),
+      (githubItem(state: "open"), [link("mac-b", number: 850)], nil, nil),
+      (focusedLinked, [link("mac-b")], "lane-849", nil),
+      (external, [link("mac-b")], nil, nil),
+    ]
+    for (index, testCase) in cases.enumerated() {
+      let merged = prApplyRemoteLaneLinks([testCase.item], links: testCase.links)
+      XCTAssertEqual(merged.count, 1, "case \(index)")
+      XCTAssertEqual(merged[0].linkedLaneId, testCase.laneId, "case \(index)")
+      XCTAssertEqual(merged[0].linkedLaneName, testCase.laneName, "case \(index)")
+      XCTAssertEqual(merged[0].linkedPrId, testCase.item.linkedPrId, "case \(index)")
+    }
+  }
+
   func testSyntheticGitHubRouteRoundTripsCoordinates() {
     let route = prSyntheticGitHubId(repoOwner: "arul28", repoName: "ADE", githubPrNumber: 849)
     let coords = prGitHubCoordinates(fromRouteId: route)

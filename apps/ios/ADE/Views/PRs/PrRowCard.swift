@@ -21,10 +21,13 @@ struct PrRowCard: View {
   init(
     item: GitHubPrListItem,
     linkedPr: PullRequestListItem? = nil,
+    laneMachineName: String? = nil,
     transitionNamespace: Namespace.ID? = nil,
     isSelectedTransitionSource: Bool = false
   ) {
-    self.data = Data(item: item, linkedPr: linkedPr)
+    var data = Data(item: item, linkedPr: linkedPr)
+    data.laneMachineName = laneMachineName
+    self.data = data
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.onShowStack = { _, _ in }
@@ -129,6 +132,7 @@ struct PrRowCard: View {
       parts.append(provenance)
     } else if let lane = data.laneLabel {
       parts.append("Lane \(lane)")
+      if let machine = data.laneMachineName { parts.append("on \(machine)") }
     }
     if let facts = data.mergeFacts { parts.append("Merged \(facts)") }
     if data.needsBranchCleanup { parts.append("Remote branch still exists") }
@@ -170,6 +174,13 @@ struct PrRowCard: View {
           .font(.caption2.weight(.medium))
           .foregroundStyle(PrsGlass.textSecondary)
           .lineLimit(1)
+        // The lane's machine, when the repository is on more than one.
+        if let machine = data.laneMachineName {
+          Label(machine, systemImage: "desktopcomputer")
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(PrsGlass.textMuted)
+            .lineLimit(1)
+        }
       }
       Spacer(minLength: 0)
     }
@@ -372,6 +383,8 @@ extension PrRowCard {
     var mergedByLogin: String? = nil
     var mergeMethod: String? = nil
     var needsBranchCleanup: Bool = false
+    /// The machine the lane is on. Nil when the repository is on one machine.
+    var laneMachineName: String? = nil
 
     var timeAgo: String {
       // Open rows are about how long something has waited; merged rows about when it
