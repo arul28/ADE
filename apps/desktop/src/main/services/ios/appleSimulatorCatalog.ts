@@ -204,7 +204,8 @@ export function pickAppleDeviceSpec(input: {
     ? runtimes.find((candidate) => candidate.identifier === wantedRuntime
       || matchesName(candidate.name, wantedRuntime)
       || candidate.version === wantedRuntime)
-    : runtimes[0];
+    : runtimes.find((candidate) => candidate.platform === "iOS");
+  if (!wantedRuntime && !runtime) throw new AppleNoInstalledSimulatorsError();
   if (!runtime) throw new AppleRuntimeNotInstalledError(`Runtime ${wantedRuntime}`, runtimeNames);
   const findType = (wanted: string) => runtime.deviceTypes.find((type) => type.identifier === wanted || matchesName(type.name, wanted));
   if (wantedType) {

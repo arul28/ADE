@@ -154,7 +154,7 @@ function AppleMiniPlayerFrameView({
       closeAppleMiniPlayer(target.deviceUdid);
     }, pinRef.current);
     return () => unsubscribe?.();
-  }, [target.deviceUdid, pinRef]);
+  }, [target.deviceUdid, target.runtimePin, pinRef]);
 
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {

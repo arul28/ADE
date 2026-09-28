@@ -76,7 +76,6 @@ function laneDevice(overrides: Partial<AppleLaneDevice> = {}): AppleLaneDevice {
     family: "iphone",
     runtime: "iOS 26.2",
     createdAt: "2026-09-21T00:00:00.000Z",
-    templateUdid: "pro",
     ...overrides,
   };
 }

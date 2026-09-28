@@ -114,7 +114,6 @@ const LANE_DEVICE: AppleLaneDevice = {
   family: "iphone",
   runtime: "iOS 26.2",
   createdAt: new Date(0).toISOString(),
-  templateUdid: null,
 };
 
 function status(overrides: Partial<IosSimulatorStatus> = {}): IosSimulatorStatus {
